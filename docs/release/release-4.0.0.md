@@ -1,58 +1,140 @@
-# LakeSoul 4.0.0 Release Guide
+# LakeSoul 4.0.0 Release Notes
 
-This document records the concrete versions, Maven coordinates, compatibility requirements, and implementation plan for the `4.0.0` release. The version-independent release policy and process live in [`release-guide.md`](release-guide.md); operator procedures live in [`upgrade-4.0.0.md`](upgrade-4.0.0.md).
+LakeSoul `4.0.0` is a major Core release. It changes the default physical file
+format, metadata representation, connector coordinates, native ABI, runtime
+baselines, and several user-visible semantics. Read the
+[upgrade and recovery guide](upgrade-4.0.0.md) before upgrading any existing
+deployment.
 
-> Current status: This document describes the release scheme to be adopted starting with `4.0.0`. The `v4.0.0` tag must not be created or published until every release gate succeeds on the final release commit and both protected publication environments are configured.
+LakeSoul Core and the Python package have independent release versions. The
+Core release tag is `v4.0.0`; the compatible Python release is `2.0.0` with tag
+`py-v2.0.0`.
 
-## 1. Target Versions
+## Highlights
 
-### 1.1 LakeSoul Core
+- Vortex Compact is the default format for new writes.
+- Readers can scan Parquet, Vortex, and Vortex Compact files in one snapshot.
+- Metadata stores the Arrow schema as Arrow IPC alongside the existing JSON
+  schema.
+- Spark moves to `3.5.8`, Flink to `1.20.0`, Flink CDC to `3.5.0`, and Presto
+  to `0.296`.
+- Connector Maven coordinates now encode the engine compatibility series in
+  the `artifactId`.
+- Official native artifacts support Linux x86_64 GNU only.
+- Spark Gluten integration is available as a GitHub Release Preview.
 
-The next official Core release is:
+## Breaking changes
 
-```text
-4.0.0
+### Default physical format
+
+`vortex-compact` is the default format for `4.0.0` writes. LakeSoul `3.0.x`
+cannot read Vortex or Vortex Compact files. During an upgrade, force every
+writer to Parquet until the deployment has passed its acceptance checks and
+restoring the pre-upgrade backup is no longer required.
+
+The exact point of no return is the first successful metadata commit that
+makes a Vortex or Vortex Compact file part of a visible table snapshot.
+Creating an uncommitted temporary file does not cross this boundary.
+
+### Metadata Arrow schema
+
+The `4.0.0` metadata migration adds these nullable columns to `table_info`:
+
+```sql
+table_schema_arrow_ipc bytea
+table_schema_arrow_ipc_json_hash text
 ```
 
-| Stage | Maven | Rust Core | Git tag |
-|---|---|---|---|
-| Development | `4.0.0-SNAPSHOT` | `4.0.0-dev.0` | None |
-| Final release | `4.0.0` | `4.0.0` | `v4.0.0` |
-| `4.0.0` maintenance branch after release | `4.0.1-SNAPSHOT` | `4.0.1-dev.0` | None |
-| `main` after the `4.0` branch is created | `4.1.0-SNAPSHOT` | `4.1.0-dev.0` | None |
+`table_schema_arrow_ipc` stores the Arrow schema in IPC form.
+`table_schema_arrow_ipc_json_hash` associates that representation with the
+existing JSON `table_schema`. Existing rows may keep both new values as `NULL`
+until a `4.0.0` client writes or refreshes their Arrow schema. The JSON schema
+column remains present.
 
-The Core release branch is `release/4.0`.
+The migration also applies:
 
-### 1.2 Python
-
-```text
-Development version: 2.0.0.dev0
-Final version:       2.0.0
-Git tag:             py-v2.0.0
+```sql
+ALTER TABLE data_commit_info REPLICA IDENTITY FULL;
 ```
 
-| Python | Cargo extension |
+Apply the versioned, idempotent migration with `script/metadata_migrate.py`
+before starting any `4.0.0` process. The runner records the migration version,
+description, checksum, installation time, and database role in
+`lakesoul_schema_migrations`; it rejects an applied migration whose recorded
+description or checksum no longer matches the repository.
+
+### Maven coordinates
+
+Starting with `4.0.0`, Maven `<version>` represents the LakeSoul Core version
+only. Runtime and Scala compatibility versions are encoded in `artifactId`.
+The old connector coordinates and the new coordinates must not coexist on one
+classpath.
+
+| Old example | `4.0.0` coordinate |
 |---|---|
-| `2.0.0.dev0` | `2.0.0-dev.0` |
-| `2.0.0` | `2.0.0` |
+| `com.dmetasoul:lakesoul-spark:3.5-3.0.0` | `com.dmetasoul:lakesoul-spark-3.5_2.12:4.0.0` |
+| `com.dmetasoul:lakesoul-flink:1.20-3.0.0` | `com.dmetasoul:lakesoul-flink-1.20_2.12:4.0.0` |
+| `com.dmetasoul:lakesoul-presto:0.29-3.0.0` | `com.dmetasoul:lakesoul-presto-0.296:4.0.0` |
 
-## 2. Why `4.0.0` Is a Major Release
+No relocation artifacts are published for the old names.
 
-The main reasons for using a major version for `4.0.0` include default Vortex Compact writes, metadata Arrow schema changes, native ABI changes, the Spark 3.5 baseline, the Flink CDC upgrade, new Presto and Java baselines, and user-visible semantic changes.
+### Range-partitioned overwrite
 
-### 2.1 Irreversible Vortex compatibility boundary
+For a range-partitioned table, Spark overwrite without `replaceWhere` now
+expires only range partitions present in the new files. Range partitions
+absent from the input remain visible. In `3.0.0`, the same operation expired
+all existing files.
 
-Vortex Compact is the default physical format for `4.0.0` writes. LakeSoul `3.0.x` reads Parquet but cannot read Vortex or Vortex Compact. The point of no return is the first successful metadata commit that makes a Vortex or Vortex Compact file written by `4.0.0` part of a visible table snapshot; creating an uncommitted temporary file does not cross the boundary.
+Jobs that used overwrite without a predicate as a table-wide truncate must
+explicitly truncate or drop the table, or use an appropriate validated
+`replaceWhere` predicate.
 
-After that commit, replacing `4.0.0` binaries with `3.0.x` binaries is not rollback. In-place and mixed-version rolling rollback are unsupported. Recovery to `3.0.x` requires restoring both PostgreSQL metadata and table data from the same verified, quiesced pre-upgrade backup set. Rewriting selected Vortex files to Parquet is a forward conversion and does not restore the previous snapshot.
+### Flink CDC cutover
 
-Before crossing this boundary, operators must use the Parquet-only upgrade window defined in the [upgrade and recovery guide](upgrade-4.0.0.md#5-parquet-only-upgrade-window). Keep every writer on Parquet until legacy Parquet/Vortex/mixed-snapshot reads, controlled writes, and backup-set restoration have passed for the deployment.
+Recovery of a Flink CDC `3.0` savepoint in Flink CDC `3.5` is not supported by
+the `4.0.0` upgrade path. Use a stopped cutover with source retention or an
+independently verified replay or backfill procedure.
 
-## 3. Maven Coordinates
+### Presto behavior
 
-Starting with `4.0.0`, Maven `<version>` represents only the LakeSoul Core version. External runtime and Scala binary versions are encoded in the `artifactId`.
+Presto now defaults `case-sensitive-name-matching` to `false`. Identifiers are
+normalized to lower case and resolved without regard to case. Lookup fails
+when multiple physical schemas or tables differ only by case. Set the property
+to `true` when exact physical-name matching is required.
 
-### 3.1 Maven Central GA
+Arrow timestamps, including timezone-annotated fields, map to Presto
+`TIMESTAMP`. In `3.0.0`, timezone-annotated fields were exposed as
+`TIMESTAMP WITH TIME ZONE`. Microsecond values are truncated to Presto's
+millisecond representation, and the Arrow timezone annotation is not
+preserved on this path.
+
+### Native ABI and deployment
+
+The `4.0.0` Java JARs and embedded native libraries are one matching set.
+Mixing `3.x` and `4.0.0` connector JARs, native libraries, coordinators,
+workers, writers, or metadata processes is unsupported. Upgrade by stopping
+the complete deployment and replacing every component together.
+
+## Non-rollback boundaries
+
+In-place rollback and mixed-version rolling rollback from `4.0.0` to `3.x`
+are unsupported after either boundary:
+
+1. the first visible metadata commit containing a Vortex or Vortex Compact
+   file;
+2. the first incompatible metadata migration applied by this or a later
+   `4.x` release.
+
+Before either boundary, create and restore-test one consistent backup pair
+containing PostgreSQL metadata and table data from the same quiesced point.
+After a boundary, recovery to `3.x` requires restoring both halves of that
+pair. Replacing binaries, restoring only PostgreSQL, restoring only table
+files, or rewriting selected Vortex files to Parquet is not rollback. When
+backup restoration is not selected, use a forward fix on `4.0.x`.
+
+## Published coordinates and assets
+
+### Maven Central GA
 
 ```text
 com.dmetasoul:lakesoul-parent:4.0.0
@@ -63,45 +145,7 @@ com.dmetasoul:lakesoul-flink-1.20_2.12:4.0.0
 com.dmetasoul:lakesoul-presto-0.296:4.0.0
 ```
 
-Supported baselines:
-
-| Artifact | Compatibility baseline |
-|---|---|
-| `lakesoul-spark-3.5_2.12` | Spark 3.5.8, Scala 2.12.15 |
-| `lakesoul-flink-1.20_2.12` | Flink 1.20.0, Flink CDC 3.5.0, Scala 2.12, Java 11+ |
-| `lakesoul-presto-0.296` | Presto 0.296, Java 17 |
-
-### 3.2 Gluten Preview
-
-The Gluten artifact uses:
-
-```text
-com.dmetasoul:lakesoul-spark-gluten-3.5_2.12:4.0.0
-```
-
-It is a GitHub Release Preview in `4.0.0`:
-
-- it may be distributed as a GitHub Release JAR;
-- it is not published to Maven Central;
-- it does not block Core GA;
-- release notes must identify Spark 3.5.8, Scala 2.12, Gluten 1.6.0, and platform limitations;
-- it may be promoted to Maven Central GA only after Gluten dependencies can be resolved publicly and reproducibly.
-
-### 3.3 Migration from Old Coordinates
-
-Examples of old coordinates:
-
-```text
-com.dmetasoul:lakesoul-spark:3.5-3.0.0
-com.dmetasoul:lakesoul-flink:1.20-3.0.0
-com.dmetasoul:lakesoul-presto:0.29-3.0.0
-```
-
-`4.0.0` publishes only the new coordinates. It does not maintain two complete sets of JARs long term and does not require relocation artifacts. The upgrade guide must provide a clear mapping between old and new coordinates.
-
-## 4. GitHub Release Assets
-
-The GitHub Release provides shaded artifacts that users can deploy directly:
+### GitHub Release
 
 ```text
 lakesoul-spark-3.5_2.12-4.0.0.jar
@@ -114,130 +158,76 @@ SHA256SUMS.asc
 SBOM.spdx.json
 ```
 
-By default, `lakesoul-common` and `lakesoul-io-java` are available only through Maven Central and are not duplicated as GitHub Release assets.
+`lakesoul-common` and `lakesoul-io-java` are available from Maven Central and
+are not duplicated as GitHub Release assets. Rust native libraries are
+embedded in the JVM artifacts and are not published independently.
 
-Rust native libraries are embedded in JVM artifacts. They are not published independently to crates.io or as official standalone release artifacts.
+## Compatibility and runtime baselines
 
-## 5. Native Platform Support
+The [user-facing compatibility matrix](../../website/docs/01-Getting%20Started/04-compatibility.md)
+distinguishes supported baselines from versions exercised by release CI.
 
-`4.0.0` supports only Linux x86_64:
+| Component | `4.0.0` baseline | Release status |
+|---|---|---|
+| Spark | Spark `3.5.8`, Scala `2.12.15`, Java 11 build/runtime baseline | GA |
+| Flink | Flink `1.20.0`, Scala `2.12`, Java 11 or later | GA |
+| Flink CDC | `3.5.0` | GA; `3.0` savepoint reuse unsupported |
+| Presto | Presto `0.296`, Java 17 | GA |
+| PostgreSQL | PostgreSQL 14 or later; release CI uses `14.5` | GA |
+| Python | LakeSoul Python `2.0.0`, Python `3.10+`, PyArrow `>=16,<21` | Independent release |
+| Native platform | Linux x86_64 GNU, `x86_64-unknown-linux-gnu` | GA |
+| Gluten | Spark `3.5.8`, Scala `2.12`, Gluten `1.6.0` | Preview |
 
-| Platform | Platform ID | Rust target | Build | Native smoke test | Connector E2E | Support level |
-|---|---|---|---:|---:|---:|---|
-| Linux x86_64 | `linux-x86_64` | `x86_64-unknown-linux-gnu` | Required | Required | Required | GA Production |
+## Native platform support
 
-All other operating systems and CPU architectures are unsupported, including Linux aarch64, Linux musl, macOS, Windows, and 32-bit platforms.
+Official `4.0.0` artifacts support only:
 
-## 6. Compatibility Requirements Specific to `4.0.0`
+| Platform | Platform ID | Rust target | Support level |
+|---|---|---|---|
+| Linux x86_64 GNU | `linux-x86_64` | `x86_64-unknown-linux-gnu` | GA Production |
 
-At minimum, the following work must be completed before publishing `4.0.0`.
+Linux aarch64, Linux musl, macOS, Windows, and 32-bit platforms are
+unsupported. The release does not publish platform-specific connector JARs or
+provide official source-build support for those platforms.
 
-### 6.1 File Formats
+## Gluten Preview
 
-- Clearly document Vortex Compact as the default physical format.
-- Verify reads of old Parquet, Vortex, and mixed snapshots.
-- State clearly that `3.0.x` cannot read Vortex and that writing the first Vortex Compact file is a point of no return for in-place rollback.
-- Provide a configuration that explicitly forces Parquet before that point during the upgrade window.
-- Do not describe rewriting Vortex to Parquet or restoring a backup as in-place rollback.
-- Mark this as a major migration risk in the release notes.
+The preview artifact is:
 
-### 6.2 Metadata
+```text
+com.dmetasoul:lakesoul-spark-gluten-3.5_2.12:4.0.0
+```
 
-- Provide an idempotent schema migration.
-- Use an explicit schema version or migration record for migration statements.
-- Validate the sequence of applying DDL before deploying binaries.
-- Treat the first incompatible metadata migration as a point of no return for in-place rollback, and do not claim old-binary compatibility beyond that point.
-- Fix the issue where a missing secondary PostgreSQL URL incorrectly falls back to the default local database.
-- Document connection pool and replica identity changes.
+It targets Spark `3.5.8`, Scala `2.12`, Gluten `1.6.0`, and Linux x86_64 GNU.
+It is distributed as a GitHub Release JAR, is not published to Maven Central,
+and does not block Core GA. Preview means its public dependency chain and
+production support contract are not yet at GA level; validate it independently
+before production use.
 
-### 6.3 Rollback and Recovery
+## Known issues and limitations
 
-- In-place rollback from `4.0.0` to `3.0.x` is unsupported after Vortex Compact files are written or incompatible metadata changes are applied.
-- Document the exact points of no return before the upgrade begins.
-- Require verified backups of both table data and PostgreSQL metadata before crossing either point of no return.
-- Provide and test a recovery procedure that restores both table data and PostgreSQL metadata from the same pre-upgrade backup.
-- Document forward fixes on `4.0.x` as the alternative when backup restoration is not selected.
-- Do not claim support for mixed-version rolling rollback.
+- Only Linux x86_64 GNU has official native support.
+- LakeSoul `3.x` cannot read Vortex or Vortex Compact files written by
+  `4.0.0`.
+- In-place and rolling rollback after a point of no return are unsupported.
+- Flink CDC `3.0` savepoints are not supported for recovery into Flink CDC
+  `3.5`.
+- Presto timestamp mapping loses Arrow timezone annotations and truncates
+  microsecond values to milliseconds.
+- Case-insensitive Presto lookup fails for physical names that differ only by
+  case.
+- Gluten support is Preview and the artifact is available only from the
+  GitHub Release.
+- Mixed-version Spark, Flink, Presto, JAR, native-library, writer, and metadata
+  deployments are unsupported.
 
-### 6.4 Native ABI
+## Upgrade and recovery
 
-- Publish the Java JAR and native libraries as a matching set.
-- Do not support mixing old and new JARs or native libraries.
-- Include artifact and native build versions in loader errors.
-- Run a real native loading smoke test on Linux x86_64.
-- Complete the `META-INF/native/linux-x86_64/` resource layout before release.
+The supported production path is a cold upgrade from the verified `3.0.0`
+baseline. Stop all LakeSoul activity, create and restore-test the metadata and
+table-data backup pair, apply metadata DDL, replace every runtime, and retain a
+Parquet-only upgrade window before enabling Vortex Compact.
 
-### 6.5 Spark, Flink, and Presto
-
-- The Spark upgrade guide must document Spark 3.5 and the new Maven coordinates.
-- Document the semantic changes to range-partitioned overwrite.
-- Flink CDC `3.0` savepoint recovery into Flink CDC `3.5` is outside the supported `4.0.0` upgrade path. Require a stopped cutover with source retention or an independently tested replay/backfill procedure, and do not claim savepoint compatibility.
-- The Presto upgrade guide must document Presto `0.296`, Java 17, case-sensitive name matching, and the changed timestamp type and precision behavior.
-- Mixed old/new Presto coordinators, workers, connector JARs, and native libraries are unsupported. Require a stopped replacement of the complete Presto deployment.
-
-## 7. Release Gates Specific to `4.0.0`
-
-In addition to the standard gates in [`release-guide.md`](release-guide.md#83-release-pr-gates), the `4.0.0` release requires:
-
-- the Core-related subset of Python compatibility tests;
-- build both native libraries for `x86_64-unknown-linux-gnu`;
-- run native loader smoke tests on Linux x86_64;
-- run Spark, Flink, and Presto E2E tests on Linux x86_64;
-- run metadata migration tests;
-- run Parquet/Vortex compatibility and backup recovery tests, including restoration of table data and PostgreSQL metadata;
-- verify both native libraries under `META-INF/native/linux-x86_64/`.
-
-## 8. `4.0.0` Release Automation Implementation Order
-
-Implement the following phases before the official release to avoid rewriting all CI at once.
-
-### Phase 1: Versions and Documentation
-
-- Adopt this release guide.
-- Implement `script/release.py` set and check operations.
-- Update Maven artifact IDs.
-- Apply the versioning policy and `publish = false` to Core Rust crates.
-- Mark Flight and S3 Proxy as Experimental in the documentation.
-- Add compatibility and migration documentation.
-
-### Phase 2: Linux x86_64 Native Build
-
-- Refactor the native resource layout and Java loader for Linux x86_64.
-- Build both native libraries for `x86_64-unknown-linux-gnu`.
-- Use `rust/target` consistently.
-- Select the Linux x86_64 runner and Rust target explicitly.
-- Add native loader smoke tests on Linux x86_64.
-- Verify both native libraries under `META-INF/native/linux-x86_64/`.
-
-### Phase 3: Release Dry Run
-
-- Extract a reusable release build workflow.
-- Use `publish = false` for release PRs.
-- Fix the Presto JDK 17 build.
-- Add version, artifact, migration, format, and E2E gates.
-- Generate checksums, a source archive, and an SBOM.
-
-### Phase 4: Publish
-
-- Trigger the official workflow from the final tag.
-- Configure protected GitHub environments.
-- Publish to Maven Central.
-- Create the GitHub Release automatically.
-- Upload assets automatically.
-- Publish the website.
-- Add post-release registry smoke tests.
-
-## 9. Known Gaps in the Current Release Pipeline
-
-The following issues must be confirmed and fixed before publishing `4.0.0`:
-
-- the current Maven deployment workflow does not validate the tag against the POM version;
-- the current workflow can be triggered with `workflow_dispatch` without a version input;
-- the native artifact download directory does not match the directory read by the Maven profile;
-- Presto requires Java 17, while the existing deployment reactor uses Java 11;
-- the existing publish command skips tests;
-- GitHub Release creation and JAR uploads are not automated;
-- website publication must be decoupled from the Core and Python tag trigger boundaries;
-- Gluten does not yet have the public, reproducible dependency chain required for Maven Central GA.
-
-The `v4.0.0` tag must not be created or published until the issues above are resolved.
+Follow the complete [LakeSoul 4.0.0 Upgrade and Recovery Guide](upgrade-4.0.0.md);
+do not infer rollback support from snapshot time travel or mixed-format read
+support.

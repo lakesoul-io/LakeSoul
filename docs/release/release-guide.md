@@ -42,7 +42,7 @@ The Core version is a single unified version expressed in three forms:
 
 The Core development version is represented by `<revision>` in the root `pom.xml`. Core Rust manifests must map it to the equivalent Cargo SemVer. CI must verify that both sides are consistent; changing only one side is not allowed.
 
-The website version represents the latest stable release, not the current development version. While a `<X.Y.Z>-SNAPSHOT` is under development, the website must continue to show the previous final release until `v<X.Y.Z>` is published.
+The website version represents the latest published stable release, not the current development or tagged-but-unpublished version. The release branch and final Core tag keep the previous stable value. Only the website publication job may set it to `<X.Y.Z>`, after Core artifacts have been published and verified.
 
 ### 2.2 Python
 
@@ -292,7 +292,7 @@ The release PR is the internal candidate and must include:
 - an upgrade guide;
 - documented rollback support and recovery procedures, including explicit points of no return and backup requirements;
 - a mapping between old and new Maven coordinates;
-- website release content. The latest stable version must change only after the official release succeeds, or atomically through the publish workflow.
+- website release content. The release commit and tag retain the previous stable version; the website publication job updates its checked-out copy only after the official Core release succeeds.
 
 The release PR runs the same reusable build workflow as the official release, with:
 
@@ -411,6 +411,7 @@ python script/release.py set-core <X.Y.Z>-SNAPSHOT
 python script/release.py set-core <X.Y.Z>
 python script/release.py set-python <X.Y.Z>.dev0
 python script/release.py check-tag v<X.Y.Z>
+python script/release.py set-website-stable <X.Y.Z>  # publication job only
 ```
 
 The tool must:

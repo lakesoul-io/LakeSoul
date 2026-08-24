@@ -16,17 +16,6 @@ on:
         required: false
         default: ""
         type: string
-    secrets:
-      OSSRH_USERNAME:
-        required: false
-      OSSRH_TOKEN:
-        required: false
-      MAVEN_SIGN_GPG_KEY:
-        required: false
-      MAVEN_SIGN_GPG_PASSPHRASE:
-        required: false
-      GH_PAGES_DEPLOY:
-        required: false
 
 permissions:
   contents: read
@@ -817,4 +806,3 @@ jobs:
     uses: ./.github/workflows/website-publish.yml
     with:
       ref: ${{ inputs.tag }}
-    secrets: inherit
