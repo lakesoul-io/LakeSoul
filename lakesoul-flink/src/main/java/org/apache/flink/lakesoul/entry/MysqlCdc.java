@@ -11,6 +11,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
 
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -79,16 +80,16 @@ public class MysqlCdc {
                         bucketParallelism,
                         true);
 
-        mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         Configuration globalConfig = FlinkUtil.IOConfigs.getInstance().conf;
         String warehousePath =
                 databasePrefixPath == null
                         ? globalConfig.getString(WAREHOUSE_PATH.key(), null)
                         : databasePrefixPath;
         Configuration conf = new Configuration();
-        if (sinkDBName == null) {
+        if (StringUtils.isEmpty(sinkDBName)) {
             sinkDBName = dbName;
         }
+        mysqlDBManager.importOrSyncLakeSoulNamespace(sinkDBName);
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);
