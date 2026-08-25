@@ -850,6 +850,15 @@ mod tests {
             ),
             "s3://lakesoul-test-bucket/test/default/abc"
         );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakeinsight-bucket/lakeinsight-v1/warehouse/default/test_table/part--0001-89bb5bc9-ad96-4906-9001-1d33a06a675e-c000.vortex"
+                ),
+                "lakeinsight-bucket"
+            ),
+            "s3://lakeinsight-bucket/lakeinsight-v1/warehouse/default/test_table"
+        );
     }
 
     async fn create_and_write_table(
