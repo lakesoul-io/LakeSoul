@@ -679,6 +679,7 @@ where
     split
         .take_while(|s| {
             !(s.ends_with(".parquet")
+                || s.ends_with(".vortex")
                 || s.starts_with("compact")
                 || s.contains(partition_equal))
         })
@@ -848,6 +849,19 @@ mod tests {
                 "lakesoul-test-bucket"
             ),
             "s3://lakesoul-test-bucket/test/default/abc"
+        );
+    }
+
+    #[test]
+    fn test_parse_vortex_table_path() {
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakeinsight-bucket/lakeinsight-v1/warehouse/default/test_jiax_basic/part--0001-89bb5bc9-ad96-4906-9001-1d33a06a675e-c000.vortex"
+                ),
+                "lakeinsight-bucket"
+            ),
+            "s3://lakeinsight-bucket/lakeinsight-v1/warehouse/default/test_jiax_basic"
         );
     }
 
