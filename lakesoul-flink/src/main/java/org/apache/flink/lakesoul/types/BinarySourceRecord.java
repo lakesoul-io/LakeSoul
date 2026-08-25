@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.types;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import org.apache.flink.core.fs.Path;
@@ -83,11 +84,10 @@ public class BinarySourceRecord {
         String sourceSchemaName = tableId.schema() == null ? tableId.catalog() : tableId.schema();
         String tableName;
         String originTableName;
-        if (sinkDBName.equals(sourceSchemaName)
-                || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")) {
+        if (StringUtils.isEmpty(sinkDBName) || sinkDBName.equals(sourceSchemaName)) {
             tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
             originTableName = tableId.table();
-            tableId = new TableId(sourceSchemaName, sinkDBName, tableName);
+            tableId = new TableId(sourceSchemaName, sourceSchemaName, tableName);
         } else {
             tableName =
                     String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table())
