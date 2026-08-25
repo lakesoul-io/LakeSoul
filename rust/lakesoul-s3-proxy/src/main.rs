@@ -679,7 +679,8 @@ where
     split
         .take_while(|s| {
             !(s.ends_with(".parquet")
-                || s.starts_with("compact")
+                || s.ends_with(".vortex")
+                || s.starts_with("compactdir")
                 || s.contains(partition_equal))
         })
         .for_each(|s| {
