@@ -14,6 +14,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WAREHOUSE_PATH;
 import com.dmetasoul.lakesoul.meta.external.NameSpaceManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -202,6 +203,12 @@ public class JdbcCDC {
                         partitionMap,
                         partitionFormatRuleMap,
                         globalConfig);
+        NameSpaceManager manager = new NameSpaceManager();
+        if (!StringUtils.isEmpty(sinkDBName)) {
+            manager.importOrSyncLakeSoulNamespace(sinkDBName);
+        } else {
+            manager.importOrSyncLakeSoulNamespace(dbName);
+        }
 
         if (dbType.equalsIgnoreCase("mysql")) {
             mysqlCdc(lakeSoulRecordConvert, conf, env, sinkDBName);
@@ -252,8 +259,6 @@ public class JdbcCDC {
                         lakeSoulRecordConvert, conf.get(WAREHOUSE_PATH), sinkDBName));
 
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
-        NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(sinkDBName);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context =
                 new LakeSoulMultiTableSinkStreamBuilder.Context();
@@ -300,8 +305,6 @@ public class JdbcCDC {
         PostgresSourceBuilder.PostgresIncrementalSource<BinarySourceRecord> pgSourceBuilder =
                 pgSourcebuilder.build();
 
-        NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(sinkDBName);
         LakeSoulMultiTableSinkStreamBuilder.Context context =
                 new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
@@ -349,9 +352,6 @@ public class JdbcCDC {
                         .splitSize(splitSize)
                         .build();
 
-        NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(sinkDBName);
-
         LakeSoulMultiTableSinkStreamBuilder.Context context =
                 new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
@@ -390,8 +390,6 @@ public class JdbcCDC {
                                         sinkDBName))
                         .startupOptions(StartupOptions.initial())
                         .build();
-        NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(sinkDBName);
         LakeSoulMultiTableSinkStreamBuilder.Context context =
                 new LakeSoulMultiTableSinkStreamBuilder.Context();
         env.getCheckpointConfig().enableUnalignedCheckpoints(false);
@@ -430,8 +428,6 @@ public class JdbcCDC {
                                         conf.getString(WAREHOUSE_PATH),
                                         sinkDBName))
                         .build();
-        NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(sinkDBName);
         LakeSoulMultiTableSinkStreamBuilder.Context context =
                 new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
