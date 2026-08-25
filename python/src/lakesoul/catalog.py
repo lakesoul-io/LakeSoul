@@ -616,11 +616,24 @@ class LakeSoulTable:
             raise ValueError("partition_desc and partitions are mutually exclusive")
 
         # Auto-detect column + params from table properties
-        vec_col, vec_dim, nlist, total_bits, metric, rotator_type, seed, use_faster_config = (
-            self._resolved_index_params(
-                column, dim, nlist, total_bits, metric, rotator_type, seed,
-                use_faster_config,
-            )
+        (
+            vec_col,
+            vec_dim,
+            nlist,
+            total_bits,
+            metric,
+            rotator_type,
+            seed,
+            use_faster_config,
+        ) = self._resolved_index_params(
+            column,
+            dim,
+            nlist,
+            total_bits,
+            metric,
+            rotator_type,
+            seed,
+            use_faster_config,
         )
 
         store_config = _default_object_store_config(catalog=self._catalog, table=self)
@@ -734,7 +747,9 @@ class LakeSoulTable:
             nlist if nlist is not None else cfg.get("nlist", 256),
             total_bits if total_bits is not None else cfg.get("total_bits", 7),
             metric if metric is not None else cfg.get("metric", "L2"),
-            rotator_type if rotator_type is not None else cfg.get("rotator_type", "FhtKac"),
+            rotator_type
+            if rotator_type is not None
+            else cfg.get("rotator_type", "FhtKac"),
             seed if seed is not None else cfg.get("seed", 42),
             use_faster_config
             if use_faster_config is not None

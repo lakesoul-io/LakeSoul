@@ -15,12 +15,22 @@ parallel across shards.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import daft
 from daft import DataType, col, func
 
 from lakesoul.vector_index import _extract_bucket_id
+
+_LOG = logging.getLogger(__name__)
+
+
+def _is_lakesoul_table(table: Any) -> bool:
+    """Return True if ``table`` is a usable :class:`LakeSoulTable`."""
+    return all(
+        hasattr(table, name) for name in ("_vector_configs", "primary_keys", "catalog")
+    )
 
 
 def build_vector_index_daft(
@@ -31,6 +41,11 @@ def build_vector_index_daft(
 ) -> None:
     """Build/update vector indexes for a freshly committed Daft write.
 
+    This is a best-effort post-write step only when ``table`` is a real
+    :class:`LakeSoulTable`.  In unit-test / distributed edge cases where a
+    placeholder is passed (or the write produced no files) it is skipped
+    gracefully, because the data write has already succeeded.
+
     Args:
         table: The :class:`lakesoul.catalog.LakeSoulTable` that was written to.
         result: The :class:`lakesoul.io.WriteResult` produced by the Daft sink.
@@ -39,6 +54,13 @@ def build_vector_index_daft(
     Raises:
         RuntimeError: If any shard's index build fails.
     """
+    if not _is_lakesoul_table(table):
+        _LOG.warning(
+            "Skipping vector index auto-build: %s is not a LakeSoul table",
+            type(table).__name__,
+        )
+        return
+
     configs = table._vector_configs()
     if not configs:
         return

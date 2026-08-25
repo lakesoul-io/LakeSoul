@@ -138,7 +138,9 @@ def test_daft_write_auto_build() -> None:
     result_table = rerank_by_distance(result_table, query_vec, "vec", top_k)
     final_ids = result_table.column("id").to_pylist()
     recall = _compute_recall(query_vec, train, final_ids, k=top_k)
-    print(f"[3/5] After re-rank: top-{len(final_ids)} IDs={final_ids}, Recall@{top_k}={recall:.2f}")
+    print(
+        f"[3/5] After re-rank: top-{len(final_ids)} IDs={final_ids}, Recall@{top_k}={recall:.2f}"
+    )
     assert recall >= 0.5, f"Recall@{top_k} too low: {recall:.2f}"
 
     # 4. Incremental Daft write auto-builds delta segments; new vectors appear.
