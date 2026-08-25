@@ -82,16 +82,13 @@ public class BinarySourceRecord {
                 new TableId(
                         io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
         String sourceSchemaName = tableId.schema() == null ? tableId.catalog() : tableId.schema();
-        String tableName;
         String originTableName;
+        String tableName =
+                String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
         if (StringUtils.isEmpty(sinkDBName) || sinkDBName.equals(sourceSchemaName)) {
-            tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
             originTableName = tableId.table();
             tableId = new TableId(sourceSchemaName, sourceSchemaName, tableName);
         } else {
-            tableName =
-                    String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table())
-                            .toLowerCase();
             originTableName = tableId.table();
             tableId = new TableId(sourceSchemaName, sinkDBName, tableName);
         }
