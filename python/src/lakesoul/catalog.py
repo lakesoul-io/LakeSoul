@@ -547,7 +547,16 @@ class LakeSoulTable:
         object_store_options: Mapping[str, str] | None = None,
         options: Mapping[str, str] | None = None,
         results_buffer_size: int | Literal["num_cpus"] = "num_cpus",
+        auto_build_vector_index: bool = True,
+        vector_index_cpus: float = 1,
     ) -> WriteResult:
+        """Write a Daft DataFrame (distributed).
+
+        If the table declares ``vector_index_columns`` properties, the vector
+        indexes are built/updated automatically after the write commits via a
+        distributed ``@daft.func`` UDF over the new per-bucket files.  Pass
+        ``auto_build_vector_index=False`` to skip.
+        """
         from lakesoul.daft import write_lakesoul
 
         return write_lakesoul(
@@ -561,6 +570,8 @@ class LakeSoulTable:
             object_store_options=object_store_options,
             options=options,
             results_buffer_size=results_buffer_size,
+            auto_build_vector_index=auto_build_vector_index,
+            vector_index_cpus=vector_index_cpus,
         )
 
     def build_vector_index(
