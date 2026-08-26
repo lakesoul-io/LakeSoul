@@ -55,7 +55,7 @@ object SqlSubmitter {
 
     def isEmptyLine(sql: String): Boolean = {
       if (
-        sql.isEmpty || sql.split("\n").iterator.forall(p => p.startsWith("--"))
+        sql.isEmpty || sql.split("\n").iterator.map(_.trim).forall(p => p.isEmpty || p.startsWith("--"))
       ) true
       else false
     }

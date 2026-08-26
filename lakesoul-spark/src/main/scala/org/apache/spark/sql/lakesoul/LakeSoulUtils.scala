@@ -228,7 +228,19 @@ object LakeSoulTableRel {
   }
 }
 
-/** Extractor Object for pulling out the full table scan of a LakeSoul table.
+object ExtractLakeSoulTableFromCDCFilter {
+  def unapply(a: LogicalPlan): Option[LakeSoulTableV2] = a match {
+    case LakeSoulTableRelationV2(tbl: LakeSoulTableV2) =>
+      Some(tbl)
+    case org.apache.spark.sql.catalyst.plans.logical.Filter(_, LakeSoulTableRelationV2(tbl: LakeSoulTableV2)) =>
+      Some(tbl)
+    case _ => None
+  }
+}
+
+
+/**
+  * Extractor Object for pulling out the full table scan of a LakeSoul table.
   */
 object LakeSoulFullTable {
   def unapply(a: LogicalPlan): Option[LakeSoulBaseRelation] = a match {

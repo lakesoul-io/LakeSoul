@@ -14,6 +14,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.commands.UpsertCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.{
+  ExtractLakeSoulTableFromCDCFilter,
   LakeSoulTableRelationV2,
   UpdateExpressionsSupport
 }
@@ -58,8 +59,8 @@ case class PreprocessTableUpsert(sqlConf: SQLConf)
     checkCondition(condition, "search")
 
     val snapshotManagement = EliminateSubqueryAliases(target) match {
-      case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
-      case o                            =>
+      case ExtractLakeSoulTableFromCDCFilter(tbl) => tbl.snapshotManagement
+      case o                                      =>
         throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
     }
 
