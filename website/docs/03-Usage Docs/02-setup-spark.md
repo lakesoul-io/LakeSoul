@@ -90,6 +90,18 @@ spark.sql.legacy.createHiveTableByDefault false
 spark.sql.sources.default lakesoul
 ```
 
+### Select the physical file format
+
+LakeSoul 4.0 defaults NativeIO writes to `vortex-compact`. To change the Spark session default:
+
+```sql
+SET spark.dmetasoul.lakesoul.native.io.physical_format=parquet;
+```
+
+Use `.option("file_format", "...")` to override one DataFrame write. Flink sinks use the same `file_format` key in their table options. Accepted values are `parquet`, `vortex`, and `vortex-compact`.
+
+See [Physical File Formats](../01-Getting%20Started/05-physical-file-formats.md) for selection guidance, complete Spark and Flink examples, mixed-format reads, and upgrade restrictions.
+
 ## Setup Flink Project or Job
 
 ### Required Flink Version

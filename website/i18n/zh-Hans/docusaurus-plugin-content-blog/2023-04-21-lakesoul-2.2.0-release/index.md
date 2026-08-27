@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 
 近日，经过数月研发，开源湖仓框架 LakeSoul 发布了 2.2.0 版本（[Github 发布日志](https://github.com/lakesoul-io/LakeSoul/releases/tag/v2.2.0)），这个版本最重要的升级是在 Spark、Flink 中默认启用了全新的 Native IO，性能再次获得显著提升，扩大了 LakeSoul 在云原生湖仓框架领域的性能领先优势。本文为您详细解读 LakeSoul 2.2.0 版本的更新以及 Native IO 的技术细节。
 
+<!-- truncate -->
+
 ## LakeSoul 2.2.0 版本更新内容
 
 在 2.2.0 版本中，LakeSoul 实现了全新的 Native IO，将全量、增量的读写逻辑都迁移到了新的 IO 层实现，并做了大量性能和正确性测试，在 Spark 和 Flink 中都默认启用了新 IO 层。

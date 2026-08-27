@@ -21,7 +21,7 @@ LakeSoul 是由数元灵科技研发并于 2023 年 5 月捐赠给 Linux Foundat
 * 批流一体：LakeSoul 支持 streaming sink，可以同时处理流式数据摄入和历史数据批量回填、交互式查询等场景；
 * Schema 演进：支持新增、删除列，并在读取时自动兼容旧数据；
 * CDC 流、日志流自动同步：支持 MySQL 整库千表同步，自动建表和自动 Schema 变更；支持 Kafka 多 topic 合并同步、自动 Schema 解析、自动新 Topic 感知；
-* 高性能 IO：使用 Rust Arrow 实现原生 Parquet IO，并对对象存储访问做了专门优化，性能优势明显；
+* 高性能 IO：LakeSoul NativeIO 使用 Rust 和 Apache Arrow 在对象存储上读写 Parquet 与 Vortex 文件。LakeSoul 4.0 支持混合格式快照，并默认使用面向存储优化的 [`vortex-compact`](01-Getting%20Started/05-physical-file-formats.md) 写入；
 * 完整支持 Flink Changelog 语义，能够支持增量流式读取，通过 Flink SQL 即可实现实时数仓全链路增量计算；
 * 多种计算引擎支持：目前支持 Spark、Flink 以流或批的方式进行读和写，支持 Presto 查询，支持 Python/PyTorch 直接读取湖仓表。
 * 支持多空间多租户权限隔离：LakeSoul 使用 Postgres 的 RBAC 和行级别安全策略，实现了元数据的权限隔离。配合 Hadoop 用户和组，可以实现物理数据隔离。LakeSoul 的权限隔离对 SQL/Java/Python 的 作业都是有效的。
@@ -34,3 +34,7 @@ LakeSoul 是由数元灵科技研发并于 2023 年 5 月捐赠给 Linux Foundat
 * 查询请求不固定，资源消耗变化较大，希望计算资源能够独立弹性伸缩的场景；
 * 需要多并发写，同时文件数量多，对元数据性能和并发有较高要求的场景；
 * 针对主键进行数据更新，对写吞吐有较高有求的场景；
+
+## 开发 LakeSoul
+
+从源码构建和贡献 LakeSoul 的开发者请从[开发环境](05-Development/01-development-environment.md)开始。开发者指南包含 Nix Flake Shell、Devenv PostgreSQL/RustFS 服务、源码构建顺序、Treefmt、Lefthook 和各组件测试命令。
