@@ -24,6 +24,14 @@ Use tags to indicate parts of the LakeSoul that your issue relates to.
 For example, in the case of bugs, please provide steps to reproduce it and tag your issue with `bug` and integration that has that bug, for example `spark` or `flink`.
 
 
+## Development environment
+
+The [Development Environment](website/docs/05-Development/01-development-environment.md)
+guide covers the Nix Flake shells, Devenv PostgreSQL and RustFS services, manual
+prerequisites, and environment variables. Continue with
+[Build from Source](website/docs/05-Development/02-build-from-source.md) and
+[Testing and Quality Checks](website/docs/05-Development/03-testing-and-quality.md).
+
 ## Contributing to the project
 
 ### Creating Pull Requests
@@ -56,7 +64,23 @@ On x86-64 Linux, use the formatter versions provided by the Nix development envi
 nix develop .#formatter --command treefmt path/to/changed-file
 ```
 
-The pre-push hook provides a best-effort local check with `treefmt --ci`. The Format Check workflow is the authoritative check for pull requests and pushes.
+Use `treefmt --ci -- path/to/changed-file` to check without modifying files. The pre-commit hook runs this check for supported staged files. The Format Check workflow is authoritative for pull requests and pushes.
+
+### Git hooks
+
+LakeSoul uses [Lefthook](https://lefthook.dev/) to manage local Git hooks. After installing the `lefthook` executable, install the repository hooks once per clone:
+
+```sh
+lefthook install
+```
+
+The pre-commit hook checks supported staged files with Treefmt. The pre-push hook runs strict Clippy across the Cargo workspace:
+
+```sh
+cargo clippy --no-deps --all-features --all-targets --workspace -- -D warnings
+```
+
+See [Testing and Quality Checks](website/docs/05-Development/03-testing-and-quality.md) for hook details and component test commands.
 
 ### Branching
 

@@ -46,13 +46,17 @@ Official connector JARs embed Linux x86_64 GNU native libraries. LakeSoul `4.0.0
 | Capability | `4.0.0` support | Compatibility boundary |
 |---|---|---|
 | Read legacy Parquet | Supported | Covered by release compatibility gates. |
-| Read Vortex and Vortex Compact | Supported | A snapshot may contain Parquet and Vortex files. |
+| Read Vortex | Supported | Uses Vortex's standard writer strategy; files use the `.vortex` extension. |
+| Read Vortex Compact | Supported | Uses the compact strategy; files also use the `.vortex` extension. |
+| Mixed-format snapshot | Supported | One snapshot may contain Parquet and either Vortex write strategy. |
 | Default writes | Vortex Compact | LakeSoul `3.x` cannot read the resulting Vortex files. |
 | Upgrade from `3.0.0` | Supported cold upgrade | Stop all processes, restore-test a consistent metadata/data backup pair, migrate metadata, and replace all runtimes together. |
 | Direct upgrade from `2.x` | Unsupported | Upgrade through the verified `3.0.0` baseline. |
 | Mixed `3.x`/`4.0.0` operation | Unsupported | Do not mix writers, readers, connector JARs, or native libraries. |
 | In-place rollback after a Vortex commit | Unsupported | Restore PostgreSQL metadata and table data from the same quiesced pre-upgrade backup. |
 | Flink CDC `3.0` savepoint reuse | Unsupported | Use source retention or an independently verified replay/backfill procedure. |
+
+See [Physical File Formats](05-physical-file-formats.md) for the differences between `parquet`, `vortex`, and `vortex-compact`, format selection in each writer, and the Vortex rollback boundary.
 
 ## Gluten Preview
 

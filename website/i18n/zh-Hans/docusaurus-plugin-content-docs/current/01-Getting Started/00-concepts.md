@@ -8,7 +8,7 @@ LakeSoul 是一个端到端的实时湖仓存储框架，使用开放式的架�
     
     此外，中心化的元数据管理还能够很容易地实现多套存储在一个湖仓实例中统一管理，例如多个S3桶、多个 HDFS 集群上的数据，都能够在一个湖仓元数据中管理。
 
-2. NativeIO 层。使用 Rust 实现的向量化 Parquet 文件读写。对于实时更新的场景，使用了“单层”类 LSM-Tree 的方式，将主键表根据主键哈希分片后排序写入，读时进行自动合并，从而实现了 Upsert 功能。NativeIO 层针对对象存储和 MOR 场景，做了大量性能优化，大幅提升了湖仓的 IO 性能。NativeIO 层也实现了列裁剪、Filter 下推等功能。
+2. NativeIO 层。使用 Rust 实现向量化的 Parquet 与 Vortex 文件读写。LakeSoul 4.0 可以在同一快照中扫描两种格式，并默认使用 `vortex-compact` 写入，详见[物理文件格式](05-physical-file-formats.md)。实时更新场景使用“单层”类 LSM-Tree：主键表根据主键哈希分片并排序写入，读取时自动合并以实现 Upsert。NativeIO 还提供对象存储优化、列裁剪和 Filter 下推。
 
    NativeIO 层使用 Rust 实现的原生 IO 库，并统一封装了 Java、Python 接口，使得 LakeSoul 能够很方便地与各类大数据、AI 框架实现原生对接，省去文件格式或者内存中的转换开销，提升执行效率。
 
@@ -21,7 +21,7 @@ LakeSoul 的目标是构建一套端到端的湖仓平台，涵盖数据集成�
 1. [实时数据集成](../03-Usage%20Docs/05-flink-cdc-sync.md)。LakeSoul 基于 Flink CDC 实现了整库同步的功能，目前已支持 MySQL、PostgreSQL、PolarDB、Oracle 等数据库。对于所有数据源，均支持整库同步、自动新表发现同步、自动 DDL Schema 变更同步（支持加列、减列、变更数据类型）。
 2. 流批计算。LakeSoul 支持 Spark、Flink 等框架进行流、批 ETL 计算。其中主键表在 Flink 中支持多流并发 Upsert、Partial Update、ChangeLog （CDC）读取，从而实现[流式增量计算](../03-Usage%20Docs/06-flink-lakesoul-connector.md)。
 3. 数据分析查询。LakeSoul 通过高性能的 IO 层实现提升数据分析查询的性能。同时也能够支持各类向量化的计算引擎。当前 LakeSoul 已经实现了 Spark Gluten Engine 的对接，在 Spark 上实现原生向量化计算。LakeSoul 也实现了与 Apache Doris、Presto Velox 等高性能向量化查询引擎的对接集成。
-4. [AI 计算](../03-Usage%20Docs/11-machine-learning-support.md)。LakeSoul 能够支持 PyTorch、Ray、Pandas 等各类 AI 和数据科学框架分布式读取，进行 AI 模型的训练和推理。
+4. [Python SDK 与生态集成](../03-Usage%20Docs/11-lakesoul-python/01-overview.md)。LakeSoul Python SDK 提供 Catalog 和表 IO API，并支持与 PyArrow、Pandas、DuckDB、PyTorch、Hugging Face Datasets、Ray Data 和 Daft 集成。
 5. 多租户空间和 RBAC。LakeSoul 内置了[多空间隔离和权限控制](../03-Usage%20Docs/12-workspace-and-rbac.md)。可以在湖仓中划分多个工作空间，每个工作空间可以加入多个用户。不同空间的元数据、物理数据实现了访问权限隔离。空间的权限隔离，对于 SQL、Java/Scala、Python 作业，包括提交到集群上执行的作业，均是有效的。
 6. 自治管理。LakeSoul 提供了[自动分离式的弹性 Compaction 服务](../03-Usage%20Docs/08-auto-compaction-task.md)、[自动数据清理服务等](../03-Usage%20Docs/16-new-async-clean-service.md)，减轻运维工作量。其中分离式弹性 Compaction 服务由元数据层自动感知触发，并行执行，不影响写入任务的效率。
 7. 快照和回滚。LakeSoul 表可以支持按照时间戳进行[快照读和版本回滚](../02-Tutorials/03-snapshot-manage.md)。
@@ -34,7 +34,7 @@ LakeSoul 的目标是构建一套端到端的湖仓平台，涵盖数据集成�
 
 在创建表时，可以通过 Spark Dataframe、Spark SQL、Flink SQL 等方式。建表时可以直接使用 `partition by` 子句指定分区列，使用表属性`hashPartitions`指定主键列，使用表属性`hashBucketNum`指定哈希分片个数。
 
-建表时可以使用 Spark、Flink 原生的所有数据类型。数据类型会被翻译成 Apache Arrow 的类型，最终翻译成 Parquet 文件的类型。类型支持多级嵌套（Struct）。
+表 Schema 使用 Apache Arrow 类型，并支持 `Struct` 等多级嵌套结构。Schema 与所选[物理文件格式](05-physical-file-formats.md)相互独立；同一个表快照可以包含 Parquet 和 Vortex 文件。
 
 ### 非主键表
 非主键表可以支持多级分区，但是没有主键。非主键表只能以 Append 方式追加写入。适合没有明确主键的场景，如日志数据等。非主键表的 Append 写入可以并发执行，即可以有多个批、流作业对表/分区并发写。

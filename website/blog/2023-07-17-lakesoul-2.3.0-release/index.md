@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 
 Recently, LakeSoul, the lakehouse framework released version 2.3.0. This new release is the first release of LakeSoul after it entered the incubation of the Linux Foundation AI & Data as a sandbox project. This new version adds Flink SQL/Table API, which supports stream and batch read and write. The Flink DataStream API for multi-table real-time CDC stream ingestion has been refactored to better support data ingestionfrom multiple data sources to the lakehouse. A new global automatic small file compaction service has been added.
 
+<!-- truncate -->
+
 ## Flink SQL/Table API
 In version 2.3.0, LakeSoul fully supports the Flink SQL/Table API, and supports both streaming and batch methods to read or write LakeSoul tables. When reading or writing streams, LakeSoul fully supports the semantics of Flink Changelog Stream.
 
