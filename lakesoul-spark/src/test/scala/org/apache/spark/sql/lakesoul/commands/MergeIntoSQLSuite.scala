@@ -4,52 +4,22 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.LakeSoulOptions
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.{
-  AnalysisException,
-  DataFrame,
-  QueryTest,
-  Row,
-  SparkSession
-}
+import org.apache.spark.sql._
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{
   LakeSoulSQLCommandTest,
   LakeSoulTestBeforeAndAfterEach,
   LakeSoulTestSparkSession,
   LakeSoulTestUtils
 }
-import org.apache.spark.util.Utils
-import org.scalatest._
-import matchers.should.Matchers._
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.util.Utils
 import org.junit.runner.RunWith
+import org.scalatest.matchers.should.Matchers._
 import org.scalatestplus.junit.JUnitRunner
-import io.jhdf.HdfFile
-import io.jhdf.api.Dataset
-import org.apache.commons.lang3.ArrayUtils
-import org.apache.spark.sql.types.{
-  ArrayType,
-  ByteType,
-  FloatType,
-  IntegerType,
-  LongType,
-  MetadataBuilder,
-  StructField,
-  StructType
-}
-import org.apache.commons.lang3.ArrayUtils
-import org.apache.spark.sql.{Row, SparkSession}
-import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.{collect_list, sum, udf}
-
-import java.nio.file.Paths
-import scala.collection.mutable.ListBuffer
-import scala.concurrent.duration.DurationLong
-import scala.math.{pow, sqrt}
 
 @RunWith(classOf[JUnitRunner])
 class MergeIntoSQLSuite
@@ -116,6 +86,32 @@ class MergeIntoSQLSuite
       Nil,
       Seq("hash")
     )
+  }
+
+  private def initHashTable3(): Unit = {
+    Seq(
+      ("range1", "hash1", "insert"),
+      ("range2", "hash2", "insert"),
+      ("range3", "hash2", "insert"),
+      ("range4", "hash2", "insert"),
+      ("range4", "hash4", "insert"),
+      ("range3", "hash3", "insert")
+    )
+      .toDF("range", "hash", "op")
+      .write
+      .mode("append")
+      .format("lakesoul")
+      .option("rangePartitions", "range")
+      .option("hashPartitions", "hash")
+      .option("hashBucketNum", "2")
+      .option("lakesoul_cdc_change_column", "op")
+      .option("shortTableName", "lakesoul_temp_table")
+      .save(snapshotManagement.table_path)
+    val lake = LakeSoulTable.forPath(snapshotManagement.table_path);
+    val tableForUpsert =
+      Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
+        .toDF("range", "hash", "op")
+    lake.upsert(tableForUpsert)
   }
 
   private def withViewNamed(
@@ -208,6 +204,16 @@ class MergeIntoSQLSuite
         )
       }
     }
+  }
+
+  test("merge into table with hash partition -- table cdc source") {
+    initHashTable3()
+    sql(
+      s"MERGE INTO lakesoul.default.`${snapshotManagement.table_path}` AS t USING lakesoul_temp_table AS s" +
+        s" ON t.hash = s.hash " +
+        s" WHEN MATCHED THEN UPDATE SET *" +
+        s" WHEN NOT MATCHED THEN INSERT *"
+    )
   }
 
   test("merge into table with hash partition -- invalid merge condition") {
