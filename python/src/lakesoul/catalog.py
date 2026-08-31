@@ -489,12 +489,12 @@ class LakeSoulTable:
         configs = self._vector_configs()
         if not configs:
             return
-        file_paths = [f.path for f in result.files]
-        if not file_paths:
+        file_infos = list(result.files)
+        if not file_infos:
             return
         for cfg in configs:
             self._incremental_build_vector_index(
-                file_paths,
+                file_infos,
                 column=cfg["column"],
                 dim=cfg["dim"],
                 nlist=cfg.get("nlist", 256),
@@ -758,7 +758,7 @@ class LakeSoulTable:
 
     def _incremental_build_vector_index(
         self,
-        file_paths: list[str],
+        file_infos: Sequence["FileInfo"],
         *,
         column: str,
         dim: int,
@@ -769,12 +769,15 @@ class LakeSoulTable:
         seed: int,
         use_faster_config: bool,
     ) -> int:
-        """Build/update the index for newly written files, per hash bucket.
+        """Build/update the index for newly written files, per shard.
 
-        Groups ``file_paths`` by bucket and calls the Rust builder on each
-        shard.  The Rust layer detects an existing manifest and performs an
-        incremental (delta segment) update instead of a full rebuild.
-        Returns the number of shards built.  Raises if any shard fails.
+        A LakeSoul vector shard is identified by ``(partition_desc,
+        hash_bucket_id)``.  Files are grouped on that key (not just the
+        bucket id) and each shard is built by the Rust builder, which derives
+        the index location from the files' partition directory.  The Rust
+        layer detects an existing manifest and performs an incremental (delta
+        segment) update instead of a full rebuild.  Returns the number of
+        shards built.  Raises if any shard fails.
         """
         from collections import defaultdict
 
@@ -782,13 +785,13 @@ class LakeSoulTable:
         from lakesoul.vector_index import _extract_bucket_id
 
         store_config = _default_object_store_config(catalog=self._catalog, table=self)
-        bucket_files: dict[int, list[str]] = defaultdict(list)
-        for fp in file_paths:
-            bucket_files[_extract_bucket_id(fp)].append(fp)
+        shards: dict[tuple[str, int], list[str]] = defaultdict(list)
+        for fi in file_infos:
+            shards[(fi.partition, _extract_bucket_id(fi.path))].append(fi.path)
 
         succeeded = 0
         failed = 0
-        for bid, bfiles in sorted(bucket_files.items()):
+        for (partition_desc, bid), bfiles in sorted(shards.items()):
             try:
                 r = build_shard_vector_index(
                     store_config=store_config,
@@ -807,13 +810,20 @@ class LakeSoulTable:
                     succeeded += 1
                 else:
                     failed += 1
+                    print(
+                        f"ERROR building vector index for column '{column}' "
+                        f"shard (partition='{partition_desc}', bucket={bid}): {r}"
+                    )
             except Exception as e:
                 failed += 1
-                print(f"ERROR building vector index for column '{column}': {e}")
+                print(
+                    f"ERROR building vector index for column '{column}' "
+                    f"shard (partition='{partition_desc}', bucket={bid}): {e}"
+                )
 
         if failed > 0:
             raise RuntimeError(
-                f"vector index build failed for {failed}/{len(bucket_files)} "
+                f"vector index build failed for {failed}/{len(shards)} "
                 f"shard(s) of column '{column}'"
             )
         return succeeded

@@ -48,7 +48,10 @@ impl VectorShardIndexBuilder {
     }
 
     fn index_prefix(&self) -> String {
-        // Derive table prefix from the first file's parent directory
+        // Derive the base prefix from the first file's parent directory.  A
+        // shard is built from files of a single (partition_desc, bucket), so
+        // they all share the same parent dir and derive_index_prefixes returns
+        // one prefix (matching the search's per-partition reader prefix).
         let prefix = self
             .file_paths
             .first()

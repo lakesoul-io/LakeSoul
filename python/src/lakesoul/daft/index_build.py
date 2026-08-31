@@ -64,8 +64,8 @@ def build_vector_index_daft(
     configs = table._vector_configs()
     if not configs:
         return
-    file_paths = [f.path for f in result.files]
-    if not file_paths:
+    file_infos = list(result.files)
+    if not file_infos:
         return
 
     from lakesoul.catalog import _default_object_store_config
@@ -75,10 +75,15 @@ def build_vector_index_daft(
     )
     pk_column = table.primary_keys[0]
 
-    # One row per (bucket, vector column) shard.
-    bucket_files: dict[int, list[str]] = {}
-    for fp in file_paths:
-        bucket_files.setdefault(_extract_bucket_id(fp), []).append(fp)
+    # A LakeSoul vector shard is identified by (partition_desc, bucket_id).
+    # Group on that key so files from different range partitions never share
+    # a shard (the Rust builder derives the index location from the files'
+    # parent directory and only uses the first one).
+    shard_files: dict[tuple[str, int], list[str]] = {}
+    for fi in file_infos:
+        shard_files.setdefault(
+            (fi.partition, _extract_bucket_id(fi.path)), []
+        ).append(fi.path)
 
     rows: dict[str, list[Any]] = {
         "file_paths": [],
@@ -93,7 +98,8 @@ def build_vector_index_daft(
         "seed": [],
         "use_faster_config": [],
     }
-    for bid, bfiles in bucket_files.items():
+    for _partition_desc, _bid in sorted(shard_files):
+        bfiles = shard_files[(_partition_desc, _bid)]
         for cfg in configs:
             rows["file_paths"].append(sorted(bfiles))
             rows["store_config_json"].append(store_config_json)
@@ -153,10 +159,10 @@ def _build_index_udf(
     seed: Any,
     use_faster_config: Any,
 ) -> str:
-    """Per-row UDF: build one vector index shard (one bucket of one column).
+    """Per-row UDF: build one vector index shard (one partition x bucket of one column).
 
-    Called once per row (per bucket x column shard) by Daft; ``file_paths``
-    is the list of newly written parquet files for that bucket.
+    Called once per row by Daft; ``file_paths`` is the list of newly written
+    parquet files for that shard.
     """
     from lakesoul._lib.vector import build_shard_vector_index
 
