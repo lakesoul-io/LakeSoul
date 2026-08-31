@@ -47,7 +47,7 @@ import java.util.{Locale, OptionalLong, TimeZone}
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
-abstract class MergeDeltaParquetScan(
+abstract class MergeDeltaLakeSoulScan(
     sparkSession: SparkSession,
     hadoopConf: Configuration,
     fileIndex: LakeSoulFileIndexV2,
@@ -550,7 +550,7 @@ case class OnePartitionMergeBucketScan(
     tableInfo: TableInfo,
     partitionFilters: Seq[Expression] = Seq.empty,
     dataFilters: Seq[Expression] = Seq.empty
-) extends MergeDeltaParquetScan(
+) extends MergeDeltaLakeSoulScan(
       sparkSession,
       hadoopConf,
       fileIndex,
@@ -634,7 +634,7 @@ case class MultiPartitionMergeBucketScan(
     tableInfo: TableInfo,
     partitionFilters: Seq[Expression] = Seq.empty,
     dataFilters: Seq[Expression] = Seq.empty
-) extends MergeDeltaParquetScan(
+) extends MergeDeltaLakeSoulScan(
       sparkSession,
       hadoopConf,
       fileIndex,
@@ -701,7 +701,7 @@ case class MultiPartitionMergeScan(
     tableInfo: TableInfo,
     partitionFilters: Seq[Expression] = Seq.empty,
     dataFilters: Seq[Expression] = Seq.empty
-) extends MergeDeltaParquetScan(
+) extends MergeDeltaLakeSoulScan(
       sparkSession,
       hadoopConf,
       fileIndex,

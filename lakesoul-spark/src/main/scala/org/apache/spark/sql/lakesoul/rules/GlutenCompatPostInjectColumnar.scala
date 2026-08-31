@@ -10,7 +10,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.merge.{
-  MergeDeltaParquetScan,
+  MergeDeltaLakeSoulScan,
   OnePartitionMergeBucketScan
 }
 import org.apache.spark.sql.execution.{
@@ -33,7 +33,7 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
 
   private def isLakeSoulScan(scan: Scan): Boolean = {
     scan.getClass.getSimpleName.contains("NativeScan") ||
-    scan.isInstanceOf[MergeDeltaParquetScan] ||
+    scan.isInstanceOf[MergeDeltaLakeSoulScan] ||
     scan.isInstanceOf[OnePartitionMergeBucketScan]
   }
 

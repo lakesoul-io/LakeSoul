@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.{
   MAX_FILE_SIZE_KEY,
   SNAPPY_COMPRESS_RATIO
 }
-import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
+import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaLakeSoulScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.{
   NativeScan,
   ParquetScan
@@ -202,7 +202,7 @@ case class CompactionCommand(
       if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeScan]) {
         fileIndex.getFileInfo(Nil)
       } else {
-        scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
+        scan.asInstanceOf[MergeDeltaLakeSoulScan].newFileIndex.getFileInfo(Nil)
       }
 
     val tableSchemaWithoutPartitions = StructType(
