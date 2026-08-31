@@ -74,7 +74,15 @@ def build_vector_index_daft(
     store_config_json = json.dumps(
         _default_object_store_config(catalog=table.catalog, table=table)
     )
-    pk_column = table.primary_keys[0]
+    primary_keys = table.primary_keys
+    if not primary_keys:
+        # write_lakesoul validates this pre-commit; direct callers get a
+        # clear error here instead of an IndexError on primary_keys[0].
+        raise ValueError(
+            "a vector index requires an id column: the table has "
+            "vector_index_columns but no primary key"
+        )
+    pk_column = primary_keys[0]
 
     rows, n_shards = _shard_rows(configs, file_infos, store_config_json, pk_column)
 
@@ -133,9 +141,9 @@ def _shard_rows(
     """
     shard_files: dict[tuple[str, int], list[str]] = {}
     for fi in file_infos:
-        shard_files.setdefault(
-            (fi.partition, _extract_bucket_id(fi.path)), []
-        ).append(fi.path)
+        shard_files.setdefault((fi.partition, _extract_bucket_id(fi.path)), []).append(
+            fi.path
+        )
 
     rows: dict[str, list[Any]] = {
         "file_paths": [],

@@ -212,6 +212,9 @@ class LakeSoulCatalog:
         ``nlist``/``total_bits``/``metric``/``rotator_type``/``seed``/
         ``use_faster_config`` default if omitted.  When the property is
         present, ``write_arrow`` automatically builds/updates the index.
+        A vector index requires an Int64/UInt64 ``primary_keys`` column and
+        Float32 vector columns whose dimension matches the schema; the
+        configuration is validated here, before any metadata is created.
 
         Raises:
             AlreadyExistsError: If the table already exists.
@@ -242,6 +245,16 @@ class LakeSoulCatalog:
             props["hashBucketNum"] = str(hash_bucket_num)
         elif normalized_primary_keys and "hashBucketNum" not in props:
             props["hashBucketNum"] = "4"
+
+        # Fail before creating any metadata: the vector index needs an integer
+        # primary key and float32 vector columns whose dimension matches.
+        raw_vector_index = props.get("vector_index_columns")
+        if raw_vector_index:
+            _validate_vector_index_configs(
+                _parse_vector_index_configs(raw_vector_index),
+                normalized_schema,
+                normalized_primary_keys,
+            )
 
         namespace = self._resolve_namespace(namespace)
         self._client.create_table(
@@ -449,6 +462,9 @@ class LakeSoulTable:
         options: Mapping[str, str] | None = None,
         auto_build_vector_index: bool = True,
     ) -> WriteResult:
+        # Fail before writing/committing if an auto-build cannot be satisfied.
+        if auto_build_vector_index:
+            self._require_vector_index_writable()
         write_config = self.write_config(format=format)
         writer_config = IOConfig(
             path=write_config.path,
@@ -554,8 +570,9 @@ class LakeSoulTable:
 
         If the table declares ``vector_index_columns`` properties, the vector
         indexes are built/updated automatically after the write commits via a
-        distributed ``@daft.func`` UDF over the new per-bucket files.  Pass
-        ``auto_build_vector_index=False`` to skip.
+        distributed ``@daft.cls`` actor-pool UDF over the new files, grouped
+        by (partition, hash bucket).  Pass ``auto_build_vector_index=False``
+        to skip.
         """
         from lakesoul.daft import write_lakesoul
 
@@ -700,9 +717,19 @@ class LakeSoulTable:
         raw = dict(self.properties).get("vector_index_columns", "")
         if not raw:
             return []
-        from lakesoul._lib.vector import parse_vector_index_configs
+        return _parse_vector_index_configs(raw)
 
-        return list(parse_vector_index_configs(raw))
+    def _require_vector_index_writable(self) -> None:
+        """Validate the vector index config against the table before writing.
+
+        ``create_table`` rejects invalid configurations up front; this guards
+        pre-existing tables (e.g. created before validation existed, or via
+        other engines) so an auto-build failure surfaces *before* data is
+        written and committed, instead of post-commit.
+        """
+        configs = self._vector_configs()
+        if configs:
+            _validate_vector_index_configs(configs, self.schema, self.primary_keys)
 
     def _vector_config_for(self, column: str) -> dict | None:
         """Return the config dict for ``column``, or ``None`` if not indexed."""
@@ -1289,6 +1316,79 @@ def _normalize_vector_index(value: Any) -> list[dict]:
         if "column" not in item or "dim" not in item:
             raise ValueError("each vector_index entry requires 'column' and 'dim'")
     return items
+
+
+def _parse_vector_index_configs(value: str) -> list[dict]:
+    """Parse a ``vector_index_columns`` property value via the Rust parser."""
+    from lakesoul._lib.vector import parse_vector_index_configs
+
+    return list(parse_vector_index_configs(value))
+
+
+def _validate_vector_index_configs(
+    configs: Sequence[Mapping[str, Any]],
+    schema: pa.Schema,
+    primary_keys: Sequence[str],
+) -> None:
+    """Validate a table can support the configured vector index.
+
+    Mirrors the native builder's requirements (``extract_vector_batch``): an
+    Int64/UInt64 primary key column and Float32 vector columns whose
+    ``FixedSizeList`` size matches the configured ``dim``.  Raises
+    ``ValueError`` so callers fail *before* creating metadata or committing
+    data, rather than in a post-commit auto-build step.
+    """
+    if not configs:
+        return
+    if not primary_keys:
+        raise ValueError(
+            "a vector index requires an id column: pass primary_keys=[...] "
+            "when creating a table with vector_index (the index maps "
+            "search results to primary key values)"
+        )
+    pk_column = primary_keys[0]
+    pk_index = schema.get_field_index(pk_column)
+    if pk_index < 0:
+        raise ValueError(
+            f"vector index primary key '{pk_column}' not found in table schema "
+            f"(columns: {list(schema.names)})"
+        )
+    pk_type = schema.field(pk_index).type
+    if not (pa.types.is_uint64(pk_type) or pa.types.is_int64(pk_type)):
+        raise ValueError(
+            f"vector index primary key '{pk_column}' must be UInt64 or Int64, "
+            f"got {pk_type}"
+        )
+    for cfg in configs:
+        column = cfg["column"]
+        index = schema.get_field_index(column)
+        if index < 0:
+            raise ValueError(
+                f"vector index column '{column}' not found in table schema "
+                f"(columns: {list(schema.names)})"
+            )
+        dtype = schema.field(index).type
+        if pa.types.is_fixed_size_list(dtype):
+            element_type = dtype.value_type
+            list_size: int | None = dtype.list_size
+        elif pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+            element_type = dtype.value_type
+            list_size = None
+        else:
+            raise ValueError(
+                f"vector index column '{column}' must be FixedSizeList<Float32> "
+                f"or List<Float32>, got {dtype}"
+            )
+        if not pa.types.is_float32(element_type):
+            raise ValueError(
+                f"vector index column '{column}' must hold Float32 values, "
+                f"got {element_type}"
+            )
+        if list_size is not None and list_size != cfg["dim"]:
+            raise ValueError(
+                f"vector index column '{column}': configured dim {cfg['dim']} "
+                f"does not match schema FixedSizeList size {list_size}"
+            )
 
 
 def _build_vector_index_for_one(
