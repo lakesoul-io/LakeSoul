@@ -275,6 +275,10 @@ jobs:
           mvn -B clean install -pl "!:lakesoul-presto-0.296"
           -Pcross-build,release-sign-artifacts -DperformRelease=true
           -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
+      - name: Build unpublished Gluten Preview JAR
+        run: >-
+          mvn -B package -pl :lakesoul-spark-gluten-3.5_2.12 -am
+          -Pcross-build,gluten -DskipTests -Dmaven.deploy.skip=true
       - name: Set up JDK 17 for Presto
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -303,6 +307,8 @@ jobs:
           uv sync --python 3.10 --group dev
           uv run maturin develop --release
           uv run pytest tests/_lib tests/io tests/arrow tests/compat/test_harness.py
+      - name: Assemble connector JARs and source archive
+        run: python script/release_assets.py assemble release-assets --commit "$GITHUB_SHA"
       - name: Verify packaged native libraries
         run: |
           python script/verify_native_jars.py \
@@ -321,6 +327,67 @@ jobs:
             lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
             lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
             lakesoul-presto/target/lakesoul-presto-0.296-*.jar
+          if-no-files-found: error
+      - name: Upload GitHub Release asset inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-input
+          path: release-assets
+          if-no-files-found: error
+
+  assemble-release-assets:
+    name: Source, checksums, SBOM, and provenance
+    needs: [validate-release, core-tests]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download assembled connector assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets-input
+          path: release-assets
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: release-assets/SBOM.spdx.json
+          artifact-name: SBOM.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate checksum manifest
+        run: python script/release_assets.py checksums release-assets
+      - name: Attest immutable release assets
+        if: inputs.publish
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release-assets/*
+      - name: Sign checksum manifest with an ephemeral gate key
+        run: |
+          cat > /tmp/release-asset-signing-key <<'KEY'
+          Key-Type: RSA
+          Key-Length: 3072
+          Name-Real: LakeSoul Release Asset Gate
+          Name-Email: release-asset-gate@lakesoul.invalid
+          Expire-Date: 1d
+          %no-protection
+          %commit
+          KEY
+          gpg --batch --generate-key /tmp/release-asset-signing-key
+          gpg --batch --yes --armor --detach-sign \
+            --output release-assets/SHA256SUMS.asc release-assets/SHA256SUMS
+      - name: Verify complete release asset set
+        run: python script/release_assets.py verify release-assets --signature
+      - name: Upload complete release asset set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: github-release-assets
+          path: release-assets
           if-no-files-found: error
 
   connector-e2e-and-recovery:
@@ -544,10 +611,10 @@ jobs:
       - rust-quality
       - build-native-linux-x86-64
       - core-tests
+      - assemble-release-assets
       - connector-e2e-and-recovery
       - metadata-migration
     runs-on: ubuntu-24.04
-    environment: maven-central-production
     services:
       postgres:
         image: postgres:14.5
@@ -621,10 +688,131 @@ jobs:
           mvn -B deploy -pl :lakesoul-presto-0.296
           -Pcross-build,release-sign-artifacts
 
-  publish-website:
+  verify-published-release:
     if: inputs.publish
     needs: [validate-release, publish-maven-central]
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Check out signed release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Set up JDK 11 and release signing key
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "11"
+          distribution: temurin
+          gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: Download and verify Maven Central artifacts
+        env:
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
+        run: |
+          version=$(python -c "from pathlib import Path; from script.release import core_version; print(core_version(Path('.')).maven)")
+          printf 'RELEASE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+          python script/release_assets.py download-central central-artifacts
+          for signature in central-artifacts/*.asc; do
+            gpg --batch --verify "$signature" "${signature%.asc}"
+          done
+      - name: Install PostgreSQL client and initialize metadata
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y postgresql-client
+          ./script/meta_init_for_local_test.sh -j 2
+      - name: Smoke-test Spark installation from Maven Central
+        run: script/smoke_release_connectors.sh spark central-artifacts "$RELEASE_VERSION"
+      - name: Smoke-test Flink installation from Maven Central
+        run: script/smoke_release_connectors.sh flink central-artifacts "$RELEASE_VERSION"
+      - name: Set up JDK 17 for Presto installation
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "17"
+          distribution: temurin
+      - name: Smoke-test Presto installation from Maven Central
+        run: script/smoke_release_connectors.sh presto central-artifacts "$RELEASE_VERSION"
+      - name: Upload Maven Central verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maven-central-verification
+          path: central-artifacts
+          retention-days: 30
+          if-no-files-found: error
+
+  publish-github-release:
+    if: inputs.publish
+    needs: [validate-release, assemble-release-assets, verify-published-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out signed release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Download immutable release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: github-release-assets
+          path: release-assets
+      - name: Import final release signing key
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "17"
+          distribution: temurin
+          gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: Replace gate signature with final checksum signature
+        env:
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
+        run: |
+          rm release-assets/SHA256SUMS.asc
+          printf '%s' "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 --armor --detach-sign \
+            --output release-assets/SHA256SUMS.asc release-assets/SHA256SUMS
+          python script/release_assets.py verify release-assets --signature
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          notes="docs/release/release-${version}.md"
+          test -f "$notes"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            gh release edit "$RELEASE_TAG" --title "LakeSoul $version" --notes-file "$notes" --latest
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag \
+              --title "LakeSoul $version" --notes-file "$notes" --latest
+          fi
+      - name: Download and verify GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          mkdir downloaded-release-assets
+          gh release download "$RELEASE_TAG" --dir downloaded-release-assets
+          python script/release_assets.py verify downloaded-release-assets --signature
+
+  publish-website:
+    if: inputs.publish
+    needs: [validate-release, publish-github-release]
     uses: ./.github/workflows/website-publish.yml
     with:
       ref: ${{ inputs.tag }}
-    secrets: inherit
+    secrets:
+      GH_PAGES_DEPLOY: ${{ secrets.GH_PAGES_DEPLOY }}

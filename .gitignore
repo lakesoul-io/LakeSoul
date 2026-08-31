@@ -102,3 +102,4 @@ devenv.local.yaml
 .pre-commit-config.yaml
 
 compatibility-artifacts
+agent_export/

@@ -78,7 +78,7 @@ df.write
 ```
 
 ## 2. Read LakeSoulTable
-You can read data by Spark API or building LakeSoulTable, Spark SQL is also supported, see [7. Operate LakeSoulTable by Spark SQL](#7-operate-lakeSoultable-by-spark-sql)
+You can read data with the Spark API or `LakeSoulTable`. Spark SQL is also supported; see [7. Operate LakeSoulTable by Spark SQL](#7-operate-lakesoultable-by-spark-sql).
 
 ### 2.1 Code Examples
 

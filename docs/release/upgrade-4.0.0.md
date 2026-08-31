@@ -1,6 +1,6 @@
 # LakeSoul 4.0.0 Upgrade and Recovery Guide
 
-This guide defines the supported upgrade path to LakeSoul Core `4.0.0`, the required pre-upgrade checks, the rollback boundaries, and the tested recovery procedure. Read it together with the [LakeSoul 4.0.0 release guide](release-4.0.0.md).
+This guide defines the supported upgrade path to LakeSoul Core `4.0.0`, the required pre-upgrade checks, the rollback boundaries, and the tested recovery procedure. Read it together with the [LakeSoul 4.0.0 release notes](release-4.0.0.md).
 
 LakeSoul `4.0.0` is a cold upgrade. Mixed `3.x`/`4.0.0` writers, mixed connector JARs and native libraries, rolling rollback, and in-place rollback after a point of no return are unsupported.
 

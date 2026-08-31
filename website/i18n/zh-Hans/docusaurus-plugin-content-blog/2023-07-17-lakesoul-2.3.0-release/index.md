@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 
 近期，湖仓框架 LakeSoul 发布了 2.3.0 版本。本次新版本发布是 LakeSoul 进入 Linux 基金会孵化后的第一次版本发布。本次新版本新增 Flink SQL/Table API，支持流、批的读写。重构了多表实时入湖的 Flink DataStream API，以更好地支持多种数据源的实时入湖。新增了全局自动小文件合并服务。
 
+<!-- truncate -->
+
 ## Flink SQL/Table API
 LakeSoul 在 2.3.0 版本中，全面支持了 Flink SQL/Table API，同时支持流、批两种方式，对 LakeSoul 表进行读或写。在流式的读取或写入时，LakeSoul 完整地支持了 Flink Changelog Stream 语义。
 

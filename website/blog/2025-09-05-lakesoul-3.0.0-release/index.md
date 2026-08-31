@@ -2,6 +2,8 @@
 
 After nearly a year of iterative optimization, LakeSoul 3.0.0 is officially released. This release brings the following key updates:
 
+<!-- truncate -->
+
 1. Core Functionality Updates for the LakeSoul Lake Warehouse Framework
     1. LakeSoul NativeIO performance has been significantly optimized, including adjustments to write file compression and dictionary encoding     algorithms, and optimizations to key Merge on Read code paths, resulting in a doubling of both read and write performance(compared to 2.6 version).
     2. LakeSoul NativeIO has added a local hot data caching feature. This allows remote object storage files to be cached on local disk,     significantly improving the performance of MPP queries and other queries. Local caching is supported for all types of remote storage.

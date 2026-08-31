@@ -25,7 +25,7 @@ LakeSoul implements incremental upserts for both row and column and allows concu
 * Streaming and batch unification: Streaming Sink is supported in LakeSoul, which can handle streaming data ingesting, historical data filling in batch, interactive query and other scenarios simultaneously.
 * Schema evolution: Users can add/drop fields at any time and historical data can be read in compatibility mode.
 * CDC stream and log stream ingestion: supports entire database sync in one Flink job with automatic table discovery and DDL synchronization; supports Kafka multi topics sync with auto schema detect and new topic discovery.
-* High IO performance: Use Rust's Arrow-rs library to read/write Parquet files on cloud object storage, and optimized the IO performance.
+* High IO performance: LakeSoul NativeIO uses Rust and Apache Arrow to read and write Parquet and Vortex files on object storage. LakeSoul 4.0 supports mixed-format snapshots and defaults new writes to storage-optimized [`vortex-compact`](01-Getting%20Started/05-physical-file-formats.md).
 * Multiple compute engines: Currently Spark and Flink are supported for both batch and streaming read/write. Presto connector is supported for reading tables. LakeSoul also provides native Python reader and PyTorch dataset implementation for reading tables.
 * Workspace and RBAC: LakeSoul uses Postgres's RBAC and row-level security policies to implement permission isolation for metadata. Together with Hadoop users and groups, physical data isolation can be achieved. LakeSoul's permission isolation is effective for SQL/Java/Python jobs.
 * Supports automatic compaction, automatic expired data cleaning, and automatic redundant data cleaning.
@@ -37,3 +37,7 @@ LakeSoul implements incremental upserts for both row and column and allows concu
 * Heavy ETLs and Ad-hoc queries, and the resource consumption changes drastically, and it is expected that the computing resources can be flexible and scalable independently.
 * High concurrent writes and high performance of metadata are required.
 * For data updates to primary keys, high write throughput is required.
+
+## Develop LakeSoul
+
+Contributors building LakeSoul from source should start with the [Development Environment](05-Development/01-development-environment.md) guide. It covers the Nix Flake shells, Devenv PostgreSQL and RustFS services, source build order, Treefmt, Lefthook, and component test commands.

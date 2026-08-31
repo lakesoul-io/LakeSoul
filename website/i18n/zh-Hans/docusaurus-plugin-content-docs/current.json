@@ -18,5 +18,9 @@
   "sidebar.tutorialSidebar.category.Deployment": {
     "message": "生产部署",
     "description": "The label for category Deployment in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Development": {
+    "message": "开发者指南",
+    "description": "The label for category Development in sidebar tutorialSidebar"
   }
 }

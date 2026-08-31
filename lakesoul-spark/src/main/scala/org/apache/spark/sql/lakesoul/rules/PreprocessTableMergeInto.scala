@@ -12,18 +12,10 @@ import org.apache.spark.sql.catalyst.expressions.{
   EqualTo,
   Expression
 }
-import org.apache.spark.sql.catalyst.plans.logical.{
-  Assignment,
-  InsertAction,
-  LakeSoulUpsert,
-  LogicalPlan,
-  MergeAction,
-  MergeIntoTable,
-  UpdateAction
-}
+import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.LakeSoulTableRelationV2
+import org.apache.spark.sql.lakesoul.ExtractLakeSoulTableFromCDCFilter
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 
@@ -40,8 +32,13 @@ case class PreprocessTableMergeInto(sqlConf: SQLConf)
           _
         ) if m.resolved =>
 
-      EliminateSubqueryAliases(targetTable) match {
-        case LakeSoulTableRelationV2(tbl: LakeSoulTableV2) =>
+      val target = targetTable match {
+        case Filter(_, child) => child
+        case p                => p
+      }
+
+      EliminateSubqueryAliases(target) match {
+        case ExtractLakeSoulTableFromCDCFilter(tbl: LakeSoulTableV2) =>
           checkLakeSoulTableHasHashPartition(tbl)
           checkMergeConditionOnPrimaryKey(mergeCondition, tbl)
           checkMatchedActionIsOneUpdateOnly(matchedActions, tbl)
