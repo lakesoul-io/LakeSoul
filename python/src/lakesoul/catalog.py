@@ -8,19 +8,22 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pyarrow as pa
 import pyarrow.dataset as ds
 
 from lakesoul._lib._utils import _schema_from_metadata_str
-from lakesoul.io import IOConfig, Writer, WriteResult
+from lakesoul.io import FileInfo, IOConfig, Writer, WriteResult
 from lakesoul.metadata import (
     NativeMetadataClient,
     PostgresMetadataConfig,
     TableInfo,
     TableNotFoundError,
 )
+
+if TYPE_CHECKING:
+    from lakesoul._lib.vector import VectorIndexConfig
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
 PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
@@ -604,7 +607,7 @@ class LakeSoulTable:
         use_faster_config: bool | None = None,
         partition_desc: str | None = None,
         partitions: Mapping[str, str] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build or update the IVF+RaBitQ vector index for this table.
 
         The vector column and all index params are auto-detected from the
@@ -708,7 +711,7 @@ class LakeSoulTable:
             store_config=store_config,
         )
 
-    def _vector_configs(self) -> list[dict]:
+    def _vector_configs(self) -> list[VectorIndexConfig]:
         """Parse the ``vector_index_columns`` property into config dicts.
 
         Uses the Rust parser (``parse_vector_index_configs``) as the single
@@ -731,7 +734,7 @@ class LakeSoulTable:
         if configs:
             _validate_vector_index_configs(configs, self.schema, self.primary_keys)
 
-    def _vector_config_for(self, column: str) -> dict | None:
+    def _vector_config_for(self, column: str) -> VectorIndexConfig | None:
         """Return the config dict for ``column``, or ``None`` if not indexed."""
         for cfg in self._vector_configs():
             if cfg["column"] == column:
@@ -785,7 +788,7 @@ class LakeSoulTable:
 
     def _incremental_build_vector_index(
         self,
-        file_infos: Sequence["FileInfo"],
+        file_infos: Sequence[FileInfo],
         *,
         column: str,
         dim: int,
@@ -1302,7 +1305,7 @@ def _default_object_store_config(
     return config
 
 
-def _normalize_vector_index(value: Any) -> list[dict]:
+def _normalize_vector_index(value: Any) -> list[dict[str, Any]]:
     """Normalize a ``vector_index`` argument into a list of config dicts."""
     if isinstance(value, dict):
         items = [value]
@@ -1318,7 +1321,7 @@ def _normalize_vector_index(value: Any) -> list[dict]:
     return items
 
 
-def _parse_vector_index_configs(value: str) -> list[dict]:
+def _parse_vector_index_configs(value: str) -> list[VectorIndexConfig]:
     """Parse a ``vector_index_columns`` property value via the Rust parser."""
     from lakesoul._lib.vector import parse_vector_index_configs
 
@@ -1403,8 +1406,8 @@ def _build_vector_index_for_one(
     seed: int,
     use_faster_config: bool,
     partition_desc: str,
-    store_config: dict,
-) -> dict:
+    store_config: dict[str, Any],
+) -> dict[str, Any]:
     from lakesoul.vector_index import build_partition_vector_index
 
     return build_partition_vector_index(

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import daft
@@ -126,8 +127,8 @@ def build_vector_index_daft(
 
 
 def _shard_rows(
-    configs: list[dict],
-    file_infos: list[Any],
+    configs: Sequence[Mapping[str, Any]],
+    file_infos: Sequence[Any],
     store_config_json: str,
     pk_column: str,
 ) -> tuple[dict[str, list[Any]], int]:

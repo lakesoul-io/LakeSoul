@@ -30,7 +30,7 @@ import json
 import re
 import collections
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from ._lib.vector import build_shard_vector_index
 from .metadata.native_client import NativeMetadataClient
@@ -104,8 +104,8 @@ def build_partition_vector_index(
     rotator_type: str = "FhtKac",
     seed: int = 42,
     use_faster_config: bool = True,
-    store_config: dict | None = None,
-) -> dict:
+    store_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build (or update) the vector index for a single partition of a table.
 
     This is the main entry point for background index building.  It:
@@ -231,8 +231,8 @@ def build_table_vector_index(
     rotator_type: str = "FhtKac",
     seed: int = 42,
     use_faster_config: bool = True,
-    store_config: dict | None = None,
-) -> dict:
+    store_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build vector index for ALL partitions of a table.
 
     Convenience wrapper around ``build_partition_vector_index`` that

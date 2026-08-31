@@ -58,9 +58,7 @@ def _schema() -> pa.Schema:
 def _make_table(vectors: np.ndarray) -> pa.Table:
     schema = _schema()
     ids = pa.array(range(len(vectors)), type=pa.uint64())
-    dts = pa.array(
-        [DATES[i % 2] for i in range(len(vectors))], type=pa.string()
-    )
+    dts = pa.array([DATES[i % 2] for i in range(len(vectors))], type=pa.string())
     vec_col = pa.FixedSizeListArray.from_arrays(
         pa.array(vectors.flatten(), type=pa.float32()), DIM
     )
@@ -86,7 +84,7 @@ def _assert_per_partition_indexes(table_path: str, result) -> int:
     local_path = (
         table_path.replace("file://", "").replace("s3://", "").replace("s3a://", "")
     )
-    for (partition, bucket) in shards:
+    for partition, bucket in shards:
         # The index lives under the reader's per-partition prefix:
         #   {table}/{partition}/_vector_index/vec/-5/{bucket}  (partitioned)
         #   {table}/_vector_index/vec/-5/{bucket}              (non-partitioned)

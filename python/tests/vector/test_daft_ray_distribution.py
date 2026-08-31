@@ -53,7 +53,9 @@ def _shard_file_infos(partitions: int, buckets: int) -> list:
 
 def test_daft_vector_build_repartition_distribution(tmp_path) -> None:
     if not _is_ray_test_enabled():
-        pytest.skip("set LAKESOUL_DAFT_RAY_TEST=1 to enable the multi-executor Daft test")
+        pytest.skip(
+            "set LAKESOUL_DAFT_RAY_TEST=1 to enable the multi-executor Daft test"
+        )
 
     import ray
 
