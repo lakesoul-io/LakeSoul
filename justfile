@@ -54,3 +54,25 @@ copy-to-java ext="dylib":
   mkdir -p lakesoul-common/target/classes/
   cp rust/target/debug/liblakesoul_io_c.{{ext}} lakesoul-common/target/classes/
   cp rust/target/debug/liblakesoul_metadata_c.{{ext}} lakesoul-common/target/classes/
+
+dist:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export ROOT="$PWD"
+    export CARGO_TARGET_DIR="$ROOT/rust/target"
+    mkdir -p "$ROOT/dist"
+
+    cd "$ROOT/python"
+    uvx --from 'maturin[zig]==1.14.1' maturin build \
+        --release \
+        --zig \
+        --target x86_64-unknown-linux-gnu \
+        --features 'pyo3/extension-module,dist-ffi' \
+        --auditwheel repair \
+        --compatibility manylinux2014 \
+        --out "$ROOT/dist"
+
+    cp \
+        "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/deps/liblakesoul_io_c.so" \
+        "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/deps/liblakesoul_metadata_c.so" \
+        "$ROOT/dist/"

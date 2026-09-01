@@ -15,9 +15,6 @@ pytest:
 sync:
     uv sync --reinstall-package lakesoul
 
-dist:
-    uvx --from 'maturin[zig]' maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist
-
 # must use venv python
 # must in python dir
 compact engines="jvm" mode="smoke":
