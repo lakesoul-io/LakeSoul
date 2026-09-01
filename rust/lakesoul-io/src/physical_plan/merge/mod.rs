@@ -7,12 +7,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::{Field, Schema, SchemaRef, SortOptions};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::dataframe::DataFrame;
+use datafusion::datasource::physical_plan::FileScanConfigBuilder;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::logical_expr::Expr;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::prelude::SessionContext;
@@ -36,6 +38,40 @@ use crate::stream::default_column::DefaultColumnStream;
 use crate::stream::empty_schema::EmptySchemaStream;
 
 pub mod sorted;
+
+/// Merge-on-read requires every input stream to be sorted by the primary
+/// keys: the k-way merge only merges rows with equal keys when they surface
+/// adjacently across streams. Declare the primary key ordering on each scan
+/// config so file sources preserve file order — the vortex reader otherwise
+/// scans row-group splits concurrently and yields batches out of order,
+/// silently breaking merge-on-read deduplication.
+fn with_primary_key_ordering(
+    config: FileScanConfig,
+    primary_keys: &[String],
+) -> FileScanConfig {
+    if primary_keys.is_empty() {
+        return config;
+    }
+    let table_schema = config.file_source.table_schema().table_schema().clone();
+    let Some(ordering) = LexOrdering::new(
+        primary_keys
+            .iter()
+            .filter_map(|pk| {
+                Column::new_with_schema(pk, &table_schema).ok().map(|col| {
+                    PhysicalSortExpr::new(Arc::new(col), SortOptions::default())
+                })
+            })
+            .collect::<Vec<_>>(),
+    ) else {
+        return config;
+    };
+    if ordering.is_empty() {
+        return config;
+    }
+    FileScanConfigBuilder::from(config)
+        .with_output_ordering(vec![ordering])
+        .build()
+}
 
 /// [`ExecutionPlan`] implementation for the merge on read operation.
 #[derive(Debug)]
@@ -98,6 +134,8 @@ impl MergeParquetExec {
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for (i, config) in flatten_configs.into_iter().enumerate() {
             debug!("flatten_configs[{i}]:{:?}", config);
+            let config =
+                with_primary_key_ordering(config, io_config.primary_keys.as_slice());
             let single_exec = DataSourceExec::from_data_source(config);
             inputs.push(single_exec);
         }
