@@ -66,6 +66,9 @@ pub enum RabitqError {
     #[error("generation conflict: compaction changed the generation")]
     GenerationConflict,
 
+    #[error("commit conflict: another writer published a newer commit")]
+    CommitConflict,
+
     #[error("I/O error: {0}")]
     Io(String),
 

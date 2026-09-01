@@ -1788,8 +1788,10 @@ impl IvfRabitqIndex {
                 },
             );
         }
-        manifest::save_manifest(mstore, &header, &cluster_map, 0).await?;
-        manifest::write_latest(mstore, 1, 0, None).await?;
+        // A fresh build replaces everything: publish as a new-generation
+        // commit at base key (0, 0) so concurrent fresh builds conflict
+        // instead of duplicating segments.
+        manifest::commit_rebuild(mstore, &header, &cluster_map, (0, 0)).await?;
         println!(
             "Saved V4 index: {} clusters, {} base segments",
             self.clusters.len(),
@@ -1804,18 +1806,12 @@ impl IvfRabitqIndex {
     /// deltas) for every cluster, merging them into a single `ClusterData`
     /// in memory.
     pub async fn load_from_v4(mstore: &ManifestStore) -> Result<Self, RabitqError> {
-        // Try LATEST → versioned manifest first, fall back to legacy manifest.bin.
+        // Resolve the current view (LATEST hint + unique commits), fall
+        // back to the legacy manifest.bin when nothing newer exists.
         let (header, cluster_map) =
-            match crate::rabitq::manifest::read_latest(mstore).await {
-                Ok(snap) if snap.generation > 0 => {
-                    crate::rabitq::manifest::load_manifest_by_gen_ver(
-                        mstore,
-                        snap.generation,
-                        snap.version,
-                    )
-                    .await?
-                }
-                _ => crate::rabitq::manifest::load_manifest(mstore).await?,
+            match crate::rabitq::manifest::resolve_view(mstore).await? {
+                Some(view) => (view.header, view.cluster_map),
+                None => crate::rabitq::manifest::load_manifest(mstore).await?,
             };
         let mut clusters = Vec::with_capacity(cluster_map.len());
         for entry in cluster_map.values() {
@@ -2086,135 +2082,124 @@ impl IvfRabitqIndex {
     }
 
     /// Compaction: merge all delta segments into new base segments,
-    /// bump the generation, and atomically update the LATEST pointer.
+    /// bump the generation, and publish a new commit.
     ///
-    /// Reads the current manifest, loads all segments (base + deltas) for
-    /// every cluster, merges them in memory, writes new base segments
-    /// (version 0), writes a new manifest with `generation+1`, and
-    /// CAS-updates LATEST.
-    ///
-    /// Old segment files are **not** deleted (object-store immutability).
-    /// Other readers continue to use the old generation until they re-read
-    /// LATEST.
+    /// Reads the current derived view, loads all segments (base + deltas)
+    /// for every cluster, merges them in memory, writes new base segments
+    /// (version 0) with unique names, and publishes a new generation via
+    /// [`commit_rebuild`].  Old segments and manifests are **not**
+    /// deleted — the index only ever grows, so readers that resolved an
+    /// older view keep working.  If a concurrent writer publishes while
+    /// compaction runs, the merge is redone against the fresher view.
     pub async fn compact_v4(mstore: &ManifestStore) -> Result<(), RabitqError> {
         use crate::rabitq::manifest::{
             self, ClusterManifestEntry, ClusterSegmentData, ManifestHeader,
             SegmentManifestEntry,
         };
 
-        // 1. Read current LATEST and load manifest.
-        let latest = manifest::read_latest(mstore).await?;
-        let (_, cluster_map) = if latest.generation > 0 {
-            manifest::load_manifest_by_gen_ver(mstore, latest.generation, latest.version)
+        for _ in 0..manifest::COMMIT_RETRIES {
+            // 1. Resolve the current view; abort on an empty store.
+            let view = manifest::resolve_view(mstore)
                 .await?
-        } else {
-            manifest::load_manifest(mstore).await?
-        };
+                .ok_or(RabitqError::InvalidPersistence("no vector index found"))?;
+            let base_key = view.key();
+            let cluster_map = view.cluster_map;
+            let old_header = &view.header;
+            let new_gen = base_key.0.max(1) + 1;
+            println!(
+                "Compaction: gen {} → {}, {} clusters",
+                base_key.0.max(1),
+                new_gen,
+                cluster_map.len()
+            );
 
-        let new_gen = latest.generation.max(1) + 1;
-        println!(
-            "Compaction: gen {} → {}, {} clusters",
-            latest.generation.max(1),
-            new_gen,
-            cluster_map.len()
-        );
+            // 2. Merge all segments for each cluster and write new base.
+            let mut new_map: std::collections::BTreeMap<u32, ClusterManifestEntry> =
+                std::collections::BTreeMap::new();
 
-        // 2. Merge all segments for each cluster and write new base.
-        let mut new_map: std::collections::BTreeMap<u32, ClusterManifestEntry> =
-            std::collections::BTreeMap::new();
-
-        for (&cid, entry) in cluster_map.iter() {
-            // Merge all segments (base + deltas) for this cluster.
-            let mut merged: Option<ClusterData> = None;
-            for seg_entry in &entry.segments {
-                let seg =
-                    manifest::read_segment_full(mstore, &seg_entry.segment_filename)
-                        .await?;
-                let cd = ClusterData::from_segment(seg);
-                if let Some(m) = merged.as_mut() {
-                    m.ids.extend_from_slice(&cd.ids);
-                    m.batch_data.extend_from_slice(&cd.batch_data);
-                    m.ex_codes_packed.extend_from_slice(&cd.ex_codes_packed);
-                    m.f_add_ex.extend_from_slice(&cd.f_add_ex);
-                    m.f_rescale_ex.extend_from_slice(&cd.f_rescale_ex);
-                    m.delta.extend_from_slice(&cd.delta);
-                    m.vl.extend_from_slice(&cd.vl);
-                    m.num_vectors += cd.num_vectors;
-                } else {
-                    merged = Some(cd);
+            for (&cid, entry) in cluster_map.iter() {
+                // Merge all segments (base + deltas) for this cluster.
+                let mut merged: Option<ClusterData> = None;
+                for seg_entry in &entry.segments {
+                    let seg =
+                        manifest::read_segment_full(mstore, &seg_entry.segment_filename)
+                            .await?;
+                    let cd = ClusterData::from_segment(seg);
+                    if let Some(m) = merged.as_mut() {
+                        m.ids.extend_from_slice(&cd.ids);
+                        m.batch_data.extend_from_slice(&cd.batch_data);
+                        m.ex_codes_packed.extend_from_slice(&cd.ex_codes_packed);
+                        m.f_add_ex.extend_from_slice(&cd.f_add_ex);
+                        m.f_rescale_ex.extend_from_slice(&cd.f_rescale_ex);
+                        m.delta.extend_from_slice(&cd.delta);
+                        m.vl.extend_from_slice(&cd.vl);
+                        m.num_vectors += cd.num_vectors;
+                    } else {
+                        merged = Some(cd);
+                    }
                 }
+
+                let cd = merged.ok_or_else(|| {
+                    RabitqError::InvalidPersistence("cluster has no segments")
+                })?;
+
+                // Write new compacted base segment (version 0).
+                let fname = manifest::segment_filename(cid, 0);
+                let seg_data = ClusterSegmentData::from_cluster_data(
+                    cid,
+                    cd.centroid.clone(),
+                    cd.padded_dim,
+                    cd.ex_bits,
+                    cd.ids.clone(),
+                    cd.batch_data.clone(),
+                    cd.ex_codes_packed.clone(),
+                    cd.f_add_ex.clone(),
+                    cd.f_rescale_ex.clone(),
+                    cd.delta.clone(),
+                    cd.vl.clone(),
+                );
+                let file_size =
+                    manifest::write_segment(mstore, &fname, &seg_data, 0).await?;
+
+                new_map.insert(
+                    cid,
+                    ClusterManifestEntry {
+                        cluster_id: cid,
+                        segments: vec![SegmentManifestEntry {
+                            segment_filename: fname,
+                            segment_version: 0,
+                            num_vectors: cd.num_vectors as u32,
+                            file_size,
+                        }],
+                    },
+                );
             }
 
-            let cd = merged.ok_or_else(|| {
-                RabitqError::InvalidPersistence("cluster has no segments")
-            })?;
-
-            // Write new compacted base segment (version 0).
-            let fname = manifest::segment_filename(cid, 0);
-            let seg_data = ClusterSegmentData::from_cluster_data(
-                cid,
-                cd.centroid.clone(),
-                cd.padded_dim,
-                cd.ex_bits,
-                cd.ids.clone(),
-                cd.batch_data.clone(),
-                cd.ex_codes_packed.clone(),
-                cd.f_add_ex.clone(),
-                cd.f_rescale_ex.clone(),
-                cd.delta.clone(),
-                cd.vl.clone(),
-            );
-            let file_size = manifest::write_segment(mstore, &fname, &seg_data, 0).await?;
-
-            new_map.insert(
-                cid,
-                ClusterManifestEntry {
-                    cluster_id: cid,
-                    segments: vec![SegmentManifestEntry {
-                        segment_filename: fname,
-                        segment_version: 0,
-                        num_vectors: cd.num_vectors as u32,
-                        file_size,
-                    }],
-                },
-            );
+            // 3. Publish a new-generation commit; retry on concurrent writes.
+            let header = ManifestHeader {
+                generation: new_gen,
+                dim: old_header.dim,
+                padded_dim: old_header.padded_dim,
+                metric: old_header.metric,
+                rotator_type: old_header.rotator_type,
+                rotator_data: old_header.rotator_data.clone(),
+                ex_bits: old_header.ex_bits,
+                total_bits: old_header.total_bits,
+            };
+            match manifest::commit_rebuild(mstore, &header, &new_map, base_key).await {
+                Ok(()) => {
+                    println!(
+                        "Compaction complete: gen {} ({} segments)",
+                        new_gen,
+                        new_map.len()
+                    );
+                    return Ok(());
+                }
+                Err(RabitqError::CommitConflict) => continue,
+                Err(e) => return Err(e),
+            }
         }
-
-        // 3. Write new-gen manifest (version 1), carrying forward header config.
-        let (old_header, _) = if latest.generation > 0 {
-            manifest::load_manifest_by_gen_ver(mstore, latest.generation, latest.version)
-                .await?
-        } else {
-            manifest::load_manifest(mstore).await?
-        };
-        let header = ManifestHeader {
-            generation: new_gen,
-            dim: old_header.dim,
-            padded_dim: old_header.padded_dim,
-            metric: old_header.metric,
-            rotator_type: old_header.rotator_type,
-            rotator_data: old_header.rotator_data,
-            ex_bits: old_header.ex_bits,
-            total_bits: old_header.total_bits,
-        };
-        manifest::save_manifest(mstore, &header, &new_map, 1).await?;
-
-        // 4. CAS-update LATEST.
-        manifest::write_latest(mstore, new_gen, 1, latest.e_tag).await
-            .map_err(|e| {
-                if matches!(e, RabitqError::VersionConflict) {
-                    RabitqError::InvalidPersistence(
-                        "compaction conflict: another process wrote LATEST during compaction"
-                    )
-                } else { e }
-            })?;
-
-        println!(
-            "Compaction complete: gen {} ({} segments)",
-            new_gen,
-            new_map.len()
-        );
-        Ok(())
+        Err(RabitqError::CommitConflict)
     }
 }
 
@@ -2285,17 +2270,6 @@ where
     use builder::IvfRabitqBuilder;
     use futures::StreamExt;
 
-    // 1. Read current LATEST, determine new generation.
-    let latest = manifest::read_latest(mstore).await?;
-    let new_gen = latest.generation.max(1) + 1;
-    println!(
-        "rebuild_v4: gen {} → {} ({} clusters, {} bits)",
-        latest.generation.max(1),
-        new_gen,
-        nlist,
-        total_bits
-    );
-
     // 2. Always fresh builder — rebuild must train new centroids.
     let mut builder = IvfRabitqBuilder::new(
         dim,
@@ -2334,8 +2308,9 @@ where
         index.estimate_memory_mb()
     );
 
-    // 3. Persist with new generation.
-    // Write base segments (version 0) per cluster, then versioned manifest.
+    // 3. Persist with a new generation via the CAS-free commit protocol:
+    //    write unique-named base segments (version 0) per cluster, then
+    //    publish a new-generation commit.
     let mut cluster_map: std::collections::BTreeMap<u32, ClusterManifestEntry> =
         std::collections::BTreeMap::new();
     for (i, cluster) in index.clusters.iter().enumerate() {
@@ -2370,7 +2345,7 @@ where
     }
 
     let header = ManifestHeader {
-        generation: new_gen,
+        generation: 1,
         dim: index.dim,
         padded_dim: index.padded_dim,
         metric: index.metric,
@@ -2379,28 +2354,33 @@ where
         ex_bits: index.ex_bits,
         total_bits: index.ex_bits + 1,
     };
-    manifest::save_manifest(mstore, &header, &cluster_map, 1).await?;
-
-    // 4. CAS LATEST.
-    manifest::write_latest(mstore, new_gen, 1, latest.e_tag)
-        .await
-        .map_err(|e| {
-            if matches!(e, RabitqError::VersionConflict) {
-                RabitqError::InvalidPersistence(
-                    "rebuild conflict: another process wrote LATEST during rebuild",
-                )
-            } else {
-                e
+    // Rebuilds produce a complete new generation.  If the view moved
+    // (e.g. a flush landed mid-rebuild), retry the whole rebuild against
+    // the fresher base so no committed delta is ever dropped.
+    for _ in 0..manifest::COMMIT_RETRIES {
+        let base_key = match manifest::resolve_view(mstore).await? {
+            Some(view) => view.key(),
+            None => (0, 0),
+        };
+        let new_gen = base_key.0.max(1) + 1;
+        let mut gen_header = header.clone();
+        gen_header.generation = new_gen;
+        match manifest::commit_rebuild(mstore, &gen_header, &cluster_map, base_key).await
+        {
+            Ok(()) => {
+                println!(
+                    "rebuild_v4 complete: gen {} ({} base segments, {} vectors)",
+                    new_gen,
+                    cluster_map.len(),
+                    index.len()
+                );
+                return Ok(());
             }
-        })?;
-
-    println!(
-        "rebuild_v4 complete: gen {} ({} base segments, {} vectors)",
-        new_gen,
-        cluster_map.len(),
-        index.len()
-    );
-    Ok(())
+            Err(RabitqError::CommitConflict) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(RabitqError::CommitConflict)
 }
 
 // ----------------------------------------------------------------------------

@@ -45,6 +45,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+async-trait = { workspace = true }
 
 [lints]
 workspace = true
