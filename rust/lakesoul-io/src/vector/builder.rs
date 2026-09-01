@@ -48,7 +48,10 @@ impl VectorShardIndexBuilder {
     }
 
     fn index_prefix(&self) -> String {
-        // Derive table prefix from the first file's parent directory
+        // Derive the base prefix from the first file's parent directory.  A
+        // shard is built from files of a single (partition_desc, bucket), so
+        // they all share the same parent dir and derive_index_prefixes returns
+        // one prefix (matching the search's per-partition reader prefix).
         let prefix = self
             .file_paths
             .first()
@@ -130,27 +133,13 @@ impl VectorShardIndexBuilder {
     }
 
     async fn build_fresh(self, mstore: ManifestStore) -> Result<(), RabitqError> {
-        let mut builder = IvfRabitqBuilder::new(
-            self.config.dim,
-            self.config.nlist,
-            self.config.total_bits,
-            self.config.metric,
-            self.config.rotator_type,
-            self.config.seed,
-            self.config.use_faster_config,
-        );
-
         // Pass 1: read all vectors via LakeSoulReader (handles merge-on-read)
         info!("Pass 1: reading via LakeSoulReader for reservoir sampling");
         let all_batches = self
             .read_all_batches()
             .await
             .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
-        let mut total = 0usize;
-        for batch in &all_batches {
-            total += batch.ids.len();
-            builder.insert_batch(batch.clone())?;
-        }
+        let total: usize = all_batches.iter().map(|b| b.ids.len()).sum();
         info!(
             "Pass 1 done: {} vectors from {} batches",
             total,
@@ -161,6 +150,27 @@ impl VectorShardIndexBuilder {
             return Err(RabitqError::InvalidPersistence(
                 "no vectors found in data files",
             ));
+        }
+
+        // Clamp nlist so we never create more clusters than there are vectors;
+        // rabitq panics on empty clusters / nlist > vector count.
+        let nlist = self.config.nlist.clamp(1, total);
+        info!(
+            "Building with nlist={} (requested {}) for {} vectors",
+            nlist, self.config.nlist, total
+        );
+
+        let mut builder = IvfRabitqBuilder::new(
+            self.config.dim,
+            nlist,
+            self.config.total_bits,
+            self.config.metric,
+            self.config.rotator_type,
+            self.config.seed,
+            self.config.use_faster_config,
+        );
+        for batch in &all_batches {
+            builder.insert_batch(batch.clone())?;
         }
 
         // Pass 2: feed the same data again for K-Means + quantize

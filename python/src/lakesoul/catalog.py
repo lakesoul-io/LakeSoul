@@ -8,19 +8,22 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pyarrow as pa
 import pyarrow.dataset as ds
 
 from lakesoul._lib._utils import _schema_from_metadata_str
-from lakesoul.io import IOConfig, Writer, WriteResult
+from lakesoul.io import FileInfo, IOConfig, Writer, WriteResult
 from lakesoul.metadata import (
     NativeMetadataClient,
     PostgresMetadataConfig,
     TableInfo,
     TableNotFoundError,
 )
+
+if TYPE_CHECKING:
+    from lakesoul._lib.vector import VectorIndexConfig
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
 PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
@@ -201,9 +204,20 @@ class LakeSoulCatalog:
         primary_keys: Sequence[str] = (),
         hash_bucket_num: int | None = None,
         properties: Mapping[str, str] | None = None,
+        vector_index: Any | None = None,
         domain: str = "public",
     ) -> LakeSoulTable:
         """Create and load a table.
+
+        ``vector_index`` (optional) is a convenience parameter that stores
+        one or more vector column configs into the ``vector_index_columns``
+        table property as JSON.  Each entry must have ``column`` and ``dim``;
+        ``nlist``/``total_bits``/``metric``/``rotator_type``/``seed``/
+        ``use_faster_config`` default if omitted.  When the property is
+        present, ``write_arrow`` automatically builds/updates the index.
+        A vector index requires an Int64/UInt64 ``primary_keys`` column and
+        Float32 vector columns whose dimension matches the schema; the
+        configuration is validated here, before any metadata is created.
 
         Raises:
             AlreadyExistsError: If the table already exists.
@@ -226,10 +240,24 @@ class LakeSoulCatalog:
             _validate_hash_bucket_num(hash_bucket_num)
 
         props = dict(properties or {})
+        if vector_index is not None:
+            props["vector_index_columns"] = json.dumps(
+                _normalize_vector_index(vector_index)
+            )
         if hash_bucket_num is not None:
             props["hashBucketNum"] = str(hash_bucket_num)
         elif normalized_primary_keys and "hashBucketNum" not in props:
             props["hashBucketNum"] = "4"
+
+        # Fail before creating any metadata: the vector index needs an integer
+        # primary key and float32 vector columns whose dimension matches.
+        raw_vector_index = props.get("vector_index_columns")
+        if raw_vector_index:
+            _validate_vector_index_configs(
+                _parse_vector_index_configs(raw_vector_index),
+                normalized_schema,
+                normalized_primary_keys,
+            )
 
         namespace = self._resolve_namespace(namespace)
         self._client.create_table(
@@ -435,7 +463,11 @@ class LakeSoulTable:
         max_row_group_size: int = 250_000,
         object_store_options: Mapping[str, str] | None = None,
         options: Mapping[str, str] | None = None,
+        auto_build_vector_index: bool = True,
     ) -> WriteResult:
+        # Fail before writing/committing if an auto-build cannot be satisfied.
+        if auto_build_vector_index:
+            self._require_vector_index_writable()
         write_config = self.write_config(format=format)
         writer_config = IOConfig(
             path=write_config.path,
@@ -459,7 +491,38 @@ class LakeSoulTable:
         if result is None:
             raise RuntimeError("writer finished without a result")
         self._catalog._commit_write_result(self, result)
+
+        if auto_build_vector_index:
+            self._auto_build_after_write(result)
+
         return result
+
+    def _auto_build_after_write(self, result: WriteResult) -> None:
+        """Build/update vector indexes for a freshly written ``result``.
+
+        Iterates every column configured in ``vector_index_columns`` and
+        builds/updates its shard indexes using only the newly written files
+        (Rust performs an incremental delta update).  Raises on any shard
+        failure.
+        """
+        configs = self._vector_configs()
+        if not configs:
+            return
+        file_infos = list(result.files)
+        if not file_infos:
+            return
+        for cfg in configs:
+            self._incremental_build_vector_index(
+                file_infos,
+                column=cfg["column"],
+                dim=cfg["dim"],
+                nlist=cfg.get("nlist", 256),
+                total_bits=cfg.get("total_bits", 7),
+                metric=cfg.get("metric", "L2"),
+                rotator_type=cfg.get("rotator_type", "FhtKac"),
+                seed=cfg.get("seed", 42),
+                use_faster_config=cfg.get("use_faster_config", True),
+            )
 
     def write_ray(
         self,
@@ -503,7 +566,17 @@ class LakeSoulTable:
         object_store_options: Mapping[str, str] | None = None,
         options: Mapping[str, str] | None = None,
         results_buffer_size: int | Literal["num_cpus"] = "num_cpus",
+        auto_build_vector_index: bool = True,
+        vector_index_cpus: float = 1,
     ) -> WriteResult:
+        """Write a Daft DataFrame (distributed).
+
+        If the table declares ``vector_index_columns`` properties, the vector
+        indexes are built/updated automatically after the write commits via a
+        distributed ``@daft.cls`` actor-pool UDF over the new files, grouped
+        by (partition, hash bucket).  Pass ``auto_build_vector_index=False``
+        to skip.
+        """
         from lakesoul.daft import write_lakesoul
 
         return write_lakesoul(
@@ -517,6 +590,8 @@ class LakeSoulTable:
             object_store_options=object_store_options,
             options=options,
             results_buffer_size=results_buffer_size,
+            auto_build_vector_index=auto_build_vector_index,
+            vector_index_cpus=vector_index_cpus,
         )
 
     def build_vector_index(
@@ -524,23 +599,29 @@ class LakeSoulTable:
         *,
         column: str | None = None,
         dim: int | None = None,
-        nlist: int = 256,
-        total_bits: int = 7,
-        metric: str = "L2",
+        nlist: int | None = None,
+        total_bits: int | None = None,
+        metric: str | None = None,
+        rotator_type: str | None = None,
+        seed: int | None = None,
+        use_faster_config: bool | None = None,
         partition_desc: str | None = None,
         partitions: Mapping[str, str] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build or update the IVF+RaBitQ vector index for this table.
 
-        The vector column is auto-detected from table properties
-        (``vector_index_columns``), or can be overridden via *column*/*dim*.
+        The vector column and all index params are auto-detected from the
+        ``vector_index_columns`` table property; explicit args override them.
 
         Args:
             column: Vector column name (auto-detected if omitted).
             dim: Vector dimension (auto-detected if omitted).
-            nlist: Number of IVF clusters (default 256).
-            total_bits: RaBitQ total bits (default 7).
+            nlist: Number of IVF clusters.
+            total_bits: RaBitQ total bits.
             metric: Distance metric, ``"L2"`` or ``"IP"``.
+            rotator_type: Rotation type, ``"FhtKac"`` or ``"Matrix"``.
+            seed: Random seed.
+            use_faster_config: Enable fast quantization.
             partition_desc: Build index for a single partition, e.g.
                 ``"range=2024-01-01"``.  When omitted, builds for all
                 partitions.
@@ -554,8 +635,26 @@ class LakeSoulTable:
         if partition_desc is not None and partitions is not None:
             raise ValueError("partition_desc and partitions are mutually exclusive")
 
-        # Auto-detect vector column from table properties
-        vec_col, vec_dim = self._vector_column_info(column, dim)
+        # Auto-detect column + params from table properties
+        (
+            vec_col,
+            vec_dim,
+            nlist,
+            total_bits,
+            metric,
+            rotator_type,
+            seed,
+            use_faster_config,
+        ) = self._resolved_index_params(
+            column,
+            dim,
+            nlist,
+            total_bits,
+            metric,
+            rotator_type,
+            seed,
+            use_faster_config,
+        )
 
         store_config = _default_object_store_config(catalog=self._catalog, table=self)
 
@@ -567,6 +666,9 @@ class LakeSoulTable:
                 nlist=nlist,
                 total_bits=total_bits,
                 metric=metric,
+                rotator_type=rotator_type,
+                seed=seed,
+                use_faster_config=use_faster_config,
                 partition_desc=partition_desc,
                 store_config=store_config,
             )
@@ -585,6 +687,9 @@ class LakeSoulTable:
                 nlist=nlist,
                 total_bits=total_bits,
                 metric=metric,
+                rotator_type=rotator_type,
+                seed=seed,
+                use_faster_config=use_faster_config,
                 partition_desc=desc,
                 store_config=store_config,
             )
@@ -600,138 +705,158 @@ class LakeSoulTable:
             nlist=nlist,
             total_bits=total_bits,
             metric=metric,
+            rotator_type=rotator_type,
+            seed=seed,
+            use_faster_config=use_faster_config,
             store_config=store_config,
         )
 
-    def write_arrow_and_build_vector_index(
+    def _vector_configs(self) -> list[VectorIndexConfig]:
+        """Parse the ``vector_index_columns`` property into config dicts.
+
+        Uses the Rust parser (``parse_vector_index_configs``) as the single
+        source of truth, so Python and Rust never disagree on the schema.
+        """
+        raw = dict(self.properties).get("vector_index_columns", "")
+        if not raw:
+            return []
+        return _parse_vector_index_configs(raw)
+
+    def _require_vector_index_writable(self) -> None:
+        """Validate the vector index config against the table before writing.
+
+        ``create_table`` rejects invalid configurations up front; this guards
+        pre-existing tables (e.g. created before validation existed, or via
+        other engines) so an auto-build failure surfaces *before* data is
+        written and committed, instead of post-commit.
+        """
+        configs = self._vector_configs()
+        if configs:
+            _validate_vector_index_configs(configs, self.schema, self.primary_keys)
+
+    def _vector_config_for(self, column: str) -> VectorIndexConfig | None:
+        """Return the config dict for ``column``, or ``None`` if not indexed."""
+        for cfg in self._vector_configs():
+            if cfg["column"] == column:
+                return cfg
+        return None
+
+    def _resolved_index_params(
         self,
-        data: "pa.RecordBatch | pa.Table | pa.RecordBatchReader",
+        column: str | None,
+        dim: int | None,
+        nlist: int | None,
+        total_bits: int | None,
+        metric: str | None,
+        rotator_type: str | None,
+        seed: int | None,
+        use_faster_config: bool | None,
+    ) -> tuple[str, int, int, int, str, str, int, bool]:
+        """Resolve an index column + all params, defaulting from properties."""
+        configs = self._vector_configs()
+        if column is not None:
+            col = column
+            cfg = self._vector_config_for(column)
+        elif configs:
+            col = configs[0]["column"]
+            cfg = configs[0]
+        else:
+            col = column
+            cfg = None
+        if col is None:
+            raise ValueError(
+                "vector column not specified and not found in table properties"
+            )
+        cfg = cfg or {}
+        resolved_dim = dim if dim is not None else cfg.get("dim", 0)
+        if resolved_dim <= 0:
+            raise ValueError(f"invalid vector dimension: {resolved_dim}")
+        return (
+            col,
+            resolved_dim,
+            nlist if nlist is not None else cfg.get("nlist", 256),
+            total_bits if total_bits is not None else cfg.get("total_bits", 7),
+            metric if metric is not None else cfg.get("metric", "L2"),
+            rotator_type
+            if rotator_type is not None
+            else cfg.get("rotator_type", "FhtKac"),
+            seed if seed is not None else cfg.get("seed", 42),
+            use_faster_config
+            if use_faster_config is not None
+            else cfg.get("use_faster_config", True),
+        )
+
+    def _incremental_build_vector_index(
+        self,
+        file_infos: Sequence[FileInfo],
         *,
-        column: str | None = None,
-        dim: int | None = None,
-        nlist: int = 256,
-        total_bits: int = 7,
-        metric: str = "L2",
-        format: "PhysicalFormat" = "vortex-compact",
-        batch_size: int = 8192,
-        thread_num: int | None = 1,
-        max_file_size: int | None = None,
-        max_row_group_size: int = 250_000,
-        object_store_options: "Mapping[str, str] | None" = None,
-        options: "Mapping[str, str] | None" = None,
-    ) -> dict:
-        """Write data and incrementally build vector index on the new files only.
+        column: str,
+        dim: int,
+        nlist: int,
+        total_bits: int,
+        metric: str,
+        rotator_type: str,
+        seed: int,
+        use_faster_config: bool,
+    ) -> int:
+        """Build/update the index for newly written files, per shard.
 
-        Combines :meth:`write_arrow` and :meth:`build_vector_index` into a
-        single call that builds the vector index using only the files
-        produced by this write — avoiding re-reading all existing files.
-
-        Args:
-            data: RecordBatch / Table / RecordBatchReader to write.
-            column: Vector column name (auto-detected if omitted).
-            dim: Vector dimension (auto-detected if omitted).
-            nlist: Number of IVF clusters (default 256).
-            total_bits: RaBitQ total bits (default 7).
-            metric: Distance metric, ``"L2"`` or ``"IP"``.
-            format: Physical file format (``"parquet"`` or
-                ``"vortex-compact"``).
-            batch_size: Rows per batch sent to the writer.
-            thread_num: Number of writer threads.
-            max_file_size: Soft limit for output file size.
-            max_row_group_size: Row-group size for Parquet files.
-            object_store_options: Extra object-store configuration.
-            options: Extra IO options forwarded to the writer.
-
-        Returns:
-            Dict with ``"status"``, ``"shards_built"``,
-            ``"new_files"``, and ``"row_count"``.
+        A LakeSoul vector shard is identified by ``(partition_desc,
+        hash_bucket_id)``.  Files are grouped on that key (not just the
+        bucket id) and each shard is built by the Rust builder, which derives
+        the index location from the files' partition directory.  The Rust
+        layer detects an existing manifest and performs an incremental (delta
+        segment) update instead of a full rebuild.  Returns the number of
+        shards built.  Raises if any shard fails.
         """
         from collections import defaultdict
 
         from lakesoul._lib.vector import build_shard_vector_index
         from lakesoul.vector_index import _extract_bucket_id
 
-        # 1. Write data
-        write_result = self.write_arrow(
-            data,
-            format=format,
-            batch_size=batch_size,
-            thread_num=thread_num,
-            max_file_size=max_file_size,
-            max_row_group_size=max_row_group_size,
-            object_store_options=object_store_options,
-            options=options,
-        )
-
-        if not write_result.files:
-            return {
-                "status": "ok",
-                "shards_built": 0,
-                "new_files": 0,
-                "row_count": write_result.row_count,
-                "message": "no files produced",
-            }
-
-        # 2. Auto-detect vector column info
-        vec_col, vec_dim = self._vector_column_info(column, dim)
-
         store_config = _default_object_store_config(catalog=self._catalog, table=self)
+        shards: dict[tuple[str, int], list[str]] = defaultdict(list)
+        for fi in file_infos:
+            shards[(fi.partition, _extract_bucket_id(fi.path))].append(fi.path)
 
-        # 3. Group new files by hash bucket
-        file_paths = [f.path for f in write_result.files]
-        bucket_files: dict[int, list[str]] = defaultdict(list)
-        for fp in file_paths:
-            bid = _extract_bucket_id(fp)
-            bucket_files[bid].append(fp)
-
-        # 4. Build/update index for each bucket using only the new files.
-        #    The Rust layer detects existing manifests and does incremental
-        #    inserts (delta segments) instead of full rebuilds.
         succeeded = 0
-        for bid, bfiles in sorted(bucket_files.items()):
-            result = build_shard_vector_index(
-                store_config=store_config,
-                file_paths=bfiles,
-                pk_column=self.primary_keys[0],
-                vector_column=vec_col,
-                dim=vec_dim,
-                nlist=nlist,
-                total_bits=total_bits,
-                metric=metric,
-            )
-            if result == "ok":
-                succeeded += 1
+        failed = 0
+        for (partition_desc, bid), bfiles in sorted(shards.items()):
+            try:
+                r = build_shard_vector_index(
+                    store_config=store_config,
+                    file_paths=bfiles,
+                    pk_column=self.primary_keys[0],
+                    vector_column=column,
+                    dim=dim,
+                    nlist=nlist,
+                    total_bits=total_bits,
+                    metric=metric,
+                    rotator_type=rotator_type,
+                    seed=seed,
+                    use_faster_config=use_faster_config,
+                )
+                if r == "ok":
+                    succeeded += 1
+                else:
+                    failed += 1
+                    print(
+                        f"ERROR building vector index for column '{column}' "
+                        f"shard (partition='{partition_desc}', bucket={bid}): {r}"
+                    )
+            except Exception as e:
+                failed += 1
+                print(
+                    f"ERROR building vector index for column '{column}' "
+                    f"shard (partition='{partition_desc}', bucket={bid}): {e}"
+                )
 
-        return {
-            "status": "ok",
-            "shards_built": succeeded,
-            "shards_total": len(bucket_files),
-            "new_files": len(file_paths),
-            "row_count": write_result.row_count,
-        }
-
-    def _vector_column_info(
-        self,
-        column: str | None,
-        dim: int | None,
-    ) -> tuple[str, int]:
-        props = dict(self.properties)
-        raw = props.get("vector_index_columns", "")
-        if raw:
-            # Parse "col:dim:nlist:bits:metric" format
-            parts = raw.split(":") if ":" in raw else [raw]
-            col = column or parts[0]
-            d = dim or (int(parts[1]) if len(parts) > 1 else 0)
-        else:
-            col = column
-            d = dim or 0
-        if col is None:
-            raise ValueError(
-                "vector column not specified and not found in table properties"
+        if failed > 0:
+            raise RuntimeError(
+                f"vector index build failed for {failed}/{len(shards)} "
+                f"shard(s) of column '{column}'"
             )
-        if d <= 0:
-            raise ValueError(f"invalid vector dimension: {d}")
-        return col, d
+        return succeeded
 
     def drop(self, *, if_exists: bool = False) -> None:
         self._catalog.drop_table(self.name, self.namespace, if_exists=if_exists)
@@ -900,6 +1025,39 @@ class LakeSoulScan:
 
         return from_lakesoul(self)
 
+    def _resolved_reader_options(self) -> dict[str, str]:
+        """Merge table vector-index params into reader options at scan time.
+
+        When a vector search is requested (``vector_search_query`` present),
+        this auto-fills the search column (from the single indexed column),
+        the metric, and the top_k/nprobe defaults from the table's
+        ``vector_index_columns`` property, so the Rust reader uses the
+        table's metric instead of a hardcoded L2 and the caller doesn't have
+        to repeat the column.
+        """
+        reader_options = dict(self._reader_options)
+        if "vector_search_query" not in reader_options:
+            return reader_options
+        configs = self._table._vector_configs()
+        if not configs:
+            return reader_options
+        column = reader_options.get("vector_search_column")
+        if column is None:
+            if len(configs) == 1:
+                column = configs[0]["column"]
+            else:
+                raise ValueError(
+                    "multiple vector columns are indexed; "
+                    "set 'vector_search_column' explicitly"
+                )
+            reader_options["vector_search_column"] = column
+        cfg = next((c for c in configs if c["column"] == column), None)
+        if cfg is not None:
+            reader_options.setdefault("vector_search_metric", cfg.get("metric", "L2"))
+        reader_options.setdefault("vector_search_top_k", "10")
+        reader_options.setdefault("vector_search_nprobe", "64")
+        return reader_options
+
     def _scan_config(self) -> Any:
         from lakesoul.arrow import LakeSoulScanConfig
 
@@ -922,7 +1080,7 @@ class LakeSoulScan:
             thread_count=self._thread_count,
             rank=self._rank,
             world_size=self._world_size,
-            reader_options=dict(self._reader_options),
+            reader_options=self._resolved_reader_options(),
         )
 
     def _replace(self, **updates: Any) -> LakeSoulScan:
@@ -1147,6 +1305,95 @@ def _default_object_store_config(
     return config
 
 
+def _normalize_vector_index(value: Any) -> list[dict[str, Any]]:
+    """Normalize a ``vector_index`` argument into a list of config dicts."""
+    if isinstance(value, dict):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        raise TypeError("vector_index must be a dict or a list of dicts")
+    for item in items:
+        if not isinstance(item, dict):
+            raise TypeError("each vector_index entry must be a dict")
+        if "column" not in item or "dim" not in item:
+            raise ValueError("each vector_index entry requires 'column' and 'dim'")
+    return items
+
+
+def _parse_vector_index_configs(value: str) -> list[VectorIndexConfig]:
+    """Parse a ``vector_index_columns`` property value via the Rust parser."""
+    from lakesoul._lib.vector import parse_vector_index_configs
+
+    return list(parse_vector_index_configs(value))
+
+
+def _validate_vector_index_configs(
+    configs: Sequence[Mapping[str, Any]],
+    schema: pa.Schema,
+    primary_keys: Sequence[str],
+) -> None:
+    """Validate a table can support the configured vector index.
+
+    Mirrors the native builder's requirements (``extract_vector_batch``): an
+    Int64/UInt64 primary key column and Float32 vector columns whose
+    ``FixedSizeList`` size matches the configured ``dim``.  Raises
+    ``ValueError`` so callers fail *before* creating metadata or committing
+    data, rather than in a post-commit auto-build step.
+    """
+    if not configs:
+        return
+    if not primary_keys:
+        raise ValueError(
+            "a vector index requires an id column: pass primary_keys=[...] "
+            "when creating a table with vector_index (the index maps "
+            "search results to primary key values)"
+        )
+    pk_column = primary_keys[0]
+    pk_index = schema.get_field_index(pk_column)
+    if pk_index < 0:
+        raise ValueError(
+            f"vector index primary key '{pk_column}' not found in table schema "
+            f"(columns: {list(schema.names)})"
+        )
+    pk_type = schema.field(pk_index).type
+    if not (pa.types.is_uint64(pk_type) or pa.types.is_int64(pk_type)):
+        raise ValueError(
+            f"vector index primary key '{pk_column}' must be UInt64 or Int64, "
+            f"got {pk_type}"
+        )
+    for cfg in configs:
+        column = cfg["column"]
+        index = schema.get_field_index(column)
+        if index < 0:
+            raise ValueError(
+                f"vector index column '{column}' not found in table schema "
+                f"(columns: {list(schema.names)})"
+            )
+        dtype = schema.field(index).type
+        if pa.types.is_fixed_size_list(dtype):
+            element_type = dtype.value_type
+            list_size: int | None = dtype.list_size
+        elif pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+            element_type = dtype.value_type
+            list_size = None
+        else:
+            raise ValueError(
+                f"vector index column '{column}' must be FixedSizeList<Float32> "
+                f"or List<Float32>, got {dtype}"
+            )
+        if not pa.types.is_float32(element_type):
+            raise ValueError(
+                f"vector index column '{column}' must hold Float32 values, "
+                f"got {element_type}"
+            )
+        if list_size is not None and list_size != cfg["dim"]:
+            raise ValueError(
+                f"vector index column '{column}': configured dim {cfg['dim']} "
+                f"does not match schema FixedSizeList size {list_size}"
+            )
+
+
 def _build_vector_index_for_one(
     *,
     table: LakeSoulTable,
@@ -1155,9 +1402,12 @@ def _build_vector_index_for_one(
     nlist: int,
     total_bits: int,
     metric: str,
+    rotator_type: str,
+    seed: int,
+    use_faster_config: bool,
     partition_desc: str,
-    store_config: dict,
-) -> dict:
+    store_config: dict[str, Any],
+) -> dict[str, Any]:
     from lakesoul.vector_index import build_partition_vector_index
 
     return build_partition_vector_index(
@@ -1169,6 +1419,9 @@ def _build_vector_index_for_one(
         nlist=nlist,
         total_bits=total_bits,
         metric=metric,
+        rotator_type=rotator_type,
+        seed=seed,
+        use_faster_config=use_faster_config,
         store_config=store_config,
     )
 

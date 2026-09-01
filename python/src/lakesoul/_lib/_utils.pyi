@@ -1,3 +1,5 @@
 import pyarrow
 
-def _schema_from_metadata_str(schema_json_str, exclude_columns=None) -> pyarrow.Schema: ...
+def _schema_from_metadata_str(
+    schema_json_str, exclude_columns=None
+) -> pyarrow.Schema: ...

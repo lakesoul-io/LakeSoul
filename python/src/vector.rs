@@ -4,19 +4,74 @@
 
 //! PyO3 bindings for lakesoul-vector crate.
 //!
-//! Exposes `build_shard_vector_index()` to Python — builds an IVF+RaBitQ
-//! vector index for a single shard (partition + hash bucket) and persists
-//! it to object storage.
+//! Exposes vector-index configuration parsing and `build_shard_vector_index()`
+//! to Python — builds an IVF+RaBitQ vector index for a single shard
+//! (partition + hash bucket) and persists it to object storage.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use lakesoul_io::vector::builder::VectorShardIndexBuilder;
-use lakesoul_vector::{Metric, VectorIndexConfig};
+use lakesoul_vector::{Metric, RotatorType, VectorIndexConfig};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use tokio::runtime::Runtime;
+
+/// Parse a table's ``vector_index_columns`` property into a list of config dicts.
+///
+/// The Rust side is the single source of truth for parsing
+/// (``VectorIndexConfig::parse_json``). Each returned dict has keys:
+/// ``column``, ``dim``, ``nlist``, ``total_bits``, ``metric``,
+/// ``rotator_type``, ``seed``, ``use_faster_config``.
+///
+/// Args:
+///     value: JSON (single object or array) from the ``vector_index_columns``
+///         table property.
+///
+/// Returns:
+///     List of config dicts. Empty list for empty input.
+#[pyfunction]
+fn parse_vector_index_configs(py: Python<'_>, value: String) -> PyResult<Vec<Py<PyAny>>> {
+    use pyo3::types::PyDict;
+
+    let configs = VectorIndexConfig::parse_json(&value).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "invalid vector_index_columns property: {}",
+            e
+        ))
+    })?;
+
+    let mut result = Vec::with_capacity(configs.len());
+    for c in configs {
+        let d = PyDict::new(py);
+        d.set_item("column", c.column_name)?;
+        d.set_item("dim", c.dim)?;
+        d.set_item("nlist", c.nlist)?;
+        d.set_item("total_bits", c.total_bits)?;
+        d.set_item("metric", metric_str(c.metric))?;
+        d.set_item("rotator_type", rotator_type_str(c.rotator_type))?;
+        d.set_item("seed", c.seed)?;
+        d.set_item("use_faster_config", c.use_faster_config)?;
+        result.push(d.into_any().unbind());
+    }
+    Ok(result)
+}
+
+fn metric_str(metric: Metric) -> &'static str {
+    match metric {
+        Metric::L2 => "L2",
+        Metric::InnerProduct => "IP",
+    }
+}
+
+fn rotator_type_str(rotator: RotatorType) -> &'static str {
+    match rotator {
+        RotatorType::FhtKacRotator => "FhtKac",
+        RotatorType::MatrixRotator => "Matrix",
+    }
+}
 
 /// Build a vector index for a single shard (one partition + one hash bucket).
 ///
@@ -37,12 +92,26 @@ use tokio::runtime::Runtime;
 ///     nlist: number of IVF clusters (default 256)
 ///     total_bits: RaBitQ total bits (default 7)
 ///     metric: distance metric, "L2" or "IP" (InnerProduct)
-///     index_prefix: object store prefix for the index,
-///         e.g. ``s3://bucket/table/_vector_index/emb/range=1/0/``
+///     rotator_type: rotation type, "FhtKac" or "Matrix" (default "FhtKac")
+///     seed: random seed (default 42)
+///     use_faster_config: fast-quantization mode (default True)
 ///
 /// Returns:
 ///     "ok" on success, raises RuntimeError on failure
 #[pyfunction]
+#[pyo3(signature = (
+    store_config,
+    file_paths,
+    pk_column,
+    vector_column,
+    dim,
+    nlist = 256,
+    total_bits = 7,
+    metric = String::from("L2"),
+    rotator_type = String::from("FhtKac"),
+    seed = 42,
+    use_faster_config = true,
+))]
 #[allow(clippy::too_many_arguments)]
 fn build_shard_vector_index(
     store_config: HashMap<String, String>,
@@ -53,6 +122,9 @@ fn build_shard_vector_index(
     nlist: usize,
     total_bits: usize,
     metric: String,
+    rotator_type: String,
+    seed: u64,
+    use_faster_config: bool,
 ) -> PyResult<String> {
     let store = create_object_store(&store_config)?;
 
@@ -66,6 +138,16 @@ fn build_shard_vector_index(
             )));
         }
     };
+    let rotator_type = match rotator_type.to_lowercase().as_str() {
+        "fhtkac" | "fht" => RotatorType::FhtKacRotator,
+        "matrix" => RotatorType::MatrixRotator,
+        other => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "unknown rotator_type '{}', expected 'FhtKac' or 'Matrix'",
+                other
+            )));
+        }
+    };
 
     let config = VectorIndexConfig {
         column_name: vector_column,
@@ -73,9 +155,9 @@ fn build_shard_vector_index(
         nlist,
         total_bits,
         metric,
-        rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
-        seed: 42,
-        use_faster_config: true,
+        rotator_type,
+        seed,
+        use_faster_config,
     };
 
     // Build object_store_options for LakeSoulReader (converted from store_config)
@@ -202,6 +284,7 @@ fn create_s3_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectS
 pub fn init(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     let submodule = PyModule::new(m.py(), "vector")?;
     submodule.add_function(wrap_pyfunction!(build_shard_vector_index, &submodule)?)?;
+    submodule.add_function(wrap_pyfunction!(parse_vector_index_configs, &submodule)?)?;
     m.add_submodule(&submodule)?;
     let full_name = format!("{}.vector", m.name()?);
     crate::install_module(&full_name, &submodule)?;
