@@ -54,7 +54,7 @@ const config = {
           remarkPlugins: [
             [variableInjector, {
               replacements: {
-                VERSION: '3.0.0',
+                VERSION: '4.0.0',
                 CURRENT_YEAR: new Date().getFullYear()
               }
             }]
