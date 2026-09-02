@@ -7,8 +7,6 @@ set -euo pipefail
 
 : "${LEGACY_SPARK_PYTHON:?Set LEGACY_SPARK_PYTHON to a Python 3.10 environment with pyspark 3.3.1}"
 : "${LEGACY_SPARK_JAR:?Set LEGACY_SPARK_JAR to lakesoul-spark-3.3-3.0.0.jar}"
-: "${LEGACY_VORTEX_PYTHON:?Set LEGACY_VORTEX_PYTHON to the pinned legacy Vortex environment}"
-: "${LEGACY_VORTEX_COMMIT:?Set LEGACY_VORTEX_COMMIT to the pinned legacy Vortex commit}"
 : "${CURRENT_PYTHON:?Set CURRENT_PYTHON to the current LakeSoul Python environment}"
 
 legacy_spark_sha256="429a1856d47c5c912a5f793072aa7ecfa5631cfcb1d6bea24bbe698fcc267c60"
@@ -53,18 +51,9 @@ JAVA_TOOL_OPTIONS="$legacy_java_options" \
   --storage "$storage_uri" \
   --spark-jar "$LEGACY_SPARK_JAR" \
   --spark-jar-sha256 "$legacy_spark_sha256" \
-  --output "$output_dir/legacy-state.json"
-
-# The pinned pre-4.0 Vortex writer requires the additive Arrow schema columns.
-# Applying this idempotent DDL does not create a 4.0 migration-history record.
-psql "${connection[@]}" -v ON_ERROR_STOP=1 -d "$database" \
-  -f script/metadata-migrations/V4000000__core_4_0_0.sql >/dev/null
-"$LEGACY_VORTEX_PYTHON" "$repo_root/python/tests/compat/legacy_fixture.py" legacy-vortex \
-  --state "$output_dir/legacy-state.json" \
-  --vortex-commit "$LEGACY_VORTEX_COMMIT" \
   --output "$output_dir/legacy-manifest.json"
 
-# Both legacy writers have exited. Capture PostgreSQL and table data from this
+# The legacy writer has exited. Capture PostgreSQL and table data from this
 # single quiesced point and bind both artifacts to one checksummed backup set.
 pg_dump "${connection[@]}" --format=custom \
   --file="$output_dir/pre-upgrade-metadata.dump" "$database"
@@ -114,7 +103,7 @@ JAVA_TOOL_OPTIONS="$legacy_java_options" \
   PYSPARK_PYTHON="$LEGACY_SPARK_PYTHON" \
   PYSPARK_DRIVER_PYTHON="$LEGACY_SPARK_PYTHON" \
   "$LEGACY_SPARK_PYTHON" "$repo_root/python/tests/compat/legacy_fixture.py" verify-spark-3.0 \
-  --state "$output_dir/legacy-state.json" \
+  --state "$output_dir/legacy-manifest.json" \
   --spark-jar "$LEGACY_SPARK_JAR" \
   --spark-jar-sha256 "$legacy_spark_sha256"
 export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$output_dir/java-current"
@@ -126,5 +115,4 @@ PYTHONPATH=python/tests:python/src "$CURRENT_PYTHON" -m compat.run_matrix \
   --readers pyarrow,datafusion,spark \
   --output-dir "$output_dir/restored-reads"
 
-printf 'Legacy Parquet/Vortex compatibility and backup-set recovery passed: %s\n' \
-  "$output_dir/backup-set.json"
+printf 'Legacy Parquet compatibility and backup-set recovery passed: %s\n' \

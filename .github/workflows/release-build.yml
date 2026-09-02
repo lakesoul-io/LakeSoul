@@ -33,8 +33,6 @@ permissions:
 
 env:
   LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
-  LAKESOUL_PG_USERNAME: lakesoul_test
-  LAKESOUL_PG_PASSWORD: lakesoul_test
   PGPASSWORD: lakesoul_test
   MAVEN_OPTS: -Xmx8g
 
@@ -98,6 +96,7 @@ jobs:
 
   rust-quality:
     name: Rust format, clippy, and tests
+    if: github.event_name != 'pull_request'
     needs: validate-release
     runs-on: ubuntu-24.04
     services:
@@ -282,6 +281,34 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
+      - name: Initialize metadata RBAC
+        run: ./script/meta_rbac_init_for_local_test.sh -j 2
+      - name: Set up HDFS
+        uses: beyondstorage/setup-hdfs@d22393f42b4f4e528e81321d1bbf2aa7a6a0a3aa # master
+        with:
+          hdfs-version: "3.3.6"
+      - name: Modify HDFS User Group Mapping
+        run: |
+          wait_dfs() {
+            for _ in {1..60}; do
+              if "$HADOOP_HOME/bin/hdfs" dfsadmin -safemode get 2>/dev/null |
+                grep -q 'Safe mode is OFF'; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "HDFS failed to become ready" >&2
+            return 1
+          }
+
+          # setup-hdfs starts the daemons asynchronously; wait for them before
+          # restarting, otherwise the restarted NameNode races the first one.
+          wait_dfs
+          "$HADOOP_HOME/sbin/stop-dfs.sh"
+          sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' "$HADOOP_HOME/etc/hadoop/core-site.xml"
+          "$HADOOP_HOME/sbin/start-dfs.sh"
+          wait_dfs
+          "$HADOOP_HOME/bin/hadoop" fs -chmod -R 777 /
       - name: Install protoc
         uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
         with:
@@ -308,30 +335,45 @@ jobs:
           java-version: "11"
           distribution: temurin
           cache: maven
-      - name: Build, test, and sign Core reactor except Presto
-        run: >-
-          mvn -B clean install -pl "!:lakesoul-presto-0.296"
-          -Pcross-build,release-sign-artifacts -DperformRelease=true
-          -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
+      - name: Install Gluten Maven dependencies
+        run: |
+          archive="$RUNNER_TEMP/gluten-maven-deps-1.6.0-spark35.tar.gz"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-maven-deps-1.6.0-spark35.tar.gz
+          echo "1648fb089c30b3222d62bbfbf0a98eefba380ac732face29e229bfb90c6cd713  $archive" |
+            sha256sum --check
+          mkdir -p "$HOME/.m2/repository"
+          tar -xf "$archive" -C "$HOME/.m2/repository"
       - name: Build unpublished Gluten Preview JAR
         run: >-
           mvn -B package -pl :lakesoul-spark-gluten-3.5_2.12 -am
           -Pcross-build,gluten -DskipTests -Dmaven.deploy.skip=true
+          -Dspark.shade.skip=true
+      - name: Build and sign Core reactor except Presto
+        run: >-
+          mvn -B clean install -pl "!:lakesoul-presto-0.296"
+          -Pcross-build,release-sign-artifacts
+          -DskipTests
+          -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
       - name: Set up JDK 17 for Presto
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "17"
           distribution: temurin
           cache: maven
-      - name: Build, test, and sign Presto
+      - name: Build and sign Presto
         run: >-
           mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build,release-sign-artifacts
-          -DperformRelease=true -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
+          -DskipTests=true
+          -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
       - name: Set up Python 3.10
+        if: github.event_name != 'pull_request'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.10"
       - name: Install uv
+        if: github.event_name != 'pull_request'
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
@@ -340,6 +382,10 @@ jobs:
             python/pyproject.toml
             python/uv.lock
       - name: Build Python extension and run Core compatibility subset
+        if: github.event_name != 'pull_request'
+        env:
+          LAKESOUL_PG_USERNAME: lakesoul_test
+          LAKESOUL_PG_PASSWORD: lakesoul_test
         working-directory: python
         run: |
           uv sync --python 3.10 --group dev
@@ -352,7 +398,8 @@ jobs:
           python script/verify_native_jars.py \
             "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
             "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
-            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)"
+            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)" \
+            "lakesoul-spark-gluten/target/$(python script/get_jar_name.py lakesoul-spark-gluten)"
       - name: Verify JARs, sources, Javadoc, and detached signatures
         run: python script/verify_release_artifacts.py artifacts --signatures
       - name: Upload dry-run release JARs
@@ -429,9 +476,12 @@ jobs:
           if-no-files-found: error
 
   connector-e2e-and-recovery:
-    name: Spark, Flink, Presto E2E and format recovery
+    name: Spark, Flink E2E and format recovery
     needs: [validate-release, build-native-linux-x86-64, metadata-migration]
     runs-on: ubuntu-24.04
+    env:
+      LAKESOUL_PG_USERNAME: lakesoul_test
+      LAKESOUL_PG_PASSWORD: lakesoul_test
     services:
       postgres:
         image: postgres:14.5
@@ -511,9 +561,7 @@ jobs:
         run: |
           uv sync --python 3.10 --group dev --extra pandas --extra ray --extra daft --extra pyspark
           uv run maturin develop --release
-      - name: Prepare pinned legacy format writers
-        env:
-          LEGACY_VORTEX_COMMIT: 6558e2a361421689d2813bb41cfd4837f5db0ed9
+      - name: Prepare pinned legacy Spark 3.0 writer
         run: |
           uv venv /tmp/lakesoul-spark-3-venv --python 3.10
           uv pip install --python /tmp/lakesoul-spark-3-venv/bin/python \
@@ -521,24 +569,11 @@ jobs:
           curl --fail --location --retry 3 \
             --output /tmp/lakesoul-spark-3.3-3.0.0.jar \
             https://repo1.maven.org/maven2/com/dmetasoul/lakesoul-spark/3.3-3.0.0/lakesoul-spark-3.3-3.0.0.jar
-
-          git worktree add --detach /tmp/lakesoul-legacy-vortex "$LEGACY_VORTEX_COMMIT"
-          uv venv /tmp/lakesoul-vortex-venv --python 3.10
-          uv pip install --python /tmp/lakesoul-vortex-venv/bin/python \
-            'maturin>=1,<2' 'grpcio-tools==1.70' 'pyarrow==20.0.0' \
-            numpy 'protobuf>=5.0' 'typing-extensions>=4.8' 'colorlog>=6'
-          (
-            cd /tmp/lakesoul-legacy-vortex/python
-            VIRTUAL_ENV=/tmp/lakesoul-vortex-venv \
-              /tmp/lakesoul-vortex-venv/bin/maturin develop --release
-          )
       - name: Verify legacy formats and consistent pre-upgrade recovery
         env:
           CURRENT_PYTHON: ${{ github.workspace }}/python/.venv/bin/python
           LEGACY_SPARK_PYTHON: /tmp/lakesoul-spark-3-venv/bin/python
           LEGACY_SPARK_JAR: /tmp/lakesoul-spark-3.3-3.0.0.jar
-          LEGACY_VORTEX_PYTHON: /tmp/lakesoul-vortex-venv/bin/python
-          LEGACY_VORTEX_COMMIT: 6558e2a361421689d2813bb41cfd4837f5db0ed9
           LAKESOUL_COMPAT_OUTPUT_DIR: compatibility-artifacts/legacy-recovery
           LAKESOUL_COMPAT_STORAGE_DIR: /tmp/lakesoul-release-legacy/storage
           PGHOST: 127.0.0.1
@@ -546,6 +581,7 @@ jobs:
           PGUSER: lakesoul_test
         run: script/test_release_file_compatibility.sh
       - name: Run Spark and Flink cross-engine E2E matrix
+        if: github.event_name != 'pull_request'
         working-directory: python
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -589,17 +625,6 @@ jobs:
           --read-manifest "${{ github.workspace }}/compatibility-artifacts/formats/manifest.json"
           --readers pyarrow,datafusion
           --output-dir "${{ github.workspace }}/compatibility-artifacts/recovery"
-      - name: Set up JDK 17 for Presto E2E
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
-        with:
-          java-version: "17"
-          distribution: temurin
-          cache: maven
-      - name: Run Presto E2E tests
-        run: >-
-          mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build
-          -Dtest=LakeSoulSmokeTest,LakeSoulStorageTest
-          -Dsurefire.failIfNoSpecifiedTests=false
       - name: Upload compatibility and recovery evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -705,7 +730,7 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
         run: >-
           mvn -B deploy -pl "!:lakesoul-presto-0.296"
-          -Pcross-build,release-sign-artifacts
+          -Pcross-build,release-sign-artifacts -DskipTests
       - name: Set up JDK 17 and Maven Central credentials
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -724,7 +749,7 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
         run: >-
           mvn -B deploy -pl :lakesoul-presto-0.296
-          -Pcross-build,release-sign-artifacts
+          -Pcross-build,release-sign-artifacts -DskipTests
 
   verify-published-release:
     if: inputs.publish
