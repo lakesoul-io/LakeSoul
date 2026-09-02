@@ -158,19 +158,24 @@ impl FileSinkWriter {
             .runtime_env()
             .object_store(&self.sink.config().object_store_url)?;
         let single_file_path = self.single_file_path();
+        let physical_format = self.physical_format.to_string();
 
         futures::future::try_join_all(written.into_iter().map(|(path, metadata)| {
             let object_store = Arc::clone(&object_store);
+            let physical_format = physical_format.clone();
             let file_path = single_file_path
                 .clone()
                 .unwrap_or_else(|| self.path_to_url_string(&path));
             async move {
                 let object_meta = object_store.head(&path).await?;
                 let file_exist_cols = metadata.get_file_exists_cols();
-                let other_info = HashMap::from([(
-                    String::from("num_row_groups"),
-                    metadata.num_row_groups().to_string(),
-                )]);
+                let other_info = HashMap::from([
+                    (
+                        String::from("num_row_groups"),
+                        metadata.num_row_groups().to_string(),
+                    ),
+                    (String::from("physical_format"), physical_format),
+                ]);
                 Ok(FlushOutput {
                     partition_desc: DEFAULT_PARTITION_DESC.to_string(),
                     file_path,
