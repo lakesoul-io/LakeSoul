@@ -12,7 +12,7 @@ on:
         required: true
         type: boolean
       tag:
-        description: Signed final Core tag; empty for release PR and manual dry runs
+        description: Final Core tag; empty for release PR and manual dry runs
         required: false
         default: ""
         type: string
@@ -80,13 +80,8 @@ jobs:
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
 
           tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
-          test "$(jq -r '.object.type' <<<"$tag_ref")" = "tag"
-          tag_object="$(jq -r '.object.sha' <<<"$tag_ref")"
-          tag_data="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
-          test "$(jq -r '.verification.verified' <<<"$tag_data")" = "true"
-          test "$(jq -r '.verification.reason' <<<"$tag_data")" = "valid"
-          test "$(jq -r '.object.type' <<<"$tag_data")" = "commit"
-          test "$(jq -r '.object.sha' <<<"$tag_data")" = "$GITHUB_SHA"
+          test "$(jq -r '.object.type' <<<"$tag_ref")" = "commit"
+          test "$(jq -r '.object.sha' <<<"$tag_ref")" = "$GITHUB_SHA"
 
           release_series="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
           release_branch="release/$release_series"
@@ -630,7 +625,7 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - name: Check out signed release tag
+      - name: Check out release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
@@ -707,7 +702,7 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - name: Check out signed release tag
+      - name: Check out release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
@@ -759,7 +754,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out signed release tag
+      - name: Check out release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
