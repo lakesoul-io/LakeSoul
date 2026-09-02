@@ -114,6 +114,15 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      rustfs:
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+          RUSTFS_CONSOLE_ENABLE: true
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
@@ -146,6 +155,41 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 1
+      - name: Wait for RustFS
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:9000/health \
+              && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
+              echo "RustFS is ready"
+              exit 0
+            fi
+
+            echo "Waiting for RustFS..."
+            sleep 2
+          done
+          echo "RustFS failed to become ready"
+          exit 1
+      - name: Setup RustFS bucket
+        run: |
+          docker run --rm --network host \
+            --entrypoint /bin/sh \
+            swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            -c '
+              set -e
+
+              until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
+                echo "RustFS is not ready yet, retrying in 2 seconds..."
+                sleep 2
+              done
+
+              echo "Create test bucket if not exists"
+              until rc mb rustfs/lakesoul-test-bucket --ignore-existing; do
+                echo "Bucket creation failed, retrying in 2 seconds..."
+                sleep 2
+              done
+
+              echo "RustFS Configuration Complete!"
+            '
       - name: Check Rust formatting
         run: cargo -q fmt --all --check
       - name: Run Clippy with warnings denied
