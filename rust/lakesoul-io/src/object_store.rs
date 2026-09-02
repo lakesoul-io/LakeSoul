@@ -20,35 +20,33 @@ use crate::{
 };
 
 fn create_s3_store(config: &LakeSoulIOConfig) -> Result<AmazonS3> {
+    create_s3_store_from_options(&config.object_store_options)
+}
+
+/// Build an S3 store from `fs.s3a.*` configuration options (env-first).
+///
+/// Used by callers that need an object store outside a DataFusion runtime
+/// (e.g. the vector-index auto build after a write).
+pub fn create_s3_store_from_options(
+    options: &std::collections::HashMap<String, String>,
+) -> Result<AmazonS3> {
     // ENV First
-    let key = std::env::var("AWS_ACCESS_KEY_ID").ok().or_else(|| {
-        config
-            .object_store_options
-            .get("fs.s3a.access.key")
-            .cloned()
-    });
-    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok().or_else(|| {
-        config
-            .object_store_options
-            .get("fs.s3a.secret.key")
-            .cloned()
-    });
+    let key = std::env::var("AWS_ACCESS_KEY_ID")
+        .ok()
+        .or_else(|| options.get("fs.s3a.access.key").cloned());
+    let secret = std::env::var("AWS_SECRET_ACCESS_KEY")
+        .ok()
+        .or_else(|| options.get("fs.s3a.secret.key").cloned());
     let region = std::env::var("AWS_REGION").ok().or_else(|| {
-        std::env::var("AWS_DEFAULT_REGION").ok().or_else(|| {
-            config
-                .object_store_options
-                .get("fs.s3a.endpoint.region")
-                .cloned()
-        })
+        std::env::var("AWS_DEFAULT_REGION")
+            .ok()
+            .or_else(|| options.get("fs.s3a.endpoint.region").cloned())
     });
     let mut endpoint = std::env::var("AWS_ENDPOINT")
         .ok()
-        .or_else(|| config.object_store_options.get("fs.s3a.endpoint").cloned());
-    let bucket = config.object_store_options.get("fs.s3a.bucket").cloned();
-    let virtual_path_style = config
-        .object_store_options
-        .get("fs.s3a.path.style.access")
-        .cloned();
+        .or_else(|| options.get("fs.s3a.endpoint").cloned());
+    let bucket = options.get("fs.s3a.bucket").cloned();
+    let virtual_path_style = options.get("fs.s3a.path.style.access").cloned();
     let virtual_path_style = virtual_path_style.is_none_or(|s| s == "true");
     if !virtual_path_style
         && let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket)
@@ -79,8 +77,7 @@ fn create_s3_store(config: &LakeSoulIOConfig) -> Result<AmazonS3> {
     retry_config.backoff.base = 2.5;
     retry_config.backoff.max_backoff = Duration::from_secs(20);
 
-    let skip_signature = config
-        .object_store_options
+    let skip_signature = options
         .get("fs.s3a.s3.signing-algorithm")
         .cloned()
         .is_some_and(|s| s == "NoOpSignerType")

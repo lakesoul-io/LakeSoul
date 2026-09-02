@@ -39,6 +39,8 @@ pub mod datasource;
 pub mod lakesoul_table;
 pub mod planner;
 pub mod tpch;
+pub mod udf;
+pub mod vector_index;
 
 #[cfg(feature = "adbc")]
 #[expect(dead_code)]
@@ -53,6 +55,15 @@ pub fn create_lakesoul_session_ctx(
     meta_client: MetaDataClientRef,
     args: &cli::CoreArgs,
 ) -> Result<Arc<SessionContext>> {
+    create_lakesoul_session_ctx_with_config(
+        meta_client,
+        args,
+        create_lakesoul_session_config()?,
+    )
+}
+
+/// Build the default [`SessionConfig`] used by LakeSoul sessions.
+pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
     let mut session_config = SessionConfig::from_env()?
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(false)
@@ -89,7 +100,16 @@ pub fn create_lakesoul_session_ctx(
         .options_mut()
         .execution
         .listing_table_factory_infer_partitions = false;
+    Ok(session_config)
+}
 
+/// Create a LakeSoul session context with a caller-supplied session
+/// configuration (e.g. with vector-search extension options attached).
+pub fn create_lakesoul_session_ctx_with_config(
+    meta_client: MetaDataClientRef,
+    args: &cli::CoreArgs,
+    session_config: SessionConfig,
+) -> Result<Arc<SessionContext>> {
     let planner = LakeSoulQueryPlanner::new_ref();
 
     let mut state = SessionStateBuilder::new()
@@ -97,6 +117,9 @@ pub fn create_lakesoul_session_ctx(
         .with_runtime_env(Arc::new(RuntimeEnv::default()))
         .with_default_features()
         .with_query_planner(planner)
+        .with_optimizer_rule(Arc::new(
+            crate::planner::vector_search_rule::VectorSearchPushdownRule,
+        ))
         .build();
     state.table_factories_mut().insert(
         "LAKESOUL".to_string(),
@@ -106,6 +129,7 @@ pub fn create_lakesoul_session_ctx(
         )),
     );
     let ctx = Arc::new(SessionContext::new_with_state(state));
+    ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
 
     let catalog = Arc::new(LakeSoulCatalog::new(meta_client.clone(), ctx.clone()));
 

@@ -373,6 +373,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 order_requirements,
                 self.table_info(),
                 self.client(),
+                self.conf.object_store_options().clone(),
             )
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
@@ -404,6 +405,13 @@ pub struct LakeSoulHashSinkExec {
     /// The range partitions.
     range_partitions: Arc<Vec<String>>,
 
+    /// The primary keys of the table (used for the vector index build).
+    primary_keys: Vec<String>,
+
+    /// Object store configuration options forwarded to the vector index
+    /// builder after the write commits.
+    object_store_options: std::collections::HashMap<String, String>,
+
     /// The properties of the plan.
     properties: Arc<PlanProperties>,
 }
@@ -421,8 +429,10 @@ impl LakeSoulHashSinkExec {
         sort_order: Option<LexRequirement>,
         table_info: Arc<TableInfo>,
         metadata_client: MetaDataClientRef,
+        object_store_options: std::collections::HashMap<String, String>,
     ) -> Result<Self> {
-        let (range_partitions, _) = parse_table_info_partitions(&table_info.partitions)?;
+        let (range_partitions, primary_keys) =
+            parse_table_info_partitions(&table_info.partitions)?;
         let range_partitions = Arc::new(range_partitions);
         Ok(Self {
             input,
@@ -431,6 +441,8 @@ impl LakeSoulHashSinkExec {
             table_info,
             metadata_client,
             range_partitions,
+            primary_keys,
+            object_store_options,
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(make_sink_schema()),
                 Partitioning::UnknownPartitioning(1),
@@ -559,6 +571,8 @@ impl LakeSoulHashSinkExec {
         join_handles: Vec<JoinHandle<Result<u64>>>,
         client: MetaDataClientRef,
         table_name: String,
+        primary_keys: Vec<String>,
+        object_store_options: std::collections::HashMap<String, String>,
         partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
     ) -> Result<u64> {
         let count = futures::future::join_all(join_handles)
@@ -580,6 +594,53 @@ impl LakeSoulHashSinkExec {
                 &table_name,
                 std::time::SystemTime::now()
             )
+        }
+
+        // Auto-build / incrementally update the vector index from the newly
+        // committed files, driven by the table's `vector_index_columns`
+        // property (same semantics as the Python write path).  Re-fetch the
+        // table info so properties changed after plan construction apply.
+        // The native builder's future is not Send, so it is driven on the
+        // blocking pool via the global runtime.
+        let committed_files: HashMap<String, (Vec<String>, u64)> =
+            partitioned_file_path_and_row_count.clone();
+        drop(partitioned_file_path_and_row_count);
+
+        let table_ref = TableReference::from(table_name.as_str());
+        let namespace = table_ref.schema().unwrap_or("default").to_string();
+        let configs = if let Some(fresh_info) = client
+            .get_table_info_by_table_name(table_ref.table(), &namespace)
+            .await?
+        {
+            crate::vector_index::parse_vector_index_from_table_properties(
+                &fresh_info.properties,
+            )
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?
+        } else {
+            Vec::new()
+        };
+        if !configs.is_empty() && !primary_keys.is_empty() {
+            let built = tokio::task::spawn_blocking(move || {
+                lakesoul_io::session::GLOBAL_RUNTIME.block_on(
+                    crate::vector_index::auto_build_vector_index(
+                        &configs,
+                        &primary_keys,
+                        &object_store_options,
+                        &committed_files,
+                    ),
+                )
+            })
+            .await
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "vector index auto build task failed: {error}"
+                ))
+            })?
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            debug!(
+                "auto-built {built} vector index shard(s) for {}",
+                &table_name
+            );
         }
         Ok(count)
     }
@@ -678,6 +739,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             table_info: self.table_info.clone(),
             range_partitions: self.range_partitions.clone(),
             metadata_client: self.metadata_client.clone(),
+            primary_keys: self.primary_keys.clone(),
+            object_store_options: self.object_store_options.clone(),
             properties: self.properties.clone(),
         }))
     }
@@ -727,6 +790,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             join_handles,
             self.metadata_client(),
             table_ref.to_string(),
+            self.primary_keys.clone(),
+            self.object_store_options.clone(),
             partitioned_file_path_and_row_count,
         ));
 

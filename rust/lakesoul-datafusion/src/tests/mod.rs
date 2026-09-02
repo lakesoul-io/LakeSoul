@@ -14,6 +14,8 @@ mod hash_tests;
 mod insert_tests;
 #[cfg(test)]
 mod upsert_tests;
+#[cfg(test)]
+mod vector_search_tests;
 // mod compaction_tests;
 // mod streaming_tests;
 #[cfg(feature = "ci")]

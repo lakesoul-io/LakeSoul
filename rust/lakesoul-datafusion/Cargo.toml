@@ -15,6 +15,7 @@ lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-common = { path = "../lakesoul-common" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
+lakesoul-vector = { path = "../lakesoul-vector" }
 # datafusion
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }

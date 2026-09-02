@@ -164,6 +164,16 @@ impl LakeSoulIOConfig {
             .or_else(|| std::env::var(format!("LAKESOUL_{}", key.to_uppercase())).ok())
     }
 
+    /// Returns the object store configuration options (e.g. S3 credentials)
+    pub fn object_store_options(&self) -> &HashMap<String, String> {
+        &self.object_store_options
+    }
+
+    /// Returns the additional configuration options map
+    pub fn options(&self) -> &HashMap<String, String> {
+        &self.options
+    }
+
     /// Returns the root directory path for files
     pub fn prefix(&self) -> &String {
         &self.prefix
