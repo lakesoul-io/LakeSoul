@@ -153,7 +153,7 @@ class ReleaseToolTest(unittest.TestCase):
             'version = "4.1.0-dev.0"',
             (self.root / "Cargo.toml").read_text(encoding="utf-8"),
         )
-        self.assertEqual("3.0.0", str(release.website_version(self.root)))
+        self.assertEqual("4.0.0", str(release.website_version(self.root)))
 
     def test_set_core_final_leaves_website_on_published_version(self) -> None:
         result, _, stderr = self.run_main("set-core", "4.0.0")
@@ -164,7 +164,7 @@ class ReleaseToolTest(unittest.TestCase):
             'version = "4.0.0"',
             (self.root / "Cargo.toml").read_text(encoding="utf-8"),
         )
-        self.assertEqual("3.0.0", str(release.website_version(self.root)))
+        self.assertEqual("4.0.0", str(release.website_version(self.root)))
         self.assertEqual([], release.validate(self.root))
 
     def test_set_website_stable_requires_matching_final_core(self) -> None:
@@ -243,6 +243,41 @@ class ReleaseToolTest(unittest.TestCase):
                 result, _, stderr = self.run_main(operation, version)
                 self.assertEqual(1, result)
                 self.assertIn("unsupported", stderr)
+
+    def test_check_reports_website_version_ahead_of_core(self) -> None:
+        config = self.root / "website/docusaurus.config.js"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "VERSION: '4.0.0'", "VERSION: '5.0.0'", 1
+            ),
+            encoding="utf-8",
+        )
+
+        result, _, stderr = self.run_main("check")
+
+        self.assertEqual(1, result)
+        self.assertIn(
+            "website stable version 5.0.0 is ahead of unpublished Core 4.0.0-SNAPSHOT",
+            stderr,
+        )
+
+    def test_core_tag_requires_matching_website_version(self) -> None:
+        self.assertEqual(0, self.run_main("set-core", "4.0.0")[0])
+        config = self.root / "website/docusaurus.config.js"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "VERSION: '4.0.0'", "VERSION: '3.9.0'", 1
+            ),
+            encoding="utf-8",
+        )
+
+        result, _, stderr = self.run_main("check-tag", "v4.0.0")
+
+        self.assertEqual(1, result)
+        self.assertIn(
+            "Core tag 'v4.0.0' requires the website stable version to match, got 3.9.0",
+            stderr,
+        )
 
 
 if __name__ == "__main__":
