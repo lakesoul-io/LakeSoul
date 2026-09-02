@@ -6,14 +6,27 @@
 //! |---------|-----------|-------------|
 //! | 1       | initial   | Single segment per cluster |
 //! | 2       | delta-seg | Multiple (base + delta) segments per cluster |
+//! | 3       | commit    | Generation+version control, CAS-free commit protocol |
+//!
+//! ## Commit protocol (V3)
+//!
+//! Every commit is an **immutable, uniquely named** manifest under
+//! `manifests/`; nothing is ever overwritten or deleted.  The current view
+//! is derived by listing `manifests/` and taking the newest commit
+//! (max generation, then max version, tie-broken by unioning every commit
+//! at the max key).  `LATEST` is a best-effort hint whose value is
+//! `generation:version:<manifest-filename>`; it is written with a plain
+//! overwrite, never with conditional headers, so the protocol works on any
+//! object store (S3, Aliyun OSS, local disk) without `If-Match` support.
 //!
 //! V2 is always written; V1 can still be read (auto-upgraded on next write).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
 use crc32fast::Hasher;
+use futures::StreamExt;
 use object_store::path::Path as StorePath;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, WriteMultipart};
 
@@ -77,10 +90,41 @@ impl ManifestStore {
     }
 }
 
-/// Manifest directory + filename for a specific (generation, version) pair.
+/// Manifest directory + filename for a specific (generation, version) pair
+/// (legacy deterministic name, written by V2-era code).
 pub fn versioned_manifest_filename(generation: u64, version: u64) -> String {
     format!("{MANIFESTS_PREFIX}/g{generation:08}_v{version:08}.bin")
 }
+
+/// Manifest filename with a unique suffix, so concurrent commits never
+/// overwrite each other.
+pub fn versioned_manifest_filename_unique(generation: u64, version: u64) -> String {
+    format!(
+        "{MANIFESTS_PREFIX}/g{generation:08}_v{version:08}_{}.bin",
+        unique_suffix()
+    )
+}
+
+/// 16-hex-char random suffix for immutable object names.
+fn unique_suffix() -> String {
+    format!("{:016x}", rand::random::<u64>())
+}
+
+/// Parse a manifest object name into its (generation, version) key.
+/// Accepts both the legacy deterministic name and the unique-suffix form.
+fn parse_manifest_key(name: &str) -> Option<(u64, u64)> {
+    let base = name.strip_suffix(".bin")?;
+    let parts = base.split('_').collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    let generation = parts[0].strip_prefix('g')?.parse().ok()?;
+    let version = parts[1].strip_prefix('v')?.parse().ok()?;
+    Some((generation, version))
+}
+
+/// Maximum number of publish/verify rounds per commit.
+pub const COMMIT_RETRIES: usize = 3;
 
 // ---- little-endian read/write with optional hasher ----
 
@@ -223,11 +267,14 @@ pub struct ManifestHeader {
     pub total_bits: usize,
 }
 
-/// Latest snapshot pointer: (generation, version, e_tag).
+/// Latest snapshot pointer: (generation, version, optional manifest
+/// filename, e_tag).  ``manifest_filename`` is set for LATEST v2 values
+/// written by the V3 commit protocol; None for legacy `gen:ver` values.
 #[derive(Debug, Clone)]
 pub struct LatestSnapshot {
     pub generation: u64,
     pub version: u64,
+    pub manifest_filename: Option<String>,
     pub e_tag: Option<String>,
 }
 
@@ -439,7 +486,20 @@ pub async fn save_manifest(
     cluster_map: &BTreeMap<u32, ClusterManifestEntry>,
     version: u64,
 ) -> Result<(), RabitqError> {
-    let key = mstore.full_path(&versioned_manifest_filename(header.generation, version));
+    let key = versioned_manifest_filename(header.generation, version);
+    save_manifest_to(mstore, header, cluster_map, &key).await
+}
+
+/// Write a manifest to an explicit (relative) key.  The key must be unique
+/// for every commit — the caller passes a uniquely named filename — so
+/// concurrent writers never overwrite each other's commits.
+pub async fn save_manifest_to(
+    mstore: &ManifestStore,
+    header: &ManifestHeader,
+    cluster_map: &BTreeMap<u32, ClusterManifestEntry>,
+    key: &str,
+) -> Result<(), RabitqError> {
+    let key = mstore.full_path(key);
     let mut b = Vec::new();
     b.write_all(&V4_MANIFEST_MAGIC).unwrap();
     wle!(b, V4_MANIFEST_VERSION, u32);
@@ -727,7 +787,10 @@ pub async fn write_segment(
 // ---- helpers ----
 
 pub fn segment_filename(cluster_id: u32, version: u32) -> String {
-    format!("cluster_{cluster_id:04}_{version:04}.seg")
+    format!(
+        "cluster_{cluster_id:04}_{version:04}_{}.seg",
+        unique_suffix()
+    )
 }
 
 pub async fn delete_segment(
@@ -743,7 +806,11 @@ pub async fn delete_segment(
 
 // ---- version control: LATEST file ----
 
-/// Read LATEST to get the current (generation, version) and etag for CAS.
+/// Read LATEST to get the current (generation, version) hint.
+///
+/// Accepts both the legacy `generation:version` format and the V3
+/// `generation:version:<manifest-filename>` format.  When no LATEST file
+/// exists, returns a zeroed snapshot (generation=0, version=0).
 pub async fn read_latest(mstore: &ManifestStore) -> Result<LatestSnapshot, RabitqError> {
     let key = mstore.full_path(LATEST_FILENAME);
     match mstore.store.head(&key).await {
@@ -767,81 +834,280 @@ pub async fn read_latest(mstore: &ManifestStore) -> Result<LatestSnapshot, Rabit
                 parts.next().and_then(|s| s.parse().ok()).ok_or_else(|| {
                     RabitqError::InvalidPersistence("LATEST invalid format")
                 })?;
+            let filename = parts.next().map(str::to_string);
             Ok(LatestSnapshot {
                 generation: gen_val,
                 version: ver,
+                manifest_filename: filename,
                 e_tag: meta.e_tag,
             })
         }
         Err(object_store::Error::NotFound { .. }) => Ok(LatestSnapshot {
             generation: 0,
             version: 0,
+            manifest_filename: None,
             e_tag: None,
         }),
         Err(e) => Err(os_err(e)),
     }
 }
 
-/// Atomically write LATEST using CAS (If-Match on the expected etag).
-/// Returns the new etag on success, or `Error::VersionConflict` if the etag
-/// didn't match (someone else updated LATEST first).
+/// Write the LATEST hint as `generation:version:<manifest-filename>`.
+///
+/// This is a plain overwrite — no conditional headers (`If-Match`) are
+/// used, so it works on every object store (S3, Aliyun OSS, local disk).
+/// Concurrency safety comes from the immutable uniquely-named commits and
+/// the derived view in [`resolve_view`], not from this pointer.
 pub async fn write_latest(
     mstore: &ManifestStore,
     generation: u64,
     version: u64,
-    expected_etag: Option<String>,
-) -> Result<Option<String>, RabitqError> {
-    use object_store::PutMode;
+    manifest_filename: &str,
+) -> Result<(), RabitqError> {
     let key = mstore.full_path(LATEST_FILENAME);
-    let content = format!("{generation}:{version}");
-    // Try CAS (Update) first if etag is provided and store type supports it.
-    // On LocalFileSystem and other stores without CAS support, fall back to
-    // Overwrite.  We detect this by a generic error catch rather than pattern
-    // matching, because object_store::Error variants differ across versions.
-    let content_bytes = content.into_bytes();
-    let make_payload = || PutPayload::from_bytes(content_bytes.clone().into());
-    let result = if let Some(ref tag) = expected_etag {
-        let update_opts = object_store::PutOptions {
-            mode: PutMode::Update(object_store::UpdateVersion {
-                e_tag: Some(tag.clone()),
-                version: None,
-            }),
-            ..Default::default()
-        };
-        match mstore
-            .store
-            .put_opts(&key, make_payload(), update_opts)
-            .await
-        {
-            Ok(r) => Ok(r),
-            Err(object_store::Error::Precondition { .. }) => {
-                Err(RabitqError::VersionConflict)
-            }
-            Err(_) => {
-                // Fallback: store might not support CAS (e.g. LocalFileSystem)
-                let overwrite_opts = object_store::PutOptions {
-                    mode: PutMode::Overwrite,
-                    ..Default::default()
-                };
-                mstore
-                    .store
-                    .put_opts(&key, make_payload(), overwrite_opts)
-                    .await
-                    .map_err(os_err)
+    let content = format!("{generation}:{version}:{manifest_filename}");
+    mstore
+        .store
+        .put(&key, PutPayload::from_bytes(content.into_bytes().into()))
+        .await
+        .map(|_| ())
+        .map_err(os_err)
+}
+
+// ---- V3 commit protocol ----
+
+/// The current derived view of an index: the newest commit key and the
+/// union of every commit at that key (concurrent writers that published at
+/// the same (generation, version) are merged by segment filename).
+#[derive(Debug, Clone)]
+pub struct ResolvedView {
+    pub generation: u64,
+    pub version: u64,
+    pub header: ManifestHeader,
+    pub cluster_map: BTreeMap<u32, ClusterManifestEntry>,
+    /// Relative manifest filenames of every commit at the resolved key.
+    pub manifest_filenames: Vec<String>,
+}
+
+impl ResolvedView {
+    /// (generation, version) key of this view.
+    pub fn key(&self) -> (u64, u64) {
+        (self.generation, self.version)
+    }
+}
+
+/// Resolve the current index view without any conditional writes.
+///
+/// Candidates are the LATEST pointer (when present) and every object
+/// listed under `manifests/`.  The newest key wins; all commits at that
+/// key are unioned so that concurrent writers never lose data.  When
+/// nothing exists at all, returns `None`; when only the legacy
+/// `manifest.bin` exists, returns a view at key (0, 0) from it.
+pub async fn resolve_view(
+    mstore: &ManifestStore,
+) -> Result<Option<ResolvedView>, RabitqError> {
+    let dir = mstore.full_path(MANIFESTS_PREFIX);
+    let mut listed: Vec<(u64, u64, String)> = Vec::new();
+    let mut stream = mstore.store.list(Some(&dir));
+    while let Some(meta) = stream.next().await {
+        let meta = meta.map_err(os_err)?;
+        if let Some(filename) = meta.location.filename() {
+            let filename = filename.to_string();
+            if let Some((generation, version)) = parse_manifest_key(&filename) {
+                listed.push((
+                    generation,
+                    version,
+                    format!("{MANIFESTS_PREFIX}/{filename}"),
+                ));
             }
         }
+    }
+
+    let snap = read_latest(mstore).await?;
+    let pointer: Option<(u64, u64, String)> = if snap.generation > 0 {
+        Some((
+            snap.generation,
+            snap.version,
+            snap.manifest_filename.clone().unwrap_or_else(|| {
+                versioned_manifest_filename(snap.generation, snap.version)
+            }),
+        ))
     } else {
-        let opts = object_store::PutOptions {
-            mode: PutMode::Overwrite,
-            ..Default::default()
-        };
-        mstore
-            .store
-            .put_opts(&key, make_payload(), opts)
-            .await
-            .map_err(os_err)
+        None
     };
-    result.map(|r| r.e_tag)
+
+    // Collect candidate (key, filename) pairs.  A pointer whose manifest is
+    // missing is skipped — the listed commits remain authoritative.
+    let mut candidates: Vec<(u64, u64, String)> = Vec::new();
+    if let Some((generation, version, fname)) = &pointer
+        && read_manifest_bytes(mstore, fname).await.is_ok()
+    {
+        candidates.push((*generation, *version, fname.clone()));
+    }
+    for (generation, version, fname) in &listed {
+        if !candidates.iter().any(|(_, _, f)| f == fname) {
+            candidates.push((*generation, *version, fname.clone()));
+        }
+    }
+
+    if candidates.is_empty() {
+        // Nothing under manifests/ and no usable pointer: fall back to the
+        // legacy single manifest.bin (V1/V2), or None if the store is empty.
+        if mstore
+            .store
+            .head(&mstore.full_path(MANIFEST_FILENAME))
+            .await
+            .is_ok()
+        {
+            let (header, cluster_map) = load_manifest(mstore).await?;
+            return Ok(Some(ResolvedView {
+                generation: 0,
+                version: 0,
+                header,
+                cluster_map,
+                manifest_filenames: Vec::new(),
+            }));
+        }
+        return Ok(None);
+    }
+
+    let max_key = candidates.iter().map(|(g, v, _)| (*g, *v)).max().unwrap();
+    let mut cluster_map: BTreeMap<u32, ClusterManifestEntry> = BTreeMap::new();
+    let mut header: Option<ManifestHeader> = None;
+    let mut manifest_filenames = Vec::new();
+    for (generation, version, fname) in &candidates {
+        if (*generation, *version) != max_key {
+            continue;
+        }
+        let (h, map) = read_manifest_bytes(mstore, fname).await?;
+        if header.is_none() {
+            header = Some(h);
+        }
+        cluster_map = merge_cluster_maps(&cluster_map, &map);
+        manifest_filenames.push(fname.clone());
+    }
+    let header = header.ok_or(RabitqError::InvalidPersistence(
+        "manifest list did not yield a header",
+    ))?;
+    Ok(Some(ResolvedView {
+        generation: max_key.0,
+        version: max_key.1,
+        header,
+        cluster_map,
+        manifest_filenames,
+    }))
+}
+
+/// Union two cluster maps: per cluster, append segments from `extra` that
+/// are not already referenced (dedup by segment filename).  A segment is
+/// immutable and uniquely named, so unioning is idempotent.
+pub fn merge_cluster_maps(
+    base: &BTreeMap<u32, ClusterManifestEntry>,
+    extra: &BTreeMap<u32, ClusterManifestEntry>,
+) -> BTreeMap<u32, ClusterManifestEntry> {
+    let mut out = base.clone();
+    for (&cid, entry) in extra {
+        match out.get_mut(&cid) {
+            Some(existing) => {
+                let existing_filenames: HashSet<String> = existing
+                    .segments
+                    .iter()
+                    .map(|s| s.segment_filename.clone())
+                    .collect();
+                for seg in &entry.segments {
+                    if !existing_filenames.contains(&seg.segment_filename) {
+                        existing.segments.push(seg.clone());
+                    }
+                }
+            }
+            None => {
+                out.insert(cid, entry.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Commit an incremental delta flush.
+///
+/// Publishes a new commit at `(view.generation, view.version + 1)` whose
+/// cluster map is the union of the current resolved view and *deltas*.
+/// Retries by rebasing onto the freshest view whenever a concurrent writer
+/// publishes first; fails loudly (rather than silently losing data) when
+/// the retry budget is exhausted.
+pub async fn commit_delta(
+    mstore: &ManifestStore,
+    header: &ManifestHeader,
+    deltas: &BTreeMap<u32, ClusterManifestEntry>,
+) -> Result<(), RabitqError> {
+    for _ in 0..COMMIT_RETRIES {
+        let view = match resolve_view(mstore).await? {
+            Some(v) => v,
+            None => ResolvedView {
+                generation: 0,
+                version: 0,
+                header: header.clone(),
+                cluster_map: BTreeMap::new(),
+                manifest_filenames: Vec::new(),
+            },
+        };
+        let target_gen = view.generation.max(1);
+        let target_ver = view.version + 1;
+        let merged = merge_cluster_maps(&view.cluster_map, deltas);
+        let fname = versioned_manifest_filename_unique(target_gen, target_ver);
+        let mut commit_header = header.clone();
+        commit_header.generation = target_gen;
+        save_manifest_to(mstore, &commit_header, &merged, &fname).await?;
+        write_latest(mstore, target_gen, target_ver, &fname).await?;
+        if let Some(after) = resolve_view(mstore).await?
+            && after.key() == (target_gen, target_ver)
+        {
+            return Ok(());
+        }
+    }
+    Err(RabitqError::CommitConflict)
+}
+
+/// Commit a full rebuild (compaction / rebuild from scratch).
+///
+/// Publishes a new generation commit at `(base_key.0 + 1, 1)`.  The
+/// caller's *map* must be a complete replacement derived from the view at
+/// *base_key*.  If the view has moved since, or another rebuild already
+/// claimed the target key, returns [`RabitqError::CommitConflict`] so the
+/// caller can redo its (expensive) rebuild against the fresher view.
+pub async fn commit_rebuild(
+    mstore: &ManifestStore,
+    header: &ManifestHeader,
+    map: &BTreeMap<u32, ClusterManifestEntry>,
+    base_key: (u64, u64),
+) -> Result<(), RabitqError> {
+    // An empty store resolves to base key (0, 0), so a fresh rebuild can
+    // publish its first generation (1, 1) without a precondition.
+    let view_key = match resolve_view(mstore).await? {
+        Some(view) => view.key(),
+        None => (0, 0),
+    };
+    if view_key != base_key {
+        return Err(RabitqError::CommitConflict);
+    }
+    let target_key = (base_key.0 + 1, 1u64);
+    let fname = versioned_manifest_filename_unique(target_key.0, target_key.1);
+    let mut commit_header = header.clone();
+    commit_header.generation = target_key.0;
+    save_manifest_to(mstore, &commit_header, map, &fname).await?;
+    write_latest(mstore, target_key.0, target_key.1, &fname).await?;
+    match resolve_view(mstore).await? {
+        Some(after) if after.key() == target_key => {
+            if after.manifest_filenames.len() == 1 && after.manifest_filenames[0] == fname
+            {
+                Ok(())
+            } else {
+                // Another rebuild claimed the same key — refuse the race.
+                Err(RabitqError::CommitConflict)
+            }
+        }
+        _ => Err(RabitqError::CommitConflict),
+    }
 }
 
 // ---- backward-compat (existing V1/V2 manifest read) ----

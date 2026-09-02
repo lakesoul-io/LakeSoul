@@ -114,18 +114,13 @@ impl IvfRabitqBuilder {
         use_faster_config: bool,
     ) -> Result<Self, RabitqError> {
         if crate::rabitq::manifest::manifest_exists(mstore).await {
-            // Try LATEST first, fall back to legacy manifest.bin
+            // Resolve the current view (LATEST hint + unique commits),
+            // falling back to the legacy manifest.bin when nothing newer
+            // exists.
             let (header, cluster_map) =
-                match crate::rabitq::manifest::read_latest(mstore).await {
-                    Ok(snap) if snap.generation > 0 => {
-                        crate::rabitq::manifest::load_manifest_by_gen_ver(
-                            mstore,
-                            snap.generation,
-                            snap.version,
-                        )
-                        .await?
-                    }
-                    _ => crate::rabitq::manifest::load_manifest(mstore).await?,
+                match crate::rabitq::manifest::resolve_view(mstore).await? {
+                    Some(view) => (view.header, view.cluster_map),
+                    None => crate::rabitq::manifest::load_manifest(mstore).await?,
                 };
             let mut clusters = Vec::with_capacity(cluster_map.len());
             for entry in cluster_map.values() {
@@ -560,11 +555,14 @@ impl IvfRabitqBuilder {
                     });
                 }
 
-                // 3. CAS loop: read LATEST, write versioned manifest, CAS-write LATEST.
-                let latest = manifest::read_latest(mstore).await?;
-                let new_version = latest.version + 1;
+                // 3. Commit the delta via the CAS-free protocol: publish an
+                //    immutable uniquely-named manifest and advance the
+                //    LATEST hint; concurrent writers are reconciled by
+                //    union-merging the derived view.  cluster_map carries
+                //    the appended delta segments (deduped by filename when
+                //    merged against the freshest view).
                 let header = ManifestHeader {
-                    generation: latest.generation,
+                    generation: 0, // filled from the resolved view by commit_delta
                     dim: index.dim,
                     padded_dim: index.padded_dim,
                     metric: index.metric,
@@ -573,46 +571,7 @@ impl IvfRabitqBuilder {
                     ex_bits: index.ex_bits,
                     total_bits: index.ex_bits + 1,
                 };
-
-                // Write the new immutable versioned manifest.
-                manifest::save_manifest(mstore, &header, &cluster_map, new_version)
-                    .await?;
-
-                // CAS the LATEST pointer.
-                match manifest::write_latest(
-                    mstore,
-                    latest.generation,
-                    new_version,
-                    latest.e_tag,
-                )
-                .await
-                {
-                    Ok(_) => {} // committed
-                    Err(RabitqError::VersionConflict) => {
-                        // Check if generation changed (compaction happened).
-                        let latest2 = manifest::read_latest(mstore).await?;
-                        if latest2.generation != latest.generation {
-                            return Err(RabitqError::GenerationConflict);
-                        }
-                        // Same generation, just concurrent flush — retry once.
-                        let new_version2 = latest2.version + 1;
-                        manifest::save_manifest(
-                            mstore,
-                            &header,
-                            &cluster_map,
-                            new_version2,
-                        )
-                        .await?;
-                        manifest::write_latest(
-                            mstore,
-                            latest2.generation,
-                            new_version2,
-                            latest2.e_tag,
-                        )
-                        .await?;
-                    }
-                    Err(e) => return Err(e),
-                }
+                manifest::commit_delta(mstore, &header, &cluster_map).await?;
 
                 // 4. Reset clusters to centroid-only state for next insert cycle.
                 for &cid_u32 in &dirty_cids {

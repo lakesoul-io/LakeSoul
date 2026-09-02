@@ -5043,6 +5043,7 @@ dependencies = [
 name = "lakesoul-vector"
 version = "4.0.0-dev.0"
 dependencies = [
+ "async-trait",
  "bincode",
  "crc32fast",
  "faer",
