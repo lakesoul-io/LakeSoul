@@ -33,6 +33,7 @@ FIXTURE_FILES = [
     "lakesoul-spark-gluten/pom.xml",
     "python/pyproject.toml",
     "python/Cargo.toml",
+    "python/uv.lock",
     "website/docusaurus.config.js",
 ]
 FIXTURE_FILES.extend(
@@ -185,7 +186,27 @@ class ReleaseToolTest(unittest.TestCase):
             'version = "2.1.0-dev.0"',
             (self.root / "python/Cargo.toml").read_text(encoding="utf-8"),
         )
+        self.assertIn(
+            'name = "lakesoul"\nversion = "2.1.0.dev0"',
+            (self.root / "python/uv.lock").read_text(encoding="utf-8"),
+        )
         self.assertEqual([], release.validate(self.root))
+
+    def test_check_reports_python_lock_mismatch(self) -> None:
+        lock = self.root / "python/uv.lock"
+        lock.write_text(
+            lock.read_text(encoding="utf-8").replace(
+                'name = "lakesoul"\nversion = "2.0.0.dev0"',
+                'name = "lakesoul"\nversion = "2.0.1.dev0"',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        result, _, stderr = self.run_main("check")
+
+        self.assertEqual(1, result)
+        self.assertIn("python/uv.lock: version '2.0.1.dev0' != '2.0.0.dev0'", stderr)
 
     def test_set_check_mode_reports_without_modifying(self) -> None:
         before = (self.root / "pom.xml").read_text(encoding="utf-8")

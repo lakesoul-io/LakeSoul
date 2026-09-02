@@ -364,6 +364,18 @@ def validate(root: Path) -> list[str]:
             errors.append(
                 f"python/Cargo.toml: version {cargo_python!r} != {python.cargo!r}"
             )
+        lock_path = root / "python/uv.lock"
+        if lock_path.exists():
+            lock_python = matched_value(
+                root,
+                "python/uv.lock",
+                r'\[\[package\]\]\nname = "lakesoul"\nversion = "([^"]+)"',
+                "Python lockfile version",
+            )
+            if lock_python != python.python:
+                errors.append(
+                    f"python/uv.lock: version {lock_python!r} != {python.python!r}"
+                )
 
         if stable >= core.version:
             errors.append(
@@ -466,6 +478,13 @@ def set_python(root: Path, value: str, check: bool = False) -> None:
                 r'^version\s*=\s*"([^"]+)"',
                 target.cargo,
                 "Python Cargo version",
+            ),
+            replace_value(
+                root,
+                "python/uv.lock",
+                r'\[\[package\]\]\nname = "lakesoul"\nversion = "([^"]+)"',
+                target.python,
+                "Python lockfile version",
             ),
         ],
         check,
