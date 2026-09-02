@@ -327,6 +327,11 @@ impl LakeSoulTable {
             range_partitions: self.range_partitions().to_vec(),
             pushdown_filters,
             io_config,
+            vector_index_configs:
+                crate::vector_index::parse_vector_index_from_table_properties(
+                    &self.table_info().properties,
+                )
+                .unwrap_or_default(),
             format_registry,
         }))
     }

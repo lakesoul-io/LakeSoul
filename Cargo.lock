@@ -4742,6 +4742,7 @@ dependencies = [
  "lakesoul-io",
  "lakesoul-metadata",
  "lakesoul-metadata-proto",
+ "lakesoul-vector",
  "log",
  "object_store",
  "parquet",

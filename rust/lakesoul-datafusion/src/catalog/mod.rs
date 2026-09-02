@@ -83,6 +83,15 @@ pub struct LakeSoulTableProperty {
     /// Whether use cdc is enabled for the LakeSoul table.
     #[serde(rename = "use_cdc", default, skip_serializing_if = "Option::is_none")]
     pub use_cdc: Option<String>,
+    /// Vector index configurations (JSON array of
+    /// [`VectorIndexTableConfig`](crate::vector_index::VectorIndexTableConfig)
+    /// entries), matching the Python SDK's `vector_index_columns` property.
+    #[serde(
+        rename = "vector_index_columns",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vector_index_columns: Option<String>,
 }
 
 /// Register a LakeSoul table in the LakeSoul metadata.
@@ -92,6 +101,38 @@ pub(crate) async fn create_table(
     client: MetaDataClientRef,
     table_name: &str,
     config: LakeSoulIOConfig,
+) -> Result<()> {
+    create_table_inner(client, table_name, config, None).await
+}
+
+/// Create a LakeSoul table that declares vector indexes through the
+/// `vector_index_columns` table property, so writes auto-build the indexes
+/// (same semantics as the Python SDK's `vector_index` argument).
+///
+/// The configuration is validated against the table schema and primary
+/// keys *before* any metadata is created.
+#[allow(dead_code)] // used for test
+pub(crate) async fn create_table_with_vector_index(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+    vector_index_configs: &[crate::vector_index::VectorIndexTableConfig],
+) -> Result<()> {
+    crate::vector_index::validate_vector_index_configs(
+        vector_index_configs,
+        config.target_schema().as_ref(),
+        config.primary_keys_slice(),
+    )?;
+    let vector_index_columns = (!vector_index_configs.is_empty())
+        .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
+    create_table_inner(client, table_name, config, vector_index_columns).await
+}
+
+async fn create_table_inner(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+    vector_index_columns: Option<String>,
 ) -> Result<()> {
     debug!("create_table: {:?}", &table_name);
     let target_schema = config.target_schema();
@@ -116,6 +157,7 @@ pub(crate) async fn create_table(
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: Some(String::from("4")),
+                vector_index_columns,
                 ..Default::default()
             })?,
             partitions: format!(

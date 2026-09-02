@@ -109,6 +109,9 @@ pub struct LakeSoulTableProvider {
     pub(crate) range_partitions: Vec<String>,
     pub(crate) pushdown_filters: bool,
     pub(crate) io_config: LakeSoulIOConfig,
+    /// Vector index configurations declared by the table's
+    /// `vector_index_columns` property (empty when the table has none).
+    pub(crate) vector_index_configs: Vec<crate::vector_index::VectorIndexTableConfig>,
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
 }
 impl LakeSoulTableProvider {
@@ -235,6 +238,11 @@ impl LakeSoulTableProvider {
 
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();
+        let vector_index_configs =
+            crate::vector_index::parse_vector_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         Ok(Self {
             listing_options,
             listing_table_paths,
@@ -247,6 +255,7 @@ impl LakeSoulTableProvider {
             range_partitions,
             pushdown_filters: lakesoul_io_config.file_filter_pushdown(),
             io_config: lakesoul_io_config,
+            vector_index_configs,
             format_registry,
         })
     }
@@ -307,6 +316,30 @@ impl LakeSoulTableProvider {
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
+        // The `vector_index_columns` option declares vector indexes at
+        // creation time (JSON array, as in the Python SDK); it is validated
+        // against the schema and stored as a table property so writes
+        // auto-build the indexes.
+        // Table-factory options arrive with a `format.` prefix (like
+        // `format.use_cdc`); accept both forms.
+        let vector_index_columns = cmd
+            .options
+            .get("format.vector_index_columns")
+            .or_else(|| cmd.options.get("vector_index_columns"))
+            .cloned();
+        if let Some(raw) = &vector_index_columns {
+            let configs = crate::vector_index::parse_vector_index_columns(Some(raw))
+                .map_err(|report| {
+                    report!("invalid vector_index_columns option: {report}")
+                })?;
+            crate::vector_index::validate_vector_index_configs(
+                &configs,
+                logical_schema.as_ref(),
+                &primary_keys,
+            )
+            .map_err(|report| report!("invalid vector_index_columns option: {report}"))?;
+        }
+
         let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
             schema_to_metadata_parts(logical_schema.as_ref());
 
@@ -331,6 +364,7 @@ impl LakeSoulTableProvider {
                 },
                 cdc_change_column: cdc_column,
                 use_cdc,
+                vector_index_columns,
                 ..Default::default()
             })
             .unwrap(),
@@ -362,6 +396,11 @@ impl LakeSoulTableProvider {
                 .parquet
                 .schema_force_view_types,
         )?);
+        let vector_index_configs =
+            crate::vector_index::parse_vector_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         Ok(Self {
             listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
                 .await?,
@@ -379,6 +418,7 @@ impl LakeSoulTableProvider {
                 .parquet
                 .pushdown_filters, // TODO after more format
             io_config,
+            vector_index_configs,
             format_registry,
         })
     }
@@ -469,7 +509,7 @@ impl LakeSoulTableProvider {
         Ok(all_sort_orders)
     }
 
-    async fn list_files_for_scan<'a>(
+    pub(crate) async fn list_files_for_scan<'a>(
         &'a self,
         ctx: &'a SessionState,
         filters: &'a [Expr],
@@ -541,6 +581,92 @@ impl LakeSoulTableProvider {
         debug!("file_groups: {:#?}", file_groups);
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
+    }
+
+    /// Build the vector-index candidate scan for a marker request.
+    ///
+    /// Returns `Ok(None)` when the request cannot be served — no primary
+    /// key, no `vector_index_columns` table property declaring the searched
+    /// column, an unsupported metric, a non-vector column, or an empty
+    /// scan — in which case the caller runs the regular full scan instead.
+    async fn try_build_vector_search_exec(
+        &self,
+        session_state: &SessionState,
+        request: crate::udf::vector_search_marker::VectorSearchRequest,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
+        if self.primary_keys.is_empty() {
+            return Ok(None);
+        }
+        if !matches!(request.metric.as_str(), "L2" | "IP") {
+            return Ok(None);
+        }
+        // The table must declare the searched column in its
+        // `vector_index_columns` property (and with a compatible metric).
+        let Some(declared) = self
+            .vector_index_configs
+            .iter()
+            .find(|c| c.column == request.vec_column)
+        else {
+            return Ok(None);
+        };
+        if declared.metric.to_uppercase().as_str() != request.metric {
+            return Ok(None);
+        }
+        let vec_field = match self.file_schema.field_with_name(&request.vec_column) {
+            Ok(field) => field,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+        if !is_vector_type(vec_field.data_type()) {
+            return Ok(None);
+        }
+        let (partitioned_file_lists, _) = self
+            .list_files_for_scan(session_state, filters, limit)
+            .await
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        if partitioned_file_lists.is_empty() {
+            return Ok(None);
+        }
+
+        let mut groups = Vec::with_capacity(partitioned_file_lists.len());
+        let mut partition_values = Vec::with_capacity(partitioned_file_lists.len());
+        for files in &partitioned_file_lists {
+            // The native reader searches the index shard of *one* hash
+            // bucket per reader, so split each partition's files by bucket.
+            let mut by_bucket: std::collections::BTreeMap<u32, Vec<PartitionedFile>> =
+                std::collections::BTreeMap::new();
+            for file in files {
+                let bucket = lakesoul_io::helpers::extract_hash_bucket_id(
+                    file.object_meta.location.as_ref(),
+                )
+                .unwrap_or(0);
+                by_bucket.entry(bucket).or_default().push(file.clone());
+            }
+            for bucket_files in by_bucket.into_values() {
+                let values = bucket_files
+                    .first()
+                    .map(|f| f.partition_values.clone())
+                    .unwrap_or_default();
+                groups.push(bucket_files);
+                partition_values.push(values);
+            }
+        }
+
+        let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
+            self.scan_schema.clone(),
+            self.file_schema.clone(),
+            self.table_partition_cols().to_vec(),
+            groups,
+            partition_values,
+            self.table_paths()[0].object_store(),
+            self.primary_keys.clone(),
+            self.io_config.object_store_options().clone(),
+            request,
+        )?;
+        Ok(Some(Arc::new(exec)))
     }
 
     fn format_scan_groups(
@@ -709,8 +835,28 @@ impl TableProvider for LakeSoulTableProvider {
             .as_any()
             .downcast_ref::<SessionState>()
             .unwrap();
+
+        // Vector search pushdown: when the optimizer annotated the scan
+        // with the vector-search marker, read only the index candidates
+        // through the native reader.  The `Sort` + `Limit` above the scan
+        // then compute the exact global top-k.
+        let vector_search =
+            crate::udf::vector_search_marker::parse_vector_search_request(filters);
+        let filters: Vec<Expr> = filters
+            .iter()
+            .filter(|f| !crate::udf::vector_search_marker::is_marker_expr(f))
+            .cloned()
+            .collect();
+        if let Some(request) = vector_search
+            && let Some(exec) = self
+                .try_build_vector_search_exec(session_state, request, &filters, limit)
+                .await?
+        {
+            return Ok(exec);
+        }
+
         let (partitioned_file_lists, statistics) = self
-            .list_files_for_scan(session_state, filters, limit)
+            .list_files_for_scan(session_state, &filters, limit)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
@@ -958,8 +1104,22 @@ impl TableProvider for LakeSoulTableProvider {
     }
 }
 
+/// True for list-of-numbers types accepted by the vector index.
+fn is_vector_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::List(field) | DataType::LargeList(field) => {
+            matches!(field.data_type(), DataType::Float32 | DataType::Float64)
+        }
+        DataType::FixedSizeList(field, _) => {
+            matches!(field.data_type(), DataType::Float32 | DataType::Float64)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
     use chrono::TimeZone;
     use object_store::{ObjectMeta, path::Path};

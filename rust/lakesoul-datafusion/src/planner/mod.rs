@@ -6,5 +6,6 @@
 
 mod physical_planner;
 pub mod query_planner;
+pub mod vector_search_rule;
 
 pub use query_planner::LakeSoulQueryPlanner;

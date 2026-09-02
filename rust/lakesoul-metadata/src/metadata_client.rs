@@ -1158,7 +1158,7 @@ impl MetaDataClient {
 
             // 更新properties
             self.execute_update(
-                DaoType::UpdateTableInfoById as i32,
+                DaoType::UpdateTableInfoPropertiesById as i32,
                 [table_id, &serde_json::to_string(&new_properties)?].join(PARAM_DELIM),
             )
             .await
