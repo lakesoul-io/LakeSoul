@@ -252,7 +252,7 @@ jobs:
           if-no-files-found: error
 
   core-tests:
-    name: Maven, Python, and signed artifact dry run
+    name: Maven and signed artifact dry run
     needs: [validate-release, build-native-linux-x86-64, metadata-migration]
     runs-on: ubuntu-24.04
     services:
@@ -367,30 +367,6 @@ jobs:
           mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build,release-sign-artifacts
           -DskipTests=true
           -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
-      - name: Set up Python 3.10
-        if: github.event_name != 'pull_request'
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.10"
-      - name: Install uv
-        if: github.event_name != 'pull_request'
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          cache-suffix: release-core-python
-          cache-dependency-glob: |
-            python/pyproject.toml
-            python/uv.lock
-      - name: Build Python extension and run Core compatibility subset
-        if: github.event_name != 'pull_request'
-        env:
-          LAKESOUL_PG_USERNAME: lakesoul_test
-          LAKESOUL_PG_PASSWORD: lakesoul_test
-        working-directory: python
-        run: |
-          uv sync --python 3.10 --group dev
-          uv run maturin develop --release
-          uv run pytest tests/_lib tests/io tests/arrow tests/compat/test_harness.py
       - name: Assemble connector JARs and source archive
         run: python script/release_assets.py assemble release-assets --commit "$GITHUB_SHA"
       - name: Verify packaged native libraries
@@ -561,6 +537,20 @@ jobs:
         run: |
           uv sync --python 3.10 --group dev --extra pandas --extra ray --extra daft --extra pyspark
           uv run maturin develop --release
+      - name: Prepare core compatibility test data
+        if: github.event_name != 'pull_request'
+        run: |
+          cargo -q run --release -p lakesoul-console -- tpch-gen \
+            -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+          cargo -q run --release -p lakesoul-console -- -f python/test.sql
+      - name: Run Python core compatibility subset
+        if: github.event_name != 'pull_request'
+        working-directory: python
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+        run: >-
+          uv run pytest tests/_lib tests/io tests/arrow
+          tests/compat/test_harness.py
       - name: Prepare pinned legacy Spark 3.0 writer
         run: |
           uv venv /tmp/lakesoul-spark-3-venv --python 3.10
