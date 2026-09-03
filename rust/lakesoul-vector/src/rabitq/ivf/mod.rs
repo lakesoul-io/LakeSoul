@@ -2613,8 +2613,8 @@ impl ClusterData {
             };
 
             let mut batch_qvecs: Vec<QuantizedVector> =
-                self.pending_vectors.drain(..).collect();
-            let batch_ids: Vec<u64> = self.pending_ids.drain(..).collect();
+                std::mem::take(&mut self.pending_vectors);
+            let batch_ids: Vec<u64> = std::mem::take(&mut self.pending_ids);
             let actual_count = batch_qvecs.len();
 
             // Pad to 32 with zeros.
