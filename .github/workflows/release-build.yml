@@ -365,7 +365,7 @@ jobs:
       - name: Build and sign Presto
         run: >-
           mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build,release-sign-artifacts
-          -DskipTests
+          -DskipTests=true
           -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
       - name: Set up Python 3.10
         if: github.event_name != 'pull_request'
