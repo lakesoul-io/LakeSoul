@@ -62,6 +62,16 @@ def test_default_format_case_uses_writer_default() -> None:
     assert CASES["format_default"].physical_format is None
 
 
+def test_legacy_mixed_expected_table_matches_pre_upgrade_fixture() -> None:
+    assert [row["id"] for row in CASES["legacy_mixed"].expected_table.to_pylist()] == [
+        1,
+        2,
+    ]
+    assert [
+        row["id"] for row in CASES["upgrade_window_mixed"].expected_table.to_pylist()
+    ] == [1, 2, 3, 4]
+
+
 def test_range_overwrite_expected_table_replaces_only_touched_partition() -> None:
     rows = sorted(
         CASES["range_overwrite"].expected_table.to_pylist(), key=lambda row: row["id"]

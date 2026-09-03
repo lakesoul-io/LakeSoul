@@ -507,7 +507,12 @@ mod tests {
             let io_session = Arc::new(LakeSoulIOSession::try_new(writer_io_config)?);
             let mut async_writer = create_leaf_writer(io_session.clone())?;
             async_writer.write_record_batch(to_write.clone()).await?;
-            async_writer.flush_and_close().await?;
+            let outputs = async_writer.flush_and_close().await?;
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(
+                outputs[0].other_info.get("physical_format"),
+                Some(&"parquet".to_string())
+            );
 
             let file = File::open(path.clone())?;
             let mut record_batch_reader =

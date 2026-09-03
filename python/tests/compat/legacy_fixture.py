@@ -229,8 +229,28 @@ def write_spark_3_0(args: argparse.Namespace) -> None:
         Path(args.output),
         {
             "run_id": RUN_ID,
+            "mode": "legacy-fixture",
             "storage": args.storage,
-            "spark_3_0_jar_sha256": checksum,
+            "writers": ["legacy_3_0"],
+            "readers": [],
+            "cases": ["legacy_parquet", "legacy_mixed"],
+            "source_manifest": None,
+            "legacy": {
+                "core_tag": "v3.0.0",
+                "spark_jar_sha256": checksum,
+            },
+            "records": [
+                _record(
+                    parquet,
+                    parquet_files,
+                    ["parquet"] * len(parquet_files),
+                ),
+                _record(
+                    mixed,
+                    mixed_files,
+                    ["parquet"] * len(mixed_files),
+                ),
+            ],
             "refs": refs,
         },
     )
@@ -289,81 +309,23 @@ def _assert_result_format(result, expected: str) -> tuple[list[str], list[str]]:
     return files, formats
 
 
-def write_legacy_vortex(args: argparse.Namespace) -> None:
-    from lakesoul import LakeSoulCatalog
-
-    state_path = Path(args.state)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    catalog = LakeSoulCatalog.from_env()
-    vortex = _ref(state["storage"], "legacy_vortex", "legacy_vortex")
-    path = _local_path(vortex["table_path"])
-    if path.exists():
-        shutil.rmtree(path)
-    catalog.drop_table(vortex["table_name"], if_exists=True)
-    table = catalog.create_table(
-        vortex["table_name"], path=vortex["table_path"], schema=SCHEMA
-    )
-    vortex_files: list[str] = []
-    vortex_formats: list[str] = []
-    for rows in BASIC_ROWS:
-        files, formats = _assert_result_format(
-            table.write_arrow(_table(rows), format="vortex"), "vortex"
-        )
-        vortex_files.extend(files)
-        vortex_formats.extend(formats)
-
-    mixed = state["refs"]["mixed"]
-    mixed_files, mixed_formats = _assert_result_format(
-        catalog.table(mixed["table_name"]).write_arrow(
-            _table(BASIC_ROWS[1]), format="vortex"
-        ),
-        "vortex",
-    )
-    old_mixed_files = [
-        path for path in _files(mixed["table_path"]) if path not in mixed_files
-    ]
-    records = [
-        _record(
-            state["refs"]["parquet"],
-            _files(state["refs"]["parquet"]["table_path"]),
-            ["parquet"] * len(_files(state["refs"]["parquet"]["table_path"])),
-        ),
-        _record(vortex, vortex_files, vortex_formats),
-        _record(
-            mixed,
-            old_mixed_files + mixed_files,
-            ["parquet"] * len(old_mixed_files) + mixed_formats,
-        ),
-    ]
-    _write_json(
-        Path(args.output),
-        {
-            "run_id": RUN_ID,
-            "mode": "legacy-fixture",
-            "storage": state["storage"],
-            "writers": ["legacy_3_0", "legacy_vortex", "legacy_mixed"],
-            "readers": [],
-            "cases": ["legacy_parquet", "legacy_vortex", "legacy_mixed"],
-            "source_manifest": None,
-            "legacy": {
-                "core_tag": "v3.0.0",
-                "spark_jar_sha256": state["spark_3_0_jar_sha256"],
-                "vortex_commit": args.vortex_commit,
-            },
-            "records": records,
-        },
-    )
-
-
 def write_upgrade_parquet(args: argparse.Namespace) -> None:
     from lakesoul import LakeSoulCatalog
 
     source = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     catalog = LakeSoulCatalog.from_env()
-    before = set(_files(source["storage"]))
     mixed_record = next(
         record for record in source["records"] if record["case"] == "legacy_mixed"
     )
+    # The upgrade appends current-format Vortex files into the table the
+    # v3.0.0 writer created, so every reader exercises merge-on-read across
+    # physical formats within one table.
+    mixed_vortex = catalog.table(mixed_record["table_name"]).write_arrow(
+        _table(BASIC_ROWS[1]), format="vortex"
+    )
+    vortex_files, vortex_formats = _assert_result_format(mixed_vortex, "vortex")
+
+    before = set(_files(source["storage"]))
     mixed_result = catalog.table(mixed_record["table_name"]).write_arrow(
         _table(UPGRADE_ROW), format="parquet"
     )
@@ -427,8 +389,10 @@ def write_upgrade_parquet(args: argparse.Namespace) -> None:
                 **mixed_record,
                 "case": "upgrade_window_mixed",
             },
-            list(mixed_record.get("produced_files", [])) + mixed_files,
-            list(mixed_record.get("physical_formats", [])) + mixed_formats,
+            list(mixed_record.get("produced_files", [])) + vortex_files + mixed_files,
+            list(mixed_record.get("physical_formats", []))
+            + vortex_formats
+            + mixed_formats,
         )
     )
     records.append(_record(pk_ref, pk_files, pk_formats))
@@ -439,7 +403,6 @@ def write_upgrade_parquet(args: argparse.Namespace) -> None:
             "mode": "parquet-upgrade-window",
             "cases": [
                 "legacy_parquet",
-                "legacy_vortex",
                 "upgrade_window_mixed",
                 "pk_upsert",
             ],
@@ -464,11 +427,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     spark_verify.add_argument("--spark-jar-sha256", required=True)
     spark.add_argument("--output", required=True)
 
-    vortex = subparsers.add_parser("legacy-vortex")
-    vortex.add_argument("--state", required=True)
-    vortex.add_argument("--vortex-commit", required=True)
-    vortex.add_argument("--output", required=True)
-
     upgrade = subparsers.add_parser("upgrade-parquet")
     upgrade.add_argument("--manifest", required=True)
     upgrade.add_argument("--output", required=True)
@@ -489,8 +447,6 @@ def main(argv: list[str] | None = None) -> int:
         write_spark_3_0(args)
     elif args.operation == "verify-spark-3.0":
         verify_spark_3_0(args)
-    elif args.operation == "legacy-vortex":
-        write_legacy_vortex(args)
     elif args.operation == "upgrade-parquet":
         write_upgrade_parquet(args)
     elif args.operation == "backup-manifest":
