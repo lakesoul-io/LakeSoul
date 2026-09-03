@@ -65,10 +65,12 @@ class ReleaseToolTest(unittest.TestCase):
         self.assertEqual([], release.validate(self.root))
 
     def test_check_reports_core_cargo_mismatch(self) -> None:
+        current = release.core_version(self.root).cargo
+        wrong = "9.9.9-dev.0"
         cargo = self.root / "Cargo.toml"
         cargo.write_text(
             cargo.read_text(encoding="utf-8").replace(
-                'version = "4.0.0-dev.0"', 'version = "4.0.1-dev.0"', 1
+                f'version = "{current}"', f'version = "{wrong}"', 1
             ),
             encoding="utf-8",
         )
@@ -76,13 +78,15 @@ class ReleaseToolTest(unittest.TestCase):
         result, _, stderr = self.run_main("check")
 
         self.assertEqual(1, result)
-        self.assertIn("workspace version '4.0.1-dev.0' != '4.0.0-dev.0'", stderr)
+        self.assertIn(f"workspace version '{wrong}' != '{current}'", stderr)
 
     def test_check_reports_core_crate_version_override(self) -> None:
+        current = release.core_version(self.root).cargo
+        wrong = "9.9.9-dev.0"
         cargo = self.root / "rust/lakesoul-io/Cargo.toml"
         cargo.write_text(
             cargo.read_text(encoding="utf-8").replace(
-                "version.workspace = true", 'version = "4.0.1-dev.0"', 1
+                "version.workspace = true", f'version = "{wrong}"', 1
             ),
             encoding="utf-8",
         )
@@ -90,7 +94,7 @@ class ReleaseToolTest(unittest.TestCase):
         result, _, stderr = self.run_main("check")
 
         self.assertEqual(1, result)
-        self.assertIn("package version '4.0.1-dev.0' != '4.0.0-dev.0'", stderr)
+        self.assertIn(f"package version '{wrong}' != '{current}'", stderr)
 
     def test_check_requires_publish_false_for_every_crate(self) -> None:
         cargo = self.root / "rust/lakesoul-common/Cargo.toml"
@@ -168,14 +172,17 @@ class ReleaseToolTest(unittest.TestCase):
         self.assertEqual([], release.validate(self.root))
 
     def test_set_website_stable_requires_matching_final_core(self) -> None:
-        result, _, stderr = self.run_main("set-website-stable", "4.0.0")
+        stable = release.website_version(self.root)
+        wrong = f"{stable.major + 1}.0.0"
+        result, _, stderr = self.run_main("set-website-stable", wrong)
         self.assertEqual(1, result)
         self.assertIn("requires matching final Core", stderr)
 
-        self.assertEqual(0, self.run_main("set-core", "4.0.0")[0])
-        result, _, stderr = self.run_main("set-website-stable", "4.0.0")
+        core = release.core_version(self.root)
+        self.assertEqual(0, self.run_main("set-core", str(core.version))[0])
+        result, _, stderr = self.run_main("set-website-stable", str(core.version))
         self.assertEqual(0, result, stderr)
-        self.assertEqual("4.0.0", str(release.website_version(self.root)))
+        self.assertEqual(str(core.version), str(release.website_version(self.root)))
 
     def test_set_python_maps_pep440_development_version_to_cargo(self) -> None:
         result, _, stderr = self.run_main("set-python", "2.1.0.dev0")
@@ -193,11 +200,13 @@ class ReleaseToolTest(unittest.TestCase):
         self.assertEqual([], release.validate(self.root))
 
     def test_check_reports_python_lock_mismatch(self) -> None:
+        current = release.python_version(self.root).python
+        wrong = "9.9.9.dev0"
         lock = self.root / "python/uv.lock"
         lock.write_text(
             lock.read_text(encoding="utf-8").replace(
-                'name = "lakesoul"\nversion = "2.0.0.dev0"',
-                'name = "lakesoul"\nversion = "2.0.1.dev0"',
+                f'name = "lakesoul"\nversion = "{current}"',
+                f'name = "lakesoul"\nversion = "{wrong}"',
                 1,
             ),
             encoding="utf-8",
@@ -206,7 +215,7 @@ class ReleaseToolTest(unittest.TestCase):
         result, _, stderr = self.run_main("check")
 
         self.assertEqual(1, result)
-        self.assertIn("python/uv.lock: version '2.0.1.dev0' != '2.0.0.dev0'", stderr)
+        self.assertIn(f"python/uv.lock: version '{wrong}' != '{current}'", stderr)
 
     def test_set_check_mode_reports_without_modifying(self) -> None:
         before = (self.root / "pom.xml").read_text(encoding="utf-8")
@@ -225,9 +234,11 @@ class ReleaseToolTest(unittest.TestCase):
         self.assertEqual(0, self.run_main("check-tag", "py-v2.0.0")[0])
 
     def test_tags_reject_development_and_unsupported_formats(self) -> None:
-        result, _, stderr = self.run_main("check-tag", "v4.0.0")
+        core = release.core_version(self.root)
+        wrong = f"v{core.version.major}.{core.version.minor + 1}.0"
+        result, _, stderr = self.run_main("check-tag", wrong)
         self.assertEqual(1, result)
-        self.assertIn("requires a final Core version", stderr)
+        self.assertIn("does not match Core version", stderr)
 
         result, _, stderr = self.run_main("check-tag", "release-4.0.0")
         self.assertEqual(1, result)
@@ -245,10 +256,12 @@ class ReleaseToolTest(unittest.TestCase):
                 self.assertIn("unsupported", stderr)
 
     def test_check_reports_website_version_ahead_of_core(self) -> None:
+        stable = release.website_version(self.root)
+        ahead = f"{stable.major + 1}.0.0"
         config = self.root / "website/docusaurus.config.js"
         config.write_text(
             config.read_text(encoding="utf-8").replace(
-                "VERSION: '4.0.0'", "VERSION: '5.0.0'", 1
+                f"VERSION: '{stable}'", f"VERSION: '{ahead}'", 1
             ),
             encoding="utf-8",
         )
@@ -257,25 +270,35 @@ class ReleaseToolTest(unittest.TestCase):
 
         self.assertEqual(1, result)
         self.assertIn(
-            "website stable version 5.0.0 is ahead of unpublished Core 4.0.0-SNAPSHOT",
+            f"website stable version {ahead} is ahead of unpublished Core "
+            f"{release.core_version(self.root).maven}",
             stderr,
         )
 
     def test_core_tag_requires_matching_website_version(self) -> None:
-        self.assertEqual(0, self.run_main("set-core", "4.0.0")[0])
+        core = release.core_version(self.root)
+        tag = f"v{core.version}"
+        self.assertEqual(0, self.run_main("set-core", str(core.version))[0])
+        stable = release.website_version(self.root)
+        other = (
+            f"{stable.major}.{stable.minor - 1}.{stable.patch}"
+            if stable.minor > 0
+            else f"{stable.major - 1}.0.0"
+        )
         config = self.root / "website/docusaurus.config.js"
         config.write_text(
             config.read_text(encoding="utf-8").replace(
-                "VERSION: '4.0.0'", "VERSION: '3.9.0'", 1
+                f"VERSION: '{stable}'", f"VERSION: '{other}'", 1
             ),
             encoding="utf-8",
         )
 
-        result, _, stderr = self.run_main("check-tag", "v4.0.0")
+        result, _, stderr = self.run_main("check-tag", tag)
 
         self.assertEqual(1, result)
         self.assertIn(
-            "Core tag 'v4.0.0' requires the website stable version to match, got 3.9.0",
+            f"Core tag '{tag}' requires the website stable version to match, "
+            f"got {other}",
             stderr,
         )
 

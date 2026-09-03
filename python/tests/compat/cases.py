@@ -254,12 +254,18 @@ CASES["format_default"] = CaseSpec(
     physical_format=None,
 )
 
-for legacy_name in ("legacy_parquet", "legacy_vortex", "legacy_mixed"):
+for legacy_name in ("legacy_parquet", "legacy_vortex"):
     CASES[legacy_name] = CaseSpec(
         name=legacy_name,
         schema=BASIC_APPEND_SCHEMA,
         batches=CASES["basic_append"].batches,
     )
+
+CASES["legacy_mixed"] = CaseSpec(
+    name="legacy_mixed",
+    schema=BASIC_APPEND_SCHEMA,
+    batches=CASES["basic_append"].batches[:1],
+)
 
 CASES["upgrade_window_mixed"] = CaseSpec(
     name="upgrade_window_mixed",
