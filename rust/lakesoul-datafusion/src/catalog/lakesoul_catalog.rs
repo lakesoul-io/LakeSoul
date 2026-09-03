@@ -161,7 +161,7 @@ mod tests {
 
         let ctx = Arc::new(SessionContext::new_with_state(state));
         let catalog = LakeSoulCatalog::new(client.clone(), ctx.clone());
-        ctx.register_catalog("LAKESOUL".to_string(), Arc::new(catalog));
+        ctx.register_catalog("lakesoul".to_string(), Arc::new(catalog));
 
         // // 创建测试用的namespace
         // let test_namespace = "test_namespace";
@@ -171,7 +171,7 @@ mod tests {
         // 执行show tables命令
         // let sql = "SHOW CATALOGS";
         let sql = "SHOW TABLES";
-        // let sql = "CREATE SCHEMA LAKESOUL.DEFAULT";
+        // let sql = "CREATE SCHEMA lakesoul.DEFAULT";
         let df = ctx.sql(sql).await?;
         // print_batches(&df.clone().explain(true, false)?.collect().await?);
         let results = df.collect().await?;

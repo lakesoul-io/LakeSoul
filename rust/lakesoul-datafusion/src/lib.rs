@@ -11,6 +11,7 @@ use std::{env, sync::Arc};
 
 use catalog::LakeSoulCatalog;
 use datafusion::{
+    catalog::CatalogProvider,
     config::Dialect,
     execution::{
         SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
@@ -51,7 +52,7 @@ mod tests;
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
-pub fn create_lakesoul_session_ctx(
+pub fn create_lakesoul_session_ctx_with_catalog_decorator<F>(
     meta_client: MetaDataClientRef,
     args: &cli::CoreArgs,
 ) -> Result<Arc<SessionContext>> {
@@ -68,7 +69,7 @@ pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(false)
         .with_batch_size(8192)
-        .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
+        .with_default_catalog_and_schema("lakesoul".to_string(), "default".to_string());
     session_config.options_mut().sql_parser.dialect = Dialect::PostgreSQL;
     session_config
         .options_mut()
@@ -130,8 +131,6 @@ pub fn create_lakesoul_session_ctx_with_config(
     );
     let ctx = Arc::new(SessionContext::new_with_state(state));
     ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
-
-    let catalog = Arc::new(LakeSoulCatalog::new(meta_client.clone(), ctx.clone()));
 
     if let Some(warehouse_prefix) = &args.warehouse_prefix {
         debug!("warehouse_prefix: {:?}", warehouse_prefix);
@@ -224,11 +223,27 @@ pub fn create_lakesoul_session_ctx_with_config(
         );
     }
 
+    let lakesoul_catalog = Arc::new(LakeSoulCatalog::new(
+        Arc::clone(&meta_client),
+        Arc::clone(&ctx),
+    ));
+
+    let catalog = decorate_catalog(lakesoul_catalog);
+
     ctx.state()
         .catalog_list()
-        .register_catalog("LAKESOUL".to_string(), catalog.clone());
+        .register_catalog("lakesoul".to_string(), catalog.clone());
 
     info!("catalogs: {:?}", ctx.catalog_names());
 
     Ok(ctx)
+}
+
+pub fn create_lakesoul_session_ctx(
+    meta_client: MetaDataClientRef,
+    args: &cli::CoreArgs,
+) -> Result<Arc<SessionContext>> {
+    create_lakesoul_session_ctx_with_catalog_decorator(meta_client, args, |catalog| {
+        catalog
+    })
 }

@@ -40,7 +40,7 @@ roaring = "0.10"
 faer = { version = "0.24", features = ["linalg", "rayon"] }
 bincode = "1.3"
 memmap2 = "0.9"
-parking_lot = "0.12"
+parking_lot.workspace = true
 libc = "0.2"
 
 [dev-dependencies]

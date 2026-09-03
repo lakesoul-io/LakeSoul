@@ -183,7 +183,7 @@ async fn exec(
                 if ctx
                     .state()
                     .catalog_list()
-                    .catalog("LAKESOUL")
+                    .catalog("lakesoul")
                     .unwrap()
                     .schema(&target)
                     .is_none()

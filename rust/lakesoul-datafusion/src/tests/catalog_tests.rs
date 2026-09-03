@@ -300,6 +300,7 @@ fn test_catalog_sql() {
     });
 }
 
+#[test]
 fn test_catalog_sql_partitioned_insert_column_order() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
@@ -319,7 +320,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             table_name
         );
 
-        let create_schema = format!("create schema \"LAKESOUL\".{namespace}");
+        let create_schema = format!("create schema lakesoul.{namespace}");
         sc.sql(&create_schema)
             .await
             .unwrap()
@@ -328,7 +329,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             .unwrap();
 
         let create_table = format!(
-            "CREATE EXTERNAL TABLE \"LAKESOUL\".{namespace}.{table_name} (
+            "CREATE EXTERNAL TABLE lakesoul.{namespace}.{table_name} (
                 c1 VARCHAR NOT NULL,
                 c2 INT NOT NULL,
                 c3 DOUBLE
@@ -345,14 +346,14 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             .unwrap();
 
         let insert_sql = format!(
-            "INSERT INTO \"LAKESOUL\".{namespace}.{table_name} VALUES
+            "INSERT INTO lakesoul.{namespace}.{table_name} VALUES
                 ('test', 1, 1.0),
                 ('hello', 2, 2.5)"
         );
         sc.sql(&insert_sql).await.unwrap().collect().await.unwrap();
 
         let select_all_sql =
-            format!("SELECT * FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c1");
+            format!("SELECT * FROM lakesoul.{namespace}.{table_name} ORDER BY c1");
         let select_all = sc
             .sql(&select_all_sql)
             .await
@@ -372,9 +373,8 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             &select_all
         );
 
-        let projected_sql = format!(
-            "SELECT c1, c3 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c1"
-        );
+        let projected_sql =
+            format!("SELECT c1, c3 FROM lakesoul.{namespace}.{table_name} ORDER BY c1");
         let projected = sc
             .sql(&projected_sql)
             .await
@@ -395,7 +395,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let partition_only_sql =
-            format!("SELECT c2 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c2");
+            format!("SELECT c2 FROM lakesoul.{namespace}.{table_name} ORDER BY c2");
         let partition_only = sc
             .sql(&partition_only_sql)
             .await
@@ -414,9 +414,8 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         ];
         assert_batches_eq!(&expected, &partition_only);
 
-        let reordered_sql = format!(
-            "SELECT c3, c2 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c3"
-        );
+        let reordered_sql =
+            format!("SELECT c3, c2 FROM lakesoul.{namespace}.{table_name} ORDER BY c3");
         let reordered = sc
             .sql(&reordered_sql)
             .await
@@ -437,7 +436,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let filter_sql = format!(
-            "SELECT c1, c2, c3 FROM \"LAKESOUL\".{namespace}.{table_name} WHERE c2 = 1"
+            "SELECT c1, c2, c3 FROM lakesoul.{namespace}.{table_name} WHERE c2 = 1"
         );
         let filtered = sc.sql(&filter_sql).await.unwrap().collect().await.unwrap();
         assert_batches_eq!(
@@ -452,7 +451,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let select_star_filter_sql =
-            format!("SELECT * FROM \"LAKESOUL\".{namespace}.{table_name} WHERE c2 = 2");
+            format!("SELECT * FROM lakesoul.{namespace}.{table_name} WHERE c2 = 2");
         let select_star_filtered = sc
             .sql(&select_star_filter_sql)
             .await
@@ -472,7 +471,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let show_columns_sql =
-            format!("show columns from \"LAKESOUL\".{namespace}.{table_name}");
+            format!("show columns from lakesoul.{namespace}.{table_name}");
         let show_columns = sc
             .sql(&show_columns_sql)
             .await

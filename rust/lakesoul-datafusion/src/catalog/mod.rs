@@ -24,9 +24,6 @@ use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 
 pub mod lakesoul_catalog;
-//  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
-// this is a workaround
-// #[cfg(test)]
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;

@@ -80,6 +80,14 @@ LakeSoul/
 
 3. **JDK 11** (for Maven builds, despite Java 8 source/target compatibility).
 
+### Development Environment
+
+- Linux x86_64 GNU is the supported native development platform. Prefer the pinned Nix shell: `nix develop`; use `nix develop .#fhs` for Java 11 Maven/Spark/Flink work and `nix develop .#formatter` for formatters only. Do not update `flake.lock` incidentally.
+- `devenv up` starts PostgreSQL 14 at `127.0.0.1:5432` and RustFS at `127.0.0.1:9000` (console `:9001`). PostgreSQL uses database/user/password `lakesoul_test`; RustFS uses access and secret key `rustfsadmin`. State persists in `.devenv/state`.
+- For manual setups, provide Rust stable (from `rust-toolchain.toml`), `protoc` 23.x, JDK 11, Maven, PostgreSQL 14+ with `psql`, Python 3.10+ with `uv` and Maturin, Node.js 18+ with npm, Clang/LLVM, `pkg-config`, `treefmt`, and Lefthook.
+- Services initialize the LakeSoul metadata schema from `script/meta_init.sql`; existing service state requires the repository migration tools. Tests may need to create their expected object-store bucket.
+- Set `LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified'`, `LAKESOUL_PG_USERNAME='lakesoul_test'`, and `LAKESOUL_PG_PASSWORD='lakesoul_test'` when using the local services.
+
 ---
 
 ### Rust
