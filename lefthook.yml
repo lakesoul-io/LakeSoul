@@ -10,6 +10,11 @@ pre-commit:
       glob: "*.{rs,java,scala,sbt,py,toml,yml,yaml,json}"
       run: treefmt --ci -- {staged_files}
 
+commit-msg:
+  jobs:
+    - name: DCO Signoff
+      run: |
+        grep -qE '^Signed-off-by: .+ <[^>]+@[^>]+>$' "{1}"
 pre-push:
   parallel: false
   jobs:
