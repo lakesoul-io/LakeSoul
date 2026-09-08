@@ -6,18 +6,36 @@
 
 use crate::rabitq::IdAndVecBatch;
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, UInt64Array,
+    Array, FixedSizeListArray, Float32Array, Float64Array, Int64Array, RecordBatch,
+    UInt64Array,
 };
 use arrow_schema::DataType;
 use lakesoul_io::Result;
 use rootcause::{bail, report};
 
+/// Casts the values of a Float32/Float64 array into `f32` (SQL `DOUBLE[]`
+/// tables store Float64 and are converted on the way into the index).
+fn float32_values(value_array: &dyn Array) -> Result<Vec<f32>> {
+    if let Some(arr) = value_array.as_any().downcast_ref::<Float32Array>() {
+        return Ok(arr.values().to_vec());
+    }
+    if let Some(arr) = value_array.as_any().downcast_ref::<Float64Array>() {
+        return Ok(arr.values().iter().map(|&v| v as f32).collect());
+    }
+    bail!(
+        "vector column values must be Float32 or Float64, got {:?}",
+        value_array.data_type()
+    )
+}
+
 /// 从 RecordBatch 中提取 PK 列（u64）和向量列（Float32），构造 `IdAndVecBatch`。
+///
+/// Float64 列表/FixedSizeList 中的值会被转换为 Float32 后写入索引。
 ///
 /// # 参数
 /// - `batch`: Arrow RecordBatch，包含 PK 列和向量列
 /// - `pk_column`: PK 列名，类型必须是 `UInt64` 或 `Int64`
-/// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float32, dim>`
+/// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float32/Float64, dim>` 或等长 `List<Float32/Float64>`
 /// - `dim`: 向量的维度
 ///
 /// # 返回
@@ -108,17 +126,8 @@ pub fn extract_vector_batch(
 
             for i in 0..fla.len() {
                 let value_array = fla.value(i);
-                let floats = value_array
-                    .as_any()
-                    .downcast_ref::<Float32Array>()
-                    .ok_or_else(|| {
-                        report!(
-                            "vector column '{}' values must be Float32, got {:?}",
-                            vector_column,
-                            value_array.data_type()
-                        )
-                    })?;
-                vectors.extend_from_slice(floats.values());
+                let floats = float32_values(value_array.as_ref())?;
+                vectors.extend_from_slice(&floats);
             }
         }
         DataType::List(_field) | DataType::LargeList(_field) => {
@@ -144,11 +153,8 @@ pub fn extract_vector_batch(
                             value_array.len()
                         );
                     }
-                    let floats = value_array
-                        .as_any()
-                        .downcast_ref::<Float32Array>()
-                        .ok_or_else(|| report!("vector column values must be Float32"))?;
-                    vectors.extend_from_slice(floats.values());
+                    let floats = float32_values(value_array.as_ref())?;
+                    vectors.extend_from_slice(&floats);
                 }
                 Ok(vectors)
             }
@@ -173,7 +179,7 @@ pub fn extract_vector_batch(
         }
         other => {
             bail!(
-                "vector column '{}' must be FixedSizeList<Float32> or List<Float32>, got {:?}",
+                "vector column '{}' must be FixedSizeList<Float32/Float64> or List<Float32/Float64>, got {:?}",
                 vector_column,
                 other
             );

@@ -265,7 +265,9 @@ fn vector_configs() -> Vec<crate::vector_index::VectorIndexTableConfig> {
     }]
 }
 
-/// Assert that every hash bucket of the table has a vector index.
+/// Assert that the table's vector index is committed: the
+/// `_vector_index/vec` tree contains at least one `LATEST` manifest (each
+/// built shard directory is sealed with one).
 fn assert_vector_index_built(table_name: &str) {
     let root = std::env::current_dir()
         .unwrap()
@@ -273,8 +275,51 @@ fn assert_vector_index_built(table_name: &str) {
         .join(table_name);
     let index_dir = root.join("_vector_index").join("vec");
     assert!(index_dir.exists(), "no _vector_index dir at {index_dir:?}");
-    let bucket_count = std::fs::read_dir(&index_dir).unwrap().count();
-    assert!(bucket_count >= 1, "expected >= 1 index shard dir");
+    let mut latest_count = 0usize;
+    let mut stack = vec![index_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().map(|n| n == "LATEST").unwrap_or(false) {
+                latest_count += 1;
+            }
+        }
+    }
+    assert!(
+        latest_count >= 1,
+        "expected a committed LATEST manifest under {index_dir:?}"
+    );
+}
+
+/// Reads the first data parquet file of `table_name` and returns the
+/// DataType of its `vec` column (to assert what was actually stored).
+fn stored_vec_column_type(table_name: &str) -> DataType {
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let mut found = None;
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().map(|e| e == "parquet").unwrap_or(false) {
+            use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+            let file = std::fs::File::open(&path).unwrap();
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                .unwrap()
+                .build()
+                .unwrap();
+            for batch in reader.take(1) {
+                let batch = batch.unwrap();
+                if let Some(field) = batch.schema().column_with_name("vec") {
+                    found = Some(field.1.data_type().clone());
+                    break;
+                }
+            }
+        }
+    }
+    found.expect("no data parquet file found for table")
 }
 
 async fn explain_plan(
@@ -645,12 +690,14 @@ async fn sql_create_table_declares_vector_index_via_option() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sql_insert_auto_builds_vector_index() {
-    // SQL CREATE TABLE (with the vector_index_columns OPTIONS) followed by
-    // SQL INSERT INTO must auto-build the vector index (same sink path as
-    // execute_upsert), and later inserts must be searchable incrementally.
+async fn sql_full_chain_insert_auto_builds_index() {
+    // Full SQL chain: CREATE EXTERNAL TABLE (declaring the vector index
+    // through OPTIONS) -> INSERT INTO -> the auto index build must seal a
+    // LATEST manifest, EXPLAIN must pick LakeSoulVectorSearchExec, and the
+    // search must return rows.  `FLOAT[]` maps to List<Float32>, so this
+    // exercises the native Float32 index path.
     let client = Arc::new(MetaDataClient::from_env().await.unwrap());
-    let table_name = "vec_sql_insert_e2e";
+    let table_name = "vec_sql_chain_f32";
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);
     let ctx =
@@ -673,8 +720,6 @@ async fn sql_insert_auto_builds_vector_index() {
     );
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
-    // The SQL insert funnels into the same write sink, which auto-builds
-    // the index from the newly committed files.
     let insert_sql = format!(
         "INSERT INTO \"LAKESOUL\".default.{table_name}
          SELECT CAST(g.value AS BIGINT),
@@ -682,8 +727,18 @@ async fn sql_insert_auto_builds_vector_index() {
          FROM generate_series(0, 99) AS g(value)"
     );
     ctx.sql(&insert_sql).await.unwrap().collect().await.unwrap();
-    assert_vector_index_built(table_name);
 
+    // The index must be committed (a LATEST manifest per shard), and the
+    // data column stored as Float32 lists (SQL FLOAT -> Float32).
+    assert_vector_index_built(table_name);
+    let stored = stored_vec_column_type(table_name);
+    assert!(
+        matches!(&stored, DataType::List(f)
+            if matches!(f.data_type(), DataType::Float32)),
+        "FLOAT[] column should be stored as List<Float32>, got {stored:?}"
+    );
+
+    // EXPLAIN confirms the query is served by the vector-index scan.
     let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
     let q = query
         .iter()
@@ -694,6 +749,13 @@ async fn sql_insert_auto_builds_vector_index() {
         "select id from \"LAKESOUL\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {select_sql}")).await;
+    assert!(
+        explain.contains("LakeSoulVectorSearchExec"),
+        "SQL insert path must be served by the vector-index exec:\n{explain}"
+    );
+
+    // And the query returns results from the inserted rows.
     let df = ctx.sql(&select_sql).await.unwrap();
     let batches = df.collect().await.unwrap();
     let mut ids = Vec::new();
@@ -711,7 +773,7 @@ async fn sql_insert_auto_builds_vector_index() {
         "ids must come from the inserted batch: {ids:?}"
     );
 
-    // An incremental SQL insert must become searchable (delta auto build).
+    // An incremental SQL insert is auto-indexed too (delta build).
     let insert2_sql = format!(
         "INSERT INTO \"LAKESOUL\".default.{table_name}
          SELECT CAST(100 + g.value AS BIGINT),
@@ -724,9 +786,6 @@ async fn sql_insert_auto_builds_vector_index() {
         .collect()
         .await
         .unwrap();
-
-    // Probe with the exact vector of id 150 (distance 0): it must be in the
-    // top results after the delta build.
     let probe: Vec<f32> = [
         (0f64).sin() as f32,
         (50f64).cos() as f32,
@@ -762,4 +821,80 @@ async fn sql_insert_auto_builds_vector_index() {
         incremental_ids.contains(&150),
         "incremental SQL insert must be searchable: {incremental_ids:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
+    // SQL `DOUBLE[]` maps to List<Float64>: the rows stay Float64 on disk,
+    // and the auto index build converts them to Float32 (the index and its
+    // search math are float32). Without the conversion this write fails.
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_sql_chain_f64";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+
+    let cfg = serde_json::json!([{"column": "vec", "dim": 8, "nlist": 4, "total_bits": 7, "metric": "L2"}])
+        .to_string();
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec DOUBLE[] NOT NULL
+         ) STORED AS LAKESOUL LOCATION '{location}'
+         OPTIONS ('vector_index_columns' '{cfg}', 'hash_bucket_num' '4')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    let insert_sql = format!(
+        "INSERT INTO \"LAKESOUL\".default.{table_name}
+         SELECT CAST(g.value AS BIGINT),
+                ARRAY[sin(g.value), cos(g.value), g.value*0.1, 0.5, -0.5, 1.0, -1.0, 0.0]
+         FROM generate_series(0, 99) AS g(value)"
+    );
+    ctx.sql(&insert_sql).await.unwrap().collect().await.unwrap();
+
+    // Data stays Float64 on disk; the index build converted it to f32.
+    let stored = stored_vec_column_type(table_name);
+    assert!(
+        matches!(&stored, DataType::List(f)
+            if matches!(f.data_type(), DataType::Float64)),
+        "DOUBLE[] column should be stored as List<Float64>, got {stored:?}"
+    );
+    assert_vector_index_built(table_name);
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let select_sql = format!(
+        "select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {select_sql}")).await;
+    assert!(
+        explain.contains("LakeSoulVectorSearchExec"),
+        "Float64 insert path must be served by the vector-index exec:\n{explain}"
+    );
+
+    let df = ctx.sql(&select_sql).await.unwrap();
+    let batches = df.collect().await.unwrap();
+    let mut ids = Vec::new();
+    for batch in &batches {
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+        ids.extend(arr.values().iter().copied());
+    }
+    assert_eq!(ids.len(), 5, "Float64 insert search returned: {ids:?}");
 }

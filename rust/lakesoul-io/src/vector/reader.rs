@@ -6,18 +6,36 @@
 
 use crate::Result;
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, UInt64Array,
+    Array, FixedSizeListArray, Float32Array, Float64Array, Int64Array, RecordBatch,
+    UInt64Array,
 };
 use arrow_schema::DataType;
 use lakesoul_vector::IdAndVecBatch;
 use rootcause::{bail, report};
 
+/// Casts the values of a Float32/Float64 array into `f32` (SQL `DOUBLE[]`
+/// tables store Float64 and are converted on the way into the index).
+fn float32_values(value_array: &dyn Array) -> Result<Vec<f32>> {
+    if let Some(arr) = value_array.as_any().downcast_ref::<Float32Array>() {
+        return Ok(arr.values().to_vec());
+    }
+    if let Some(arr) = value_array.as_any().downcast_ref::<Float64Array>() {
+        return Ok(arr.values().iter().map(|&v| v as f32).collect());
+    }
+    bail!(
+        "vector column values must be Float32 or Float64, got {:?}",
+        value_array.data_type()
+    )
+}
+
 /// 从 RecordBatch 中提取 PK 列（u64）和向量列（Float32），构造 `IdAndVecBatch`。
+///
+/// Float64 列表/FixedSizeList 中的值会被转换为 Float32 后写入索引。
 ///
 /// # 参数
 /// - `batch`: Arrow RecordBatch，包含 PK 列和向量列
 /// - `pk_column`: PK 列名，类型必须是 `UInt64` 或 `Int64`
-/// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float32, dim>`
+/// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float32/Float64, dim>` 或等长 `List<Float32/Float64>`
 /// - `dim`: 向量的维度
 ///
 /// # 返回
@@ -108,17 +126,8 @@ pub fn extract_vector_batch(
 
             for i in 0..fla.len() {
                 let value_array = fla.value(i);
-                let floats = value_array
-                    .as_any()
-                    .downcast_ref::<Float32Array>()
-                    .ok_or_else(|| {
-                        report!(
-                            "vector column '{}' values must be Float32, got {:?}",
-                            vector_column,
-                            value_array.data_type()
-                        )
-                    })?;
-                vectors.extend_from_slice(floats.values());
+                let floats = float32_values(value_array.as_ref())?;
+                vectors.extend_from_slice(&floats);
             }
         }
         DataType::List(_field) | DataType::LargeList(_field) => {
@@ -144,11 +153,8 @@ pub fn extract_vector_batch(
                             value_array.len()
                         );
                     }
-                    let floats = value_array
-                        .as_any()
-                        .downcast_ref::<Float32Array>()
-                        .ok_or_else(|| report!("vector column values must be Float32"))?;
-                    vectors.extend_from_slice(floats.values());
+                    let floats = float32_values(value_array.as_ref())?;
+                    vectors.extend_from_slice(&floats);
                 }
                 Ok(vectors)
             }
@@ -173,7 +179,7 @@ pub fn extract_vector_batch(
         }
         other => {
             bail!(
-                "vector column '{}' must be FixedSizeList<Float32> or List<Float32>, got {:?}",
+                "vector column '{}' must be FixedSizeList<Float32/Float64> or List<Float32/Float64>, got {:?}",
                 vector_column,
                 other
             );
@@ -255,5 +261,70 @@ mod tests {
         let batch = make_fixed_size_list_batch(vec![1], vec![vec![0.1]], 1);
         let result = extract_vector_batch(&batch, "nonexistent", "vec", 1);
         assert!(result.is_err());
+    }
+
+    fn make_fixed_size_list_f64_batch(
+        ids: Vec<u64>,
+        vectors: Vec<Vec<f64>>,
+        dim: usize,
+    ) -> RecordBatch {
+        let id_array = Arc::new(UInt64Array::from(ids)) as arrow_array::ArrayRef;
+        let flat: Vec<f64> = vectors.iter().flatten().copied().collect();
+        let value_array = Float64Array::from(flat);
+        let list_array = FixedSizeListArray::new(
+            Arc::new(arrow_schema::Field::new("item", DataType::Float64, true)),
+            dim as i32,
+            Arc::new(value_array),
+            None,
+        );
+        RecordBatch::try_from_iter(vec![
+            ("id", id_array),
+            ("vec", Arc::new(list_array) as arrow_array::ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    fn make_list_f64_batch(ids: Vec<u64>, vectors: Vec<Vec<f64>>) -> RecordBatch {
+        let id_array = Arc::new(UInt64Array::from(ids)) as arrow_array::ArrayRef;
+        let values: Vec<f64> = vectors.iter().flatten().copied().collect();
+        let offsets: Vec<i32> = std::iter::once(0)
+            .chain(vectors.iter().map(|v| v.len() as i32))
+            .scan(0i32, |acc, len| {
+                *acc += len;
+                Some(*acc)
+            })
+            .collect();
+        let value_array = Float64Array::from(values);
+        let list_array = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", DataType::Float64, true)),
+            arrow_buffer::OffsetBuffer::new(offsets.into()),
+            Arc::new(value_array),
+            None,
+        );
+        RecordBatch::try_from_iter(vec![
+            ("id", id_array),
+            ("vec", Arc::new(list_array) as arrow_array::ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_extract_f64_fixed_size_list_converts_to_f32() {
+        let batch = make_fixed_size_list_f64_batch(
+            vec![1, 2],
+            vec![vec![0.1, 0.2], vec![0.3, 0.4]],
+            2,
+        );
+        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
+        assert_eq!(result.ids, vec![1, 2]);
+        assert_eq!(result.vectors, vec![0.1f32, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn test_extract_f64_var_size_list_converts_to_f32() {
+        let batch = make_list_f64_batch(vec![7], vec![vec![1.5, -2.5]]);
+        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
+        assert_eq!(result.ids, vec![7]);
+        assert_eq!(result.vectors, vec![1.5f32, -2.5]);
     }
 }
