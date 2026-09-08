@@ -362,7 +362,6 @@ pub fn create_hashes<'a>(
 
 #[cfg(test)]
 mod tests {
-    use arrow::{array::*, datatypes::*};
     use std::sync::Arc;
 
     use super::*;

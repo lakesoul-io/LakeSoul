@@ -364,10 +364,22 @@ def validate(root: Path) -> list[str]:
             errors.append(
                 f"python/Cargo.toml: version {cargo_python!r} != {python.cargo!r}"
             )
+        lock_path = root / "python/uv.lock"
+        if lock_path.exists():
+            lock_python = matched_value(
+                root,
+                "python/uv.lock",
+                r'\[\[package\]\]\nname = "lakesoul"\nversion = "([^"]+)"',
+                "Python lockfile version",
+            )
+            if lock_python != python.python:
+                errors.append(
+                    f"python/uv.lock: version {lock_python!r} != {python.python!r}"
+                )
 
-        if stable >= core.version:
+        if stable > core.version:
             errors.append(
-                f"website stable version {stable} must precede unpublished Core {core.maven}"
+                f"website stable version {stable} is ahead of unpublished Core {core.maven}"
             )
 
         validate_maven(root, core, errors)
@@ -399,9 +411,9 @@ def apply_updates(
 def set_core(root: Path, value: str, check: bool = False) -> None:
     target = parse_core(value)
     stable = website_version(root)
-    if stable >= target.version:
+    if stable > target.version:
         raise ReleaseError(
-            f"website stable version {stable} must precede unpublished Core {target.maven}"
+            f"website stable version {stable} is ahead of unpublished Core {target.maven}"
         )
 
     apply_updates(
@@ -467,6 +479,13 @@ def set_python(root: Path, value: str, check: bool = False) -> None:
                 target.cargo,
                 "Python Cargo version",
             ),
+            replace_value(
+                root,
+                "python/uv.lock",
+                r'\[\[package\]\]\nname = "lakesoul"\nversion = "([^"]+)"',
+                target.python,
+                "Python lockfile version",
+            ),
         ],
         check,
     )
@@ -507,10 +526,10 @@ def check_tag(root: Path, tag: str) -> None:
                 f"Core tag {tag!r} does not match Core version {current.maven}"
             )
         stable = website_version(root)
-        if stable >= tagged:
+        if stable != tagged:
             raise ReleaseError(
-                f"Core tag {tag!r} requires the website stable version to precede "
-                f"the unpublished Core version, got {stable}"
+                f"Core tag {tag!r} requires the website stable version to match, "
+                f"got {stable}"
             )
         print(f"Core tag {tag} matches Maven and Rust versions.")
         return

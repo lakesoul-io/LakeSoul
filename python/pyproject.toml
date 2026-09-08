@@ -4,7 +4,7 @@
 
 [project]
 name = "lakesoul"
-version = "2.0.0.dev0"
+version = "2.0.0"
 authors = [
   { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
@@ -70,7 +70,7 @@ all = [
   "grpcio-tools == 1.70",
   "duckdb",
 ]
-dev = ["pytest>=8", { include-group = "all" }]
+dev = ["pytest>=8", "maturin>=1,<2", { include-group = "all" }]
 
 [project.urls]
 "Homepage" = "https://github.com/lakesoul-io/LakeSoul"

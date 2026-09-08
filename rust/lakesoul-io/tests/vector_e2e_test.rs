@@ -39,8 +39,8 @@ fn read_fvecs(path: &str, n: Option<usize>) -> Vec<Vec<f32>> {
         let mut vec = vec![0.0f32; dim];
         let mut buf = vec![0u8; dim * 4];
         f.read_exact(&mut buf).ok()?;
-        for (j, chunk) in buf.chunks_exact(4).enumerate() {
-            vec[j] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (j, chunk) in buf.as_chunks::<4>().0.iter().enumerate() {
+            vec[j] = f32::from_le_bytes(*chunk);
         }
         Some(vec)
     };
@@ -70,8 +70,8 @@ fn read_ivecs(path: &str, n: Option<usize>) -> Vec<Vec<i32>> {
         let mut ids = vec![0i32; k];
         let mut buf = vec![0u8; k * 4];
         f.read_exact(&mut buf).unwrap();
-        for (j, chunk) in buf.chunks_exact(4).enumerate() {
-            ids[j] = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (j, chunk) in buf.as_chunks::<4>().0.iter().enumerate() {
+            ids[j] = i32::from_le_bytes(*chunk);
         }
         results.push(ids);
         if results.len() >= n.unwrap_or(usize::MAX) {

@@ -50,7 +50,7 @@ schema_query="
 select table_name || '|' || column_name || '|' || data_type || '|' || is_nullable
 from information_schema.columns
 where table_schema = 'public'
-order by table_name, ordinal_position;
+order by table_name, column_name;
 select c.relname || '|replica_identity|' || c.relreplident
 from pg_class c join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public' and c.relkind = 'r'

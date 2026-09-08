@@ -681,6 +681,7 @@ where
             !(s.ends_with(".parquet")
                 || s.ends_with(".vortex")
                 || s.starts_with("compactdir")
+                || s.starts_with("compact_")
                 || s.contains(partition_equal))
         })
         .for_each(|s| {
@@ -968,11 +969,24 @@ mod tests {
             main();
         })
     }
-
     fn change_s3_to_proxy() {
         unsafe {
-            std::env::set_var("AWS_ENDPOINT", "http://localhost:6188");
+            std::env::set_var("AWS_ENDPOINT", "http://127.0.0.1:6188");
         }
+    }
+
+    async fn wait_for_proxy(timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if tokio::net::TcpStream::connect("127.0.0.1:6188")
+                .await
+                .is_ok()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        false
     }
 
     fn table_name_for_suffix(suffix: &str) -> String {
@@ -1072,9 +1086,10 @@ mod tests {
         let test_result = async {
             create_table_and_write_suffix("ads", metadata_client.clone()).await?;
             create_table_and_write_suffix("dwd", metadata_client.clone()).await?;
-
             let _thread_handle = run_server();
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            if !wait_for_proxy(Duration::from_secs(60)).await {
+                return Err(anyhow!("s3 proxy did not become ready on 127.0.0.1:6188"));
+            }
             change_s3_to_proxy();
 
             // verify read/write table in ads domain success
@@ -1105,9 +1120,6 @@ mod tests {
         if let Some(err) = cleanup_error {
             return Err(err);
         }
-
-        // exit self by signal 15
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        std::process::exit(0);
+        Ok(())
     }
 }

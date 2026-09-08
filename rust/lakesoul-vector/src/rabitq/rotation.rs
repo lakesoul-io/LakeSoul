@@ -228,9 +228,8 @@ impl Rotator for MatrixRotator {
         }
 
         let mut matrix = Vec::with_capacity(padded_dim * padded_dim);
-        for chunk in data.chunks_exact(4) {
-            let bytes: [u8; 4] = chunk.try_into().unwrap();
-            matrix.push(f32::from_le_bytes(bytes));
+        for bytes in data.as_chunks::<4>().0 {
+            matrix.push(f32::from_le_bytes(*bytes));
         }
 
         Ok(Self {

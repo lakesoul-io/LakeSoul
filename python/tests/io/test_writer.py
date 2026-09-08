@@ -157,6 +157,23 @@ def test_writer_rejects_schema_mismatch(tmp_path: Path) -> None:
     writer.abort()
 
 
+def test_writer_parquet_output_reports_physical_format(tmp_path: Path) -> None:
+    batch = _batch()
+    writer = Writer(
+        IOConfig(path=tmp_path / "parquet", schema=batch.schema, format="parquet")
+    )
+
+    writer.write(batch)
+    result = writer.finish()
+
+    assert result.row_count == 2
+    assert len(result.files) == 1
+    output_path = _local_path(result.files[0].path)
+    assert output_path.suffix == ".parquet"
+    assert output_path.exists()
+    assert result.files[0].other_info["physical_format"] == "parquet"
+
+
 def test_writer_vortex_output(tmp_path: Path) -> None:
     batch = _batch()
     writer = Writer(

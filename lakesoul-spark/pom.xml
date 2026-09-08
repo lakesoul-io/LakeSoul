@@ -438,7 +438,7 @@ SPDX-License-Identifier: Apache-2.0
                                 <include>**</include>
                             </includes>
                             <excludes>
-                                <exclude>RBACOperatinSuite</exclude>
+                                <exclude>RBACOperationSuite</exclude>
                             </excludes>
                         </configuration>
                     </plugin>

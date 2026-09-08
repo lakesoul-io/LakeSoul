@@ -4685,11 +4685,11 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-build-info"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 
 [[package]]
 name = "lakesoul-common"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "arrow-ipc",
  "arrow-schema",
@@ -4701,7 +4701,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-console"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "clap",
  "datafusion",
@@ -4718,7 +4718,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-datafusion"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "adbc_core",
  "adbc_driver_manager",
@@ -4765,7 +4765,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-flight"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4808,7 +4808,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4891,7 +4891,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io-c"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4914,7 +4914,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "async-trait",
  "bb8-postgres",
@@ -4944,7 +4944,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata-c"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "lakesoul-build-info",
  "lakesoul-common",
@@ -4958,7 +4958,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata-proto"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "bytes",
  "prost",
@@ -4967,7 +4967,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-python"
-version = "2.0.0-dev.0"
+version = "2.0.0"
 dependencies = [
  "arrow-array",
  "arrow-pyarrow",
@@ -4997,7 +4997,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-s3-proxy"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5042,7 +5042,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-vector"
-version = "4.0.0-dev.0"
+version = "4.0.0"
 dependencies = [
  "async-trait",
  "bincode",
