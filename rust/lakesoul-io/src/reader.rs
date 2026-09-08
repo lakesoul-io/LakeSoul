@@ -327,11 +327,23 @@ impl LakeSoulReader {
         tracing::info!("Vector search found {} matching IDs", ids.len());
         let pk_expr =
             Expr::Column(datafusion_common::Column::new_unqualified(&pk_column));
+        // The index stores vector ids as u64; build the pk filter literal
+        // with the pk column's own type so Int64 primary keys (e.g. SQL
+        // BIGINT) compare correctly instead of failing Int64 == UInt64.
+        let table_schema = self.io_session.get_table_schema().await?;
+        let pk_data_type = table_schema
+            .table_schema()
+            .field_with_name(&pk_column)
+            .map(|f| f.data_type().clone())
+            .unwrap_or_else(|_| arrow_schema::DataType::UInt64);
         let mut id_filter: Option<Expr> = None;
         for id in &ids {
-            let eq = pk_expr
-                .clone()
-                .eq(Expr::Literal(ScalarValue::UInt64(Some(*id)), None));
+            let literal = match pk_data_type {
+                arrow_schema::DataType::Int64 => ScalarValue::Int64(Some(*id as i64)),
+                arrow_schema::DataType::Int32 => ScalarValue::Int32(Some(*id as i32)),
+                _ => ScalarValue::UInt64(Some(*id)),
+            };
+            let eq = pk_expr.clone().eq(Expr::Literal(literal, None));
             id_filter = Some(id_filter.map_or(eq.clone(), |prev| prev.or(eq)));
         }
         if let Some(f) = id_filter {

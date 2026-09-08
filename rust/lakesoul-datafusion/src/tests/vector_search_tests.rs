@@ -594,12 +594,18 @@ async fn sql_create_table_declares_vector_index_via_option() {
 
     // A `FLOAT[]` column validates against the vector-index rules (List of
     // floats); the option is stored as the table property.
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
     let create_sql = format!(
         "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \
-         LOCATION 'default/{table_name}' \
+         LOCATION '{location}' \
          OPTIONS ('vector_index_columns' '{vector_option}', 'hash_bucket_num' '4')"
     );
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
@@ -635,5 +641,125 @@ async fn sql_create_table_declares_vector_index_via_option() {
     assert!(
         err.to_string().contains("invalid vector_index_columns"),
         "expected an option validation error, got: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_insert_auto_builds_vector_index() {
+    // SQL CREATE TABLE (with the vector_index_columns OPTIONS) followed by
+    // SQL INSERT INTO must auto-build the vector index (same sink path as
+    // execute_upsert), and later inserts must be searchable incrementally.
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_sql_insert_e2e";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+
+    let cfg = serde_json::json!([{"column": "vec", "dim": 8, "nlist": 4, "total_bits": 7, "metric": "L2"}])
+        .to_string();
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL LOCATION '{location}'
+         OPTIONS ('vector_index_columns' '{cfg}', 'hash_bucket_num' '4')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    // The SQL insert funnels into the same write sink, which auto-builds
+    // the index from the newly committed files.
+    let insert_sql = format!(
+        "INSERT INTO \"LAKESOUL\".default.{table_name}
+         SELECT CAST(g.value AS BIGINT),
+                ARRAY[sin(g.value), cos(g.value), g.value*0.1, 0.5, -0.5, 1.0, -1.0, 0.0]
+         FROM generate_series(0, 99) AS g(value)"
+    );
+    ctx.sql(&insert_sql).await.unwrap().collect().await.unwrap();
+    assert_vector_index_built(table_name);
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let select_sql = format!(
+        "select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let df = ctx.sql(&select_sql).await.unwrap();
+    let batches = df.collect().await.unwrap();
+    let mut ids = Vec::new();
+    for batch in &batches {
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+        ids.extend(arr.values().iter().copied());
+    }
+    assert_eq!(ids.len(), 5, "SQL insert search returned: {ids:?}");
+    assert!(
+        ids.iter().all(|id| (0..100).contains(id)),
+        "ids must come from the inserted batch: {ids:?}"
+    );
+
+    // An incremental SQL insert must become searchable (delta auto build).
+    let insert2_sql = format!(
+        "INSERT INTO \"LAKESOUL\".default.{table_name}
+         SELECT CAST(100 + g.value AS BIGINT),
+                ARRAY[sin(g.value), cos(g.value), g.value*0.2, -0.5, 0.5, 0.0, 1.0, -1.0]
+         FROM generate_series(0, 99) AS g(value)"
+    );
+    ctx.sql(&insert2_sql)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    // Probe with the exact vector of id 150 (distance 0): it must be in the
+    // top results after the delta build.
+    let probe: Vec<f32> = [
+        (0f64).sin() as f32,
+        (50f64).cos() as f32,
+        (50f64 * 0.2) as f32,
+        -0.5,
+        0.5,
+        0.0,
+        1.0,
+        -1.0,
+    ]
+    .to_vec();
+    let pq = probe
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let incremental_sql = format!(
+        "select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{pq}]) limit 5"
+    );
+    let df = ctx.sql(&incremental_sql).await.unwrap();
+    let batches = df.collect().await.unwrap();
+    let mut incremental_ids = Vec::new();
+    for batch in &batches {
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+        incremental_ids.extend(arr.values().iter().copied());
+    }
+    assert!(
+        incremental_ids.contains(&150),
+        "incremental SQL insert must be searchable: {incremental_ids:?}"
     );
 }
