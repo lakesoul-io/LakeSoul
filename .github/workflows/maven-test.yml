@@ -485,7 +485,7 @@ jobs:
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users_for_test.sql lakesoul_test
       - name: Configure crash diagnostics
         run: |
-          sudo sysctl -w kernel.core_pattern=/tmp/lakesoul-core.%e.%p.%t
+          sudo sysctl -w kernel.core_pattern=/tmp/lakesoul-core.%p.%t
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v2

@@ -15,18 +15,35 @@ on:
       GH_PAGES_DEPLOY:
         required: true
 
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Existing final Core release tag, for example v4.0.0
+        required: true
+        type: string
+
 permissions:
   contents: read
 
 jobs:
   publish:
-    if: github.ref == format('refs/tags/{0}', inputs.ref)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == format('refs/tags/{0}', inputs.ref)
     runs-on: ubuntu-24.04
     steps:
       - name: Check out validated release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
