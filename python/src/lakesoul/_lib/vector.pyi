@@ -12,9 +12,24 @@ class VectorIndexConfig(TypedDict):
     rotator_type: str
     seed: int
     use_faster_config: bool
+    rebuild_mode: str
+    max_delta_ratio: float
 
 def parse_vector_index_configs(value: str) -> list[VectorIndexConfig]: ...
 def build_shard_vector_index(
+    store_config: Mapping[str, str],
+    file_paths: list[str],
+    pk_column: str,
+    vector_column: str,
+    dim: int,
+    nlist: int = 256,
+    total_bits: int = 7,
+    metric: str = "L2",
+    rotator_type: str = "FhtKac",
+    seed: int = 42,
+    use_faster_config: bool = True,
+) -> str: ...
+def rebuild_shard_vector_index(
     store_config: Mapping[str, str],
     file_paths: list[str],
     pk_column: str,

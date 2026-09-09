@@ -262,6 +262,8 @@ fn vector_configs() -> Vec<crate::vector_index::VectorIndexTableConfig> {
         rotator_type: "FhtKac".to_string(),
         seed: 42,
         use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
     }]
 }
 
@@ -897,4 +899,218 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
         ids.extend(arr.values().iter().copied());
     }
     assert_eq!(ids.len(), 5, "Float64 insert search returned: {ids:?}");
+}
+
+/// Read the `generation` field of every LATEST manifest under the table's
+/// `_vector_index` tree.
+fn latest_generations(table_name: &str) -> Vec<u64> {
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let mut out = Vec::new();
+    let mut stack = vec![root.join("_vector_index")];
+    while let Some(dir) = stack.pop() {
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().map(|n| n == "LATEST").unwrap_or(false) {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let generation = text.split(':').next().unwrap().parse::<u64>().unwrap();
+                out.push(generation);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incremental_writes_auto_rebuild_when_delta_ratio_exceeded() {
+    use crate::catalog::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_auto_rebuild_drift";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // Aggressive ratio: two incremental writes of ~10% drift already
+    // exceed it, so the third write must trigger a full rebuild.
+    let mut configs = vector_configs();
+    configs[0].rebuild_mode = "auto".to_string();
+    configs[0].max_delta_ratio = 0.05;
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    // w1: fresh build (100 rows).
+    let mut id = 0u64;
+    let mut write = |n: usize, ctx: &mut Vec<Vec<f32>>| {
+        let vectors = random_vectors(n);
+        ctx.extend(vectors.iter().cloned());
+        let ids: Vec<u64> = (id..id + n as u64).collect();
+        id += n as u64;
+        let batch = make_batch(&ids, &vectors);
+        let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name);
+        Box::pin(async move { table.await.unwrap().execute_upsert(batch).await.unwrap() })
+    };
+    let mut stored = Vec::new();
+    write(100, &mut stored).await;
+    assert!(
+        latest_generations(table_name).iter().all(|g| *g == 1),
+        "fresh build publishes generation 1: {:?}",
+        latest_generations(table_name)
+    );
+
+    // w2: 10 more rows (10% drift vs base=100) — still incremental (the
+    // ratio is only checked on the *next* write), generation stays at 1.
+    write(10, &mut stored).await;
+    write(10, &mut stored).await;
+    let gens = latest_generations(table_name);
+    assert!(
+        gens.iter().any(|g| *g >= 2),
+        "drift past max_delta_ratio must rebuild (new generation): {gens:?}"
+    );
+
+    // The rebuilt index still serves searches, including late rows.
+    let probe = &stored[115];
+    let q = probe
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut ids_result = Vec::new();
+    for batch in &batches {
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+        ids_result.extend(arr.values().iter().copied());
+    }
+    assert!(
+        ids_result.contains(&115),
+        "rebuilt index must find drifted rows: {ids_result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rebuild_mode_none_never_rebuilds() {
+    use crate::catalog::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_no_auto_rebuild";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let mut configs = vector_configs();
+    configs[0].rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let write = |n: u64| {
+        let vectors = random_vectors(n as usize);
+        let ids: Vec<u64> = (0..n).collect();
+        let batch = make_batch(&ids, &vectors);
+        let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name);
+        Box::pin(async move { table.await.unwrap().execute_upsert(batch).await.unwrap() })
+    };
+
+    // A whole sequence of equal-sized writes must never bump the
+    // generation when rebuild_mode is "none".
+    write(50).await;
+    write(50).await;
+    write(50).await;
+    write(50).await;
+    let gens = latest_generations(table_name);
+    assert!(
+        gens.iter().all(|g| *g == 1),
+        "rebuild_mode 'none' must never rebuild: {gens:?}"
+    );
+    let _ = client;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_rebuild_vector_index_rebuilds_all_shards() {
+    use crate::catalog::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_manual_rebuild";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // Disable auto rebuild so the manual call is the only way generations
+    // bump.
+    let mut configs = vector_configs();
+    configs[0].rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let mut offset = 0u64;
+    for _ in 0..4 {
+        let vectors = random_vectors(50);
+        let ids: Vec<u64> = (offset..offset + 50).collect();
+        offset += 50;
+        let batch = make_batch(&ids, &vectors);
+        table.execute_upsert(batch).await.unwrap();
+    }
+    assert!(
+        latest_generations(table_name).iter().all(|g| *g == 1),
+        "no auto rebuild expected: {:?}",
+        latest_generations(table_name)
+    );
+
+    let rebuilt = table.rebuild_vector_index().await.unwrap();
+    assert!(rebuilt >= 1, "at least one shard rebuilt, got {rebuilt}");
+    assert!(
+        latest_generations(table_name).iter().any(|g| *g >= 2),
+        "manual rebuild must publish a new generation: {:?}",
+        latest_generations(table_name)
+    );
+
+    // Search still works and reaches late rows.
+    let vectors = random_vectors(1);
+    let q = vectors[0]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut rows = 0usize;
+    for batch in &batches {
+        rows += batch.num_rows();
+    }
+    assert_eq!(rows, 5);
 }

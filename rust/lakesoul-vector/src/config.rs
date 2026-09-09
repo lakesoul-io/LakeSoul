@@ -26,6 +26,9 @@ type Result<T> = std::result::Result<T, rootcause::Report>;
 /// - `rotator_type`（默认 `"FhtKac"`）：`"FhtKac"` 或 `"Matrix"`
 /// - `seed`（默认 42）：随机种子
 /// - `use_faster_config`（默认 true）：快速量化
+/// - `rebuild_mode`（默认 `"auto"`）：索引重建策略，`"auto"` 或 `"none"`
+/// - `max_delta_ratio`（默认 1.0）：`"auto"` 模式下，当 shard 的增量向量数 /
+///   基础向量数超过该比例时触发全量重建（重新训练聚类中心）
 #[derive(Debug, Clone)]
 pub struct VectorIndexConfig {
     /// 向量列名（在 Arrow Schema 中的字段名）
@@ -44,6 +47,10 @@ pub struct VectorIndexConfig {
     pub seed: u64,
     /// 是否使用快速量化配置（速度快 100-500x，精度损失 <1%）
     pub use_faster_config: bool,
+    /// 索引重建策略："auto"（默认，按 max_delta_ratio 触发）或 "none"
+    pub rebuild_mode: String,
+    /// auto 模式的重建触发阈值：delta_vectors / base_vectors 超过该值时重建
+    pub max_delta_ratio: f32,
 }
 
 impl Default for VectorIndexConfig {
@@ -57,6 +64,8 @@ impl Default for VectorIndexConfig {
             rotator_type: RotatorType::FhtKacRotator,
             seed: 42,
             use_faster_config: true,
+            rebuild_mode: "auto".to_string(),
+            max_delta_ratio: 1.0,
         }
     }
 }
@@ -78,6 +87,10 @@ struct JsonEntry {
     seed: u64,
     #[serde(default = "default_faster")]
     use_faster_config: bool,
+    #[serde(default = "default_rebuild_mode")]
+    rebuild_mode: String,
+    #[serde(default = "default_max_delta_ratio")]
+    max_delta_ratio: f32,
 }
 
 fn default_nlist() -> usize {
@@ -97,6 +110,12 @@ fn default_seed() -> u64 {
 }
 fn default_faster() -> bool {
     true
+}
+fn default_rebuild_mode() -> String {
+    "auto".to_string()
+}
+fn default_max_delta_ratio() -> f32 {
+    1.0
 }
 
 impl JsonEntry {
@@ -132,6 +151,21 @@ impl JsonEntry {
                 self.column
             ),
         };
+        let rebuild_mode = match self.rebuild_mode.to_lowercase().as_str() {
+            "auto" | "none" => self.rebuild_mode.to_lowercase(),
+            other => bail!(
+                "unknown rebuild_mode '{}' for column '{}', expected 'auto' or 'none'",
+                other,
+                self.column
+            ),
+        };
+        if self.max_delta_ratio <= 0.0 || self.max_delta_ratio.is_nan() {
+            bail!(
+                "invalid max_delta_ratio {} for column '{}': must be > 0",
+                self.max_delta_ratio,
+                self.column
+            );
+        }
         Ok(VectorIndexConfig {
             column_name: self.column,
             dim: self.dim,
@@ -141,6 +175,8 @@ impl JsonEntry {
             rotator_type,
             seed: self.seed,
             use_faster_config: self.use_faster_config,
+            rebuild_mode,
+            max_delta_ratio: self.max_delta_ratio,
         })
     }
 }
@@ -186,6 +222,8 @@ mod tests {
         ));
         assert_eq!(configs[0].seed, 42);
         assert!(configs[0].use_faster_config);
+        assert_eq!(configs[0].rebuild_mode, "auto");
+        assert_eq!(configs[0].max_delta_ratio, 1.0);
     }
 
     #[test]
@@ -258,6 +296,36 @@ mod tests {
     fn test_parse_json_bad_total_bits() {
         let result =
             VectorIndexConfig::parse_json(r#"{"column":"emb","dim":8,"total_bits":32}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_json_rebuild_options() {
+        let configs = VectorIndexConfig::parse_json(
+            r#"{"column":"emb","dim":8,"rebuild_mode":"none","max_delta_ratio":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(configs[0].rebuild_mode, "none");
+        assert_eq!(configs[0].max_delta_ratio, 0.5);
+
+        let configs = VectorIndexConfig::parse_json(
+            r#"{"column":"emb","dim":8,"rebuild_mode":"AUTO","max_delta_ratio":2.0}"#,
+        )
+        .unwrap();
+        assert_eq!(configs[0].rebuild_mode, "auto");
+        assert_eq!(configs[0].max_delta_ratio, 2.0);
+    }
+
+    #[test]
+    fn test_parse_json_bad_rebuild_options() {
+        let result = VectorIndexConfig::parse_json(
+            r#"{"column":"emb","dim":8,"rebuild_mode":"sometimes"}"#,
+        );
+        assert!(result.is_err());
+
+        let result = VectorIndexConfig::parse_json(
+            r#"{"column":"emb","dim":8,"max_delta_ratio":0}"#,
+        );
         assert!(result.is_err());
     }
 }

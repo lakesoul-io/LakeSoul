@@ -524,3 +524,78 @@ async fn test_retry_budget_is_bounded() {
     assert!(manifest::resolve_view(&mstore).await.unwrap().is_none());
     let _: Option<ResolvedView> = None;
 }
+
+#[tokio::test]
+async fn test_index_stats_tracks_base_and_delta_vectors() {
+    use lakesoul_vector::{IdAndVecBatch, IndexStats, IvfRabitqBuilder, index_stats};
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+
+    let mstore = ManifestStore::new(no_cas_store(), "stats".to_string());
+    assert!(index_stats(&mstore).await.unwrap().is_none());
+
+    let mut rng = StdRng::seed_from_u64(3);
+    let dim = 8usize;
+    let rand_vec = |rng: &mut StdRng| {
+        (0..dim)
+            .map(|_| rng.r#gen::<f32>() * 2.0 - 1.0)
+            .collect::<Vec<f32>>()
+    };
+
+    // Fresh build: 64 vectors, 4 clusters -> all base.
+    let mut builder =
+        IvfRabitqBuilder::new(dim, 4, 7, Metric::L2, RotatorType::FhtKacRotator, 1, true);
+    let base: Vec<IdAndVecBatch> = (0..4)
+        .map(|b| IdAndVecBatch {
+            ids: (b * 16..b * 16 + 16).collect(),
+            vectors: (0..16).flat_map(|_| rand_vec(&mut rng)).collect(),
+        })
+        .collect();
+    for batch in &base {
+        builder.insert_batch(batch.clone()).unwrap();
+    }
+    let base_stream = base.clone();
+    let index = builder
+        .build(|| futures::stream::iter(base_stream.clone().into_iter()))
+        .await
+        .unwrap();
+    index.save_to_v4(&mstore).await.unwrap();
+
+    let stats = index_stats(&mstore).await.unwrap().unwrap();
+    assert_eq!(
+        stats,
+        IndexStats {
+            base_segments: 4,
+            delta_segments: 0,
+            base_vectors: 64,
+            delta_vectors: 0,
+        }
+    );
+    assert_eq!(stats.delta_ratio(), 0.0);
+
+    // One incremental flush: 16 more vectors -> delta segments.
+    let mut builder = IvfRabitqBuilder::load(
+        &mstore,
+        dim,
+        4,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        1,
+        true,
+    )
+    .await
+    .unwrap();
+    builder
+        .insert_batch(IdAndVecBatch {
+            ids: (64..80).collect(),
+            vectors: (0..16).flat_map(|_| rand_vec(&mut rng)).collect(),
+        })
+        .unwrap();
+    builder.flush(&mstore).await.unwrap();
+
+    let stats = index_stats(&mstore).await.unwrap().unwrap();
+    assert_eq!(stats.base_vectors, 64);
+    assert_eq!(stats.delta_vectors, 16);
+    assert_eq!(stats.delta_segments, 4, "one delta per dirty cluster");
+    assert_eq!(stats.delta_ratio(), 16.0 / 64.0);
+}

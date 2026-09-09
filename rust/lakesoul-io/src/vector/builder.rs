@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use arrow_schema::Schema;
-use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, ManifestStore, RabitqError};
+use lakesoul_vector::{
+    IdAndVecBatch, IvfRabitqBuilder, ManifestStore, RabitqError, rebuild_v4,
+};
 use object_store::ObjectStore;
 use tracing::{info, warn};
 
@@ -18,6 +20,31 @@ use crate::session::LakeSoulIOSession;
 
 use crate::vector::reader::extract_vector_batch;
 use lakesoul_vector::VectorIndexConfig;
+
+/// Derive the vector index store prefix for the shard containing `file_paths`.
+///
+/// All files of a shard share the same partition directory, so the first
+/// file determines the shard's `_vector_index/{column}/...` prefix (matching
+/// how the search path locates the index).
+pub fn shard_index_prefix(file_paths: &[String], column: &str) -> String {
+    let prefix = file_paths
+        .first()
+        .and_then(|u| {
+            let u = u
+                .trim_start_matches("file://")
+                .trim_start_matches("s3://")
+                .trim_start_matches("s3a://");
+            std::path::Path::new(u.trim_end_matches('/'))
+                .parent()?
+                .to_str()
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    crate::vector::search::derive_index_prefixes(file_paths, &prefix, column)
+        .first()
+        .map(|(p, _)| p.clone())
+        .unwrap_or_else(|| format!("_vector_index/{column}/-5/0/"))
+}
 
 pub struct VectorShardIndexBuilder {
     store: Arc<dyn ObjectStore>,
@@ -48,33 +75,7 @@ impl VectorShardIndexBuilder {
     }
 
     fn index_prefix(&self) -> String {
-        // Derive the base prefix from the first file's parent directory.  A
-        // shard is built from files of a single (partition_desc, bucket), so
-        // they all share the same parent dir and derive_index_prefixes returns
-        // one prefix (matching the search's per-partition reader prefix).
-        let prefix = self
-            .file_paths
-            .first()
-            .and_then(|u| {
-                let u = u
-                    .trim_start_matches("file://")
-                    .trim_start_matches("s3://")
-                    .trim_start_matches("s3a://");
-                std::path::Path::new(u.trim_end_matches('/'))
-                    .parent()?
-                    .to_str()
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_default();
-        let prefixes = crate::vector::search::derive_index_prefixes(
-            &self.file_paths,
-            &prefix,
-            &self.config.column_name,
-        );
-        prefixes
-            .first()
-            .map(|(p, _)| p.clone())
-            .unwrap_or_else(|| format!("_vector_index/{}/-5/0/", self.config.column_name))
+        shard_index_prefix(&self.file_paths, &self.config.column_name)
     }
 
     fn table_prefix(&self) -> String {
@@ -222,6 +223,56 @@ impl VectorShardIndexBuilder {
         Ok(())
     }
 
+    /// Force a full rebuild of the shard index from scratch.
+    ///
+    /// Unlike [`build`](Self::build) — which appends the new batch into the
+    /// existing clusters as a delta segment — a rebuild re-reads **all**
+    /// data files of the shard, re-trains the IVF centroids on the full
+    /// dataset, and publishes a new index generation (CAS-free).  Callers
+    /// must pass the complete shard file list (base + previous deltas + the
+    /// new batch), e.g. when the accumulated delta/base ratio has drifted
+    /// past the configured threshold or on an explicit user request.
+    pub async fn rebuild(self) -> Result<(), RabitqError> {
+        let mstore = ManifestStore::new(self.store.clone(), self.index_prefix());
+        let all_batches = self
+            .read_all_batches()
+            .await
+            .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
+        let total: usize = all_batches.iter().map(|b| b.ids.len()).sum();
+        info!(
+            "Full rebuild: {} vectors from {} batches",
+            total,
+            all_batches.len()
+        );
+        if total == 0 {
+            return Err(RabitqError::InvalidPersistence(
+                "no vectors found in data files",
+            ));
+        }
+        // Clamp nlist so we never create more clusters than there are vectors.
+        let nlist = self.config.nlist.clamp(1, total);
+
+        let batches = all_batches;
+        let make_stream = move || {
+            let iter = batches.clone().into_iter();
+            Box::pin(futures::stream::iter(iter))
+        };
+        rebuild_v4(
+            &mstore,
+            self.config.dim,
+            nlist,
+            self.config.total_bits,
+            self.config.metric,
+            self.config.rotator_type,
+            self.config.seed,
+            self.config.use_faster_config,
+            make_stream,
+        )
+        .await?;
+        info!("Full vector index rebuild complete (new generation)");
+        Ok(())
+    }
+
     /// Read all rows via LakeSoulReader (handles merge-on-read, CDC, etc.)
     async fn read_all_batches(&self) -> crate::Result<Vec<IdAndVecBatch>> {
         let mut results = Vec::new();
@@ -348,6 +399,8 @@ mod tests {
                 rotator_type: RotatorType::FhtKacRotator,
                 seed: 42,
                 use_faster_config: true,
+                rebuild_mode: "auto".to_string(),
+                max_delta_ratio: 1.0,
             },
             outputs.into_iter().map(|output| output.file_path).collect(),
             "id".to_string(),

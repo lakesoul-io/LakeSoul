@@ -24,7 +24,8 @@ use tokio::runtime::Runtime;
 /// The Rust side is the single source of truth for parsing
 /// (``VectorIndexConfig::parse_json``). Each returned dict has keys:
 /// ``column``, ``dim``, ``nlist``, ``total_bits``, ``metric``,
-/// ``rotator_type``, ``seed``, ``use_faster_config``.
+/// ``rotator_type``, ``seed``, ``use_faster_config``, ``rebuild_mode``,
+/// ``max_delta_ratio``.
 ///
 /// Args:
 ///     value: JSON (single object or array) from the ``vector_index_columns``
@@ -54,6 +55,8 @@ fn parse_vector_index_configs(py: Python<'_>, value: String) -> PyResult<Vec<Py<
         d.set_item("rotator_type", rotator_type_str(c.rotator_type))?;
         d.set_item("seed", c.seed)?;
         d.set_item("use_faster_config", c.use_faster_config)?;
+        d.set_item("rebuild_mode", c.rebuild_mode)?;
+        d.set_item("max_delta_ratio", c.max_delta_ratio)?;
         result.push(d.into_any().unbind());
     }
     Ok(result)
@@ -126,6 +129,89 @@ fn build_shard_vector_index(
     seed: u64,
     use_faster_config: bool,
 ) -> PyResult<String> {
+    run_shard_vector_index(
+        store_config,
+        file_paths,
+        pk_column,
+        vector_column,
+        dim,
+        nlist,
+        total_bits,
+        metric,
+        rotator_type,
+        seed,
+        use_faster_config,
+        false,
+    )
+}
+
+/// Rebuild a vector index shard from scratch (fresh IVF k-means over all of
+/// the shard's data files, published as a new index generation).
+///
+/// *file_paths* must contain **all** active data files of the shard (base +
+/// earlier deltas + the latest batch), not just newly written ones.
+///
+/// Returns:
+///     "ok" on success, raises RuntimeError on failure
+#[pyfunction]
+#[pyo3(signature = (
+    store_config,
+    file_paths,
+    pk_column,
+    vector_column,
+    dim,
+    nlist = 256,
+    total_bits = 7,
+    metric = String::from("L2"),
+    rotator_type = String::from("FhtKac"),
+    seed = 42,
+    use_faster_config = true,
+))]
+#[allow(clippy::too_many_arguments)]
+fn rebuild_shard_vector_index(
+    store_config: HashMap<String, String>,
+    file_paths: Vec<String>,
+    pk_column: String,
+    vector_column: String,
+    dim: usize,
+    nlist: usize,
+    total_bits: usize,
+    metric: String,
+    rotator_type: String,
+    seed: u64,
+    use_faster_config: bool,
+) -> PyResult<String> {
+    run_shard_vector_index(
+        store_config,
+        file_paths,
+        pk_column,
+        vector_column,
+        dim,
+        nlist,
+        total_bits,
+        metric,
+        rotator_type,
+        seed,
+        use_faster_config,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_shard_vector_index(
+    store_config: HashMap<String, String>,
+    file_paths: Vec<String>,
+    pk_column: String,
+    vector_column: String,
+    dim: usize,
+    nlist: usize,
+    total_bits: usize,
+    metric: String,
+    rotator_type: String,
+    seed: u64,
+    use_faster_config: bool,
+    force_rebuild: bool,
+) -> PyResult<String> {
     let store = create_object_store(&store_config)?;
 
     let metric = match metric.to_lowercase().as_str() {
@@ -158,6 +244,8 @@ fn build_shard_vector_index(
         rotator_type,
         seed,
         use_faster_config,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
     };
 
     // Build object_store_options for LakeSoulReader (converted from store_config)
@@ -184,9 +272,12 @@ fn build_shard_vector_index(
     })?;
 
     runtime.block_on(async move {
-        builder
-            .build()
-            .await
+        let result = if force_rebuild {
+            builder.rebuild().await
+        } else {
+            builder.build().await
+        };
+        result
             .map(|_| "ok".to_string())
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -284,6 +375,7 @@ fn create_s3_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectS
 pub fn init(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     let submodule = PyModule::new(m.py(), "vector")?;
     submodule.add_function(wrap_pyfunction!(build_shard_vector_index, &submodule)?)?;
+    submodule.add_function(wrap_pyfunction!(rebuild_shard_vector_index, &submodule)?)?;
     submodule.add_function(wrap_pyfunction!(parse_vector_index_configs, &submodule)?)?;
     m.add_submodule(&submodule)?;
     let full_name = format!("{}.vector", m.name()?);

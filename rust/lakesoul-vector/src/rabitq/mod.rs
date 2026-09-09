@@ -18,7 +18,7 @@ pub(crate) mod simd;
 // Re-export key types at the rabitq module level for convenience
 pub use ivf::builder::IvfRabitqBuilder;
 pub use ivf::{IdAndVecBatch, IvfRabitqIndex, SearchParams, SearchResult, rebuild_v4};
-pub use manifest::ManifestStore;
+pub use manifest::{IndexStats, ManifestStore, index_stats};
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;
 

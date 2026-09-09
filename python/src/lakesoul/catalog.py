@@ -711,6 +711,120 @@ class LakeSoulTable:
             store_config=store_config,
         )
 
+    def rebuild_vector_index(
+        self,
+        *,
+        column: str | None = None,
+        partition_desc: str | None = None,
+        partitions: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Rebuild the IVF+RaBitQ vector index from scratch for this table.
+
+        Unlike incremental writes — which append vectors to the centroids
+        trained at the original build — a rebuild re-reads every active data
+        file of each shard, re-trains the IVF centroids on the full dataset,
+        and publishes a new index generation.  Use this after the data
+        distribution has drifted (or call it proactively as maintenance).
+
+        Args:
+            column: Vector column to rebuild.  When omitted, rebuilds all
+                configured ``vector_index_columns``.
+            partition_desc: Rebuild a single partition, e.g.
+                ``"range=2024-01-01"``.  When omitted, rebuilds all
+                partitions.
+            partitions: Shorthand for partition_desc — a mapping of
+                partition column names to values.
+
+        Returns:
+            Dict with summary: ``{"status": "ok", "partitions": N, ...}``.
+        """
+        if partition_desc is not None and partitions is not None:
+            raise ValueError("partition_desc and partitions are mutually exclusive")
+
+        configs = self._vector_configs()
+        if not configs:
+            raise ValueError(
+                "table has no vector_index_columns configured; nothing to rebuild"
+            )
+        columns = [column] if column is not None else [c["column"] for c in configs]
+        unknown = [c for c in columns if self._vector_config_for(c) is None]
+        if unknown:
+            raise ValueError(
+                f"column(s) {unknown} are not configured for vector indexing"
+            )
+
+        store_config = _default_object_store_config(catalog=self._catalog, table=self)
+        from lakesoul.vector_index import (
+            build_partition_vector_index,
+            build_table_vector_index,
+        )
+
+        def rebuild_one(col: str) -> dict[str, Any]:
+            dim, nlist, total_bits, metric, rotator_type, seed, use_faster_config = (
+                self._resolved_index_params(
+                    col, None, None, None, None, None, None, None
+                )[1:]
+            )
+            if partition_desc is not None:
+                return build_partition_vector_index(
+                    table_name=self.name,
+                    namespace=self.namespace,
+                    partition_desc=partition_desc,
+                    vector_column=col,
+                    dim=dim,
+                    nlist=nlist,
+                    total_bits=total_bits,
+                    metric=metric,
+                    rotator_type=rotator_type,
+                    seed=seed,
+                    use_faster_config=use_faster_config,
+                    store_config=store_config,
+                    rebuild=True,
+                )
+            if partitions is not None:
+                part_cols = self.partition_by
+                missing = [c for c in part_cols if c not in partitions]
+                if missing:
+                    raise ValueError(f"missing partition columns: {missing}")
+                desc = ",".join(f"{c}={partitions[c]}" for c in part_cols)
+                return build_partition_vector_index(
+                    table_name=self.name,
+                    namespace=self.namespace,
+                    partition_desc=desc,
+                    vector_column=col,
+                    dim=dim,
+                    nlist=nlist,
+                    total_bits=total_bits,
+                    metric=metric,
+                    rotator_type=rotator_type,
+                    seed=seed,
+                    use_faster_config=use_faster_config,
+                    store_config=store_config,
+                    rebuild=True,
+                )
+            return build_table_vector_index(
+                table_name=self.name,
+                namespace=self.namespace,
+                vector_column=col,
+                dim=dim,
+                nlist=nlist,
+                total_bits=total_bits,
+                metric=metric,
+                rotator_type=rotator_type,
+                seed=seed,
+                use_faster_config=use_faster_config,
+                store_config=store_config,
+                rebuild=True,
+            )
+
+        results = [rebuild_one(col) for col in columns]
+        return {
+            "status": "ok",
+            "table_name": self.name,
+            "columns": columns,
+            "results": results,
+        }
+
     def _vector_configs(self) -> list[VectorIndexConfig]:
         """Parse the ``vector_index_columns`` property into config dicts.
 

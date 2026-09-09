@@ -32,7 +32,7 @@ import collections
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from ._lib.vector import build_shard_vector_index
+from ._lib.vector import build_shard_vector_index, rebuild_shard_vector_index
 from .metadata.native_client import NativeMetadataClient
 
 
@@ -105,8 +105,10 @@ def build_partition_vector_index(
     seed: int = 42,
     use_faster_config: bool = True,
     store_config: dict[str, Any] | None = None,
+    rebuild: bool = False,
 ) -> dict[str, Any]:
-    """Build (or update) the vector index for a single partition of a table.
+    """Build (or update, or rebuild) the vector index for a single partition
+    of a table.
 
     This is the main entry point for background index building.  It:
 
@@ -131,6 +133,13 @@ def build_partition_vector_index(
             ``{"type": "s3", "bucket": "...", "region": "...",
                "access_key_id": "...", "secret_access_key": "...", ...}``.
             If not provided, reads ``LAKESOUL_OBJECT_STORE_*`` env vars.
+
+    Args:
+        rebuild: When true, every shard is rebuilt from scratch (fresh IVF
+            k-means over all of the shard's active data files, published as
+            a new index generation) instead of receiving an incremental
+            delta update.  This is the way to re-train centroids after the
+            data distribution has drifted.
 
     Returns:
         Dict with summary::
@@ -181,9 +190,10 @@ def build_partition_vector_index(
     # 3. Build index for each shard
     succeeded = 0
     failed = 0
+    shard_builder = rebuild_shard_vector_index if rebuild else build_shard_vector_index
     for shard in shards:
         try:
-            result = build_shard_vector_index(
+            result = shard_builder(
                 store_config=store_config,
                 file_paths=shard.file_paths,
                 pk_column=pk_column,
@@ -232,11 +242,13 @@ def build_table_vector_index(
     seed: int = 42,
     use_faster_config: bool = True,
     store_config: dict[str, Any] | None = None,
+    rebuild: bool = False,
 ) -> dict[str, Any]:
-    """Build vector index for ALL partitions of a table.
+    """Build (or rebuild) vector index for ALL partitions of a table.
 
     Convenience wrapper around ``build_partition_vector_index`` that
-    iterates over all existing partitions of the table.
+    iterates over all existing partitions of the table.  When *rebuild* is
+    true every shard is rebuilt from scratch (fresh k-means).
 
     Returns:
         Dict with per-partition results.
@@ -261,6 +273,7 @@ def build_table_vector_index(
             seed=seed,
             use_faster_config=use_faster_config,
             store_config=store_config,
+            rebuild=rebuild,
         )
         results.append(result)
 

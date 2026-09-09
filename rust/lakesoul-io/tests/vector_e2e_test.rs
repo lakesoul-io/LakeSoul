@@ -106,6 +106,8 @@ async fn test_glove_e2e_build_and_search() {
         rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
         seed: 42,
         use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
     };
 
     // Build index from parquet file
@@ -220,6 +222,8 @@ async fn test_build_and_list_files() {
         rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
         seed: 42,
         use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
     };
     let parquet_path = format!("{}/data/train_10k.parquet", TEST_DATA_DIR);
     let builder = VectorShardIndexBuilder::new(
@@ -331,6 +335,8 @@ async fn test_reader_with_vector_search() {
         rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
         seed: 42,
         use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
     };
     let builder = VectorShardIndexBuilder::new(
         store.clone(),

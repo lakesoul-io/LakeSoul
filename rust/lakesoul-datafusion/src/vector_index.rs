@@ -10,16 +10,30 @@
 //! `(partition, hash bucket)` from the newly written files; the Rust
 //! builder performs an incremental delta update when the shard index
 //! already exists.
+//!
+//! # Rebuilds
+//!
+//! Incremental writes append vectors to the centroids trained at the
+//! initial build, so after enough deltas the centroids no longer match the
+//! (growing) data distribution.  A shard whose
+//! `rebuild_mode == "auto"` config has accumulated
+//! `delta_vectors / base_vectors > max_delta_ratio` is therefore rebuilt
+//! from scratch (fresh k-means over all of the shard's data files) as part
+//! of the write.  [`rebuild_vector_index`] exposes the same operation
+//! explicitly.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use lakesoul_io::helpers::extract_hash_bucket_id;
-use lakesoul_io::vector::builder::VectorShardIndexBuilder;
-use lakesoul_vector::{Metric, RotatorType, VectorIndexConfig};
+use lakesoul_io::vector::builder::{VectorShardIndexBuilder, shard_index_prefix};
+use lakesoul_vector::{
+    IndexStats, ManifestStore, Metric, RotatorType, VectorIndexConfig, index_stats,
+};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use rootcause::{bail, report};
+use tracing::info;
 
 use crate::Result;
 
@@ -50,6 +64,14 @@ fn default_use_faster_config() -> bool {
     true
 }
 
+fn default_rebuild_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_max_delta_ratio() -> f32 {
+    1.0
+}
+
 /// One entry of the `vector_index_columns` table property (JSON).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VectorIndexTableConfig {
@@ -75,6 +97,15 @@ pub struct VectorIndexTableConfig {
     /// Fast quantization mode.
     #[serde(default = "default_use_faster_config")]
     pub use_faster_config: bool,
+    /// Index rebuild strategy: `"auto"` (default) rebuilds a shard from
+    /// scratch when its delta/base vector ratio exceeds `max_delta_ratio`;
+    /// `"none"` only ever appends delta segments.
+    #[serde(default = "default_rebuild_mode")]
+    pub rebuild_mode: String,
+    /// Auto-rebuild trigger: rebuild a shard when
+    /// `delta_vectors / base_vectors` exceeds this ratio.
+    #[serde(default = "default_max_delta_ratio")]
+    pub max_delta_ratio: f32,
 }
 
 impl VectorIndexTableConfig {
@@ -99,6 +130,8 @@ impl VectorIndexTableConfig {
             rotator_type,
             seed: self.seed,
             use_faster_config: self.use_faster_config,
+            rebuild_mode: self.rebuild_mode.to_lowercase(),
+            max_delta_ratio: self.max_delta_ratio,
         })
     }
 }
@@ -141,6 +174,20 @@ pub fn validate_vector_index_configs(
     }
     for config in configs {
         let column = &config.column;
+        let rebuild_mode = config.rebuild_mode.to_lowercase();
+        if rebuild_mode != "auto" && rebuild_mode != "none" {
+            bail!(
+                "vector index column '{column}' rebuild_mode must be \"auto\" or \"none\", \
+                 got {:?}",
+                config.rebuild_mode
+            );
+        }
+        if config.max_delta_ratio <= 0.0 || config.max_delta_ratio.is_nan() {
+            bail!(
+                "vector index column '{column}' max_delta_ratio must be > 0, got {}",
+                config.max_delta_ratio
+            );
+        }
         let Some(column_index) = schema.index_of(column).ok() else {
             bail!("vector index column '{column}' not found in table schema");
         };
@@ -219,14 +266,20 @@ pub fn parse_vector_index_from_table_properties(
     }
 }
 
-/// Build (or incrementally update) the vector index for newly committed
-/// files of a write.
+/// Build (or incrementally update, or rebuild) the vector index for newly
+/// committed files of a write.
 ///
 /// Files are grouped by `(partition_desc, hash_bucket_id)`; each group is
 /// one index shard and is handed to the native builder, which derives the
 /// index location from the files' directory and performs a delta update
-/// when the shard index already exists.  Fails loudly when any shard of a
-/// configured column fails.
+/// when the shard index already exists.
+///
+/// When `all_active_files` (every currently active data file of the table,
+/// from the metadata client) is provided and the shard's config uses
+/// `rebuild_mode: "auto"`, a shard whose index has drifted past
+/// `max_delta_ratio` (delta vectors / base vectors) is **rebuilt** from all
+/// of its files instead of receiving another delta segment.  Fails loudly
+/// when any shard of a configured column fails.
 ///
 /// `partition_files` maps a partition description to its newly written
 /// (file path, row count) pairs, as produced by the write sink.
@@ -235,6 +288,7 @@ pub async fn auto_build_vector_index(
     primary_keys: &[String],
     object_store_options: &HashMap<String, String>,
     partition_files: &HashMap<String, (Vec<String>, u64)>,
+    all_active_files: Option<&[String]>,
 ) -> Result<usize> {
     if configs.is_empty() || partition_files.is_empty() {
         return Ok(0);
@@ -253,6 +307,26 @@ pub async fn auto_build_vector_index(
     let mut built = 0usize;
     for config in configs {
         let vector_config = config.to_vector_index_config()?;
+        let rebuild = vector_config.rebuild_mode == "auto";
+        // Files of each shard, for a full rebuild when drift is detected.
+        let shard_all_files: HashMap<String, Vec<String>> = if rebuild {
+            match all_active_files {
+                Some(all) => {
+                    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+                    for file in all {
+                        let prefix = shard_index_prefix(
+                            std::slice::from_ref(file),
+                            &config.column,
+                        );
+                        map.entry(prefix).or_default().push(file.clone());
+                    }
+                    map
+                }
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
         let mut failures: Vec<String> = Vec::new();
         // One shard per (partition_desc, hash_bucket_id) — files from
         // different range partitions must never share a shard.
@@ -268,16 +342,52 @@ pub async fn auto_build_vector_index(
             }
         }
         for ((partition_desc, bucket), bucket_files) in shards {
-            let result = VectorShardIndexBuilder::new(
-                store.clone(),
-                vector_config.clone(),
-                bucket_files,
-                pk_column.clone(),
-                object_store_options.clone(),
-                None,
-            )
-            .build()
-            .await;
+            // Decide: full rebuild (drift) or incremental delta?
+            let prefix = shard_index_prefix(&bucket_files, &config.column);
+            // Rebuild only when the complete shard file list is available —
+            // rebuilding from just the new files would drop the existing
+            // index contents.
+            let full_shard_files = shard_all_files.get(&prefix).cloned();
+            let should_rebuild = rebuild
+                && full_shard_files
+                    .as_ref()
+                    .is_some_and(|files| !files.is_empty())
+                && drift_exceeds_threshold(
+                    &store,
+                    &prefix,
+                    vector_config.max_delta_ratio,
+                )
+                .await
+                .unwrap_or(false);
+            let result = if should_rebuild {
+                let files = full_shard_files.expect("checked above");
+                info!(
+                    "Rebuilding vector index shard for column '{}' ({} files)",
+                    config.column,
+                    files.len()
+                );
+                VectorShardIndexBuilder::new(
+                    store.clone(),
+                    vector_config.clone(),
+                    files,
+                    pk_column.clone(),
+                    object_store_options.clone(),
+                    None,
+                )
+                .rebuild()
+                .await
+            } else {
+                VectorShardIndexBuilder::new(
+                    store.clone(),
+                    vector_config.clone(),
+                    bucket_files,
+                    pk_column.clone(),
+                    object_store_options.clone(),
+                    None,
+                )
+                .build()
+                .await
+            };
             match result {
                 Ok(()) => built += 1,
                 Err(error) => failures.push(format!(
@@ -296,6 +406,93 @@ pub async fn auto_build_vector_index(
     Ok(built)
 }
 
+/// Whether the shard index at `prefix` has drifted past the ratio: only
+/// meaningful when a manifest exists (returns `Ok(false)` otherwise).
+async fn drift_exceeds_threshold(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    max_delta_ratio: f32,
+) -> Result<bool> {
+    let mstore = ManifestStore::new(store.clone(), prefix.to_string());
+    let stats: Option<IndexStats> = index_stats(&mstore)
+        .await
+        .map_err(|e| report!("failed to read vector index stats at '{prefix}': {e}"))?;
+    Ok(stats.is_some_and(|s| s.delta_ratio() > max_delta_ratio))
+}
+
+/// Rebuild every vector index shard of a table from scratch (fresh
+/// k-means over all of the table's active data files), regardless of the
+/// configured `rebuild_mode`/`max_delta_ratio`.
+///
+/// Returns the number of rebuilt shards.  Fails loudly when any shard of a
+/// configured column fails.
+pub async fn rebuild_vector_index(
+    client: &lakesoul_metadata::MetaDataClient,
+    table_name: &str,
+    namespace: &str,
+    primary_keys: &[String],
+    object_store_options: HashMap<String, String>,
+) -> Result<usize> {
+    let Some(table_info) = client
+        .get_table_info_by_table_name(table_name, namespace)
+        .await?
+    else {
+        bail!("table '{namespace}.{table_name}' not found");
+    };
+    let configs = parse_vector_index_from_table_properties(&table_info.properties)?;
+    if configs.is_empty() {
+        return Ok(0);
+    }
+    let Some(pk_column) = primary_keys.first() else {
+        bail!("a vector index requires a table with a primary key");
+    };
+    let all_active_files = client
+        .get_data_files_by_table_name(table_name, namespace)
+        .await?;
+    let Some(first_file) = all_active_files.first() else {
+        return Ok(0);
+    };
+    let store = store_for_files(first_file, &object_store_options)?;
+
+    let mut rebuilt = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for config in &configs {
+        let vector_config = config.to_vector_index_config()?;
+        // Group every active file into its shard.
+        let mut shards: HashMap<String, Vec<String>> = HashMap::new();
+        for file in &all_active_files {
+            if extract_hash_bucket_id(file).is_some() {
+                let prefix =
+                    shard_index_prefix(std::slice::from_ref(file), &config.column);
+                shards.entry(prefix).or_default().push(file.clone());
+            }
+        }
+        for (prefix, files) in shards {
+            let result = VectorShardIndexBuilder::new(
+                store.clone(),
+                vector_config.clone(),
+                files,
+                pk_column.clone(),
+                object_store_options.clone(),
+                None,
+            )
+            .rebuild()
+            .await;
+            match result {
+                Ok(()) => rebuilt += 1,
+                Err(error) => failures.push(format!("{prefix}: {error}")),
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(report!(
+            "vector index rebuild failed for column(s): {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(rebuilt)
+}
+
 /// Build an object store for the vector index from the table's files.
 fn store_for_files(
     first_file: &str,
@@ -309,5 +506,75 @@ fn store_for_files(
         ))
     } else {
         Ok(Arc::new(LocalFileSystem::new()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schema() -> arrow::datatypes::Schema {
+        use arrow::datatypes::{DataType, Field};
+        arrow::datatypes::Schema::new(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    8,
+                ),
+                false,
+            ),
+        ])
+    }
+
+    fn config(rebuild_mode: &str, max_delta_ratio: f32) -> VectorIndexTableConfig {
+        VectorIndexTableConfig {
+            column: "vec".to_string(),
+            dim: 8,
+            nlist: 4,
+            total_bits: 7,
+            metric: "L2".to_string(),
+            rotator_type: "FhtKac".to_string(),
+            seed: 42,
+            use_faster_config: true,
+            rebuild_mode: rebuild_mode.to_string(),
+            max_delta_ratio,
+        }
+    }
+
+    #[test]
+    fn parse_and_validate_rebuild_options() {
+        let configs =
+            parse_vector_index_columns(Some(r#"[{"column":"vec","dim":8}]"#)).unwrap();
+        assert_eq!(configs[0].rebuild_mode, "auto", "default is auto");
+        assert_eq!(configs[0].max_delta_ratio, 1.0);
+
+        let configs = parse_vector_index_columns(Some(
+            r#"[{"column":"vec","dim":8,"rebuild_mode":"none","max_delta_ratio":0.25}]"#,
+        ))
+        .unwrap();
+        assert_eq!(configs[0].rebuild_mode, "none");
+        assert_eq!(configs[0].max_delta_ratio, 0.25);
+        validate_vector_index_configs(&configs, &schema(), &["id".to_string()]).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_bad_rebuild_options() {
+        let err = validate_vector_index_configs(
+            &[config("sometimes", 1.0)],
+            &schema(),
+            &["id".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("rebuild_mode"), "{err}");
+
+        let err = validate_vector_index_configs(
+            &[config("auto", 0.0)],
+            &schema(),
+            &["id".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("max_delta_ratio"), "{err}");
     }
 }

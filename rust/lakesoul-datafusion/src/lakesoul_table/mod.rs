@@ -76,7 +76,6 @@ impl LakeSoulTable {
     pub async fn for_name(table_name: &str) -> Result<Self> {
         Ok(Self::for_namespace_and_name("default", table_name, None).await?)
     }
-
     pub async fn for_table_reference(
         table_ref: &TableReference,
         client: Option<MetaDataClientRef>,
@@ -369,6 +368,21 @@ impl LakeSoulTable {
 
     pub fn table_namespace(&self) -> &str {
         &self.table_info.table_namespace
+    }
+
+    /// Rebuild every vector index shard of this table from scratch (fresh
+    /// k-means over all active data files), ignoring the configured
+    /// `rebuild_mode`/`max_delta_ratio`.  Returns the number of rebuilt
+    /// shards.
+    pub async fn rebuild_vector_index(&self) -> Result<usize> {
+        crate::vector_index::rebuild_vector_index(
+            &self.client,
+            self.table_name(),
+            self.table_namespace(),
+            &self.primary_keys,
+            HashMap::new(),
+        )
+        .await
     }
 
     pub fn schema(&self) -> SchemaRef {

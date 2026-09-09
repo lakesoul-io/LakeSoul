@@ -1124,3 +1124,63 @@ pub async fn manifest_exists(mstore: &ManifestStore) -> bool {
             .await
             .is_ok()
 }
+
+// ---- index statistics (drift detection for auto-rebuild) ----
+
+/// Aggregate statistics over the current view of an index manifest,
+/// used to decide whether an incremental (delta) update has drifted far
+/// enough from the base centroids to warrant a full rebuild.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexStats {
+    /// Segments at version 0 (one per cluster after a fresh build/rebuild).
+    pub base_segments: usize,
+    /// Segments at version >= 1 (written by incremental delta flushes).
+    pub delta_segments: usize,
+    /// Total vectors stored in base segments.
+    pub base_vectors: usize,
+    /// Total vectors stored in delta segments.
+    pub delta_vectors: usize,
+}
+
+impl IndexStats {
+    /// Ratio `delta_vectors / base_vectors`.  When there are no base
+    /// vectors but deltas exist the ratio is infinite (a rebuild is
+    /// warranted); when both are zero it is 0.0.
+    pub fn delta_ratio(&self) -> f32 {
+        if self.base_vectors == 0 {
+            if self.delta_vectors == 0 {
+                0.0
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            self.delta_vectors as f32 / self.base_vectors as f32
+        }
+    }
+}
+
+/// Compute [`IndexStats`] for the store's current index view.
+///
+/// Returns `Ok(None)` when no manifest exists at all (fresh build needed);
+/// `Ok(Some(stats))` otherwise.  Only reads metadata (manifest files), never
+/// segment payloads.
+pub async fn index_stats(
+    mstore: &ManifestStore,
+) -> Result<Option<IndexStats>, RabitqError> {
+    let Some(view) = resolve_view(mstore).await? else {
+        return Ok(None);
+    };
+    let mut stats = IndexStats::default();
+    for entry in view.cluster_map.values() {
+        for seg in &entry.segments {
+            if seg.segment_version == 0 {
+                stats.base_segments += 1;
+                stats.base_vectors += seg.num_vectors as usize;
+            } else {
+                stats.delta_segments += 1;
+                stats.delta_vectors += seg.num_vectors as usize;
+            }
+        }
+    }
+    Ok(Some(stats))
+}
