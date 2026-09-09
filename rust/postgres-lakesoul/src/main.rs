@@ -6,8 +6,7 @@
 use std::sync::{Arc, Once};
 
 use clap::Parser;
-use datafusion_postgres::serve;
-use datafusion_postgres::{ServerOptions, auth::AuthManager};
+use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_metadata::MetaDataClient;
 use rootcause::Report;
@@ -15,10 +14,12 @@ use tokio::runtime::{self};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use crate::session::{PgSessionFactory, SessionIdentity, SessionSettings};
+use crate::server::LakeSoulHandlers;
+use crate::session::PgSessionFactory;
 
 mod catalog;
 mod misc;
+mod server;
 mod session;
 
 fn init_logger() {
@@ -50,17 +51,18 @@ async fn main_inner() -> Result<(), Report> {
     let session_factory = PgSessionFactory::new(
         Arc::clone(&meta_client),
         &CoreArgs::from_env(),
-        auth_manager,
+        Arc::clone(&auth_manager),
     )?;
-    let session = session_factory
-        .create_session(SessionIdentity::default(), &SessionSettings::default())?;
-    let ctx = Arc::clone(&session.context);
     init_logger();
     let server_opts = ServerOptions::new()
         .with_host(String::from("127.0.0.1"))
         .with_port(cli.port);
     info!("start serving on 127.0.0.1:{}", cli.port);
-    serve(ctx, &server_opts).await?;
+    serve_with_handlers(
+        Arc::new(LakeSoulHandlers::new(Arc::new(session_factory))),
+        &server_opts,
+    )
+    .await?;
     Ok(())
 }
 

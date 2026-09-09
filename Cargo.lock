@@ -7011,9 +7011,11 @@ dependencies = [
 name = "postgres-lakesoul"
 version = "4.0.0"
 dependencies = [
+ "async-trait",
  "clap",
  "datafusion",
  "datafusion-postgres",
+ "futures",
  "jiff",
  "lakesoul-datafusion",
  "lakesoul-metadata",
