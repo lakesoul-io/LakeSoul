@@ -599,3 +599,117 @@ async fn test_index_stats_tracks_base_and_delta_vectors() {
     assert_eq!(stats.delta_segments, 4, "one delta per dirty cluster");
     assert_eq!(stats.delta_ratio(), 16.0 / 64.0);
 }
+
+#[tokio::test]
+async fn test_cluster_stats_reports_per_cluster_delta_ratio() {
+    use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, cluster_stats};
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+
+    let mstore = ManifestStore::new(no_cas_store(), "cstats".to_string());
+    assert!(cluster_stats(&mstore).await.unwrap().is_none());
+
+    let mut rng = StdRng::seed_from_u64(5);
+    let dim = 8usize;
+    let rand_vec = |rng: &mut StdRng| {
+        (0..dim)
+            .map(|_| rng.r#gen::<f32>() * 2.0 - 1.0)
+            .collect::<Vec<f32>>()
+    };
+
+    // Fresh build: 64 vectors, 4 clusters.
+    let mut builder =
+        IvfRabitqBuilder::new(dim, 4, 7, Metric::L2, RotatorType::FhtKacRotator, 1, true);
+    let base: Vec<IdAndVecBatch> = (0..4)
+        .map(|b| IdAndVecBatch {
+            ids: (b * 16..b * 16 + 16).collect(),
+            vectors: (0..16).flat_map(|_| rand_vec(&mut rng)).collect(),
+        })
+        .collect();
+    for batch in &base {
+        builder.insert_batch(batch.clone()).unwrap();
+    }
+    let base_stream = base.clone();
+    let index = builder
+        .build(|| futures::stream::iter(base_stream.clone().into_iter()))
+        .await
+        .unwrap();
+    index.save_to_v4(&mstore).await.unwrap();
+
+    let stats = cluster_stats(&mstore).await.unwrap().unwrap();
+    assert_eq!(stats.len(), 4);
+    let base_total: usize = stats.iter().map(|s| s.base_vectors).sum();
+    assert_eq!(base_total, 64);
+    for s in &stats {
+        assert_eq!(s.delta_vectors, 0);
+        assert_eq!(s.delta_ratio(), 0.0);
+    }
+
+    // One flush concentrated in a single cluster: 24 copies of one vector
+    // (no perturbation) all map to the same nearest cluster and push its
+    // delta/base ratio above 1.0 (its base is at most ~18 here).
+    let mut builder = IvfRabitqBuilder::load(
+        &mstore,
+        dim,
+        4,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        1,
+        true,
+    )
+    .await
+    .unwrap();
+    let seed_vec = rand_vec(&mut rng);
+    let clustered: Vec<f32> = (0..24).flat_map(|_| seed_vec.clone()).collect();
+    builder
+        .insert_batch(IdAndVecBatch {
+            ids: (64..88).collect(),
+            vectors: clustered,
+        })
+        .unwrap();
+    builder.flush(&mstore).await.unwrap();
+
+    let stats = cluster_stats(&mstore).await.unwrap().unwrap();
+    assert_eq!(stats.len(), 4);
+    let delta_total: usize = stats.iter().map(|s| s.delta_vectors).sum();
+    assert_eq!(delta_total, 24);
+    let overfull: Vec<&lakesoul_vector::ClusterStat> =
+        stats.iter().filter(|s| s.delta_ratio() > 1.0).collect();
+    assert_eq!(
+        overfull.len(),
+        1,
+        "exactly one cluster should absorb the clustered flush: {stats:?}"
+    );
+    let hot = overfull[0];
+    assert_eq!(hot.delta_vectors, 24);
+    assert!(hot.delta_ratio() > 1.0);
+    // The other clusters have no deltas at all.
+    assert!(
+        stats
+            .iter()
+            .filter(|s| s.cluster_id != hot.cluster_id)
+            .all(|s| s.delta_vectors == 0)
+    );
+}
+
+#[tokio::test]
+async fn test_cluster_stats_empty_cluster_ratio_is_infinite_or_zero() {
+    let stat = lakesoul_vector::ClusterStat {
+        cluster_id: 0,
+        base_vectors: 0,
+        delta_vectors: 0,
+    };
+    assert_eq!(stat.delta_ratio(), 0.0);
+    let stat = lakesoul_vector::ClusterStat {
+        cluster_id: 1,
+        base_vectors: 0,
+        delta_vectors: 5,
+    };
+    assert_eq!(stat.delta_ratio(), f32::INFINITY);
+    let stat = lakesoul_vector::ClusterStat {
+        cluster_id: 2,
+        base_vectors: 10,
+        delta_vectors: 25,
+    };
+    assert_eq!(stat.delta_ratio(), 2.5);
+}

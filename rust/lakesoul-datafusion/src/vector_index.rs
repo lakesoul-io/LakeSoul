@@ -16,11 +16,13 @@
 //! Incremental writes append vectors to the centroids trained at the
 //! initial build, so after enough deltas the centroids no longer match the
 //! (growing) data distribution.  A shard whose
-//! `rebuild_mode == "auto"` config has accumulated
-//! `delta_vectors / base_vectors > max_delta_ratio` is therefore rebuilt
-//! from scratch (fresh k-means over all of the shard's data files) as part
-//! of the write.  [`rebuild_vector_index`] exposes the same operation
-//! explicitly.
+//! `rebuild_mode == "auto"` config is therefore rebuilt from scratch (fresh
+//! k-means over all of the shard's data files) as part of the write once a
+//! **cluster** of the shard has accumulated
+//! `delta_vectors / base_vectors > max_delta_ratio` — i.e. when new data
+//! has landed in an existing cluster disproportionately, its centroid no
+//! longer represents that cluster's contents.  [`rebuild_vector_index`]
+//! exposes the same operation explicitly.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ use std::sync::Arc;
 use lakesoul_io::helpers::extract_hash_bucket_id;
 use lakesoul_io::vector::builder::{VectorShardIndexBuilder, shard_index_prefix};
 use lakesoul_vector::{
-    IndexStats, ManifestStore, Metric, RotatorType, VectorIndexConfig, index_stats,
+    ClusterStat, ManifestStore, Metric, RotatorType, VectorIndexConfig, cluster_stats,
 };
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
@@ -98,12 +100,14 @@ pub struct VectorIndexTableConfig {
     #[serde(default = "default_use_faster_config")]
     pub use_faster_config: bool,
     /// Index rebuild strategy: `"auto"` (default) rebuilds a shard from
-    /// scratch when its delta/base vector ratio exceeds `max_delta_ratio`;
-    /// `"none"` only ever appends delta segments.
+    /// scratch when any of its clusters' delta/base vector ratio exceeds
+    /// `max_delta_ratio`; `"none"` only ever appends delta segments.
     #[serde(default = "default_rebuild_mode")]
     pub rebuild_mode: String,
-    /// Auto-rebuild trigger: rebuild a shard when
-    /// `delta_vectors / base_vectors` exceeds this ratio.
+    /// Auto-rebuild trigger: rebuild the shard when **any cluster** of it
+    /// has accumulated `delta_vectors / base_vectors` above this ratio
+    /// (per-cluster drift detection; a cluster with no base vectors but
+    /// deltas has infinite ratio).
     #[serde(default = "default_max_delta_ratio")]
     pub max_delta_ratio: f32,
 }
@@ -276,10 +280,10 @@ pub fn parse_vector_index_from_table_properties(
 ///
 /// When `all_active_files` (every currently active data file of the table,
 /// from the metadata client) is provided and the shard's config uses
-/// `rebuild_mode: "auto"`, a shard whose index has drifted past
-/// `max_delta_ratio` (delta vectors / base vectors) is **rebuilt** from all
-/// of its files instead of receiving another delta segment.  Fails loudly
-/// when any shard of a configured column fails.
+/// `rebuild_mode: "auto"`, a shard any of whose clusters has drifted past
+/// `max_delta_ratio` (cluster delta vectors / cluster base vectors) is
+/// **rebuilt** from all of its files instead of receiving another delta
+/// segment.  Fails loudly when any shard of a configured column fails.
 ///
 /// `partition_files` maps a partition description to its newly written
 /// (file path, row count) pairs, as produced by the write sink.
@@ -406,7 +410,8 @@ pub async fn auto_build_vector_index(
     Ok(built)
 }
 
-/// Whether the shard index at `prefix` has drifted past the ratio: only
+/// Whether any cluster of the shard index at `prefix` has drifted past the
+/// configured ratio (`delta_vectors / base_vectors` per cluster).  Only
 /// meaningful when a manifest exists (returns `Ok(false)` otherwise).
 async fn drift_exceeds_threshold(
     store: &Arc<dyn ObjectStore>,
@@ -414,10 +419,11 @@ async fn drift_exceeds_threshold(
     max_delta_ratio: f32,
 ) -> Result<bool> {
     let mstore = ManifestStore::new(store.clone(), prefix.to_string());
-    let stats: Option<IndexStats> = index_stats(&mstore)
+    let clusters: Option<Vec<ClusterStat>> = cluster_stats(&mstore)
         .await
         .map_err(|e| report!("failed to read vector index stats at '{prefix}': {e}"))?;
-    Ok(stats.is_some_and(|s| s.delta_ratio() > max_delta_ratio))
+    Ok(clusters
+        .is_some_and(|stats| stats.iter().any(|c| c.delta_ratio() > max_delta_ratio)))
 }
 
 /// Rebuild every vector index shard of a table from scratch (fresh

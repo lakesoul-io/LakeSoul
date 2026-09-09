@@ -27,8 +27,8 @@ type Result<T> = std::result::Result<T, rootcause::Report>;
 /// - `seed`（默认 42）：随机种子
 /// - `use_faster_config`（默认 true）：快速量化
 /// - `rebuild_mode`（默认 `"auto"`）：索引重建策略，`"auto"` 或 `"none"`
-/// - `max_delta_ratio`（默认 1.0）：`"auto"` 模式下，当 shard 的增量向量数 /
-///   基础向量数超过该比例时触发全量重建（重新训练聚类中心）
+/// - `max_delta_ratio`（默认 1.0）：`"auto"` 模式下，当 shard 内**任意簇**的
+///   增量向量数 / 基础向量数超过该比例时触发全量重建（重新训练聚类中心）
 #[derive(Debug, Clone)]
 pub struct VectorIndexConfig {
     /// 向量列名（在 Arrow Schema 中的字段名）
@@ -49,7 +49,7 @@ pub struct VectorIndexConfig {
     pub use_faster_config: bool,
     /// 索引重建策略："auto"（默认，按 max_delta_ratio 触发）或 "none"
     pub rebuild_mode: String,
-    /// auto 模式的重建触发阈值：delta_vectors / base_vectors 超过该值时重建
+    /// auto 模式的重建触发阈值：shard 内任一簇的 delta_vectors/base_vectors 超过该值时重建
     pub max_delta_ratio: f32,
 }
 

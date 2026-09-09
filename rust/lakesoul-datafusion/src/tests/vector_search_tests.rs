@@ -1114,3 +1114,189 @@ async fn manual_rebuild_vector_index_rebuilds_all_shards() {
     }
     assert_eq!(rows, 5);
 }
+
+/// Vectors concentrated near `per_group` evenly-distributed anchor points
+/// (with small noise) so a table write spreads ~evenly across its clusters.
+fn clustered_vectors(
+    anchors: &[[f32; DIM]],
+    per_group: usize,
+    noise: f32,
+    rng: &mut rand::rngs::StdRng,
+) -> Vec<Vec<f32>> {
+    use rand::Rng;
+    let mut out = Vec::new();
+    for anchor in anchors {
+        for _ in 0..per_group {
+            let v: Vec<f32> = anchor
+                .iter()
+                .map(|x| x + (rng.r#gen::<f32>() - 0.5) * noise)
+                .collect();
+            out.push(v);
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cluster_skew_triggers_rebuild_even_when_shard_ratio_is_low() {
+    use crate::catalog::create_table_with_vector_index;
+    use rand::SeedableRng;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_cluster_skew_rebuild";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // Single hash bucket, so one shard holds the whole table and each of
+    // the 4 clusters has a meaningful base size (~40 vectors).
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+    let anchors: [[f32; DIM]; 4] = [
+        [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4],
+        [-0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4],
+        [0.4, -0.4, 0.4, -0.4, 0.4, -0.4, 0.4, -0.4],
+        [-0.4, 0.4, -0.4, 0.4, -0.4, 0.4, -0.4, 0.4],
+    ];
+    let mut next_id = 0u64;
+    let upsert = |vectors: Vec<Vec<f32>>, start_id: u64| {
+        let ids: Vec<u64> = (start_id..start_id + vectors.len() as u64).collect();
+        let batch = make_batch(&ids, &vectors);
+        let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name);
+        Box::pin(async move { table.await.unwrap().execute_upsert(batch).await.unwrap() })
+    };
+
+    // w1: 160 vectors spread evenly over the 4 anchors (40 per cluster).
+    upsert(clustered_vectors(&anchors, 40, 0.05, &mut rng), next_id).await;
+    next_id = 160;
+    assert!(
+        latest_generations(table_name).iter().all(|g| *g == 1),
+        "fresh build publishes generation 1: {:?}",
+        latest_generations(table_name)
+    );
+
+    // w2 + w3: 40 evenly-spread vectors each (10 per cluster, cumulative
+    // per-cluster delta 20/40 = 0.5 < 1.0) — still incremental.
+    for _ in 0..2 {
+        upsert(clustered_vectors(&anchors, 10, 0.05, &mut rng), next_id).await;
+        next_id += 40;
+    }
+    assert!(
+        latest_generations(table_name).iter().all(|g| *g == 1),
+        "mild uniform growth must not rebuild: {:?}",
+        latest_generations(table_name)
+    );
+
+    // w4: 60 copies of anchor[0] all land in one cluster, taking its
+    // cumulative delta to 80 vs ~40 base (> 1.0) while the shard-wide
+    // ratio is (80 + 80) / 160 = 1.0 — exactly at (not above) the old
+    // shard threshold.  The rebuild decision runs on the *next* write.
+    upsert(vec![anchors[0].to_vec(); 60], next_id).await;
+    next_id += 60;
+    assert!(
+        latest_generations(table_name).iter().all(|g| *g == 1),
+        "drift becomes visible on the write after the skewed flush: {:?}",
+        latest_generations(table_name)
+    );
+
+    // w5: a tiny write.  Pre-write, one cluster has ~80 delta vs ~40 base
+    // (ratio > 1.0) while the shard ratio is still 1.0: the per-cluster
+    // rule rebuilds, the old shard-level (>1.0) rule would not.
+    upsert(clustered_vectors(&anchors[..1], 2, 0.05, &mut rng), next_id).await;
+    let gens = latest_generations(table_name);
+    assert!(
+        gens.iter().any(|g| *g >= 2),
+        "skewed cluster growth must trigger a rebuild: {gens:?}"
+    );
+
+    // The rebuilt index serves the skewed rows.
+    let probe = anchors[0];
+    let q = probe
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut ids_result = Vec::new();
+    for batch in &batches {
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+        ids_result.extend(arr.values().iter().copied());
+    }
+    assert!(
+        ids_result.iter().any(|id| *id >= 240),
+        "rebuilt index must find the skewed cluster's rows: {ids_result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uniform_growth_does_not_trigger_per_cluster_rebuild_before_ratio() {
+    use crate::catalog::create_table_with_vector_index;
+    use rand::SeedableRng;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_cluster_uniform_no_rebuild";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    let anchors: [[f32; DIM]; 4] = [
+        [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4],
+        [-0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4],
+        [0.4, -0.4, 0.4, -0.4, 0.4, -0.4, 0.4, -0.4],
+        [-0.4, 0.4, -0.4, 0.4, -0.4, 0.4, -0.4, 0.4],
+    ];
+    let mut next_id = 0u64;
+    let upsert = |vectors: Vec<Vec<f32>>, start_id: u64| {
+        let ids: Vec<u64> = (start_id..start_id + vectors.len() as u64).collect();
+        let batch = make_batch(&ids, &vectors);
+        let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name);
+        Box::pin(async move { table.await.unwrap().execute_upsert(batch).await.unwrap() })
+    };
+
+    // Base 160, then three even writes of 40 (10 per cluster each):
+    // cumulative per-cluster delta stays 30 vs base ~40 (< 1.0).
+    upsert(clustered_vectors(&anchors, 40, 0.05, &mut rng), next_id).await;
+    next_id = 160;
+    for _ in 0..3 {
+        upsert(clustered_vectors(&anchors, 10, 0.05, &mut rng), next_id).await;
+        next_id += 40;
+    }
+    let gens = latest_generations(table_name);
+    assert!(
+        gens.iter().all(|g| *g == 1),
+        "even growth below the per-cluster ratio must never rebuild: {gens:?}"
+    );
+}
