@@ -18,7 +18,9 @@ use rand::distr::Alphanumeric;
 
 use tokio::runtime::Runtime;
 
-use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
+use crate::catalog::{
+    LakeSoulCatalog, LakeSoulNamespace, LakeSoulProviderOptions, LakeSoulTableProperty,
+};
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
@@ -138,11 +140,15 @@ fn test_catalog_api() {
             .build();
 
         let sc = Arc::new(create_session_context(&mut config).unwrap());
+        let provider_options = LakeSoulProviderOptions::from_session(&sc.state());
         let data = random_tables(random_namespace("api", 4), schema.clone());
 
-        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
-        let dummy_schema_provider =
-            Arc::new(LakeSoulNamespace::new(client.clone(), sc.clone(), "dummy"));
+        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), provider_options));
+        let dummy_schema_provider = Arc::new(LakeSoulNamespace::new(
+            client.clone(),
+            provider_options,
+            "dummy",
+        ));
         // id, path, name must be unique
         for (np, tables) in data.iter() {
             // client.create_namespace(np.clone()).await.unwrap();
@@ -168,7 +174,7 @@ fn test_catalog_api() {
         );
         for (np, tables) in data.iter() {
             let schema =
-                LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
             let names = schema.table_names();
             debug!("{names:?}");
             assert_eq!(names.len(), tables.len());
@@ -208,6 +214,7 @@ fn test_catalog_sql() {
             .build();
 
         let sc = Arc::new(create_session_context(&mut config).unwrap());
+        let provider_options = LakeSoulProviderOptions::from_session(&sc.state());
 
         let expected = &[
             "+----------+------+-------+",
@@ -220,7 +227,7 @@ fn test_catalog_sql() {
             "+----------+------+-------+",
         ];
 
-        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
+        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), provider_options));
         {
             let before = {
                 let sql = "show tables";
@@ -263,7 +270,7 @@ fn test_catalog_sql() {
         }
         for (np, tables) in data.iter() {
             let schema =
-                LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
             let names = schema.table_names();
             debug!("{names:?}");
             assert_eq!(names.len(), tables.len());

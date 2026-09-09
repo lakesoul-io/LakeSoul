@@ -26,6 +26,7 @@ use lakesoul_io::helpers::{
 use lakesoul_io::physical_plan::RepartitionByRangeAndHashExec;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
+use crate::catalog::LakeSoulProviderOptions;
 use crate::lakesoul_table::LakeSoulTable;
 
 pub struct LakeSoulPhysicalPlanner {
@@ -84,7 +85,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 .await
                 .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
-                match lakesoul_table.as_sink_provider(session_state).await {
+                let provider_options =
+                    LakeSoulProviderOptions::from_session(session_state);
+                match lakesoul_table.as_sink_provider(provider_options).await {
                     Ok(provider) => {
                         let physical_input =
                             self.create_physical_plan(input, session_state).await?;

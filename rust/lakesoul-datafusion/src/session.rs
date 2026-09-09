@@ -25,7 +25,7 @@ use rootcause::{bail, report};
 use url::Url;
 
 use crate::Result;
-use crate::catalog::LakeSoulCatalog;
+use crate::catalog::{LakeSoulCatalog, LakeSoulProviderOptions};
 use crate::cli::CoreArgs;
 use crate::datasource::table_factory::LakeSoulTableProviderFactory;
 use crate::planner::LakeSoulQueryPlanner;
@@ -146,11 +146,12 @@ impl LakeSoulSessionFactory {
             "LAKESOUL".to_string(),
             Arc::clone(&self.table_factory) as Arc<dyn TableProviderFactory>,
         );
+        let provider_options = LakeSoulProviderOptions::from_session(&state);
         let ctx = Arc::new(SessionContext::new_with_state(state));
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::new(
             Arc::clone(&self.meta_client),
-            Arc::clone(&ctx),
+            provider_options,
         ));
         let catalog = match &self.catalog_decorator {
             Some(decorate) => decorate(lakesoul_catalog),

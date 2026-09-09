@@ -59,6 +59,26 @@ fn test_sessions_are_independent() {
     });
 }
 
+#[test]
+fn test_session_is_released_when_last_owner_is_dropped() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = Arc::new(crate::MetaDataClient::from_env().await.unwrap());
+        let factory = new_factory(client);
+        let ctx = factory
+            .create_session(&LakeSoulSessionOptions::default())
+            .unwrap();
+        let weak_ctx = Arc::downgrade(&ctx);
+
+        drop(ctx);
+
+        assert!(
+            weak_ctx.upgrade().is_none(),
+            "catalog must not retain its owning SessionContext"
+        );
+    });
+}
+
 /// Generic initial schema and time-zone options are applied while the catalog
 /// and information schema are wired into the new context.
 #[test]
