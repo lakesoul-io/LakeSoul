@@ -390,7 +390,7 @@ async fn sql_vector_search_end_to_end() {
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
 
@@ -423,7 +423,7 @@ async fn sql_vector_search_end_to_end() {
 
     // 6. cosine_distance falls back to the full scan.
     let cosine_sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by cosine_distance(vec, ARRAY[{q}]) limit 5"
     );
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {cosine_sql}")).await;
@@ -451,7 +451,7 @@ async fn sql_vector_search_end_to_end() {
         .collect::<Vec<_>>()
         .join(", ");
     let incremental_sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{pq}]) limit 5"
     );
     let df = ctx.sql(&incremental_sql).await.unwrap();
@@ -522,7 +522,7 @@ async fn sql_vector_search_with_where_and_nprobe() {
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          where id % 2 = 0 \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
@@ -589,7 +589,7 @@ async fn sql_vector_search_falls_back_without_index() {
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
@@ -648,7 +648,7 @@ async fn sql_create_table_declares_vector_index_via_option() {
         .display()
         .to_string();
     let create_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \
@@ -677,7 +677,7 @@ async fn sql_create_table_declares_vector_index_via_option() {
     let _ = client.drop_table(table_name2, "default").await;
     clean_table_dir(table_name2);
     let bad_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name2} (
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name2} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \
@@ -714,7 +714,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
         .display()
         .to_string();
     let create_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL LOCATION '{location}'
@@ -723,7 +723,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
     let insert_sql = format!(
-        "INSERT INTO \"LAKESOUL\".default.{table_name}
+        "INSERT INTO \"lakesoul\".default.{table_name}
          SELECT CAST(g.value AS BIGINT),
                 ARRAY[sin(g.value), cos(g.value), g.value*0.1, 0.5, -0.5, 1.0, -1.0, 0.0]
          FROM generate_series(0, 99) AS g(value)"
@@ -748,7 +748,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
         .collect::<Vec<_>>()
         .join(", ");
     let select_sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {select_sql}")).await;
@@ -777,7 +777,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
 
     // An incremental SQL insert is auto-indexed too (delta build).
     let insert2_sql = format!(
-        "INSERT INTO \"LAKESOUL\".default.{table_name}
+        "INSERT INTO \"lakesoul\".default.{table_name}
          SELECT CAST(100 + g.value AS BIGINT),
                 ARRAY[sin(g.value), cos(g.value), g.value*0.2, -0.5, 0.5, 0.0, 1.0, -1.0]
          FROM generate_series(0, 99) AS g(value)"
@@ -805,7 +805,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
         .collect::<Vec<_>>()
         .join(", ");
     let incremental_sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{pq}]) limit 5"
     );
     let df = ctx.sql(&incremental_sql).await.unwrap();
@@ -846,7 +846,7 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
         .display()
         .to_string();
     let create_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec DOUBLE[] NOT NULL
          ) STORED AS LAKESOUL LOCATION '{location}'
@@ -855,7 +855,7 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
     let insert_sql = format!(
-        "INSERT INTO \"LAKESOUL\".default.{table_name}
+        "INSERT INTO \"lakesoul\".default.{table_name}
          SELECT CAST(g.value AS BIGINT),
                 ARRAY[sin(g.value), cos(g.value), g.value*0.1, 0.5, -0.5, 1.0, -1.0, 0.0]
          FROM generate_series(0, 99) AS g(value)"
@@ -878,7 +878,7 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
         .collect::<Vec<_>>()
         .join(", ");
     let select_sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {select_sql}")).await;
@@ -988,7 +988,7 @@ async fn incremental_writes_auto_rebuild_when_delta_ratio_exceeded() {
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
@@ -1103,7 +1103,7 @@ async fn manual_rebuild_vector_index_rebuilds_all_shards() {
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 5"
     );
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
@@ -1228,7 +1228,7 @@ async fn cluster_skew_triggers_rebuild_even_when_shard_ratio_is_low() {
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "select id from \"LAKESOUL\".default.{table_name} \
+        "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 10"
     );
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();

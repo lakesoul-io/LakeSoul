@@ -13,7 +13,6 @@
 use std::sync::Arc;
 
 use datafusion::catalog::{CatalogProvider, TableProviderFactory};
-use datafusion::config::Dialect;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -117,6 +116,15 @@ impl LakeSoulSessionFactory {
         self
     }
 
+    /// Replace the session config template shared by every session.
+    ///
+    /// Used by [`crate::create_lakesoul_session_ctx_with_config`] to attach
+    /// caller-supplied extensions (e.g. vector-search options).
+    pub fn with_session_template(mut self, session_template: SessionConfig) -> Self {
+        self.session_template = session_template;
+        self
+    }
+
     /// Build a fresh [`SessionContext`].
     pub fn create_session(
         &self,
@@ -141,6 +149,9 @@ impl LakeSoulSessionFactory {
             .with_runtime_env(runtime)
             .with_default_features()
             .with_query_planner(Arc::clone(&self.planner))
+            .with_optimizer_rule(Arc::new(
+                crate::planner::vector_search_rule::VectorSearchPushdownRule,
+            ))
             .build();
         state.table_factories_mut().insert(
             "LAKESOUL".to_string(),
@@ -148,6 +159,7 @@ impl LakeSoulSessionFactory {
         );
         let provider_options = LakeSoulProviderOptions::from_session(&state);
         let ctx = Arc::new(SessionContext::new_with_state(state));
+        ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::new(
             Arc::clone(&self.meta_client),
@@ -169,37 +181,9 @@ impl LakeSoulSessionFactory {
     }
 
     /// Constant parts of the session config, shared by every session.
+    /// Single source of truth: [`crate::create_lakesoul_session_config`].
     fn session_template() -> Result<SessionConfig> {
-        let mut session_config = SessionConfig::from_env()?
-            .with_information_schema(true)
-            .with_create_default_catalog_and_schema(false)
-            .with_batch_size(8192);
-        session_config.options_mut().sql_parser.dialect = Dialect::PostgreSQL;
-        session_config
-            .options_mut()
-            .sql_parser
-            .map_string_types_to_utf8view = false; // TODO(jiax): check this
-        session_config
-            .options_mut()
-            .optimizer
-            .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
-        session_config.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .pushdown_filters = true;
-        session_config.options_mut().execution.target_partitions = 1;
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .schema_force_view_types = false;
-        session_config
-            .options_mut()
-            .execution
-            .listing_table_factory_infer_partitions = false;
-        Ok(session_config)
+        crate::create_lakesoul_session_config()
     }
 
     fn parse_warehouse(prefix: Option<&str>) -> Result<WarehouseConfig> {
