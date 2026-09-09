@@ -240,6 +240,14 @@ CAS (Compare-And-Swap) for concurrency safety.
 | `rotator_type` | Rotator type | FhtKacRotator |
 | `seed` | Random seed | 42 |
 | `use_faster_config` | Fast quantization mode | true |
+| `rebuild_mode` | Index rebuild policy: `"auto"` rebuilds a shard from scratch when any of its clusters drifts past `max_delta_ratio`; `"none"` only ever appends delta segments | `"auto"` |
+| `max_delta_ratio` | Per-cluster rebuild trigger: rebuild the shard when any cluster has accumulated `delta_vectors / base_vectors` above this ratio (a cluster with no base vectors but deltas has infinite ratio) | `1.0` |
+
+### Rebuild on drift (incremental maintenance)
+
+Incremental writes append new vectors to the centroids trained at the initial build and store them as delta segments, so cluster centroids can drift as the data distribution shifts. When `rebuild_mode` is `"auto"`, engines that build the index on write (e.g. the LakeSoul Rust/DataFusion writer) re-train the shard from all of its data files — fresh k-means, published as a new index generation — once **any cluster** of a shard has accumulated `delta_vectors / base_vectors > max_delta_ratio`. Per-cluster detection catches skewed growth concentrated in a few clusters earlier than a whole-shard ratio would; under uniform growth a shard behaves as before. Rebuilds are atomic and CAS-free (see above): readers resolve the new generation via `LATEST`.
+
+Manual re-clustering is always possible regardless of `rebuild_mode`: the higher-level `VectorShardIndexBuilder::rebuild()` (all data files of a shard) or a table-level rebuild API.
 
 ## Performance Reference
 

@@ -56,6 +56,8 @@ Each entry accepts the following fields:
 | `rotator_type` | Rotation, `"FhtKac"` or `"Matrix"` | `"FhtKac"` |
 | `seed` | Random seed | 42 |
 | `use_faster_config` | Fast-quantization mode | `true` |
+| `rebuild_mode` | Rebuild policy: `"auto"` re-trains a shard when any of its clusters drifts past `max_delta_ratio`; `"none"` only appends delta segments | `"auto"` |
+| `max_delta_ratio` | Per-cluster rebuild trigger: `delta_vectors / base_vectors` of a cluster | `1.0` |
 
 Multiple vector columns are supported by passing a list of entries; each column gets its own index.
 
@@ -82,6 +84,27 @@ table = catalog.create_table(
     },
 )
 ```
+
+### Rebuild policy (re-clustering on drift)
+
+Incremental writes append new vectors to the IVF centroids trained at the initial build, so after many writes the centroids may no longer represent the (shifted) data distribution. Two fields control how this is handled:
+
+- `rebuild_mode`: `"auto"` (default) or `"none"`. In `"auto"` mode, index maintenance on write re-trains a shard from scratch (fresh k-means over all of the shard's data files, published as a new index generation) once **any cluster** of the shard has accumulated `delta_vectors / base_vectors > max_delta_ratio`. Set it to `"none"` to keep writes purely incremental.
+- `max_delta_ratio`: the per-cluster threshold (default `1.0`, meaning "a cluster received more delta vectors than its original base"). A cluster with no base vectors but deltas is treated as fully drifted.
+
+```python
+vector_index=[
+    {
+        "column": "vec",
+        "dim": 768,
+        "nlist": 256,
+        "rebuild_mode": "auto",   # "auto" (default) or "none"
+        "max_delta_ratio": 1.0,   # rebuild when any cluster's delta/base exceeds this
+    }
+]
+```
+
+Drift detection is per cluster rather than per shard, so skewed growth concentrated in a few clusters triggers a rebuild earlier, while uniform growth behaves as before. This policy is enforced by writers that perform automatic index maintenance on commit (e.g. the LakeSoul Rust/DataFusion engine). With the **Python SDK**, writes update the index incrementally regardless of `rebuild_mode`; call `rebuild_vector_index()` explicitly to re-train (see below), or write the same table through a Rust/DataFusion engine to get automatic rebuilds.
 
 ## Automatic index build on write
 
@@ -113,6 +136,19 @@ For tables created before this feature existed, or when you want to rebuild from
 table.build_vector_index()                      # all columns, params from properties
 table.build_vector_index(column="vec", nlist=64)  # override nlist
 ```
+
+### Manual re-clustering: `rebuild_vector_index()`
+
+To re-train the centroids on the current data (for example after a large data-distribution shift, or to fold many delta segments back into a fresh base), call `rebuild_vector_index`. It re-reads **all** active data files of each shard, runs fresh k-means, and publishes a new index generation — regardless of `rebuild_mode`.
+
+```python
+table.rebuild_vector_index()                                   # all configured columns, all partitions
+table.rebuild_vector_index(column="vec")                       # a single vector column
+table.rebuild_vector_index(partition_desc="range=2024-01-01")  # a single partition
+table.rebuild_vector_index(column="vec", partitions={"range": "2024-01-01"})
+```
+
+Search keeps serving during a rebuild: the new generation is published atomically (CAS-free protocol) and readers pick it up through the latest manifest. The lower-level `lakesoul.vector_index.build_partition_vector_index(..., rebuild=True)` / `build_table_vector_index(..., rebuild=True)` expose the same operation per partition/table.
 
 ## Vector search
 

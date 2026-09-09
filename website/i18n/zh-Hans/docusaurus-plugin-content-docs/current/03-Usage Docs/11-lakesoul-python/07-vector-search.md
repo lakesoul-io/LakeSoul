@@ -56,6 +56,8 @@ table = catalog.create_table(
 | `rotator_type` | 旋转方式，`"FhtKac"` 或 `"Matrix"` | `"FhtKac"` |
 | `seed` | 随机种子 | 42 |
 | `use_faster_config` | 快速量化模式 | `true` |
+| `rebuild_mode` | 重建策略：`"auto"` 会在 shard 内任一簇漂移超过 `max_delta_ratio` 时全量重建；`"none"` 只追加 delta segment | `"auto"` |
+| `max_delta_ratio` | 簇级重建触发阈值（簇的 `delta_vectors / base_vectors`） | `1.0` |
 
 传入配置列表即可支持多个向量列，每个列会构建独立的索引。
 
@@ -82,6 +84,27 @@ table = catalog.create_table(
     },
 )
 ```
+
+### 重建策略（漂移后的重新聚类）
+
+增量写入把新向量追加到初次构建时训练的 IVF 聚类中心上，因此写入多次后聚类中心可能不再代表（发生偏移的）当前数据分布。通过两个字段控制：
+
+- `rebuild_mode`：`"auto"`（默认）或 `"none"`。`"auto"` 模式下，写入路径上的索引维护会在 shard 内**任一簇**的 `delta_vectors / base_vectors` 超过 `max_delta_ratio` 后，对该 shard 的全部数据文件重新训练（全新 k-means，以新的索引 generation 发布）；设为 `"none"` 则写入始终保持纯增量。
+- `max_delta_ratio`：簇级阈值（默认 `1.0`，含义是"某个簇积累的增量向量数已超过其原始 base"）。无 base 向量但已有 delta 的簇视为完全漂移。
+
+```python
+vector_index=[
+    {
+        "column": "vec",
+        "dim": 768,
+        "nlist": 256,
+        "rebuild_mode": "auto",   # "auto"（默认）或 "none"
+        "max_delta_ratio": 1.0,   # 任一簇 delta/base 超过该值即重建
+    }
+]
+```
+
+漂移检测是**簇级**而非 shard 级：新数据集中在少数簇的偏斜增长会更早触发重建，而均匀增长的行为与原来一致。该策略由"提交时自动维护索引"的写入引擎执行（如 LakeSoul Rust/DataFusion 引擎）。**Python SDK** 的写入路径无论 `rebuild_mode` 取值如何都只做增量更新：需要重新聚类时显式调用 `rebuild_vector_index()`（见下），或改用 Rust/DataFusion 引擎写入同一张表以启用自动重建。
 
 ## 写入时自动构建索引
 
@@ -113,6 +136,19 @@ table.write_daft(rows, vector_index_cpus=1)
 table.build_vector_index()                        # 全部列，参数取自表属性
 table.build_vector_index(column="vec", nlist=64)  # 覆盖 nlist
 ```
+
+### 手动重新聚类：`rebuild_vector_index()`
+
+若需要基于当前数据重新训练聚类中心（例如数据分布发生较大偏移之后，或希望把大量 delta segment 折叠回全新的 base），调用 `rebuild_vector_index`。它会重新读取每个 shard 的**全部**有效数据文件、运行全新 k-means 并发布新的索引 generation——不受 `rebuild_mode` 限制。
+
+```python
+table.rebuild_vector_index()                                   # 全部已配置列、全部分区
+table.rebuild_vector_index(column="vec")                       # 单个向量列
+table.rebuild_vector_index(partition_desc="range=2024-01-01")  # 单个分区
+table.rebuild_vector_index(column="vec", partitions={"range": "2024-01-01"})
+```
+
+重建期间检索服务不受影响：新 generation 通过无 CAS 冲突的提交协议原子发布，reader 通过最新 manifest（`LATEST`）自动切换到新版本。底层 `lakesoul.vector_index.build_partition_vector_index(..., rebuild=True)` / `build_table_vector_index(..., rebuild=True)` 提供按分区/按表粒度的等价操作。
 
 ## 向量检索
 

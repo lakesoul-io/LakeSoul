@@ -220,6 +220,14 @@ rabitq-rs 使用 immutable 文件设计，适合对象存储 (S3/GCS/Azure):
 | `rotator_type` | 旋转器类型 | FhtKacRotator |
 | `seed` | 随机种子 | 42 |
 | `use_faster_config` | 快速量化模式 | true |
+| `rebuild_mode` | 索引重建策略：`"auto"` 表示当 shard 内任一簇漂移超过 `max_delta_ratio` 时全量重建；`"none"` 只做增量 delta 追加 | `"auto"` |
+| `max_delta_ratio` | 簇级重建触发阈值：shard 内任一簇的 `delta_vectors / base_vectors` 超过该值即触发重建（无 base 但有 delta 的簇比值为无穷） | `1.0` |
+
+### 漂移重建（增量维护）
+
+增量写入把新向量追加到初次构建时的聚类中心上，并以 delta segment 存储，因此随着数据分布变化，簇中心会逐渐漂移。当 `rebuild_mode` 为 `"auto"` 时，在写入路径上自动维护索引的引擎（如 LakeSoul Rust/DataFusion writer）会在**任一簇**的 `delta_vectors / base_vectors` 超过 `max_delta_ratio` 后，对该 shard 的全部数据文件重新训练 k-means 并以新 generation 发布（见上文 V4 持久化，原子且 CAS-free，reader 通过 `LATEST` 自动切换到新版本）。逐簇检测能比整 shard 比值更早地捕捉到"新数据集中在少数簇"的偏斜增长；均匀增长下行为与原先一致。
+
+无论 `rebuild_mode` 如何，都可以手动强制重新聚类：上层 `VectorShardIndexBuilder::rebuild()`（传入某 shard 全部数据文件）或表级 rebuild API。
 
 ## 性能参考
 
