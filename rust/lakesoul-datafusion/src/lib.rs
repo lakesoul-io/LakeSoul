@@ -19,6 +19,7 @@ pub mod catalog;
 pub mod cli;
 pub mod datasource;
 pub mod index;
+pub mod distributed;
 pub mod lakesoul_table;
 pub mod planner;
 pub mod session;

@@ -29,6 +29,8 @@ mod benchmarks;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod distributed_tests;
+#[cfg(test)]
 mod session_factory_tests;
 #[cfg(test)]
 mod vortex_catalog_tests;
