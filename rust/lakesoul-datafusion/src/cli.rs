@@ -44,6 +44,9 @@ impl CoreArgs {
         if let Some(s3_bucket) = &self.s3_bucket {
             options.insert("fs.s3a.bucket".to_string(), s3_bucket.to_string());
         }
+        if let Some(endpoint) = &self.endpoint {
+            options.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
+        }
         if let Some(s3_access_key) = &self.s3_access_key {
             options.insert("fs.s3a.access.key".to_string(), s3_access_key.to_string());
         }
@@ -72,5 +75,23 @@ impl CoreArgs {
                 .unwrap_or(false),
             worker_threads: 2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_options_include_explicit_endpoint() {
+        let args = CoreArgs {
+            endpoint: Some("http://127.0.0.1:9000".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            args.s3_options().get("fs.s3a.endpoint").map(String::as_str),
+            Some("http://127.0.0.1:9000")
+        );
     }
 }

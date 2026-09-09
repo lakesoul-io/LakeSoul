@@ -7,50 +7,29 @@
 #[macro_use]
 extern crate tracing;
 
-use std::{env, sync::Arc};
+use std::sync::Arc;
 
 use catalog::LakeSoulCatalog;
-use datafusion::{
-    catalog::CatalogProvider,
-    config::Dialect,
-    execution::{
-        SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
-    },
-    prelude::{SessionConfig, SessionContext},
-};
-use datasource::table_factory::LakeSoulTableProviderFactory;
-use lakesoul_io::{
-    config::LakeSoulIOConfigBuilder,
-    object_store::{register_hdfs_object_store, register_s3_object_store},
-};
-use object_store::local::LocalFileSystem;
-use rootcause::{Report, bail};
-use url::Url;
+use datafusion::catalog::CatalogProvider;
+use datafusion::prelude::SessionContext;
+use rootcause::Report;
 
-use crate::planner::LakeSoulQueryPlanner;
-
-// re export
-pub use datafusion::*;
-pub use lakesoul_common::ser;
-pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 
 pub mod catalog;
 pub mod cli;
 pub mod datasource;
 pub mod lakesoul_table;
 pub mod planner;
+pub mod session;
 pub mod tpch;
 pub mod udf;
 pub mod vector_index;
 
-#[cfg(feature = "adbc")]
-#[expect(dead_code)]
-mod adbc;
-
-#[cfg(test)]
-mod tests;
-
-type Result<T, E = Report> = std::result::Result<T, E>;
+// re export
+pub use datafusion::*;
+pub use lakesoul_common::ser;
+pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
 pub fn create_lakesoul_session_ctx_with_catalog_decorator<F>(
     meta_client: MetaDataClientRef,
@@ -238,6 +217,15 @@ pub fn create_lakesoul_session_ctx_with_config(
 
     Ok(ctx)
 }
+
+type Result<T, E = Report> = std::result::Result<T, E>;
+
+#[cfg(feature = "adbc")]
+#[expect(dead_code)]
+mod adbc;
+
+#[cfg(test)]
+mod tests;
 
 pub fn create_lakesoul_session_ctx(
     meta_client: MetaDataClientRef,

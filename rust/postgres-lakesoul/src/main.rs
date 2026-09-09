@@ -6,25 +6,20 @@
 use std::sync::{Arc, Once};
 
 use clap::Parser;
-use datafusion_postgres::datafusion_pg_catalog::{
-    PgCatalogOptions, setup_pg_catalog_with_options,
-};
 use datafusion_postgres::serve;
 use datafusion_postgres::{ServerOptions, auth::AuthManager};
 use lakesoul_datafusion::cli::CoreArgs;
-use lakesoul_datafusion::{
-    create_lakesoul_session_ctx, create_lakesoul_session_ctx_with_catalog_decorator,
-};
 use lakesoul_metadata::MetaDataClient;
 use rootcause::Report;
 use tokio::runtime::{self};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use crate::catalog::PgLakeSoulCatalog;
+use crate::session::{PgSessionFactory, SessionIdentity, SessionSettings};
 
 mod catalog;
 mod misc;
+mod session;
 
 fn init_logger() {
     static TRACING: Once = Once::new();
@@ -51,20 +46,15 @@ struct Cli {
 async fn main_inner() -> Result<(), Report> {
     let cli = Cli::parse();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
-    let ctx = create_lakesoul_session_ctx_with_catalog_decorator(
+    let auth_manager = Arc::new(AuthManager::new());
+    let session_factory = PgSessionFactory::new(
         Arc::clone(&meta_client),
         &CoreArgs::from_env(),
-        |catalog| Arc::new(PgLakeSoulCatalog::new(catalog)),
+        auth_manager,
     )?;
-    let am = Arc::new(AuthManager::new());
-    setup_pg_catalog_with_options(
-        &ctx,
-        "lakesoul",
-        am,
-        PgCatalogOptions {
-            include_synthetic_postgres_database: false,
-        },
-    )?;
+    let session = session_factory
+        .create_session(SessionIdentity::default(), &SessionSettings::default())?;
+    let ctx = Arc::clone(&session.context);
     init_logger();
     let server_opts = ServerOptions::new()
         .with_host(String::from("127.0.0.1"))
