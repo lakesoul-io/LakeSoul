@@ -48,6 +48,7 @@ use url::Url;
 use vortex::file::Footer;
 
 use self::transform::uniform_schema;
+use crate::constant::DEFAULT_PARTITION_DESC;
 use crate::{
     Result,
     config::LakeSoulIOConfig,
@@ -529,7 +530,7 @@ pub fn partition_desc_to_scalar_values(
     }
 }
 
-/// Extracts a partition description and a map of column names to file paths from a file scan config.
+/// Extracts a partition description and a map of column names to partition values from a file scan config.
 ///
 /// # Arguments
 ///
@@ -537,17 +538,15 @@ pub fn partition_desc_to_scalar_values(
 ///
 /// # Returns
 ///
-/// Returns a tuple of (Partition Description, Map of Column Names to File Paths)
+/// Returns a tuple of (Partition Description, Map of Column Names to Partition Values)
 pub fn partition_desc_from_file_scan_config(
     conf: &FileScanConfig,
 ) -> Result<(String, HashMap<String, String>)> {
-    // we use
-    // TODO
-    // conf's table_schema is not stable
-    // so use file source's
+    // Callers flatten each config to a single file, so the first file's
+    // partition_values represent the whole group.
     if conf.table_partition_cols().is_empty() {
-        warn!("partition is empty");
-        Ok(("-5".to_string(), HashMap::default()))
+        debug!("partition is empty");
+        Ok((DEFAULT_PARTITION_DESC.to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {
             Some(file) => Ok((

@@ -51,19 +51,22 @@ async fn test_factory() -> Arc<PgSessionFactory> {
 /// Simulate one connection startup: create a session and attach it to a
 /// mock client's `SessionExtensions`, mirroring
 /// `LakeSoulStartupHandler::post_startup`.
-fn attach_session(
+async fn attach_session(
     factory: &PgSessionFactory,
     client: &mut MockClient,
     user: &str,
 ) -> Arc<ConnectionSession> {
+    // `default` is the namespace guaranteed by the metadata schema init;
+    // PG maps the database parameter to a LakeSoul namespace.
     let session = factory
         .create_session(
             SessionIdentity {
                 user: user.to_string(),
-                database: user.to_string(),
+                database: "default".to_string(),
             },
             &SessionSettings::default(),
         )
+        .await
         .expect("create_session");
     let service = Arc::new(DfSessionService::new(Arc::clone(&session.context)));
     let state = Arc::new(ConnectionSession { session, service });
@@ -94,19 +97,21 @@ async fn sessions_are_connection_local() {
         .create_session(
             SessionIdentity {
                 user: "user_a".to_string(),
-                database: "user_a".to_string(),
+                database: "default".to_string(),
             },
             &SessionSettings::default(),
         )
+        .await
         .expect("create_session A");
     let session_b = factory
         .create_session(
             SessionIdentity {
                 user: "user_b".to_string(),
-                database: "user_b".to_string(),
+                database: "default".to_string(),
             },
             &SessionSettings::default(),
         )
+        .await
         .expect("create_session B");
 
     assert!(!Arc::ptr_eq(&session_a.context, &session_b.context));
@@ -120,8 +125,8 @@ async fn simple_query_routing_is_isolated() {
     let factory = test_factory().await;
     let mut client_a = MockClient::new();
     let mut client_b = MockClient::new();
-    let state_a = attach_session(&factory, &mut client_a, "user_a");
-    let state_b = attach_session(&factory, &mut client_b, "user_b");
+    let state_a = attach_session(&factory, &mut client_a, "user_a").await;
+    let state_b = attach_session(&factory, &mut client_b, "user_b").await;
 
     let router = LakeSoulQueryRouter::new();
     let responses = <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(
@@ -153,8 +158,8 @@ async fn extended_protocol_uses_connection_local_context() {
     let factory = test_factory().await;
     let mut client_a = MockClient::new();
     let mut client_b = MockClient::new();
-    let state_a = attach_session(&factory, &mut client_a, "user_a");
-    let state_b = attach_session(&factory, &mut client_b, "user_b");
+    let state_a = attach_session(&factory, &mut client_a, "user_a").await;
+    let state_b = attach_session(&factory, &mut client_b, "user_b").await;
 
     let router = LakeSoulQueryRouter::new();
 
@@ -232,10 +237,11 @@ async fn connection_close_releases_session() {
         .create_session(
             SessionIdentity {
                 user: "user_a".to_string(),
-                database: "user_a".to_string(),
+                database: "default".to_string(),
             },
             &SessionSettings::default(),
         )
+        .await
         .expect("create_session");
     let context = Arc::clone(&session.context);
     let baseline = Arc::strong_count(&context);
@@ -264,14 +270,13 @@ async fn startup_handler_installs_session() {
         Arc::clone(&factory),
         Arc::new(pgwire::api::ConnectionManager::new()),
     );
-
     let mut client = MockClient::new();
     client
         .metadata_mut()
         .insert(METADATA_USER.to_string(), "lakesoul_user".to_string());
     client
         .metadata_mut()
-        .insert(METADATA_DATABASE.to_string(), "lakesoul_db".to_string());
+        .insert(METADATA_DATABASE.to_string(), "default".to_string());
 
     let message = PgWireFrontendMessage::Sync(PgSync::new());
     NoopStartupHandler::post_startup(&handler, &mut client, message)
@@ -283,5 +288,57 @@ async fn startup_handler_installs_session() {
         .get::<ConnectionSession>()
         .expect("connection session installed");
     assert_eq!(state.session.identity.user, "lakesoul_user");
-    assert_eq!(state.session.identity.database, "lakesoul_db");
+    assert_eq!(state.session.identity.database, "default");
+}
+
+#[tokio::test]
+async fn session_scopes_namespaces_as_databases() {
+    if !pg_available() {
+        return;
+    }
+    let factory = test_factory().await;
+    let session = factory
+        .create_session(
+            SessionIdentity {
+                user: "user_a".to_string(),
+                database: "default".to_string(),
+            },
+            &SessionSettings::default(),
+        )
+        .await
+        .expect("create_session");
+
+    let meta = MetaDataClient::from_env().await.expect("metadata client");
+    let expected: std::collections::BTreeSet<String> = meta
+        .get_all_namespace()
+        .await
+        .expect("namespaces")
+        .into_iter()
+        .map(|namespace| namespace.namespace)
+        .collect();
+    let state = session.context.state();
+    let catalog_list = state.catalog_list();
+    let listed = catalog_list.catalog_names();
+    assert_eq!(listed.len(), expected.len());
+    for namespace in &expected {
+        assert!(listed.contains(namespace), "{listed:?} missing {namespace}");
+    }
+
+    // The current database is backed by the real catalog with pg_catalog
+    // installed; other databases resolve to empty markers.
+    assert_eq!(state.config().options().catalog.default_catalog, "default");
+    assert_eq!(state.config().options().catalog.default_schema, "public");
+    let current = catalog_list.catalog("default").expect("current catalog");
+    assert!(current.schema("public").is_some());
+    assert!(current.schema("pg_catalog").is_some());
+    assert_eq!(current.schema_names(), vec!["pg_catalog", "public"]);
+
+    let others: Vec<_> = listed
+        .iter()
+        .filter(|name| *name != "default")
+        .filter_map(|name| catalog_list.catalog(name))
+        .collect();
+    for marker in others {
+        assert!(marker.schema_names().is_empty());
+    }
 }

@@ -19,6 +19,7 @@ use crate::session::PgSessionFactory;
 
 mod catalog;
 mod misc;
+mod read_only;
 mod server;
 mod session;
 

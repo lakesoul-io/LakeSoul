@@ -4,6 +4,7 @@
 
 //! The interface of LakeSoul table.
 
+use std::fmt::Display;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -431,6 +432,12 @@ impl LakeSoulTable {
         }
 
         Ok(())
+    }
+}
+
+impl Display for LakeSoulTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.table_name)
     }
 }
 

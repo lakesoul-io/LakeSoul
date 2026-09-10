@@ -131,7 +131,7 @@ tempfile = "3.3.0"
 # error handling
 thiserror = "1.0"
 anyhow = "1"
-rootcause = "0.11"
+rootcause = "0.13"
 reqwest = "0.13"
 # sync
 parking_lot = "0.12"

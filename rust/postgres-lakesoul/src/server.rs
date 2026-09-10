@@ -38,6 +38,7 @@ use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use rootcause::Report;
 use tracing::{info, warn};
 
+use crate::read_only::statement_hooks;
 use crate::session::{PgSession, PgSessionFactory, SessionIdentity, SessionSettings};
 
 /// State owned by one PostgreSQL connection.
@@ -73,7 +74,7 @@ fn fatal_startup_error(error: Report) -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
         "FATAL".to_string(),
         "XX000".to_string(),
-        error.to_string(),
+        error.format_current_context_unhooked().to_string(),
     )))
 }
 
@@ -134,6 +135,7 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
                 SessionIdentity { user, database },
                 &SessionSettings::default(),
             )
+            .await
             .map_err(fatal_startup_error)?;
         info!(
             user = %session.identity.user,
@@ -141,7 +143,10 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
             "created connection-local session"
         );
 
-        let service = Arc::new(DfSessionService::new(Arc::clone(&session.context)));
+        let service = Arc::new(DfSessionService::new_with_hooks(
+            Arc::clone(&session.context),
+            statement_hooks(),
+        ));
         client
             .session_extensions()
             .insert(ConnectionSession { session, service });

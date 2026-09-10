@@ -76,18 +76,23 @@ impl SchemaProvider for LakeSoulNamespace {
         );
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
-        futures::executor::block_on(async move {
-            Handle::current()
-                .spawn(async move {
-                    let table_name_ids = client
-                        .get_all_table_name_id_by_namespace(&np)
-                        .await
-                        .expect("get all table name failed");
-                    debug!("table_name_ids: {:?}", table_name_ids);
-                    table_name_ids
-                })
-                .await
-                .expect("spawn failed")
+        // Synchronous interface called from DataFusion execution tasks: park
+        // this worker and let the runtime spawn a replacement so the spawned
+        // metadata query can run (same pattern as `LakeSoulCatalog::schema_names`).
+        tokio::task::block_in_place(|| {
+            futures::executor::block_on(async move {
+                Handle::current()
+                    .spawn(async move {
+                        let table_name_ids = client
+                            .get_all_table_name_id_by_namespace(&np)
+                            .await
+                            .expect("get all table name failed");
+                        debug!("table_name_ids: {:?}", table_name_ids);
+                        table_name_ids
+                    })
+                    .await
+                    .expect("spawn failed")
+            })
         })
         .into_iter()
         .map(|v| v.table_name)
@@ -102,7 +107,6 @@ impl SchemaProvider for LakeSoulNamespace {
             name, &self.namespace
         );
         let name = case_fold_table_name(name);
-        info!("table: {:?} {:?}", name, &self.namespace);
         let table = match LakeSoulTable::for_namespace_and_name(
             &self.namespace,
             &name,
@@ -116,7 +120,7 @@ impl SchemaProvider for LakeSoulNamespace {
                 return Ok(None);
             }
         };
-        info!("table: {} {:?}, table {:?}", name, &self.namespace, table);
+        info!("found table: {}::{}", &self.namespace, table);
 
         Ok(Some(
             table
