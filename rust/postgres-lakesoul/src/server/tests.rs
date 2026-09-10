@@ -343,9 +343,34 @@ async fn session_scopes_namespaces_as_databases() {
     }
 }
 
-/// Every connection of one factory lists from the same metadata view: a
-/// per-connection snapshot would multiply the periodic metadata load by the
-/// number of connections.
+/// psql's `\d` sends the relation oid as a quoted literal
+/// (`pg_relation_is_publishable('16495')`), which the upstream oid-only
+/// signature cannot coerce.
+#[tokio::test]
+async fn publishable_shim_accepts_quoted_oid() {
+    if !pg_available() {
+        return;
+    }
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    for sql in [
+        "SELECT pg_catalog.pg_relation_is_publishable('16495')",
+        "SELECT pg_catalog.pg_relation_is_publishable(16495)",
+    ] {
+        let responses = <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(
+            &router,
+            &mut client,
+            sql,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{sql}: {err}"));
+        assert!(!responses.is_empty(), "{sql}");
+    }
+}
+
 #[tokio::test]
 async fn connections_share_the_factory_catalog_snapshot() {
     if !pg_available() {

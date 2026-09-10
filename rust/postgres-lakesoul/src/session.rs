@@ -201,6 +201,9 @@ impl PgSessionFactory {
             Arc::clone(&self.auth_manager),
             self.catalog_options,
         )?;
+        // After the upstream setup: the registry is keyed by name, so the shims
+        // replace the narrower upstream signatures.
+        crate::pg_compat::register_pg_catalog_shims(&context);
 
         let session = Arc::new(PgSession::new(
             identity,

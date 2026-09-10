@@ -19,6 +19,7 @@ use crate::session::PgSessionFactory;
 
 mod catalog;
 mod misc;
+mod pg_compat;
 mod read_only;
 mod server;
 mod session;
@@ -41,7 +42,7 @@ fn init_logger() {
 #[derive(Parser)]
 struct Cli {
     /// Port the server listens to, default to 5432
-    #[clap(short, default_value_t = 5432)]
+    #[clap(short, long, default_value_t = 5432)]
     port: u16,
 }
 
