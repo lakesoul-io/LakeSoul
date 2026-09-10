@@ -4,15 +4,22 @@
 
 use std::{env, sync::Arc};
 
-use arrow::array::RecordBatch;
+use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 use lakesoul_metadata_proto::entity::TableInfo;
 use rootcause::report;
 
-use crate::{Result, catalog::LakeSoulTableProperty};
+use crate::{
+    Result,
+    catalog::{LakeSoulTableProperty, format_table_info_partitions},
+};
 
 #[cfg(test)]
-use lakesoul_io::config::LakeSoulIOConfig;
+use lakesoul_io::config::{
+    LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN,
+    OPTION_KEY_STABLE_SORT,
+};
 use lakesoul_metadata::MetaDataClient;
 #[cfg(test)]
 use lakesoul_metadata::MetaDataClientRef;
@@ -171,6 +178,73 @@ async fn create_table_inner(
                     .collect::<Vec<_>>()
                     .join(",")
             ),
+            domain: "public".to_string(),
+        })
+        .await?;
+    Ok(())
+}
+
+/// CDC-enabled primary-key schema: `op` carries `insert`/`delete`.
+pub(crate) fn cdc_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("score", DataType::Int32, false),
+        Field::new("op", DataType::Utf8, true),
+    ]))
+}
+
+pub(crate) fn cdc_batch(ids: &[i32], scores: &[i32], ops: &[&str]) -> RecordBatch {
+    RecordBatch::try_new(
+        cdc_schema(),
+        vec![
+            Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
+            Arc::new(Int32Array::from(scores.to_vec())) as ArrayRef,
+            Arc::new(StringArray::from(ops.to_vec())) as ArrayRef,
+        ],
+    )
+    .unwrap()
+}
+
+/// Creates the CDC table shape LakeSoul's delete tombstones need: a change
+/// column plus the `use_cdc` table property.
+pub(crate) async fn create_cdc_table(
+    client: MetaDataClientRef,
+    table_name: &str,
+) -> Result<()> {
+    let primary_keys = vec!["id".to_string()];
+    let io_config = LakeSoulIOConfigBuilder::new()
+        .with_schema(cdc_schema())
+        .with_primary_keys(primary_keys.clone())
+        .with_option(OPTION_KEY_CDC_COLUMN, "op")
+        .with_option(OPTION_KEY_STABLE_SORT, "true")
+        .build();
+    let target_schema = io_config.target_schema();
+    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+        schema_to_metadata_parts(target_schema.as_ref());
+
+    client
+        .create_table(TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: table_name.to_string(),
+            table_path: format!(
+                "file://{}/default/{}",
+                env::current_dir()
+                    .unwrap()
+                    .to_str()
+                    .ok_or(report!("can not get $TMPDIR"))?,
+                table_name
+            ),
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            table_namespace: "default".to_string(),
+            properties: serde_json::to_string(&LakeSoulTableProperty {
+                hash_bucket_num: Some(String::from("4")),
+                cdc_change_column: Some(String::from("op")),
+                use_cdc: Some(String::from("true")),
+                ..Default::default()
+            })?,
+            partitions: format_table_info_partitions(&[], &primary_keys),
             domain: "public".to_string(),
         })
         .await?;

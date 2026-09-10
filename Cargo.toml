@@ -21,6 +21,16 @@ members = [
   "python",
   "rust/postgres-lakesoul",
 ]
+default-members = [
+  "rust/lakesoul-build-info",
+  "rust/lakesoul-metadata-proto",
+  "rust/lakesoul-metadata",
+  "rust/lakesoul-io",
+  "rust/lakesoul-datafusion",
+  "rust/lakesoul-console",
+  "rust/lakesoul-common",
+  "rust/lakesoul-vector",
+]
 resolver = "3"
 
 [workspace.package]

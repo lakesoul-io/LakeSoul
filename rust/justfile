@@ -98,3 +98,26 @@ cross:
     cross build --target x86_64-unknown-linux-gnu --release  --package lakesoul-metadata-c --all-features
     cp target/x86_64-unknown-linux-gnu/release/lib*.so target/release
     cd .. && mvn install -pl lakesoul-flink -Pcross-build -am -DskipTests
+
+# Create the test_tables fixtures: 1M synthetic rows + full TPC-H SF 0.1.
+test-tables:
+    ./script/test_tables.sh
+
+# Larger fixtures: 10M synthetic rows + full TPC-H SF 1.
+test-tables-large:
+    ROWS=10000000 SF=1 ./script/test_tables.sh
+
+# Same fixtures on S3 (RustFS); the warehouse prefix overrides the LOCATION clauses.
+test-tables-s3:
+    ./script/test_tables.sh \
+      --warehouse-prefix "s3://lakesoul-test-bucket/test-tables" \
+      --endpoint "http://localhost:9000" \
+      --s3-bucket "lakesoul-test-bucket" \
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin"
+
+clean-test-tables:
+    rm -rf /tmp/lakesoul/test_tables
+
+clean-test-tables-s3:
+    mc rm -rf dev/lakesoul-test-bucket/test-tables

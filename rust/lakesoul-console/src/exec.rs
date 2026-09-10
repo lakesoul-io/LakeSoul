@@ -2,12 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use std::{fs::File, io::BufReader};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::config::Dialect;
@@ -19,6 +21,8 @@ use futures::stream::StreamExt;
 use lakesoul_datafusion::tpch::tpch_gen_sql;
 use rootcause::bail;
 use rustyline::error::ReadlineError;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::signal;
 use tracing::{debug, trace};
 
@@ -106,6 +110,8 @@ async fn exec_from_lines(
 ) -> Result<()> {
     let mut query = "".to_owned();
 
+    let mut last_output = String::new();
+
     for line in reader.lines() {
         match line {
             Ok(line) if line.starts_with("#!") => {
@@ -118,7 +124,7 @@ async fn exec_from_lines(
                 let line = line.trim_end();
                 query.push_str(line);
                 if line.ends_with(';') {
-                    match exec_and_print(ctx, printer, &query).await {
+                    match exec_and_print(ctx, printer, &query, &mut last_output).await {
                         Ok(_) => {}
                         Err(err) => eprintln!("{err}"),
                     }
@@ -136,7 +142,7 @@ async fn exec_from_lines(
     // run the left over query if the last statement doesn't contain ‘;’
     // ignore if it only consists of '\n'
     if query.contains(|c| c != '\n') {
-        exec_and_print(ctx, printer, &query).await?;
+        exec_and_print(ctx, printer, &query, &mut last_output).await?;
     }
 
     Ok(())
@@ -244,23 +250,62 @@ async fn exec_and_print(
     ctx: &SessionContext,
     printer: &Printer,
     sql: &str,
+    last_output: &mut String,
 ) -> Result<()> {
     trace!("begin exec sql");
     let now = Instant::now();
-    let (row_count, res, schema) = exec(ctx, sql).await?;
-    printer.print_batches(schema, &res, now, row_count)?;
+    // match control command
+    match sql.trim() {
+        r"\copy" => {
+            if last_output.is_empty() {
+                bail!("nothing to copy, run a query first");
+            }
+            // OSC52 hands the payload to the *local* terminal emulator's
+            // clipboard, so it works over ssh and tmux with no display server
+            // on this machine. tmux needs `set -g set-clipboard on` to forward
+            // it, and the outer terminal must support OSC52.
+            // 74994 is the conservative payload cap accepted across terminals.
+            let encoded = BASE64.encode(last_output.as_bytes());
+            if encoded.len() > 74_994 {
+                bail!(
+                    "output too large for OSC52 ({} bytes encoded); trim the result with LIMIT",
+                    encoded.len()
+                );
+            }
+            let mut stdout = std::io::stdout().lock();
+            write!(stdout, "\x1b]52;c;{encoded}\x07")?;
+            stdout.flush()?;
+            println!("copied {} bytes to clipboard via OSC52", last_output.len());
+            debug!("copied {} bytes via OSC52", last_output.len());
+        }
+        r"\dump" => {
+            // write last output to a file
+            let mut options = OpenOptions::new();
+            let filename = String::from("console.dump");
+            let mut f = options.create(true).write(true).open(&filename).await?;
+            f.write_all(last_output.as_bytes()).await?;
+            println!("dump to {filename}");
+        }
+        _ => {
+            let (row_count, res, schema) = exec(ctx, sql).await?;
+            printer.print_batches(schema.clone(), &res, now, row_count)?;
+            *last_output = printer.format_batches(schema, &res)?;
+        }
+    }
     Ok(())
 }
 
 pub async fn exec_from_repl(ctx: &SessionContext, printer: &Printer) -> Result<()> {
     let mut rl = rustyline::DefaultEditor::new()?;
     rl.load_history(history_path()).ok();
+    let mut last_output = String::new();
+
     loop {
         match rl.readline("lakesoul >> ") {
             Ok(line) => {
                 rl.add_history_entry(line.trim_end())?;
                 tokio::select! {
-                        res = exec_and_print(ctx, printer, &line) => match res {
+                        res = exec_and_print(ctx, printer, &line,&mut last_output) => match res {
                             Ok(_) => {}
                             Err(err) => eprintln!("{err}"),
                         },

@@ -124,6 +124,16 @@ impl Printer {
 
         Ok(())
     }
+
+    pub fn format_batches(
+        &self,
+        schema: SchemaRef,
+        batches: &[RecordBatch],
+    ) -> Result<String> {
+        let mut buf = Vec::new();
+        print_batches(&mut buf, schema, batches)?;
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
 }
 
 #[cfg(test)]
