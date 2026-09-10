@@ -24,7 +24,10 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::Result;
-use crate::catalog::{LakeSoulCatalog, LakeSoulProviderOptions};
+use crate::catalog::{
+    CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, LakeSoulCatalog,
+    LakeSoulProviderOptions,
+};
 use crate::cli::CoreArgs;
 use crate::datasource::table_factory::LakeSoulTableProviderFactory;
 use crate::distributed::DistributedOptions;
@@ -90,6 +93,15 @@ pub struct LakeSoulSessionFactory {
     catalog_decorator: Option<Arc<CatalogDecorator>>,
     /// Distributed planning options; `None` keeps sessions single-node.
     distributed: Option<DistributedOptions>,
+    /// `target_partitions` of single-node sessions; distributed sessions use
+    /// [`DistributedOptions::target_partitions`] instead.
+    target_partitions: Option<usize>,
+    /// Metadata view shared by every session of this factory.
+    ///
+    /// One snapshot (and therefore one periodic refresher) per factory instead
+    /// of one per session: per-session snapshots would multiply the periodic
+    /// metadata load by the number of connections.
+    catalog_snapshot: Arc<CatalogSnapshot>,
 }
 
 impl LakeSoulSessionFactory {
@@ -103,6 +115,10 @@ impl LakeSoulSessionFactory {
             Arc::clone(&meta_client),
             args.warehouse_prefix.clone(),
         ));
+        let catalog_snapshot = CatalogSnapshot::new(
+            Arc::clone(&meta_client),
+            DEFAULT_CATALOG_REFRESH_INTERVAL,
+        );
         Ok(Self {
             meta_client,
             session_template,
@@ -112,6 +128,8 @@ impl LakeSoulSessionFactory {
             table_factory,
             catalog_decorator: None,
             distributed: None,
+            target_partitions: None,
+            catalog_snapshot,
         })
     }
 
@@ -151,13 +169,19 @@ impl LakeSoulSessionFactory {
         }
 
         let distributed = self.distributed.clone();
-        if let Some(distributed) = &distributed {
-            // Distributed planning relies on hash `RepartitionExec` stage
-            // boundaries, which the physical planner only emits when
-            // `target_partitions > 1`.
-            session_config.options_mut().execution.target_partitions =
-                distributed.target_partitions.max(2);
-        }
+        // `target_partitions` is parameterized rather than fixed at 1:
+        // distributed planning relies on hash `RepartitionExec` stage
+        // boundaries, which the physical planner only emits when
+        // `target_partitions > 1`. A session template supplied by the caller
+        // keeps its own value unless the factory overrides it.
+        let target_partitions = match &distributed {
+            Some(distributed) => distributed.target_partitions.max(2),
+            None => self
+                .target_partitions
+                .unwrap_or(session_config.options().execution.target_partitions)
+                .max(1),
+        };
+        session_config.options_mut().execution.target_partitions = target_partitions;
 
         let runtime = Arc::new(RuntimeEnv::default());
         register_warehouse_object_store(
@@ -218,9 +242,10 @@ impl LakeSoulSessionFactory {
         let ctx = Arc::new(SessionContext::new_with_state(state));
         ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
 
-        let lakesoul_catalog = Arc::new(LakeSoulCatalog::new(
+        let lakesoul_catalog = Arc::new(LakeSoulCatalog::with_snapshot(
             Arc::clone(&self.meta_client),
             provider_options,
+            Arc::clone(&self.catalog_snapshot),
         ));
         let catalog = match &self.catalog_decorator {
             Some(decorate) => decorate(lakesoul_catalog),
@@ -235,6 +260,26 @@ impl LakeSoulSessionFactory {
             ctx.catalog_names()
         );
         Ok(ctx)
+    }
+
+    /// Sets `target_partitions` for sessions created by this factory.
+    ///
+    /// Unset by default, so the session template's value is kept (1 for the
+    /// default template, and whatever a caller supplied through
+    /// [`Self::with_session_template`]). Distributed sessions ignore this and
+    /// use [`DistributedOptions::target_partitions`] instead, which is forced
+    /// to at least 2.
+    pub fn with_target_partitions(mut self, target_partitions: usize) -> Self {
+        self.target_partitions = Some(target_partitions);
+        self
+    }
+
+    /// The metadata view shared by this factory's sessions.
+    ///
+    /// Call [`CatalogSnapshot::load`] on it once at start-up to warm the view
+    /// before serving queries.
+    pub fn catalog_snapshot(&self) -> &Arc<CatalogSnapshot> {
+        &self.catalog_snapshot
     }
 
     /// Enable distributed planning for sessions created by this factory.

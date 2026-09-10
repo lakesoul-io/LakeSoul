@@ -26,6 +26,8 @@ pub mod lakesoul_catalog;
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
+pub mod snapshot;
+pub use snapshot::{CatalogSnapshot, CatalogView, DEFAULT_CATALOG_REFRESH_INTERVAL};
 
 /// Deserialize the hash bucket number from the string or number.
 fn _deserialize_hash_bucket_num<'de, D>(

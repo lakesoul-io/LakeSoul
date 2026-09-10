@@ -15,9 +15,11 @@ use datafusion::error::Result as DFResult;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use rootcause::compat::boxed_error::IntoBoxedError;
-use tokio::runtime::Handle;
 
 use crate::catalog::LakeSoulProviderOptions;
+use crate::catalog::snapshot::{
+    CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, wait_on_runtime,
+};
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::lakesoul_table::helpers::case_fold_table_name;
@@ -27,13 +29,36 @@ pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
     provider_options: LakeSoulProviderOptions,
     namespace: String,
+    /// Namespace/table view backing the synchronous listing methods.
+    snapshot: Arc<CatalogSnapshot>,
 }
 
 impl LakeSoulNamespace {
+    /// Builds a namespace backed by its own metadata snapshot, refreshed in
+    /// the background every [`DEFAULT_CATALOG_REFRESH_INTERVAL`].
+    ///
+    /// Prefer [`Self::with_snapshot`] when several namespaces belong to one
+    /// catalog: they then share a single refresher.
     pub fn new(
         meta_data_client_ref: MetaDataClientRef,
         provider_options: LakeSoulProviderOptions,
         namespace: &str,
+    ) -> Self {
+        let snapshot = CatalogSnapshot::new(
+            Arc::clone(&meta_data_client_ref),
+            DEFAULT_CATALOG_REFRESH_INTERVAL,
+        );
+        Self::with_snapshot(meta_data_client_ref, provider_options, namespace, snapshot)
+    }
+
+    /// Builds a namespace listing its tables from `snapshot`.
+    ///
+    /// The catalog adapters use this to share the factory's snapshot.
+    pub fn with_snapshot(
+        meta_data_client_ref: MetaDataClientRef,
+        provider_options: LakeSoulProviderOptions,
+        namespace: &str,
+        snapshot: Arc<CatalogSnapshot>,
     ) -> Self {
         debug!(
             "LakeSoulNamespace::new - Creating new namespace: {}",
@@ -43,7 +68,19 @@ impl LakeSoulNamespace {
             metadata_client: meta_data_client_ref,
             provider_options,
             namespace: namespace.to_string(),
+            snapshot,
         }
+    }
+
+    /// Refreshes the snapshot this namespace lists its tables from.
+    pub async fn refresh(&self) -> Result<(), DataFusionError> {
+        self.snapshot.refresh().await
+    }
+
+    /// The metadata view this namespace lists from, shared with the other
+    /// namespaces of the same catalog.
+    pub fn snapshot(&self) -> &Arc<CatalogSnapshot> {
+        &self.snapshot
     }
 
     pub fn metadata_client(&self) -> MetaDataClientRef {
@@ -74,29 +111,14 @@ impl SchemaProvider for LakeSoulNamespace {
             "LakeSoulNamespace::table_names - Getting all tables for namespace: {}",
             &self.namespace
         );
-        let client = self.metadata_client.clone();
-        let np = self.namespace.clone();
-        // Synchronous interface called from DataFusion execution tasks: park
-        // this worker and let the runtime spawn a replacement so the spawned
-        // metadata query can run (same pattern as `LakeSoulCatalog::schema_names`).
-        tokio::task::block_in_place(|| {
-            futures::executor::block_on(async move {
-                Handle::current()
-                    .spawn(async move {
-                        let table_name_ids = client
-                            .get_all_table_name_id_by_namespace(&np)
-                            .await
-                            .expect("get all table name failed");
-                        debug!("table_name_ids: {:?}", table_name_ids);
-                        table_name_ids
-                    })
-                    .await
-                    .expect("spawn failed")
-            })
-        })
-        .into_iter()
-        .map(|v| v.table_name)
-        .collect()
+        // Answered from the catalog snapshot: this trait method is synchronous
+        // and BI clients call it concurrently, so it must not block on a
+        // metadata query.
+        self.snapshot.ensure_loaded();
+        if !self.snapshot.has_namespace(&self.namespace) {
+            self.snapshot.spawn_refresh_if_stale();
+        }
+        self.snapshot.tables(&self.namespace)
     }
 
     /// Search table by name
@@ -154,18 +176,54 @@ impl SchemaProvider for LakeSoulNamespace {
                 })?;
 
         let client = self.metadata_client.clone();
-        tokio::task::block_in_place(|| {
-            // TODO(jiax): change this
-            match futures::executor::block_on(async move {
+        let table_info = lakesoul_table.table_info();
+        let table_name = table_info.table_name.clone();
+        let table_info = table_info.as_ref().clone();
+        // Authoritative existence check: the view can be stale, and creating
+        // unconditionally would fail with a duplicate key — after partial
+        // metadata inserts — for `CREATE EXTERNAL TABLE IF NOT EXISTS`.
+        let existed = {
+            let client = client.clone();
+            let namespace = self.namespace.clone();
+            let table_name = table_name.clone();
+            wait_on_runtime(async move {
+                match LakeSoulTable::for_namespace_and_name(
+                    &namespace,
+                    &table_name,
+                    Some(client),
+                )
+                .await
+                {
+                    Ok(_) => Ok(true),
+                    // Only a missing table means "create it": a metadata
+                    // failure or an unreadable existing table must not be
+                    // turned into a create attempt.
+                    Err(report) => {
+                        if matches!(
+                            report.current_context(),
+                            LakeSoulMetaDataError::NotFound(_)
+                        ) {
+                            Ok(false)
+                        } else {
+                            Err(DataFusionError::External(report.into_boxed_error()))
+                        }
+                    }
+                }
+            })?
+        };
+        if !existed {
+            wait_on_runtime(async move {
                 client
-                    .create_table(lakesoul_table.table_info().as_ref().clone())
+                    .create_table(table_info)
                     .await
                     .map_err(|e| DataFusionError::External(Box::new(e)))
-            }) {
-                Ok(_) => Ok(None),
-                Err(e) => Err(e),
-            }
-        })
+            })?;
+        }
+        // Published to the view: the write must be visible to the next listing,
+        // while a listing failure must never turn an already committed write
+        // into an error for the caller.
+        self.snapshot.refresh_after_write();
+        Ok(existed.then(|| Arc::clone(&table)))
     }
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
@@ -181,51 +239,37 @@ impl SchemaProvider for LakeSoulNamespace {
         let table_name = name.to_string();
         let namespace = self.namespace.clone();
         let pushdown_filters = self.provider_options.pushdown_filters;
-        tokio::task::block_in_place(|| {
-            futures::executor::block_on(async move {
-                Handle::current()
-                    .spawn(async move {
-                        match LakeSoulTable::for_namespace_and_name(
-                            &namespace,
-                            &table_name,
-                            Some(client.clone()),
-                        )
+        let provider: Option<Arc<dyn TableProvider>> = wait_on_runtime(async move {
+            match LakeSoulTable::for_namespace_and_name(
+                &namespace,
+                &table_name,
+                Some(client.clone()),
+            )
+            .await
+            {
+                Ok(table) => {
+                    debug!("get table provider success");
+                    client
+                        .delete_table_by_table_info_cascade(&table.table_info())
                         .await
-                        {
-                            Ok(table) => {
-                                debug!("get table provider success");
-                                client
-                                    .delete_table_by_table_info_cascade(
-                                        &table.table_info(),
-                                    )
-                                    .await
-                                    .map_err(|_| {
-                                        DataFusionError::External(
-                                            "delete table info failed".into(),
-                                        )
-                                    })?;
-                                Ok(Some(
-                                    table.as_provider(pushdown_filters).await.map_err(
-                                        |e| {
-                                            DataFusionError::External(
-                                                e.into_boxed_error(),
-                                            )
-                                        },
-                                    )?,
-                                ))
-                            }
-                            Err(report) => match report.current_context() {
-                                LakeSoulMetaDataError::NotFound(_) => Ok(None),
-                                _ => Err(DataFusionError::External(
-                                    "get table info failed".into(),
-                                )),
-                            },
-                        }
-                    })
-                    .await
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?
-            })
-        })
+                        .map_err(|_| {
+                            DataFusionError::External("delete table info failed".into())
+                        })?;
+                    Ok(Some(table.as_provider(pushdown_filters).await.map_err(
+                        |e| DataFusionError::External(e.into_boxed_error()),
+                    )?))
+                }
+                Err(report) => match report.current_context() {
+                    LakeSoulMetaDataError::NotFound(_) => Ok(None),
+                    _ => Err(DataFusionError::External("get table info failed".into())),
+                },
+            }
+        })?;
+        // Published to the view: the write must be visible to the next listing,
+        // while a listing failure must never turn an already committed write
+        // into an error for the caller.
+        self.snapshot.refresh_after_write();
+        Ok(provider)
     }
 
     /// Check if the table exists in the namespace.
@@ -235,24 +279,14 @@ impl SchemaProvider for LakeSoulNamespace {
             name, &self.namespace
         );
         info!("table_exist: {:?} {:?}", name, &self.namespace);
-        // table name is primary key for `table_name_id`
-        let client = self.metadata_client.clone();
-        let np = self.namespace.clone();
-        let name = name.to_string();
-        futures::executor::block_on(async move {
-            Handle::current()
-                .spawn(async move {
-                    let table_name_ids = client
-                        .get_all_table_name_id_by_namespace(&np)
-                        .await
-                        .expect("get table name failed");
-                    table_name_ids
-                        .into_iter()
-                        .map(|v| v.table_name)
-                        .any(|s| s.eq_ignore_ascii_case(&name))
-                })
-                .await
-                .expect("spawn failed")
-        })
+        // Answered from the snapshot; see `table_names`.
+        self.snapshot.ensure_loaded();
+        let exists = self.snapshot.table_exists(&self.namespace, name);
+        if !exists {
+            // Unknown namespace *or* a table created since the last refresh:
+            // converge in the background instead of reporting a permanent miss.
+            self.snapshot.spawn_refresh_if_stale();
+        }
+        exists
     }
 }

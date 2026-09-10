@@ -16,7 +16,7 @@ use datafusion_postgres::auth::AuthManager;
 use datafusion_postgres::datafusion_pg_catalog::{
     PgCatalogOptions, setup_pg_catalog_with_options,
 };
-use lakesoul_datafusion::catalog::LakeSoulProviderOptions;
+use lakesoul_datafusion::catalog::{CatalogSnapshot, LakeSoulProviderOptions};
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_metadata::MetaDataClientRef;
@@ -71,6 +71,10 @@ pub struct PgSession {
     pub identity: SessionIdentity,
     pub context: Arc<SessionContext>,
     pub settings: RwLock<SessionSettings>,
+    /// Metadata view this connection lists from: the factory's shared
+    /// snapshot, i.e. one refresher per process rather than one per
+    /// connection.
+    catalog_snapshot: Arc<CatalogSnapshot>,
 }
 
 impl PgSession {
@@ -78,12 +82,19 @@ impl PgSession {
         identity: SessionIdentity,
         context: Arc<SessionContext>,
         settings: SessionSettings,
+        catalog_snapshot: Arc<CatalogSnapshot>,
     ) -> Self {
         Self {
             identity,
             context,
             settings: RwLock::new(settings),
+            catalog_snapshot,
         }
+    }
+
+    /// The metadata view backing this connection's catalog listings.
+    pub fn catalog_snapshot(&self) -> &Arc<CatalogSnapshot> {
+        &self.catalog_snapshot
     }
 }
 
@@ -127,6 +138,14 @@ impl PgSessionFactory {
         })
     }
 
+    /// The metadata view shared by every connection of this factory.
+    ///
+    /// Call [`CatalogSnapshot::load`] on it once at start-up to warm it, so the
+    /// first connection does not pay for the initial load.
+    pub fn catalog_snapshot(&self) -> &Arc<CatalogSnapshot> {
+        self.base.catalog_snapshot()
+    }
+
     pub async fn create_session(
         &self,
         identity: SessionIdentity,
@@ -153,6 +172,7 @@ impl PgSessionFactory {
             Arc::clone(&self.meta_client),
             LakeSoulProviderOptions::from_session(&state),
             &identity.database,
+            Arc::clone(self.base.catalog_snapshot()),
         );
         let catalog_list = Arc::new(PgDatabaseCatalogList::new(
             identity.database.clone(),
@@ -182,7 +202,12 @@ impl PgSessionFactory {
             self.catalog_options,
         )?;
 
-        let session = Arc::new(PgSession::new(identity, context, settings.clone()));
+        let session = Arc::new(PgSession::new(
+            identity,
+            context,
+            settings.clone(),
+            Arc::clone(self.base.catalog_snapshot()),
+        ));
         {
             let settings = session.settings.read();
             info!(
@@ -190,6 +215,11 @@ impl PgSessionFactory {
                 database = %session.identity.database,
                 time_zone = ?settings.time_zone.iana_name().unwrap_or("None"),
                 statement_timeout = ?settings.statement_timeout,
+                catalog_view_age_ms = ?session
+                    .catalog_snapshot()
+                    .view()
+                    .refreshed_at()
+                    .map(|at| at.elapsed().as_millis()),
                 "created PostgreSQL session"
             );
         }

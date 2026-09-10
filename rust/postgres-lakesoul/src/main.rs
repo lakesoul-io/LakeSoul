@@ -11,7 +11,7 @@ use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_metadata::MetaDataClient;
 use rootcause::Report;
 use tokio::runtime::{self};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::server::LakeSoulHandlers;
@@ -55,6 +55,11 @@ async fn main_inner() -> Result<(), Report> {
         Arc::clone(&auth_manager),
     )?;
     init_logger();
+    // Warm the shared catalog view once: every connection lists from it, so
+    // the first one must not pay for the initial metadata load.
+    if let Err(err) = session_factory.catalog_snapshot().load().await {
+        warn!("initial catalog view load failed: {err}");
+    }
     let server_opts = ServerOptions::new()
         .with_host(String::from("127.0.0.1"))
         .with_port(cli.port);

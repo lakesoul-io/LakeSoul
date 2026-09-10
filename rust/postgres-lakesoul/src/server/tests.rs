@@ -342,3 +342,29 @@ async fn session_scopes_namespaces_as_databases() {
         assert!(marker.schema_names().is_empty());
     }
 }
+
+/// Every connection of one factory lists from the same metadata view: a
+/// per-connection snapshot would multiply the periodic metadata load by the
+/// number of connections.
+#[tokio::test]
+async fn connections_share_the_factory_catalog_snapshot() {
+    if !pg_available() {
+        return;
+    }
+    let factory = test_factory().await;
+    let session = factory
+        .create_session(
+            SessionIdentity {
+                user: "user_a".to_string(),
+                database: "default".to_string(),
+            },
+            &SessionSettings::default(),
+        )
+        .await
+        .expect("create_session");
+
+    assert!(
+        Arc::ptr_eq(session.catalog_snapshot(), factory.catalog_snapshot()),
+        "connections must share the factory metadata view"
+    );
+}
