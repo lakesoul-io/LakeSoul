@@ -277,14 +277,12 @@ fn run_shard_vector_index(
         } else {
             builder.build().await
         };
-        result
-            .map(|_| "ok".to_string())
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "vector index build failed: {:?}",
-                    e
-                ))
-            })
+        result.map(|_| "ok".to_string()).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "vector index build failed: {:?}",
+                e
+            ))
+        })
     })
 }
 
