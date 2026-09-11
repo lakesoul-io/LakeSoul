@@ -38,6 +38,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use arrow::array::{ArrayRef, Int32Array, Int64Array};
 use arrow::record_batch::RecordBatch;
@@ -45,13 +46,15 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed::{DistributedExec, display_plan_ascii};
+use datafusion_distributed::{DistributedExec, Worker, display_plan_ascii};
+use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::physical_plan::MergeParquetExec;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
+use tokio_stream::wrappers::TcpListenerStream;
 
 use crate::distributed::{DistributedOptions, LakeSoulWorkerOptions, WorkerDiscovery};
 use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
@@ -1601,6 +1604,169 @@ async fn test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent_inner
             "+----+-----+",
         ],
         &batches,
+    );
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Like `spawn_workers`, but each worker's `Worker` handle is returned too, so
+/// a test can observe task lifecycle through `Worker::tasks_running` (which
+/// needs the `integration` feature, enabled for this crate's dev deps).
+async fn spawn_workers_with_handles(
+    workers: usize,
+) -> (Vec<String>, Vec<Worker>, JoinSet<()>) {
+    let mut urls = Vec::new();
+    let mut handles = Vec::new();
+    let mut join_set = JoinSet::new();
+    for _ in 0..workers {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        urls.push(format!("http://127.0.0.1:{port}"));
+        let options = LakeSoulWorkerOptions {
+            core_args: CoreArgs::default(),
+        };
+        let worker = crate::distributed::lakesoul_worker(&options).unwrap();
+        handles.push(worker.clone());
+        join_set.spawn(async move {
+            let incoming = TcpListenerStream::new(listener);
+            tonic::transport::Server::builder()
+                .add_service(worker.into_worker_server())
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+    }
+    (urls, handles, join_set)
+}
+
+/// Streams `rows` of `(part, b)` into an append-only range-partitioned table
+/// through the normal upsert path, one call per file, and returns the table
+/// name and the row count written.
+async fn seed_large_table(
+    client: MetaDataClientRef,
+    rows_per_call: usize,
+    calls: usize,
+) -> Result<(String, usize)> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_cancel_t_{suffix}");
+    create_distributed_table(
+        client.clone(),
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(t1_schema())
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    for _ in 0..calls {
+        let rows = rows_per_call;
+        let part: Vec<i32> = (0..rows).map(|i| (i % 3) as i32).collect();
+        let b: Vec<i32> = (0..rows).map(|i| i as i32).collect();
+        table.execute_upsert(batch(t1_schema(), part, b)).await?;
+    }
+    Ok((name, rows_per_call * calls))
+}
+
+#[test]
+fn test_dropping_a_running_distributed_stream_stops_the_workers() {
+    run_distributed_test(
+        test_dropping_a_running_distributed_stream_stops_the_workers_inner(),
+    );
+}
+
+/// A distributed stream dropped mid-execution must stop the worker tasks
+/// promptly.
+///
+/// This is the mechanism the PG adapter's statement cancellation relies on:
+/// `CancellableRows` reports `57014` and drops the wrapped DataFusion stream,
+/// and the coordinator turns that drop into the end of the coordinator→worker
+/// channels (see `postgres_lakesoul::cancel`). Verified here end to end over
+/// real gRPC workers:
+///
+/// - The query is a bare scan, so the coordinator's head stage streams
+///   batches continuously and the dropped stream is observed by the stage
+///   pump at its next batch. (An aggregating or sorted head stage emits
+///   nothing until the scan is over, and would only observe the drop then.)
+/// - Each dispatched stage task holds one worker task entry, invalidated when
+///   the worker sees the coordinator channel's EOS that the drop triggers. A
+///   leaked cancellation cannot normalize them otherwise: a worker task left
+///   running is backpressured — the cancelled query never reads another
+///   batch — so it never completes on its own and the entry survives its
+///   ten-minute TTL.
+/// - Therefore, after the drop, every worker's `tasks_running()` must reach
+///   zero within seconds, and the workers must stay usable.
+async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() -> Result<()>
+{
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    // Four million rows: the scan outlasts the first batch by far, and its
+    // buffered batches far exceed every boundary buffer, so a task left
+    // running after the drop stays backpressured instead of finishing.
+    let (t, expected_rows) = seed_large_table(client.clone(), 2_000_000, 2).await?;
+
+    let (worker_urls, handles, mut workers) =
+        spawn_workers_with_handles(WORKER_COUNT).await;
+    let factory = distributed_factory(client, worker_urls, false)?;
+    let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
+
+    let mut stream = ctx
+        .sql(&format!("SELECT part, b FROM {t}"))
+        .await?
+        .execute_stream()
+        .await?;
+    // The first batch can only arrive after the plan was dispatched, so the
+    // workers hold un-finalized task entries right now.
+    drop(stream.next().await.unwrap()?);
+    let dispatched: usize =
+        futures::future::join_all(handles.iter().map(Worker::tasks_running))
+            .await
+            .into_iter()
+            .sum();
+    assert!(
+        dispatched > 0,
+        "the scan stage must be dispatched while the first batch arrives, got {dispatched}"
+    );
+
+    // The cancellation mechanism under test: drop the stream while the scan
+    // is still running.
+    drop(stream);
+
+    for handle in &handles {
+        let mut drained = false;
+        for _ in 0..100 {
+            if handle.tasks_running().await == 0 {
+                drained = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            drained,
+            "the dropped stream must stop the worker tasks; {} still running",
+            handle.tasks_running().await
+        );
+    }
+
+    // The workers are still usable afterwards: a fresh distributed query
+    // over the same table returns the full count.
+    let count = ctx
+        .sql(&format!("SELECT count(*) AS c FROM {t}"))
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(count.len(), 1);
+    assert_eq!(
+        count[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("count(*) yields int64")
+            .value(0),
+        expected_rows as i64,
+        "a query after the cancelled one must see every row"
     );
 
     workers.abort_all();
