@@ -975,6 +975,11 @@ pub fn is_or_conjunctive(expr: &datafusion_expr::Expr) -> bool {
         datafusion_expr::Expr::BinaryExpr(binary_expr) => {
             binary_expr.op == datafusion_expr::Operator::Or
         }
+        // `col IN (v1, v2, ...)` is an OR-conjunction of equalities.
+        datafusion_expr::Expr::InList(in_list) => {
+            !in_list.negated
+                && matches!(in_list.expr.as_ref(), datafusion_expr::Expr::Column(_))
+        }
         _ => false,
     }
 }
@@ -1023,6 +1028,19 @@ pub fn collect_column_equalities(
         Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Or => {
             collect_column_equalities(&binary_expr.left, equalities);
             collect_column_equalities(&binary_expr.right, equalities);
+        }
+        // `col IN (v1, v2, ...)` contributes one equality per value.
+        Expr::InList(in_list) if !in_list.negated => {
+            if let Expr::Column(col) = in_list.expr.as_ref() {
+                for item in &in_list.list {
+                    if let Expr::Literal(scalar, _) = item {
+                        equalities.push(ColumnEquality {
+                            column_name: col.name.clone(),
+                            scalar_value: scalar.clone(),
+                        });
+                    }
+                }
+            }
         }
         // If it's an equality comparison with a literal, extract the column name and scalar value
         Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {

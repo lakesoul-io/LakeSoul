@@ -236,6 +236,12 @@ impl LakeSoulReader {
             )) as SendableRecordBatchStream
         } else {
             let plan = self.io_session.build_physical_plan(filters).await?;
+            if std::env::var("LAKESOUL_READER_PLAN").is_ok() {
+                eprintln!(
+                    "reader plan:\n{}",
+                    datafusion::physical_plan::displayable(plan.as_ref()).indent(true)
+                );
+            }
             execute_stream(plan, self.io_session.task_ctx())?
         };
         let schema = stream.schema();
@@ -337,14 +343,25 @@ impl LakeSoulReader {
             .map(|f| f.data_type().clone())
             .unwrap_or_else(|_| arrow_schema::DataType::UInt64);
         let mut id_filter: Option<Expr> = None;
-        for id in &ids {
-            let literal = match pk_data_type {
-                arrow_schema::DataType::Int64 => ScalarValue::Int64(Some(*id as i64)),
-                arrow_schema::DataType::Int32 => ScalarValue::Int32(Some(*id as i32)),
-                _ => ScalarValue::UInt64(Some(*id)),
-            };
-            let eq = pk_expr.clone().eq(Expr::Literal(literal, None));
-            id_filter = Some(id_filter.map_or(eq.clone(), |prev| prev.or(eq)));
+        let literals: Vec<Expr> = ids
+            .iter()
+            .map(|id| {
+                let literal = match pk_data_type {
+                    arrow_schema::DataType::Int64 => ScalarValue::Int64(Some(*id as i64)),
+                    arrow_schema::DataType::Int32 => ScalarValue::Int32(Some(*id as i32)),
+                    _ => ScalarValue::UInt64(Some(*id)),
+                };
+                Expr::Literal(literal, None)
+            })
+            .collect();
+        if !literals.is_empty() {
+            // A single `pk IN (...)` instead of a chain of ORs: much cheaper
+            // to evaluate and to push into file scans.
+            id_filter = Some(Expr::InList(datafusion_expr::expr::InList::new(
+                Box::new(pk_expr.clone()),
+                literals,
+                false,
+            )));
         }
         if let Some(f) = id_filter {
             return Ok(filters.into_iter().chain(std::iter::once(f)).collect());
