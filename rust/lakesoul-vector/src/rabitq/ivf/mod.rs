@@ -1815,36 +1815,28 @@ impl IvfRabitqIndex {
             };
         let mut clusters = Vec::with_capacity(cluster_map.len());
         for entry in cluster_map.values() {
-            // Merge all segments (base + deltas) for this cluster.
-            let mut merged: Option<ClusterData> = None;
+            // Merge all segments (base + deltas) for this cluster.  The merge
+            // re-packs the FastScan batches because each segment pads its
+            // final batch, so raw concatenation would misalign later vectors.
+            let mut segments = Vec::with_capacity(entry.segments.len());
             for seg_entry in &entry.segments {
-                let seg = crate::rabitq::manifest::read_segment_full(
-                    mstore,
-                    &seg_entry.segment_filename,
-                )
-                .await?;
-                let cd = ClusterData::from_segment(seg);
-                if let Some(m) = merged.as_mut() {
-                    // Concatenate: keep centroid from first segment, append data.
-                    m.ids.extend_from_slice(&cd.ids);
-                    m.batch_data.extend_from_slice(&cd.batch_data);
-                    m.ex_codes_packed.extend_from_slice(&cd.ex_codes_packed);
-                    m.f_add_ex.extend_from_slice(&cd.f_add_ex);
-                    m.f_rescale_ex.extend_from_slice(&cd.f_rescale_ex);
-                    m.delta.extend_from_slice(&cd.delta);
-                    m.vl.extend_from_slice(&cd.vl);
-                    m.num_vectors += cd.num_vectors;
-                } else {
-                    merged = Some(cd);
-                }
+                segments.push(
+                    crate::rabitq::manifest::read_segment_full(
+                        mstore,
+                        &seg_entry.segment_filename,
+                    )
+                    .await?,
+                );
             }
-            let final_cd = merged.unwrap_or_else(|| {
+            let final_cd = if segments.is_empty() {
                 ClusterData::new(
                     vec![0.0f32; header.padded_dim],
                     header.padded_dim,
                     header.ex_bits,
                 )
-            });
+            } else {
+                ClusterData::merge_segments(segments)?
+            };
             clusters.push(final_cd);
         }
         let rotator = DynamicRotator::deserialize(
@@ -2118,30 +2110,16 @@ impl IvfRabitqIndex {
                 std::collections::BTreeMap::new();
 
             for (&cid, entry) in cluster_map.iter() {
-                // Merge all segments (base + deltas) for this cluster.
-                let mut merged: Option<ClusterData> = None;
+                // Merge all segments (base + deltas) for this cluster,
+                // re-packing the FastScan batches (see `merge_segments`).
+                let mut segments = Vec::with_capacity(entry.segments.len());
                 for seg_entry in &entry.segments {
-                    let seg =
+                    segments.push(
                         manifest::read_segment_full(mstore, &seg_entry.segment_filename)
-                            .await?;
-                    let cd = ClusterData::from_segment(seg);
-                    if let Some(m) = merged.as_mut() {
-                        m.ids.extend_from_slice(&cd.ids);
-                        m.batch_data.extend_from_slice(&cd.batch_data);
-                        m.ex_codes_packed.extend_from_slice(&cd.ex_codes_packed);
-                        m.f_add_ex.extend_from_slice(&cd.f_add_ex);
-                        m.f_rescale_ex.extend_from_slice(&cd.f_rescale_ex);
-                        m.delta.extend_from_slice(&cd.delta);
-                        m.vl.extend_from_slice(&cd.vl);
-                        m.num_vectors += cd.num_vectors;
-                    } else {
-                        merged = Some(cd);
-                    }
+                            .await?,
+                    );
                 }
-
-                let cd = merged.ok_or_else(|| {
-                    RabitqError::InvalidPersistence("cluster has no segments")
-                })?;
+                let cd = ClusterData::merge_segments(segments)?;
 
                 // Write new compacted base segment (version 0).
                 let fname = manifest::segment_filename(cid, 0);

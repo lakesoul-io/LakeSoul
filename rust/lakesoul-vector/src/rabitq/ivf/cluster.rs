@@ -357,6 +357,77 @@ impl ClusterData {
         }
     }
 
+    /// Merge segment data (base first, then deltas) into one position-aligned
+    /// cluster.
+    ///
+    /// Each segment stores its own FastScan batches with the final batch
+    /// padded to 32 vectors.  Raw `batch_data` concatenation would therefore
+    /// shift every vector after a non-32-aligned segment boundary, so the
+    /// merge unpacks each vector's codes/parameters and re-packs them into a
+    /// single contiguous batch layout.
+    pub(crate) fn merge_segments(
+        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+    ) -> Result<Self, RabitqError> {
+        let mut centroid: Option<Vec<f32>> = None;
+        let mut padded_dim = 0usize;
+        let mut ex_bits = 0usize;
+        let mut ids: Vec<u64> = Vec::new();
+        let mut quantized: Vec<QuantizedVector> = Vec::new();
+
+        for seg in segments {
+            let cd = ClusterData::from_segment(seg);
+            match centroid {
+                None => {
+                    centroid = Some(cd.centroid.clone());
+                    padded_dim = cd.padded_dim;
+                    ex_bits = cd.ex_bits;
+                }
+                Some(_) if cd.padded_dim != padded_dim || cd.ex_bits != ex_bits => {
+                    return Err(RabitqError::InvalidPersistence(
+                        "segment dimension/ex_bits mismatch while merging",
+                    ));
+                }
+                Some(_) => {}
+            }
+            let dim_bytes = cd.padded_dim / 8;
+            ids.extend_from_slice(&cd.ids);
+            for i in 0..cd.num_vectors {
+                let batch_idx = i / simd::FASTSCAN_BATCH_SIZE;
+                let in_batch = i % simd::FASTSCAN_BATCH_SIZE;
+                let mut unpacked = vec![0u8; cd.padded_dim];
+                simd::unpack_single_vector(
+                    cd.batch_bin_codes(batch_idx),
+                    in_batch,
+                    dim_bytes,
+                    &mut unpacked,
+                );
+                let mut packed = vec![0u8; dim_bytes];
+                simd::pack_binary_code(&unpacked, &mut packed, cd.padded_dim);
+                quantized.push(QuantizedVector {
+                    binary_code_packed: packed,
+                    ex_code_packed: cd.ex_codes_packed[i].clone(),
+                    ex_bits: cd.ex_bits as u8,
+                    dim: cd.padded_dim,
+                    delta: cd.delta[i],
+                    vl: cd.vl[i],
+                    f_add: cd.batch_f_add(batch_idx)[in_batch],
+                    f_rescale: cd.batch_f_rescale(batch_idx)[in_batch],
+                    f_error: cd.batch_f_error(batch_idx)[in_batch],
+                    residual_norm: 0.0,
+                    f_add_ex: cd.f_add_ex[i],
+                    f_rescale_ex: cd.f_rescale_ex[i],
+                });
+            }
+        }
+
+        let centroid = centroid.ok_or(RabitqError::InvalidPersistence(
+            "cluster has no segments to merge",
+        ))?;
+        Ok(ClusterData::from_quantized_vectors(
+            centroid, ids, quantized, padded_dim, ex_bits,
+        ))
+    }
+
     /// Create new empty cluster
     #[allow(dead_code)]
     pub(crate) fn new(centroid: Vec<f32>, padded_dim: usize, ex_bits: usize) -> Self {
