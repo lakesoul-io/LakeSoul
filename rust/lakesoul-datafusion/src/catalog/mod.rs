@@ -93,21 +93,23 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub vector_index_columns: Option<String>,
-    /// Physical file format used for writes: `"parquet"`, `"vortex"` or
-    /// `"vortex-compact"`.  Defaults to parquet when unset.
+    /// File format used for writes: `"parquet"`, `"vortex"` or
+    /// `"vortex-compact"` (same `file_format` option as the Spark/Flink
+    /// connectors).  Defaults to parquet when unset.
     #[serde(
-        rename = "physical_format",
+        rename = "file_format",
+        alias = "physical_format",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub physical_format: Option<String>,
+    pub file_format: Option<String>,
 }
 
-/// Resolve the physical file format declared by a table's properties
-/// (`physical_format`); parquet when unset.
-pub(crate) fn table_physical_format(properties_json: &str) -> Result<PhysicalFormat> {
+/// Resolve the file format declared by a table's properties
+/// (`file_format`, the Spark/Flink-compatible option); parquet when unset.
+pub(crate) fn table_file_format(properties_json: &str) -> Result<PhysicalFormat> {
     let properties: LakeSoulTableProperty = serde_json::from_str(properties_json)?;
-    match properties.physical_format {
+    match properties.file_format {
         Some(ref format) => Ok(format.parse()?),
         None => Ok(PhysicalFormat::Parquet),
     }

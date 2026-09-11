@@ -25,7 +25,7 @@ LakeSoul 的向量检索基于 **IVF+RaBitQ** 索引，并在数据写入过程�
 |------|------|
 | 机器 | Linux，32 核 CPU，62 GB 内存，本地 NVMe SSD |
 | 构建 | `cargo bench` release profile，16 个工作线程（`RAYON_NUM_THREADS=16`） |
-| 存储 | 本地文件系统；所有场景的 LakeSoul 表数据都以 **vortex** 格式写入（`PhysicalFormat::Vortex`；SQL 场景通过 `physical_format` 表选项选择） |
+| 存储 | 本地文件系统；所有场景的 LakeSoul 表数据都以 **vortex** 格式写入（`PhysicalFormat::Vortex`；SQL 场景通过 `file_format` 表选项选择） |
 | 距离度量 | L2 |
 | 索引配置 | `nlist = 256`、`total_bits = 7`、`top_k = 10`、检索 `nprobe = 64`（E4 扫描 1–256） |
 | 每次 checkpoint 查询数 | 100 |
@@ -231,7 +231,7 @@ recall 已降到约 0.8；逐簇规则在前几轮即触发，这正是 E1 中 `
 PostgreSQL 元数据服务。
 
 **方法。**
-- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ..., 'physical_format'
+- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ..., 'file_format'
   'vortex')` 同时声明索引与写入格式；先从一个注册在独立 catalog 的内存表插入 10 万条 base
   向量，随后再执行 10 轮、每轮 1 万条的均匀向量 `INSERT`（共写入 20 万行）。表属性的重建
   策略在这些 SQL 写入过程中生效。
@@ -265,8 +265,8 @@ GIST 1.03 QPS / 967 ms —— 即每次 SQL 查询 vortex 约快 1.9×（GloVe�
   GIST 约 0.27 s，而候选扫描仅约 6–30 ms、SQL 规划几毫秒。下一步吞吐优化应做索引缓存
   （或长生命周期 reader）。
 - **写入格式有影响。** SQL sink 此前硬编码仅支持 parquet 的 multipart writer、忽略表的
-  `physical_format`；现在使用支持多格式的 writer，建表可指定
-  `physical_format = "vortex"`。在 recall 相同的前提下，每次 SQL 查询 vortex 比 parquet 约快
+  `file_format`；现在使用支持多格式的 writer，建表可指定
+  `file_format = "vortex"`。在 recall 相同的前提下，每次 SQL 查询 vortex 比 parquet 约快
   1.9×（GloVe）/ 3.1×（GIST），因为 vortex 的候选扫描剪枝更快。
 - **磁盘索引包含所有历史 generation**：segment 不可变且不做垃圾回收，因此重建后
   `_vector_index/` 目录（此处 GIST 为 412 MB）大于当前 generation。压缩/GC 是自然的后续工作。

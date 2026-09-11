@@ -1952,7 +1952,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             vec FLOAT[] NOT NULL\
          ) STORED AS LAKESOUL LOCATION '{}' \
          OPTIONS ('vector_index_columns' '{property}', 'hash_bucket_num' '1', \
-                  'physical_format' '{}')",
+                  'file_format' '{}')",
         work_dir.display(),
         args.sql_format
     );

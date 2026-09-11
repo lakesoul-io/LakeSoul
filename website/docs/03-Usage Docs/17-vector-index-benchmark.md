@@ -29,7 +29,7 @@ The benchmark is a self-contained Rust scenario runner
 |------|-------|
 | Machine | Linux, 32 CPU cores, 62 GB RAM, local NVMe SSD |
 | Build | `cargo bench` release profile, 16 worker threads (`RAYON_NUM_THREADS=16`) |
-| Storage | local filesystem; all scenarios write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`; the SQL scenario selects it through the `physical_format` table option) |
+| Storage | local filesystem; all scenarios write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`; the SQL scenario selects it through the `file_format` table option) |
 | Distance metric | L2 |
 | Index config | `nlist = 256`, `total_bits = 7`, `top_k = 10`, search `nprobe = 64` (E4 sweeps 1–256) |
 | Queries per checkpoint | 100 |
@@ -275,7 +275,7 @@ isolation.  The scenario requires PostgreSQL metadata.
 
 **Method.**
 - `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ..., '
-  physical_format' 'vortex')` declares the index and the write format; the base
+  file_format' 'vortex')` declares the index and the write format; the base
   100K vectors are inserted from an in-memory table registered in a separate
   catalog, followed by 10 further `INSERT` rounds of 10K uniform vectors (200K
   rows written in total).  The table's rebuild policy runs during these SQL
@@ -319,9 +319,9 @@ and 1.03 QPS / 967 ms (GIST) at identical recall — vortex is ~1.9× (GloVe) an
   candidate scan and a few ms of planning.  An index cache (or a long-lived
   reader) is therefore the next throughput improvement.
 - **The write format matters.**  The SQL sink used to hard-code a parquet-only
-  multipart writer and ignored the table's `physical_format`; it now uses the
+  multipart writer and ignored the table's `file_format`; it now uses the
   format-aware writer, so tables can be created with
-  `physical_format = "vortex"`.  At identical recall vortex is ~1.9×
+  `file_format = "vortex"`.  At identical recall vortex is ~1.9×
   (GloVe) and ~3.1× (GIST) faster per SQL query than parquet, because the
   vortex candidate scan prunes faster.
 - **On-disk index size includes all generations:** segments are immutable and

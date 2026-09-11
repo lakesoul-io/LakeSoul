@@ -220,10 +220,6 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         "LakeSoulVectorSearchExec"
     }
 
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -310,6 +306,10 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream))
             as SendableRecordBatchStream)
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 

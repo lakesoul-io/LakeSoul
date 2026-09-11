@@ -510,7 +510,7 @@ impl LakeSoulHashSinkExec {
             let batch_excluding_range =
                 batch.project(&schema_projection_excluding_range)?;
             let physical_format =
-                crate::catalog::table_physical_format(&table_info.properties)?;
+                crate::catalog::table_file_format(&table_info.properties)?;
             let file_absolute_path = format!(
                 "{}{}part-{}_{:0>4}.{}",
                 table_info.table_path,

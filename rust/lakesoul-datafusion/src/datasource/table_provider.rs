@@ -340,17 +340,21 @@ impl LakeSoulTableProvider {
             .map_err(|report| report!("invalid vector_index_columns option: {report}"))?;
         }
 
-        // Optional physical write format ("parquet", "vortex" or
-        // "vortex-compact"), stored as a table property for the sink.
-        let physical_format = cmd
+        // Optional file format ("parquet", "vortex" or "vortex-compact"),
+        // named `file_format` like the Spark/Flink connectors and stored as
+        // a table property for the sink.  `physical_format` is accepted as
+        // a backwards-compatible alias.
+        let file_format = cmd
             .options
-            .get("format.physical_format")
+            .get("format.file_format")
+            .or_else(|| cmd.options.get("file_format"))
+            .or_else(|| cmd.options.get("format.physical_format"))
             .or_else(|| cmd.options.get("physical_format"))
             .cloned();
-        if let Some(raw) = &physical_format {
+        if let Some(raw) = &file_format {
             raw.parse::<lakesoul_io::file_format::PhysicalFormat>()
                 .map_err(|report| {
-                    report!("invalid physical_format option '{raw}': {report}")
+                    report!("invalid file_format option '{raw}': {report}")
                 })?;
         }
 
@@ -381,7 +385,7 @@ impl LakeSoulTableProvider {
                 cdc_change_column: cdc_column,
                 use_cdc,
                 vector_index_columns,
-                physical_format,
+                file_format,
                 ..Default::default()
             })
             .unwrap(),

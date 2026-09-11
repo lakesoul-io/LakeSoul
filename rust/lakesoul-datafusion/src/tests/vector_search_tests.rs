@@ -692,6 +692,68 @@ async fn sql_create_table_declares_vector_index_via_option() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_create_table_stores_file_format_option() {
+    // The write format is declared through the Spark/Flink-compatible
+    // `file_format` OPTIONS entry and stored as a table property.
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_file_format";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL \
+         LOCATION '{location}' \
+         OPTIONS ('file_format' 'vortex')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    let table_info = client
+        .get_table_info_by_table_name(table_name, "default")
+        .await
+        .unwrap()
+        .expect("table must exist");
+    let properties: serde_json::Value =
+        serde_json::from_str(&table_info.properties).unwrap();
+    assert_eq!(
+        properties.get("file_format").and_then(|v| v.as_str()),
+        Some("vortex")
+    );
+    assert_eq!(
+        crate::catalog::table_file_format(&table_info.properties).unwrap(),
+        lakesoul_io::file_format::PhysicalFormat::Vortex
+    );
+
+    // An invalid format is rejected before any metadata is created.
+    let table_name2 = "vec_search_sql_file_format_bad";
+    let _ = client.drop_table(table_name2, "default").await;
+    clean_table_dir(table_name2);
+    let bad_sql = format!(
+        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name2} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL \
+         LOCATION 'default/{table_name2}' \
+         OPTIONS ('file_format' 'orc')"
+    );
+    let err = ctx.sql(&bad_sql).await.unwrap_err();
+    assert!(
+        err.to_string().contains("invalid file_format"),
+        "expected a file_format validation error, got: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_full_chain_insert_auto_builds_index() {
     // Full SQL chain: CREATE EXTERNAL TABLE (declaring the vector index
     // through OPTIONS) -> INSERT INTO -> the auto index build must seal a
