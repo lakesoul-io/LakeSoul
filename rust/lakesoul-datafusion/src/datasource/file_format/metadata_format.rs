@@ -58,7 +58,8 @@ use lakesoul_io::helpers::{
 };
 use lakesoul_io::physical_plan::MergeParquetExec;
 use lakesoul_io::session::LakeSoulIOSession;
-use lakesoul_io::writer::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
+use lakesoul_io::writer::async_writer::AsyncBatchWriter;
+use lakesoul_io::writer::create_writer;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use lakesoul_metadata_proto::entity::TableInfo;
 use object_store::{ObjectMeta, ObjectStore};
@@ -497,8 +498,10 @@ impl LakeSoulHashSinkExec {
             .collect::<Vec<_>>();
 
         let mut row_count = 0;
-        // let mut async_writer = MultiPartAsyncWriter::try_new(lakesoul_io_config).await?;
-        let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
+        // One writer (and one data file) per input partition; the writer is
+        // chosen by the table's physical format (parquet / vortex).
+        let mut partitioned_writer =
+            HashMap::<String, Box<dyn AsyncBatchWriter + Send>>::new();
         while let Some(batch) = data.next().await.transpose()? {
             debug!("write record_batch with {} rows", batch.num_rows());
             let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
@@ -506,12 +509,15 @@ impl LakeSoulHashSinkExec {
             debug!("{partition_desc}");
             let batch_excluding_range =
                 batch.project(&schema_projection_excluding_range)?;
+            let physical_format =
+                crate::catalog::table_physical_format(&table_info.properties)?;
             let file_absolute_path = format!(
-                "{}{}part-{}_{:0>4}.parquet",
+                "{}{}part-{}_{:0>4}.{}",
                 table_info.table_path,
                 columnar_values_to_sub_path(&columnar_values),
                 write_id,
-                partition
+                partition,
+                physical_format.extension()
             );
 
             if !partitioned_writer.contains_key(&partition_desc) {
@@ -521,6 +527,9 @@ impl LakeSoulHashSinkExec {
                     HashMap::new(),
                     HashMap::new(),
                 )?
+                // The sink already assigns one file per input partition, so
+                // disable the writer's own dynamic partitioning.
+                .set_dynamic_partition(false)
                 .with_files(vec![file_absolute_path])
                 .with_schema(batch_excluding_range.schema())
                 .build();
@@ -529,8 +538,8 @@ impl LakeSoulHashSinkExec {
                         io_config,
                         context.clone(),
                     ));
-                let writer = MultiPartAsyncWriter::try_new(new_session).await?;
-                partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
+                let writer = create_writer(new_session).await?;
+                partitioned_writer.insert(partition_desc.clone(), writer);
             }
 
             if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {
@@ -543,25 +552,19 @@ impl LakeSoulHashSinkExec {
 
         // TODO: apply rolling strategy
         for (partition_desc, writer) in partitioned_writer.into_iter() {
+            let outputs = writer.flush_and_close().await?;
             {
                 let mut partitioned_file_path_and_row_count_locked =
                     partitioned_file_path_and_row_count.lock().await;
-                let file_absolute_path = writer.absolute_path();
-                let num_rows = writer.nun_rows();
-                if let Some(file_path_and_row_count) =
-                    partitioned_file_path_and_row_count_locked.get_mut(&partition_desc)
-                {
-                    file_path_and_row_count.0.push(file_absolute_path);
-                    file_path_and_row_count.1 += num_rows;
-                } else {
-                    partitioned_file_path_and_row_count_locked.insert(
-                        partition_desc.clone(),
-                        (vec![file_absolute_path], num_rows),
-                    );
+                let entry = partitioned_file_path_and_row_count_locked
+                    .entry(partition_desc.clone())
+                    .or_insert_with(|| (Vec::new(), 0u64));
+                for output in outputs {
+                    entry.0.push(output.file_path);
+                    entry.1 += output.row_count as u64;
                 }
                 // release guard
             }
-            writer.flush_and_close().await?;
         }
 
         Ok(row_count as u64)
