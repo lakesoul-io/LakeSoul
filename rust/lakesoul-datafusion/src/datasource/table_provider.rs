@@ -354,10 +354,12 @@ impl LakeSoulTableProvider {
                 hash_bucket_num: if primary_keys.is_empty() {
                     None
                 } else {
-                    // TODO: 4 should be parameter
+                    // Table-factory options arrive with a `format.` prefix
+                    // (like `format.use_cdc`); accept both forms.
                     Some(
                         cmd.options
                             .get("hash_bucket_num")
+                            .or_else(|| cmd.options.get("format.hash_bucket_num"))
                             .cloned()
                             .unwrap_or(String::from("4")),
                     )
