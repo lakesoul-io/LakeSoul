@@ -1947,7 +1947,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     };
     let property = vector_index_columns_to_json(std::slice::from_ref(&config));
     let create_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (\
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (\
             id BIGINT NOT NULL PRIMARY KEY, \
             vec FLOAT[] NOT NULL\
          ) STORED AS LAKESOUL LOCATION '{}' \
@@ -1977,7 +1977,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         .map_err(|e| format!("register table: {e}"))?;
     let t = Instant::now();
     ctx.sql(&format!(
-        "INSERT INTO \"LAKESOUL\".default.{table_name} \
+        "INSERT INTO \"lakesoul\".default.{table_name} \
          SELECT id, vec FROM src.public.bench_src"
     ))
     .await
@@ -2009,7 +2009,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
                 .map_err(|e| format!("register table: {e}"))?;
             let t = Instant::now();
             ctx.sql(&format!(
-                "INSERT INTO \"LAKESOUL\".default.{table_name} \
+                "INSERT INTO \"lakesoul\".default.{table_name} \
                  SELECT id, vec FROM src.public.{name}"
             ))
             .await
@@ -2042,7 +2042,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 
     // 6. EXPLAIN must show the index-candidate + exact-rerank exec node.
     let explain_sql = format!(
-        "EXPLAIN VERBOSE select id from \"LAKESOUL\".default.{table_name} \
+        "EXPLAIN VERBOSE select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{}]) limit {}",
         query_literal(dataset, 0),
         args.top_k
@@ -2051,7 +2051,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let uses_vector_index_exec = explain.contains("LakeSoulVectorSearchExec");
     // Per-operator timings for the same query (diagnostic).
     let analyze_sql = format!(
-        "EXPLAIN ANALYZE select id from \"LAKESOUL\".default.{table_name} \
+        "EXPLAIN ANALYZE select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{}]) limit {}",
         query_literal(dataset, 0),
         args.top_k
@@ -2064,7 +2064,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let mut recall_sum = 0.0;
     for qi in 0..nq {
         let sql = format!(
-            "select id from \"LAKESOUL\".default.{table_name} \
+            "select id from \"lakesoul\".default.{table_name} \
              order by array_distance(vec, ARRAY[{}]) limit {}",
             query_literal(dataset, qi),
             args.top_k

@@ -709,7 +709,7 @@ async fn sql_create_table_stores_file_format_option() {
         .display()
         .to_string();
     let create_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \
@@ -739,7 +739,7 @@ async fn sql_create_table_stores_file_format_option() {
     let _ = client.drop_table(table_name2, "default").await;
     clean_table_dir(table_name2);
     let bad_sql = format!(
-        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name2} (
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name2} (
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \

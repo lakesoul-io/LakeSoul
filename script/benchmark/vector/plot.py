@@ -102,8 +102,7 @@ def plot_e1(data: list[dict], outdir: Path) -> None:
             for d in group:
                 rounds = [r["round"] for r in d["rounds_data"]]
                 recalls = [
-                    (r.get("search") or {}).get("recall_at_k")
-                    for r in d["rounds_data"]
+                    (r.get("search") or {}).get("recall_at_k") for r in d["rounds_data"]
                 ]
                 xs = [x for x, y in zip(rounds, recalls) if y is not None]
                 ys = [y for y in recalls if y is not None]
@@ -183,7 +182,10 @@ def plot_e2(data: list[dict], outdir: Path) -> None:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.8))
         for d in sorted(group, key=lambda x: (x["config"]["nlist"], x["n_base"])):
             nlist = d["config"]["nlist"]
-            color = AUTO_COLORS[list({g["config"]["nlist"] for g in group}).index(nlist) % len(AUTO_COLORS)]
+            color = AUTO_COLORS[
+                list({g["config"]["nlist"] for g in group}).index(nlist)
+                % len(AUTO_COLORS)
+            ]
             ax1.plot(
                 d["n_base"],
                 d["build_ms"],
@@ -220,7 +222,11 @@ def plot_e3(data: list[dict], outdir: Path) -> None:
             axes = [axes]
         for ax, drift in zip(axes, DRIFTS):
             d = next(
-                (x for x in runs if x.get("drift") == drift and x["_file"].startswith(f"e3_{ds}_")),
+                (
+                    x
+                    for x in runs
+                    if x.get("drift") == drift and x["_file"].startswith(f"e3_{ds}_")
+                ),
                 None,
             )
             if d is None:
@@ -230,24 +236,35 @@ def plot_e3(data: list[dict], outdir: Path) -> None:
             cluster = [r["stats"]["max_cluster_delta_ratio"] for r in d["rounds_data"]]
             shard = [r["stats"]["shard_delta_ratio"] for r in d["rounds_data"]]
             recalls = [
-                (r.get("search") or {}).get("recall_at_k")
-                for r in d["rounds_data"]
+                (r.get("search") or {}).get("recall_at_k") for r in d["rounds_data"]
             ]
-            ax.plot(rounds, cluster, marker="o", color="#d62728", label="max cluster delta/base")
-            ax.plot(rounds, shard, marker="s", color="#1f77b4", label="shard delta/base")
+            ax.plot(
+                rounds,
+                cluster,
+                marker="o",
+                color="#d62728",
+                label="max cluster delta/base",
+            )
+            ax.plot(
+                rounds, shard, marker="s", color="#1f77b4", label="shard delta/base"
+            )
             ax.set_xlabel("update round")
             ax.set_ylabel("delta / base ratio")
             ax.grid(alpha=0.3, linestyle="--")
             ax2 = ax.twinx()
             xs = [x for x, y in zip(rounds, recalls) if y is not None]
             ys = [y for y in recalls if y is not None]
-            ax2.plot(xs, ys, color="#2ca02c", linestyle=":", marker="x", label="recall@10")
+            ax2.plot(
+                xs, ys, color="#2ca02c", linestyle=":", marker="x", label="recall@10"
+            )
             ax2.set_ylabel("recall@10")
             ax2.set_ylim(0.0, 1.02)
             ax.set_title(f"E3 trigger — {ds}/{drift}")
             lines1, labels1 = ax.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
-            ax.legend(lines1 + lines2, labels1 + labels2, fontsize=7, loc="center right")
+            ax.legend(
+                lines1 + lines2, labels1 + labels2, fontsize=7, loc="center right"
+            )
         save(fig, outdir, f"e3_trigger_{ds}")
 
 
@@ -304,6 +321,7 @@ def plot_e5(data: list[dict], outdir: Path) -> None:
     if not runs:
         return
     print("E5:")
+
     def e5_label(d: dict) -> str:
         stem = Path(d["_file"]).stem
         return stem[3:] if stem.startswith("e5_") else stem
@@ -320,7 +338,7 @@ def plot_e5(data: list[dict], outdir: Path) -> None:
     ax1.grid(alpha=0.3, axis="y", linestyle="--")
     for i, d in enumerate(runs):
         ax1.annotate(
-            f'p99 {d["p99_ms"]:.0f} ms',
+            f"p99 {d['p99_ms']:.0f} ms",
             (i, d["qps"]),
             ha="center",
             va="bottom",
