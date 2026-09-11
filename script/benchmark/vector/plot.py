@@ -78,7 +78,8 @@ def save(fig, outdir: Path, name: str) -> None:
 
 
 def dataset_of(data: dict) -> str:
-    return data.get("_file", "unknown").split("_")[1]
+    stem = Path(data.get("_file", "unknown")).stem
+    return stem.split("_")[1] if "_" in stem else stem
 
 
 def plot_e1(data: list[dict], outdir: Path) -> None:
@@ -298,6 +299,39 @@ def plot_e4(data: list[dict], outdir: Path) -> None:
         save(fig, outdir, f"e4_recall_qps_{ds}")
 
 
+def plot_e5(data: list[dict], outdir: Path) -> None:
+    runs = [d for d in data if d.get("scenario") == "sql"]
+    if not runs:
+        return
+    print("E5:")
+    runs.sort(key=dataset_of)
+    datasets = [dataset_of(d) for d in runs]
+    xs = list(range(len(datasets)))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
+    ax1.bar(xs, [d["qps"] for d in runs], color="#1f77b4")
+    ax1.set_xticks(xs)
+    ax1.set_xticklabels(datasets)
+    ax1.set_ylabel("end-to-end SQL QPS")
+    ax1.set_title("E5 SQL search throughput")
+    ax1.grid(alpha=0.3, axis="y", linestyle="--")
+    for i, d in enumerate(runs):
+        ax1.annotate(
+            f'p99 {d["p99_ms"]:.0f} ms',
+            (i, d["qps"]),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+    ax2.bar(xs, [d["recall_at_k"] for d in runs], color="#2ca02c")
+    ax2.set_xticks(xs)
+    ax2.set_xticklabels(datasets)
+    ax2.set_ylabel("recall@10")
+    ax2.set_ylim(0.0, 1.02)
+    ax2.set_title("E5 SQL search recall")
+    ax2.grid(alpha=0.3, axis="y", linestyle="--")
+    save(fig, outdir, "e5_sql_end_to_end")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", required=True, type=Path)
@@ -316,6 +350,7 @@ def main() -> None:
     plot_e2(data, outdir)
     plot_e3(data, outdir)
     plot_e4(data, outdir)
+    plot_e5(data, outdir)
 
 
 if __name__ == "__main__":

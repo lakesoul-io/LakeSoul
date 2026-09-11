@@ -21,6 +21,7 @@ The benchmark is a self-contained Rust scenario runner
 | **E2** | Fresh build scaling | How do build time, peak memory and on-disk index size scale with vector count, dimension and `nlist`? |
 | **E3** | Per-cluster vs shard trigger | Does per-cluster drift detection fire earlier and more precisely than the old whole-shard `delta/base` ratio? |
 | **E4** | Search by index state | How do recall and QPS differ between a fresh index, one with accumulated deltas, and one that has just been rebuilt? |
+| **E5** | End-to-end DataFusion SQL | What do QPS and recall look like when the data is written with SQL `INSERT` and searched with `ORDER BY array_distance(...) LIMIT k` (index candidates + exact re-rank)? |
 
 ## Test environment
 
@@ -28,7 +29,7 @@ The benchmark is a self-contained Rust scenario runner
 |------|-------|
 | Machine | Linux, 32 CPU cores, 62 GB RAM, local NVMe SSD |
 | Build | `cargo bench` release profile, 16 worker threads (`RAYON_NUM_THREADS=16`) |
-| Storage | local filesystem; LakeSoul table data written as **vortex** files (`PhysicalFormat::Vortex`) |
+| Storage | local filesystem; E1-E4 write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`), E5 uses the SQL DML path |
 | Distance metric | L2 |
 | Index config | `nlist = 256`, `total_bits = 7`, `top_k = 10`, search `nprobe = 64` (E4 sweeps 1–256) |
 | Queries per checkpoint | 100 |
@@ -252,6 +253,51 @@ vectors actually present in each index state.
 - Because search keeps working across states, rebuilds can be scheduled
   independently of query serving; readers switch to the new generation through
   the manifest `LATEST` pointer.
+
+### E5 — end-to-end DataFusion SQL (write + search)
+
+**Goal.** Measure the complete SQL path: create a table with the vector index
+property, write vectors with `INSERT ... SELECT` (DataFusion sink + the
+post-commit auto index build), then search with
+`ORDER BY array_distance(vec, ARRAY[...]) LIMIT k`.  This path is served by
+the index (candidate ids) plus an **exact re-rank of the candidate rows inside
+DataFusion**, so it exercises the integration rather than the index in
+isolation.  The scenario requires PostgreSQL metadata.
+
+**Method.**
+- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ...)` declares the
+  index; the base 100K vectors are inserted from an in-memory table registered
+  in a separate catalog, followed by 10 further `INSERT` rounds of 10K uniform
+  vectors (200K rows written in total).  The table's rebuild policy runs
+  during these SQL writes.
+- Search runs one SQL statement per query (including SQL planning) with
+  `nprobe = 64`; recall is computed against the exact top-10 over all written
+  vectors, and `EXPLAIN VERBOSE` is checked for `LakeSoulVectorSearchExec`.
+
+| Dataset | Rows written | Base insert | Recall@10 | QPS | Mean latency | p99 | Index (live generation) |
+|---------|-------------:|------------:|----------:|----:|-------------:|----:|-------------------------|
+| GloVe-200d | 200,000 | 1.3 s (+10 rounds ≈ 0.2 s each) | 0.899 | 1.19 | 839 ms | 919 ms | 190K base + 10K delta, gen 2 |
+| GIST1M (960d) | 200,000 | 6.0 s (+10 rounds ≈ 0.7–0.9 s each) | 0.980 | 0.25 | 3,965 ms | 4,328 ms | 170K base + 30K delta, gen 3 |
+
+![E5 SQL end-to-end](/img/vector-benchmark/e5_sql_end_to_end.png)
+
+**What it tells us.**
+- **Functional correctness end to end:** `EXPLAIN VERBOSE` picks
+  `LakeSoulVectorSearchExec`, and SQL recall matches the index-level
+  measurements (0.90 for GloVe, 0.98 for GIST).  The candidate-then-rerank
+  path returns exact top-k among the retrieved candidates.
+- **SQL writes maintain the index:** each `INSERT` commits data files and the
+  post-commit hook updates (or rebuilds) the index; the manifest generation
+  reached 2 (GloVe) and 3 (GIST) across the ten update rounds.
+- **QPS is dominated by index loading, not ANN:** every SQL execution opens
+  the index from object storage, which costs ~0.8 s (GloVe) and ~4 s (GIST).
+  The SQL path is therefore a correctness/ergonomics path today; production
+  throughput needs an index cache (or a long-lived reader) so the index is
+  loaded once instead of once per query.
+- **On-disk index size includes all generations:** segments are immutable and
+  not garbage-collected, so after rebuilds the `_vector_index/` directory
+  (412 MB for GIST here) is larger than the live generation.  Compaction or
+  GC is a natural follow-up.
 
 ## Recommendations
 

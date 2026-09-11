@@ -33,10 +33,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use arrow::array::{FixedSizeListBuilder, Float32Builder, RecordBatch, UInt64Array};
+use arrow::array::{
+    FixedSizeListBuilder, Float32Builder, Int64Array, ListBuilder, RecordBatch,
+    UInt64Array,
+};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::{
+    CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+};
+use datafusion::datasource::memory::MemTable;
+use lakesoul_datafusion::cli::CoreArgs;
+use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchOptions;
 use lakesoul_datafusion::vector_index::{
-    VectorIndexTableConfig, auto_build_vector_index,
+    VectorIndexTableConfig, auto_build_vector_index, vector_index_columns_to_json,
 };
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
@@ -70,6 +79,10 @@ enum Scenario {
     Search,
     Stream,
     Trigger,
+    /// End-to-end DataFusion SQL: write through INSERT, search through
+    /// `ORDER BY array_distance(...) LIMIT k` (index candidates + exact
+    /// re-rank).  Requires PostgreSQL metadata.
+    Sql,
 }
 
 /// Rebuild policy exercised by the `stream`/`trigger` scenarios.
@@ -136,6 +149,8 @@ struct Args {
     /// Checkpoint queries follow the drift distribution (default).  With
     /// `--static-queries` the dataset's fixed queries are used instead.
     query_drift: bool,
+    /// Table name for the SQL scenario.
+    table: String,
     /// Print full usage.
     help: bool,
 }
@@ -170,6 +185,7 @@ impl Default for Args {
             drift_strength: 0.5,
             checkpoint_every: 1,
             query_drift: true,
+            table: "vec_bench_sql".to_string(),
             help: false,
         }
     }
@@ -183,7 +199,7 @@ USAGE:
   cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- [OPTIONS]
 
 OPTIONS:
-  --scenario <build|search|stream|trigger>  Scenario to run (default: build)
+  --scenario <build|search|stream|trigger|sql>  Scenario to run (default: build)
   --base <path.fvecs>                       Base vectors (required)
   --query <path.fvecs>                      Query vectors (required)
   --gt <path.ivecs>                         Ground truth (optional; brute-forced if absent)
@@ -213,6 +229,7 @@ STREAM / TRIGGER:
   --checkpoint-every <N>                    Recall/QPS checkpoint every N rounds (default: 1)
   --static-queries                          Measure recall on the dataset's fixed queries
                                             (default: checkpoint queries follow the drift)
+  --table <name>                            Table name for the SQL scenario (default: vec_bench_sql)
 
   --help                                    Show this help
 "#
@@ -238,6 +255,7 @@ fn parse_args() -> Result<Args, String> {
                     "search" => Scenario::Search,
                     "stream" => Scenario::Stream,
                     "trigger" => Scenario::Trigger,
+                    "sql" => Scenario::Sql,
                     other => return Err(format!("unknown scenario: {other}")),
                 };
             }
@@ -307,6 +325,7 @@ fn parse_args() -> Result<Args, String> {
             "--work-dir" => args.work_dir = PathBuf::from(value(flag)?),
             "--out" => args.out = Some(PathBuf::from(value(flag)?)),
             "--reuse" => args.reuse = true,
+            "--table" => args.table = value(flag)?,
             "--policy" => {
                 args.policy = match value(flag)?.to_lowercase().as_str() {
                     "none" => Policy::None,
@@ -904,15 +923,20 @@ async fn write_vortex_data(
     Ok(outputs.into_iter().map(|o| o.file_path).collect())
 }
 
-/// List the vortex data files directly under `work_dir` (sorted for
-/// deterministic shard prefix derivation).
-fn find_vortex_files(work_dir: &Path) -> Vec<String> {
+/// List the LakeSoul data files directly under `work_dir` (vortex from the
+/// index-level scenarios, parquet from the SQL scenario), sorted for
+/// deterministic shard prefix derivation.
+fn find_data_files(work_dir: &Path) -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(work_dir)
         .map(|entries| {
             entries
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| p.extension().map(|e| e == "vortex").unwrap_or(false))
+                .filter(|p| {
+                    p.extension()
+                        .map(|e| e == "vortex" || e == "parquet")
+                        .unwrap_or(false)
+                })
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
         })
@@ -939,6 +963,57 @@ fn vector_index_config(args: &Args, dim: usize) -> VectorIndexConfig {
 fn manifest_store(files: &[String]) -> ManifestStore {
     let prefix = shard_index_prefix(files, VEC_COLUMN);
     ManifestStore::new(Arc::new(LocalFileSystem::new()), prefix)
+}
+
+/// Every vector-index shard prefix for `files` (indices are stored per
+/// `(partition_desc, hash bucket)`).
+fn all_shard_prefixes(files: &[String], column: &str) -> Vec<String> {
+    let base = files
+        .first()
+        .and_then(|u| {
+            let u = u
+                .trim_start_matches("file://")
+                .trim_start_matches("s3://")
+                .trim_start_matches("s3a://");
+            std::path::Path::new(u.trim_end_matches('/'))
+                .parent()?
+                .to_str()
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    lakesoul_io::vector::search::derive_index_prefixes(files, &base, column)
+        .into_iter()
+        .map(|(prefix, _)| prefix)
+        .collect()
+}
+
+/// Aggregate [`RoundStats`] over every shard of the table's index.
+async fn collect_all_shard_stats(files: &[String]) -> Result<Value, String> {
+    let mut shards = 0usize;
+    let mut generation = 0u64;
+    let mut base_vectors = 0usize;
+    let mut delta_vectors = 0usize;
+    let mut max_cluster_delta_ratio = 0.0f32;
+    let mut violating_clusters = 0usize;
+    for prefix in all_shard_prefixes(files, VEC_COLUMN) {
+        let mstore = ManifestStore::new(Arc::new(LocalFileSystem::new()), prefix);
+        let stats = collect_round_stats(&mstore).await?;
+        shards += 1;
+        generation = generation.max(stats.generation);
+        base_vectors += stats.base_vectors;
+        delta_vectors += stats.delta_vectors;
+        max_cluster_delta_ratio =
+            max_cluster_delta_ratio.max(stats.max_cluster_delta_ratio);
+        violating_clusters += stats.violating_clusters;
+    }
+    Ok(json!({
+        "shards": shards,
+        "generation": generation,
+        "base_vectors": base_vectors,
+        "delta_vectors": delta_vectors,
+        "max_cluster_delta_ratio": max_cluster_delta_ratio,
+        "violating_clusters": violating_clusters,
+    }))
 }
 
 /// Read every vector stored in the LakeSoul data files under `work_dir`
@@ -1035,7 +1110,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         if index_dir.exists() {
             std::fs::remove_dir_all(&index_dir).map_err(|e| format!("clean: {e}"))?;
         }
-        for file in find_vortex_files(&work_dir) {
+        for file in find_data_files(&work_dir) {
             let _ = std::fs::remove_file(file);
         }
     }
@@ -1123,7 +1198,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let dim = dataset.dim();
     let work_dir = prepare_work_dir(&args.work_dir)?;
 
-    let files = find_vortex_files(&work_dir);
+    let files = find_data_files(&work_dir);
     if files.is_empty() {
         return Err(format!(
             "no vortex data files under {} — run --scenario build first",
@@ -1379,6 +1454,56 @@ impl UpdateSampler {
     }
 }
 
+/// Build the update and query samplers over the shared drift definition
+/// (same skew region / shift direction, different random streams).
+fn make_samplers(args: &Args, dataset: &Dataset) -> (UpdateSampler, UpdateSampler) {
+    let dim = dataset.dim();
+    let (pool, pool_n) = match &dataset.learn {
+        Some(learn) => (learn.data.clone(), learn.n),
+        None => (dataset.base.data.clone(), dataset.base.n),
+    };
+    let pool = Arc::new(pool);
+    let skew_rows = if args.drift == Drift::Skew {
+        make_skew_rows(
+            &pool,
+            pool_n,
+            dim,
+            &mut StdRng::seed_from_u64(args.seed ^ 0xA1),
+        )
+    } else {
+        Vec::new()
+    };
+    let shift_offset = if args.drift == Drift::Shift {
+        make_shift_offset(
+            &pool,
+            pool_n,
+            dim,
+            args.drift_strength,
+            &mut StdRng::seed_from_u64(args.seed ^ 0xB2),
+        )
+    } else {
+        Vec::new()
+    };
+    (
+        UpdateSampler::new(
+            dataset,
+            pool.clone(),
+            pool_n,
+            args.seed ^ 0x9e37_79b9_7f4a_7c15,
+            skew_rows.clone(),
+            shift_offset.clone(),
+        ),
+        UpdateSampler::new(
+            dataset,
+            pool,
+            pool_n,
+            args.seed ^ 0xdead_beef,
+            skew_rows,
+            shift_offset,
+        ),
+    )
+}
+
 /// Candidate rows for skewed growth: the closest `pool_n / 20` vectors to a
 /// random anchor, i.e. a small concentrated region of the space.
 fn make_skew_rows(pool: &[f32], pool_n: usize, dim: usize, rng: &mut StdRng) -> Vec<u32> {
@@ -1448,7 +1573,7 @@ fn clean_work_dir(work_dir: &Path) -> Result<(), String> {
     if index_dir.exists() {
         std::fs::remove_dir_all(&index_dir).map_err(|e| format!("clean: {e}"))?;
     }
-    for file in find_vortex_files(work_dir) {
+    for file in find_data_files(work_dir) {
         let _ = std::fs::remove_file(file);
     }
     Ok(())
@@ -1504,51 +1629,8 @@ async fn run_stream_inner(
     .map_err(|e| format!("base index build failed: {e}"))?;
     let base_build_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-    // 2. Update pool (learn set if provided, else the base vectors) plus the
-    //    drift definition shared by the update and query samplers.
-    let (pool, pool_n) = match &dataset.learn {
-        Some(learn) => (learn.data.clone(), learn.n),
-        None => (dataset.base.data.clone(), dataset.base.n),
-    };
-    let pool = Arc::new(pool);
-    let skew_rows = if args.drift == Drift::Skew {
-        make_skew_rows(
-            &pool,
-            pool_n,
-            dim,
-            &mut StdRng::seed_from_u64(args.seed ^ 0xA1),
-        )
-    } else {
-        Vec::new()
-    };
-    let shift_offset = if args.drift == Drift::Shift {
-        make_shift_offset(
-            &pool,
-            pool_n,
-            dim,
-            args.drift_strength,
-            &mut StdRng::seed_from_u64(args.seed ^ 0xB2),
-        )
-    } else {
-        Vec::new()
-    };
-    let mut sampler = UpdateSampler::new(
-        dataset,
-        pool.clone(),
-        pool_n,
-        args.seed ^ 0x9e37_79b9_7f4a_7c15,
-        skew_rows.clone(),
-        shift_offset.clone(),
-    );
-    // Query sampler: same distribution as the updates, different stream.
-    let mut query_sampler = UpdateSampler::new(
-        dataset,
-        pool,
-        pool_n,
-        args.seed ^ 0xdead_beef,
-        skew_rows,
-        shift_offset,
-    );
+    // 2. Update/query samplers over the shared drift definition.
+    let (mut sampler, mut query_sampler) = make_samplers(args, dataset);
 
     let mstore = manifest_store(&all_files);
     let mut vectors = dataset.base.data.clone();
@@ -1743,6 +1825,296 @@ async fn run_stream(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     run_stream_inner(args, dataset, false).await
 }
 
+// ---------------------------------------------------------------------------
+// SQL scenario (end-to-end DataFusion: write + index-backed search)
+// ---------------------------------------------------------------------------
+
+fn core_args() -> CoreArgs {
+    CoreArgs {
+        warehouse_prefix: None,
+        endpoint: None,
+        s3_bucket: None,
+        s3_access_key: None,
+        s3_secret_key: None,
+        s3_virtual_host_style: false,
+        worker_threads: 2,
+    }
+}
+
+/// Record batch matching the SQL table schema (`id BIGINT`, `vec FLOAT[]`).
+fn sql_vector_batch(
+    ids: &[i64],
+    vectors: &[f32],
+    dim: usize,
+) -> Result<RecordBatch, String> {
+    let id_array = Int64Array::from(ids.to_vec());
+    let mut builder = ListBuilder::new(Float32Builder::new());
+    for vector in vectors.chunks_exact(dim) {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let list = builder.finish();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(PK_COLUMN, DataType::Int64, false),
+        Field::new(
+            VEC_COLUMN,
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+            false,
+        ),
+    ]));
+    RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(list)])
+        .map_err(|e| format!("build sql batch: {e}"))
+}
+
+fn query_literal(dataset: &Dataset, i: usize) -> String {
+    dataset
+        .queries
+        .query(i)
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+async fn explain_text(
+    ctx: &datafusion::prelude::SessionContext,
+    sql: &str,
+) -> Result<String, String> {
+    let batches = ctx
+        .sql(sql)
+        .await
+        .map_err(|e| format!("explain: {e}"))?
+        .collect()
+        .await
+        .map_err(|e| format!("explain: {e}"))?;
+    datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+        .map(|t| t.to_string())
+        .map_err(|e| format!("format explain: {e}"))
+}
+
+/// End-to-end DataFusion SQL benchmark: create a LakeSoul table with the
+/// vector index property, write vectors through `INSERT ... SELECT`, then
+/// query with `ORDER BY array_distance(...) LIMIT k`.  The query is served by
+/// the index (candidate ids) plus an exact re-rank over the candidate rows in
+/// DataFusion; this scenario therefore measures the full write + search path.
+///
+/// Requires a running PostgreSQL metadata service (same default as the
+/// integration tests).
+async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    let dim = dataset.dim();
+    let work_dir = prepare_work_dir(&args.work_dir)?;
+    clean_work_dir(&work_dir)?;
+    let table_name = args.table.clone();
+
+    let client = Arc::new(
+        lakesoul_datafusion::MetaDataClient::from_env()
+            .await
+            .map_err(|e| format!("sql scenario requires PostgreSQL metadata: {e}"))?,
+    );
+    let _ = client.drop_table(&table_name, "default").await;
+
+    let core = core_args();
+    let ctx = lakesoul_datafusion::create_lakesoul_session_ctx(client.clone(), &core)
+        .map_err(|e| format!("create session: {e}"))?;
+    // The LakeSoul catalog only accepts LakeSoul tables, so the INSERT source
+    // data lives in a separate in-memory catalog (`src.public.*`).
+    let src_catalog = Arc::new(MemoryCatalogProvider::new());
+    let src_schema = Arc::new(MemorySchemaProvider::new());
+    src_catalog
+        .register_schema("public", src_schema.clone())
+        .map_err(|e| format!("register schema: {e}"))?;
+    ctx.register_catalog("src", src_catalog as Arc<dyn CatalogProvider>);
+
+    // 1. Create the table through SQL DDL with the vector index property.
+    let config = VectorIndexTableConfig {
+        column: VEC_COLUMN.to_string(),
+        dim,
+        nlist: args.nlist,
+        total_bits: args.total_bits,
+        metric: metric_str(args.metric).to_string(),
+        rotator_type: "FhtKac".to_string(),
+        seed: args.seed,
+        use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: args.max_delta_ratio,
+    };
+    let property = vector_index_columns_to_json(std::slice::from_ref(&config));
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"LAKESOUL\".default.{table_name} (\
+            id BIGINT NOT NULL PRIMARY KEY, \
+            vec FLOAT[] NOT NULL\
+         ) STORED AS LAKESOUL LOCATION '{}' \
+         OPTIONS ('vector_index_columns' '{property}', 'hash_bucket_num' '1')",
+        work_dir.display()
+    );
+    ctx.sql(&create_sql)
+        .await
+        .map_err(|e| format!("create table: {e}"))?
+        .collect()
+        .await
+        .map_err(|e| format!("create table: {e}"))?;
+
+    // 2. Write the base data through `INSERT ... SELECT` from an in-memory
+    //    table: this goes through the DataFusion planner, the LakeSoul sink,
+    //    and the post-commit auto index build.
+    let base_ids: Vec<i64> = (0..dataset.base.n as i64).collect();
+    let base_batch = sql_vector_batch(&base_ids, &dataset.base.data, dim)?;
+    let src = Arc::new(
+        MemTable::try_new(base_batch.schema(), vec![vec![base_batch.clone()]])
+            .map_err(|e| format!("memtable: {e}"))?,
+    );
+    src_schema
+        .register_table("bench_src".to_string(), src)
+        .map_err(|e| format!("register table: {e}"))?;
+    let t = Instant::now();
+    ctx.sql(&format!(
+        "INSERT INTO \"LAKESOUL\".default.{table_name} \
+         SELECT id, vec FROM src.public.bench_src"
+    ))
+    .await
+    .map_err(|e| format!("base insert plan: {e}"))?
+    .collect()
+    .await
+    .map_err(|e| format!("base insert: {e}"))?;
+    let base_insert_ms = t.elapsed().as_secs_f64() * 1000.0;
+    println!("base insert (SQL): {base_insert_ms:.0}ms");
+
+    // 3. Optional extra rounds of SQL inserts (with the configured drift).
+    let mut vectors = dataset.base.data.clone();
+    let mut round_insert_ms: Vec<f64> = Vec::new();
+    if args.rounds > 0 {
+        let (mut sampler, _) = make_samplers(args, dataset);
+        let mut next_id = dataset.base.n as i64;
+        for round in 1..=args.rounds {
+            let updates = sampler.sample(args.per_round);
+            let ids: Vec<i64> = (next_id..next_id + args.per_round as i64).collect();
+            next_id += args.per_round as i64;
+            let batch = sql_vector_batch(&ids, &updates, dim)?;
+            let name = format!("bench_src_r{round}");
+            let src = Arc::new(
+                MemTable::try_new(batch.schema(), vec![vec![batch.clone()]])
+                    .map_err(|e| format!("memtable: {e}"))?,
+            );
+            src_schema
+                .register_table(name.clone(), src)
+                .map_err(|e| format!("register table: {e}"))?;
+            let t = Instant::now();
+            ctx.sql(&format!(
+                "INSERT INTO \"LAKESOUL\".default.{table_name} \
+                 SELECT id, vec FROM src.public.{name}"
+            ))
+            .await
+            .map_err(|e| format!("round {round} insert plan: {e}"))?
+            .collect()
+            .await
+            .map_err(|e| format!("round {round} insert: {e}"))?;
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            println!("round {round} insert (SQL): {ms:.0}ms");
+            round_insert_ms.push(ms);
+            vectors.extend_from_slice(&updates);
+        }
+    }
+
+    // 4. Ground truth over the current dataset.
+    let gt = brute_force_gt(&vectors, dim, &dataset.queries, args.top_k, args.threads);
+
+    // 5. Search session with the nprobe extension.
+    let session_config = lakesoul_datafusion::create_lakesoul_session_config()
+        .map_err(|e| format!("session config: {e}"))?
+        .with_extension(Arc::new(LakeSoulVectorSearchOptions {
+            nprobe: args.nprobe,
+        }));
+    let search_ctx = lakesoul_datafusion::create_lakesoul_session_ctx_with_config(
+        client.clone(),
+        &core,
+        session_config,
+    )
+    .map_err(|e| format!("search session: {e}"))?;
+
+    // 6. EXPLAIN must show the index-candidate + exact-rerank exec node.
+    let explain_sql = format!(
+        "EXPLAIN VERBOSE select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{}]) limit {}",
+        query_literal(dataset, 0),
+        args.top_k
+    );
+    let explain = explain_text(&search_ctx, &explain_sql).await?;
+    let uses_vector_index_exec = explain.contains("LakeSoulVectorSearchExec");
+
+    // 7. End-to-end SQL latency and recall, one query at a time.
+    let nq = dataset.queries.n;
+    let mut latencies = Vec::with_capacity(nq);
+    let mut recall_sum = 0.0;
+    for qi in 0..nq {
+        let sql = format!(
+            "select id from \"LAKESOUL\".default.{table_name} \
+             order by array_distance(vec, ARRAY[{}]) limit {}",
+            query_literal(dataset, qi),
+            args.top_k
+        );
+        let t = Instant::now();
+        let batches = search_ctx
+            .sql(&sql)
+            .await
+            .map_err(|e| format!("query: {e}"))?
+            .collect()
+            .await
+            .map_err(|e| format!("query: {e}"))?;
+        latencies.push(t.elapsed().as_secs_f64() * 1000.0);
+        let mut predicted = Vec::new();
+        for batch in &batches {
+            if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
+                predicted.extend(arr.values().iter().map(|&v| v as u64));
+            }
+        }
+        recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
+    }
+    latencies.sort_by(|a, b| a.total_cmp(b));
+    let percentile = |p: f64| -> f64 {
+        if latencies.is_empty() {
+            return 0.0;
+        }
+        latencies[((latencies.len() as f64 - 1.0) * p).round() as usize]
+    };
+    let total_ms: f64 = latencies.iter().sum();
+    let qps = if total_ms > 0.0 {
+        nq as f64 / (total_ms / 1000.0)
+    } else {
+        f64::INFINITY
+    };
+
+    let index_state = collect_all_shard_stats(&find_data_files(&work_dir))
+        .await
+        .unwrap_or(Value::Null);
+
+    let summary = json!({
+        "scenario": "sql",
+        "table": table_name,
+        "dim": dim,
+        "n_base": dataset.base.n,
+        "n_rounds": args.rounds,
+        "n_queries": nq,
+        "top_k": args.top_k,
+        "nprobe": args.nprobe,
+        "base_insert_ms": base_insert_ms,
+        "round_insert_ms": round_insert_ms,
+        "recall_at_k": recall_sum / nq.max(1) as f64,
+        "qps": qps,
+        "mean_ms": total_ms / nq.max(1) as f64,
+        "p50_ms": percentile(0.50),
+        "p99_ms": percentile(0.99),
+        "uses_vector_index_exec": uses_vector_index_exec,
+        "index_size_bytes": index_size_bytes(&work_dir),
+        "index_state": index_state,
+        "peak_rss_mb": peak_rss_mb(),
+        "explain": explain,
+    });
+    print_summary(&summary);
+    Ok(summary)
+}
+
 async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     run_stream_inner(args, dataset, true).await
 }
@@ -1802,6 +2174,7 @@ fn main() {
             Scenario::Search => run_search(&args, &dataset).await,
             Scenario::Stream => run_stream(&args, &dataset).await,
             Scenario::Trigger => run_trigger(&args, &dataset).await,
+            Scenario::Sql => run_sql(&args, &dataset).await,
         }
     });
 

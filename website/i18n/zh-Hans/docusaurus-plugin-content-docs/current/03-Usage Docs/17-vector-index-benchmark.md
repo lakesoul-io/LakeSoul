@@ -17,6 +17,7 @@ LakeSoul 的向量检索基于 **IVF+RaBitQ** 索引，并在数据写入过程�
 | **E2** | 全量构建扩展性 | 构建时间、峰值内存、索引磁盘大小随向量数、维度、`nlist` 如何变化？ |
 | **E3** | 逐簇 vs 整 shard 触发 | 逐簇漂移检测是否比旧的整 shard `delta/base` 比值更早、更准确地触发？ |
 | **E4** | 不同索引状态的检索 | 全新索引、累积 delta 的索引、刚重建的索引，在 recall 与 QPS 上有何差异？ |
+| **E5** | DataFusion SQL 端到端 | 用 SQL `INSERT` 写入数据、再用 `ORDER BY array_distance(...) LIMIT k`（索引取候选 + 精确精排）检索时，QPS 与 recall 如何？ |
 
 ## 测试环境
 
@@ -24,7 +25,7 @@ LakeSoul 的向量检索基于 **IVF+RaBitQ** 索引，并在数据写入过程�
 |------|------|
 | 机器 | Linux，32 核 CPU，62 GB 内存，本地 NVMe SSD |
 | 构建 | `cargo bench` release profile，16 个工作线程（`RAYON_NUM_THREADS=16`） |
-| 存储 | 本地文件系统；LakeSoul 表数据以 **vortex** 格式写入（`PhysicalFormat::Vortex`） |
+| 存储 | 本地文件系统；E1-E4 的 LakeSoul 表数据以 **vortex** 格式写入（`PhysicalFormat::Vortex`），E5 使用 SQL DML 写入路径 |
 | 距离度量 | L2 |
 | 索引配置 | `nlist = 256`、`total_bits = 7`、`top_k = 10`、检索 `nprobe = 64`（E4 扫描 1–256） |
 | 每次 checkpoint 查询数 | 100 |
@@ -214,6 +215,40 @@ recall 已降到约 0.8；逐簇规则在前几轮即触发，这正是 E1 中 `
   需要读取并合并所有 segment。重建把 delta 折叠回单个 base segment，消除了这部分开销。
 - 由于检索在各状态下都能正常工作，重建可以独立于查询服务进行调度；reader 通过 manifest
   的 `LATEST` 指针切换到新 generation。
+
+### E5 — DataFusion SQL 端到端（写入 + 检索）
+
+**目标。** 度量完整的 SQL 链路：用带向量索引属性的 `CREATE TABLE` 建表，用
+`INSERT ... SELECT` 写入向量（DataFusion sink + 提交后的自动索引维护），再用
+`ORDER BY array_distance(vec, ARRAY[...]) LIMIT k` 检索。该链路由索引（候选 id）加
+**DataFusion 中对候选行的精确精排**组成，因此测试的是集成行为而非孤立的索引。该场景需要
+PostgreSQL 元数据服务。
+
+**方法。**
+- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ...)` 声明索引；先从一个
+  注册在独立 catalog 的内存表插入 10 万条 base 向量，随后再执行 10 轮、每轮 1 万条的均匀
+  向量 `INSERT`（共写入 20 万行）。表属性的重建策略在这些 SQL 写入过程中生效。
+- 检索为每个查询执行一条 SQL（包含 SQL 规划），`nprobe = 64`；recall 以全部已写入向量的
+  精确 top-10 为基准，并用 `EXPLAIN VERBOSE` 校验 `LakeSoulVectorSearchExec`。
+
+| 数据集 | 写入行数 | base 插入 | recall@10 | QPS | 平均延迟 | p99 | 索引（当前 generation） |
+|--------|---------:|----------:|----------:|----:|---------:|----:|-------------------------|
+| GloVe-200d | 200,000 | 1.3 s（另 10 轮各约 0.2 s） | 0.899 | 1.19 | 839 ms | 919 ms | 19 万 base + 1 万 delta，gen 2 |
+| GIST1M (960d) | 200,000 | 6.0 s（另 10 轮各约 0.7–0.9 s） | 0.980 | 0.25 | 3,965 ms | 4,328 ms | 17 万 base + 3 万 delta，gen 3 |
+
+![E5 SQL 端到端](/img/vector-benchmark/e5_sql_end_to_end.png)
+
+**结论。**
+- **端到端功能正确**：`EXPLAIN VERBOSE` 命中 `LakeSoulVectorSearchExec`，SQL 检索的
+  recall 与索引级测量一致（GloVe 0.90、GIST 0.98）；"候选 → 精排"路径返回候选中的精确
+  top-k。
+- **SQL 写入会维护索引**：每次 `INSERT` 提交数据文件后，提交钩子会增量更新或重建索引；
+  10 轮更新后 manifest generation 分别达到 2（GloVe）和 3（GIST）。
+- **QPS 瓶颈是索引加载而非 ANN**：每次 SQL 执行都要从对象存储打开整个索引，GloVe 约
+  0.8 s、GIST 约 4 s。因此 SQL 路径目前更适合正确性/易用性场景；要达到生产吞吐，需要
+  索引缓存（或长生命周期 reader），让索引只加载一次而不是每查询一次。
+- **磁盘索引包含所有历史 generation**：segment 不可变且不做垃圾回收，因此重建后
+  `_vector_index/` 目录（此处 GIST 为 412 MB）大于当前 generation。压缩/GC 是自然的后续工作。
 
 ## 建议
 

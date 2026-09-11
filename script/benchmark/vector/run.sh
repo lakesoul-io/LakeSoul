@@ -8,7 +8,7 @@
 # locations with DATA_DIR or the individual *_BASE/*_QUERY/*_GT variables.
 #
 # Usage:
-#   script/benchmark/vector/run.sh [e1|e2|e3|e4|all] [--quick] [--results DIR]
+#   script/benchmark/vector/run.sh [e1|e2|e3|e4|e5|all] [--quick] [--results DIR]
 #
 # Environment:
 #   DATA_DIR      dataset root (default: ~/program/opensource/rabitq-rs/data)
@@ -43,7 +43,7 @@ usage() {
 SCENARIOS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        e1|e2|e3|e4|all) SCENARIOS+=("$1"); shift ;;
+        e1|e2|e3|e4|e5|all) SCENARIOS+=("$1"); shift ;;
         --quick) QUICK=1; shift ;;
         --results) RESULTS_DIR="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
@@ -232,6 +232,33 @@ run_e4() {
 }
 
 # ---------------------------------------------------------------------------
+# E5: end-to-end DataFusion SQL (SQL INSERT + index-backed SQL search)
+# ---------------------------------------------------------------------------
+run_e5() {
+    local ds="$1"
+    set_dataset "$ds"
+    local limit=100000 nlist=256 nq=100 rounds=10 per=10000
+    if [[ "$ds" == gist ]]; then
+        nq=50
+    fi
+    if [[ "$QUICK" == 1 ]]; then
+        limit=20000; nlist=64; nq=20; rounds=2; per=1000
+    fi
+    rounds="${E5_ROUNDS:-$rounds}"
+    per="${E5_PER_ROUND:-$per}"
+    # Requires PostgreSQL metadata (same environment as the integration tests).
+    # Base write + `rounds` incremental inserts through SQL; then SQL search.
+    # No --gt/--learn: the ground truth is brute-forced over the written data
+    # and the SQL scenario does not use an update pool.
+    run_one "e5_${ds}" --base "$BASE" --query "$QUERY" \
+        --scenario sql --limit "$limit" --nlist "$nlist" --n-queries "$nq" \
+        --top-k 10 --nprobe 64 --threads "$THREADS" \
+        --rounds "$rounds" --per-round "$per" --drift uniform \
+        --table "vec_bench_sql_${ds}" \
+        --work-dir "$RESULTS_DIR/work/e5_${ds}"
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 echo "results: $RESULTS_DIR"
@@ -248,11 +275,14 @@ for scenario in "${SCENARIOS[@]}"; do
             run_e1 gist
             run_e3 gist
             run_e4 gist
+            run_e5 glove
+            run_e5 gist
             ;;
         e1) run_e1 glove; run_e1 gist ;;
         e2) run_e2 glove; run_e2 gist ;;
         e3) run_e3 glove; run_e3 gist ;;
         e4) run_e4 glove; run_e4 gist ;;
+        e5) run_e5 glove; run_e5 gist ;;
     esac
 done
 
