@@ -342,14 +342,11 @@ impl LakeSoulTableProvider {
 
         // Optional file format ("parquet", "vortex" or "vortex-compact"),
         // named `file_format` like the Spark/Flink connectors and stored as
-        // a table property for the sink.  `physical_format` is accepted as
-        // a backwards-compatible alias.
+        // a table property for the sink.
         let file_format = cmd
             .options
             .get("format.file_format")
             .or_else(|| cmd.options.get("file_format"))
-            .or_else(|| cmd.options.get("format.physical_format"))
-            .or_else(|| cmd.options.get("physical_format"))
             .cloned();
         if let Some(raw) = &file_format {
             raw.parse::<lakesoul_io::file_format::PhysicalFormat>()
@@ -372,12 +369,16 @@ impl LakeSoulTableProvider {
                 hash_bucket_num: if primary_keys.is_empty() {
                     None
                 } else {
+                    // `hashBucketNum`, matching the Spark/Flink connectors.
                     // Table-factory options arrive with a `format.` prefix
-                    // (like `format.use_cdc`); accept both forms.
+                    // (like `format.use_cdc`); accept both forms, plus the
+                    // earlier snake_case spelling.
                     Some(
                         cmd.options
-                            .get("hash_bucket_num")
+                            .get("format.hashBucketNum")
+                            .or_else(|| cmd.options.get("hashBucketNum"))
                             .or_else(|| cmd.options.get("format.hash_bucket_num"))
+                            .or_else(|| cmd.options.get("hash_bucket_num"))
                             .cloned()
                             .unwrap_or(String::from("4")),
                     )

@@ -1951,7 +1951,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             id BIGINT NOT NULL PRIMARY KEY, \
             vec FLOAT[] NOT NULL\
          ) STORED AS LAKESOUL LOCATION '{}' \
-         OPTIONS ('vector_index_columns' '{property}', 'hash_bucket_num' '1', \
+         OPTIONS ('vector_index_columns' '{property}', 'hashBucketNum' '1', \
                   'file_format' '{}')",
         work_dir.display(),
         args.sql_format

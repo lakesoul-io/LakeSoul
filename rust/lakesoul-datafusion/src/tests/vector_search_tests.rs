@@ -653,7 +653,7 @@ async fn sql_create_table_declares_vector_index_via_option() {
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \
          LOCATION '{location}' \
-         OPTIONS ('vector_index_columns' '{vector_option}', 'hash_bucket_num' '4')"
+         OPTIONS ('vector_index_columns' '{vector_option}', 'hashBucketNum' '4')"
     );
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
@@ -780,7 +780,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
             id BIGINT NOT NULL PRIMARY KEY,
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL LOCATION '{location}'
-         OPTIONS ('vector_index_columns' '{cfg}', 'hash_bucket_num' '4')"
+         OPTIONS ('vector_index_columns' '{cfg}', 'hashBucketNum' '4')"
     );
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 

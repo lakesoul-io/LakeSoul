@@ -98,7 +98,6 @@ pub struct LakeSoulTableProperty {
     /// connectors).  Defaults to parquet when unset.
     #[serde(
         rename = "file_format",
-        alias = "physical_format",
         default,
         skip_serializing_if = "Option::is_none"
     )]
