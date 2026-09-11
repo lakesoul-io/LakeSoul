@@ -35,21 +35,30 @@ use std::time::Instant;
 
 use arrow::array::{FixedSizeListBuilder, Float32Builder, RecordBatch, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use lakesoul_datafusion::vector_index::{
+    VectorIndexTableConfig, auto_build_vector_index,
+};
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::vector::builder::{VectorShardIndexBuilder, shard_index_prefix};
 use lakesoul_io::writer::create_writer_with_io_config;
+use lakesoul_vector::rabitq::manifest::resolve_view;
 use lakesoul_vector::{
     IvfRabitqIndex, ManifestStore, Metric, RotatorType, SearchParams, VectorIndexConfig,
     cluster_stats, index_stats,
 };
 use object_store::local::LocalFileSystem;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use serde_json::{Value, json};
 
 const PK_COLUMN: &str = "id";
 const VEC_COLUMN: &str = "vec";
 const DEFAULT_WORK_DIR: &str = "/tmp/lakesoul_test/vector_bench";
 const WRITE_BATCH_SIZE: usize = 8192;
+/// `max_delta_ratio` used to force a rebuild through the real auto policy
+/// (`always` and the periodic rounds): any non-zero delta exceeds it.
+const FORCE_REBUILD_RATIO: f32 = 1e-9;
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -61,6 +70,30 @@ enum Scenario {
     Search,
     Stream,
     Trigger,
+}
+
+/// Rebuild policy exercised by the `stream`/`trigger` scenarios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Policy {
+    /// `rebuild_mode: "none"` — incremental delta segments only.
+    None,
+    /// `rebuild_mode: "auto"` with `--max-delta-ratio`.
+    Auto,
+    /// Incremental, with a forced rebuild every `--period` rounds.
+    Periodic,
+    /// Rebuild on every round (forced through the auto policy).
+    Always,
+}
+
+/// How the per-round update vectors are generated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drift {
+    /// Uniformly sampled from the update pool (learn set or base).
+    Uniform,
+    /// Sampled from a small region around a random anchor (skewed growth).
+    Skew,
+    /// Uniform samples translated by a fixed offset (distribution shift).
+    Shift,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +121,18 @@ struct Args {
     out: Option<PathBuf>,
     /// Reuse an existing index in `work_dir` instead of rebuilding it.
     reuse: bool,
+    // ---- stream / trigger ----
+    policy: Policy,
+    max_delta_ratio: f32,
+    /// Periodic policy: force a rebuild every N rounds.
+    period: usize,
+    rounds: usize,
+    per_round: usize,
+    drift: Drift,
+    /// `shift` drift: offset magnitude as a fraction of the mean vector norm.
+    drift_strength: f32,
+    /// Measure recall/QPS every N rounds (brute-force GT is recomputed).
+    checkpoint_every: usize,
     /// Print full usage.
     help: bool,
 }
@@ -113,6 +158,14 @@ impl Default for Args {
             work_dir: PathBuf::from(DEFAULT_WORK_DIR),
             out: None,
             reuse: false,
+            policy: Policy::Auto,
+            max_delta_ratio: 1.0,
+            period: 3,
+            rounds: 10,
+            per_round: 10_000,
+            drift: Drift::Uniform,
+            drift_strength: 0.5,
+            checkpoint_every: 1,
             help: false,
         }
     }
@@ -130,7 +183,7 @@ OPTIONS:
   --base <path.fvecs>                       Base vectors (required)
   --query <path.fvecs>                      Query vectors (required)
   --gt <path.ivecs>                         Ground truth (optional; brute-forced if absent)
-  --learn <path.fvecs>                      Extra vectors for stream updates (optional)
+  --learn <path.fvecs>                      Update pool for stream (default: base vectors)
   --limit <N>                               Cap base vectors (default: all)
   --n-queries <N>                           Cap queries used (default: 100)
   --nlist <N>                               IVF clusters (default: 256)
@@ -144,6 +197,17 @@ OPTIONS:
   --work-dir <path>                         Data + index directory (default: {DEFAULT_WORK_DIR})
   --out <path.json>                         Write the result summary as JSON
   --reuse                                   Reuse an existing index in --work-dir
+
+STREAM / TRIGGER:
+  --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
+  --max-delta-ratio <F>                     Auto policy threshold (default: 1.0)
+  --period <N>                              Periodic policy: rebuild every N rounds (default: 3)
+  --rounds <N>                              Update rounds (default: 10)
+  --per-round <N>                           Vectors written per round (default: 10000)
+  --drift <uniform|skew|shift>              Update distribution (default: uniform)
+  --drift-strength <F>                      Shift offset / mean-norm fraction (default: 0.5)
+  --checkpoint-every <N>                    Recall/QPS checkpoint every N rounds (default: 1)
+
   --help                                    Show this help
 "#
     )
@@ -237,6 +301,53 @@ fn parse_args() -> Result<Args, String> {
             "--work-dir" => args.work_dir = PathBuf::from(value(flag)?),
             "--out" => args.out = Some(PathBuf::from(value(flag)?)),
             "--reuse" => args.reuse = true,
+            "--policy" => {
+                args.policy = match value(flag)?.to_lowercase().as_str() {
+                    "none" => Policy::None,
+                    "auto" => Policy::Auto,
+                    "periodic" => Policy::Periodic,
+                    "always" => Policy::Always,
+                    other => return Err(format!("unknown policy: {other}")),
+                }
+            }
+            "--max-delta-ratio" => {
+                args.max_delta_ratio = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --max-delta-ratio: {e}"))?
+            }
+            "--period" => {
+                args.period = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --period: {e}"))?
+            }
+            "--rounds" => {
+                args.rounds = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --rounds: {e}"))?
+            }
+            "--per-round" => {
+                args.per_round = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --per-round: {e}"))?
+            }
+            "--drift" => {
+                args.drift = match value(flag)?.to_lowercase().as_str() {
+                    "uniform" => Drift::Uniform,
+                    "skew" => Drift::Skew,
+                    "shift" => Drift::Shift,
+                    other => return Err(format!("unknown drift: {other}")),
+                }
+            }
+            "--drift-strength" => {
+                args.drift_strength = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --drift-strength: {e}"))?
+            }
+            "--checkpoint-every" => {
+                args.checkpoint_every = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --checkpoint-every: {e}"))?
+            }
             // `cargo bench` appends `--bench` (and `cargo test` `--test`) to
             // harness = false targets; ignore them.
             "--bench" | "--test" => {}
@@ -249,6 +360,20 @@ fn parse_args() -> Result<Args, String> {
         && (args.base.as_os_str().is_empty() || args.query.as_os_str().is_empty())
     {
         return Err("--base and --query are required (see --help)".to_string());
+    }
+    if matches!(args.scenario, Scenario::Stream | Scenario::Trigger) {
+        if args.per_round == 0 {
+            return Err("--per-round must be > 0".to_string());
+        }
+        if args.rounds == 0 {
+            return Err("--rounds must be > 0".to_string());
+        }
+        if args.period == 0 {
+            return Err("--period must be > 0".to_string());
+        }
+        if args.checkpoint_every == 0 {
+            return Err("--checkpoint-every must be > 0".to_string());
+        }
     }
     Ok(args)
 }
@@ -460,7 +585,8 @@ fn load_dataset(args: &Args) -> Result<Dataset, String> {
                 queries.n, args.top_k
             );
             let t = Instant::now();
-            let gt = brute_force_gt(&base, &queries, args.top_k, args.threads);
+            let gt =
+                brute_force_gt(&base.data, base.dim, &queries, args.top_k, args.threads);
             println!("brute force done in {:.2}s", t.elapsed().as_secs_f64());
             (gt, "brute_force")
         }
@@ -489,10 +615,19 @@ fn load_dataset(args: &Args) -> Result<Dataset, String> {
 // ---------------------------------------------------------------------------
 
 /// Exact L2 top-k for every query, computed in parallel over `threads`.
-fn brute_force_gt(base: &Fvecs, queries: &Fvecs, k: usize, threads: usize) -> Ivecs {
-    let dim = base.dim;
+///
+/// `base` is the flat row-major current vector set (`base.len() / dim`
+/// vectors); the returned ids are row indices.
+fn brute_force_gt(
+    base: &[f32],
+    dim: usize,
+    queries: &Fvecs,
+    k: usize,
+    threads: usize,
+) -> Ivecs {
+    let base_n = base.len() / dim;
     let nq = queries.n;
-    let k = k.min(base.n).max(1);
+    let k = k.min(base_n).max(1);
     let mut out = vec![0i32; nq * k];
     let nthreads = threads.min(nq).max(1);
     let queries_per_thread = nq.div_ceil(nthreads);
@@ -501,15 +636,14 @@ fn brute_force_gt(base: &Fvecs, queries: &Fvecs, k: usize, threads: usize) -> Iv
         for (t, out_chunk) in out.chunks_mut(queries_per_thread * k).enumerate() {
             let q0 = t * queries_per_thread;
             let qn = out_chunk.len() / k;
-            let base_data = &base.data;
             let query_data = &queries.data;
             scope.spawn(move || {
-                let mut dists: Vec<(f32, u32)> = Vec::with_capacity(base.n);
+                let mut dists: Vec<(f32, u32)> = Vec::with_capacity(base_n);
                 for qi in 0..qn {
                     let q = &query_data[(q0 + qi) * dim..(q0 + qi + 1) * dim];
                     dists.clear();
-                    for vi in 0..base.n {
-                        let v = &base_data[vi * dim..(vi + 1) * dim];
+                    for vi in 0..base_n {
+                        let v = &base[vi * dim..(vi + 1) * dim];
                         let mut d = 0f32;
                         for j in 0..dim {
                             let x = q[j] - v[j];
@@ -563,23 +697,22 @@ struct SearchMetrics {
     mean_ms: f64,
 }
 
-fn measure_search(
+fn measure_index(
     index: &IvfRabitqIndex,
-    dataset: &Dataset,
+    queries: &Fvecs,
+    gt: &Ivecs,
     top_k: usize,
     nprobe: usize,
 ) -> SearchMetrics {
     let params = SearchParams::new(top_k, nprobe);
-    let query_refs: Vec<&[f32]> = (0..dataset.queries.n)
-        .map(|i| dataset.queries.query(i))
-        .collect();
+    let query_refs: Vec<&[f32]> = (0..queries.n).map(|i| queries.query(i)).collect();
 
     // Multi-threaded throughput (batch_search uses the rayon pool).
     let t = Instant::now();
     let batch = index.batch_search(&query_refs, params);
     let batch_ms = t.elapsed().as_secs_f64() * 1000.0;
     let qps = if batch_ms > 0.0 {
-        dataset.queries.n as f64 / (batch_ms / 1000.0)
+        queries.n as f64 / (batch_ms / 1000.0)
     } else {
         f64::INFINITY
     };
@@ -590,7 +723,7 @@ fn measure_search(
     for (i, result) in batch.iter().enumerate() {
         if let Ok(results) = result {
             let predicted: Vec<u64> = results.iter().map(|r| r.id).collect();
-            recall_sum += recall_at_k(&predicted, dataset.gt.row(i), top_k);
+            recall_sum += recall_at_k(&predicted, gt.row(i), top_k);
             n_ok += 1;
         }
     }
@@ -601,7 +734,7 @@ fn measure_search(
     };
 
     // Single-threaded latency.
-    let mut latencies = Vec::with_capacity(dataset.queries.n);
+    let mut latencies = Vec::with_capacity(queries.n);
     for q in &query_refs {
         let t = Instant::now();
         let _ = index.search(q, params);
@@ -942,7 +1075,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 
     let mut sweep = Vec::new();
     for &nprobe in &args.nprobe_sweep {
-        let m = measure_search(&index, dataset, args.top_k, nprobe);
+        let m = measure_index(&index, &dataset.queries, &dataset.gt, args.top_k, nprobe);
         println!(
             "nprobe={:<4} recall@{}={:.4} qps={:>10.1} p50={:.3}ms p99={:.3}ms",
             m.nprobe, args.top_k, m.recall_at_k, m.qps, m.p50_ms, m.p99_ms
@@ -974,12 +1107,481 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     Ok(summary)
 }
 
-async fn run_stream(_args: &Args, _dataset: &Dataset) -> Result<Value, String> {
-    Err("scenario 'stream' is not implemented yet (skeleton stage)".to_string())
+// ---------------------------------------------------------------------------
+// Stream / trigger helpers
+// ---------------------------------------------------------------------------
+
+fn metric_str(metric: Metric) -> &'static str {
+    match metric {
+        Metric::L2 => "L2",
+        Metric::InnerProduct => "IP",
+    }
 }
 
-async fn run_trigger(_args: &Args, _dataset: &Dataset) -> Result<Value, String> {
-    Err("scenario 'trigger' is not implemented yet (skeleton stage)".to_string())
+fn policy_name(policy: Policy) -> &'static str {
+    match policy {
+        Policy::None => "none",
+        Policy::Auto => "auto",
+        Policy::Periodic => "periodic",
+        Policy::Always => "always",
+    }
+}
+
+fn drift_name(drift: Drift) -> &'static str {
+    match drift {
+        Drift::Uniform => "uniform",
+        Drift::Skew => "skew",
+        Drift::Shift => "shift",
+    }
+}
+
+/// The table-property entry consumed by the real `auto_build_vector_index`
+/// policy path.
+fn table_config(
+    args: &Args,
+    dim: usize,
+    rebuild_mode: &str,
+    max_delta_ratio: f32,
+) -> VectorIndexTableConfig {
+    VectorIndexTableConfig {
+        column: VEC_COLUMN.to_string(),
+        dim,
+        nlist: args.nlist,
+        total_bits: args.total_bits,
+        metric: metric_str(args.metric).to_string(),
+        rotator_type: "FhtKac".to_string(),
+        seed: args.seed,
+        use_faster_config: true,
+        rebuild_mode: rebuild_mode.to_string(),
+        max_delta_ratio,
+    }
+}
+
+/// Per-round index state collected from the manifest.
+#[derive(Debug, Clone)]
+struct RoundStats {
+    generation: u64,
+    clusters: usize,
+    base_vectors: usize,
+    delta_vectors: usize,
+    delta_segments: usize,
+    shard_delta_ratio: f32,
+    max_cluster_delta_ratio: f32,
+    violating_clusters: usize,
+}
+
+impl RoundStats {
+    fn to_json(&self) -> Value {
+        json!({
+            "generation": self.generation,
+            "clusters": self.clusters,
+            "base_vectors": self.base_vectors,
+            "delta_vectors": self.delta_vectors,
+            "delta_segments": self.delta_segments,
+            "shard_delta_ratio": self.shard_delta_ratio,
+            "max_cluster_delta_ratio": self.max_cluster_delta_ratio,
+            "violating_clusters": self.violating_clusters,
+        })
+    }
+}
+
+async fn collect_round_stats(mstore: &ManifestStore) -> Result<RoundStats, String> {
+    let stats = index_stats(mstore)
+        .await
+        .map_err(|e| format!("index_stats: {e}"))?
+        .unwrap_or_default();
+    let clusters = cluster_stats(mstore)
+        .await
+        .map_err(|e| format!("cluster_stats: {e}"))?
+        .unwrap_or_default();
+    let max_cluster_delta_ratio = clusters
+        .iter()
+        .map(|c| c.delta_ratio())
+        .fold(0.0f32, f32::max);
+    let violating_clusters = clusters.iter().filter(|c| c.delta_ratio() > 1.0).count();
+    let generation = resolve_view(mstore)
+        .await
+        .map_err(|e| format!("resolve_view: {e}"))?
+        .map(|v| v.generation)
+        .unwrap_or(0);
+    Ok(RoundStats {
+        generation,
+        clusters: clusters.len(),
+        base_vectors: stats.base_vectors,
+        delta_vectors: stats.delta_vectors,
+        delta_segments: stats.delta_segments,
+        shard_delta_ratio: stats.delta_ratio(),
+        max_cluster_delta_ratio,
+        violating_clusters,
+    })
+}
+
+/// Update sampler holding the pool plus the pre-computed skew candidates and
+/// the fixed shift offset.
+struct UpdateSampler {
+    pool: Vec<f32>,
+    pool_n: usize,
+    dim: usize,
+    skew_rows: Vec<u32>,
+    shift_offset: Vec<f32>,
+    rng: StdRng,
+}
+
+impl UpdateSampler {
+    fn new(args: &Args, dataset: &Dataset, pool: Vec<f32>, pool_n: usize) -> Self {
+        let dim = dataset.dim();
+        let mut rng = StdRng::seed_from_u64(args.seed ^ 0x9e37_79b9_7f4a_7c15);
+        let skew_rows = if args.drift == Drift::Skew {
+            make_skew_rows(&pool, pool_n, dim, &mut rng)
+        } else {
+            Vec::new()
+        };
+        let shift_offset = if args.drift == Drift::Shift {
+            make_shift_offset(&pool, pool_n, dim, args.drift_strength, &mut rng)
+        } else {
+            Vec::new()
+        };
+        Self {
+            pool,
+            pool_n,
+            dim,
+            skew_rows,
+            shift_offset,
+            rng,
+        }
+    }
+
+    /// Sample `count` update vectors according to the configured drift.
+    fn sample(&mut self, count: usize) -> Vec<f32> {
+        use rand::Rng;
+        let dim = self.dim;
+        let mut out = Vec::with_capacity(count * dim);
+        for _ in 0..count {
+            let row = if self.skew_rows.is_empty() {
+                self.rng.random_range(0..self.pool_n)
+            } else {
+                let idx = self.rng.random_range(0..self.skew_rows.len());
+                self.skew_rows[idx] as usize
+            };
+            let src = &self.pool[row * dim..(row + 1) * dim];
+            if self.shift_offset.is_empty() {
+                out.extend_from_slice(src);
+            } else {
+                out.extend(src.iter().zip(&self.shift_offset).map(|(a, b)| a + b));
+            }
+        }
+        out
+    }
+}
+
+/// Candidate rows for skewed growth: the closest `pool_n / 20` vectors to a
+/// random anchor, i.e. a small concentrated region of the space.
+fn make_skew_rows(pool: &[f32], pool_n: usize, dim: usize, rng: &mut StdRng) -> Vec<u32> {
+    use rand::Rng;
+    let anchor = rng.random_range(0..pool_n);
+    let anchor_vec = &pool[anchor * dim..(anchor + 1) * dim];
+    let mut dists: Vec<(f32, u32)> = (0..pool_n)
+        .map(|i| {
+            let v = &pool[i * dim..(i + 1) * dim];
+            let d: f32 = v
+                .iter()
+                .zip(anchor_vec)
+                .map(|(a, b)| {
+                    let x = a - b;
+                    x * x
+                })
+                .sum();
+            (d, i as u32)
+        })
+        .collect();
+    let keep = (pool_n / 20).max(1);
+    dists.select_nth_unstable_by(keep - 1, |a, b| a.0.total_cmp(&b.0));
+    dists.truncate(keep);
+    dists.iter().map(|(_, i)| *i).collect()
+}
+
+/// Fixed translation for shift drift: a random unit direction scaled by
+/// `strength * mean_vector_norm`.
+fn make_shift_offset(
+    pool: &[f32],
+    pool_n: usize,
+    dim: usize,
+    strength: f32,
+    rng: &mut StdRng,
+) -> Vec<f32> {
+    use rand::Rng;
+    let mut dir: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+    let norm = dir.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+    for x in &mut dir {
+        *x /= norm;
+    }
+    let sample = pool_n.clamp(1, 1024);
+    let mean_norm = (0..sample)
+        .map(|i| {
+            let v = &pool[i * dim..(i + 1) * dim];
+            v.iter().map(|x| x * x).sum::<f32>().sqrt()
+        })
+        .sum::<f32>()
+        / sample as f32;
+    let scale = strength * mean_norm;
+    dir.iter().map(|x| x * scale).collect()
+}
+
+/// Remove any stale index and vortex data files from `work_dir`.
+fn clean_work_dir(work_dir: &Path) -> Result<(), String> {
+    let index_dir = work_dir.join("_vector_index");
+    if index_dir.exists() {
+        std::fs::remove_dir_all(&index_dir).map_err(|e| format!("clean: {e}"))?;
+    }
+    for file in find_vortex_files(work_dir) {
+        let _ = std::fs::remove_file(file);
+    }
+    Ok(())
+}
+
+/// Recall recorded at `round`, or the most recent checkpoint before it.
+fn recall_at_round(
+    series: &[(usize, f32, f32, Option<f64>)],
+    round: Option<usize>,
+) -> Value {
+    let Some(round) = round else {
+        return Value::Null;
+    };
+    series
+        .iter()
+        .take_while(|(r, _, _, _)| *r <= round)
+        .filter_map(|(_, _, _, recall)| *recall)
+        .last()
+        .map(|r| json!(r))
+        .unwrap_or(Value::Null)
+}
+
+async fn run_stream_inner(
+    args: &Args,
+    dataset: &Dataset,
+    trigger_only: bool,
+) -> Result<Value, String> {
+    let dim = dataset.dim();
+    let work_dir = &args.work_dir;
+    if args.reuse {
+        return Err("--reuse is not supported for stream/trigger".to_string());
+    }
+    std::fs::create_dir_all(work_dir).map_err(|e| format!("mkdir: {e}"))?;
+    clean_work_dir(work_dir)?;
+
+    // 1. Base data + fresh index through the real auto policy path.
+    let ids: Vec<u64> = (0..dataset.base.n as u64).collect();
+    let t = Instant::now();
+    let mut all_files =
+        write_vortex_data(work_dir, dim, &ids, &dataset.base.data).await?;
+    let base_write_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+    let mut base_files: HashMap<String, (Vec<String>, u64)> = HashMap::new();
+    base_files.insert("-5".to_string(), (all_files.clone(), dataset.base.n as u64));
+    let t = Instant::now();
+    auto_build_vector_index(
+        &[table_config(args, dim, "auto", args.max_delta_ratio)],
+        &[PK_COLUMN.to_string()],
+        &HashMap::new(),
+        &base_files,
+        Some(all_files.as_slice()),
+    )
+    .await
+    .map_err(|e| format!("base index build failed: {e}"))?;
+    let base_build_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+    // 2. Update pool (learn set if provided, else the base vectors).
+    let (pool, pool_n) = match &dataset.learn {
+        Some(learn) => (learn.data.clone(), learn.n),
+        None => (dataset.base.data.clone(), dataset.base.n),
+    };
+    let mut sampler = UpdateSampler::new(args, dataset, pool, pool_n);
+
+    let mstore = manifest_store(&all_files);
+    let mut vectors = dataset.base.data.clone();
+    let mut next_id = dataset.base.n as u64;
+
+    let mut rounds_json: Vec<Value> = Vec::new();
+    // (round, max cluster ratio, shard ratio, recall at that round)
+    let mut series: Vec<(usize, f32, f32, Option<f64>)> = Vec::new();
+    let mut rebuilds = 0usize;
+    let mut total_data_ms = 0.0f64;
+    let mut total_index_ms = 0.0f64;
+    let mut min_recall = f64::INFINITY;
+    let mut last_recall: Option<f64> = None;
+
+    for round in 1..=args.rounds {
+        // 2a. Write this round's update vectors as a new vortex file.
+        let updates = sampler.sample(args.per_round);
+        let update_ids: Vec<u64> = (next_id..next_id + args.per_round as u64).collect();
+        next_id += args.per_round as u64;
+        let t = Instant::now();
+        let new_files = write_vortex_data(work_dir, dim, &update_ids, &updates).await?;
+        let data_write_ms = t.elapsed().as_secs_f64() * 1000.0;
+        all_files.extend(new_files.iter().cloned());
+        vectors.extend_from_slice(&updates);
+
+        // 2b. Map the policy onto the real auto-build configuration and call
+        //     `auto_build_vector_index` (the production decision path).
+        let (rebuild_mode, ratio) = if trigger_only {
+            ("none", args.max_delta_ratio)
+        } else {
+            match args.policy {
+                Policy::None => ("none", args.max_delta_ratio),
+                Policy::Auto => ("auto", args.max_delta_ratio),
+                Policy::Always => ("auto", FORCE_REBUILD_RATIO),
+                Policy::Periodic => {
+                    if round % args.period == 0 {
+                        ("auto", FORCE_REBUILD_RATIO)
+                    } else {
+                        ("none", args.max_delta_ratio)
+                    }
+                }
+            }
+        };
+        let gen_before = collect_round_stats(&mstore).await?.generation;
+        let mut round_files: HashMap<String, (Vec<String>, u64)> = HashMap::new();
+        round_files.insert("-5".to_string(), (new_files, args.per_round as u64));
+        let t = Instant::now();
+        auto_build_vector_index(
+            &[table_config(args, dim, rebuild_mode, ratio)],
+            &[PK_COLUMN.to_string()],
+            &HashMap::new(),
+            &round_files,
+            Some(all_files.as_slice()),
+        )
+        .await
+        .map_err(|e| format!("round {round} index update failed: {e}"))?;
+        let index_update_ms = t.elapsed().as_secs_f64() * 1000.0;
+        total_data_ms += data_write_ms;
+        total_index_ms += index_update_ms;
+
+        let stats = collect_round_stats(&mstore).await?;
+        let rebuilt = stats.generation > gen_before;
+        if rebuilt {
+            rebuilds += 1;
+        }
+
+        // 2c. Recall/QPS checkpoint (brute-force GT over the current data).
+        let mut search = Value::Null;
+        let mut recall_here: Option<f64> = None;
+        if round % args.checkpoint_every == 0 || round == args.rounds {
+            let gt =
+                brute_force_gt(&vectors, dim, &dataset.queries, args.top_k, args.threads);
+            let t = Instant::now();
+            let index = IvfRabitqIndex::load_from_v4(&mstore)
+                .await
+                .map_err(|e| format!("load index: {e}"))?;
+            let load_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let m = measure_index(&index, &dataset.queries, &gt, args.top_k, args.nprobe);
+            min_recall = min_recall.min(m.recall_at_k);
+            last_recall = Some(m.recall_at_k);
+            recall_here = Some(m.recall_at_k);
+            search = json!({
+                "recall_at_k": m.recall_at_k,
+                "qps": m.qps,
+                "p50_ms": m.p50_ms,
+                "p99_ms": m.p99_ms,
+                "load_ms": load_ms,
+            });
+        }
+        series.push((
+            round,
+            stats.max_cluster_delta_ratio,
+            stats.shard_delta_ratio,
+            recall_here,
+        ));
+
+        println!(
+            "round {round:>2}: n_total={:<8} gen={} rebuilt={:<5} \
+             idx={:>8.1}ms data={:>7.1}ms cluster_ratio={:.3} shard_ratio={:.3}{}",
+            vectors.len() / dim,
+            stats.generation,
+            rebuilt,
+            index_update_ms,
+            data_write_ms,
+            stats.max_cluster_delta_ratio,
+            stats.shard_delta_ratio,
+            recall_here
+                .map(|r| format!(" recall@{}={r:.4}", args.top_k))
+                .unwrap_or_default(),
+        );
+
+        rounds_json.push(json!({
+            "round": round,
+            "n_total": vectors.len() / dim,
+            "data_write_ms": data_write_ms,
+            "index_update_ms": index_update_ms,
+            "rebuilt": rebuilt,
+            "stats": stats.to_json(),
+            "search": search,
+        }));
+    }
+
+    let total_vectors = (dataset.base.n + args.rounds * args.per_round) as f64;
+    let amortized_vps = total_vectors / ((total_data_ms + total_index_ms) / 1000.0);
+    let mut summary = json!({
+        "scenario": if trigger_only { "trigger" } else { "stream" },
+        "policy": if trigger_only { "none" } else { policy_name(args.policy) },
+        "drift": drift_name(args.drift),
+        "max_delta_ratio": args.max_delta_ratio,
+        "period": args.period,
+        "rounds": args.rounds,
+        "per_round": args.per_round,
+        "dim": dim,
+        "n_base": dataset.base.n,
+        "n_queries": dataset.queries.n,
+        "top_k": args.top_k,
+        "nprobe": args.nprobe,
+        "base_write_ms": base_write_ms,
+        "base_build_ms": base_build_ms,
+        "rounds_data": rounds_json,
+        "summary": {
+            "rebuilds": rebuilds,
+            "total_data_write_ms": total_data_ms,
+            "total_index_update_ms": total_index_ms,
+            "amortized_vectors_per_sec": amortized_vps,
+            "min_recall": if min_recall.is_finite() { json!(min_recall) } else { Value::Null },
+            "final_recall": last_recall,
+            "final_index_size_bytes": index_size_bytes(work_dir),
+            "peak_rss_mb": peak_rss_mb(),
+        },
+    });
+
+    if trigger_only {
+        // Compare when the per-cluster rule and the old shard-level rule
+        // would first fire, and the recall at each trigger point.
+        let mut analysis = Vec::new();
+        for threshold in [0.25f32, 0.5, 1.0, 2.0] {
+            let cluster_first = series
+                .iter()
+                .find(|(_, cluster, _, _)| *cluster > threshold)
+                .map(|(round, _, _, _)| *round);
+            let shard_first = series
+                .iter()
+                .find(|(_, _, shard, _)| *shard > threshold)
+                .map(|(round, _, _, _)| *round);
+            analysis.push(json!({
+                "threshold": threshold,
+                "cluster_first_round": cluster_first,
+                "cluster_recall_at_trigger": recall_at_round(&series, cluster_first),
+                "shard_first_round": shard_first,
+                "shard_recall_at_trigger": recall_at_round(&series, shard_first),
+            }));
+        }
+        summary["trigger_analysis"] = json!(analysis);
+    }
+
+    print_summary(&summary);
+    Ok(summary)
+}
+
+async fn run_stream(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    run_stream_inner(args, dataset, false).await
+}
+
+async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    run_stream_inner(args, dataset, true).await
 }
 
 // ---------------------------------------------------------------------------
