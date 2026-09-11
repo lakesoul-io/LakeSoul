@@ -5,10 +5,8 @@
 //! The [`datafusion::catalog::CatalogProvider`] implementation for the LakeSoul.
 
 use crate::catalog::LakeSoulNamespace;
-use datafusion::catalog::CatalogProvider;
-use datafusion::catalog::SchemaProvider;
+use datafusion::catalog::{CatalogProvider, SchemaProvider, Session};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::prelude::SessionContext;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata_proto::entity::Namespace;
@@ -16,10 +14,26 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LakeSoulProviderOptions {
+    pub parquet_force_view_types: bool,
+    pub pushdown_filters: bool,
+}
+
+impl LakeSoulProviderOptions {
+    pub fn from_session(session: &dyn Session) -> Self {
+        let parquet = &session.config_options().execution.parquet;
+        Self {
+            parquet_force_view_types: parquet.schema_force_view_types,
+            pushdown_filters: parquet.pushdown_filters,
+        }
+    }
+}
+
 /// A metadata wrapper for LakeSoul metadata and DataFusion catalog.
 pub struct LakeSoulCatalog {
     metadata_client: MetaDataClientRef,
-    context: Arc<SessionContext>,
+    provider_options: LakeSoulProviderOptions,
 }
 
 impl Debug for LakeSoulCatalog {
@@ -31,18 +45,18 @@ impl Debug for LakeSoulCatalog {
 impl LakeSoulCatalog {
     pub fn new(
         meta_data_client_ref: MetaDataClientRef,
-        context: Arc<SessionContext>,
+        provider_options: LakeSoulProviderOptions,
     ) -> Self {
         Self {
             metadata_client: meta_data_client_ref,
-            context,
+            provider_options,
         }
     }
     pub fn metadata_client(&self) -> MetaDataClientRef {
         self.metadata_client.clone()
     }
-    pub fn context(&self) -> Arc<SessionContext> {
-        self.context.clone()
+    pub fn provider_options(&self) -> &LakeSoulProviderOptions {
+        &self.provider_options
     }
 
     fn get_all_namespace(&self) -> crate::Result<Vec<Namespace>> {
@@ -64,7 +78,7 @@ impl CatalogProvider for LakeSoulCatalog {
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        info!("schema: {:?}", name);
+        info!("schema: {}", name);
         tokio::task::block_in_place(|| {
             match futures::executor::block_on(async {
                 self.metadata_client.get_all_namespace().await
@@ -73,7 +87,7 @@ impl CatalogProvider for LakeSoulCatalog {
                     if v.iter().any(|np| np.namespace == name) {
                         Some(Arc::new(LakeSoulNamespace::new(
                             self.metadata_client.clone(),
-                            self.context.clone(),
+                            self.provider_options,
                             name,
                         )) as Arc<dyn SchemaProvider>)
                     } else {
@@ -100,7 +114,7 @@ impl CatalogProvider for LakeSoulCatalog {
                 Ok(v) if v.iter().any(|np| np.namespace == name) => {
                     Some(Arc::new(LakeSoulNamespace::new(
                         self.metadata_client.clone(),
-                        self.context.clone(),
+                        self.provider_options,
                         name,
                     )) as Arc<dyn SchemaProvider>)
                 }
@@ -160,18 +174,25 @@ mod tests {
             .build();
 
         let ctx = Arc::new(SessionContext::new_with_state(state));
-        let catalog = LakeSoulCatalog::new(client.clone(), ctx.clone());
-        ctx.register_catalog("LAKESOUL".to_string(), Arc::new(catalog));
+        let catalog = LakeSoulCatalog::new(
+            client.clone(),
+            LakeSoulProviderOptions::from_session(&ctx.state()),
+        );
+        ctx.register_catalog("lakesoul".to_string(), Arc::new(catalog));
 
         // // 创建测试用的namespace
         // let test_namespace = "test_namespace";
-        // let schema = Arc::new(LakeSoulNamespace::new(client.clone(), ctx.clone(), test_namespace));
+        // let schema = Arc::new(LakeSoulNamespace::new(
+        //     client.clone(),
+        //     LakeSoulProviderOptions::from_session(&ctx.state()),
+        //     test_namespace,
+        // ));
         // catalog.register_schema(test_namespace, schema)?;
 
         // 执行show tables命令
         // let sql = "SHOW CATALOGS";
         let sql = "SHOW TABLES";
-        // let sql = "CREATE SCHEMA LAKESOUL.DEFAULT";
+        // let sql = "CREATE SCHEMA lakesoul.DEFAULT";
         let df = ctx.sql(sql).await?;
         // print_batches(&df.clone().explain(true, false)?.collect().await?);
         let results = df.collect().await?;

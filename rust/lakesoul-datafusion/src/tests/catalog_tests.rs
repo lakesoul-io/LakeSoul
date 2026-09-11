@@ -18,7 +18,9 @@ use rand::distr::Alphanumeric;
 
 use tokio::runtime::Runtime;
 
-use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
+use crate::catalog::{
+    LakeSoulCatalog, LakeSoulNamespace, LakeSoulProviderOptions, LakeSoulTableProperty,
+};
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
@@ -138,11 +140,15 @@ fn test_catalog_api() {
             .build();
 
         let sc = Arc::new(create_session_context(&mut config).unwrap());
+        let provider_options = LakeSoulProviderOptions::from_session(&sc.state());
         let data = random_tables(random_namespace("api", 4), schema.clone());
 
-        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
-        let dummy_schema_provider =
-            Arc::new(LakeSoulNamespace::new(client.clone(), sc.clone(), "dummy"));
+        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), provider_options));
+        let dummy_schema_provider = Arc::new(LakeSoulNamespace::new(
+            client.clone(),
+            provider_options,
+            "dummy",
+        ));
         // id, path, name must be unique
         for (np, tables) in data.iter() {
             // client.create_namespace(np.clone()).await.unwrap();
@@ -168,7 +174,7 @@ fn test_catalog_api() {
         );
         for (np, tables) in data.iter() {
             let schema =
-                LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
             let names = schema.table_names();
             debug!("{names:?}");
             assert_eq!(names.len(), tables.len());
@@ -208,6 +214,7 @@ fn test_catalog_sql() {
             .build();
 
         let sc = Arc::new(create_session_context(&mut config).unwrap());
+        let provider_options = LakeSoulProviderOptions::from_session(&sc.state());
 
         let expected = &[
             "+----------+------+-------+",
@@ -220,7 +227,7 @@ fn test_catalog_sql() {
             "+----------+------+-------+",
         ];
 
-        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
+        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), provider_options));
         {
             let before = {
                 let sql = "show tables";
@@ -263,7 +270,7 @@ fn test_catalog_sql() {
         }
         for (np, tables) in data.iter() {
             let schema =
-                LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
             let names = schema.table_names();
             debug!("{names:?}");
             assert_eq!(names.len(), tables.len());
@@ -300,6 +307,7 @@ fn test_catalog_sql() {
     });
 }
 
+#[test]
 fn test_catalog_sql_partitioned_insert_column_order() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
@@ -319,7 +327,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             table_name
         );
 
-        let create_schema = format!("create schema \"LAKESOUL\".{namespace}");
+        let create_schema = format!("create schema lakesoul.{namespace}");
         sc.sql(&create_schema)
             .await
             .unwrap()
@@ -328,7 +336,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             .unwrap();
 
         let create_table = format!(
-            "CREATE EXTERNAL TABLE \"LAKESOUL\".{namespace}.{table_name} (
+            "CREATE EXTERNAL TABLE lakesoul.{namespace}.{table_name} (
                 c1 VARCHAR NOT NULL,
                 c2 INT NOT NULL,
                 c3 DOUBLE
@@ -345,14 +353,14 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             .unwrap();
 
         let insert_sql = format!(
-            "INSERT INTO \"LAKESOUL\".{namespace}.{table_name} VALUES
+            "INSERT INTO lakesoul.{namespace}.{table_name} VALUES
                 ('test', 1, 1.0),
                 ('hello', 2, 2.5)"
         );
         sc.sql(&insert_sql).await.unwrap().collect().await.unwrap();
 
         let select_all_sql =
-            format!("SELECT * FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c1");
+            format!("SELECT * FROM lakesoul.{namespace}.{table_name} ORDER BY c1");
         let select_all = sc
             .sql(&select_all_sql)
             .await
@@ -372,9 +380,8 @@ fn test_catalog_sql_partitioned_insert_column_order() {
             &select_all
         );
 
-        let projected_sql = format!(
-            "SELECT c1, c3 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c1"
-        );
+        let projected_sql =
+            format!("SELECT c1, c3 FROM lakesoul.{namespace}.{table_name} ORDER BY c1");
         let projected = sc
             .sql(&projected_sql)
             .await
@@ -395,7 +402,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let partition_only_sql =
-            format!("SELECT c2 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c2");
+            format!("SELECT c2 FROM lakesoul.{namespace}.{table_name} ORDER BY c2");
         let partition_only = sc
             .sql(&partition_only_sql)
             .await
@@ -414,9 +421,8 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         ];
         assert_batches_eq!(&expected, &partition_only);
 
-        let reordered_sql = format!(
-            "SELECT c3, c2 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c3"
-        );
+        let reordered_sql =
+            format!("SELECT c3, c2 FROM lakesoul.{namespace}.{table_name} ORDER BY c3");
         let reordered = sc
             .sql(&reordered_sql)
             .await
@@ -437,7 +443,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let filter_sql = format!(
-            "SELECT c1, c2, c3 FROM \"LAKESOUL\".{namespace}.{table_name} WHERE c2 = 1"
+            "SELECT c1, c2, c3 FROM lakesoul.{namespace}.{table_name} WHERE c2 = 1"
         );
         let filtered = sc.sql(&filter_sql).await.unwrap().collect().await.unwrap();
         assert_batches_eq!(
@@ -452,7 +458,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let select_star_filter_sql =
-            format!("SELECT * FROM \"LAKESOUL\".{namespace}.{table_name} WHERE c2 = 2");
+            format!("SELECT * FROM lakesoul.{namespace}.{table_name} WHERE c2 = 2");
         let select_star_filtered = sc
             .sql(&select_star_filter_sql)
             .await
@@ -472,7 +478,7 @@ fn test_catalog_sql_partitioned_insert_column_order() {
         );
 
         let show_columns_sql =
-            format!("show columns from \"LAKESOUL\".{namespace}.{table_name}");
+            format!("show columns from lakesoul.{namespace}.{table_name}");
         let show_columns = sc
             .sql(&show_columns_sql)
             .await

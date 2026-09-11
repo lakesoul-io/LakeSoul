@@ -12,12 +12,12 @@ use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
-use datafusion::prelude::SessionContext;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use tokio::runtime::Handle;
 
+use crate::catalog::LakeSoulProviderOptions;
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::lakesoul_table::helpers::case_fold_table_name;
@@ -25,14 +25,14 @@ use crate::lakesoul_table::helpers::case_fold_table_name;
 /// A [`SchemaProvider`] that query from LakeSoul metadata.
 pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
-    context: Arc<SessionContext>,
+    provider_options: LakeSoulProviderOptions,
     namespace: String,
 }
 
 impl LakeSoulNamespace {
     pub fn new(
         meta_data_client_ref: MetaDataClientRef,
-        context: Arc<SessionContext>,
+        provider_options: LakeSoulProviderOptions,
         namespace: &str,
     ) -> Self {
         debug!(
@@ -41,7 +41,7 @@ impl LakeSoulNamespace {
         );
         Self {
             metadata_client: meta_data_client_ref,
-            context,
+            provider_options,
             namespace: namespace.to_string(),
         }
     }
@@ -49,11 +49,6 @@ impl LakeSoulNamespace {
     pub fn metadata_client(&self) -> MetaDataClientRef {
         debug!("LakeSoulNamespace::metadata_client - Getting metadata client");
         self.metadata_client.clone()
-    }
-
-    pub fn context(&self) -> Arc<SessionContext> {
-        debug!("LakeSoulNamespace::context - Getting session context");
-        self.context.clone()
     }
 
     pub fn namespace(&self) -> &str {
@@ -81,18 +76,23 @@ impl SchemaProvider for LakeSoulNamespace {
         );
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
-        futures::executor::block_on(async move {
-            Handle::current()
-                .spawn(async move {
-                    let table_name_ids = client
-                        .get_all_table_name_id_by_namespace(&np)
-                        .await
-                        .expect("get all table name failed");
-                    debug!("table_name_ids: {:?}", table_name_ids);
-                    table_name_ids
-                })
-                .await
-                .expect("spawn failed")
+        // Synchronous interface called from DataFusion execution tasks: park
+        // this worker and let the runtime spawn a replacement so the spawned
+        // metadata query can run (same pattern as `LakeSoulCatalog::schema_names`).
+        tokio::task::block_in_place(|| {
+            futures::executor::block_on(async move {
+                Handle::current()
+                    .spawn(async move {
+                        let table_name_ids = client
+                            .get_all_table_name_id_by_namespace(&np)
+                            .await
+                            .expect("get all table name failed");
+                        debug!("table_name_ids: {:?}", table_name_ids);
+                        table_name_ids
+                    })
+                    .await
+                    .expect("spawn failed")
+            })
         })
         .into_iter()
         .map(|v| v.table_name)
@@ -107,7 +107,6 @@ impl SchemaProvider for LakeSoulNamespace {
             name, &self.namespace
         );
         let name = case_fold_table_name(name);
-        info!("table: {:?} {:?}", name, &self.namespace);
         let table = match LakeSoulTable::for_namespace_and_name(
             &self.namespace,
             &name,
@@ -121,11 +120,11 @@ impl SchemaProvider for LakeSoulNamespace {
                 return Ok(None);
             }
         };
-        info!("table: {} {:?}, table {:?}", name, &self.namespace, table);
+        info!("found table: {}::{}", &self.namespace, table);
 
         Ok(Some(
             table
-                .as_sink_provider(&self.context.state())
+                .as_sink_provider(self.provider_options)
                 .await
                 .map_err(|e| DataFusionError::External(e.into_boxed_error()))?,
         ))
@@ -181,7 +180,7 @@ impl SchemaProvider for LakeSoulNamespace {
         let client = self.metadata_client.clone();
         let table_name = name.to_string();
         let namespace = self.namespace.clone();
-        let ctx = self.context.clone();
+        let pushdown_filters = self.provider_options.pushdown_filters;
         tokio::task::block_in_place(|| {
             futures::executor::block_on(async move {
                 Handle::current()
@@ -206,20 +205,13 @@ impl SchemaProvider for LakeSoulNamespace {
                                         )
                                     })?;
                                 Ok(Some(
-                                    table
-                                        .as_provider(
-                                            ctx.state()
-                                                .config_options()
-                                                .execution
-                                                .parquet
-                                                .pushdown_filters,
-                                        )
-                                        .await
-                                        .map_err(|e| {
+                                    table.as_provider(pushdown_filters).await.map_err(
+                                        |e| {
                                             DataFusionError::External(
                                                 e.into_boxed_error(),
                                             )
-                                        })?,
+                                        },
+                                    )?,
                                 ))
                             }
                             Err(report) => match report.current_context() {

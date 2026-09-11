@@ -4,6 +4,7 @@
 
 //! The interface of LakeSoul table.
 
+use std::fmt::Display;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -13,11 +14,8 @@ use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
-    arrow::record_batch::RecordBatch,
-    dataframe::DataFrame,
-    datasource::TableProvider,
-    execution::context::{SessionContext, SessionState},
-    logical_expr::LogicalPlanBuilder,
+    arrow::record_batch::RecordBatch, dataframe::DataFrame, datasource::TableProvider,
+    execution::context::SessionContext, logical_expr::LogicalPlanBuilder,
 };
 use helpers::{case_fold_table_name, create_io_config_builder_from_table_info};
 use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
@@ -39,7 +37,8 @@ use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::{
     Result,
     catalog::{
-        LakeSoulTableProperty, create_io_config_builder, parse_table_info_partitions,
+        LakeSoulProviderOptions, LakeSoulTableProperty, create_io_config_builder,
+        parse_table_info_partitions,
     },
     planner::query_planner::LakeSoulQueryPlanner,
 };
@@ -267,7 +266,6 @@ impl LakeSoulTable {
                 self.client(),
                 config_builder.build(),
                 self.table_info(),
-                false,
             )
             .await?,
         );
@@ -276,7 +274,7 @@ impl LakeSoulTable {
 
     pub async fn as_sink_provider(
         &self,
-        session_state: &SessionState,
+        provider_options: LakeSoulProviderOptions,
     ) -> Result<Arc<dyn TableProvider>> {
         let config_builder = create_io_config_builder(
             self.client(),
@@ -289,12 +287,11 @@ impl LakeSoulTable {
         .await?
         .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
-            LakeSoulTableProvider::try_new(
-                session_state,
+            LakeSoulTableProvider::try_new_as_sink(
+                provider_options,
                 self.client(),
                 config_builder.build(),
                 self.table_info(),
-                true,
             )
             .await?,
         ))
@@ -435,6 +432,12 @@ impl LakeSoulTable {
         }
 
         Ok(())
+    }
+}
+
+impl Display for LakeSoulTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.table_name)
     }
 }
 

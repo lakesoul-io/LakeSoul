@@ -53,7 +53,8 @@ use lakesoul_io::file_format::{
     flatten_file_scan_config_for_format,
 };
 use lakesoul_io::helpers::{
-    listing_table_from_lakesoul_io_config, partition_desc_from_file_scan_config,
+    listing_sink_table_from_lakesoul_io_config,
+    listing_source_table_from_lakesoul_io_config, partition_desc_from_file_scan_config,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
@@ -64,7 +65,8 @@ use rootcause::report;
 
 use crate::Result;
 use crate::catalog::{
-    LakeSoulTableProperty, format_table_info_partitions, parse_table_info_partitions,
+    LakeSoulProviderOptions, LakeSoulTableProperty, format_table_info_partitions,
+    parse_table_info_partitions,
 };
 use crate::lakesoul_table::helpers::{
     case_fold_column_name, case_fold_table_name,
@@ -190,12 +192,47 @@ impl LakeSoulTableProvider {
         )
     }
 
+    /// Build a source provider using the current session for object-store
+    /// access and file-schema inference.
     pub async fn try_new(
-        session_state: &SessionState,
+        session: &dyn Session,
         client: MetaDataClientRef,
         lakesoul_io_config: LakeSoulIOConfig,
         table_info: Arc<TableInfo>,
-        as_sink: bool,
+    ) -> Result<Self> {
+        Self::try_new_inner(
+            Some(session),
+            LakeSoulProviderOptions::from_session(session),
+            client,
+            lakesoul_io_config,
+            table_info,
+        )
+        .await
+    }
+
+    /// Build a sink provider without retaining or requiring a session.
+    pub async fn try_new_as_sink(
+        provider_options: LakeSoulProviderOptions,
+        client: MetaDataClientRef,
+        lakesoul_io_config: LakeSoulIOConfig,
+        table_info: Arc<TableInfo>,
+    ) -> Result<Self> {
+        Self::try_new_inner(
+            None,
+            provider_options,
+            client,
+            lakesoul_io_config,
+            table_info,
+        )
+        .await
+    }
+
+    async fn try_new_inner(
+        source_session: Option<&dyn Session>,
+        provider_options: LakeSoulProviderOptions,
+        client: MetaDataClientRef,
+        lakesoul_io_config: LakeSoulIOConfig,
+        table_info: Arc<TableInfo>,
     ) -> Result<Self> {
         let logical_schema = Arc::new(schema_from_table_info_metadata(
             &table_info.table_schema,
@@ -207,11 +244,7 @@ impl LakeSoulTableProvider {
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
-        let parquet_force_view_types = session_state
-            .config_options()
-            .execution
-            .parquet
-            .schema_force_view_types;
+        let parquet_force_view_types = provider_options.parquet_force_view_types;
         let format_registry = Arc::new(LakeSoulFormatRegistry::new(
             lakesoul_io_config.clone(),
             parquet_force_view_types,
@@ -228,13 +261,20 @@ impl LakeSoulTableProvider {
             .await?,
         );
 
-        let (_, listing_table) = listing_table_from_lakesoul_io_config(
-            session_state,
-            lakesoul_io_config.clone(),
-            file_format,
-            as_sink,
-        )
-        .await?;
+        let (_, listing_table) = match source_session {
+            Some(session) => {
+                listing_source_table_from_lakesoul_io_config(
+                    session,
+                    lakesoul_io_config.clone(),
+                    file_format,
+                )
+                .await?
+            }
+            None => listing_sink_table_from_lakesoul_io_config(
+                lakesoul_io_config.clone(),
+                file_format,
+            )?,
+        };
 
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();

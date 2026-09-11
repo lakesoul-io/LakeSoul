@@ -23,7 +23,6 @@ use datafusion_common::{DFSchema, ScalarValue};
 use datafusion_datasource::ListingTableUrl;
 use datafusion_datasource::file_format::FileFormat;
 use datafusion_datasource::file_scan_config::FileScanConfig;
-use datafusion_execution::TaskContext;
 use datafusion_expr::binary::BinaryTypeCoercer;
 use datafusion_expr::{BinaryExpr, Expr, ExprSchemable, col};
 use datafusion_physical_expr::create_physical_sort_expr;
@@ -49,6 +48,7 @@ use url::Url;
 use vortex::file::Footer;
 
 use self::transform::uniform_schema;
+use crate::constant::DEFAULT_PARTITION_DESC;
 use crate::{
     Result,
     config::LakeSoulIOConfig,
@@ -530,7 +530,7 @@ pub fn partition_desc_to_scalar_values(
     }
 }
 
-/// Extracts a partition description and a map of column names to file paths from a file scan config.
+/// Extracts a partition description and a map of column names to partition values from a file scan config.
 ///
 /// # Arguments
 ///
@@ -538,17 +538,15 @@ pub fn partition_desc_to_scalar_values(
 ///
 /// # Returns
 ///
-/// Returns a tuple of (Partition Description, Map of Column Names to File Paths)
+/// Returns a tuple of (Partition Description, Map of Column Names to Partition Values)
 pub fn partition_desc_from_file_scan_config(
     conf: &FileScanConfig,
 ) -> Result<(String, HashMap<String, String>)> {
-    // we use
-    // TODO
-    // conf's table_schema is not stable
-    // so use file source's
+    // Callers flatten each config to a single file, so the first file's
+    // partition_values represent the whole group.
     if conf.table_partition_cols().is_empty() {
-        warn!("partition is empty");
-        Ok(("-5".to_string(), HashMap::default()))
+        debug!("partition is empty");
+        Ok((DEFAULT_PARTITION_DESC.to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {
             Some(file) => Ok((
@@ -571,92 +569,106 @@ pub fn partition_desc_from_file_scan_config(
     }
 }
 
-/// Creates a [`datafusion::datasource::listing::ListingTable`] from a [`LakeSoulIOConfig`].
+/// Creates a source or sink [`ListingTable`] from a [`LakeSoulIOConfig`].
 ///
-/// # Arguments
-///
-/// * `session_state` - The session state
-/// * `lakesoul_io_config` - The [`LakeSoulIOConfig`]
-/// * `file_format` - The file format
-/// * `as_sink` - Whether to create a sink
-///
-/// # Returns
-///
-/// Returns a tuple of (Option<[`arrow::datatypes::SchemaRef`]>, Arc<[`datafusion::datasource::listing::ListingTable`]>)
+/// Prefer [`listing_source_table_from_lakesoul_io_config`] or
+/// [`listing_sink_table_from_lakesoul_io_config`] in new code so callers that
+/// only build a sink do not need to supply a session.
 pub async fn listing_table_from_lakesoul_io_config(
     session: &dyn Session,
     lakesoul_io_config: LakeSoulIOConfig,
     file_format: Arc<dyn FileFormat>,
     as_sink: bool,
 ) -> Result<(Option<SchemaRef>, Arc<ListingTable>)> {
-    let config = match as_sink {
-        false => {
-            // Parse the path
-            let table_paths = lakesoul_io_config
-                .files
-                .iter()
-                .map(|p| ListingTableUrl::parse(p).map_err(|e| e.into()))
-                .collect::<Result<Vec<_>>>()?;
-            let object_metas =
-                get_file_object_meta(session.task_ctx(), &table_paths).await?;
-            let (table_paths, object_metas): (Vec<_>, Vec<_>) =
-                zip(table_paths, object_metas)
-                    .filter(|(_, obj_meta)| {
-                        let valid = obj_meta.size >= 8;
-                        if !valid {
-                            error!(
-                                "File {}, size {}, is invalid",
-                                obj_meta.location, obj_meta.size
-                            );
-                        }
-                        valid
-                    })
-                    .unzip();
-            // Resolve the schema
-            let resolved_schema = infer_schema(
-                session,
-                &table_paths,
-                &object_metas,
-                Arc::clone(&file_format),
-            )
-            .await?;
+    if as_sink {
+        listing_sink_table_from_lakesoul_io_config(lakesoul_io_config, file_format)
+    } else {
+        listing_source_table_from_lakesoul_io_config(
+            session,
+            lakesoul_io_config,
+            file_format,
+        )
+        .await
+    }
+}
 
-            let target_schema = if lakesoul_io_config.inferring_schema {
-                SchemaRef::new(Schema::empty())
-            } else {
-                uniform_schema(lakesoul_io_config.target_schema())
-            };
+/// Creates a source [`ListingTable`], fetching object metadata and inferring
+/// the file schema with the current session's runtime and configuration.
+pub async fn listing_source_table_from_lakesoul_io_config(
+    session: &dyn Session,
+    lakesoul_io_config: LakeSoulIOConfig,
+    file_format: Arc<dyn FileFormat>,
+) -> Result<(Option<SchemaRef>, Arc<ListingTable>)> {
+    let table_paths = lakesoul_io_config
+        .files
+        .iter()
+        .map(|p| ListingTableUrl::parse(p).map_err(|e| e.into()))
+        .collect::<Result<Vec<_>>>()?;
+    let object_metas = get_file_object_meta(session, &table_paths).await?;
+    let (table_paths, object_metas): (Vec<_>, Vec<_>) = zip(table_paths, object_metas)
+        .filter(|(_, obj_meta)| {
+            let valid = obj_meta.size >= 8;
+            if !valid {
+                error!(
+                    "File {}, size {}, is invalid",
+                    obj_meta.location, obj_meta.size
+                );
+            }
+            valid
+        })
+        .unzip();
+    let resolved_schema = infer_schema(
+        session,
+        &table_paths,
+        &object_metas,
+        Arc::clone(&file_format),
+    )
+    .await?;
 
-            let table_partition_cols = range_partition_to_partition_cols(
-                target_schema.clone(),
-                lakesoul_io_config.range_partitions_slice(),
-            )?;
-            let listing_options = ListingOptions::new(file_format.clone())
-                .with_file_extension(".parquet")
-                .with_table_partition_cols(table_partition_cols);
-
-            ListingTableConfig::new_with_multi_paths(table_paths)
-                .with_listing_options(listing_options)
-                .with_schema(resolved_schema)
-        }
-        true => {
-            let target_schema = uniform_schema(lakesoul_io_config.target_schema());
-            let table_partition_cols = range_partition_to_partition_cols(
-                target_schema.clone(),
-                lakesoul_io_config.range_partitions_slice(),
-            )?;
-
-            let listing_options = ListingOptions::new(file_format.clone())
-                .with_file_extension(".parquet")
-                .with_table_partition_cols(table_partition_cols);
-            let prefix = ListingTableUrl::parse(lakesoul_io_config.prefix.clone())?;
-
-            ListingTableConfig::new(prefix)
-                .with_listing_options(listing_options)
-                .with_schema(target_schema)
-        }
+    let target_schema = if lakesoul_io_config.inferring_schema {
+        SchemaRef::new(Schema::empty())
+    } else {
+        uniform_schema(lakesoul_io_config.target_schema())
     };
+    let table_partition_cols = range_partition_to_partition_cols(
+        target_schema,
+        lakesoul_io_config.range_partitions_slice(),
+    )?;
+    let listing_options = ListingOptions::new(file_format)
+        .with_file_extension(".parquet")
+        .with_table_partition_cols(table_partition_cols);
+    let config = ListingTableConfig::new_with_multi_paths(table_paths)
+        .with_listing_options(listing_options)
+        .with_schema(resolved_schema);
 
+    listing_table_from_config(config)
+}
+
+/// Creates a sink [`ListingTable`] without requiring a session. Object-store
+/// access happens later when DataFusion calls `insert_into` with its session.
+pub fn listing_sink_table_from_lakesoul_io_config(
+    lakesoul_io_config: LakeSoulIOConfig,
+    file_format: Arc<dyn FileFormat>,
+) -> Result<(Option<SchemaRef>, Arc<ListingTable>)> {
+    let target_schema = uniform_schema(lakesoul_io_config.target_schema());
+    let table_partition_cols = range_partition_to_partition_cols(
+        target_schema.clone(),
+        lakesoul_io_config.range_partitions_slice(),
+    )?;
+    let listing_options = ListingOptions::new(file_format)
+        .with_file_extension(".parquet")
+        .with_table_partition_cols(table_partition_cols);
+    let prefix = ListingTableUrl::parse(lakesoul_io_config.prefix.clone())?;
+    let config = ListingTableConfig::new(prefix)
+        .with_listing_options(listing_options)
+        .with_schema(target_schema);
+
+    listing_table_from_config(config)
+}
+
+fn listing_table_from_config(
+    config: ListingTableConfig,
+) -> Result<(Option<SchemaRef>, Arc<ListingTable>)> {
     Ok((
         config.file_schema.clone(),
         Arc::new(ListingTable::try_new(config)?),
@@ -667,21 +679,21 @@ pub async fn listing_table_from_lakesoul_io_config(
 ///
 /// # Arguments
 ///
-/// * `task_ctx` - The task context
+/// * `session` - The current DataFusion session
 /// * `table_paths` - The list of table paths
 ///
 /// # Returns
 ///
 /// Returns a vector of [`object_store::ObjectMetadata`]
 pub async fn get_file_object_meta(
-    task_ctx: Arc<TaskContext>,
+    session: &dyn Session,
     table_paths: &[ListingTableUrl],
 ) -> Result<Vec<ObjectMeta>> {
     let object_store_url = table_paths
         .first()
         .ok_or(report!("no table path"))?
         .object_store();
-    let store = task_ctx
+    let store = session
         .runtime_env()
         .object_store(object_store_url.clone())?;
     futures::stream::iter(table_paths)
@@ -695,13 +707,7 @@ pub async fn get_file_object_meta(
             }
         })
         .boxed()
-        .buffered(
-            task_ctx
-                .session_config()
-                .options()
-                .execution
-                .meta_fetch_concurrency,
-        )
+        .buffered(session.config_options().execution.meta_fetch_concurrency)
         .try_collect()
         .await
 }
@@ -1178,4 +1184,28 @@ pub(crate) fn coerce_filter_type(expr: Expr, schema: &DFSchema) -> Result<Expr> 
     })
     .map(|res| res.data)
     .map_err(|e| e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::Field;
+    use datafusion::datasource::file_format::parquet::ParquetFormat;
+
+    #[test]
+    fn listing_sink_does_not_require_a_session() {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let config = crate::config::LakeSoulIOConfigBuilder::new()
+            .with_schema(schema)
+            .with_prefix("file:///tmp/lakesoul-table".to_string())
+            .build();
+        let file_format = Arc::new(ParquetFormat::new()) as Arc<dyn FileFormat>;
+
+        let (file_schema, table) =
+            listing_sink_table_from_lakesoul_io_config(config, file_format).unwrap();
+
+        assert!(file_schema.is_some());
+        assert_eq!(table.table_paths().len(), 1);
+    }
 }

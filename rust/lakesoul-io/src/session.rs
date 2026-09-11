@@ -434,8 +434,7 @@ impl LakeSoulIOSession {
                     .iter()
                     .map(ListingTableUrl::parse)
                     .collect::<Result<Vec<_>>>()?;
-                let object_metas =
-                    get_file_object_meta(self.task_ctx(), &table_paths).await?;
+                let object_metas = get_file_object_meta(self, &table_paths).await?;
                 let (p, o) = zip(table_paths, object_metas)
                     .filter(|(_, obj_meta)| {
                         let valid = obj_meta.size >= 8;

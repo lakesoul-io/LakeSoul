@@ -104,3 +104,5 @@ devenv.local.yaml
 
 compatibility-artifacts
 agent_export/
+
+**/.plans/
