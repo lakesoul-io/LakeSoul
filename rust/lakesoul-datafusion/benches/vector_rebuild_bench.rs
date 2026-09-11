@@ -2049,6 +2049,14 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     );
     let explain = explain_text(&search_ctx, &explain_sql).await?;
     let uses_vector_index_exec = explain.contains("LakeSoulVectorSearchExec");
+    // Per-operator timings for the same query (diagnostic).
+    let analyze_sql = format!(
+        "EXPLAIN ANALYZE select id from \"LAKESOUL\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{}]) limit {}",
+        query_literal(dataset, 0),
+        args.top_k
+    );
+    let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
 
     // 7. End-to-end SQL latency and recall, one query at a time.
     let nq = dataset.queries.n;
@@ -2117,6 +2125,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "index_state": index_state,
         "peak_rss_mb": peak_rss_mb(),
         "explain": explain,
+        "explain_analyze": explain_analyze,
     });
     print_summary(&summary);
     Ok(summary)

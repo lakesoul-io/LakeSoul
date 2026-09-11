@@ -240,12 +240,11 @@ PostgreSQL 元数据服务。
 
 | 数据集 | 写入行数 | base 插入 | recall@10 | QPS | 平均延迟 | p99 | 索引（当前 generation） |
 |--------|---------:|----------:|----------:|----:|---------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.4 s（另 10 轮各 ≤ 1.2 s） | 0.899 | 3.84 | 260 ms | 287 ms | 19 万 base + 1 万 delta，gen 2 |
-| GIST1M (960d) | 200,000 | 4.9 s（另 10 轮各 ≤ 4.8 s，含重建轮） | 0.980 | 0.46 | 2,161 ms | 2,468 ms | 17 万 base + 3 万 delta，gen 3 |
+| GloVe-200d | 200,000 | 1.3 s（另 10 轮，中位 0.4 s） | 0.899 | 6.98 | 143 ms | 183 ms | 19 万 base + 1 万 delta，gen 2 |
+| GIST1M (960d) | 200,000 | 5.0 s（另 10 轮，中位 3.6 s，含重建轮） | 0.980 | 3.24 | 308 ms | 363 ms | 17 万 base + 3 万 delta，gen 3 |
 
-同一工作负载若写成 **parquet**（此前 SQL sink 的默认格式），在 recall 相同的情况下测得
-GloVe 1.83 QPS / 545 ms、GIST 0.35 QPS / 2,897 ms —— 即 vortex 的候选扫描在 QPS 上约快
-2.1×（GloVe）/ 1.3×（GIST）。
+同一工作负载若写成 **parquet**，在 recall 相同的情况下测得 GloVe 3.73 QPS / 268 ms、
+GIST 1.03 QPS / 967 ms —— 即每次 SQL 查询 vortex 约快 1.9×（GloVe）/ 3.1×（GIST）。
 
 ![E5 SQL 端到端](/img/vector-benchmark/e5_sql_end_to_end.png)
 
@@ -255,14 +254,20 @@ GloVe 1.83 QPS / 545 ms、GIST 0.35 QPS / 2,897 ms —— 即 vortex 的候选�
   top-k。
 - **SQL 写入会维护索引**：每次 `INSERT` 提交数据文件后，提交钩子会增量更新或重建索引；
   10 轮更新后 manifest generation 分别达到 2（GloVe）和 3（GIST）。
-- **每次查询的开销由索引打开 + 候选数据扫描组成**：每次 SQL 执行都会打开索引
-  （经过 E4 中所述的加载器优化后，GloVe 约 0.10 s、GIST 约 0.27 s），然后扫描数据文件取回
-  候选行并精排；剩余延迟主要来自候选扫描和 SQL 规划。
-- **写入格式会影响候选扫描。** SQL sink 此前硬编码了仅支持 parquet 的 multipart writer，
-  并且忽略表的 `physical_format`。现在它使用支持多格式的 writer，因此建表时可以指定
-  `physical_format = "vortex"`；在 recall 相同的前提下候选扫描的 QPS 提升约 2.1×（GloVe）/
-  1.3×（GIST）。生产吞吐仍需要索引缓存（或长生命周期 reader）以及进一步优化候选读取，
-  但数据格式已不再是限制因素。
+- **候选扫描曾是主要瓶颈，现已提速约 50×。** 查询计划是
+  `Filter(pk IN candidates)` 压在 `MergeParquetExec` 之上，而 merge 之前会把**每个数据文件
+  的所有行**读出并合并后才过滤（GIST 20 万行每查询约 1.7 s）。修复需要两点：为向量检索
+  reader 打开 `file_filter_pushdown`（只有开启该选项，`supports_filters_pushdown` 才会把 pk
+  过滤判定为 Inexact 下推），并把注入过滤构造成单个 `pk IN (...)` 而不是一串 `OR`——OR 链会
+  让 vortex 的过滤下推卡死，IN 列表则既廉价又能下推。过滤进入每个文件的扫描后，merge 只需
+  处理约 100 行候选：扫描从约 1.7 s 降到约 10–30 ms。
+- **索引打开现在是每次查询的主要剩余开销**：经过 E4 的加载器优化后 GloVe 约 0.10 s、
+  GIST 约 0.27 s，而候选扫描仅约 6–30 ms、SQL 规划几毫秒。下一步吞吐优化应做索引缓存
+  （或长生命周期 reader）。
+- **写入格式有影响。** SQL sink 此前硬编码仅支持 parquet 的 multipart writer、忽略表的
+  `physical_format`；现在使用支持多格式的 writer，建表可指定
+  `physical_format = "vortex"`。在 recall 相同的前提下，每次 SQL 查询 vortex 比 parquet 约快
+  1.9×（GloVe）/ 3.1×（GIST），因为 vortex 的候选扫描剪枝更快。
 - **磁盘索引包含所有历史 generation**：segment 不可变且不做垃圾回收，因此重建后
   `_vector_index/` 目录（此处 GIST 为 412 MB）大于当前 generation。压缩/GC 是自然的后续工作。
 

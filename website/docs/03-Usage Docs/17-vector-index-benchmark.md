@@ -286,13 +286,12 @@ isolation.  The scenario requires PostgreSQL metadata.
 
 | Dataset | Rows written | Base insert | Recall@10 | QPS | Mean latency | p99 | Index (live generation) |
 |---------|-------------:|------------:|----------:|----:|-------------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.4 s (+10 rounds ≤ 1.2 s each) | 0.899 | 3.84 | 260 ms | 287 ms | 190K base + 10K delta, gen 2 |
-| GIST1M (960d) | 200,000 | 4.9 s (+10 rounds ≤ 4.8 s each, rebuild rounds included) | 0.980 | 0.46 | 2,161 ms | 2,468 ms | 170K base + 30K delta, gen 3 |
+| GloVe-200d | 200,000 | 1.3 s (+10 rounds, median 0.4 s) | 0.899 | 6.98 | 143 ms | 183 ms | 190K base + 10K delta, gen 2 |
+| GIST1M (960d) | 200,000 | 5.0 s (+10 rounds, median 3.6 s incl. rebuilds) | 0.980 | 3.24 | 308 ms | 363 ms | 170K base + 30K delta, gen 3 |
 
-The same workload written as **parquet** (the previous SQL sink default)
-measures 1.83 QPS / 545 ms (GloVe) and 0.35 QPS / 2,897 ms (GIST) at identical
-recall — i.e. the vortex candidate scan is ~2.1× faster on GloVe and ~1.3×
-faster on GIST at QPS level.
+The same workload written as **parquet** measures 3.73 QPS / 268 ms (GloVe)
+and 1.03 QPS / 967 ms (GIST) at identical recall — vortex is ~1.9× (GloVe) and
+~3.1× (GIST) faster per SQL query.
 
 ![E5 SQL end-to-end](/img/vector-benchmark/e5_sql_end_to_end.png)
 
@@ -304,18 +303,27 @@ faster on GIST at QPS level.
 - **SQL writes maintain the index:** each `INSERT` commits data files and the
   post-commit hook updates (or rebuilds) the index; the manifest generation
   reached 2 (GloVe) and 3 (GIST) across the ten update rounds.
-- **Per-query cost is split between index open and the candidate data scan:**
-  every SQL execution opens the index (0.10 s for GloVe, 0.27 s for GIST after
-  the loader optimizations described in E4) and then scans the data files to
-  fetch and re-rank the candidate rows.  The remaining latency is dominated by
-  that candidate scan plus SQL planning.
-- **The write format matters for the candidate scan.**  The SQL sink used to
-  hard-code a parquet-only multipart writer and ignored the table's
-  `physical_format`.  It now uses the format-aware writer, so the table can be
-  created with `physical_format = "vortex"`; the candidate scan got ~2.1×
-  (GloVe) / ~1.3× (GIST) faster at equal recall.  Production throughput still
-  needs an index cache (or a long-lived reader) *and* further candidate-read
-  work, but the data format is no longer the blocking factor.
+- **The candidate scan was the dominant cost and is now ~50× faster.**  The
+  query plan is `Filter(pk IN candidates)` above `MergeParquetExec`, and the
+  merge used to read and merge *every* row of every data file before the
+  filter ran (1.7 s per GIST query for 200K rows).  Two things were needed to
+  fix it: enable `file_filter_pushdown` for the vector-search reader
+  (`supports_filters_pushdown` classifies the pk filter as an Inexact pushdown
+  only when this option is set) and build the injected filter as a single
+  `pk IN (...)` instead of a chain of `OR`s — the OR-chain made vortex's
+  filter pushdown hang, while the IN list is evaluated and pushed cheaply.
+  With the filter applied inside each file scan, the merge only sees the
+  ~100 candidate rows: the scan dropped from ~1.7 s to ~10–30 ms.
+- **Index open is now the main remaining per-query cost:** ~0.10 s (GloVe)
+  and ~0.27 s (GIST) after the loader optimizations in E4, versus ~6–30 ms of
+  candidate scan and a few ms of planning.  An index cache (or a long-lived
+  reader) is therefore the next throughput improvement.
+- **The write format matters.**  The SQL sink used to hard-code a parquet-only
+  multipart writer and ignored the table's `physical_format`; it now uses the
+  format-aware writer, so tables can be created with
+  `physical_format = "vortex"`.  At identical recall vortex is ~1.9×
+  (GloVe) and ~3.1× (GIST) faster per SQL query than parquet, because the
+  vortex candidate scan prunes faster.
 - **On-disk index size includes all generations:** segments are immutable and
   not garbage-collected, so after rebuilds the `_vector_index/` directory
   (412 MB for GIST here) is larger than the live generation.  Compaction or
