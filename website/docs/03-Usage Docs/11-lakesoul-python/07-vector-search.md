@@ -218,4 +218,5 @@ print(result.column("id").to_pylist())  # nearest first, global top-10
 - Each table keeps one index per vector column at `{table_path}/_vector_index/{column}/{partition}/{bucket}/`.
 - The vector index shard identity is `(partition_desc, hash_bucket_id)`: files from different range partitions are never merged into one shard, so partitioned tables get a separate index per partition.
 - Indexes are stored as immutable segments; incremental writes append delta segments without rewriting the base index, and the manifest is updated with a compare-and-swap for concurrent safety.
+- See the [Vector index benchmark](../17-vector-index-benchmark.md) for measured quality/cost trade-offs of incremental updates and the drift-triggered rebuild policies.
 - See the [core catalog and table IO](02-core-api.md) guide for the general `create_table`, `write_arrow`, and `scan` APIs used above.
