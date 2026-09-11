@@ -1339,7 +1339,6 @@ impl UpdateSampler {
     /// Build a sampler over `pool` with a shared skew region and shift
     /// direction, so update and query samplers target the same distribution.
     fn new(
-        args: &Args,
         dataset: &Dataset,
         pool: Arc<Vec<f32>>,
         pool_n: usize,
@@ -1534,7 +1533,6 @@ async fn run_stream_inner(
         Vec::new()
     };
     let mut sampler = UpdateSampler::new(
-        args,
         dataset,
         pool.clone(),
         pool_n,
@@ -1544,7 +1542,6 @@ async fn run_stream_inner(
     );
     // Query sampler: same distribution as the updates, different stream.
     let mut query_sampler = UpdateSampler::new(
-        args,
         dataset,
         pool,
         pool_n,
