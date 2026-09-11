@@ -233,12 +233,12 @@ vectors actually present in each index state.
 
 | Dataset | State | Index load | Best recall@10 | QPS at that point |
 |---------|-------|-----------:|---------------:|------------------:|
-| GIST1M | fresh | 687 ms | 0.977 (@nprobe 128) | 13,334 |
-| GIST1M | delta | 992 ms | 0.971 (@nprobe 64) | 15,088 |
-| GIST1M | rebuilt | 934 ms | 0.971 (@nprobe 128) | 14,339 |
-| GloVe-200d | fresh | 249 ms | 0.970 (@nprobe 256) | 14,621 |
-| GloVe-200d | delta | 312 ms | 0.949 (@nprobe 256) | 13,783 |
-| GloVe-200d | rebuilt | 260 ms | 0.951 (@nprobe 256) | 13,928 |
+| GIST1M | fresh | 57 ms | 0.977 (@nprobe 128) | 19,359 |
+| GIST1M | delta | 217 ms | 0.971 (@nprobe 64) | 21,377 |
+| GIST1M | rebuilt | 71 ms | 0.971 (@nprobe 128) | 14,691 |
+| GloVe-200d | fresh | 25 ms | 0.970 (@nprobe 256) | 17,318 |
+| GloVe-200d | delta | 89 ms | 0.949 (@nprobe 256) | 12,647 |
+| GloVe-200d | rebuilt | 31 ms | 0.951 (@nprobe 256) | 12,662 |
 
 ![E4 GIST recall vs QPS](/img/vector-benchmark/e4_recall_qps_gist.png)
 
@@ -246,10 +246,19 @@ vectors actually present in each index state.
 - Search quality and throughput remain comparable across the three states;
   delta segments do not break the recall/QPS trade-off (GloVe's small
   regression recovers after rebuild).
-- The visible cost of accumulated deltas is **index load time** (+30–45% with
-  six delta generations), because every segment must be read and merged when
-  the index is opened.  Rebuilding folds the deltas back into one base segment
-  and removes that overhead.
+- The visible cost of accumulated deltas is **index load time** (GloVe
+  25 → 89 ms, GIST 57 → 217 ms with six delta generations), because every
+  segment must be read and merged when the index is opened.  Rebuilding folds
+  the deltas back into one base segment and removes that overhead.
+- Why opening a multi-segment index is slower, and what was done about it:
+  each segment pads its final FastScan batch to 32 vectors, so merging
+  segments requires extracting and re-packing every vector's codes (a single
+  freshly-built or rebuilt index needs none of this).  The loader now
+  reuses single-segment clusters as-is, concatenates already-aligned
+  segments directly, and re-packs the rest in parallel across batches while
+  reading clusters concurrently.  Compared with the first implementation this
+  cuts index open by **4–5× for delta-heavy indexes** (GIST 1.31 s → 0.27 s)
+  and **up to ~12× for fresh indexes** (GIST 0.69 s → 0.06 s).
 - Because search keeps working across states, rebuilds can be scheduled
   independently of query serving; readers switch to the new generation through
   the manifest `LATEST` pointer.
@@ -276,8 +285,8 @@ isolation.  The scenario requires PostgreSQL metadata.
 
 | Dataset | Rows written | Base insert | Recall@10 | QPS | Mean latency | p99 | Index (live generation) |
 |---------|-------------:|------------:|----------:|----:|-------------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.3 s (+10 rounds ≈ 0.2 s each) | 0.899 | 1.19 | 839 ms | 919 ms | 190K base + 10K delta, gen 2 |
-| GIST1M (960d) | 200,000 | 6.0 s (+10 rounds ≈ 0.7–0.9 s each) | 0.980 | 0.25 | 3,965 ms | 4,328 ms | 170K base + 30K delta, gen 3 |
+| GloVe-200d | 200,000 | 2.4 s (+10 rounds ≤ 2.2 s each) | 0.899 | 1.86 | 537 ms | 633 ms | 190K base + 10K delta, gen 2 |
+| GIST1M (960d) | 200,000 | 6.3 s (+10 rounds ≤ 5.1 s each, rebuild rounds included) | 0.980 | 0.33 | 3,009 ms | 3,681 ms | 170K base + 30K delta, gen 3 |
 
 ![E5 SQL end-to-end](/img/vector-benchmark/e5_sql_end_to_end.png)
 
@@ -289,11 +298,13 @@ isolation.  The scenario requires PostgreSQL metadata.
 - **SQL writes maintain the index:** each `INSERT` commits data files and the
   post-commit hook updates (or rebuilds) the index; the manifest generation
   reached 2 (GloVe) and 3 (GIST) across the ten update rounds.
-- **QPS is dominated by index loading, not ANN:** every SQL execution opens
-  the index from object storage, which costs ~0.8 s (GloVe) and ~4 s (GIST).
-  The SQL path is therefore a correctness/ergonomics path today; production
-  throughput needs an index cache (or a long-lived reader) so the index is
-  loaded once instead of once per query.
+- **Per-query cost is split between index open and the candidate data scan:**
+  every SQL execution opens the index (now 0.10 s for GloVe, 0.27 s for GIST
+  after the loader optimizations described in E4) and then scans the data
+  files to fetch and re-rank the candidate rows.  The remaining latency
+  (0.5 s GloVe, 3.0 s GIST) is dominated by that candidate scan plus SQL
+  planning, so production throughput still needs an index cache (or a
+  long-lived reader) *and* cheaper candidate reads.
 - **On-disk index size includes all generations:** segments are immutable and
   not garbage-collected, so after rebuilds the `_vector_index/` directory
   (412 MB for GIST here) is larger than the live generation.  Compaction or

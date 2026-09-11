@@ -199,20 +199,26 @@ recall 已降到约 0.8；逐簇规则在前几轮即触发，这正是 E1 中 `
 
 | 数据集 | 状态 | 索引加载 | 最佳 recall@10 | 该点 QPS |
 |--------|------|---------:|---------------:|---------:|
-| GIST1M | fresh | 687 ms | 0.977 (@nprobe 128) | 13,334 |
-| GIST1M | delta | 992 ms | 0.971 (@nprobe 64) | 15,088 |
-| GIST1M | rebuilt | 934 ms | 0.971 (@nprobe 128) | 14,339 |
-| GloVe-200d | fresh | 249 ms | 0.970 (@nprobe 256) | 14,621 |
-| GloVe-200d | delta | 312 ms | 0.949 (@nprobe 256) | 13,783 |
-| GloVe-200d | rebuilt | 260 ms | 0.951 (@nprobe 256) | 13,928 |
+| GIST1M | fresh | 57 ms | 0.977 (@nprobe 128) | 19,359 |
+| GIST1M | delta | 217 ms | 0.971 (@nprobe 64) | 21,377 |
+| GIST1M | rebuilt | 71 ms | 0.971 (@nprobe 128) | 14,691 |
+| GloVe-200d | fresh | 25 ms | 0.970 (@nprobe 256) | 17,318 |
+| GloVe-200d | delta | 89 ms | 0.949 (@nprobe 256) | 12,647 |
+| GloVe-200d | rebuilt | 31 ms | 0.951 (@nprobe 256) | 12,662 |
 
 ![E4 GIST recall vs QPS](/img/vector-benchmark/e4_recall_qps_gist.png)
 
 **结论。**
 - 三种状态的检索质量与吞吐相当；delta segment 不会破坏 recall/QPS 折中（GloVe 的小幅
   下降在重建后恢复）。
-- 累积 delta 的可见成本是**索引加载时间**（6 代 delta 后增加约 30–45%），因为打开索引时
-  需要读取并合并所有 segment。重建把 delta 折叠回单个 base segment，消除了这部分开销。
+- 累积 delta 的可见成本是**索引加载时间**（6 代 delta 后：GloVe 25 → 89 ms、GIST
+  57 → 217 ms），因为打开索引时需要读取并合并所有 segment。重建把 delta 折叠回单个 base
+  segment，消除了这部分开销。
+- 为什么多 segment 时打开索引更慢、以及相应优化：每个 segment 的最后一个 FastScan batch 会
+  补零到 32 个向量，因此合并必须逐向量解包并重打包编码（全新构建/刚重建的索引不需要）。
+  加载器现在对单 segment 簇直接复用、对已按 32 对齐的段直接拼接、其余在读取各簇的同时按
+  batch 并行重打包。相比最初实现，**delta 较多的索引打开提速 4–5×**（GIST 1.31 s → 0.27 s），
+  **全新索引最多约 12×**（GIST 0.69 s → 0.06 s）。
 - 由于检索在各状态下都能正常工作，重建可以独立于查询服务进行调度；reader 通过 manifest
   的 `LATEST` 指针切换到新 generation。
 
@@ -233,8 +239,8 @@ PostgreSQL 元数据服务。
 
 | 数据集 | 写入行数 | base 插入 | recall@10 | QPS | 平均延迟 | p99 | 索引（当前 generation） |
 |--------|---------:|----------:|----------:|----:|---------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.3 s（另 10 轮各约 0.2 s） | 0.899 | 1.19 | 839 ms | 919 ms | 19 万 base + 1 万 delta，gen 2 |
-| GIST1M (960d) | 200,000 | 6.0 s（另 10 轮各约 0.7–0.9 s） | 0.980 | 0.25 | 3,965 ms | 4,328 ms | 17 万 base + 3 万 delta，gen 3 |
+| GloVe-200d | 200,000 | 2.4 s（另 10 轮各 ≤ 2.2 s） | 0.899 | 1.86 | 537 ms | 633 ms | 19 万 base + 1 万 delta，gen 2 |
+| GIST1M (960d) | 200,000 | 6.3 s（另 10 轮各 ≤ 5.1 s，含重建轮） | 0.980 | 0.33 | 3,009 ms | 3,681 ms | 17 万 base + 3 万 delta，gen 3 |
 
 ![E5 SQL 端到端](/img/vector-benchmark/e5_sql_end_to_end.png)
 
@@ -244,9 +250,10 @@ PostgreSQL 元数据服务。
   top-k。
 - **SQL 写入会维护索引**：每次 `INSERT` 提交数据文件后，提交钩子会增量更新或重建索引；
   10 轮更新后 manifest generation 分别达到 2（GloVe）和 3（GIST）。
-- **QPS 瓶颈是索引加载而非 ANN**：每次 SQL 执行都要从对象存储打开整个索引，GloVe 约
-  0.8 s、GIST 约 4 s。因此 SQL 路径目前更适合正确性/易用性场景；要达到生产吞吐，需要
-  索引缓存（或长生命周期 reader），让索引只加载一次而不是每查询一次。
+- **每次查询的开销由索引打开 + 候选数据扫描组成**：每次 SQL 执行都会打开索引
+  （经过 E4 中所述的加载器优化后，GloVe 约 0.10 s、GIST 约 0.27 s），然后扫描数据文件取回
+  候选行并精排。剩余延迟（GloVe 约 0.5 s、GIST 约 3.0 s）主要来自候选扫描和 SQL 规划；
+  因此生产吞吐仍需要索引缓存（或长生命周期 reader）以及更高效的候选读取。
 - **磁盘索引包含所有历史 generation**：segment 不可变且不做垃圾回收，因此重建后
   `_vector_index/` 目录（此处 GIST 为 412 MB）大于当前 generation。压缩/GC 是自然的后续工作。
 
