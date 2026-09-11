@@ -25,7 +25,7 @@ LakeSoul 的向量检索基于 **IVF+RaBitQ** 索引，并在数据写入过程�
 |------|------|
 | 机器 | Linux，32 核 CPU，62 GB 内存，本地 NVMe SSD |
 | 构建 | `cargo bench` release profile，16 个工作线程（`RAYON_NUM_THREADS=16`） |
-| 存储 | 本地文件系统；E1-E4 的 LakeSoul 表数据以 **vortex** 格式写入（`PhysicalFormat::Vortex`），E5 使用 SQL DML 写入路径 |
+| 存储 | 本地文件系统；所有场景的 LakeSoul 表数据都以 **vortex** 格式写入（`PhysicalFormat::Vortex`；SQL 场景通过 `physical_format` 表选项选择） |
 | 距离度量 | L2 |
 | 索引配置 | `nlist = 256`、`total_bits = 7`、`top_k = 10`、检索 `nprobe = 64`（E4 扫描 1–256） |
 | 每次 checkpoint 查询数 | 100 |
@@ -231,16 +231,21 @@ recall 已降到约 0.8；逐簇规则在前几轮即触发，这正是 E1 中 `
 PostgreSQL 元数据服务。
 
 **方法。**
-- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ...)` 声明索引；先从一个
-  注册在独立 catalog 的内存表插入 10 万条 base 向量，随后再执行 10 轮、每轮 1 万条的均匀
-  向量 `INSERT`（共写入 20 万行）。表属性的重建策略在这些 SQL 写入过程中生效。
+- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ..., 'physical_format'
+  'vortex')` 同时声明索引与写入格式；先从一个注册在独立 catalog 的内存表插入 10 万条 base
+  向量，随后再执行 10 轮、每轮 1 万条的均匀向量 `INSERT`（共写入 20 万行）。表属性的重建
+  策略在这些 SQL 写入过程中生效。
 - 检索为每个查询执行一条 SQL（包含 SQL 规划），`nprobe = 64`；recall 以全部已写入向量的
   精确 top-10 为基准，并用 `EXPLAIN VERBOSE` 校验 `LakeSoulVectorSearchExec`。
 
 | 数据集 | 写入行数 | base 插入 | recall@10 | QPS | 平均延迟 | p99 | 索引（当前 generation） |
 |--------|---------:|----------:|----------:|----:|---------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 2.4 s（另 10 轮各 ≤ 2.2 s） | 0.899 | 1.86 | 537 ms | 633 ms | 19 万 base + 1 万 delta，gen 2 |
-| GIST1M (960d) | 200,000 | 6.3 s（另 10 轮各 ≤ 5.1 s，含重建轮） | 0.980 | 0.33 | 3,009 ms | 3,681 ms | 17 万 base + 3 万 delta，gen 3 |
+| GloVe-200d | 200,000 | 1.4 s（另 10 轮各 ≤ 1.2 s） | 0.899 | 3.84 | 260 ms | 287 ms | 19 万 base + 1 万 delta，gen 2 |
+| GIST1M (960d) | 200,000 | 4.9 s（另 10 轮各 ≤ 4.8 s，含重建轮） | 0.980 | 0.46 | 2,161 ms | 2,468 ms | 17 万 base + 3 万 delta，gen 3 |
+
+同一工作负载若写成 **parquet**（此前 SQL sink 的默认格式），在 recall 相同的情况下测得
+GloVe 1.83 QPS / 545 ms、GIST 0.35 QPS / 2,897 ms —— 即 vortex 的候选扫描在 QPS 上约快
+2.1×（GloVe）/ 1.3×（GIST）。
 
 ![E5 SQL 端到端](/img/vector-benchmark/e5_sql_end_to_end.png)
 
@@ -252,8 +257,12 @@ PostgreSQL 元数据服务。
   10 轮更新后 manifest generation 分别达到 2（GloVe）和 3（GIST）。
 - **每次查询的开销由索引打开 + 候选数据扫描组成**：每次 SQL 执行都会打开索引
   （经过 E4 中所述的加载器优化后，GloVe 约 0.10 s、GIST 约 0.27 s），然后扫描数据文件取回
-  候选行并精排。剩余延迟（GloVe 约 0.5 s、GIST 约 3.0 s）主要来自候选扫描和 SQL 规划；
-  因此生产吞吐仍需要索引缓存（或长生命周期 reader）以及更高效的候选读取。
+  候选行并精排；剩余延迟主要来自候选扫描和 SQL 规划。
+- **写入格式会影响候选扫描。** SQL sink 此前硬编码了仅支持 parquet 的 multipart writer，
+  并且忽略表的 `physical_format`。现在它使用支持多格式的 writer，因此建表时可以指定
+  `physical_format = "vortex"`；在 recall 相同的前提下候选扫描的 QPS 提升约 2.1×（GloVe）/
+  1.3×（GIST）。生产吞吐仍需要索引缓存（或长生命周期 reader）以及进一步优化候选读取，
+  但数据格式已不再是限制因素。
 - **磁盘索引包含所有历史 generation**：segment 不可变且不做垃圾回收，因此重建后
   `_vector_index/` 目录（此处 GIST 为 412 MB）大于当前 generation。压缩/GC 是自然的后续工作。
 

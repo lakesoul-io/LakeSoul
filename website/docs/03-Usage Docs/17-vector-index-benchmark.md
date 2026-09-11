@@ -29,7 +29,7 @@ The benchmark is a self-contained Rust scenario runner
 |------|-------|
 | Machine | Linux, 32 CPU cores, 62 GB RAM, local NVMe SSD |
 | Build | `cargo bench` release profile, 16 worker threads (`RAYON_NUM_THREADS=16`) |
-| Storage | local filesystem; E1-E4 write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`), E5 uses the SQL DML path |
+| Storage | local filesystem; all scenarios write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`; the SQL scenario selects it through the `physical_format` table option) |
 | Distance metric | L2 |
 | Index config | `nlist = 256`, `total_bits = 7`, `top_k = 10`, search `nprobe = 64` (E4 sweeps 1–256) |
 | Queries per checkpoint | 100 |
@@ -274,19 +274,25 @@ DataFusion**, so it exercises the integration rather than the index in
 isolation.  The scenario requires PostgreSQL metadata.
 
 **Method.**
-- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ...)` declares the
-  index; the base 100K vectors are inserted from an in-memory table registered
-  in a separate catalog, followed by 10 further `INSERT` rounds of 10K uniform
-  vectors (200K rows written in total).  The table's rebuild policy runs
-  during these SQL writes.
+- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ..., '
+  physical_format' 'vortex')` declares the index and the write format; the base
+  100K vectors are inserted from an in-memory table registered in a separate
+  catalog, followed by 10 further `INSERT` rounds of 10K uniform vectors (200K
+  rows written in total).  The table's rebuild policy runs during these SQL
+  writes.
 - Search runs one SQL statement per query (including SQL planning) with
   `nprobe = 64`; recall is computed against the exact top-10 over all written
   vectors, and `EXPLAIN VERBOSE` is checked for `LakeSoulVectorSearchExec`.
 
 | Dataset | Rows written | Base insert | Recall@10 | QPS | Mean latency | p99 | Index (live generation) |
 |---------|-------------:|------------:|----------:|----:|-------------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 2.4 s (+10 rounds ≤ 2.2 s each) | 0.899 | 1.86 | 537 ms | 633 ms | 190K base + 10K delta, gen 2 |
-| GIST1M (960d) | 200,000 | 6.3 s (+10 rounds ≤ 5.1 s each, rebuild rounds included) | 0.980 | 0.33 | 3,009 ms | 3,681 ms | 170K base + 30K delta, gen 3 |
+| GloVe-200d | 200,000 | 1.4 s (+10 rounds ≤ 1.2 s each) | 0.899 | 3.84 | 260 ms | 287 ms | 190K base + 10K delta, gen 2 |
+| GIST1M (960d) | 200,000 | 4.9 s (+10 rounds ≤ 4.8 s each, rebuild rounds included) | 0.980 | 0.46 | 2,161 ms | 2,468 ms | 170K base + 30K delta, gen 3 |
+
+The same workload written as **parquet** (the previous SQL sink default)
+measures 1.83 QPS / 545 ms (GloVe) and 0.35 QPS / 2,897 ms (GIST) at identical
+recall — i.e. the vortex candidate scan is ~2.1× faster on GloVe and ~1.3×
+faster on GIST at QPS level.
 
 ![E5 SQL end-to-end](/img/vector-benchmark/e5_sql_end_to_end.png)
 
@@ -299,12 +305,17 @@ isolation.  The scenario requires PostgreSQL metadata.
   post-commit hook updates (or rebuilds) the index; the manifest generation
   reached 2 (GloVe) and 3 (GIST) across the ten update rounds.
 - **Per-query cost is split between index open and the candidate data scan:**
-  every SQL execution opens the index (now 0.10 s for GloVe, 0.27 s for GIST
-  after the loader optimizations described in E4) and then scans the data
-  files to fetch and re-rank the candidate rows.  The remaining latency
-  (0.5 s GloVe, 3.0 s GIST) is dominated by that candidate scan plus SQL
-  planning, so production throughput still needs an index cache (or a
-  long-lived reader) *and* cheaper candidate reads.
+  every SQL execution opens the index (0.10 s for GloVe, 0.27 s for GIST after
+  the loader optimizations described in E4) and then scans the data files to
+  fetch and re-rank the candidate rows.  The remaining latency is dominated by
+  that candidate scan plus SQL planning.
+- **The write format matters for the candidate scan.**  The SQL sink used to
+  hard-code a parquet-only multipart writer and ignored the table's
+  `physical_format`.  It now uses the format-aware writer, so the table can be
+  created with `physical_format = "vortex"`; the candidate scan got ~2.1×
+  (GloVe) / ~1.3× (GIST) faster at equal recall.  Production throughput still
+  needs an index cache (or a long-lived reader) *and* further candidate-read
+  work, but the data format is no longer the blocking factor.
 - **On-disk index size includes all generations:** segments are immutable and
   not garbage-collected, so after rebuilds the `_vector_index/` directory
   (412 MB for GIST here) is larger than the live generation.  Compaction or

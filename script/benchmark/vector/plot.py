@@ -304,13 +304,17 @@ def plot_e5(data: list[dict], outdir: Path) -> None:
     if not runs:
         return
     print("E5:")
-    runs.sort(key=dataset_of)
-    datasets = [dataset_of(d) for d in runs]
+    def e5_label(d: dict) -> str:
+        stem = Path(d["_file"]).stem
+        return stem[3:] if stem.startswith("e5_") else stem
+
+    runs.sort(key=e5_label)
+    datasets = [e5_label(d) for d in runs]
     xs = list(range(len(datasets)))
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
     ax1.bar(xs, [d["qps"] for d in runs], color="#1f77b4")
     ax1.set_xticks(xs)
-    ax1.set_xticklabels(datasets)
+    ax1.set_xticklabels(datasets, rotation=20, ha="right")
     ax1.set_ylabel("end-to-end SQL QPS")
     ax1.set_title("E5 SQL search throughput")
     ax1.grid(alpha=0.3, axis="y", linestyle="--")
@@ -324,7 +328,7 @@ def plot_e5(data: list[dict], outdir: Path) -> None:
         )
     ax2.bar(xs, [d["recall_at_k"] for d in runs], color="#2ca02c")
     ax2.set_xticks(xs)
-    ax2.set_xticklabels(datasets)
+    ax2.set_xticklabels(datasets, rotation=20, ha="right")
     ax2.set_ylabel("recall@10")
     ax2.set_ylim(0.0, 1.02)
     ax2.set_title("E5 SQL search recall")

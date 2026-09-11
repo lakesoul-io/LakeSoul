@@ -151,6 +151,8 @@ struct Args {
     query_drift: bool,
     /// Table name for the SQL scenario.
     table: String,
+    /// Physical format for the SQL scenario's table ("parquet" or "vortex").
+    sql_format: String,
     /// Print full usage.
     help: bool,
 }
@@ -186,6 +188,7 @@ impl Default for Args {
             checkpoint_every: 1,
             query_drift: true,
             table: "vec_bench_sql".to_string(),
+            sql_format: "vortex".to_string(),
             help: false,
         }
     }
@@ -230,6 +233,7 @@ STREAM / TRIGGER:
   --static-queries                          Measure recall on the dataset's fixed queries
                                             (default: checkpoint queries follow the drift)
   --table <name>                            Table name for the SQL scenario (default: vec_bench_sql)
+  --sql-format <parquet|vortex>              Data file format for the SQL scenario (default: vortex)
 
   --help                                    Show this help
 "#
@@ -326,6 +330,7 @@ fn parse_args() -> Result<Args, String> {
             "--out" => args.out = Some(PathBuf::from(value(flag)?)),
             "--reuse" => args.reuse = true,
             "--table" => args.table = value(flag)?,
+            "--sql-format" => args.sql_format = value(flag)?,
             "--policy" => {
                 args.policy = match value(flag)?.to_lowercase().as_str() {
                     "none" => Policy::None,
@@ -1946,8 +1951,10 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             id BIGINT NOT NULL PRIMARY KEY, \
             vec FLOAT[] NOT NULL\
          ) STORED AS LAKESOUL LOCATION '{}' \
-         OPTIONS ('vector_index_columns' '{property}', 'hash_bucket_num' '1')",
-        work_dir.display()
+         OPTIONS ('vector_index_columns' '{property}', 'hash_bucket_num' '1', \
+                  'physical_format' '{}')",
+        work_dir.display(),
+        args.sql_format
     );
     ctx.sql(&create_sql)
         .await
