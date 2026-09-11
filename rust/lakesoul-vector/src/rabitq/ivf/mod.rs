@@ -1806,38 +1806,57 @@ impl IvfRabitqIndex {
     /// deltas) for every cluster, merging them into a single `ClusterData`
     /// in memory.
     pub async fn load_from_v4(mstore: &ManifestStore) -> Result<Self, RabitqError> {
+        let _prof = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
+        let _t_total = std::time::Instant::now();
         // Resolve the current view (LATEST hint + unique commits), fall
         // back to the legacy manifest.bin when nothing newer exists.
+        let _t0 = std::time::Instant::now();
         let (header, cluster_map) =
             match crate::rabitq::manifest::resolve_view(mstore).await? {
                 Some(view) => (view.header, view.cluster_map),
                 None => crate::rabitq::manifest::load_manifest(mstore).await?,
             };
-        let mut clusters = Vec::with_capacity(cluster_map.len());
-        for entry in cluster_map.values() {
-            // Merge all segments (base + deltas) for this cluster.  The merge
-            // re-packs the FastScan batches because each segment pads its
-            // final batch, so raw concatenation would misalign later vectors.
-            let mut segments = Vec::with_capacity(entry.segments.len());
-            for seg_entry in &entry.segments {
-                segments.push(
-                    crate::rabitq::manifest::read_segment_full(
-                        mstore,
-                        &seg_entry.segment_filename,
+        let _resolve = _t0.elapsed();
+        // Clusters are independent: read their segments (and merge them)
+        // concurrently, preserving cluster order.
+        let _n_segments: usize = cluster_map.values().map(|e| e.segments.len()).sum();
+        let _t0 = std::time::Instant::now();
+        use futures::{StreamExt, TryStreamExt};
+        let clusters: Vec<ClusterData> = futures::stream::iter(cluster_map.values())
+            .map(|entry| async move {
+                let mut segments = Vec::with_capacity(entry.segments.len());
+                for seg_entry in &entry.segments {
+                    segments.push(
+                        crate::rabitq::manifest::read_segment_full(
+                            mstore,
+                            &seg_entry.segment_filename,
+                        )
+                        .await?,
+                    );
+                }
+                let cd = if segments.is_empty() {
+                    ClusterData::new(
+                        vec![0.0f32; header.padded_dim],
+                        header.padded_dim,
+                        header.ex_bits,
                     )
-                    .await?,
-                );
-            }
-            let final_cd = if segments.is_empty() {
-                ClusterData::new(
-                    vec![0.0f32; header.padded_dim],
-                    header.padded_dim,
-                    header.ex_bits,
-                )
-            } else {
-                ClusterData::merge_segments(segments)?
-            };
-            clusters.push(final_cd);
+                } else {
+                    ClusterData::merge_segments(segments)?
+                };
+                Ok::<ClusterData, RabitqError>(cd)
+            })
+            .buffered(16)
+            .try_collect()
+            .await?;
+        if _prof {
+            eprintln!(
+                "load_from_v4: resolve={:?} load_clusters={:?} total={:?} clusters={} segments={}",
+                _resolve,
+                _t0.elapsed(),
+                _t_total.elapsed(),
+                clusters.len(),
+                _n_segments
+            );
         }
         let rotator = DynamicRotator::deserialize(
             header.dim,
