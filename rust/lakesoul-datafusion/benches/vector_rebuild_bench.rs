@@ -133,6 +133,9 @@ struct Args {
     drift_strength: f32,
     /// Measure recall/QPS every N rounds (brute-force GT is recomputed).
     checkpoint_every: usize,
+    /// Checkpoint queries follow the drift distribution (default).  With
+    /// `--static-queries` the dataset's fixed queries are used instead.
+    query_drift: bool,
     /// Print full usage.
     help: bool,
 }
@@ -166,6 +169,7 @@ impl Default for Args {
             drift: Drift::Uniform,
             drift_strength: 0.5,
             checkpoint_every: 1,
+            query_drift: true,
             help: false,
         }
     }
@@ -207,6 +211,8 @@ STREAM / TRIGGER:
   --drift <uniform|skew|shift>              Update distribution (default: uniform)
   --drift-strength <F>                      Shift offset / mean-norm fraction (default: 0.5)
   --checkpoint-every <N>                    Recall/QPS checkpoint every N rounds (default: 1)
+  --static-queries                          Measure recall on the dataset's fixed queries
+                                            (default: checkpoint queries follow the drift)
 
   --help                                    Show this help
 "#
@@ -348,6 +354,7 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("bad --checkpoint-every: {e}"))?
             }
+            "--static-queries" => args.query_drift = false,
             // `cargo bench` appends `--bench` (and `cargo test` `--test`) to
             // harness = false targets; ignore them.
             "--bench" | "--test" => {}
@@ -579,6 +586,16 @@ fn load_dataset(args: &Args) -> Result<Dataset, String> {
             }
             (gt, "provided")
         }
+        // The search scenario computes the GT over the vectors actually
+        // stored in the index (base + deltas), so defer it.
+        None if args.scenario == Scenario::Search => (
+            Ivecs {
+                k: args.top_k,
+                n: 0,
+                data: Vec::new(),
+            },
+            "indexed_files",
+        ),
         None => {
             println!(
                 "computing brute-force ground truth ({} queries, k={}) ...",
@@ -924,14 +941,92 @@ fn manifest_store(files: &[String]) -> ManifestStore {
     ManifestStore::new(Arc::new(LocalFileSystem::new()), prefix)
 }
 
+/// Read every vector stored in the LakeSoul data files under `work_dir`
+/// back through the native reader, ordered by id (ids are dense 0..n).
+async fn read_indexed_vectors(
+    files: &[String],
+    work_dir: &Path,
+    dim: usize,
+) -> Result<Fvecs, String> {
+    let urls: Vec<String> = files
+        .iter()
+        .map(|f| {
+            if f.starts_with("file://") {
+                f.clone()
+            } else {
+                format!("file://{f}")
+            }
+        })
+        .collect();
+    let config = LakeSoulIOConfigBuilder::new()
+        .with_files(urls)
+        .with_prefix(work_dir.to_string_lossy().to_string())
+        .with_schema(vector_schema(dim))
+        .with_primary_keys(vec![PK_COLUMN.to_string()])
+        .build();
+    let mut reader = lakesoul_io::reader::LakeSoulReader::new(config)
+        .map_err(|e| format!("create reader: {e}"))?;
+    reader
+        .start()
+        .await
+        .map_err(|e| format!("reader start: {e}"))?;
+
+    let mut rows: Vec<(u64, Vec<f32>)> = Vec::new();
+    while let Some(batch) = reader.next_rb().await {
+        let batch = batch.map_err(|e| format!("read batch: {e}"))?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let id_col = batch
+            .column_by_name(PK_COLUMN)
+            .and_then(|c| c.as_any().downcast_ref::<UInt64Array>())
+            .ok_or_else(|| format!("missing u64 column '{PK_COLUMN}'"))?;
+        let vec_col = batch
+            .column_by_name(VEC_COLUMN)
+            .and_then(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::FixedSizeListArray>()
+            })
+            .ok_or_else(|| format!("missing FixedSizeList column '{VEC_COLUMN}'"))?;
+        for i in 0..batch.num_rows() {
+            let values = vec_col.value(i);
+            let floats = values
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .ok_or_else(|| "vector values must be Float32".to_string())?;
+            rows.push((id_col.value(i), floats.values().to_vec()));
+        }
+    }
+
+    let max_id = rows.iter().map(|(id, _)| *id).max().unwrap_or(0) as usize;
+    let mut data = vec![0f32; (max_id + 1) * dim];
+    let mut seen = vec![false; max_id + 1];
+    for (id, vector) in &rows {
+        let start = *id as usize * dim;
+        data[start..start + dim].copy_from_slice(vector);
+        seen[*id as usize] = true;
+    }
+    if seen.iter().any(|s| !s) {
+        return Err(format!(
+            "non-contiguous vector ids in {} ({} rows read)",
+            work_dir.display(),
+            rows.len()
+        ));
+    }
+    Ok(Fvecs {
+        dim,
+        n: max_id + 1,
+        data,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
 
 async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let dim = dataset.dim();
-    let work_dir = &args.work_dir;
-    std::fs::create_dir_all(work_dir).map_err(|e| format!("mkdir: {e}"))?;
+    let work_dir = prepare_work_dir(&args.work_dir)?;
 
     // Deterministic re-runs: drop any stale index and data files unless the
     // caller explicitly wants to reuse them.
@@ -940,7 +1035,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         if index_dir.exists() {
             std::fs::remove_dir_all(&index_dir).map_err(|e| format!("clean: {e}"))?;
         }
-        for file in find_vortex_files(work_dir) {
+        for file in find_vortex_files(&work_dir) {
             let _ = std::fs::remove_file(file);
         }
     }
@@ -948,7 +1043,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     // 1. Write the base dataset as LakeSoul vortex files.
     let ids: Vec<u64> = (0..dataset.base.n as u64).collect();
     let t = Instant::now();
-    let files = write_vortex_data(work_dir, dim, &ids, &dataset.base.data).await?;
+    let files = write_vortex_data(&work_dir, dim, &ids, &dataset.base.data).await?;
     let data_write_ms = t.elapsed().as_secs_f64() * 1000.0;
     println!(
         "wrote {} vortex file(s) in {:.1}ms: {:?}",
@@ -990,7 +1085,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         .map(|c| c.delta_ratio())
         .fold(0.0f32, f32::max);
 
-    let index_bytes = index_size_bytes(work_dir);
+    let index_bytes = index_size_bytes(&work_dir);
     let summary = json!({
         "scenario": "build",
         "format": "vortex",
@@ -1026,10 +1121,9 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 
 async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let dim = dataset.dim();
-    let work_dir = &args.work_dir;
-    std::fs::create_dir_all(work_dir).map_err(|e| format!("mkdir: {e}"))?;
+    let work_dir = prepare_work_dir(&args.work_dir)?;
 
-    let files = find_vortex_files(work_dir);
+    let files = find_vortex_files(&work_dir);
     if files.is_empty() {
         return Err(format!(
             "no vortex data files under {} — run --scenario build first",
@@ -1073,9 +1167,23 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         load_ms
     );
 
+    // Ground truth for the indexed dataset (base + deltas): when no
+    // `--gt` is given, read every vector back from the vortex files and
+    // brute-force the top-k over them.
+    let gt = if dataset.gt.n == dataset.queries.n {
+        dataset.gt.clone()
+    } else {
+        let all = read_indexed_vectors(&files, &work_dir, dim).await?;
+        println!(
+            "computing brute-force GT over {} indexed vectors ...",
+            all.n
+        );
+        brute_force_gt(&all.data, dim, &dataset.queries, args.top_k, args.threads)
+    };
+
     let mut sweep = Vec::new();
     for &nprobe in &args.nprobe_sweep {
-        let m = measure_index(&index, &dataset.queries, &dataset.gt, args.top_k, nprobe);
+        let m = measure_index(&index, &dataset.queries, &gt, args.top_k, nprobe);
         println!(
             "nprobe={:<4} recall@{}={:.4} qps={:>10.1} p50={:.3}ms p99={:.3}ms",
             m.nprobe, args.top_k, m.recall_at_k, m.qps, m.p50_ms, m.p99_ms
@@ -1100,7 +1208,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "top_k": args.top_k,
         "gt_source": dataset.gt_source,
         "load_ms": load_ms,
-        "index_size_bytes": index_size_bytes(work_dir),
+        "index_size_bytes": index_size_bytes(&work_dir),
         "sweep": sweep,
     });
     print_summary(&summary);
@@ -1219,7 +1327,7 @@ async fn collect_round_stats(mstore: &ManifestStore) -> Result<RoundStats, Strin
 /// Update sampler holding the pool plus the pre-computed skew candidates and
 /// the fixed shift offset.
 struct UpdateSampler {
-    pool: Vec<f32>,
+    pool: Arc<Vec<f32>>,
     pool_n: usize,
     dim: usize,
     skew_rows: Vec<u32>,
@@ -1228,30 +1336,28 @@ struct UpdateSampler {
 }
 
 impl UpdateSampler {
-    fn new(args: &Args, dataset: &Dataset, pool: Vec<f32>, pool_n: usize) -> Self {
-        let dim = dataset.dim();
-        let mut rng = StdRng::seed_from_u64(args.seed ^ 0x9e37_79b9_7f4a_7c15);
-        let skew_rows = if args.drift == Drift::Skew {
-            make_skew_rows(&pool, pool_n, dim, &mut rng)
-        } else {
-            Vec::new()
-        };
-        let shift_offset = if args.drift == Drift::Shift {
-            make_shift_offset(&pool, pool_n, dim, args.drift_strength, &mut rng)
-        } else {
-            Vec::new()
-        };
+    /// Build a sampler over `pool` with a shared skew region and shift
+    /// direction, so update and query samplers target the same distribution.
+    fn new(
+        args: &Args,
+        dataset: &Dataset,
+        pool: Arc<Vec<f32>>,
+        pool_n: usize,
+        rng_seed: u64,
+        skew_rows: Vec<u32>,
+        shift_offset: Vec<f32>,
+    ) -> Self {
         Self {
             pool,
             pool_n,
-            dim,
+            dim: dataset.dim(),
             skew_rows,
             shift_offset,
-            rng,
+            rng: StdRng::seed_from_u64(rng_seed),
         }
     }
 
-    /// Sample `count` update vectors according to the configured drift.
+    /// Sample `count` vectors according to the configured drift.
     fn sample(&mut self, count: usize) -> Vec<f32> {
         use rand::Rng;
         let dim = self.dim;
@@ -1327,6 +1433,16 @@ fn make_shift_offset(
     dir.iter().map(|x| x * scale).collect()
 }
 
+/// Create `work_dir` and return its absolute path (the local object store
+/// resolves prefixes against the filesystem root, so relative paths must be
+/// canonicalized before use).
+fn prepare_work_dir(work_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(work_dir)
+        .map_err(|e| format!("mkdir {}: {e}", work_dir.display()))?;
+    std::fs::canonicalize(work_dir)
+        .map_err(|e| format!("canonicalize {}: {e}", work_dir.display()))
+}
+
 /// Remove any stale index and vortex data files from `work_dir`.
 fn clean_work_dir(work_dir: &Path) -> Result<(), String> {
     let index_dir = work_dir.join("_vector_index");
@@ -1362,18 +1478,17 @@ async fn run_stream_inner(
     trigger_only: bool,
 ) -> Result<Value, String> {
     let dim = dataset.dim();
-    let work_dir = &args.work_dir;
     if args.reuse {
         return Err("--reuse is not supported for stream/trigger".to_string());
     }
-    std::fs::create_dir_all(work_dir).map_err(|e| format!("mkdir: {e}"))?;
-    clean_work_dir(work_dir)?;
+    let work_dir = prepare_work_dir(&args.work_dir)?;
+    clean_work_dir(&work_dir)?;
 
     // 1. Base data + fresh index through the real auto policy path.
     let ids: Vec<u64> = (0..dataset.base.n as u64).collect();
     let t = Instant::now();
     let mut all_files =
-        write_vortex_data(work_dir, dim, &ids, &dataset.base.data).await?;
+        write_vortex_data(&work_dir, dim, &ids, &dataset.base.data).await?;
     let base_write_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     let mut base_files: HashMap<String, (Vec<String>, u64)> = HashMap::new();
@@ -1390,12 +1505,53 @@ async fn run_stream_inner(
     .map_err(|e| format!("base index build failed: {e}"))?;
     let base_build_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-    // 2. Update pool (learn set if provided, else the base vectors).
+    // 2. Update pool (learn set if provided, else the base vectors) plus the
+    //    drift definition shared by the update and query samplers.
     let (pool, pool_n) = match &dataset.learn {
         Some(learn) => (learn.data.clone(), learn.n),
         None => (dataset.base.data.clone(), dataset.base.n),
     };
-    let mut sampler = UpdateSampler::new(args, dataset, pool, pool_n);
+    let pool = Arc::new(pool);
+    let skew_rows = if args.drift == Drift::Skew {
+        make_skew_rows(
+            &pool,
+            pool_n,
+            dim,
+            &mut StdRng::seed_from_u64(args.seed ^ 0xA1),
+        )
+    } else {
+        Vec::new()
+    };
+    let shift_offset = if args.drift == Drift::Shift {
+        make_shift_offset(
+            &pool,
+            pool_n,
+            dim,
+            args.drift_strength,
+            &mut StdRng::seed_from_u64(args.seed ^ 0xB2),
+        )
+    } else {
+        Vec::new()
+    };
+    let mut sampler = UpdateSampler::new(
+        args,
+        dataset,
+        pool.clone(),
+        pool_n,
+        args.seed ^ 0x9e37_79b9_7f4a_7c15,
+        skew_rows.clone(),
+        shift_offset.clone(),
+    );
+    // Query sampler: same distribution as the updates, different stream.
+    let mut query_sampler = UpdateSampler::new(
+        args,
+        dataset,
+        pool,
+        pool_n,
+        args.seed ^ 0xdead_beef,
+        skew_rows,
+        shift_offset,
+    );
 
     let mstore = manifest_store(&all_files);
     let mut vectors = dataset.base.data.clone();
@@ -1416,7 +1572,7 @@ async fn run_stream_inner(
         let update_ids: Vec<u64> = (next_id..next_id + args.per_round as u64).collect();
         next_id += args.per_round as u64;
         let t = Instant::now();
-        let new_files = write_vortex_data(work_dir, dim, &update_ids, &updates).await?;
+        let new_files = write_vortex_data(&work_dir, dim, &update_ids, &updates).await?;
         let data_write_ms = t.elapsed().as_secs_f64() * 1000.0;
         all_files.extend(new_files.iter().cloned());
         vectors.extend_from_slice(&updates);
@@ -1466,14 +1622,24 @@ async fn run_stream_inner(
         let mut search = Value::Null;
         let mut recall_here: Option<f64> = None;
         if round % args.checkpoint_every == 0 || round == args.rounds {
-            let gt =
-                brute_force_gt(&vectors, dim, &dataset.queries, args.top_k, args.threads);
+            // By default the checkpoint queries follow the drift (new data is
+            // what gets queried); `--static-queries` keeps the dataset queries.
+            let queries = if args.query_drift {
+                Fvecs {
+                    dim,
+                    n: dataset.queries.n,
+                    data: query_sampler.sample(dataset.queries.n),
+                }
+            } else {
+                dataset.queries.clone()
+            };
+            let gt = brute_force_gt(&vectors, dim, &queries, args.top_k, args.threads);
             let t = Instant::now();
             let index = IvfRabitqIndex::load_from_v4(&mstore)
                 .await
                 .map_err(|e| format!("load index: {e}"))?;
             let load_ms = t.elapsed().as_secs_f64() * 1000.0;
-            let m = measure_index(&index, &dataset.queries, &gt, args.top_k, args.nprobe);
+            let m = measure_index(&index, &queries, &gt, args.top_k, args.nprobe);
             min_recall = min_recall.min(m.recall_at_k);
             last_recall = Some(m.recall_at_k);
             recall_here = Some(m.recall_at_k);
@@ -1543,7 +1709,7 @@ async fn run_stream_inner(
             "amortized_vectors_per_sec": amortized_vps,
             "min_recall": if min_recall.is_finite() { json!(min_recall) } else { Value::Null },
             "final_recall": last_recall,
-            "final_index_size_bytes": index_size_bytes(work_dir),
+            "final_index_size_bytes": index_size_bytes(&work_dir),
             "peak_rss_mb": peak_rss_mb(),
         },
     });

@@ -5,10 +5,12 @@
 .zed
 .pytest_cache
 /target/
+/benchmark-results/
 /build/
 /.idea/
 /spark-warehouse/
 /lakesoul-spark-gluten/target/
+/benchmark-results/
 /derby.log
 /.metals/
 /.vscode/
@@ -16,7 +18,9 @@
 /**/.venv
 *.iml
 /native-io/lakesoul-io-java/target/
+/benchmark-results/
 /aws-test/target/
+/benchmark-results/
 /native-io/lakesoul-io-java/.idea/
 dependency-reduced-pom.xml
 /lakesoul-spark/spark-warehouse/
@@ -40,6 +44,7 @@ __pycache__/
 /rust/lakesoul-io/lakesoul_cache_dir/
 /rust/lakesoul-io-c/lakesoul_c_bindings.h
 /rust/lakesoul-io-java/target/
+/benchmark-results/
 /rust/lakesoul-io-java/.idea/
 /rust/console.history
 /python/lakesoul/metadata/generated/entity_pb2.py
