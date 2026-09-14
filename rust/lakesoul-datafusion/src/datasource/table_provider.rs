@@ -380,6 +380,21 @@ impl LakeSoulTableProvider {
             .map_err(|report| report!("invalid vector_index_columns option: {report}"))?;
         }
 
+        // Optional file format ("parquet", "vortex" or "vortex-compact"),
+        // named `file_format` like the Spark/Flink connectors and stored as
+        // a table property for the sink.
+        let file_format = cmd
+            .options
+            .get("format.file_format")
+            .or_else(|| cmd.options.get("file_format"))
+            .cloned();
+        if let Some(raw) = &file_format {
+            raw.parse::<lakesoul_io::file_format::PhysicalFormat>()
+                .map_err(|report| {
+                    report!("invalid file_format option '{raw}': {report}")
+                })?;
+        }
+
         let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
             schema_to_metadata_parts(logical_schema.as_ref());
 
@@ -394,10 +409,16 @@ impl LakeSoulTableProvider {
                 hash_bucket_num: if primary_keys.is_empty() {
                     None
                 } else {
-                    // TODO: 4 should be parameter
+                    // `hashBucketNum`, matching the Spark/Flink connectors.
+                    // Table-factory options arrive with a `format.` prefix
+                    // (like `format.use_cdc`); accept both forms, plus the
+                    // earlier snake_case spelling.
                     Some(
                         cmd.options
-                            .get("hash_bucket_num")
+                            .get("format.hashBucketNum")
+                            .or_else(|| cmd.options.get("hashBucketNum"))
+                            .or_else(|| cmd.options.get("format.hash_bucket_num"))
+                            .or_else(|| cmd.options.get("hash_bucket_num"))
                             .cloned()
                             .unwrap_or(String::from("4")),
                     )
@@ -405,6 +426,7 @@ impl LakeSoulTableProvider {
                 cdc_change_column: cdc_column,
                 use_cdc,
                 vector_index_columns,
+                file_format,
                 ..Default::default()
             })
             .unwrap(),

@@ -5,6 +5,7 @@
 .zed
 .pytest_cache
 /target/
+/benchmark-results/
 /build/
 /.idea/
 /spark-warehouse/

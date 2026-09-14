@@ -50,6 +50,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .map_or("".to_string(), |cdc_column| cdc_column.clone());
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
 
+    let physical_format = crate::catalog::table_file_format(&table_info.properties)?;
     let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(Arc::new(schema_from_table_info_metadata(
             &table_info.table_schema,
@@ -57,6 +58,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
             &table_info.table_schema_arrow_ipc_json_hash,
         )?))
         .with_prefix(table_info.table_path.clone())
+        .with_physical_format(physical_format)
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(String::from("1")))

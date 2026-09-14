@@ -218,4 +218,5 @@ print(result.column("id").to_pylist())  # 按距离从近到远，全局 top-10
 - 每个向量列在每个 `{table_path}/_vector_index/{column}/{partition}/{bucket}/` 目录下维护一个索引。
 - 向量索引 shard 的身份是 `(partition_desc, hash_bucket_id)`：不同 range 分区的文件绝不会合并到同一 shard，分区表每个分区都有独立的索引。
 - 索引以不可变 segment 存储；增量写入只追加 delta segment，不重写基础索引，manifest 通过 compare-and-swap 保证并发安全。
+- 增量更新与漂移重建策略的质量/成本实测数据参见[向量索引基准测试](../17-vector-index-benchmark.md)。
 - 通用的 `create_table`、`write_arrow`、`scan` API 见[核心 Catalog 与表 IO](02-core-api.md)。

@@ -12,6 +12,7 @@ use std::time::SystemTime;
 
 use datafusion::sql::TableReference;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata_proto::entity::{
     CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid,
@@ -89,6 +90,25 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub vector_index_columns: Option<String>,
+    /// File format used for writes: `"parquet"`, `"vortex"` or
+    /// `"vortex-compact"` (same `file_format` option as the Spark/Flink
+    /// connectors).  Defaults to parquet when unset.
+    #[serde(
+        rename = "file_format",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_format: Option<String>,
+}
+
+/// Resolve the file format declared by a table's properties
+/// (`file_format`, the Spark/Flink-compatible option); parquet when unset.
+pub(crate) fn table_file_format(properties_json: &str) -> Result<PhysicalFormat> {
+    let properties: LakeSoulTableProperty = serde_json::from_str(properties_json)?;
+    match properties.file_format {
+        Some(ref format) => Ok(format.parse()?),
+        None => Ok(PhysicalFormat::Parquet),
+    }
 }
 
 /// Register a LakeSoul table in the LakeSoul metadata.

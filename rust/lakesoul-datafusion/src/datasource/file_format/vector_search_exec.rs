@@ -127,7 +127,12 @@ impl LakeSoulVectorSearchExec {
             .with_files(file_uris)
             .with_primary_keys(self.primary_keys.clone())
             .with_schema(Arc::clone(&self.file_schema))
-            .with_prefix(derive_prefix(&first));
+            .with_prefix(derive_prefix(&first))
+            // Push the candidate pk filter into the file scans so the merge
+            // only sees the (few) matching rows instead of every row of every
+            // file.  DataFusion still re-applies the filter above for
+            // correctness (our pushdown is best-effort/Inexact).
+            .with_option(lakesoul_io::config::OPTION_KEY_FILE_FILTER_PUSHDOWN, "true");
 
         if !self.partition_cols.is_empty() {
             let partition_schema = Arc::new(Schema::new(
@@ -215,10 +220,6 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         "LakeSoulVectorSearchExec"
     }
 
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -270,21 +271,33 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         // reader's async API is not `Send`, so it is driven through the
         // blocking wrapper on the global runtime; the candidate set is
         // bounded by top_k × bucket_count and cheap to collect.
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let batches = tokio::task::block_in_place(|| {
             let mut batches: Vec<arrow::record_batch::RecordBatch> = Vec::new();
             for config in configs {
+                let t_create = std::time::Instant::now();
                 let reader = LakeSoulReader::new(config)
                     .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
                 let mut sync_reader =
                     SyncSendableMutableLakeSoulReader::new_with_global_runtime(reader);
+                let create = t_create.elapsed();
+                let t_start = std::time::Instant::now();
                 sync_reader
                     .start_blocked()
                     .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+                let start = t_start.elapsed();
+                let t_scan = std::time::Instant::now();
+                let mut rows = 0usize;
                 while let Some(batch) = sync_reader.next_rb_blocked() {
-                    batches.push(
-                        batch.map_err(|e| {
-                            DataFusionError::External(e.into_boxed_error())
-                        })?,
+                    let batch = batch
+                        .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+                    rows += batch.num_rows();
+                    batches.push(batch);
+                }
+                if profile {
+                    eprintln!(
+                        "vector_search_exec: create={create:?} start(index+plan)={start:?}                          scan={:?} rows={rows}",
+                        t_scan.elapsed()
                     );
                 }
             }
@@ -293,6 +306,10 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream))
             as SendableRecordBatchStream)
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 

@@ -357,6 +357,214 @@ impl ClusterData {
         }
     }
 
+    /// Merge segment data (base first, then deltas) into one position-aligned
+    /// cluster.
+    ///
+    /// Each segment stores its own FastScan batches with the final batch
+    /// padded to 32 vectors.  Raw `batch_data` concatenation would therefore
+    /// shift every vector after a non-32-aligned segment boundary, so the
+    /// merge unpacks each vector's codes/parameters and re-packs them into a
+    /// single contiguous batch layout.
+    pub(crate) fn merge_segments(
+        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+    ) -> Result<Self, RabitqError> {
+        if segments.is_empty() {
+            return Err(RabitqError::InvalidPersistence(
+                "cluster has no segments to merge",
+            ));
+        }
+        if segments.len() == 1 {
+            // Fresh/rebuilt cluster: nothing to merge, reuse the segment
+            // layout as-is (no unpack/re-pack).
+            return Ok(ClusterData::from_segment(
+                segments.into_iter().next().unwrap(),
+            ));
+        }
+        // If every segment except the last ends on a 32-vector boundary, its
+        // batches need no re-packing and can be concatenated directly.
+        let aligned = segments
+            .iter()
+            .rev()
+            .skip(1)
+            .all(|s| s.ids.len() % simd::FASTSCAN_BATCH_SIZE == 0);
+        if aligned {
+            Self::concat_aligned(segments)
+        } else {
+            Self::repack_segments(segments)
+        }
+    }
+
+    /// Concatenate segments whose batch layouts already line up (all but the
+    /// last segment end on a 32-vector boundary).
+    fn concat_aligned(
+        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+    ) -> Result<Self, RabitqError> {
+        let mut it = segments.into_iter();
+        let mut merged = ClusterData::from_segment(it.next().unwrap());
+        for seg in it {
+            if seg.padded_dim != merged.padded_dim || seg.ex_bits != merged.ex_bits {
+                return Err(RabitqError::InvalidPersistence(
+                    "segment dimension/ex_bits mismatch while merging",
+                ));
+            }
+            merged.ids.extend(seg.ids);
+            merged.batch_data.extend(seg.batch_data);
+            merged.ex_codes_packed.extend(seg.ex_codes_packed);
+            merged.f_add_ex.extend(seg.f_add_ex);
+            merged.f_rescale_ex.extend(seg.f_rescale_ex);
+            merged.delta.extend(seg.delta);
+            merged.vl.extend(seg.vl);
+        }
+        merged.num_vectors = merged.ids.len();
+        Ok(merged)
+    }
+
+    /// Re-pack segments into one position-aligned batch layout.
+    ///
+    /// Each output batch is rebuilt independently (in parallel) from the
+    /// source segments: per-vector packed binary codes and
+    /// `f_add`/`f_rescale`/`f_error` parameters are extracted from the
+    /// segment FastScan layouts into reusable per-thread buffers, and the
+    /// per-vector metadata arrays are moved rather than cloned.
+    fn repack_segments(
+        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+    ) -> Result<Self, RabitqError> {
+        use rayon::prelude::*;
+
+        let batch = simd::FASTSCAN_BATCH_SIZE;
+        let n_total: usize = segments.iter().map(|s| s.ids.len()).sum();
+        let centroid = segments[0].centroid.clone();
+        let padded_dim = segments[0].padded_dim;
+        let ex_bits = segments[0].ex_bits;
+        let dim_bytes = padded_dim / 8;
+        let stride = ClusterData::batch_stride(padded_dim);
+        let total_batches = n_total.div_ceil(batch);
+        let mut batch_data =
+            crate::rabitq::memory::allocate_aligned_vec::<u8>(stride * total_batches);
+
+        // Move the per-vector metadata out of the segments (no clones) and
+        // keep the batch layouts for the parallel re-pack below.
+        let mut cds: Vec<ClusterData> = Vec::with_capacity(segments.len());
+        let mut offsets: Vec<usize> = Vec::with_capacity(segments.len());
+        let mut ids: Vec<u64> = Vec::with_capacity(n_total);
+        let mut ex_codes_packed: Vec<Vec<u8>> = Vec::with_capacity(n_total);
+        let mut f_add_ex: Vec<f32> = Vec::with_capacity(n_total);
+        let mut f_rescale_ex: Vec<f32> = Vec::with_capacity(n_total);
+        let mut delta: Vec<f32> = Vec::with_capacity(n_total);
+        let mut vl: Vec<f32> = Vec::with_capacity(n_total);
+        let mut start = 0usize;
+        for seg in segments {
+            if seg.padded_dim != padded_dim || seg.ex_bits != ex_bits {
+                return Err(RabitqError::InvalidPersistence(
+                    "segment dimension/ex_bits mismatch while merging",
+                ));
+            }
+            let mut cd = ClusterData::from_segment(seg);
+            ids.extend_from_slice(&cd.ids);
+            ex_codes_packed.append(&mut cd.ex_codes_packed);
+            f_add_ex.append(&mut cd.f_add_ex);
+            f_rescale_ex.append(&mut cd.f_rescale_ex);
+            delta.append(&mut cd.delta);
+            vl.append(&mut cd.vl);
+            if cd.num_vectors > 0 {
+                offsets.push(start);
+                start += cd.num_vectors;
+            }
+            cds.push(cd);
+        }
+        let cds = &cds;
+        let offsets = &offsets;
+
+        batch_data.par_chunks_mut(stride).enumerate().for_each_init(
+            || {
+                (
+                    vec![0u8; batch * dim_bytes],
+                    vec![0u8; padded_dim],
+                    vec![0f32; batch],
+                    vec![0f32; batch],
+                    vec![0f32; batch],
+                )
+            },
+            |(codes, unpacked, f_add, f_rescale, f_error), (b, batch_slice)| {
+                let actual = (n_total - b * batch).min(batch);
+                for s in 0..actual {
+                    let g = b * batch + s;
+                    let idx = offsets.partition_point(|&o| o <= g) - 1;
+                    let i = g - offsets[idx];
+                    let cd = &cds[idx];
+                    let src_batch = i / batch;
+                    let src_slot = i % batch;
+                    simd::unpack_single_vector(
+                        cd.batch_bin_codes(src_batch),
+                        src_slot,
+                        dim_bytes,
+                        unpacked,
+                    );
+                    simd::pack_binary_code(
+                        unpacked,
+                        &mut codes[s * dim_bytes..(s + 1) * dim_bytes],
+                        padded_dim,
+                    );
+                    f_add[s] = cd.batch_f_add(src_batch)[src_slot];
+                    f_rescale[s] = cd.batch_f_rescale(src_batch)[src_slot];
+                    f_error[s] = cd.batch_f_error(src_batch)[src_slot];
+                }
+                // The thread-local buffers are reused: clear the padding
+                // slots of a partial batch.
+                codes[actual * dim_bytes..].fill(0);
+                for s in actual..batch {
+                    f_add[s] = 0.0;
+                    f_rescale[s] = 0.0;
+                    f_error[s] = 0.0;
+                }
+
+                let binary_bytes = padded_dim * batch / 8;
+                simd::pack_codes(
+                    codes,
+                    batch,
+                    dim_bytes,
+                    &mut batch_slice[..binary_bytes],
+                );
+                let f_add_offset = binary_bytes;
+                let f_rescale_offset = f_add_offset + 4 * batch;
+                let f_error_offset = f_rescale_offset + 4 * batch;
+                unsafe {
+                    std::slice::from_raw_parts_mut(
+                        batch_slice[f_add_offset..].as_mut_ptr() as *mut f32,
+                        batch,
+                    )
+                    .copy_from_slice(f_add);
+                    std::slice::from_raw_parts_mut(
+                        batch_slice[f_rescale_offset..].as_mut_ptr() as *mut f32,
+                        batch,
+                    )
+                    .copy_from_slice(f_rescale);
+                    std::slice::from_raw_parts_mut(
+                        batch_slice[f_error_offset..].as_mut_ptr() as *mut f32,
+                        batch,
+                    )
+                    .copy_from_slice(f_error);
+                }
+            },
+        );
+
+        Ok(ClusterData {
+            centroid,
+            ids,
+            batch_data,
+            ex_codes_packed,
+            f_add_ex,
+            f_rescale_ex,
+            delta,
+            vl,
+            num_vectors: n_total,
+            padded_dim,
+            ex_bits,
+            pending_ids: Vec::new(),
+            pending_vectors: Vec::new(),
+        })
+    }
+
     /// Create new empty cluster
     #[allow(dead_code)]
     pub(crate) fn new(centroid: Vec<f32>, padded_dim: usize, ex_bits: usize) -> Self {

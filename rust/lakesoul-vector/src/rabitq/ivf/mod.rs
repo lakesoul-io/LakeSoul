@@ -1806,46 +1806,57 @@ impl IvfRabitqIndex {
     /// deltas) for every cluster, merging them into a single `ClusterData`
     /// in memory.
     pub async fn load_from_v4(mstore: &ManifestStore) -> Result<Self, RabitqError> {
+        let _prof = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
+        let _t_total = std::time::Instant::now();
         // Resolve the current view (LATEST hint + unique commits), fall
         // back to the legacy manifest.bin when nothing newer exists.
+        let _t0 = std::time::Instant::now();
         let (header, cluster_map) =
             match crate::rabitq::manifest::resolve_view(mstore).await? {
                 Some(view) => (view.header, view.cluster_map),
                 None => crate::rabitq::manifest::load_manifest(mstore).await?,
             };
-        let mut clusters = Vec::with_capacity(cluster_map.len());
-        for entry in cluster_map.values() {
-            // Merge all segments (base + deltas) for this cluster.
-            let mut merged: Option<ClusterData> = None;
-            for seg_entry in &entry.segments {
-                let seg = crate::rabitq::manifest::read_segment_full(
-                    mstore,
-                    &seg_entry.segment_filename,
-                )
-                .await?;
-                let cd = ClusterData::from_segment(seg);
-                if let Some(m) = merged.as_mut() {
-                    // Concatenate: keep centroid from first segment, append data.
-                    m.ids.extend_from_slice(&cd.ids);
-                    m.batch_data.extend_from_slice(&cd.batch_data);
-                    m.ex_codes_packed.extend_from_slice(&cd.ex_codes_packed);
-                    m.f_add_ex.extend_from_slice(&cd.f_add_ex);
-                    m.f_rescale_ex.extend_from_slice(&cd.f_rescale_ex);
-                    m.delta.extend_from_slice(&cd.delta);
-                    m.vl.extend_from_slice(&cd.vl);
-                    m.num_vectors += cd.num_vectors;
-                } else {
-                    merged = Some(cd);
+        let _resolve = _t0.elapsed();
+        // Clusters are independent: read their segments (and merge them)
+        // concurrently, preserving cluster order.
+        let _n_segments: usize = cluster_map.values().map(|e| e.segments.len()).sum();
+        let _t0 = std::time::Instant::now();
+        use futures::{StreamExt, TryStreamExt};
+        let clusters: Vec<ClusterData> = futures::stream::iter(cluster_map.values())
+            .map(|entry| async move {
+                let mut segments = Vec::with_capacity(entry.segments.len());
+                for seg_entry in &entry.segments {
+                    segments.push(
+                        crate::rabitq::manifest::read_segment_full(
+                            mstore,
+                            &seg_entry.segment_filename,
+                        )
+                        .await?,
+                    );
                 }
-            }
-            let final_cd = merged.unwrap_or_else(|| {
-                ClusterData::new(
-                    vec![0.0f32; header.padded_dim],
-                    header.padded_dim,
-                    header.ex_bits,
-                )
-            });
-            clusters.push(final_cd);
+                let cd = if segments.is_empty() {
+                    ClusterData::new(
+                        vec![0.0f32; header.padded_dim],
+                        header.padded_dim,
+                        header.ex_bits,
+                    )
+                } else {
+                    ClusterData::merge_segments(segments)?
+                };
+                Ok::<ClusterData, RabitqError>(cd)
+            })
+            .buffered(16)
+            .try_collect()
+            .await?;
+        if _prof {
+            eprintln!(
+                "load_from_v4: resolve={:?} load_clusters={:?} total={:?} clusters={} segments={}",
+                _resolve,
+                _t0.elapsed(),
+                _t_total.elapsed(),
+                clusters.len(),
+                _n_segments
+            );
         }
         let rotator = DynamicRotator::deserialize(
             header.dim,
@@ -2118,30 +2129,16 @@ impl IvfRabitqIndex {
                 std::collections::BTreeMap::new();
 
             for (&cid, entry) in cluster_map.iter() {
-                // Merge all segments (base + deltas) for this cluster.
-                let mut merged: Option<ClusterData> = None;
+                // Merge all segments (base + deltas) for this cluster,
+                // re-packing the FastScan batches (see `merge_segments`).
+                let mut segments = Vec::with_capacity(entry.segments.len());
                 for seg_entry in &entry.segments {
-                    let seg =
+                    segments.push(
                         manifest::read_segment_full(mstore, &seg_entry.segment_filename)
-                            .await?;
-                    let cd = ClusterData::from_segment(seg);
-                    if let Some(m) = merged.as_mut() {
-                        m.ids.extend_from_slice(&cd.ids);
-                        m.batch_data.extend_from_slice(&cd.batch_data);
-                        m.ex_codes_packed.extend_from_slice(&cd.ex_codes_packed);
-                        m.f_add_ex.extend_from_slice(&cd.f_add_ex);
-                        m.f_rescale_ex.extend_from_slice(&cd.f_rescale_ex);
-                        m.delta.extend_from_slice(&cd.delta);
-                        m.vl.extend_from_slice(&cd.vl);
-                        m.num_vectors += cd.num_vectors;
-                    } else {
-                        merged = Some(cd);
-                    }
+                            .await?,
+                    );
                 }
-
-                let cd = merged.ok_or_else(|| {
-                    RabitqError::InvalidPersistence("cluster has no segments")
-                })?;
+                let cd = ClusterData::merge_segments(segments)?;
 
                 // Write new compacted base segment (version 0).
                 let fname = manifest::segment_filename(cid, 0);
