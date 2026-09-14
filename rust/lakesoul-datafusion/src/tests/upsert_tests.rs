@@ -16,9 +16,9 @@ mod upsert_with_metadata_tests {
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
     use crate::Result;
-    use crate::catalog::{create_io_config_builder, create_table};
+    use crate::catalog::create_io_config_builder;
     use crate::lakesoul_table::LakeSoulTable;
-    use crate::tests::assert_batches_eq;
+    use crate::tests::{assert_batches_eq, create_table};
 
     enum StrOrI32 {
         V1(&'static str),

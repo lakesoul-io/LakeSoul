@@ -24,13 +24,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion_distributed::{
     ChannelResolver, GetWorkerInfoRequest, WorkerResolver, grpc,
 };
 use parking_lot::RwLock;
+use rootcause::prelude::ResultExt;
+use rootcause::{bail, report};
 use url::Url;
 
+use crate::Result;
 use crate::distributed::DISTRIBUTED_PROTOCOL_VERSION;
 
 /// In-memory snapshot of the currently eligible workers.
@@ -52,7 +55,7 @@ impl WorkerSnapshot {
 }
 
 impl WorkerResolver for WorkerSnapshot {
-    fn get_urls(&self) -> Result<Vec<Url>> {
+    fn get_urls(&self) -> DFResult<Vec<Url>> {
         Ok(self.urls.clone())
     }
 }
@@ -156,7 +159,7 @@ impl StaticWorkerResolver {
 }
 
 impl WorkerResolver for StaticWorkerResolver {
-    fn get_urls(&self) -> Result<Vec<Url>> {
+    fn get_urls(&self) -> DFResult<Vec<Url>> {
         Ok(self.snapshot.read().urls.clone())
     }
 }
@@ -164,11 +167,7 @@ impl WorkerResolver for StaticWorkerResolver {
 fn parse_urls(urls: Vec<String>) -> Result<Vec<Url>> {
     urls.iter()
         .map(|url| {
-            Url::parse(url).map_err(|err| {
-                DataFusionError::Configuration(format!(
-                    "invalid worker url {url:?}: {err}"
-                ))
-            })
+            Url::parse(url).map_err(|err| report!("invalid worker url {url:?}: {err}"))
         })
         .collect()
 }
@@ -240,7 +239,7 @@ impl KubernetesWorkerResolver {
 }
 
 impl WorkerResolver for KubernetesWorkerResolver {
-    fn get_urls(&self) -> Result<Vec<Url>> {
+    fn get_urls(&self) -> DFResult<Vec<Url>> {
         Ok(self.snapshot.read().urls.clone())
     }
 }
@@ -255,9 +254,7 @@ fn build_http_client(discovery: &KubernetesDiscovery) -> Result<reqwest::Client>
         })?;
         builder = builder.add_root_certificate(cert);
     }
-    builder.build().map_err(|err| {
-        DataFusionError::Configuration(format!("building Kubernetes client: {err}"))
-    })
+    Ok(builder.build().context("building kubernetes client")?)
 }
 
 async fn fetch_endpointslices(
@@ -287,14 +284,9 @@ async fn fetch_endpointslices(
         .map_err(|err| DataFusionError::External(Box::new(err)))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(DataFusionError::External(Box::new(std::io::Error::other(
-            format!("EndpointSlice request returned {status}"),
-        ))));
+        bail!("EndpointSlice request returned {status}")
     }
-    let body = response
-        .text()
-        .await
-        .map_err(|err| DataFusionError::External(Box::new(err)))?;
+    let body = response.text().await?;
     ready_worker_urls(&body)
 }
 
@@ -337,11 +329,8 @@ pub fn ready_worker_urls(list_json: &str) -> Result<Vec<Url>> {
         protocol: Option<String>,
     }
 
-    let list: EndpointSliceList = serde_json::from_str(list_json).map_err(|err| {
-        DataFusionError::External(Box::new(std::io::Error::other(format!(
-            "invalid EndpointSliceList: {err}"
-        ))))
-    })?;
+    let list: EndpointSliceList =
+        serde_json::from_str(list_json).context("invalid EndpointSliceList")?;
 
     let mut urls = Vec::new();
     // A rolling update can list the same address in several EndpointSlices;
@@ -433,8 +422,13 @@ mod tests {
 
     #[test]
     fn static_resolver_rejects_invalid_url_early() {
-        let err = StaticWorkerResolver::new(vec!["not a url".into()]).unwrap_err();
-        assert!(matches!(err, DataFusionError::Configuration(_)));
+        let error = StaticWorkerResolver::new(vec!["not a url".into()]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains("invalid worker url") && message.contains("not a url"),
+            "expected an invalid worker URL error, got: {message}"
+        );
     }
 
     #[test]

@@ -5,7 +5,6 @@
 //! The [`datafusion::catalog`] implementation for the LakeSoul.
 
 use std::collections::HashMap;
-use std::env;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -15,14 +14,13 @@ use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata_proto::entity::{
-    CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid,
+    CommitOp, DataCommitInfo, DataFileOp, FileOp, Uuid,
 };
 use rootcause::report;
 use serde::Deserialize;
 
 use crate::Result;
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 
 pub mod lakesoul_catalog;
 pub use lakesoul_catalog::*;
@@ -109,93 +107,6 @@ pub(crate) fn table_file_format(properties_json: &str) -> Result<PhysicalFormat>
         Some(ref format) => Ok(format.parse()?),
         None => Ok(PhysicalFormat::Parquet),
     }
-}
-
-/// Register a LakeSoul table in the LakeSoul metadata.
-#[allow(dead_code)]
-// TODO: this function used for test
-pub(crate) async fn create_table(
-    client: MetaDataClientRef,
-    table_name: &str,
-    config: LakeSoulIOConfig,
-) -> Result<()> {
-    create_table_inner(client, table_name, config, None).await
-}
-
-/// Create a LakeSoul table that declares vector indexes through the
-/// `vector_index_columns` table property, so writes auto-build the indexes
-/// (same semantics as the Python SDK's `vector_index` argument).
-///
-/// The configuration is validated against the table schema and primary
-/// keys *before* any metadata is created.
-#[allow(dead_code)] // used for test
-pub(crate) async fn create_table_with_vector_index(
-    client: MetaDataClientRef,
-    table_name: &str,
-    config: LakeSoulIOConfig,
-    vector_index_configs: &[crate::vector_index::VectorIndexTableConfig],
-) -> Result<()> {
-    crate::vector_index::validate_vector_index_configs(
-        vector_index_configs,
-        config.target_schema().as_ref(),
-        config.primary_keys_slice(),
-    )?;
-    let vector_index_columns = (!vector_index_configs.is_empty())
-        .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
-    create_table_inner(client, table_name, config, vector_index_columns).await
-}
-
-async fn create_table_inner(
-    client: MetaDataClientRef,
-    table_name: &str,
-    config: LakeSoulIOConfig,
-    vector_index_columns: Option<String>,
-) -> Result<()> {
-    debug!("create_table: {:?}", &table_name);
-    let target_schema = config.target_schema();
-    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
-        schema_to_metadata_parts(target_schema.as_ref());
-
-    client
-        .create_table(TableInfo {
-            table_id: format!("table_{}", uuid::Uuid::new_v4()),
-            table_name: table_name.to_string(),
-            table_path: format!(
-                "file://{}/default/{}",
-                env::current_dir()
-                    .unwrap()
-                    .to_str()
-                    .ok_or(report!("can not get $TMPDIR"))?,
-                table_name
-            ),
-            table_schema,
-            table_schema_arrow_ipc,
-            table_schema_arrow_ipc_json_hash,
-            table_namespace: "default".to_string(),
-            properties: serde_json::to_string(&LakeSoulTableProperty {
-                hash_bucket_num: Some(String::from("4")),
-                vector_index_columns,
-                ..Default::default()
-            })?,
-            partitions: format!(
-                "{};{}",
-                config
-                    .range_partitions_slice()
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(","),
-                config
-                    .primary_keys_slice()
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            domain: "public".to_string(),
-        })
-        .await?;
-    Ok(())
 }
 
 /// Create a [`LakeSoulIOConfigBuilder`] from LakeSoul metadata, according to the table name, fetch files, namespace, options, and object store options.

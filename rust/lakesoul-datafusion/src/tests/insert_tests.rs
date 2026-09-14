@@ -20,11 +20,8 @@ use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use rootcause::report;
 
 use crate::lakesoul_table::LakeSoulTable;
-use crate::tests::assert_batches_eq;
-use crate::{
-    Result,
-    catalog::{create_io_config_builder, create_table},
-};
+use crate::tests::{assert_batches_eq, create_table};
+use crate::{Result, catalog::create_io_config_builder};
 
 async fn init_table(
     client: MetaDataClientRef,

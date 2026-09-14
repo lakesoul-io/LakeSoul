@@ -197,13 +197,17 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             .await
     }
 
-    /// Create a physical plan for the scan LakeSoul table.
-    /// The overall process is as follows:
-    /// 1. Get the predicate from the filters.
-    /// 2. Get each file metadata from the file scan config.
-    /// 3. Create [`datafusion::datasource::physical_plan::parquet::ParquetExec`] for each file.
-    /// 4. Merge the [`datafusion::datasource::physical_plan::parquet::ParquetExec`]s according to the partition columns.
-    /// 5. Apply the operations on the merged [`datafusion::physical_plan::ExecutionPlan`].
+    /// Creates a physical scan plan for a LakeSoul table.
+    ///
+    /// The plan is built as follows:
+    /// 1. Derive the requested output and merge schemas from the projection,
+    ///    primary keys, and CDC column.
+    /// 2. Resolve LakeSoul metadata into per-file scan configurations.
+    /// 3. Build `DataSourceExec` inputs and group them by LakeSoul range partition.
+    /// 4. Build one `MergeParquetExec` per range partition. Distributed scans of
+    ///    append-only tables may coalesce compatible file inputs into one scan.
+    /// 5. Union partition plans, filter CDC delete records, and project the
+    ///    requested output schema.
     async fn create_physical_plan(
         &self,
         state: &dyn Session,
@@ -254,12 +258,13 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         // file on variant 0). Merge-on-read tables keep the per-file scan
         // structure: their k-way merge requires one sorted stream per file
         // and is intentionally not distributed yet.
-        let distribute_scan = state
+        let is_non_primary_key_table = self.conf.primary_keys_slice().is_empty();
+        let is_distri_ext_enabled = state
             .config_options()
             .extensions
             .get::<datafusion_distributed::DistributedConfig>()
-            .is_some()
-            && self.conf.primary_keys_slice().is_empty();
+            .is_some();
+        let is_distributed_scan = is_distri_ext_enabled && is_non_primary_key_table;
 
         let mut inputs_map: HashMap<
             String,
@@ -283,15 +288,15 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
             info!("Create parquet exec input with config= {:?}", config);
             let file_path = config.file_groups[0].files()[0].path().to_string();
-            let parquet_exec = DataSourceExec::from_data_source(config.clone());
-            for field in parquet_exec.schema().fields().iter() {
+            let datasource_exec = DataSourceExec::from_data_source(config.clone());
+            for field in datasource_exec.schema().fields().iter() {
                 if field.is_nullable() {
                     column_nullable.insert(field.name().clone());
                 }
             }
 
             if let Some((_, entry)) = inputs_map.get_mut(&partition_desc) {
-                entry.0.push(parquet_exec);
+                entry.0.push(datasource_exec);
                 entry.1.push(config);
                 entry.2.push(file_path);
             } else {
@@ -299,7 +304,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                     partition_desc.clone(),
                     (
                         partition_columnar_value.clone(),
-                        (vec![parquet_exec], vec![config], vec![file_path]),
+                        (vec![datasource_exec], vec![config], vec![file_path]),
                     ),
                 );
             }
@@ -317,28 +322,18 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             .iter()
             .cloned()
             .collect::<HashSet<_>>();
-        let merged_schema = SchemaRef::new(Schema::new(
-            merged_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        !partition_columns.contains(field.name())
-                            && (field.is_nullable()
-                                | column_nullable.contains(field.name())),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
+        let merged_schema = merged_schema_with_file_nullability(
+            merged_schema,
+            &partition_columns,
+            &column_nullable,
+        );
 
         let mut partitioned_exec = Vec::new();
         for (_, (partition_columnar_values, (inputs, configs, file_paths))) in inputs_map
         {
             let mut conf = self.conf.clone();
             conf.set_files(file_paths);
-            let inputs = if distribute_scan && groupable_scan_configs(&configs) {
+            let inputs = if is_distributed_scan && groupable_scan_configs(&configs) {
                 vec![grouped_scan_exec(configs)?]
             } else {
                 inputs
@@ -908,6 +903,30 @@ fn make_sink_schema() -> SchemaRef {
     ]))
 }
 
+/// Derives the scan schema's nullability from the logical schema and per-file
+/// schemas. Range partition columns are injected as constants by LakeSoul, so
+/// their nullability is defined only by the logical schema.
+fn merged_schema_with_file_nullability(
+    merged_schema: SchemaRef,
+    partition_columns: &HashSet<String>,
+    column_nullable: &HashSet<String>,
+) -> SchemaRef {
+    SchemaRef::new(Schema::new(
+        merged_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let is_partition_column = partition_columns.contains(field.name());
+                let nullable_in_any_file = column_nullable.contains(field.name());
+                let nullable_due_to_file = !is_partition_column && nullable_in_any_file;
+                let output_nullable = field.is_nullable() || nullable_due_to_file;
+
+                Field::new(field.name(), field.data_type().clone(), output_nullable)
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// Whether the per-file scan configs can be merged into one
 /// `DataSourceExec(FileScanConfig)` leaf with multiple file groups.
 ///
@@ -961,6 +980,8 @@ fn grouped_scan_exec(configs: Vec<FileScanConfig>) -> DFResult<Arc<dyn Execution
 mod tests {
 
     use super::*;
+    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_plan::empty::EmptyExec;
 
     #[test]
     fn same_width_different_order_still_needs_projection() {
@@ -977,5 +998,57 @@ mod tests {
             &target_schema,
             &merged_schema,
         ));
+    }
+
+    #[test]
+    fn nullable_range_partition_column_preserves_logical_schema() {
+        // Range partition values are injected by LakeSoul rather than read
+        // from parquet. The physical input therefore has no `part` column.
+        let logical_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("part", DataType::Utf8, true),
+        ]));
+        let partition_columns = HashSet::from(["part".to_string()]);
+        let scan_schema = merged_schema_with_file_nullability(
+            logical_schema,
+            &partition_columns,
+            &HashSet::new(),
+        );
+
+        assert!(
+            scan_schema.field_with_name("part").unwrap().is_nullable(),
+            "a nullable range partition column must retain its logical nullability"
+        );
+
+        let file_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let input = Arc::new(EmptyExec::new(file_schema)) as Arc<dyn ExecutionPlan>;
+        let merge_exec = Arc::new(
+            MergeParquetExec::new_with_inputs(
+                scan_schema,
+                vec![input],
+                LakeSoulIOConfig::default(),
+                Arc::new(HashMap::from([("part".to_string(), "p0".to_string())])),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        // A downstream projection must observe the same nullable partition
+        // field rather than a schema narrowed from nullable to non-nullable.
+        let projection = ProjectionExec::try_new(
+            vec![(
+                col("part", merge_exec.schema().as_ref()).unwrap(),
+                "part".into(),
+            )],
+            merge_exec,
+        )
+        .unwrap();
+        assert!(
+            projection
+                .schema()
+                .field_with_name("part")
+                .unwrap()
+                .is_nullable()
+        );
     }
 }

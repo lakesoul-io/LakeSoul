@@ -21,13 +21,13 @@ use lakesoul_metadata_proto::entity::TableInfo;
 
 use crate::Result;
 use crate::catalog::{
-    LakeSoulTableProperty, create_io_config_builder, create_table,
-    format_table_info_partitions,
+    LakeSoulTableProperty, create_io_config_builder, format_table_info_partitions,
 };
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::ser::arrow_java::schema_to_metadata_parts;
+use crate::tests::create_table;
 
 fn test_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![

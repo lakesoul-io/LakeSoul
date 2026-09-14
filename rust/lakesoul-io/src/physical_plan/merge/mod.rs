@@ -111,27 +111,20 @@ impl MergeParquetExec {
                 .fields()
                 .iter()
                 .map(|field| {
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable()
-                            || (!partition_columns.contains(field.name())
-                                && inputs.iter().any(|plan| {
-                                    // If a non-partition input is missing a requested
-                                    // field, the default-column projection will
-                                    // synthesize nulls for that input. Partition
-                                    // columns are projected constants supplied by
-                                    // this plan itself; widening them would make the
-                                    // physical schema more nullable than the logical
-                                    // one, which DataFusion's planner rejects below
-                                    // aggregates.
-                                    plan.schema()
-                                        .column_with_name(field.name())
-                                        .is_none_or(|(_, plan_field)| {
-                                            plan_field.is_nullable()
-                                        })
-                                })),
-                    )
+                    let is_partition_column = partition_columns.contains(field.name());
+                    // A missing non-partition field is synthesized by the default-column
+                    // projection and may therefore be null. Partition columns are constants
+                    // injected by this plan, so their absence from a parquet input does not
+                    // affect output nullability.
+                    let nullable_in_any_input = inputs.iter().any(|plan| {
+                        plan.schema()
+                            .column_with_name(field.name())
+                            .is_none_or(|(_, input_field)| input_field.is_nullable())
+                    });
+                    let nullable_due_to_input =
+                        !is_partition_column && nullable_in_any_input;
+                    let output_nullable = field.is_nullable() || nullable_due_to_input;
+                    Field::new(field.name(), field.data_type().clone(), output_nullable)
                 })
                 .collect::<Vec<_>>(),
         ))

@@ -6,7 +6,11 @@ use std::{path::Path, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
-    MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
+    MetaDataClient,
+    cli::CoreArgs,
+    distributed::{DistributedOptions, WorkerDiscovery},
+    session::{LakeSoulSessionFactory, LakeSoulSessionOptions},
+    tpch::register_tpch_udtfs,
 };
 use rand::Rng;
 use rand::distr::Alphanumeric;
@@ -43,6 +47,22 @@ struct Cli {
 
     #[command(flatten)]
     pub core: CoreArgs,
+
+    /// Worker gRPC URL. Supplying one or more workers enables distributed execution.
+    #[arg(long = "worker", value_name = "URL")]
+    workers: Vec<String>,
+
+    /// Target number of partitions for distributed execution.
+    #[arg(long, default_value_t = 4)]
+    target_partitions: usize,
+
+    /// Approximate bytes assigned to each distributed file-scan task.
+    #[arg(long)]
+    bytes_per_partition: Option<usize>,
+
+    /// Development only: execute locally if no configured worker is available.
+    #[arg(long)]
+    distributed_fallback_local: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -115,13 +135,16 @@ async fn main_inner(cli: Cli) -> Result<()> {
     print_banner();
     let _log_guard = init_log(&cli.log_dir);
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
-
-    let ctx = create_lakesoul_session_ctx(meta_client, &cli.core).unwrap();
-
-    register_tpch_udtfs(&ctx)?;
-
-    let meta_client = Arc::new(MetaDataClient::from_env().await?);
-    let ctx = create_lakesoul_session_ctx(meta_client, &cli.core)?;
+    let mut session_factory = LakeSoulSessionFactory::new(meta_client, &cli.core)?;
+    if !cli.workers.is_empty() {
+        session_factory = session_factory.with_distributed(DistributedOptions {
+            discovery: WorkerDiscovery::Static(cli.workers.clone()),
+            fallback_to_local: cli.distributed_fallback_local,
+            target_partitions: cli.target_partitions,
+            bytes_per_partition: cli.bytes_per_partition,
+        });
+    }
+    let ctx = session_factory.create_session(&LakeSoulSessionOptions::default())?;
     register_tpch_udtfs(&ctx)?;
     let files = cli.file;
 
@@ -136,6 +159,46 @@ async fn main_inner(cli: Cli) -> Result<()> {
     }
 
     exec_from_repl(&ctx, &printer).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workers_enable_distributed_execution_options() {
+        let cli = Cli::try_parse_from([
+            "lakesoul-console",
+            "--worker",
+            "http://127.0.0.1:50051",
+            "--worker",
+            "http://127.0.0.1:50052",
+            "--target-partitions",
+            "2",
+            "--bytes-per-partition",
+            "1",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.workers,
+            [
+                "http://127.0.0.1:50051".to_string(),
+                "http://127.0.0.1:50052".to_string(),
+            ]
+        );
+        assert_eq!(cli.target_partitions, 2);
+        assert_eq!(cli.bytes_per_partition, Some(1));
+        assert!(!cli.distributed_fallback_local);
+    }
+
+    #[test]
+    fn no_workers_keeps_distributed_mode_disabled() {
+        let cli = Cli::try_parse_from(["lakesoul-console"]).unwrap();
+
+        assert!(cli.workers.is_empty());
+        assert!(!cli.distributed_fallback_local);
+    }
 }
 
 fn main() -> ExitCode {

@@ -2,11 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::util::pretty::pretty_format_batches;
 use std::io::Write;
 use std::time::Instant;
+
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::util::display::array_value_to_string;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 
 use crate::Result;
 
@@ -15,19 +17,57 @@ fn print_batches<W: std::io::Write>(
     schema: SchemaRef,
     batches: &[RecordBatch],
 ) -> Result<()> {
-    // filter out any empty batches
+    // Filter out any empty batches.
     let batches: Vec<_> = batches
         .iter()
-        .filter(|b| b.num_rows() > 0)
+        .filter(|batch| batch.num_rows() > 0)
         .cloned()
         .collect();
     if batches.is_empty() {
         return print_empty(writer, schema);
     }
 
+    if print_explain_batches(writer, &schema, &batches)? {
+        return Ok(());
+    }
+
     let formatted = pretty_format_batches(&batches)?;
     writeln!(writer, "{formatted}")?;
     Ok(())
+}
+
+/// Render DataFusion's `EXPLAIN` / `EXPLAIN ANALYZE` result as its native
+/// multi-line plan text instead of embedding it in a bordered table cell.
+///
+/// DataFusion exposes explain results as `plan_type` and `plan` string
+/// columns. The latter contains a tree with line breaks, which is unreadable
+/// when rendered through `pretty_format_batches`.
+fn print_explain_batches<W: Write>(
+    writer: &mut W,
+    schema: &SchemaRef,
+    batches: &[RecordBatch],
+) -> Result<bool> {
+    let plan_type_index = schema
+        .fields()
+        .iter()
+        .position(|field| field.name() == "plan_type");
+    let plan_index = schema
+        .fields()
+        .iter()
+        .position(|field| field.name() == "plan");
+    let (Some(plan_type_index), Some(plan_index)) = (plan_type_index, plan_index) else {
+        return Ok(false);
+    };
+
+    for batch in batches {
+        let plan_type = batch.column(plan_type_index);
+        let plan = batch.column(plan_index);
+        for row in 0..batch.num_rows() {
+            writeln!(writer, "-- {} --", array_value_to_string(plan_type, row)?)?;
+            writeln!(writer, "{}", array_value_to_string(plan, row)?)?;
+        }
+    }
+    Ok(true)
 }
 
 /// Print when the result batches contain no rows
@@ -61,6 +101,39 @@ fn get_execution_details_formatted(
 pub struct Printer {
     // not implemented
     _color: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::arrow::array::{ArrayRef, StringArray};
+
+    use super::*;
+
+    #[test]
+    fn explain_output_uses_multiline_plan_format() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "plan_type",
+                Arc::new(StringArray::from(vec!["physical_plan"])) as ArrayRef,
+            ),
+            (
+                "plan",
+                Arc::new(StringArray::from(vec!["AggregateExec\n  DataSourceExec"]))
+                    as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let mut output = Vec::new();
+
+        print_batches(&mut output, batch.schema(), &[batch]).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("-- physical_plan --"));
+        assert!(output.contains("AggregateExec\n  DataSourceExec"));
+        assert!(!output.contains("| plan_type |"));
+    }
 }
 
 impl Printer {

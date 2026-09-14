@@ -23,10 +23,9 @@ use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
-use crate::catalog::create_table;
 use crate::distributed::{DistributedOptions, LakeSoulWorkerOptions, WorkerDiscovery};
 use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
-use crate::tests::assert_batches_eq;
+use crate::tests::{assert_batches_eq, create_table};
 use crate::{Result, cli::CoreArgs};
 
 const WORKER_COUNT: usize = 3;
