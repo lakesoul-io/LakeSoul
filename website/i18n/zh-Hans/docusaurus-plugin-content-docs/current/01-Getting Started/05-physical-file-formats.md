@@ -51,6 +51,8 @@ df.write
 
 可选值为 `parquet`、`vortex` 和 `vortex-compact`。单次写入配置优先于 Hadoop Job 配置，Hadoop Job 配置优先于 Spark SQL 默认值。
 
+compaction 遵循同一套解析顺序：`LakeSoulTable.newCompaction` 先取表的 `file_format` 属性，其次取 Hadoop Job 配置，最后取 `spark.dmetasoul.lakesoul.native.io.physical_format`。若要固定某张表 compaction 产物的格式，请设置表属性——会话级默认值不会随表持久化。
+
 ### Flink 与 Flink CDC
 
 在 LakeSoul Sink 表上设置 `file_format`：

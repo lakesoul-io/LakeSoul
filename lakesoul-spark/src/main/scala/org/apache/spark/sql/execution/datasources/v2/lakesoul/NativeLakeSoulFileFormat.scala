@@ -6,6 +6,7 @@ package org.apache.spark.sql.execution.datasources.v2.lakesoul
 
 import java.util.Locale
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext}
 import org.apache.parquet.hadoop.codec.CodecConfig
@@ -27,15 +28,22 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.sources.DataSourceRegister
 import org.apache.spark.sql.types._
 
-private[v2] object NativeLakeSoulFileFormat {
+object NativeLakeSoulFileFormat {
+
+  /** Resolve the physical write format.
+    *
+    * Precedence: the caller's option map (a per-write option, or a table's
+    * `file_format` property) wins over the Hadoop job configuration, which wins
+    * over the Spark SQL default (`native.io.physical_format`).
+    */
   def resolvePhysicalFormat(
       options: Map[String, String],
-      job: Job,
+      hadoopConf: Configuration,
       sqlConf: SQLConf
   ): String = {
     options
       .get(LakeSoulOptions.FILE_FORMAT)
-      .orElse(Option(job.getConfiguration.get(LakeSoulOptions.FILE_FORMAT)))
+      .orElse(Option(hadoopConf.get(LakeSoulOptions.FILE_FORMAT)))
       .getOrElse(sqlConf.getConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT))
       .toLowerCase(Locale.ROOT)
   }
@@ -69,7 +77,7 @@ class NativeLakeSoulFileFormat
     val physicalFormat =
       NativeLakeSoulFileFormat.resolvePhysicalFormat(
         options,
-        job,
+        job.getConfiguration,
         sparkSession.sessionState.conf
       )
     // vortex is only supported when native io is enabled

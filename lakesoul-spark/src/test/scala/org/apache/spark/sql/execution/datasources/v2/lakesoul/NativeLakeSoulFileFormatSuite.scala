@@ -57,7 +57,11 @@ class NativeLakeSoulFileFormatSuite extends AnyFunSuite {
   private def fileExtension(job: Job, options: Map[String, String]): String = {
     val sqlConf = new SQLConf
     NativeLakeSoulFileFormat.extensionForPhysicalFormat(
-      NativeLakeSoulFileFormat.resolvePhysicalFormat(options, job, sqlConf)
+      NativeLakeSoulFileFormat.resolvePhysicalFormat(
+        options,
+        job.getConfiguration,
+        sqlConf
+      )
     )
   }
 }

@@ -125,6 +125,90 @@ class NewCompactionSuite
     })
   }
 
+  test("compaction respects file_format table property") {
+    withTempDir(file => {
+      val tableName = file.getCanonicalPath
+
+      val df1 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
+        .toDF("range", "hash", "value")
+      df1.write
+        .option("hashPartitions", "hash")
+        .option("hashBucketNum", "2")
+        .option("file_format", "parquet")
+        .format("lakesoul")
+        .save(tableName)
+
+      val sm = SnapshotManagement(
+        SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString
+      )
+      val initial = SparkUtil.allDataInfo(sm.updateSnapshot())
+      assert(initial.nonEmpty)
+      assert(
+        initial.forall(_.path.endsWith(".parquet")),
+        s"initial files should be parquet: ${initial.map(_.path)}"
+      )
+
+      LakeSoulTable.forPath(tableName).upsert(df1)
+
+      LakeSoulTable.forPath(tableName).newCompaction()
+
+      val rangeGroup =
+        SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      // compaction must actually merge: one active file per bucket
+      assert(
+        rangeGroup.forall(
+          _._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)
+        )
+      )
+      assert(
+        rangeGroup.values.flatten.forall(_.path.endsWith(".parquet")),
+        s"compacted files should be parquet: ${rangeGroup.values.flatten.map(_.path)}"
+      )
+    })
+  }
+
+  test("compaction respects native.io.physical_format session default") {
+    withTempDir(file => {
+      val tableName = file.getCanonicalPath
+      withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "parquet") {
+        val df1 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
+          .toDF("range", "hash", "value")
+        df1.write
+          .option("hashPartitions", "hash")
+          .option("hashBucketNum", "2")
+          .format("lakesoul")
+          .save(tableName)
+
+        val sm = SnapshotManagement(
+          SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString
+        )
+        val initial = SparkUtil.allDataInfo(sm.updateSnapshot())
+        assert(initial.nonEmpty)
+        assert(
+          initial.forall(_.path.endsWith(".parquet")),
+          s"initial files should follow the session format: ${initial.map(_.path)}"
+        )
+
+        LakeSoulTable.forPath(tableName).upsert(df1)
+
+        LakeSoulTable.forPath(tableName).newCompaction()
+
+        val rangeGroup =
+          SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+        assert(
+          rangeGroup.forall(
+            _._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)
+          )
+        )
+        assert(
+          rangeGroup.values.flatten.forall(_.path.endsWith(".parquet")),
+          s"compacted files should follow the session format: " +
+            s"${rangeGroup.values.flatten.map(_.path)}"
+        )
+      }
+    })
+  }
+
   test("simple nwe compaction with partition") {
     withTempDir(file => {
       val tableName = file.getCanonicalPath
