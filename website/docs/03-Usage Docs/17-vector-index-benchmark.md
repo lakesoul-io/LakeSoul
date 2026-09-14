@@ -293,6 +293,21 @@ The same workload written as **parquet** measures 3.73 QPS / 268 ms (GloVe)
 and 1.03 QPS / 967 ms (GIST) at identical recall — vortex is ~1.9× (GloVe) and
 ~3.1× (GIST) faster per SQL query.
 
+**Index cache.**  A process-wide cache keeps the merged in-memory index per
+`(object store, index prefix)` and reuses it while the manifest still resolves
+to the same commit; a rebuild or delta commit publishes a new manifest, so the
+next query loads the new generation and replaces the entry.  The same E5
+workload with and without the cache (identical recall):
+
+| Dataset | Live index size | Cache off | Cache on | Speedup |
+|---------|----------------:|----------:|---------:|--------:|
+| GloVe-200d | 121 MB | 3.20 QPS / 312.8 ms | 10.31 QPS / 97.0 ms | 3.2× |
+| GIST1M (960d) | 389 MB | 1.62 QPS / 615.6 ms | 9.41 QPS / 106.2 ms | 5.8× |
+
+The cache is bounded by a byte budget
+(`LAKESOUL_VECTOR_INDEX_CACHE_BYTES`, default 512 MiB, `0` disables it) and
+evicts by weighted LRU.
+
 ![E5 SQL end-to-end](/img/vector-benchmark/e5_sql_end_to_end.png)
 
 **What it tells us.**
@@ -314,10 +329,12 @@ and 1.03 QPS / 967 ms (GIST) at identical recall — vortex is ~1.9× (GloVe) an
   filter pushdown hang, while the IN list is evaluated and pushed cheaply.
   With the filter applied inside each file scan, the merge only sees the
   ~100 candidate rows: the scan dropped from ~1.7 s to ~10–30 ms.
-- **Index open is now the main remaining per-query cost:** ~0.10 s (GloVe)
-  and ~0.27 s (GIST) after the loader optimizations in E4, versus ~6–30 ms of
-  candidate scan and a few ms of planning.  An index cache (or a long-lived
-  reader) is therefore the next throughput improvement.
+- **Index open was the dominant remaining cost and is now cached.**  After the
+  E4 loader optimizations every query still re-opened and re-merged the shard
+  (~0.10 s GloVe, ~0.27 s GIST) versus only ~6–30 ms of candidate scan.  The
+  process-level cache above removes that cost: with it enabled the E5 workload
+  reaches 10.3 QPS (GloVe) / 9.4 QPS (GIST), and the remaining per-query time
+  is the candidate scan plus the exact re-rank.
 - **The write format matters.**  The SQL sink used to hard-code a parquet-only
   multipart writer and ignored the table's `file_format`; it now uses the
   format-aware writer, so tables can be created with

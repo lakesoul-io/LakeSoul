@@ -246,6 +246,18 @@ PostgreSQL 元数据服务。
 同一工作负载若写成 **parquet**，在 recall 相同的情况下测得 GloVe 3.73 QPS / 268 ms、
 GIST 1.03 QPS / 967 ms —— 即每次 SQL 查询 vortex 约快 1.9×（GloVe）/ 3.1×（GIST）。
 
+**索引缓存。** 进程级缓存按 `(object store, 索引前缀)` 保留已合并的内存索引：只要
+manifest 仍解析到同一 commit 就直接复用；重建或增量提交会发布新 manifest，下一次查询即
+加载新 generation 并替换缓存。同一 E5 工作负载开/关缓存的对比（recall 相同）：
+
+| 数据集 | 当前索引大小 | 关闭缓存 | 开启缓存 | 加速 |
+|--------|-------------:|---------:|---------:|-----:|
+| GloVe-200d | 121 MB | 3.20 QPS / 312.8 ms | 10.31 QPS / 97.0 ms | 3.2× |
+| GIST1M (960d) | 389 MB | 1.62 QPS / 615.6 ms | 9.41 QPS / 106.2 ms | 5.8× |
+
+缓存以字节预算为上限（`LAKESOUL_VECTOR_INDEX_CACHE_BYTES`，默认 512 MiB，`0` 表示禁用），
+按加权 LRU 淘汰。
+
 ![E5 SQL 端到端](/img/vector-benchmark/e5_sql_end_to_end.png)
 
 **结论。**
@@ -261,9 +273,10 @@ GIST 1.03 QPS / 967 ms —— 即每次 SQL 查询 vortex 约快 1.9×（GloVe�
   过滤判定为 Inexact 下推），并把注入过滤构造成单个 `pk IN (...)` 而不是一串 `OR`——OR 链会
   让 vortex 的过滤下推卡死，IN 列表则既廉价又能下推。过滤进入每个文件的扫描后，merge 只需
   处理约 100 行候选：扫描从约 1.7 s 降到约 10–30 ms。
-- **索引打开现在是每次查询的主要剩余开销**：经过 E4 的加载器优化后 GloVe 约 0.10 s、
-  GIST 约 0.27 s，而候选扫描仅约 6–30 ms、SQL 规划几毫秒。下一步吞吐优化应做索引缓存
-  （或长生命周期 reader）。
+- **索引打开曾是最主要的剩余开销，现已被缓存消除。** 经过 E4 的加载器优化后，每次查询
+  仍需重新打开并合并索引分片（GloVe 约 0.10 s、GIST 约 0.27 s），而候选扫描仅约
+  6–30 ms。上文的进程级缓存消除了这部分开销：开启后 E5 工作负载达到 10.3 QPS（GloVe）/
+  9.4 QPS（GIST），剩余耗时主要是候选扫描与精确精排。
 - **写入格式有影响。** SQL sink 此前硬编码仅支持 parquet 的 multipart writer、忽略表的
   `file_format`；现在使用支持多格式的 writer，建表可指定
   `file_format = "vortex"`。在 recall 相同的前提下，每次 SQL 查询 vortex 比 parquet 约快
