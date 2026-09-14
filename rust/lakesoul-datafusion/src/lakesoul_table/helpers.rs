@@ -51,6 +51,15 @@ pub(crate) fn create_io_config_builder_from_table_info(
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
 
     let physical_format = crate::catalog::table_file_format(&table_info.properties)?;
+    // Vector index columns get small row blocks on write so the candidate
+    // rows can later be fetched by row index cheaply.
+    let vector_columns = crate::vector_index::parse_vector_index_columns(
+        properties.vector_index_columns.as_deref(),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|config| config.column)
+    .collect::<Vec<_>>();
     let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(Arc::new(schema_from_table_info_metadata(
             &table_info.table_schema,
@@ -60,6 +69,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_prefix(table_info.table_path.clone())
         .with_physical_format(physical_format)
         .with_primary_keys(hash_partitions)
+        .with_vector_columns(vector_columns)
         .with_range_partitions(range_partitions)
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(String::from("1")))
         .set_dynamic_partition(dynamic_partition)

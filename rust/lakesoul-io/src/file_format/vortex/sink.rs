@@ -40,11 +40,20 @@ use vortex::io::VortexWrite;
 use vortex::io::object_store::ObjectStoreWrite;
 use vortex::session::VortexSession;
 
+/// Row block size used for vector index columns.  Candidate rows are
+/// fetched by row index, and vortex reads random rows at row-block
+/// granularity, so smaller blocks make those fetches much cheaper.  The
+/// default of 8192 rows would read most of the vector column for a
+/// scattered candidate set.
+const VECTOR_ROW_BLOCK_SIZE: usize = 1024;
+
 pub struct VortexSink {
     config: FileSinkConfig,
     schema: SchemaRef,
     session: VortexSession,
     is_compact: bool,
+    /// Vector index columns that get small row blocks.
+    vector_columns: Vec<String>,
     /// The Mutex is only used to allow inserting to HashMap from behind borrowed reference in DataSink::write_all.
     written: Arc<parking_lot::Mutex<HashMap<Path, FileFooter>>>,
 }
@@ -56,14 +65,47 @@ impl VortexSink {
         config: FileSinkConfig,
         schema: SchemaRef,
         is_compact: bool,
+        vector_columns: Vec<String>,
     ) -> Self {
         Self {
             config,
             schema,
             session,
             is_compact,
+            vector_columns,
             written: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Build the write strategy: the default strategy, optionally with the
+    /// compact compressor, plus a small-row-block override for every vector
+    /// index column.
+    fn write_strategy(&self) -> Arc<dyn vortex::layout::LayoutStrategy> {
+        let make_builder = || {
+            let builder = WriteStrategyBuilder::default();
+            if self.is_compact {
+                // use zstd in block level
+                builder.with_btrblocks_builder(
+                    BtrBlocksCompressorBuilder::default().with_compact(),
+                )
+            } else {
+                builder
+            }
+        };
+
+        let mut builder = make_builder();
+        if !self.vector_columns.is_empty() {
+            let vector_strategy: Arc<dyn vortex::layout::LayoutStrategy> = make_builder()
+                .with_row_block_size(VECTOR_ROW_BLOCK_SIZE)
+                .build();
+            for column in &self.vector_columns {
+                builder = builder.with_field_writer(
+                    vortex::dtype::FieldPath::from_name(column.as_str()),
+                    Arc::clone(&vector_strategy),
+                );
+            }
+        }
+        builder.build()
     }
 
     pub fn written(&self) -> HashMap<Path, FileFooter> {
@@ -129,6 +171,7 @@ impl FileSink for VortexSink {
         let mut file_write_tasks: JoinSet<DFResult<(Path, WriteSummary)>> =
             JoinSet::new();
         let writer_schema = get_writer_schema(&self.config);
+        let write_strategy = self.write_strategy();
         let dtype = self
             .session
             .arrow()
@@ -150,7 +193,7 @@ impl FileSink for VortexSink {
             let arrow_session = session.clone();
             let import_schema = Arc::clone(&writer_schema);
             let dtype = dtype.clone();
-            let is_compact = self.is_compact;
+            let write_strategy = Arc::clone(&write_strategy);
             file_write_tasks.spawn(async move {
                 let stream = ReceiverStream::new(rx).map(move |rb| {
                     arrow_session
@@ -166,18 +209,9 @@ impl FileSink for VortexSink {
                         exec_datafusion_err!("Failed to create ObjectStoreWrite: {e}")
                     })?;
 
-                let write_options = if is_compact {
-                    // use zstd in block level
-                    session.write_options().with_strategy(
-                        WriteStrategyBuilder::default()
-                            .with_btrblocks_builder(
-                                BtrBlocksCompressorBuilder::default().with_compact(),
-                            )
-                            .build(),
-                    )
-                } else {
-                    session.write_options()
-                };
+                let write_options = session
+                    .write_options()
+                    .with_strategy(Arc::clone(&write_strategy));
 
                 let summary = write_options
                     .write(&mut object_writer, stream_adapter)
