@@ -410,13 +410,13 @@ impl LakeSoulTableProvider {
                     None
                 } else {
                     // `hashBucketNum`, matching the Spark/Flink connectors.
-                    // Table-factory options arrive with a `format.` prefix
-                    // (like `format.use_cdc`); accept both forms, plus the
-                    // earlier snake_case spelling.
+                    // DataFusion lower-cases option keys and prefixes
+                    // namespace-less keys with `format.` (so the SQL spelling
+                    // `'hashBucketNum'` arrives as `format.hashbucketnum`).
                     Some(
                         cmd.options
-                            .get("format.hashBucketNum")
-                            .or_else(|| cmd.options.get("hashBucketNum"))
+                            .get("format.hashbucketnum")
+                            .or_else(|| cmd.options.get("hashbucketnum"))
                             .or_else(|| cmd.options.get("format.hash_bucket_num"))
                             .or_else(|| cmd.options.get("hash_bucket_num"))
                             .cloned()

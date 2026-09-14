@@ -270,38 +270,64 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         // Read every bucket's candidates through the native reader.  The
         // reader's async API is not `Send`, so it is driven through the
         // blocking wrapper on the global runtime; the candidate set is
-        // bounded by top_k × bucket_count and cheap to collect.
+        // bounded by top_k × bucket_count and cheap to collect.  Buckets are
+        // independent — their indexes and data files do not overlap — so
+        // they are read in parallel, one scoped thread per bucket.
+        fn read_bucket(
+            config: LakeSoulIOConfig,
+            profile: bool,
+        ) -> DFResult<Vec<arrow::record_batch::RecordBatch>> {
+            let t_create = std::time::Instant::now();
+            let reader = LakeSoulReader::new(config)
+                .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+            let mut sync_reader =
+                SyncSendableMutableLakeSoulReader::new_with_global_runtime(reader);
+            let create = t_create.elapsed();
+            let t_start = std::time::Instant::now();
+            sync_reader
+                .start_blocked()
+                .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+            let start = t_start.elapsed();
+            let t_scan = std::time::Instant::now();
+            let mut rows = 0usize;
+            let mut batches = Vec::new();
+            while let Some(batch) = sync_reader.next_rb_blocked() {
+                let batch =
+                    batch.map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+                rows += batch.num_rows();
+                batches.push(batch);
+            }
+            if profile {
+                eprintln!(
+                    "vector_search_exec: create={create:?} start(index+plan)={start:?}                          scan={:?} rows={rows}",
+                    t_scan.elapsed()
+                );
+            }
+            Ok(batches)
+        }
+
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let batches = tokio::task::block_in_place(|| {
-            let mut batches: Vec<arrow::record_batch::RecordBatch> = Vec::new();
-            for config in configs {
-                let t_create = std::time::Instant::now();
-                let reader = LakeSoulReader::new(config)
-                    .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
-                let mut sync_reader =
-                    SyncSendableMutableLakeSoulReader::new_with_global_runtime(reader);
-                let create = t_create.elapsed();
-                let t_start = std::time::Instant::now();
-                sync_reader
-                    .start_blocked()
-                    .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
-                let start = t_start.elapsed();
-                let t_scan = std::time::Instant::now();
-                let mut rows = 0usize;
-                while let Some(batch) = sync_reader.next_rb_blocked() {
-                    let batch = batch
-                        .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
-                    rows += batch.num_rows();
-                    batches.push(batch);
-                }
-                if profile {
-                    eprintln!(
-                        "vector_search_exec: create={create:?} start(index+plan)={start:?}                          scan={:?} rows={rows}",
-                        t_scan.elapsed()
-                    );
-                }
+            if configs.len() == 1 {
+                let config = configs.pop().expect("one config");
+                return read_bucket(config, profile);
             }
-            Ok::<_, DataFusionError>(batches)
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = configs
+                    .into_iter()
+                    .map(|config| scope.spawn(move || read_bucket(config, profile)))
+                    .collect();
+                let mut batches: Vec<arrow::record_batch::RecordBatch> = Vec::new();
+                for handle in handles {
+                    let mut bucket_batches = handle.join().map_err(|_| {
+                        DataFusionError::Execution(
+                            "vector search bucket reader panicked".to_string(),
+                        )
+                    })??;
+                    batches.append(&mut bucket_batches);
+                }
+                Ok::<_, DataFusionError>(batches)
+            })
         })?;
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream))
