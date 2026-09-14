@@ -536,6 +536,19 @@ pub enum DynamicRotator {
 }
 
 impl DynamicRotator {
+    /// Approximate heap footprint of the rotator in bytes.
+    pub fn memory_bytes(&self) -> usize {
+        match self {
+            DynamicRotator::Matrix(r) => {
+                std::mem::size_of::<MatrixRotator>()
+                    + r.matrix.capacity() * std::mem::size_of::<f32>()
+            }
+            DynamicRotator::Fht(r) => {
+                std::mem::size_of::<FhtKacRotator>() + r.flip.capacity()
+            }
+        }
+    }
+
     /// Create a new rotator of the specified type
     pub fn new(dim: usize, rotator_type: RotatorType, seed: u64) -> Self {
         match rotator_type {

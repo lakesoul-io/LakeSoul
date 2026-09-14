@@ -192,6 +192,36 @@ pub(crate) struct ClusterData {
 }
 
 impl ClusterData {
+    /// Approximate heap footprint of this cluster in bytes (buffer capacity
+    /// plus struct overhead); used to bound process-level index caches.
+    pub(crate) fn memory_bytes(&self) -> usize {
+        let f32_size = std::mem::size_of::<f32>();
+        let mut bytes = std::mem::size_of::<Self>();
+        bytes += self.centroid.capacity() * f32_size;
+        bytes += self.ids.capacity() * std::mem::size_of::<u64>();
+        bytes += self.batch_data.capacity();
+        bytes += self
+            .ex_codes_packed
+            .iter()
+            .map(|c| c.capacity() + std::mem::size_of::<Vec<u8>>())
+            .sum::<usize>();
+        bytes += self.f_add_ex.capacity() * f32_size;
+        bytes += self.f_rescale_ex.capacity() * f32_size;
+        bytes += self.delta.capacity() * f32_size;
+        bytes += self.vl.capacity() * f32_size;
+        bytes += self.pending_ids.capacity() * std::mem::size_of::<u64>();
+        bytes += self
+            .pending_vectors
+            .iter()
+            .map(|q| {
+                std::mem::size_of::<QuantizedVector>()
+                    + q.binary_code_packed.capacity()
+                    + q.ex_code_packed.capacity()
+            })
+            .sum::<usize>();
+        bytes
+    }
+
     /// Calculate bytes per batch in contiguous layout
     #[inline(always)]
     pub(crate) fn batch_stride(padded_dim: usize) -> usize {
