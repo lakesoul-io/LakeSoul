@@ -70,6 +70,7 @@ pub mod filter;
 pub mod helpers;
 pub mod object_store;
 pub mod physical_plan;
+pub mod pk_locator;
 pub mod reader;
 pub mod session;
 pub mod utils;

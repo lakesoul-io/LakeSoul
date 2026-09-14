@@ -809,22 +809,18 @@ impl LakeSoulTableProvider {
         primary_keys: &[String],
         filters: &[&Expr],
     ) -> DFResult<Vec<TableProviderFilterPushDown>> {
-        if !pushdown_filters {
-            return Ok(vec![
-                TableProviderFilterPushDown::Unsupported;
-                filters.len()
-            ]);
-        }
-
-        if primary_keys.is_empty() {
-            return Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()]);
-        }
-
         filters
             .iter()
             .map(|f| {
                 let cols = f.column_refs();
-                if cols.iter().all(|col| primary_keys.contains(&col.name)) {
+                let pk_only = !primary_keys.is_empty()
+                    && cols.iter().all(|col| primary_keys.contains(&col.name));
+                if pk_only {
+                    // Primary-key filters are always handed to the scan so
+                    // the row locator can turn them into row-level fetches.
+                    // Inexact keeps DataFusion's own FilterExec on top.
+                    Ok(TableProviderFilterPushDown::Inexact)
+                } else if pushdown_filters && primary_keys.is_empty() {
                     Ok(TableProviderFilterPushDown::Inexact)
                 } else {
                     Ok(TableProviderFilterPushDown::Unsupported)
@@ -916,6 +912,22 @@ impl TableProvider for LakeSoulTableProvider {
         {
             return Ok(exec);
         }
+
+        // Finite primary-key predicates let the scan fetch only the matching
+        // rows (vortex + integer pk only); the optimizer keeps re-applying
+        // the filter above the scan, so a superset candidate set is safe.
+        let pk_candidates = if self.primary_keys.len() == 1 {
+            let pk = &self.primary_keys[0];
+            self.file_schema.field_with_name(pk).ok().and_then(|field| {
+                lakesoul_io::pk_locator::extract_pk_candidates(
+                    &filters,
+                    pk,
+                    field.data_type(),
+                )
+            })
+        } else {
+            None
+        };
 
         let (partitioned_file_lists, statistics) = self
             .list_files_for_scan(session_state, &filters, limit)
@@ -1038,6 +1050,19 @@ impl TableProvider for LakeSoulTableProvider {
             flatten_configs.extend(group_flatten_configs);
         }
 
+        let candidate_inputs = match pk_candidates {
+            Some(candidates) if !candidates.is_empty() => {
+                lakesoul_io::pk_locator::try_build_pk_inputs(
+                    session_state,
+                    &self.io_config,
+                    &flatten_configs,
+                    &candidates,
+                )
+                .await
+            }
+            _ => None,
+        };
+
         let mut inputs_map: HashMap<
             String,
             (
@@ -1047,14 +1072,17 @@ impl TableProvider for LakeSoulTableProvider {
         > = HashMap::new();
         let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
 
-        for config in flatten_configs {
+        for (index, config) in flatten_configs.into_iter().enumerate() {
             let (partition_desc, partition_values) =
                 partition_desc_from_file_scan_config(&config).map_err(|report| {
                     DataFusionError::External(report.into_boxed_error())
                 })?;
             let partition_values = Arc::new(partition_values);
             let file_path = config.file_groups[0].files()[0].path().to_string();
-            let input = DataSourceExec::from_data_source(config);
+            let input: Arc<dyn ExecutionPlan> = match &candidate_inputs {
+                Some(inputs) => Arc::clone(&inputs[index]),
+                None => DataSourceExec::from_data_source(config),
+            };
             all_inputs.push(input.clone());
 
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {

@@ -13,6 +13,8 @@ mod hash_tests;
 #[cfg(test)]
 mod insert_tests;
 #[cfg(test)]
+mod pk_locator_tests;
+#[cfg(test)]
 mod upsert_tests;
 #[cfg(test)]
 mod vector_search_tests;
