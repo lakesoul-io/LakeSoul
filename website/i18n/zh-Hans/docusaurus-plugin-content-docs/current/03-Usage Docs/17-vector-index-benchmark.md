@@ -240,20 +240,21 @@ PostgreSQL 元数据服务。
 
 | 数据集 | 写入行数 | base 插入 | recall@10 | QPS | 平均延迟 | p99 | 索引（当前 generation） |
 |--------|---------:|----------:|----------:|----:|---------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.3 s（另 10 轮，中位 0.4 s） | 0.899 | 6.98 | 143 ms | 183 ms | 19 万 base + 1 万 delta，gen 2 |
-| GIST1M (960d) | 200,000 | 5.0 s（另 10 轮，中位 3.6 s，含重建轮） | 0.980 | 3.24 | 308 ms | 363 ms | 17 万 base + 3 万 delta，gen 3 |
+| GloVe-200d | 200,000 | 1.4 s（另 10 轮，中位 0.4 s） | 0.899 | 24.7 | 40.4 ms | 50.0 ms | 1 分片，107 MB，19 万 base + 1 万 delta，gen 2 |
+| GIST1M (960d) | 200,000 | 5.3 s（另 10 轮，中位 1.0 s，含重建轮） | 0.980 | 15.7 | 63.6 ms | 72.2 ms | 1 分片，432 MB，17 万 base + 3 万 delta，gen 3 |
 
-同一工作负载若写成 **parquet**，在 recall 相同的情况下测得 GloVe 3.73 QPS / 268 ms、
+以上数字已包含下文的索引缓存与单分片修复。同一工作负载若写成 **parquet**，在早前一轮
+（尚未引入索引缓存与分片修复时）recall 相同的情况下测得 GloVe 3.73 QPS / 268 ms、
 GIST 1.03 QPS / 967 ms —— 即每次 SQL 查询 vortex 约快 1.9×（GloVe）/ 3.1×（GIST）。
 
 **索引缓存。** 进程级缓存按 `(object store, 索引前缀)` 保留已合并的内存索引：只要
 manifest 仍解析到同一 commit 就直接复用；重建或增量提交会发布新 manifest，下一次查询即
-加载新 generation 并替换缓存。同一 E5 工作负载开/关缓存的对比（recall 相同）：
+加载新 generation 并替换缓存。同一 E5 工作负载开/关缓存的对比（recall 相同，单 hash 分桶）：
 
 | 数据集 | 当前索引大小 | 关闭缓存 | 开启缓存 | 加速 |
 |--------|-------------:|---------:|---------:|-----:|
-| GloVe-200d | 121 MB | 3.20 QPS / 312.8 ms | 10.31 QPS / 97.0 ms | 3.2× |
-| GIST1M (960d) | 389 MB | 1.62 QPS / 615.6 ms | 9.41 QPS / 106.2 ms | 5.8× |
+| GloVe-200d | 107 MB | 7.04 QPS / 142.0 ms | 24.74 QPS / 40.4 ms | 3.5× |
+| GIST1M (960d) | 432 MB | 3.19 QPS / 313.6 ms | 15.72 QPS / 63.6 ms | 4.9× |
 
 缓存以字节预算为上限（`LAKESOUL_VECTOR_INDEX_CACHE_BYTES`，默认 512 MiB，`0` 表示禁用），
 按加权 LRU 淘汰。
@@ -275,8 +276,22 @@ manifest 仍解析到同一 commit 就直接复用；重建或增量提交会发
   处理约 100 行候选：扫描从约 1.7 s 降到约 10–30 ms。
 - **索引打开曾是最主要的剩余开销，现已被缓存消除。** 经过 E4 的加载器优化后，每次查询
   仍需重新打开并合并索引分片（GloVe 约 0.10 s、GIST 约 0.27 s），而候选扫描仅约
-  6–30 ms。上文的进程级缓存消除了这部分开销：开启后 E5 工作负载达到 10.3 QPS（GloVe）/
-  9.4 QPS（GIST），剩余耗时主要是候选扫描与精确精排。
+  6–30 ms。上文的进程级缓存消除了这部分开销；叠加下文的单分片修复后，E5 达到
+  24.7 QPS（GloVe）/ 15.7 QPS（GIST）。
+- **SQL DDL 曾静默忽略 `hashBucketNum`。** DataFusion 会把 `OPTIONS` 的 key 转成小写并为
+  不带命名空间的 key 加上 `format.` 前缀，因此 Spark/Flink 大小写写法
+  `'hashBucketNum' '1'` 实际变成 `format.hashbucketnum`，provider 回退到默认 4 个分桶：
+  每次查询要探测 4 个索引分片并扫描 4 倍数据文件。现已正确解析（SQL 测试会断言落库属性）；
+  对本负载单分桶也是最快配置（GloVe 24.7 QPS，4 分桶为 14.1 QPS）。
+- **分桶并行读取。** `LakeSoulVectorSearchExec` 原先串行驱动每个 hash 分桶的 reader；各分桶
+  的索引与数据文件相互独立，现在每个分桶跑在独立的 scoped 线程上。GloVe 4 分桶表每次查询
+  的执行时间从 92.6 ms 降到 61.5 ms。
+- **当前瓶颈是候选行扫描。** 单分片下每次查询的耗时拆分约为：SQL 规划 2–4 ms、物理规划
+  （元数据 + 文件列表）4–6 ms、索引探测 7–11 ms、候选扫描 28–47 ms（占执行时间
+  70–85%）。即便只有一个数据文件，扫描仍需约 26 ms（GIST 10 万行）：候选 id 是随机的，
+  下推的 `id IN (...)` 无法利用 vortex 的 zone map 剪枝，只能在每次查询中逐行求值。
+  下一步的自然优化是直接定位候选行（pk → 文件/行号定位器，或常驻内存的 pk 列缓存）；
+  仅做 compaction 只能省掉每文件的开销。
 - **写入格式有影响。** SQL sink 此前硬编码仅支持 parquet 的 multipart writer、忽略表的
   `file_format`；现在使用支持多格式的 writer，建表可指定
   `file_format = "vortex"`。在 recall 相同的前提下，每次 SQL 查询 vortex 比 parquet 约快

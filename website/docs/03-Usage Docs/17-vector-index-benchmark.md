@@ -286,23 +286,25 @@ isolation.  The scenario requires PostgreSQL metadata.
 
 | Dataset | Rows written | Base insert | Recall@10 | QPS | Mean latency | p99 | Index (live generation) |
 |---------|-------------:|------------:|----------:|----:|-------------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.3 s (+10 rounds, median 0.4 s) | 0.899 | 6.98 | 143 ms | 183 ms | 190K base + 10K delta, gen 2 |
-| GIST1M (960d) | 200,000 | 5.0 s (+10 rounds, median 3.6 s incl. rebuilds) | 0.980 | 3.24 | 308 ms | 363 ms | 170K base + 30K delta, gen 3 |
+| GloVe-200d | 200,000 | 1.4 s (+10 rounds, median 0.4 s) | 0.899 | 24.7 | 40.4 ms | 50.0 ms | 1 shard, 107 MB, 190K base + 10K delta, gen 2 |
+| GIST1M (960d) | 200,000 | 5.3 s (+10 rounds, median 1.0 s incl. rebuilds) | 0.980 | 15.7 | 63.6 ms | 72.2 ms | 1 shard, 432 MB, 170K base + 30K delta, gen 3 |
 
-The same workload written as **parquet** measures 3.73 QPS / 268 ms (GloVe)
-and 1.03 QPS / 967 ms (GIST) at identical recall — vortex is ~1.9× (GloVe) and
-~3.1× (GIST) faster per SQL query.
+These numbers are measured with the index cache and the single-shard fixes
+described below.  The same workload written as **parquet** measured
+3.73 QPS / 268 ms (GloVe) and 1.03 QPS / 967 ms (GIST) at identical recall in
+an earlier run (before the index cache and shard fixes) — vortex was ~1.9×
+(GloVe) and ~3.1× (GIST) faster per SQL query.
 
 **Index cache.**  A process-wide cache keeps the merged in-memory index per
 `(object store, index prefix)` and reuses it while the manifest still resolves
 to the same commit; a rebuild or delta commit publishes a new manifest, so the
 next query loads the new generation and replaces the entry.  The same E5
-workload with and without the cache (identical recall):
+workload with and without the cache (identical recall, single hash bucket):
 
 | Dataset | Live index size | Cache off | Cache on | Speedup |
 |---------|----------------:|----------:|---------:|--------:|
-| GloVe-200d | 121 MB | 3.20 QPS / 312.8 ms | 10.31 QPS / 97.0 ms | 3.2× |
-| GIST1M (960d) | 389 MB | 1.62 QPS / 615.6 ms | 9.41 QPS / 106.2 ms | 5.8× |
+| GloVe-200d | 107 MB | 7.04 QPS / 142.0 ms | 24.74 QPS / 40.4 ms | 3.5× |
+| GIST1M (960d) | 432 MB | 3.19 QPS / 313.6 ms | 15.72 QPS / 63.6 ms | 4.9× |
 
 The cache is bounded by a byte budget
 (`LAKESOUL_VECTOR_INDEX_CACHE_BYTES`, default 512 MiB, `0` disables it) and
@@ -332,9 +334,30 @@ evicts by weighted LRU.
 - **Index open was the dominant remaining cost and is now cached.**  After the
   E4 loader optimizations every query still re-opened and re-merged the shard
   (~0.10 s GloVe, ~0.27 s GIST) versus only ~6–30 ms of candidate scan.  The
-  process-level cache above removes that cost: with it enabled the E5 workload
-  reaches 10.3 QPS (GloVe) / 9.4 QPS (GIST), and the remaining per-query time
-  is the candidate scan plus the exact re-rank.
+  process-level cache above removes that cost; together with the shard fixes
+  below the E5 workload now reaches 24.7 QPS (GloVe) / 15.7 QPS (GIST).
+- **`hashBucketNum` was silently ignored by SQL DDL.**  DataFusion lower-cases
+  `OPTIONS` keys and prefixes namespace-less keys with `format.`, so the
+  Spark/Flink spelling `'hashBucketNum' '1'` arrived as
+  `format.hashbucketnum` and the provider fell back to the default of 4
+  buckets.  Every query then probed 4 index shards and scanned 4× the data
+  files.  The option is now honored (the SQL test asserts the stored
+  property), and a single bucket is the fastest configuration for this
+  workload (24.7 vs 14.1 QPS for 4 buckets on GloVe).
+- **Buckets are read in parallel.**  `LakeSoulVectorSearchExec` used to drive
+  each hash bucket's reader sequentially; buckets are independent (separate
+  indexes and files), so they now run on one scoped thread each.  On a 4-bucket
+  GloVe table this cut execution from 92.6 ms to 61.5 ms per query.
+- **The candidate scan is now the bottleneck.**  For the single-shard setup the
+  per-query split is SQL planning ~2–4 ms, physical planning (metadata + file
+  listing) ~4–6 ms, index probe ~7–11 ms and candidate scan ~28–47 ms
+  (70–85% of execution).  The scan keeps its cost even with a single file
+  (~26 ms for 100K GIST rows), because candidate ids are random: the pushed
+  `id IN (...)` predicate cannot be pruned by vortex zone maps and is
+  evaluated across every row of every file on each query.  Fetching the
+  candidate rows directly (a pk → file/row locator or an in-memory pk cache)
+  is the natural next optimization; compaction alone only removes per-file
+  overhead.
 - **The write format matters.**  The SQL sink used to hard-code a parquet-only
   multipart writer and ignored the table's `file_format`; it now uses the
   format-aware writer, so tables can be created with
