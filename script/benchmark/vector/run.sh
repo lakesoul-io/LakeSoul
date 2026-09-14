@@ -254,6 +254,7 @@ run_e5() {
         --scenario sql --limit "$limit" --nlist "$nlist" --n-queries "$nq" \
         --top-k 10 --nprobe 64 --threads "$THREADS" \
         --rounds "$rounds" --per-round "$per" --drift uniform \
+        --sql-hash-buckets "${E5_HASH_BUCKETS:-1}" \
         --table "vec_bench_sql_${ds}" \
         --work-dir "$RESULTS_DIR/work/e5_${ds}"
 }
