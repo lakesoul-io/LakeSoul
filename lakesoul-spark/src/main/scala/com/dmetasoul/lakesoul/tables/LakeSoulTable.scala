@@ -18,6 +18,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.arrow.{CompactBucketIO, CompressDataFileInfo}
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.execution.datasources.v2.lakesoul.NativeLakeSoulFileFormat
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -430,6 +431,16 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     }
     val spark = SparkSession.active
 
+    // Resolve the compaction output format here: the executor-side
+    // CompactBucketIO has no access to the SQL session configuration, so the
+    // table property, Hadoop job option, and session default must be folded
+    // into one value on the driver.
+    val physicalFormat = NativeLakeSoulFileFormat.resolvePhysicalFormat(
+      tableInfo.configuration,
+      spark.sessionState.newHadoopConf(),
+      spark.sessionState.conf
+    )
+
     def executeCompactOnePartition(
         part: PartitionInfoScala,
         uuid: UUID
@@ -478,7 +489,8 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
                 parsedFileNumLimit,
                 parsedFileSizeLimit,
                 tableInfo.bucket_num != tableHashBucketNum,
-                taskId
+                taskId,
+                physicalFormat
               )
             ) { compactionBucketIO =>
               val partitionDescAndFilesMap =

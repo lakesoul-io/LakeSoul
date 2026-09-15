@@ -60,6 +60,14 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private final NativeIOOptions nativeIOOptions;
     private final List<CompressDataFileInfo> fileInfo;
     private final String metaPartitionExpr;
+
+    /**
+     * Physical file format of the compacted output, resolved on the driver (see {@code
+     * LakeSoulTable.newCompaction}) where the table property, the Hadoop job option, and the Spark
+     * SQL default are all available.
+     */
+    private final String physicalFormat;
+
     private NativeIOWriter nativeWriter;
     private LakeSoulArrowReader lakesoulArrowReader;
     private Map<String, List<CompressDataFileInfo>> levelFileMap;
@@ -89,12 +97,14 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             int readFileNumLimit,
             long batchIncrementalFileSizeLimit,
             boolean tableHashBucketNumChanged,
-            long taskId)
+            long taskId,
+            String physicalFormat)
             throws IOException {
 
         this.conf = conf;
         this.fileInfo = fileInfo;
         this.metaPartitionExpr = metaPartitionExpr;
+        this.physicalFormat = physicalFormat;
         this.schema = Schema.fromJSON(tableInfo.table_schema());
         this.primaryKeys = JavaConverters.seqAsJavaList(tableInfo.hash_partition_columns().toSeq());
         this.hashBucketNum = tableHashBucketNum;
@@ -263,6 +273,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
 
         NativeIOUtils.setNativeIOOptions(nativeWriter, this.nativeIOOptions);
+        nativeWriter.setOption("physical_format", this.physicalFormat);
         nativeWriter.initializeWriter();
         LOG.info(
                 "Task {}, Initialized compaction writer for table {}, outPath {}, pks {}, range {}",

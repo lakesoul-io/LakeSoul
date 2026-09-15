@@ -51,6 +51,8 @@ df.write
 
 Accepted values are `parquet`, `vortex`, and `vortex-compact`. The per-write option takes precedence over the Hadoop job option, which takes precedence over the Spark SQL default.
 
+Compaction resolves the format the same way: `LakeSoulTable.newCompaction` takes the table's `file_format` property first, then the Hadoop job configuration, then `spark.dmetasoul.lakesoul.native.io.physical_format`. Set the table property to pin the format of a table's compacted output, since the session default is not stored with the table.
+
 ### Flink and Flink CDC
 
 Set `file_format` on the LakeSoul sink table:

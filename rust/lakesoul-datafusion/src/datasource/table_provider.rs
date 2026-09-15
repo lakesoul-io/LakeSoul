@@ -293,7 +293,7 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys: hash_partitions,
             range_partitions,
-            pushdown_filters: lakesoul_io_config.file_filter_pushdown(),
+            pushdown_filters: provider_options.pushdown_filters,
             io_config: lakesoul_io_config,
             vector_index_configs,
             format_registry,
