@@ -11,8 +11,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lakesoul_io::vector::builder::VectorShardIndexBuilder;
-use lakesoul_vector::{Metric, RotatorType, VectorIndexConfig};
+use lakesoul_io::vector::builder::{
+    ResolvedIndexShard, VectorShardIndexBuilder, shard_index_prefix,
+};
+use lakesoul_metadata::vector_index::{CommitMode, IndexCommitView, IndexSegmentEntry, PgCatalog};
+use lakesoul_vector::{Metric, RotatorType, SegmentEntry, VectorIndexConfig};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use pyo3::prelude::*;
@@ -255,6 +258,7 @@ fn run_shard_vector_index(
         .cloned()
         .or_else(|| store_config.get("bucket").map(|b| format!("s3://{}", b)));
 
+    let index_prefix = shard_index_prefix(&file_paths, &config.column_name);
     let builder = VectorShardIndexBuilder::new(
         store,
         config,
@@ -272,18 +276,90 @@ fn run_shard_vector_index(
     })?;
 
     runtime.block_on(async move {
-        let result = if force_rebuild {
+        let client = lakesoul_metadata::MetaDataClient::from_env()
+            .await
+            .map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index build requires metadata access: {error}"
+                ))
+            })?;
+        let catalog = PgCatalog::from_client(&client);
+        let resolved = catalog.resolve(&index_prefix).await.map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "failed to resolve vector index at '{index_prefix}': {error}"
+            ))
+        })?;
+
+        let (mode, builder) = match &resolved {
+            Some(view) if !force_rebuild => (
+                CommitMode::Delta,
+                builder.with_base(to_resolved_shard(&index_prefix, view)),
+            ),
+            _ => (CommitMode::Rebuild, builder),
+        };
+        let outcome = if mode == CommitMode::Rebuild {
             builder.rebuild().await
         } else {
             builder.build().await
-        };
-        result.map(|_| "ok".to_string()).map_err(|e| {
+        }
+        .map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                 "vector index build failed: {:?}",
                 e
             ))
-        })
+        })?;
+
+        if !outcome.new_segments.is_empty() {
+            catalog
+                .commit(
+                    &outcome.index_prefix,
+                    &outcome.header,
+                    &to_catalog_segments(&outcome.new_segments),
+                    mode,
+                )
+                .await
+                .map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                        "vector index commit failed: {e}"
+                    ))
+                })?;
+        }
+        Ok("ok".to_string())
     })
+}
+
+fn to_resolved_shard(prefix: &str, view: &IndexCommitView) -> ResolvedIndexShard {
+    ResolvedIndexShard {
+        index_prefix: prefix.to_string(),
+        commit_id: view.commit_id,
+        generation: view.generation,
+        version: view.version,
+        header: view.header.clone(),
+        segments: view
+            .segments
+            .iter()
+            .map(|segment| SegmentEntry {
+                cluster_id: segment.cluster_id,
+                segment_version: segment.segment_version,
+                segment_filename: segment.filename.clone(),
+                num_vectors: segment.num_vectors,
+                file_size: segment.file_size,
+            })
+            .collect(),
+    }
+}
+
+fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<IndexSegmentEntry> {
+    segments
+        .iter()
+        .map(|segment| IndexSegmentEntry {
+            cluster_id: segment.cluster_id,
+            segment_version: segment.segment_version,
+            filename: segment.segment_filename.clone(),
+            num_vectors: segment.num_vectors,
+            file_size: segment.file_size,
+        })
+        .collect()
 }
 
 /// Create an ObjectStore from a Python configuration dict.
