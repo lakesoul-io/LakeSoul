@@ -38,7 +38,7 @@ use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use rootcause::Report;
 use tracing::{info, warn};
 
-use crate::read_only::statement_hooks;
+use crate::read_only::{rejected_startup_isolation, statement_hooks};
 use crate::session::{PgSession, PgSessionFactory, SessionIdentity, SessionSettings};
 
 /// State owned by one PostgreSQL connection.
@@ -118,6 +118,14 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
         C::Error: std::fmt::Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
+        // The session's isolation semantics are fixed (READ COMMITTED, no
+        // multi-statement snapshot). A client that requests a stronger
+        // default at startup would otherwise connect under a false
+        // assumption, so the connection is rejected before a session is
+        // ever created.
+        if let Some(error) = rejected_startup_isolation(client.metadata()) {
+            return Err(error);
+        }
         let user = client
             .metadata()
             .get(METADATA_USER)
