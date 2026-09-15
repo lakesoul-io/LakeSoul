@@ -24,18 +24,22 @@
 //! longer represents that cluster's contents.  [`rebuild_vector_index`]
 //! exposes the same operation explicitly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use lakesoul_io::helpers::extract_hash_bucket_id;
-use lakesoul_io::vector::builder::{VectorShardIndexBuilder, shard_index_prefix};
-use lakesoul_vector::{
-    ClusterStat, ManifestStore, Metric, RotatorType, VectorIndexConfig, cluster_stats,
+use lakesoul_io::vector::builder::{
+    ResolvedIndexShard, VectorShardIndexBuilder, shard_index_prefix,
 };
-use object_store::ObjectStore;
+use lakesoul_metadata::vector_index::{
+    CommitMode, IndexCommitView, IndexSegmentEntry, PgCatalog, normalize_index_prefix,
+};
+use lakesoul_vector::{Metric, RotatorType, SegmentEntry, VectorIndexConfig};
 use object_store::local::LocalFileSystem;
+use object_store::{ObjectStore, ObjectStoreExt};
 use rootcause::{bail, report};
-use tracing::info;
+use tracing::warn;
 
 use crate::Result;
 
@@ -110,6 +114,28 @@ pub struct VectorIndexTableConfig {
     /// deltas has infinite ratio).
     #[serde(default = "default_max_delta_ratio")]
     pub max_delta_ratio: f32,
+    /// Delete superseded index files after commits (best effort).
+    #[serde(default = "default_gc_enabled")]
+    pub gc_enabled: bool,
+    /// Files superseded for at least this long are eligible for deletion;
+    /// protects readers that resolved an older commit.
+    #[serde(default = "default_gc_grace_seconds")]
+    pub gc_grace_seconds: u64,
+    /// Generations to keep (including the current one) before deleting.
+    #[serde(default = "default_gc_keep_generations")]
+    pub gc_keep_generations: usize,
+}
+
+fn default_gc_enabled() -> bool {
+    true
+}
+
+fn default_gc_grace_seconds() -> u64 {
+    3600
+}
+
+fn default_gc_keep_generations() -> usize {
+    1
 }
 
 impl VectorIndexTableConfig {
@@ -270,29 +296,154 @@ pub fn parse_vector_index_from_table_properties(
     }
 }
 
+/// Default grace period before superseded index files may be deleted.
+pub const DEFAULT_GC_GRACE_SECONDS: u64 = 3600;
+
+/// Knobs for an explicit garbage collection run.
+#[derive(Debug, Clone)]
+pub struct VectorIndexGcOptions {
+    pub grace_seconds: u64,
+    pub keep_generations: usize,
+    /// Delete control-plane rows of shards whose directory is gone.
+    pub drop_orphan_shards: bool,
+}
+
+impl Default for VectorIndexGcOptions {
+    fn default() -> Self {
+        Self {
+            grace_seconds: DEFAULT_GC_GRACE_SECONDS,
+            keep_generations: 1,
+            drop_orphan_shards: true,
+        }
+    }
+}
+
+/// What a garbage collection run did.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct VectorIndexGcReport {
+    pub shards_scanned: usize,
+    pub commits_deleted: u64,
+    pub objects_deleted: u64,
+    pub bytes_deleted: u64,
+    pub orphan_shards_deleted: u64,
+}
+
+fn to_resolved_shard(prefix: &str, view: &IndexCommitView) -> ResolvedIndexShard {
+    ResolvedIndexShard {
+        index_prefix: prefix.to_string(),
+        commit_id: view.commit_id,
+        generation: view.generation,
+        version: view.version,
+        header: view.header.clone(),
+        segments: view
+            .segments
+            .iter()
+            .map(|segment| SegmentEntry {
+                cluster_id: segment.cluster_id,
+                segment_version: segment.segment_version,
+                segment_filename: segment.filename.clone(),
+                num_vectors: segment.num_vectors,
+                file_size: segment.file_size,
+            })
+            .collect(),
+    }
+}
+
+fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<IndexSegmentEntry> {
+    segments
+        .iter()
+        .map(|segment| IndexSegmentEntry {
+            cluster_id: segment.cluster_id,
+            segment_version: segment.segment_version,
+            filename: segment.segment_filename.clone(),
+            num_vectors: segment.num_vectors,
+            file_size: segment.file_size,
+        })
+        .collect()
+}
+
+/// List the segment objects of a shard that may be removed: unreferenced
+/// and last modified before the grace cutoff.
+async fn sweep_shard_objects(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    retained: &HashSet<String>,
+    grace: Duration,
+) -> Result<(u64, u64)> {
+    use futures::StreamExt;
+    let path = object_store::path::Path::from(prefix.trim_end_matches('/'));
+    let cutoff = chrono::DateTime::<chrono::Utc>::from(SystemTime::now() - grace);
+    let mut deleted_objects = 0u64;
+    let mut deleted_bytes = 0u64;
+    let mut stream = store.list(Some(&path));
+    while let Some(meta) = stream.next().await {
+        let meta = meta?;
+        let name = meta.location.filename().unwrap_or_default().to_string();
+        // Only ever delete our own segment files.
+        if !name.starts_with("cluster_") || !name.ends_with(".seg") {
+            continue;
+        }
+        if retained.contains(&name) {
+            continue;
+        }
+        if meta.last_modified > cutoff {
+            continue;
+        }
+        store.delete(&meta.location).await?;
+        deleted_objects += 1;
+        deleted_bytes += meta.size;
+    }
+    Ok((deleted_objects, deleted_bytes))
+}
+
+async fn shard_directory_is_empty(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+) -> Result<bool> {
+    use futures::StreamExt;
+    let path = object_store::path::Path::from(prefix.trim_end_matches('/'));
+    let mut stream = store.list(Some(&path));
+    Ok(stream.next().await.is_none())
+}
+
+/// Garbage collect one shard: drop expired leases and superseded
+/// generations in the catalog, then delete the objects they referenced.
+async fn gc_shard_now(
+    store: &Arc<dyn ObjectStore>,
+    catalog: &PgCatalog,
+    prefix: &str,
+    grace: Duration,
+    keep_generations: usize,
+) -> Result<VectorIndexGcReport> {
+    let mut report = VectorIndexGcReport::default();
+    let plan = catalog.gc_shard(prefix, grace, keep_generations).await?;
+    report.commits_deleted = plan.deleted_commit_rows;
+    if plan.deleted_commit_rows == 0 && plan.removed_filenames.is_empty() {
+        return Ok(report);
+    }
+    let retained: HashSet<String> = plan.retained_filenames.into_iter().collect();
+    let (objects, bytes) = sweep_shard_objects(store, prefix, &retained, grace).await?;
+    report.objects_deleted = objects;
+    report.bytes_deleted = bytes;
+    Ok(report)
+}
+
 /// Build (or incrementally update, or rebuild) the vector index for newly
-/// committed files of a write.
+/// committed files of a write, then optionally garbage collect.
 ///
 /// Files are grouped by `(partition_desc, hash_bucket_id)`; each group is
-/// one index shard and is handed to the native builder, which derives the
-/// index location from the files' directory and performs a delta update
-/// when the shard index already exists.
-///
-/// When `all_active_files` (every currently active data file of the table,
-/// from the metadata client) is provided and the shard's config uses
-/// `rebuild_mode: "auto"`, a shard any of whose clusters has drifted past
-/// `max_delta_ratio` (cluster delta vectors / cluster base vectors) is
-/// **rebuilt** from all of its files instead of receiving another delta
-/// segment.  Fails loudly when any shard of a configured column fails.
-///
-/// `partition_files` maps a partition description to its newly written
-/// (file path, row count) pairs, as produced by the write sink.
+/// one index shard.  The current commit of every shard is resolved from the
+/// catalog ([`PgCatalog`]): without a commit the shard is built fresh, with
+/// one the new vectors are appended as delta segments, and when any cluster
+/// has drifted past `max_delta_ratio` the whole shard is rebuilt from all
+/// of its active data files.
 pub async fn auto_build_vector_index(
     configs: &[VectorIndexTableConfig],
     primary_keys: &[String],
     object_store_options: &HashMap<String, String>,
     partition_files: &HashMap<String, (Vec<String>, u64)>,
     all_active_files: Option<&[String]>,
+    catalog: &PgCatalog,
 ) -> Result<usize> {
     if configs.is_empty() || partition_files.is_empty() {
         return Ok(0);
@@ -311,9 +462,9 @@ pub async fn auto_build_vector_index(
     let mut built = 0usize;
     for config in configs {
         let vector_config = config.to_vector_index_config()?;
-        let rebuild = vector_config.rebuild_mode == "auto";
+        let auto_rebuild = vector_config.rebuild_mode == "auto";
         // Files of each shard, for a full rebuild when drift is detected.
-        let shard_all_files: HashMap<String, Vec<String>> = if rebuild {
+        let shard_all_files: HashMap<String, Vec<String>> = if auto_rebuild {
             match all_active_files {
                 Some(all) => {
                     let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -346,57 +497,124 @@ pub async fn auto_build_vector_index(
             }
         }
         for ((partition_desc, bucket), bucket_files) in shards {
-            // Decide: full rebuild (drift) or incremental delta?
             let prefix = shard_index_prefix(&bucket_files, &config.column);
-            // Rebuild only when the complete shard file list is available —
-            // rebuilding from just the new files would drop the existing
-            // index contents.
+            let resolved = match catalog.resolve(&prefix).await {
+                Ok(view) => view,
+                Err(error) => {
+                    failures.push(format!(
+                        "partition {partition_desc:?} bucket {bucket}: failed to resolve index: {error}"
+                    ));
+                    continue;
+                }
+            };
             let full_shard_files = shard_all_files.get(&prefix).cloned();
-            let should_rebuild = rebuild
+            let should_rebuild = auto_rebuild
                 && full_shard_files
                     .as_ref()
                     .is_some_and(|files| !files.is_empty())
                 && drift_exceeds_threshold(
-                    &store,
+                    catalog,
                     &prefix,
                     vector_config.max_delta_ratio,
                 )
                 .await
                 .unwrap_or(false);
-            let result = if should_rebuild {
-                let files = full_shard_files.expect("checked above");
-                info!(
-                    "Rebuilding vector index shard for column '{}' ({} files)",
-                    config.column,
-                    files.len()
-                );
-                VectorShardIndexBuilder::new(
-                    store.clone(),
-                    vector_config.clone(),
-                    files,
-                    pk_column.clone(),
-                    object_store_options.clone(),
+            let (files, base, mode) = match (resolved.as_ref(), should_rebuild) {
+                (_, true) => (
+                    full_shard_files.unwrap_or_else(|| bucket_files.clone()),
                     None,
-                )
-                .rebuild()
-                .await
-            } else {
-                VectorShardIndexBuilder::new(
-                    store.clone(),
-                    vector_config.clone(),
-                    bucket_files,
-                    pk_column.clone(),
-                    object_store_options.clone(),
+                    CommitMode::Rebuild,
+                ),
+                (Some(view), false) => {
+                    (bucket_files.clone(), Some(view.clone()), CommitMode::Delta)
+                }
+                (None, false) => (
+                    full_shard_files.unwrap_or_else(|| bucket_files.clone()),
                     None,
-                )
-                .build()
-                .await
+                    CommitMode::Rebuild,
+                ),
             };
-            match result {
-                Ok(()) => built += 1,
-                Err(error) => failures.push(format!(
-                    "partition {partition_desc:?} bucket {bucket}: {error}"
-                )),
+            let mut builder = VectorShardIndexBuilder::new(
+                store.clone(),
+                vector_config.clone(),
+                files.clone(),
+                pk_column.clone(),
+                object_store_options.clone(),
+                None,
+            );
+            if let Some(view) = &base {
+                builder = builder.with_base(to_resolved_shard(&prefix, view));
+            }
+            let mut commit_mode = mode;
+            let outcome = match builder.build().await {
+                Ok(outcome) => outcome,
+                Err(error) if commit_mode == CommitMode::Delta => {
+                    // The resolved commit points at files that no longer
+                    // exist (directory removed out-of-band, restored backup,
+                    // or a stale control-plane row).  Heal by rebuilding the
+                    // shard from its full data files instead of failing the
+                    // write.
+                    warn!(
+                        "incremental vector index build for '{prefix}' failed ({error}); \
+                         rebuilding the shard from scratch"
+                    );
+                    commit_mode = CommitMode::Rebuild;
+                    match VectorShardIndexBuilder::new(
+                        store.clone(),
+                        vector_config.clone(),
+                        files,
+                        pk_column.clone(),
+                        object_store_options.clone(),
+                        None,
+                    )
+                    .rebuild()
+                    .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            failures.push(format!(
+                                "partition {partition_desc:?} bucket {bucket}: {error}"
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                Err(error) => {
+                    failures.push(format!(
+                        "partition {partition_desc:?} bucket {bucket}: {error}"
+                    ));
+                    continue;
+                }
+            };
+            if outcome.new_segments.is_empty() {
+                continue;
+            }
+            if let Err(error) = catalog
+                .commit(
+                    &prefix,
+                    &outcome.header,
+                    &to_catalog_segments(&outcome.new_segments),
+                    commit_mode,
+                )
+                .await
+            {
+                failures.push(format!(
+                    "partition {partition_desc:?} bucket {bucket}: failed to commit index: {error}"
+                ));
+                continue;
+            }
+            built += 1;
+            if config.gc_enabled
+                && let Err(error) = gc_shard_now(
+                    &store,
+                    catalog,
+                    &prefix,
+                    Duration::from_secs(config.gc_grace_seconds),
+                    config.gc_keep_generations,
+                )
+                .await
+            {
+                warn!("vector index gc failed for '{prefix}': {error}");
             }
         }
         if !failures.is_empty() {
@@ -412,14 +630,14 @@ pub async fn auto_build_vector_index(
 
 /// Whether any cluster of the shard index at `prefix` has drifted past the
 /// configured ratio (`delta_vectors / base_vectors` per cluster).  Only
-/// meaningful when a manifest exists (returns `Ok(false)` otherwise).
+/// meaningful when a commit exists (returns `Ok(false)` otherwise).
 async fn drift_exceeds_threshold(
-    store: &Arc<dyn ObjectStore>,
+    catalog: &PgCatalog,
     prefix: &str,
     max_delta_ratio: f32,
 ) -> Result<bool> {
-    let mstore = ManifestStore::new(store.clone(), prefix.to_string());
-    let clusters: Option<Vec<ClusterStat>> = cluster_stats(&mstore)
+    let clusters = catalog
+        .cluster_stats(prefix)
         .await
         .map_err(|e| report!("failed to read vector index stats at '{prefix}': {e}"))?;
     Ok(clusters
@@ -459,6 +677,7 @@ pub async fn rebuild_vector_index(
         return Ok(0);
     };
     let store = store_for_files(first_file, &object_store_options)?;
+    let catalog = PgCatalog::from_client(client);
 
     let mut rebuilt = 0usize;
     let mut failures: Vec<String> = Vec::new();
@@ -485,7 +704,25 @@ pub async fn rebuild_vector_index(
             .rebuild()
             .await;
             match result {
-                Ok(()) => rebuilt += 1,
+                Ok(outcome) => {
+                    if outcome.new_segments.is_empty() {
+                        continue;
+                    }
+                    match catalog
+                        .commit(
+                            &prefix,
+                            &outcome.header,
+                            &to_catalog_segments(&outcome.new_segments),
+                            CommitMode::Rebuild,
+                        )
+                        .await
+                    {
+                        Ok(_) => rebuilt += 1,
+                        Err(error) => {
+                            failures.push(format!("{prefix}: commit failed: {error}"))
+                        }
+                    }
+                }
                 Err(error) => failures.push(format!("{prefix}: {error}")),
             }
         }
@@ -497,6 +734,58 @@ pub async fn rebuild_vector_index(
         ));
     }
     Ok(rebuilt)
+}
+
+/// Garbage collect the vector index files of a table.
+///
+/// Drops expired leases and superseded generations from the catalog and
+/// deletes their segment objects once they are older than the grace period,
+/// so readers that resolved an older commit keep working.  Shards whose
+/// directory is gone (dropped partitions) have their control-plane rows
+/// removed as well.
+pub async fn gc_vector_index(
+    client: &lakesoul_metadata::MetaDataClient,
+    table_name: &str,
+    namespace: &str,
+    object_store_options: &HashMap<String, String>,
+    options: &VectorIndexGcOptions,
+) -> Result<VectorIndexGcReport> {
+    let Some(table_info) = client
+        .get_table_info_by_table_name(table_name, namespace)
+        .await?
+    else {
+        bail!("table '{namespace}.{table_name}' not found");
+    };
+    let all_active_files = client
+        .get_data_files_by_table_name(table_name, namespace)
+        .await?;
+    let Some(first_file) = all_active_files.first() else {
+        return Ok(VectorIndexGcReport::default());
+    };
+    let store = store_for_files(first_file, object_store_options)?;
+    let catalog = PgCatalog::from_client(client);
+    let grace = Duration::from_secs(options.grace_seconds);
+
+    let table_prefix = normalize_index_prefix(&table_info.table_path);
+    let shards = catalog.list_shards_under(&table_prefix).await?;
+    let mut report = VectorIndexGcReport::default();
+    for prefix in shards {
+        report.shards_scanned += 1;
+        let plan =
+            gc_shard_now(&store, &catalog, &prefix, grace, options.keep_generations)
+                .await?;
+        report.commits_deleted += plan.commits_deleted;
+        report.objects_deleted += plan.objects_deleted;
+        report.bytes_deleted += plan.bytes_deleted;
+        if options.drop_orphan_shards {
+            let has_commit = catalog.resolve(&prefix).await?.is_some();
+            if !has_commit && shard_directory_is_empty(&store, &prefix).await? {
+                catalog.delete_shard(&prefix).await?;
+                report.orphan_shards_deleted += 1;
+            }
+        }
+    }
+    Ok(report)
 }
 
 /// Build an object store for the vector index from the table's files.
@@ -546,6 +835,9 @@ mod tests {
             use_faster_config: true,
             rebuild_mode: rebuild_mode.to_string(),
             max_delta_ratio,
+            gc_enabled: true,
+            gc_grace_seconds: 3600,
+            gc_keep_generations: 1,
         }
     }
 

@@ -51,10 +51,10 @@ use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::vector::builder::{VectorShardIndexBuilder, shard_index_prefix};
 use lakesoul_io::writer::create_writer_with_io_config;
-use lakesoul_vector::rabitq::manifest::resolve_view;
+use lakesoul_metadata::vector_index::{CommitMode, PgCatalog};
 use lakesoul_vector::{
-    IvfRabitqIndex, ManifestStore, Metric, RotatorType, SearchParams, VectorIndexConfig,
-    cluster_stats, index_stats,
+    IndexHeader, IndexStore, IvfRabitqIndex, Metric, RotatorType, SearchParams,
+    SegmentEntry, VectorIndexConfig,
 };
 use object_store::local::LocalFileSystem;
 use rand::SeedableRng;
@@ -974,9 +974,79 @@ fn vector_index_config(args: &Args, dim: usize) -> VectorIndexConfig {
     }
 }
 
-fn manifest_store(files: &[String]) -> ManifestStore {
-    let prefix = shard_index_prefix(files, VEC_COLUMN);
-    ManifestStore::new(Arc::new(LocalFileSystem::new()), prefix)
+async fn bench_catalog() -> Result<PgCatalog, String> {
+    lakesoul_metadata::MetaDataClient::from_env()
+        .await
+        .map(|client| PgCatalog::from_client(&client))
+        .map_err(|e| format!("metadata client: {e}"))
+}
+
+fn catalog_segments(
+    segments: &[lakesoul_metadata::vector_index::IndexSegmentEntry],
+) -> Vec<SegmentEntry> {
+    segments
+        .iter()
+        .map(|segment| SegmentEntry {
+            cluster_id: segment.cluster_id,
+            segment_version: segment.segment_version,
+            segment_filename: segment.filename.clone(),
+            num_vectors: segment.num_vectors,
+            file_size: segment.file_size,
+        })
+        .collect()
+}
+
+fn vector_segments(
+    segments: &[SegmentEntry],
+) -> Vec<lakesoul_metadata::vector_index::IndexSegmentEntry> {
+    segments
+        .iter()
+        .map(
+            |segment| lakesoul_metadata::vector_index::IndexSegmentEntry {
+                cluster_id: segment.cluster_id,
+                segment_version: segment.segment_version,
+                filename: segment.segment_filename.clone(),
+                num_vectors: segment.num_vectors,
+                file_size: segment.file_size,
+            },
+        )
+        .collect()
+}
+
+async fn commit_outcome(
+    catalog: &PgCatalog,
+    outcome: &lakesoul_io::vector::builder::ShardBuildOutcome,
+    mode: CommitMode,
+) -> Result<(), String> {
+    if outcome.new_segments.is_empty() {
+        return Ok(());
+    }
+    catalog
+        .commit(
+            &outcome.index_prefix,
+            &outcome.header,
+            &vector_segments(&outcome.new_segments),
+            mode,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("index commit: {e}"))
+}
+
+async fn load_index(catalog: &PgCatalog, prefix: &str) -> Result<IvfRabitqIndex, String> {
+    let view = catalog
+        .resolve(prefix)
+        .await
+        .map_err(|e| format!("resolve index: {e}"))?
+        .ok_or_else(|| format!("no index at {prefix}"))?;
+    let header = IndexHeader::deserialize(&view.header)
+        .map_err(|e| format!("index header: {e}"))?;
+    let segments = catalog_segments(&view.segments);
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
+    let istore = IndexStore::new(store, prefix.to_string());
+    IvfRabitqIndex::load_from_segments(&istore, &header, &segments)
+        .await
+        .map_err(|e| format!("load index: {e}"))
 }
 
 /// Every vector-index shard prefix for `files` (indices are stored per
@@ -1009,9 +1079,9 @@ async fn collect_all_shard_stats(files: &[String]) -> Result<Value, String> {
     let mut delta_vectors = 0usize;
     let mut max_cluster_delta_ratio = 0.0f32;
     let mut violating_clusters = 0usize;
+    let catalog = bench_catalog().await?;
     for prefix in all_shard_prefixes(files, VEC_COLUMN) {
-        let mstore = ManifestStore::new(Arc::new(LocalFileSystem::new()), prefix);
-        let stats = collect_round_stats(&mstore).await?;
+        let stats = collect_round_stats(&catalog, &prefix).await?;
         shards += 1;
         generation = generation.max(stats.generation);
         base_vectors += stats.base_vectors;
@@ -1153,19 +1223,23 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         Some(format!("file://{}", work_dir.display())),
     );
     let t = Instant::now();
-    builder
+    let outcome = builder
         .build()
         .await
         .map_err(|e| format!("index build failed: {e:?}"))?;
+    let catalog = bench_catalog().await?;
+    commit_outcome(&catalog, &outcome, CommitMode::Rebuild).await?;
     let build_ms = t.elapsed().as_secs_f64() * 1000.0;
     let rss_after = rss_mb();
 
     // 3. Collect index stats.
-    let mstore = manifest_store(&files);
-    let stats = index_stats(&mstore)
+    let build_prefix = shard_index_prefix(&files, VEC_COLUMN);
+    let view = catalog
+        .resolve(&build_prefix)
         .await
-        .map_err(|e| format!("index_stats: {e}"))?;
-    let clusters = cluster_stats(&mstore)
+        .map_err(|e| format!("resolve index: {e}"))?;
+    let clusters = catalog
+        .cluster_stats(&build_prefix)
         .await
         .map_err(|e| format!("cluster_stats: {e}"))?
         .unwrap_or_default();
@@ -1194,11 +1268,11 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "rss_after_mb": rss_after,
         "peak_rss_mb": peak_rss_mb(),
         "index_size_bytes": index_bytes,
-        "index_stats": stats.as_ref().map(|s| json!({
-            "base_segments": s.base_segments,
-            "delta_segments": s.delta_segments,
-            "base_vectors": s.base_vectors,
-            "delta_vectors": s.delta_vectors,
+        "index_stats": view.map(|view| json!({
+            "base_segments": view.segments.iter().filter(|s| s.segment_version == 0).count(),
+            "delta_segments": view.segments.iter().filter(|s| s.segment_version > 0).count(),
+            "base_vectors": clusters.iter().map(|c| c.base_vectors).sum::<usize>(),
+            "delta_vectors": clusters.iter().map(|c| c.delta_vectors).sum::<usize>(),
         })),
         "clusters": clusters.len(),
         "max_cluster_delta_ratio": max_cluster_ratio,
@@ -1220,8 +1294,13 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         ));
     }
 
-    let mstore = manifest_store(&files);
-    let has_index = lakesoul_vector::rabitq::manifest::manifest_exists(&mstore).await;
+    let catalog = bench_catalog().await?;
+    let search_prefix = shard_index_prefix(&files, VEC_COLUMN);
+    let has_index = catalog
+        .resolve(&search_prefix)
+        .await
+        .map_err(|e| format!("resolve index: {e}"))?
+        .is_some();
     if !has_index {
         if args.reuse {
             return Err(format!(
@@ -1230,7 +1309,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             ));
         }
         println!("no index found; building fresh ...");
-        VectorShardIndexBuilder::new(
+        let outcome = VectorShardIndexBuilder::new(
             Arc::new(LocalFileSystem::new()),
             vector_index_config(args, dim),
             files.clone(),
@@ -1241,13 +1320,12 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         .build()
         .await
         .map_err(|e| format!("index build failed: {e:?}"))?;
+        commit_outcome(&catalog, &outcome, CommitMode::Rebuild).await?;
     }
 
     // Load the index and measure load time.
     let t = Instant::now();
-    let index = IvfRabitqIndex::load_from_v4(&mstore)
-        .await
-        .map_err(|e| format!("load index: {e}"))?;
+    let index = load_index(&catalog, &search_prefix).await?;
     let load_ms = t.elapsed().as_secs_f64() * 1000.0;
     println!(
         "loaded index ({} vectors, {} clusters) in {:.1}ms",
@@ -1351,6 +1429,9 @@ fn table_config(
         use_faster_config: true,
         rebuild_mode: rebuild_mode.to_string(),
         max_delta_ratio,
+        gc_enabled: true,
+        gc_grace_seconds: 3600,
+        gc_keep_generations: 1,
     }
 }
 
@@ -1382,32 +1463,52 @@ impl RoundStats {
     }
 }
 
-async fn collect_round_stats(mstore: &ManifestStore) -> Result<RoundStats, String> {
-    let stats = index_stats(mstore)
-        .await
-        .map_err(|e| format!("index_stats: {e}"))?
-        .unwrap_or_default();
-    let clusters = cluster_stats(mstore)
+async fn collect_round_stats(
+    catalog: &PgCatalog,
+    prefix: &str,
+) -> Result<RoundStats, String> {
+    let clusters = catalog
+        .cluster_stats(prefix)
         .await
         .map_err(|e| format!("cluster_stats: {e}"))?
         .unwrap_or_default();
+    let base_vectors = clusters.iter().map(|c| c.base_vectors).sum();
+    let delta_vectors = clusters.iter().map(|c| c.delta_vectors).sum();
     let max_cluster_delta_ratio = clusters
         .iter()
         .map(|c| c.delta_ratio())
         .fold(0.0f32, f32::max);
     let violating_clusters = clusters.iter().filter(|c| c.delta_ratio() > 1.0).count();
-    let generation = resolve_view(mstore)
+    let view = catalog
+        .resolve(prefix)
         .await
-        .map_err(|e| format!("resolve_view: {e}"))?
-        .map(|v| v.generation)
+        .map_err(|e| format!("resolve index: {e}"))?;
+    let generation = view.as_ref().map(|v| v.generation).unwrap_or(0);
+    let delta_segments = view
+        .as_ref()
+        .map(|v| {
+            v.segments
+                .iter()
+                .filter(|segment| segment.segment_version > 0)
+                .count()
+        })
         .unwrap_or(0);
+    let shard_delta_ratio = if base_vectors == 0 {
+        if delta_vectors == 0 {
+            0.0
+        } else {
+            f32::INFINITY
+        }
+    } else {
+        delta_vectors as f32 / base_vectors as f32
+    };
     Ok(RoundStats {
         generation,
         clusters: clusters.len(),
-        base_vectors: stats.base_vectors,
-        delta_vectors: stats.delta_vectors,
-        delta_segments: stats.delta_segments,
-        shard_delta_ratio: stats.delta_ratio(),
+        base_vectors,
+        delta_vectors,
+        delta_segments,
+        shard_delta_ratio,
         max_cluster_delta_ratio,
         violating_clusters,
     })
@@ -1638,6 +1739,7 @@ async fn run_stream_inner(
         &HashMap::new(),
         &base_files,
         Some(all_files.as_slice()),
+        &bench_catalog().await?,
     )
     .await
     .map_err(|e| format!("base index build failed: {e}"))?;
@@ -1646,7 +1748,8 @@ async fn run_stream_inner(
     // 2. Update/query samplers over the shared drift definition.
     let (mut sampler, mut query_sampler) = make_samplers(args, dataset);
 
-    let mstore = manifest_store(&all_files);
+    let catalog = bench_catalog().await?;
+    let stream_prefix = shard_index_prefix(&all_files, VEC_COLUMN);
     let mut vectors = dataset.base.data.clone();
     let mut next_id = dataset.base.n as u64;
 
@@ -1688,7 +1791,9 @@ async fn run_stream_inner(
                 }
             }
         };
-        let gen_before = collect_round_stats(&mstore).await?.generation;
+        let gen_before = collect_round_stats(&catalog, &stream_prefix)
+            .await?
+            .generation;
         let mut round_files: HashMap<String, (Vec<String>, u64)> = HashMap::new();
         round_files.insert("-5".to_string(), (new_files, args.per_round as u64));
         let t = Instant::now();
@@ -1698,6 +1803,7 @@ async fn run_stream_inner(
             &HashMap::new(),
             &round_files,
             Some(all_files.as_slice()),
+            &catalog,
         )
         .await
         .map_err(|e| format!("round {round} index update failed: {e}"))?;
@@ -1705,7 +1811,7 @@ async fn run_stream_inner(
         total_data_ms += data_write_ms;
         total_index_ms += index_update_ms;
 
-        let stats = collect_round_stats(&mstore).await?;
+        let stats = collect_round_stats(&catalog, &stream_prefix).await?;
         let rebuilt = stats.generation > gen_before;
         if rebuilt {
             rebuilds += 1;
@@ -1728,9 +1834,7 @@ async fn run_stream_inner(
             };
             let gt = brute_force_gt(&vectors, dim, &queries, args.top_k, args.threads);
             let t = Instant::now();
-            let index = IvfRabitqIndex::load_from_v4(&mstore)
-                .await
-                .map_err(|e| format!("load index: {e}"))?;
+            let index = load_index(&catalog, &stream_prefix).await?;
             let load_ms = t.elapsed().as_secs_f64() * 1000.0;
             let m = measure_index(&index, &queries, &gt, args.top_k, args.nprobe);
             min_recall = min_recall.min(m.recall_at_k);
@@ -1953,6 +2057,9 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         use_faster_config: true,
         rebuild_mode: "auto".to_string(),
         max_delta_ratio: args.max_delta_ratio,
+        gc_enabled: true,
+        gc_grace_seconds: 3600,
+        gc_keep_generations: 1,
     };
     let property = vector_index_columns_to_json(std::slice::from_ref(&config));
     let create_sql = format!(

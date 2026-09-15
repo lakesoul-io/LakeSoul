@@ -727,6 +727,7 @@ impl LakeSoulTableProvider {
             self.primary_keys.clone(),
             self.io_config.object_store_options().clone(),
             request,
+            lakesoul_metadata::vector_index::PgCatalog::from_client(&self.client),
         )?;
         Ok(Some(Arc::new(exec)))
     }
