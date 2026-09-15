@@ -5,9 +5,9 @@ use super::IvfRabitqIndex;
 use super::assign_batch_to_centroids;
 use super::cluster::ClusterData;
 use crate::rabitq::kmeans::KMeansResult;
-use crate::rabitq::manifest::ManifestStore;
 use crate::rabitq::quantizer::{QuantizedVector, RabitqConfig};
 use crate::rabitq::rotation::{DynamicRotator, RotatorType};
+use crate::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use crate::rabitq::{Metric, RabitqError};
 use rand::prelude::*;
 use rand::rngs::StdRng;
@@ -30,13 +30,9 @@ enum BuilderState {
     },
     Loaded {
         index: IvfRabitqIndex,
-        /// Original segment metadata from manifest (segment file names,
-        /// versions, sizes).  Used during incremental flush to locate
-        /// and replace old segments.
-        cluster_map: std::collections::BTreeMap<
-            u32,
-            crate::rabitq::manifest::ClusterManifestEntry,
-        >,
+        /// Segment files of the resolved view, grouped by cluster; used
+        /// to pick the next delta version for each dirty cluster.
+        cluster_map: crate::rabitq::segment::SegmentMap,
     },
 }
 
@@ -96,99 +92,68 @@ impl IvfRabitqBuilder {
         }
     }
 
-    /// Load from an object store, or initialise a fresh builder if no
-    /// manifest exists.
+    /// Load an existing index from its resolved header and segment list.
     ///
-    /// - **Fresh**: no manifest → `insert_batch` reservoir-samples; `build`
-    ///   runs k-means + streaming quantisation.
-    /// - **Loaded**: manifest exists → reads centroids only from segments;
-    ///   `insert_batch` appends vectors directly; `build` flushes pending.
+    /// Only the base segment (version 0) of every cluster is read, and only
+    /// its centroid; data segments are merged by the search path.  In this
+    /// mode `insert_batch` appends vectors directly and `flush` writes delta
+    /// segments for the dirty clusters.
     pub async fn load(
-        mstore: &ManifestStore,
-        dim: usize,
-        nlist: usize,
-        total_bits: usize,
-        metric: Metric,
-        rotator_type: RotatorType,
-        seed: u64,
-        use_faster_config: bool,
+        istore: &IndexStore,
+        header: &IndexHeader,
+        segments: &[SegmentEntry],
     ) -> Result<Self, RabitqError> {
-        if crate::rabitq::manifest::manifest_exists(mstore).await {
-            // Resolve the current view (LATEST hint + unique commits),
-            // falling back to the legacy manifest.bin when nothing newer
-            // exists.
-            let (header, cluster_map) =
-                match crate::rabitq::manifest::resolve_view(mstore).await? {
-                    Some(view) => (view.header, view.cluster_map),
-                    None => crate::rabitq::manifest::load_manifest(mstore).await?,
-                };
-            let mut clusters = Vec::with_capacity(cluster_map.len());
-            for entry in cluster_map.values() {
-                // Read centroid from the base segment (version 0).
-                let base = entry.base_segment().ok_or_else(|| {
-                    RabitqError::InvalidPersistence("cluster has no base segment")
-                })?;
-                let (_, centroid) = crate::rabitq::manifest::read_segment_centroid(
-                    mstore,
-                    &base.segment_filename,
-                    header.padded_dim,
-                )
-                .await?;
-                clusters.push(ClusterData {
-                    centroid,
-                    ids: Vec::new(),
-                    batch_data: Vec::new(),
-                    ex_codes_packed: Vec::new(),
-                    f_add_ex: Vec::new(),
-                    f_rescale_ex: Vec::new(),
-                    delta: Vec::new(),
-                    vl: Vec::new(),
-                    num_vectors: 0,
-                    padded_dim: header.padded_dim,
-                    ex_bits: header.ex_bits,
-                    pending_ids: Vec::new(),
-                    pending_vectors: Vec::new(),
-                });
-            }
-            let rotator = DynamicRotator::deserialize(
-                header.dim,
+        let cluster_map = crate::rabitq::segment::group_by_cluster(segments);
+        let mut clusters = Vec::with_capacity(cluster_map.len());
+        for entries in cluster_map.values() {
+            // Cluster ids are dense (0..nlist) and the map is ordered, so
+            // the vector position is the cluster id.
+            let base = entries
+                .iter()
+                .find(|segment| segment.segment_version == 0)
+                .ok_or(RabitqError::InvalidPersistence(
+                    "cluster has no base segment",
+                ))?;
+            let (_, centroid) = crate::rabitq::segment::read_segment_centroid(
+                istore,
+                &base.segment_filename,
                 header.padded_dim,
-                header.rotator_type,
-                &header.rotator_data,
-            )?;
-            let ip_func = crate::rabitq::simd::select_excode_ipfunc(header.ex_bits);
-            let index = IvfRabitqIndex {
-                dim: header.dim,
+            )
+            .await?;
+            clusters.push(ClusterData {
+                centroid,
+                ids: Vec::new(),
+                batch_data: Vec::new(),
+                ex_codes_packed: Vec::new(),
+                f_add_ex: Vec::new(),
+                f_rescale_ex: Vec::new(),
+                delta: Vec::new(),
+                vl: Vec::new(),
+                num_vectors: 0,
                 padded_dim: header.padded_dim,
-                metric: header.metric,
-                rotator,
-                clusters,
                 ex_bits: header.ex_bits,
-                ip_func,
-            };
-            return Ok(Self {
-                state: BuilderState::Loaded { index, cluster_map },
+                pending_ids: Vec::new(),
+                pending_vectors: Vec::new(),
             });
         }
-
-        let rotator = DynamicRotator::new(dim, rotator_type, seed);
-        let reservoir_capacity = nlist * 64;
+        let rotator = DynamicRotator::deserialize(
+            header.dim,
+            header.padded_dim,
+            header.rotator_type,
+            &header.rotator_data,
+        )?;
+        let ip_func = crate::rabitq::simd::select_excode_ipfunc(header.ex_bits);
+        let index = IvfRabitqIndex {
+            dim: header.dim,
+            padded_dim: header.padded_dim,
+            metric: header.metric,
+            rotator,
+            clusters,
+            ex_bits: header.ex_bits,
+            ip_func,
+        };
         Ok(Self {
-            state: BuilderState::Fresh {
-                dim,
-                nlist,
-                total_bits,
-                metric,
-                rotator_type,
-                seed,
-                use_faster_config,
-                padded_dim: rotator.padded_dim(),
-                ex_bits: total_bits.saturating_sub(1),
-                reservoir: Vec::with_capacity(reservoir_capacity * dim),
-                reservoir_capacity,
-                reservoir_count: 0,
-                reservoir_seen: 0,
-            },
+            state: BuilderState::Loaded { index, cluster_map },
         })
     }
 
@@ -466,35 +431,28 @@ impl IvfRabitqBuilder {
         }
     }
 
-    /// Flush the (built or loaded) index to object store.
+    /// Write delta segments for the dirty clusters.
     ///
-    /// - **Fresh mode**: error — call `build()` first.
-    /// - **Loaded mode**: flushes pending, then for each dirty cluster writes a
-    ///   *delta* segment containing only the new vectors, and appends it to the
-    ///   cluster's segment list in the manifest.
-    ///
-    ///   No existing segment files are read, modified, or deleted — object
-    ///   storage files are immutable.  Clusters with no new vectors are left
-    ///   completely untouched.  After flush the in-memory index is reset to
-    ///   centroid-only state, ready for the next round of inserts.
+    /// Returns the index header and the newly written segments; the caller
+    /// publishes them through the metadata catalog.  No existing segment
+    /// file is read, modified or deleted.  Clusters with no new vectors are
+    /// left untouched, and the in-memory index is reset to centroid-only
+    /// state afterwards.
     pub async fn flush(
         self,
-        mstore: &ManifestStore,
-    ) -> Result<IvfRabitqIndex, RabitqError> {
+        istore: &IndexStore,
+    ) -> Result<(IndexHeader, Vec<SegmentEntry>), RabitqError> {
         match self.state {
             BuilderState::Loaded {
                 mut index,
-                mut cluster_map,
-                ..
+                cluster_map,
             } => {
-                use crate::rabitq::manifest::{
-                    self, ClusterSegmentData, ManifestHeader, SegmentManifestEntry,
+                use crate::rabitq::segment::{
+                    ClusterSegmentData, segment_filename, write_segment,
                 };
 
-                // 1. Flush all pending vectors (including partial batches) into batch_data.
                 index.flush_all_pending();
 
-                // 2. Collect dirty clusters.
                 let dirty_cids: Vec<u32> = index
                     .clusters
                     .iter()
@@ -503,9 +461,10 @@ impl IvfRabitqBuilder {
                     .map(|(i, _)| i as u32)
                     .collect();
 
+                let header = index.index_header();
                 if dirty_cids.is_empty() {
-                    println!("Flush: no dirty clusters, manifest unchanged.");
-                    return Ok(index);
+                    println!("Flush: no dirty clusters, nothing to commit.");
+                    return Ok((header, Vec::new()));
                 }
 
                 println!(
@@ -515,20 +474,23 @@ impl IvfRabitqBuilder {
                 );
 
                 let mut total_new: usize = 0;
+                let mut new_segments = Vec::with_capacity(dirty_cids.len());
 
                 for &cid_u32 in &dirty_cids {
                     let cid = cid_u32 as usize;
                     let cluster = &index.clusters[cid];
-                    let entry = cluster_map.get_mut(&cid_u32).ok_or_else(|| {
-                        RabitqError::InvalidPersistence("cluster missing from manifest")
-                    })?;
 
+                    let latest_version = cluster_map
+                        .get(&cid_u32)
+                        .and_then(|segments| {
+                            segments.iter().map(|s| s.segment_version).max()
+                        })
+                        .unwrap_or(0);
+                    let new_version = latest_version + 1;
                     let n_new = cluster.num_vectors;
                     total_new += n_new;
 
-                    // -- write delta segment with ONLY the new vectors --
-                    let new_version = entry.latest_version() + 1;
-                    let fname = manifest::segment_filename(cid_u32, new_version);
+                    let fname = segment_filename(cid_u32, new_version);
                     let seg_data = ClusterSegmentData::from_cluster_data(
                         cid_u32,
                         cluster.centroid.clone(),
@@ -543,37 +505,18 @@ impl IvfRabitqBuilder {
                         cluster.vl.clone(),
                     );
                     let file_size =
-                        manifest::write_segment(mstore, &fname, &seg_data, new_version)
-                            .await?;
+                        write_segment(istore, &fname, &seg_data, new_version).await?;
 
-                    // -- append delta to cluster's segment list (no deletion) --
-                    entry.segments.push(SegmentManifestEntry {
-                        segment_filename: fname,
+                    new_segments.push(SegmentEntry {
+                        cluster_id: cid_u32,
                         segment_version: new_version,
+                        segment_filename: fname,
                         num_vectors: n_new as u32,
                         file_size,
                     });
                 }
 
-                // 3. Commit the delta via the CAS-free protocol: publish an
-                //    immutable uniquely-named manifest and advance the
-                //    LATEST hint; concurrent writers are reconciled by
-                //    union-merging the derived view.  cluster_map carries
-                //    the appended delta segments (deduped by filename when
-                //    merged against the freshest view).
-                let header = ManifestHeader {
-                    generation: 0, // filled from the resolved view by commit_delta
-                    dim: index.dim,
-                    padded_dim: index.padded_dim,
-                    metric: index.metric,
-                    rotator_type: index.rotator.rotator_type(),
-                    rotator_data: index.rotator.serialize(),
-                    ex_bits: index.ex_bits,
-                    total_bits: index.ex_bits + 1,
-                };
-                manifest::commit_delta(mstore, &header, &cluster_map).await?;
-
-                // 4. Reset clusters to centroid-only state for next insert cycle.
+                // Reset clusters to centroid-only state for the next cycle.
                 for &cid_u32 in &dirty_cids {
                     let c = &mut index.clusters[cid_u32 as usize];
                     c.ids.clear();
@@ -584,22 +527,14 @@ impl IvfRabitqBuilder {
                     c.delta.clear();
                     c.vl.clear();
                     c.num_vectors = 0;
-                    // pending is already empty after flush_all_pending
                 }
 
-                // If we stored the updated total we could update original_total,
-                // but self is consumed — next load() will re-read the manifest.
-
                 println!(
-                    "Flush complete: {} delta segments ({} new vectors), {} segments total across all clusters",
-                    dirty_cids.len(),
-                    total_new,
-                    cluster_map
-                        .values()
-                        .map(|e| e.segments.len())
-                        .sum::<usize>()
+                    "Flush complete: {} delta segments ({} new vectors)",
+                    new_segments.len(),
+                    total_new
                 );
-                Ok(index)
+                Ok((header, new_segments))
             }
             BuilderState::Fresh { .. } => Err(RabitqError::InvalidConfig(
                 "call build() before flush() for fresh builder",

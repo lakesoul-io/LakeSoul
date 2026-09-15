@@ -14,7 +14,6 @@ pub use config::VectorIndexConfig;
 
 // Re-export key rabitq types for downstream crates
 pub use rabitq::{
-    ClusterStat, IdAndVecBatch, IndexStats, IvfRabitqBuilder, IvfRabitqIndex,
-    ManifestStore, Metric, RabitqConfig, RabitqError, RotatorType, SearchParams,
-    SearchResult, cluster_stats, index_stats, rebuild_v4,
+    IdAndVecBatch, IndexHeader, IndexStore, IvfRabitqBuilder, IvfRabitqIndex, Metric,
+    RabitqConfig, RabitqError, RotatorType, SearchParams, SearchResult, SegmentEntry,
 };

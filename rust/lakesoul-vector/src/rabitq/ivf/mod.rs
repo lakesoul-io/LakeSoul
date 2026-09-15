@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-use crate::rabitq::manifest::ManifestStore;
+use crate::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use crc32fast::Hasher;
 
 use rand::prelude::*;
@@ -1735,31 +1735,37 @@ impl IvfRabitqIndex {
         }
     }
 
-    /// Save the index to object store (initial build: one base segment per cluster).
-    pub async fn save_to_v4(&self, mstore: &ManifestStore) -> Result<(), RabitqError> {
-        use crate::rabitq::manifest::{
-            self, ClusterManifestEntry, ClusterSegmentData, ManifestHeader,
-            SegmentManifestEntry,
-        };
-
-        let rotator_type = self.rotator.rotator_type();
-        let header = ManifestHeader {
-            generation: 1,
+    /// Serialized header describing this index.
+    pub fn index_header(&self) -> IndexHeader {
+        IndexHeader {
             dim: self.dim,
             padded_dim: self.padded_dim,
             metric: self.metric,
-            rotator_type,
+            rotator_type: self.rotator.rotator_type(),
             rotator_data: self.rotator.serialize(),
             ex_bits: self.ex_bits,
             total_bits: self.ex_bits + 1,
-        };
-        let mut cluster_map: std::collections::BTreeMap<u32, ClusterManifestEntry> =
-            std::collections::BTreeMap::new();
+        }
+    }
 
+    /// Write the index as one base segment (version 0) per cluster.
+    ///
+    /// Returns the header and the segment entries; the caller publishes
+    /// them through the metadata catalog.
+    pub async fn write_base_segments(
+        &self,
+        istore: &IndexStore,
+    ) -> Result<(IndexHeader, Vec<SegmentEntry>), RabitqError> {
+        use crate::rabitq::segment::{
+            ClusterSegmentData, segment_filename, write_segment,
+        };
+
+        let header = self.index_header();
+        let mut entries = Vec::with_capacity(self.clusters.len());
         for (i, cluster) in self.clusters.iter().enumerate() {
             let cid = i as u32;
             let version = 0u32;
-            let fname = manifest::segment_filename(cid, version);
+            let fname = segment_filename(cid, version);
             let seg_data = ClusterSegmentData::from_cluster_data(
                 cid,
                 cluster.centroid.clone(),
@@ -1773,138 +1779,62 @@ impl IvfRabitqIndex {
                 cluster.delta.clone(),
                 cluster.vl.clone(),
             );
-            let file_size =
-                manifest::write_segment(mstore, &fname, &seg_data, version).await?;
-            cluster_map.insert(
-                cid,
-                ClusterManifestEntry {
-                    cluster_id: cid,
-                    segments: vec![SegmentManifestEntry {
-                        segment_filename: fname,
-                        segment_version: version,
-                        num_vectors: cluster.num_vectors as u32,
-                        file_size,
-                    }],
-                },
-            );
+            let file_size = write_segment(istore, &fname, &seg_data, version).await?;
+            entries.push(SegmentEntry {
+                cluster_id: cid,
+                segment_version: version,
+                segment_filename: fname,
+                num_vectors: cluster.num_vectors as u32,
+                file_size,
+            });
         }
-        // A fresh build replaces everything: publish as a new-generation
-        // commit at base key (0, 0) so concurrent fresh builds conflict
-        // instead of duplicating segments.
-        manifest::commit_rebuild(mstore, &header, &cluster_map, (0, 0)).await?;
-        println!(
-            "Saved V4 index: {} clusters, {} base segments",
-            self.clusters.len(),
-            cluster_map.len()
-        );
-        Ok(())
+        Ok((header, entries))
     }
 
-    /// Load index from object store (async, full segments for search).
+    /// Load the index for an explicit segment list.
     ///
-    /// Reads the manifest and then loads **all** segment files (base + all
-    /// deltas) for every cluster, merging them into a single `ClusterData`
-    /// in memory.
-    pub async fn load_from_v4(mstore: &ManifestStore) -> Result<Self, RabitqError> {
-        let _prof = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
-        let _t0 = std::time::Instant::now();
-        // Resolve the current view (LATEST hint + unique commits), fall
-        // back to the legacy manifest.bin when nothing newer exists.
-        let view = crate::rabitq::manifest::resolve_view(mstore).await?;
-        let resolve = _t0.elapsed();
-        match view {
-            Some(view) => {
-                let index = Self::load_from_view(mstore, &view).await?;
-                if _prof {
-                    eprintln!(
-                        "load_from_v4: view=g{}/v{} resolve={:?} (load timing in load_from_view)",
-                        view.generation, view.version, resolve
-                    );
-                }
-                Ok(index)
-            }
-            None => {
-                let (header, cluster_map) =
-                    crate::rabitq::manifest::load_manifest(mstore).await?;
-                let _t_load = std::time::Instant::now();
-                let (clusters, n_segments) =
-                    Self::load_clusters(mstore, &header, cluster_map.values()).await?;
-                if _prof {
-                    eprintln!(
-                        "load_from_v4 (legacy): resolve={:?} load_clusters={:?} clusters={} segments={}",
-                        resolve,
-                        _t_load.elapsed(),
-                        clusters.len(),
-                        n_segments
-                    );
-                }
-                Self::assemble(&header, clusters)
-            }
-        }
-    }
-
-    /// Load the index for an already-resolved manifest view.
-    ///
-    /// Unlike [`Self::load_from_v4`], this does not re-resolve the view, so
-    /// callers that validated a `(generation, version)` key (e.g. an index
-    /// cache) load exactly the state they observed.
-    pub async fn load_from_view(
-        mstore: &ManifestStore,
-        view: &crate::rabitq::manifest::ResolvedView,
+    /// `header` and `segments` come from the caller's resolved catalog
+    /// view; every listed segment must exist.
+    pub async fn load_from_segments(
+        istore: &IndexStore,
+        header: &IndexHeader,
+        segments: &[SegmentEntry],
     ) -> Result<Self, RabitqError> {
-        let _prof = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
-        let _t_total = std::time::Instant::now();
-        let _t0 = std::time::Instant::now();
-        let (clusters, n_segments) =
-            Self::load_clusters(mstore, &view.header, view.cluster_map.values()).await?;
-        if _prof {
-            eprintln!(
-                "load_from_view: g{}/v{} load_clusters={:?} total={:?} clusters={} segments={}",
-                view.generation,
-                view.version,
-                _t0.elapsed(),
-                _t_total.elapsed(),
-                clusters.len(),
-                n_segments
-            );
-        }
-        Self::assemble(&view.header, clusters)
+        let cluster_map = crate::rabitq::segment::group_by_cluster(segments);
+        let (clusters, _segments) =
+            Self::load_clusters(istore, header, &cluster_map).await?;
+        Self::assemble(header, clusters)
     }
 
     /// Read and merge every cluster's segments (base + deltas) concurrently.
-    async fn load_clusters<'a, I>(
-        mstore: &ManifestStore,
-        header: &crate::rabitq::manifest::ManifestHeader,
-        entries: I,
-    ) -> Result<(Vec<ClusterData>, usize), RabitqError>
-    where
-        I: Iterator<Item = &'a crate::rabitq::manifest::ClusterManifestEntry>,
-    {
-        let mut cluster_map: Vec<&crate::rabitq::manifest::ClusterManifestEntry> =
-            entries.collect();
-        cluster_map.sort_by_key(|e| e.cluster_id);
-        let num_segments: usize = cluster_map.iter().map(|e| e.segments.len()).sum();
+    async fn load_clusters(
+        istore: &IndexStore,
+        header: &IndexHeader,
+        cluster_map: &crate::rabitq::segment::SegmentMap,
+    ) -> Result<(Vec<ClusterData>, usize), RabitqError> {
+        let num_segments: usize =
+            cluster_map.values().map(|segments| segments.len()).sum();
         use futures::{StreamExt, TryStreamExt};
-        let clusters: Vec<ClusterData> = futures::stream::iter(cluster_map)
-            .map(|entry| async move {
-                let mut segments = Vec::with_capacity(entry.segments.len());
-                for seg_entry in &entry.segments {
-                    segments.push(
-                        crate::rabitq::manifest::read_segment_full(
-                            mstore,
-                            &seg_entry.segment_filename,
+        let clusters: Vec<ClusterData> = futures::stream::iter(cluster_map.values())
+            .map(|segments| async move {
+                let mut datas = Vec::with_capacity(segments.len());
+                for entry in segments {
+                    datas.push(
+                        crate::rabitq::segment::read_segment_full(
+                            istore,
+                            &entry.segment_filename,
                         )
                         .await?,
                     );
                 }
-                let cd = if segments.is_empty() {
+                let cd = if datas.is_empty() {
                     ClusterData::new(
                         vec![0.0f32; header.padded_dim],
                         header.padded_dim,
                         header.ex_bits,
                     )
                 } else {
-                    ClusterData::merge_segments(segments)?
+                    ClusterData::merge_segments(datas)?
                 };
                 Ok::<ClusterData, RabitqError>(cd)
             })
@@ -1915,7 +1845,7 @@ impl IvfRabitqIndex {
     }
 
     fn assemble(
-        header: &crate::rabitq::manifest::ManifestHeader,
+        header: &IndexHeader,
         clusters: Vec<ClusterData>,
     ) -> Result<Self, RabitqError> {
         let rotator = DynamicRotator::deserialize(
@@ -2082,76 +2012,6 @@ impl IvfRabitqIndex {
         Ok(())
     }
 
-    /// Flush dirty clusters to V4 directory: writes a **compaction** segment
-    /// containing the full merged data, replaces the cluster's segment list,
-    /// and deletes all old segment files.
-    ///
-    /// Prefer the delta-segment flow via `IvfRabitqBuilder::flush()` for
-    /// incremental inserts; this method is for compacting a fully-loaded index.
-    pub async fn flush_v4(
-        &self,
-        mstore: &ManifestStore,
-        dirty_cids: &[u32],
-    ) -> Result<(), RabitqError> {
-        use crate::rabitq::manifest::{
-            self, ClusterSegmentData, ManifestHeader, SegmentManifestEntry,
-        };
-
-        let (_header, mut cluster_map) =
-            crate::rabitq::manifest::load_manifest(mstore).await?;
-
-        for &cid in dirty_cids {
-            let idx = cid as usize;
-            let cluster = &self.clusters[idx];
-            let entry = cluster_map.get_mut(&cid).ok_or_else(|| {
-                RabitqError::InvalidPersistence("cluster missing from manifest")
-            })?;
-            let new_version = entry.latest_version() + 1;
-            let fname = manifest::segment_filename(cid, new_version);
-
-            let seg_data = ClusterSegmentData::from_cluster_data(
-                cid,
-                cluster.centroid.clone(),
-                self.padded_dim,
-                self.ex_bits,
-                cluster.ids.clone(),
-                cluster.batch_data.clone(),
-                cluster.ex_codes_packed.clone(),
-                cluster.f_add_ex.clone(),
-                cluster.f_rescale_ex.clone(),
-                cluster.delta.clone(),
-                cluster.vl.clone(),
-            );
-            let file_size =
-                manifest::write_segment(mstore, &fname, &seg_data, new_version).await?;
-
-            // Delete all old segments (compaction: replace with single new segment).
-            for old in &entry.segments {
-                let _ = manifest::delete_segment(mstore, &old.segment_filename).await;
-            }
-
-            entry.segments = vec![SegmentManifestEntry {
-                segment_filename: fname,
-                segment_version: new_version,
-                num_vectors: cluster.num_vectors as u32,
-                file_size,
-            }];
-        }
-
-        let header = ManifestHeader {
-            generation: 1,
-            dim: self.dim,
-            padded_dim: self.padded_dim,
-            metric: self.metric,
-            rotator_type: self.rotator.rotator_type(),
-            rotator_data: self.rotator.serialize(),
-            ex_bits: self.ex_bits,
-            total_bits: self.ex_bits + 1,
-        };
-        manifest::save_manifest(mstore, &header, &cluster_map, 0).await?;
-        Ok(())
-    }
-
     /// Find the nearest cluster id for a rotated query vector.
     fn find_nearest_cluster_id(&self, rotated: &[f32]) -> usize {
         let mut best_cid = 0usize;
@@ -2165,352 +2025,13 @@ impl IvfRabitqIndex {
         }
         best_cid
     }
-
-    /// Compaction: merge all delta segments into new base segments,
-    /// bump the generation, and publish a new commit.
-    ///
-    /// Reads the current derived view, loads all segments (base + deltas)
-    /// for every cluster, merges them in memory, writes new base segments
-    /// (version 0) with unique names, and publishes a new generation via
-    /// [`commit_rebuild`].  Old segments and manifests are **not**
-    /// deleted — the index only ever grows, so readers that resolved an
-    /// older view keep working.  If a concurrent writer publishes while
-    /// compaction runs, the merge is redone against the fresher view.
-    pub async fn compact_v4(mstore: &ManifestStore) -> Result<(), RabitqError> {
-        use crate::rabitq::manifest::{
-            self, ClusterManifestEntry, ClusterSegmentData, ManifestHeader,
-            SegmentManifestEntry,
-        };
-
-        for _ in 0..manifest::COMMIT_RETRIES {
-            // 1. Resolve the current view; abort on an empty store.
-            let view = manifest::resolve_view(mstore)
-                .await?
-                .ok_or(RabitqError::InvalidPersistence("no vector index found"))?;
-            let base_key = view.key();
-            let cluster_map = view.cluster_map;
-            let old_header = &view.header;
-            let new_gen = base_key.0.max(1) + 1;
-            println!(
-                "Compaction: gen {} → {}, {} clusters",
-                base_key.0.max(1),
-                new_gen,
-                cluster_map.len()
-            );
-
-            // 2. Merge all segments for each cluster and write new base.
-            let mut new_map: std::collections::BTreeMap<u32, ClusterManifestEntry> =
-                std::collections::BTreeMap::new();
-
-            for (&cid, entry) in cluster_map.iter() {
-                // Merge all segments (base + deltas) for this cluster,
-                // re-packing the FastScan batches (see `merge_segments`).
-                let mut segments = Vec::with_capacity(entry.segments.len());
-                for seg_entry in &entry.segments {
-                    segments.push(
-                        manifest::read_segment_full(mstore, &seg_entry.segment_filename)
-                            .await?,
-                    );
-                }
-                let cd = ClusterData::merge_segments(segments)?;
-
-                // Write new compacted base segment (version 0).
-                let fname = manifest::segment_filename(cid, 0);
-                let seg_data = ClusterSegmentData::from_cluster_data(
-                    cid,
-                    cd.centroid.clone(),
-                    cd.padded_dim,
-                    cd.ex_bits,
-                    cd.ids.clone(),
-                    cd.batch_data.clone(),
-                    cd.ex_codes_packed.clone(),
-                    cd.f_add_ex.clone(),
-                    cd.f_rescale_ex.clone(),
-                    cd.delta.clone(),
-                    cd.vl.clone(),
-                );
-                let file_size =
-                    manifest::write_segment(mstore, &fname, &seg_data, 0).await?;
-
-                new_map.insert(
-                    cid,
-                    ClusterManifestEntry {
-                        cluster_id: cid,
-                        segments: vec![SegmentManifestEntry {
-                            segment_filename: fname,
-                            segment_version: 0,
-                            num_vectors: cd.num_vectors as u32,
-                            file_size,
-                        }],
-                    },
-                );
-            }
-
-            // 3. Publish a new-generation commit; retry on concurrent writes.
-            let header = ManifestHeader {
-                generation: new_gen,
-                dim: old_header.dim,
-                padded_dim: old_header.padded_dim,
-                metric: old_header.metric,
-                rotator_type: old_header.rotator_type,
-                rotator_data: old_header.rotator_data.clone(),
-                ex_bits: old_header.ex_bits,
-                total_bits: old_header.total_bits,
-            };
-            match manifest::commit_rebuild(mstore, &header, &new_map, base_key).await {
-                Ok(()) => {
-                    println!(
-                        "Compaction complete: gen {} ({} segments)",
-                        new_gen,
-                        new_map.len()
-                    );
-                    return Ok(());
-                }
-                Err(RabitqError::CommitConflict) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Err(RabitqError::CommitConflict)
-    }
-}
-
-// ============================================================================
-// rebuild_v4: full rebuild from external data stream
-// ============================================================================
-
-/// A batch of vectors with their external IDs, used as input to
-/// [`rebuild_v4`].
-#[derive(Debug, Clone)]
-pub struct IdAndVecBatch {
-    /// External vector IDs (one per vector, must be globally unique).
-    pub ids: Vec<u64>,
-    /// Flat row-major vector data: `[batch_n × dim]` f32 values.
-    pub vectors: Vec<f32>,
-}
-
-impl IdAndVecBatch {
-    /// Number of vectors in this batch.
-    pub fn len(&self) -> usize {
-        self.ids.len()
-    }
-    /// True if the batch is empty.
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-}
-
-/// Completely rebuild the IVF+RaBitQ index from an external async data
-/// stream.
-///
-/// This runs full K-Means training on a reservoir-sampled subset followed
-/// by streaming rotation, centroid assignment, and RaBitQ quantisation of
-/// every input vector.  The result is a **new generation** of the index:
-/// new centroids, new segments, new manifest, and an atomic LATEST update.
-///
-/// # Arguments
-///
-/// * `make_stream` — A factory closure that returns a fresh
-///   `futures::Stream<Item = IdAndVecBatch>`.  It is called **twice**:
-///   once for the reservoir-sampling pass and once for the streaming
-///   build pass.  Each call should produce an independent stream over the
-///   same data.
-///
-/// # Panics
-///
-/// Panics if any batch has mismatched dimensions or an ID count that
-/// doesn't match its vector count.
-pub async fn rebuild_v4<F, S>(
-    mstore: &ManifestStore,
-    dim: usize,
-    nlist: usize,
-    total_bits: usize,
-    metric: Metric,
-    rotator_type: RotatorType,
-    seed: u64,
-    faster_config: bool,
-    mut make_stream: F,
-) -> Result<(), RabitqError>
-where
-    F: FnMut() -> S,
-    S: futures::Stream<Item = IdAndVecBatch> + Unpin,
-{
-    use crate::rabitq::manifest::{
-        self, ClusterManifestEntry, ClusterSegmentData, ManifestHeader,
-        SegmentManifestEntry,
-    };
-    use builder::IvfRabitqBuilder;
-    use futures::StreamExt;
-
-    // 2. Always fresh builder — rebuild must train new centroids.
-    let mut builder = IvfRabitqBuilder::new(
-        dim,
-        nlist,
-        total_bits,
-        metric,
-        rotator_type,
-        seed,
-        faster_config,
-    );
-
-    // -- Phase 1: reservoir sampling --
-    println!("  Phase 1: reservoir sampling...");
-    let mut seen: usize = 0;
-    {
-        let mut stream = make_stream();
-        while let Some(batch) = stream.next().await {
-            let n = batch.ids.len();
-            seen += n;
-            builder.insert_batch(batch)?;
-        }
-    }
-    println!("  Phase 1 complete: {} vectors streamed", seen);
-    if seen == 0 {
-        return Err(RabitqError::InvalidConfig("no vectors in rebuild stream"));
-    }
-
-    // -- Phase 2: build (K-Means + streaming rotation + quantisation) --
-    println!("  Phase 2: building (K-Means + streaming quantisation)...");
-    let index = builder.build(make_stream).await?;
-
-    println!(
-        "  Build complete: {} vectors, {} clusters, {:.1} MB",
-        index.len(),
-        index.cluster_count(),
-        index.estimate_memory_mb()
-    );
-
-    // 3. Persist with a new generation via the CAS-free commit protocol:
-    //    write unique-named base segments (version 0) per cluster, then
-    //    publish a new-generation commit.
-    let mut cluster_map: std::collections::BTreeMap<u32, ClusterManifestEntry> =
-        std::collections::BTreeMap::new();
-    for (i, cluster) in index.clusters.iter().enumerate() {
-        let cid = i as u32;
-        let fname = manifest::segment_filename(cid, 0);
-        let seg_data = ClusterSegmentData::from_cluster_data(
-            cid,
-            cluster.centroid.clone(),
-            index.padded_dim,
-            index.ex_bits,
-            cluster.ids.clone(),
-            cluster.batch_data.clone(),
-            cluster.ex_codes_packed.clone(),
-            cluster.f_add_ex.clone(),
-            cluster.f_rescale_ex.clone(),
-            cluster.delta.clone(),
-            cluster.vl.clone(),
-        );
-        let file_size = manifest::write_segment(mstore, &fname, &seg_data, 0).await?;
-        cluster_map.insert(
-            cid,
-            ClusterManifestEntry {
-                cluster_id: cid,
-                segments: vec![SegmentManifestEntry {
-                    segment_filename: fname,
-                    segment_version: 0,
-                    num_vectors: cluster.num_vectors as u32,
-                    file_size,
-                }],
-            },
-        );
-    }
-
-    let header = ManifestHeader {
-        generation: 1,
-        dim: index.dim,
-        padded_dim: index.padded_dim,
-        metric: index.metric,
-        rotator_type: index.rotator.rotator_type(),
-        rotator_data: index.rotator.serialize(),
-        ex_bits: index.ex_bits,
-        total_bits: index.ex_bits + 1,
-    };
-    // Rebuilds produce a complete new generation.  If the view moved
-    // (e.g. a flush landed mid-rebuild), retry the whole rebuild against
-    // the fresher base so no committed delta is ever dropped.
-    for _ in 0..manifest::COMMIT_RETRIES {
-        let base_key = match manifest::resolve_view(mstore).await? {
-            Some(view) => view.key(),
-            None => (0, 0),
-        };
-        let new_gen = base_key.0.max(1) + 1;
-        let mut gen_header = header.clone();
-        gen_header.generation = new_gen;
-        match manifest::commit_rebuild(mstore, &gen_header, &cluster_map, base_key).await
-        {
-            Ok(()) => {
-                println!(
-                    "rebuild_v4 complete: gen {} ({} base segments, {} vectors)",
-                    new_gen,
-                    cluster_map.len(),
-                    index.len()
-                );
-                return Ok(());
-            }
-            Err(RabitqError::CommitConflict) => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(RabitqError::CommitConflict)
 }
 
 // ----------------------------------------------------------------------------
-// Standalone helpers
+// ClusterSegmentData constructor (used by the segment writers)
 // ----------------------------------------------------------------------------
 
-/// Batch-assign vectors to nearest centroids using GEMM + row-wise argmin.
-fn assign_batch_to_centroids(
-    rotated_batch: &[f32],
-    batch_n: usize,
-    nlist: usize,
-    padded_dim: usize,
-    centroid_col: &[f32],
-    centroid_norms: &[f32],
-) -> Vec<usize> {
-    let k = nlist;
-    let mut dot_products = vec![0.0f32; batch_n * k];
-    {
-        use faer::linalg::matmul::matmul;
-        use faer::mat::{MatMut, MatRef};
-        use faer::{Accum, Par};
-        let a = MatRef::from_row_major_slice(rotated_batch, batch_n, padded_dim);
-        let b = MatRef::from_row_major_slice(centroid_col, padded_dim, k);
-        let c = MatMut::from_row_major_slice_mut(&mut dot_products, batch_n, k);
-        matmul(c, Accum::Replace, a, b, 1.0f32, Par::rayon(0));
-    }
-    let norms: Vec<f32> = (0..batch_n)
-        .map(|i| {
-            rotated_batch[i * padded_dim..(i + 1) * padded_dim]
-                .iter()
-                .map(|x| x * x)
-                .sum()
-        })
-        .collect();
-    let mut assignments = Vec::with_capacity(batch_n);
-    for i in 0..batch_n {
-        let mut best_cid = 0usize;
-        let mut best_dist = f32::INFINITY;
-        for c in 0..k {
-            let dot = dot_products[i * k + c];
-            let mut dist = norms[i] + centroid_norms[c] - 2.0 * dot;
-            if dist < 0.0 {
-                dist = 0.0;
-            }
-            if dist < best_dist {
-                best_dist = dist;
-                best_cid = c;
-            }
-        }
-        assignments.push(best_cid);
-    }
-    assignments
-}
-
-// ----------------------------------------------------------------------------
-// ClusterSegmentData constructor (used by V4 save/flush)
-// ----------------------------------------------------------------------------
-
-impl crate::rabitq::manifest::ClusterSegmentData {
+impl crate::rabitq::segment::ClusterSegmentData {
     #[allow(clippy::too_many_arguments)]
     pub fn from_cluster_data(
         cluster_id: u32,
@@ -3257,4 +2778,76 @@ mod batch_search_tests {
             );
         }
     }
+}
+
+// ----------------------------------------------------------------------------
+// Build input
+// ----------------------------------------------------------------------------
+
+/// A batch of vectors with their external IDs.
+#[derive(Debug, Clone)]
+pub struct IdAndVecBatch {
+    /// External vector IDs (one per vector, must be globally unique).
+    pub ids: Vec<u64>,
+    /// Flat row-major vector data: `[batch_n × dim]` f32 values.
+    pub vectors: Vec<f32>,
+}
+
+impl IdAndVecBatch {
+    /// Number of vectors in this batch.
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+    /// True if the batch is empty.
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+/// Batch-assign vectors to nearest centroids using GEMM + row-wise argmin.
+fn assign_batch_to_centroids(
+    rotated_batch: &[f32],
+    batch_n: usize,
+    nlist: usize,
+    padded_dim: usize,
+    centroid_col: &[f32],
+    centroid_norms: &[f32],
+) -> Vec<usize> {
+    let k = nlist;
+    let mut dot_products = vec![0.0f32; batch_n * k];
+    {
+        use faer::linalg::matmul::matmul;
+        use faer::mat::{MatMut, MatRef};
+        use faer::{Accum, Par};
+        let a = MatRef::from_row_major_slice(rotated_batch, batch_n, padded_dim);
+        let b = MatRef::from_row_major_slice(centroid_col, padded_dim, k);
+        let c = MatMut::from_row_major_slice_mut(&mut dot_products, batch_n, k);
+        matmul(c, Accum::Replace, a, b, 1.0f32, Par::rayon(0));
+    }
+    let norms: Vec<f32> = (0..batch_n)
+        .map(|i| {
+            rotated_batch[i * padded_dim..(i + 1) * padded_dim]
+                .iter()
+                .map(|x| x * x)
+                .sum()
+        })
+        .collect();
+    let mut assignments = Vec::with_capacity(batch_n);
+    for i in 0..batch_n {
+        let mut best_cid = 0usize;
+        let mut best_dist = f32::INFINITY;
+        for c in 0..k {
+            let dot = dot_products[i * k + c];
+            let mut dist = norms[i] + centroid_norms[c] - 2.0 * dot;
+            if dist < 0.0 {
+                dist = 0.0;
+            }
+            if dist < best_dist {
+                best_dist = dist;
+                best_cid = c;
+            }
+        }
+        assignments.push(best_cid);
+    }
+    assignments
 }

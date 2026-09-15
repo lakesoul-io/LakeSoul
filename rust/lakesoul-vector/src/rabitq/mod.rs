@@ -4,11 +4,11 @@
 //! MSTG, brute-force, HNSW, and Python bindings are excluded.
 
 pub mod ivf;
-pub mod manifest;
 pub mod math;
 mod memory;
 pub mod quantizer;
 pub mod rotation;
+pub mod segment;
 
 pub(crate) mod fastscan;
 pub(crate) mod fastscan_kernel;
@@ -17,10 +17,10 @@ pub(crate) mod simd;
 
 // Re-export key types at the rabitq module level for convenience
 pub use ivf::builder::IvfRabitqBuilder;
-pub use ivf::{IdAndVecBatch, IvfRabitqIndex, SearchParams, SearchResult, rebuild_v4};
-pub use manifest::{ClusterStat, IndexStats, ManifestStore, cluster_stats, index_stats};
+pub use ivf::{IdAndVecBatch, IvfRabitqIndex, SearchParams, SearchResult};
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;
+pub use segment::{IndexHeader, IndexStore, SegmentEntry};
 
 use serde::{Deserialize, Serialize};
 
@@ -59,15 +59,6 @@ pub enum RabitqError {
 
     #[error("invalid persistence: {0}")]
     InvalidPersistence(&'static str),
-
-    #[error("version conflict: another writer modified LATEST")]
-    VersionConflict,
-
-    #[error("generation conflict: compaction changed the generation")]
-    GenerationConflict,
-
-    #[error("commit conflict: another writer published a newer commit")]
-    CommitConflict,
 
     #[error("I/O error: {0}")]
     Io(String),
