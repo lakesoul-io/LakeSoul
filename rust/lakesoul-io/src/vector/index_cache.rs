@@ -100,6 +100,22 @@ async fn load_entry(
     })
 }
 
+/// Whether the shard at `commit_id` is already loaded, so a query would not
+/// touch any file (and therefore needs no reader lease).
+pub async fn is_loaded(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    commit_id: i64,
+) -> bool {
+    let Some(cache) = CACHE.as_ref() else {
+        return false;
+    };
+    cache
+        .get(&cache_key(store, prefix))
+        .await
+        .is_some_and(|entry| entry.matches(commit_id))
+}
+
 /// Return the index shard for `(store, prefix)` at the resolved commit,
 /// loading and caching it when needed.
 ///

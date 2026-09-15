@@ -123,6 +123,7 @@ impl LakeSoulVectorSearchExec {
     /// commit without touching the catalog itself.
     async fn reader_config(
         &self,
+        store: &Arc<dyn object_store::ObjectStore>,
         files: &[PartitionedFile],
         partition_values: &[ScalarValue],
         nprobe: usize,
@@ -157,22 +158,32 @@ impl LakeSoulVectorSearchExec {
             let Some(view) = view else {
                 continue;
             };
-            let lease = self
-                .catalog
-                .acquire_lease(&index_prefix, lease_ttl(), &lease_owner())
-                .await
-                .map_err(|error| {
-                    DataFusionError::External(
-                        rootcause::report!(
-                            "failed to lease vector index at '{}': {}",
-                            index_prefix,
-                            error
+            // A lease is only needed while the index is being loaded; a
+            // cache hit reads no file at all.
+            if !lakesoul_io::vector::index_cache::is_loaded(
+                store,
+                index_prefix.trim_end_matches('/'),
+                view.commit_id,
+            )
+            .await
+            {
+                let lease = self
+                    .catalog
+                    .acquire_lease(&index_prefix, lease_ttl(), &lease_owner())
+                    .await
+                    .map_err(|error| {
+                        DataFusionError::External(
+                            rootcause::report!(
+                                "failed to lease vector index at '{}': {}",
+                                index_prefix,
+                                error
+                            )
+                            .into_boxed_error(),
                         )
-                        .into_boxed_error(),
-                    )
-                })?;
-            if let Some(handle) = lease {
-                leases.push(Arc::new(IndexLease::new(handle)));
+                    })?;
+                if let Some(handle) = lease {
+                    leases.push(Arc::new(IndexLease::new(handle)));
+                }
             }
             resolved_shards.push(ResolvedIndexShard {
                 index_prefix,
@@ -334,11 +345,20 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             .map(|o| o.nprobe)
             .unwrap_or(64);
 
+        let store = context
+            .runtime_env()
+            .object_store(self.object_store_url.clone())
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to get object store: {}", error)
+                        .into_boxed_error(),
+                )
+            })?;
         let mut configs = Vec::with_capacity(self.file_groups.len());
         for (group, values) in self.file_groups.iter().zip(&self.partition_values) {
             let config = tokio::task::block_in_place(|| {
                 lakesoul_io::session::GLOBAL_RUNTIME
-                    .block_on(self.reader_config(group, values, nprobe))
+                    .block_on(self.reader_config(&store, group, values, nprobe))
             })?;
             configs.push(config);
         }

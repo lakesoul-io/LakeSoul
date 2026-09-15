@@ -73,10 +73,11 @@ async fn commit_resolve_roundtrip() -> Result<()> {
 
     let resolved = catalog.resolve(&prefix).await?.expect("view");
     assert_eq!(resolved.segments.len(), 3);
-    assert_eq!(
-        resolved.segments,
-        [base[0].clone(), base[1].clone(), delta[0].clone()]
-    );
+    let mut got = resolved.segments.clone();
+    let mut want = vec![base[0].clone(), base[1].clone(), delta[0].clone()];
+    got.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
+    want.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
+    assert_eq!(got, want);
 
     let rebuild = vec![segment(0, 0, 200)];
     let view3 = catalog

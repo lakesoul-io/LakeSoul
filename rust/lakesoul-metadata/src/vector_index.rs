@@ -580,30 +580,55 @@ async fn resolve_with(
     client: &PooledClient,
     index_prefix: &str,
 ) -> Result<Option<IndexCommitView>> {
-    let Some(row) = client
+    // One round trip: the current commit plus the cumulative segment list of
+    // its generation.
+    let row = client
         .query_opt(
-            "select shard_id from vector_index_shard where index_prefix = $1",
+            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, \
+                    coalesce((select jsonb_agg(s.segments order by s.version) from vector_index_commit s \
+                              where s.shard_id = sh.shard_id and s.generation = c.generation \
+                                and s.version <= c.version), '[]'::jsonb) \
+             from vector_index_shard sh \
+             join lateral (select commit_id, shard_id, generation, version, header \
+                           from vector_index_commit where shard_id = sh.shard_id \
+                           order by generation desc, version desc limit 1) c on true \
+             where sh.index_prefix = $1",
             QueryType::RO,
             &[&index_prefix],
         )
-        .await?
-    else {
+        .await?;
+    let Some(row) = row else {
         return Ok(None);
     };
     let shard_id: i64 = row.get(0);
-    let Some(commit) = client
-        .query_opt(
-            "select commit_id, generation, version, header from vector_index_commit \
-             where shard_id = $1 order by generation desc, version desc limit 1",
-            QueryType::RO,
-            &[&shard_id],
-        )
-        .await?
-    else {
-        return Ok(None);
-    };
-    let view = commit_view(client, shard_id, &commit).await?;
-    Ok(Some(view))
+    let commit_id: i64 = row.get(1);
+    let generation = row.get::<_, i64>(2) as u64;
+    let version = row.get::<_, i64>(3) as u64;
+    let header: Vec<u8> = row.get(4);
+    let segments_json: serde_json::Value = row.get(5);
+
+    let mut segments: Vec<IndexSegmentEntry> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(commit_arrays) = segments_json.as_array() {
+        for entry in commit_arrays {
+            for segment in parse_segments(entry.clone())? {
+                if seen.insert(segment.filename.clone()) {
+                    segments.push(segment);
+                }
+            }
+        }
+    }
+    // Deterministic base-then-deltas order per cluster.
+    segments.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
+
+    Ok(Some(IndexCommitView {
+        shard_id,
+        commit_id,
+        generation,
+        version,
+        header,
+        segments,
+    }))
 }
 
 struct CurrentCommit {
@@ -642,44 +667,6 @@ async fn current_commit(
             version: row.get::<_, i64>(1) as u64,
         },
     )))
-}
-
-async fn commit_view(
-    client: &PooledClient,
-    shard_id: i64,
-    commit_row: &tokio_postgres::Row,
-) -> Result<IndexCommitView> {
-    let commit_id: i64 = commit_row.get(0);
-    let generation = commit_row.get::<_, i64>(1) as u64;
-    let version = commit_row.get::<_, i64>(2) as u64;
-    let header: Vec<u8> = commit_row.get(3);
-
-    let segment_rows = client
-        .query(
-            "select segments from vector_index_commit \
-             where shard_id = $1 and generation = $2 and version <= $3 order by version",
-            QueryType::RO,
-            &[&shard_id, &to_i64(generation), &to_i64(version)],
-        )
-        .await?;
-    let mut segments: Vec<IndexSegmentEntry> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for row in segment_rows {
-        for segment in parse_segments(row.get::<_, serde_json::Value>(0))? {
-            if seen.insert(segment.filename.clone()) {
-                segments.push(segment);
-            }
-        }
-    }
-
-    Ok(IndexCommitView {
-        shard_id,
-        commit_id,
-        generation,
-        version,
-        header,
-        segments,
-    })
 }
 
 async fn ensure_shard(client: &PooledClient, index_prefix: &str) -> Result<i64> {
