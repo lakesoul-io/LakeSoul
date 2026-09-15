@@ -47,6 +47,12 @@ pub struct LakeSoulIOConfig {
     /// Vector index columns; the writer gives these columns small row
     /// blocks so candidate rows can be fetched by row index cheaply.
     pub(crate) vector_columns: Vec<String>,
+    /// Index commits resolved by the caller (the layer with metadata
+    /// access) for vector search.
+    pub(crate) resolved_index_shards: Vec<crate::vector::builder::ResolvedIndexShard>,
+    /// Leases held while this reader uses the resolved index shards; they
+    /// are released when the config (and the reader) is dropped.
+    pub(crate) index_leases: Vec<Arc<crate::vector::IndexLease>>,
     /// Names of range partition columns
     pub(crate) range_partitions: Vec<String>,
     /// Number of hash buckets for hash partitioning
@@ -142,6 +148,18 @@ impl LakeSoulIOConfig {
     /// Returns a slice of vector index column names
     pub fn vector_columns_slice(&self) -> &[String] {
         &self.vector_columns
+    }
+
+    /// Returns the index commits resolved by the caller for vector search.
+    pub fn resolved_index_shards_slice(
+        &self,
+    ) -> &[crate::vector::builder::ResolvedIndexShard] {
+        &self.resolved_index_shards
+    }
+
+    /// Returns the leases held while the resolved shards are in use.
+    pub fn index_leases(&self) -> &[Arc<crate::vector::IndexLease>] {
+        &self.index_leases
     }
 
     /// Returns the range partition column names.
@@ -402,6 +420,24 @@ impl LakeSoulIOConfigBuilder {
     /// columns small row blocks for cheap row-index fetches.
     pub fn with_vector_columns(mut self, columns: Vec<String>) -> Self {
         self.config.vector_columns = columns;
+        self
+    }
+
+    /// Supplies the caller-resolved index commits for vector search.
+    pub fn with_resolved_index_shards(
+        mut self,
+        shards: Vec<crate::vector::builder::ResolvedIndexShard>,
+    ) -> Self {
+        self.config.resolved_index_shards = shards;
+        self
+    }
+
+    /// Holds leases for the resolved index shards for the reader's lifetime.
+    pub fn with_index_leases(
+        mut self,
+        leases: Vec<Arc<crate::vector::IndexLease>>,
+    ) -> Self {
+        self.config.index_leases = leases;
         self
     }
 

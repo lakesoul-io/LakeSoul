@@ -206,14 +206,14 @@ async fn probe_chunk_encodings() {
         median_f64(&mut execute_ms),
     );
     let mut encodings: Vec<_> = encodings.into_iter().collect();
-    encodings.sort_by(|a, b| b.1.cmp(&a.1));
+    encodings.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     println!("encoding histogram (nodes over all chunks):");
     for (name, count) in encodings {
         println!("  {name}: {count}");
     }
 }
 
-fn median_f64(values: &mut Vec<f64>) -> f64 {
+fn median_f64(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.total_cmp(b));
     values.get(values.len() / 2).copied().unwrap_or(0.0)
 }

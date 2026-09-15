@@ -3,95 +3,74 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Vector similarity search via rabitq-rs IVF+RaBitQ index.
+//!
+//! The catalog is resolved by the caller (which has metadata access); this
+//! module searches an already-resolved [`ResolvedIndexShard`] and derives
+//! index prefixes from data file paths.
 
 use std::sync::Arc;
 
-use lakesoul_vector::rabitq::manifest::resolve_view;
-use lakesoul_vector::{IvfRabitqIndex, ManifestStore, Metric, RabitqError, SearchParams};
+use lakesoul_vector::{IvfRabitqIndex, Metric, SearchParams};
 use object_store::ObjectStore;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::Result as IoResult;
+use crate::vector::builder::ResolvedIndexShard;
 use crate::vector::index_cache;
 
-pub async fn search_index_shard(
+/// Search one resolved shard (base + deltas of its current commit).
+pub async fn search_resolved_shard(
     store: &Arc<dyn ObjectStore>,
-    index_prefix: &str,
+    resolved: &ResolvedIndexShard,
+    query: &[f32],
+    top_k: usize,
+    nprobe: usize,
+) -> IoResult<Option<Vec<u64>>> {
+    let prefix = resolved.index_prefix.trim_end_matches('/');
+    let entry = index_cache::get_or_load(store, prefix, resolved)
+        .await
+        .map_err(|e| {
+            rootcause::report!("failed to load vector index at '{}': {}", prefix, e)
+        })?;
+    search_loaded_index(&entry.index, prefix, query, top_k, nprobe)
+}
+
+/// Search the vector index matching a single bucket's files.
+///
+/// One LakeSoulReader processes files from exactly one hash bucket, so the
+/// first derived prefix selects the shard to search.  `resolved_shards`
+/// carries the commits resolved by the caller; a file group whose index was
+/// not resolved yields an error instead of silently scanning.
+pub async fn search_matching_shards(
+    store: &Arc<dyn ObjectStore>,
+    file_paths: &[String],
+    vector_column: &str,
+    prefix: &str,
+    _range_partitions: &[String],
     query: &[f32],
     top_k: usize,
     nprobe: usize,
     _metric: Metric,
-) -> IoResult<Option<Vec<u64>>> {
-    let prefix = index_prefix.trim_end_matches('/');
-    let mstore = ManifestStore::new(store.clone(), prefix.to_string());
-    let profile = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
-    let t0 = std::time::Instant::now();
-    let view = match resolve_view(&mstore).await {
-        Ok(Some(view)) => view,
-        Ok(None) => {
-            // No V4 manifest: fall back to the legacy manifest.bin loader
-            // (not cached — legacy indices are read-only and rare).
-            return search_legacy_index(&mstore, prefix, query, top_k, nprobe).await;
-        }
-        Err(e) => {
-            return Err(rootcause::report!(
-                "failed to resolve vector index at '{}': {}",
-                prefix,
-                e
-            ));
-        }
+    resolved_shards: &[ResolvedIndexShard],
+) -> IoResult<Vec<u64>> {
+    let prefixes = derive_index_prefixes(file_paths, prefix, vector_column);
+    let Some((index_prefix, _bucket_id)) = prefixes.first() else {
+        return Ok(Vec::new());
     };
-    let resolve = t0.elapsed();
-    let entry = match index_cache::get_or_load(store, prefix, &view).await {
-        Ok(entry) => entry,
-        Err(e) => match e.as_ref() {
-            RabitqError::InvalidPersistence(_) => {
-                // Genuinely missing index — not an error, just no candidates
-                debug!("No vector index found at '{}'", prefix);
-                return Ok(None);
-            }
-            other => {
-                // Operational failure (object-store outage, corrupt segment,
-                // incompatible manifest, permission denied, …) — must propagate
-                return Err(rootcause::report!(
-                    "failed to load vector index at '{}': {}",
-                    prefix,
-                    other
-                ));
-            }
-        },
+    let normalized = index_prefix.trim_end_matches('/');
+    let Some(resolved) = resolved_shards
+        .iter()
+        .find(|shard| shard.index_prefix.trim_end_matches('/') == normalized)
+    else {
+        return Err(rootcause::report!(
+            "vector index at '{}' was not resolved by the caller; rebuild the index \
+             if it was created by an unsupported (legacy) writer",
+            normalized
+        ));
     };
-    if profile {
-        eprintln!(
-            "search_index_shard '{prefix}': resolve={resolve:?} view=g{}/v{} bytes={}",
-            entry.generation, entry.version, entry.bytes
-        );
-    }
-    search_loaded_index(&entry.index, prefix, query, top_k, nprobe)
-}
-
-async fn search_legacy_index(
-    mstore: &ManifestStore,
-    prefix: &str,
-    query: &[f32],
-    top_k: usize,
-    nprobe: usize,
-) -> IoResult<Option<Vec<u64>>> {
-    let index = match IvfRabitqIndex::load_from_v4(mstore).await {
-        Ok(idx) => idx,
-        Err(RabitqError::InvalidPersistence(_)) => {
-            debug!("No vector index found at '{}'", prefix);
-            return Ok(None);
-        }
-        Err(e) => {
-            return Err(rootcause::report!(
-                "failed to load vector index at '{}': {}",
-                prefix,
-                e
-            ));
-        }
-    };
-    search_loaded_index(&index, prefix, query, top_k, nprobe)
+    Ok(search_resolved_shard(store, resolved, query, top_k, nprobe)
+        .await?
+        .unwrap_or_default())
 }
 
 fn search_loaded_index(
@@ -113,33 +92,6 @@ fn search_loaded_index(
         nprobe
     );
     Ok(Some(ids))
-}
-
-/// Search the vector index matching a single bucket's files.
-///
-/// One LakeSoulReader processes files from exactly one hash bucket.
-/// We derive the index prefix from those files and search that one index.
-/// Merging results across multiple buckets is the caller's responsibility.
-pub async fn search_matching_shards(
-    store: &Arc<dyn ObjectStore>,
-    file_paths: &[String],
-    vector_column: &str,
-    prefix: &str,
-    _range_partitions: &[String],
-    query: &[f32],
-    top_k: usize,
-    nprobe: usize,
-    metric: Metric,
-) -> IoResult<Vec<u64>> {
-    let prefixes = derive_index_prefixes(file_paths, prefix, vector_column);
-    // One reader = one bucket, use the first (only) matching index
-    if let Some((index_prefix, _bucket_id)) = prefixes.first()
-        && let Some(ids) =
-            search_index_shard(store, index_prefix, query, top_k, nprobe, metric).await?
-    {
-        return Ok(ids);
-    }
-    Ok(Vec::new())
 }
 
 /// Derive the vector index prefix from file paths and table prefix.
@@ -225,7 +177,7 @@ pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<
     let vec: Vec<f32> = s
         .split(',')
         .map(|p| p.trim().parse::<f32>())
-        .collect::<Result<Vec<_>, _>>()
+        .collect::<Result<_, _>>()
         .map_err(|e| rootcause::report!("invalid vector search query: {}", e))?;
     if let Some(dim) = expected_dim
         && vec.len() != dim
@@ -237,4 +189,29 @@ pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<
         ));
     }
     Ok(vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_index_prefixes;
+
+    #[test]
+    fn derive_prefixes_from_local_files() {
+        let files = vec![
+            "/tmp/table/part=1/part-x_0.parquet".to_string(),
+            "/tmp/table/part=1/part-y_0.parquet".to_string(),
+        ];
+        let prefixes = derive_index_prefixes(&files, "/tmp/table", "vec");
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0].0, "/tmp/table/_vector_index/vec/part=1/0");
+        assert_eq!(prefixes[0].1, 0);
+    }
+
+    #[test]
+    fn derive_prefixes_strips_s3_bucket() {
+        let files = vec!["s3://bucket/table/part-x_0.parquet".to_string()];
+        let prefixes = derive_index_prefixes(&files, "s3://bucket/table", "vec");
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0].0, "table/_vector_index/vec/-5/0");
+    }
 }

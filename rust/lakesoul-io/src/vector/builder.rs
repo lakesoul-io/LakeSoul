@@ -1,25 +1,29 @@
-// Integrate with the reader's vector_search injection later
 // SPDX-FileCopyrightText: 2025 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-shard vector index builder: reads parquet via LakeSoulReader, builds IVF+RaBitQ index.
+//! Shard index builder.
+//!
+//! Reads a shard's data files through [`LakeSoulReader`] and writes the
+//! resulting segment files; commit bookkeeping (which segments form the
+//! current index) belongs to the caller, which has metadata access.  The
+//! caller resolves the shard's current commit and passes it via
+//! [`VectorShardIndexBuilder::with_base`]: without a base the builder
+//! trains a fresh index, with one it appends a delta.  The returned
+//! [`ShardBuildOutcome`] carries the segment entries to publish.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_schema::Schema;
-use lakesoul_vector::{
-    IdAndVecBatch, IvfRabitqBuilder, ManifestStore, RabitqError, rebuild_v4,
-};
+use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
+use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, VectorIndexConfig};
 use object_store::ObjectStore;
 use tracing::{info, warn};
 
 use crate::config::LakeSoulIOConfigBuilder;
-use crate::reader::LakeSoulReader;
 use crate::session::LakeSoulIOSession;
-
 use crate::vector::reader::extract_vector_batch;
-use lakesoul_vector::VectorIndexConfig;
 
 /// Derive the vector index store prefix for the shard containing `file_paths`.
 ///
@@ -46,13 +50,40 @@ pub fn shard_index_prefix(file_paths: &[String], column: &str) -> String {
         .unwrap_or_else(|| format!("_vector_index/{column}/-5/0/"))
 }
 
+/// An index commit resolved by the caller from the metadata catalog.
+///
+/// The header is the opaque [`IndexHeader`] serialization; the segments are
+/// every file of the resolved view.  Types are deliberately plain so that
+/// this crate stays independent of the metadata layer.
+#[derive(Debug, Clone)]
+pub struct ResolvedIndexShard {
+    pub index_prefix: String,
+    pub commit_id: i64,
+    pub generation: u64,
+    pub version: u64,
+    pub header: Vec<u8>,
+    pub segments: Vec<SegmentEntry>,
+}
+
+/// Header and segment files produced by a build, for the caller to commit.
+#[derive(Debug, Clone)]
+pub struct ShardBuildOutcome {
+    pub index_prefix: String,
+    /// Serialized [`IndexHeader`].
+    pub header: Vec<u8>,
+    /// New segments only: the delta segments of an incremental build, or
+    /// every base segment of a fresh build / rebuild.
+    pub new_segments: Vec<SegmentEntry>,
+}
+
 pub struct VectorShardIndexBuilder {
     store: Arc<dyn ObjectStore>,
     config: VectorIndexConfig,
     file_paths: Vec<String>,
     pk_column: String,
-    object_store_options: std::collections::HashMap<String, String>,
+    object_store_options: HashMap<String, String>,
     default_fs: Option<String>,
+    base: Option<ResolvedIndexShard>,
 }
 
 impl VectorShardIndexBuilder {
@@ -61,7 +92,7 @@ impl VectorShardIndexBuilder {
         config: VectorIndexConfig,
         file_paths: Vec<String>,
         pk_column: String,
-        object_store_options: std::collections::HashMap<String, String>,
+        object_store_options: HashMap<String, String>,
         default_fs: Option<String>,
     ) -> Self {
         Self {
@@ -71,11 +102,23 @@ impl VectorShardIndexBuilder {
             pk_column,
             object_store_options,
             default_fs,
+            base: None,
         }
     }
 
-    fn index_prefix(&self) -> String {
-        shard_index_prefix(&self.file_paths, &self.config.column_name)
+    /// Run an incremental build on top of the resolved base commit.
+    pub fn with_base(mut self, base: ResolvedIndexShard) -> Self {
+        self.base = Some(base);
+        self
+    }
+
+    pub fn index_prefix(&self) -> String {
+        self.base
+            .as_ref()
+            .map(|base| base.index_prefix.clone())
+            .unwrap_or_else(|| {
+                shard_index_prefix(&self.file_paths, &self.config.column_name)
+            })
     }
 
     fn table_prefix(&self) -> String {
@@ -122,18 +165,43 @@ impl VectorShardIndexBuilder {
         config_builder
     }
 
-    pub async fn build(self) -> Result<(), RabitqError> {
-        let mstore = ManifestStore::new(self.store.clone(), self.index_prefix());
-        let need_fresh =
-            !lakesoul_vector::rabitq::manifest::manifest_exists(&mstore).await;
-        if need_fresh {
-            self.build_fresh(mstore).await
+    /// Build the shard: fresh when no base was supplied, incremental otherwise.
+    pub async fn build(self) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
+        if self.base.is_some() {
+            self.build_incremental().await
         } else {
-            self.build_loaded(mstore).await
+            self.build_fresh().await
         }
     }
 
-    async fn build_fresh(self, mstore: ManifestStore) -> Result<(), RabitqError> {
+    /// Force a full rebuild of the shard index from scratch.
+    ///
+    /// Unlike [`build`](Self::build) — which appends the new batch into the
+    /// existing clusters as a delta segment — a rebuild re-reads **all**
+    /// data files of the shard, re-trains the IVF centroids on the full
+    /// dataset, and returns a complete new generation.  Callers must pass
+    /// the complete shard file list (base + previous deltas + the new
+    /// batch), e.g. when the accumulated delta/base ratio has drifted past
+    /// the configured threshold or on an explicit user request.
+    pub async fn rebuild(
+        self,
+    ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
+        self.build_fresh().await
+    }
+
+    async fn build_fresh(
+        self,
+    ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
+        use lakesoul_vector::RabitqError;
+
+        let index_prefix = self.index_prefix();
+        info!(
+            "Building fresh vector index for column '{}' at '{}' ({} files)",
+            self.config.column_name,
+            index_prefix,
+            self.file_paths.len()
+        );
+
         // Pass 1: read all vectors via LakeSoulReader (handles merge-on-read)
         info!("Pass 1: reading via LakeSoulReader for reservoir sampling");
         let all_batches = self
@@ -182,27 +250,41 @@ impl VectorShardIndexBuilder {
             Box::pin(futures::stream::iter(iter))
         };
         let index = builder.build(make_stream).await?;
-        info!("Saving index to object store...");
-        index.save_to_v4(&mstore).await.map_err(|e| {
-            warn!("Failed to save index: {:?}", e);
-            e
-        })?;
+
+        info!("Writing index segments...");
+        let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
+        let (header, new_segments) =
+            index.write_base_segments(&istore).await.map_err(|e| {
+                warn!("Failed to write index segments: {:?}", e);
+                e
+            })?;
         info!("Fresh index built successfully");
-        Ok(())
+        Ok(ShardBuildOutcome {
+            index_prefix,
+            header: header.serialize(),
+            new_segments,
+        })
     }
 
-    async fn build_loaded(self, mstore: ManifestStore) -> Result<(), RabitqError> {
-        let mut builder = IvfRabitqBuilder::load(
-            &mstore,
-            self.config.dim,
-            self.config.nlist,
-            self.config.total_bits,
-            self.config.metric,
-            self.config.rotator_type,
-            self.config.seed,
-            self.config.use_faster_config,
-        )
-        .await?;
+    async fn build_incremental(
+        self,
+    ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
+        use lakesoul_vector::RabitqError;
+
+        let base = self.base.clone().expect("checked by caller");
+        let index_prefix = base.index_prefix.clone();
+        let header = IndexHeader::deserialize(&base.header)?;
+        let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
+
+        info!(
+            "Incrementally updating vector index for column '{}' at '{}' ({} files)",
+            self.config.column_name,
+            index_prefix,
+            self.file_paths.len()
+        );
+
+        let mut builder =
+            IvfRabitqBuilder::load(&istore, &header, &base.segments).await?;
 
         let all_batches = self
             .read_all_batches()
@@ -215,66 +297,24 @@ impl VectorShardIndexBuilder {
         }
         info!("Inserted {} vectors", total);
         if total == 0 {
-            return Ok(());
+            return Ok(ShardBuildOutcome {
+                index_prefix,
+                header: base.header,
+                new_segments: Vec::new(),
+            });
         }
 
-        builder.flush(&mstore).await?;
+        let (header, new_segments) = builder.flush(&istore).await?;
         info!("Incremental index update complete");
-        Ok(())
-    }
-
-    /// Force a full rebuild of the shard index from scratch.
-    ///
-    /// Unlike [`build`](Self::build) — which appends the new batch into the
-    /// existing clusters as a delta segment — a rebuild re-reads **all**
-    /// data files of the shard, re-trains the IVF centroids on the full
-    /// dataset, and publishes a new index generation (CAS-free).  Callers
-    /// must pass the complete shard file list (base + previous deltas + the
-    /// new batch), e.g. when the accumulated delta/base ratio has drifted
-    /// past the configured threshold or on an explicit user request.
-    pub async fn rebuild(self) -> Result<(), RabitqError> {
-        let mstore = ManifestStore::new(self.store.clone(), self.index_prefix());
-        let all_batches = self
-            .read_all_batches()
-            .await
-            .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
-        let total: usize = all_batches.iter().map(|b| b.ids.len()).sum();
-        info!(
-            "Full rebuild: {} vectors from {} batches",
-            total,
-            all_batches.len()
-        );
-        if total == 0 {
-            return Err(RabitqError::InvalidPersistence(
-                "no vectors found in data files",
-            ));
-        }
-        // Clamp nlist so we never create more clusters than there are vectors.
-        let nlist = self.config.nlist.clamp(1, total);
-
-        let batches = all_batches;
-        let make_stream = move || {
-            let iter = batches.clone().into_iter();
-            Box::pin(futures::stream::iter(iter))
-        };
-        rebuild_v4(
-            &mstore,
-            self.config.dim,
-            nlist,
-            self.config.total_bits,
-            self.config.metric,
-            self.config.rotator_type,
-            self.config.seed,
-            self.config.use_faster_config,
-            make_stream,
-        )
-        .await?;
-        info!("Full vector index rebuild complete (new generation)");
-        Ok(())
+        Ok(ShardBuildOutcome {
+            index_prefix,
+            header: header.serialize(),
+            new_segments,
+        })
     }
 
     /// Read all rows via LakeSoulReader (handles merge-on-read, CDC, etc.)
-    async fn read_all_batches(&self) -> crate::Result<Vec<IdAndVecBatch>> {
+    pub async fn read_all_batches(&self) -> crate::Result<Vec<IdAndVecBatch>> {
         let mut results = Vec::new();
         let vec_col = self.config.column_name.clone();
         let pk_col = self.pk_column.clone();
@@ -315,7 +355,7 @@ impl VectorShardIndexBuilder {
         ]));
 
         let io_config = self.reader_config_builder().with_schema(schema).build();
-        let mut reader = LakeSoulReader::new(io_config)
+        let mut reader = crate::reader::LakeSoulReader::new(io_config)
             .map_err(|e| rootcause::report!("failed to create reader: {}", e))?;
         reader
             .start()
