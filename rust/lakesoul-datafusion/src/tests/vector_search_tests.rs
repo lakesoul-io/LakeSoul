@@ -714,7 +714,7 @@ async fn sql_create_table_stores_file_format_option() {
             vec FLOAT[] NOT NULL
          ) STORED AS LAKESOUL \
          LOCATION '{location}' \
-         OPTIONS ('file_format' 'vortex')"
+         OPTIONS ('file_format' 'vortex', 'hashBucketNum' '2')"
     );
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
@@ -732,6 +732,12 @@ async fn sql_create_table_stores_file_format_option() {
     assert_eq!(
         crate::catalog::table_file_format(&table_info.properties).unwrap(),
         lakesoul_io::file_format::PhysicalFormat::Vortex
+    );
+    // DataFusion lower-cases OPTIONS keys, so the Spark/Flink spelling
+    // `hashBucketNum` must still reach the stored property.
+    assert_eq!(
+        properties.get("hashBucketNum").and_then(|v| v.as_str()),
+        Some("2")
     );
 
     // An invalid format is rejected before any metadata is created.

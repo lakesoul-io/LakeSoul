@@ -44,6 +44,9 @@ pub struct LakeSoulIOConfig {
     pub(crate) files: Vec<String>,
     /// Names of primary key columns
     pub(crate) primary_keys: Vec<String>,
+    /// Vector index columns; the writer gives these columns small row
+    /// blocks so candidate rows can be fetched by row index cheaply.
+    pub(crate) vector_columns: Vec<String>,
     /// Names of range partition columns
     pub(crate) range_partitions: Vec<String>,
     /// Number of hash buckets for hash partitioning
@@ -134,6 +137,11 @@ impl LakeSoulIOConfig {
     /// Returns a slice of primary key column names
     pub fn primary_keys_slice(&self) -> &[String] {
         &self.primary_keys
+    }
+
+    /// Returns a slice of vector index column names
+    pub fn vector_columns_slice(&self) -> &[String] {
+        &self.vector_columns
     }
 
     /// Returns the range partition column names.
@@ -387,6 +395,13 @@ impl LakeSoulIOConfigBuilder {
     /// * `pks` - The list of primary keys to add
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
+        self
+    }
+
+    /// Sets the vector index columns of the table; writers give these
+    /// columns small row blocks for cheap row-index fetches.
+    pub fn with_vector_columns(mut self, columns: Vec<String>) -> Self {
+        self.config.vector_columns = columns;
         self
     }
 

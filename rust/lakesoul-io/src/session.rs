@@ -64,6 +64,7 @@ use crate::helpers::get_file_object_meta;
 use crate::helpers::transform::uniform_schema;
 use crate::physical_plan::empty_schema::EmptyScanCountExec;
 use crate::physical_plan::merge::MergeParquetExec;
+use crate::pk_locator;
 use crate::utils::random_str;
 
 // Define the global static runtime
@@ -806,6 +807,26 @@ impl LakeSoulIOSession {
         let table_schema = self.io_table_schema().await?;
         let statistics = Statistics::new_unknown(table_schema.table_schema());
 
+        // Row-level primary-key candidates (`pk = v` / `pk IN (...)`) let the
+        // scan fetch only the matching rows instead of reading the id column
+        // of every file.  The set is a superset of the matching rows; the
+        // filters above the scan still run for correctness.
+        let pk_candidates = {
+            let primary_keys = self.io_config.primary_keys_slice();
+            if primary_keys.len() == 1 {
+                let pk = &primary_keys[0];
+                table_schema
+                    .file_schema()
+                    .field_with_name(pk)
+                    .ok()
+                    .and_then(|field| {
+                        pk_locator::extract_pk_candidates(&filters, pk, field.data_type())
+                    })
+            } else {
+                None
+            }
+        };
+
         // 1. Classify filters into Inexact (pushdown-capable) and Unsupported.
         // We never return Exact because our file-level pushdown (Parquet row filter,
         // Vortex filter) is best-effort: it may skip files/pages but does not
@@ -939,11 +960,34 @@ impl LakeSoulIOSession {
         }
 
         // 6. Merge all format-specific scan inputs with one LakeSoul merge path.
-        let merge_exec = Arc::new(MergeParquetExec::new(
-            merged_schema.clone(),
-            flatten_configs,
-            self.io_config.clone(),
-        )?);
+        // When a finite pk filter is present, replace the per-file scans with
+        // row-level candidate inputs (vortex + integer pk only; otherwise the
+        // regular scan path is kept).
+        let candidate_inputs = match pk_candidates {
+            Some(candidates) if !candidates.is_empty() => {
+                pk_locator::try_build_pk_inputs(
+                    self,
+                    &self.io_config,
+                    &flatten_configs,
+                    &candidates,
+                )
+                .await
+            }
+            _ => None,
+        };
+        let merge_exec = Arc::new(match candidate_inputs {
+            Some(inputs) => MergeParquetExec::new_with_inputs(
+                merged_schema.clone(),
+                inputs,
+                self.io_config.clone(),
+                Arc::new(self.io_config.default_column_value.clone()),
+            )?,
+            None => MergeParquetExec::new(
+                merged_schema.clone(),
+                flatten_configs,
+                self.io_config.clone(),
+            )?,
+        });
         let exec: Arc<dyn ExecutionPlan> =
             if scan_schema.fields().len() < merged_schema.fields().len() {
                 let mut projection_expr = vec![];

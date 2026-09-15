@@ -185,12 +185,14 @@ pub(crate) fn create_leaf_writer(
             sink_config,
             file_schema,
             false,
+            io_config.vector_columns_slice().to_vec(),
         )),
         PhysicalFormat::VortexCompact => Arc::new(VortexSink::new(
             VortexSession::default().with_tokio(),
             sink_config,
             file_schema,
             true,
+            io_config.vector_columns_slice().to_vec(),
         )),
     };
 

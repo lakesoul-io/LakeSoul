@@ -1807,22 +1807,85 @@ impl IvfRabitqIndex {
     /// in memory.
     pub async fn load_from_v4(mstore: &ManifestStore) -> Result<Self, RabitqError> {
         let _prof = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
-        let _t_total = std::time::Instant::now();
+        let _t0 = std::time::Instant::now();
         // Resolve the current view (LATEST hint + unique commits), fall
         // back to the legacy manifest.bin when nothing newer exists.
+        let view = crate::rabitq::manifest::resolve_view(mstore).await?;
+        let resolve = _t0.elapsed();
+        match view {
+            Some(view) => {
+                let index = Self::load_from_view(mstore, &view).await?;
+                if _prof {
+                    eprintln!(
+                        "load_from_v4: view=g{}/v{} resolve={:?} (load timing in load_from_view)",
+                        view.generation, view.version, resolve
+                    );
+                }
+                Ok(index)
+            }
+            None => {
+                let (header, cluster_map) =
+                    crate::rabitq::manifest::load_manifest(mstore).await?;
+                let _t_load = std::time::Instant::now();
+                let (clusters, n_segments) =
+                    Self::load_clusters(mstore, &header, cluster_map.values()).await?;
+                if _prof {
+                    eprintln!(
+                        "load_from_v4 (legacy): resolve={:?} load_clusters={:?} clusters={} segments={}",
+                        resolve,
+                        _t_load.elapsed(),
+                        clusters.len(),
+                        n_segments
+                    );
+                }
+                Self::assemble(&header, clusters)
+            }
+        }
+    }
+
+    /// Load the index for an already-resolved manifest view.
+    ///
+    /// Unlike [`Self::load_from_v4`], this does not re-resolve the view, so
+    /// callers that validated a `(generation, version)` key (e.g. an index
+    /// cache) load exactly the state they observed.
+    pub async fn load_from_view(
+        mstore: &ManifestStore,
+        view: &crate::rabitq::manifest::ResolvedView,
+    ) -> Result<Self, RabitqError> {
+        let _prof = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
+        let _t_total = std::time::Instant::now();
         let _t0 = std::time::Instant::now();
-        let (header, cluster_map) =
-            match crate::rabitq::manifest::resolve_view(mstore).await? {
-                Some(view) => (view.header, view.cluster_map),
-                None => crate::rabitq::manifest::load_manifest(mstore).await?,
-            };
-        let _resolve = _t0.elapsed();
-        // Clusters are independent: read their segments (and merge them)
-        // concurrently, preserving cluster order.
-        let _n_segments: usize = cluster_map.values().map(|e| e.segments.len()).sum();
-        let _t0 = std::time::Instant::now();
+        let (clusters, n_segments) =
+            Self::load_clusters(mstore, &view.header, view.cluster_map.values()).await?;
+        if _prof {
+            eprintln!(
+                "load_from_view: g{}/v{} load_clusters={:?} total={:?} clusters={} segments={}",
+                view.generation,
+                view.version,
+                _t0.elapsed(),
+                _t_total.elapsed(),
+                clusters.len(),
+                n_segments
+            );
+        }
+        Self::assemble(&view.header, clusters)
+    }
+
+    /// Read and merge every cluster's segments (base + deltas) concurrently.
+    async fn load_clusters<'a, I>(
+        mstore: &ManifestStore,
+        header: &crate::rabitq::manifest::ManifestHeader,
+        entries: I,
+    ) -> Result<(Vec<ClusterData>, usize), RabitqError>
+    where
+        I: Iterator<Item = &'a crate::rabitq::manifest::ClusterManifestEntry>,
+    {
+        let mut cluster_map: Vec<&crate::rabitq::manifest::ClusterManifestEntry> =
+            entries.collect();
+        cluster_map.sort_by_key(|e| e.cluster_id);
+        let num_segments: usize = cluster_map.iter().map(|e| e.segments.len()).sum();
         use futures::{StreamExt, TryStreamExt};
-        let clusters: Vec<ClusterData> = futures::stream::iter(cluster_map.values())
+        let clusters: Vec<ClusterData> = futures::stream::iter(cluster_map)
             .map(|entry| async move {
                 let mut segments = Vec::with_capacity(entry.segments.len());
                 for seg_entry in &entry.segments {
@@ -1848,16 +1911,13 @@ impl IvfRabitqIndex {
             .buffered(16)
             .try_collect()
             .await?;
-        if _prof {
-            eprintln!(
-                "load_from_v4: resolve={:?} load_clusters={:?} total={:?} clusters={} segments={}",
-                _resolve,
-                _t0.elapsed(),
-                _t_total.elapsed(),
-                clusters.len(),
-                _n_segments
-            );
-        }
+        Ok((clusters, num_segments))
+    }
+
+    fn assemble(
+        header: &crate::rabitq::manifest::ManifestHeader,
+        clusters: Vec<ClusterData>,
+    ) -> Result<Self, RabitqError> {
         let rotator = DynamicRotator::deserialize(
             header.dim,
             header.padded_dim,
@@ -1874,6 +1934,20 @@ impl IvfRabitqIndex {
             ex_bits: header.ex_bits,
             ip_func,
         })
+    }
+
+    /// Approximate heap footprint of the loaded index in bytes.
+    ///
+    /// Sums the capacities of the owned buffers plus the struct sizes; used
+    /// to bound process-level index caches.
+    pub fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.rotator.memory_bytes()
+            + self
+                .clusters
+                .iter()
+                .map(|c| c.memory_bytes())
+                .sum::<usize>()
     }
 
     /// Insert a single vector into the index (in-memory).

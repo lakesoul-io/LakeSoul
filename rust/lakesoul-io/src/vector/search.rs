@@ -6,11 +6,13 @@
 
 use std::sync::Arc;
 
-use lakesoul_vector::{IvfRabitqIndex, ManifestStore, Metric, SearchParams};
+use lakesoul_vector::rabitq::manifest::resolve_view;
+use lakesoul_vector::{IvfRabitqIndex, ManifestStore, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
 use tracing::{debug, info};
 
 use crate::Result as IoResult;
+use crate::vector::index_cache;
 
 pub async fn search_index_shard(
     store: &Arc<dyn ObjectStore>,
@@ -22,16 +24,66 @@ pub async fn search_index_shard(
 ) -> IoResult<Option<Vec<u64>>> {
     let prefix = index_prefix.trim_end_matches('/');
     let mstore = ManifestStore::new(store.clone(), prefix.to_string());
-    let index = match IvfRabitqIndex::load_from_v4(&mstore).await {
+    let profile = std::env::var("LAKESOUL_VECTOR_LOAD_PROFILE").is_ok();
+    let t0 = std::time::Instant::now();
+    let view = match resolve_view(&mstore).await {
+        Ok(Some(view)) => view,
+        Ok(None) => {
+            // No V4 manifest: fall back to the legacy manifest.bin loader
+            // (not cached — legacy indices are read-only and rare).
+            return search_legacy_index(&mstore, prefix, query, top_k, nprobe).await;
+        }
+        Err(e) => {
+            return Err(rootcause::report!(
+                "failed to resolve vector index at '{}': {}",
+                prefix,
+                e
+            ));
+        }
+    };
+    let resolve = t0.elapsed();
+    let entry = match index_cache::get_or_load(store, prefix, &view).await {
+        Ok(entry) => entry,
+        Err(e) => match e.as_ref() {
+            RabitqError::InvalidPersistence(_) => {
+                // Genuinely missing index — not an error, just no candidates
+                debug!("No vector index found at '{}'", prefix);
+                return Ok(None);
+            }
+            other => {
+                // Operational failure (object-store outage, corrupt segment,
+                // incompatible manifest, permission denied, …) — must propagate
+                return Err(rootcause::report!(
+                    "failed to load vector index at '{}': {}",
+                    prefix,
+                    other
+                ));
+            }
+        },
+    };
+    if profile {
+        eprintln!(
+            "search_index_shard '{prefix}': resolve={resolve:?} view=g{}/v{} bytes={}",
+            entry.generation, entry.version, entry.bytes
+        );
+    }
+    search_loaded_index(&entry.index, prefix, query, top_k, nprobe)
+}
+
+async fn search_legacy_index(
+    mstore: &ManifestStore,
+    prefix: &str,
+    query: &[f32],
+    top_k: usize,
+    nprobe: usize,
+) -> IoResult<Option<Vec<u64>>> {
+    let index = match IvfRabitqIndex::load_from_v4(mstore).await {
         Ok(idx) => idx,
-        Err(lakesoul_vector::RabitqError::InvalidPersistence(_)) => {
-            // Genuinely missing index — not an error, just no candidates
+        Err(RabitqError::InvalidPersistence(_)) => {
             debug!("No vector index found at '{}'", prefix);
             return Ok(None);
         }
         Err(e) => {
-            // Operational failure (object-store outage, corrupt segment,
-            // incompatible manifest, permission denied, …) — must propagate
             return Err(rootcause::report!(
                 "failed to load vector index at '{}': {}",
                 prefix,
@@ -39,6 +91,16 @@ pub async fn search_index_shard(
             ));
         }
     };
+    search_loaded_index(&index, prefix, query, top_k, nprobe)
+}
+
+fn search_loaded_index(
+    index: &IvfRabitqIndex,
+    prefix: &str,
+    query: &[f32],
+    top_k: usize,
+    nprobe: usize,
+) -> IoResult<Option<Vec<u64>>> {
     let params = SearchParams::new(top_k, nprobe);
     let results = index.search(query, params).map_err(|e| {
         rootcause::report!("vector search failed at '{}': {:?}", prefix, e)

@@ -153,6 +153,8 @@ struct Args {
     table: String,
     /// Physical format for the SQL scenario's table ("parquet" or "vortex").
     sql_format: String,
+    /// Number of hash buckets for the SQL scenario's table.
+    sql_hash_buckets: usize,
     /// Print full usage.
     help: bool,
 }
@@ -189,6 +191,7 @@ impl Default for Args {
             query_drift: true,
             table: "vec_bench_sql".to_string(),
             sql_format: "vortex".to_string(),
+            sql_hash_buckets: 1,
             help: false,
         }
     }
@@ -234,6 +237,7 @@ STREAM / TRIGGER:
                                             (default: checkpoint queries follow the drift)
   --table <name>                            Table name for the SQL scenario (default: vec_bench_sql)
   --sql-format <parquet|vortex>              Data file format for the SQL scenario (default: vortex)
+  --sql-hash-buckets <n>                     Hash buckets for the SQL scenario (default: 1)
 
   --help                                    Show this help
 "#
@@ -331,6 +335,11 @@ fn parse_args() -> Result<Args, String> {
             "--reuse" => args.reuse = true,
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
+            "--sql-hash-buckets" => {
+                args.sql_hash_buckets = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --sql-hash-buckets: {e}"))?
+            }
             "--policy" => {
                 args.policy = match value(flag)?.to_lowercase().as_str() {
                     "none" => Policy::None,
@@ -1951,9 +1960,10 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             id BIGINT NOT NULL PRIMARY KEY, \
             vec FLOAT[] NOT NULL\
          ) STORED AS LAKESOUL LOCATION '{}' \
-         OPTIONS ('vector_index_columns' '{property}', 'hashBucketNum' '1', \
+         OPTIONS ('vector_index_columns' '{property}', 'hashBucketNum' '{}', \
                   'file_format' '{}')",
         work_dir.display(),
+        args.sql_hash_buckets,
         args.sql_format
     );
     ctx.sql(&create_sql)
@@ -2058,9 +2068,14 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     );
     let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
 
-    // 7. End-to-end SQL latency and recall, one query at a time.
+    // 7. End-to-end SQL latency and recall, one query at a time; split into
+    // logical planning, physical planning (table metadata + file listing) and
+    // execution (index probe + candidate scan + exact re-rank).
     let nq = dataset.queries.n;
     let mut latencies = Vec::with_capacity(nq);
+    let mut plan_ms = Vec::with_capacity(nq);
+    let mut phys_ms = Vec::with_capacity(nq);
+    let mut exec_ms = Vec::with_capacity(nq);
     let mut recall_sum = 0.0;
     for qi in 0..nq {
         let sql = format!(
@@ -2070,14 +2085,26 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             args.top_k
         );
         let t = Instant::now();
-        let batches = search_ctx
+        let df = search_ctx
             .sql(&sql)
             .await
-            .map_err(|e| format!("query: {e}"))?
-            .collect()
+            .map_err(|e| format!("query: {e}"))?;
+        let t_plan = t.elapsed();
+        let t = Instant::now();
+        let plan = df
+            .create_physical_plan()
             .await
             .map_err(|e| format!("query: {e}"))?;
-        latencies.push(t.elapsed().as_secs_f64() * 1000.0);
+        let t_phys = t.elapsed();
+        let t = Instant::now();
+        let batches = datafusion::physical_plan::collect(plan, search_ctx.task_ctx())
+            .await
+            .map_err(|e| format!("query: {e}"))?;
+        let t_exec = t.elapsed();
+        plan_ms.push(t_plan.as_secs_f64() * 1000.0);
+        phys_ms.push(t_phys.as_secs_f64() * 1000.0);
+        exec_ms.push(t_exec.as_secs_f64() * 1000.0);
+        latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
         let mut predicted = Vec::new();
         for batch in &batches {
             if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
@@ -2086,6 +2113,15 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         }
         recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
     }
+    let mean = |v: &[f64]| -> f64 {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
+    };
+    let (plan_mean_ms, phys_mean_ms, exec_mean_ms) =
+        (mean(&plan_ms), mean(&phys_ms), mean(&exec_ms));
     latencies.sort_by(|a, b| a.total_cmp(b));
     let percentile = |p: f64| -> f64 {
         if latencies.is_empty() {
@@ -2120,6 +2156,9 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "mean_ms": total_ms / nq.max(1) as f64,
         "p50_ms": percentile(0.50),
         "p99_ms": percentile(0.99),
+        "plan_mean_ms": plan_mean_ms,
+        "physical_plan_mean_ms": phys_mean_ms,
+        "exec_mean_ms": exec_mean_ms,
         "uses_vector_index_exec": uses_vector_index_exec,
         "index_size_bytes": index_size_bytes(&work_dir),
         "index_state": index_state,

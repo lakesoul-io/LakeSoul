@@ -887,6 +887,11 @@ pub struct ResolvedView {
     pub cluster_map: BTreeMap<u32, ClusterManifestEntry>,
     /// Relative manifest filenames of every commit at the resolved key.
     pub manifest_filenames: Vec<String>,
+    /// Identity of the manifest objects at the resolved key (filename,
+    /// size, last-modified, e-tag).  Unlike `(generation, version)` this
+    /// also changes when an index directory is deleted and rebuilt from
+    /// scratch, so caches keyed on it never serve a previous index.
+    pub view_token: String,
 }
 
 impl ResolvedView {
@@ -907,7 +912,7 @@ pub async fn resolve_view(
     mstore: &ManifestStore,
 ) -> Result<Option<ResolvedView>, RabitqError> {
     let dir = mstore.full_path(MANIFESTS_PREFIX);
-    let mut listed: Vec<(u64, u64, String)> = Vec::new();
+    let mut listed: Vec<(u64, u64, String, String)> = Vec::new();
     let mut stream = mstore.store.list(Some(&dir));
     while let Some(meta) = stream.next().await {
         let meta = meta.map_err(os_err)?;
@@ -918,46 +923,49 @@ pub async fn resolve_view(
                     generation,
                     version,
                     format!("{MANIFESTS_PREFIX}/{filename}"),
+                    object_token(&meta),
                 ));
             }
         }
     }
 
     let snap = read_latest(mstore).await?;
-    let pointer: Option<(u64, u64, String)> = if snap.generation > 0 {
-        Some((
-            snap.generation,
-            snap.version,
-            snap.manifest_filename.clone().unwrap_or_else(|| {
-                versioned_manifest_filename(snap.generation, snap.version)
-            }),
-        ))
+    let pointer: Option<(u64, u64, String, String)> = if snap.generation > 0 {
+        let fname = snap.manifest_filename.clone().unwrap_or_else(|| {
+            versioned_manifest_filename(snap.generation, snap.version)
+        });
+        let token = listed
+            .iter()
+            .find(|(_, _, f, _)| *f == fname)
+            .map(|(_, _, _, t)| t.clone())
+            .unwrap_or_else(|| snap.e_tag.clone().unwrap_or_default());
+        Some((snap.generation, snap.version, fname, token))
     } else {
         None
     };
 
-    // Collect candidate (key, filename) pairs.  A pointer whose manifest is
-    // missing is skipped — the listed commits remain authoritative.
-    let mut candidates: Vec<(u64, u64, String)> = Vec::new();
-    if let Some((generation, version, fname)) = &pointer
+    // Collect candidate (key, filename, object token) tuples.  A pointer
+    // whose manifest is missing is skipped — the listed commits remain
+    // authoritative.
+    let mut candidates: Vec<(u64, u64, String, String)> = Vec::new();
+    if let Some((generation, version, fname, token)) = &pointer
         && read_manifest_bytes(mstore, fname).await.is_ok()
     {
-        candidates.push((*generation, *version, fname.clone()));
+        candidates.push((*generation, *version, fname.clone(), token.clone()));
     }
-    for (generation, version, fname) in &listed {
-        if !candidates.iter().any(|(_, _, f)| f == fname) {
-            candidates.push((*generation, *version, fname.clone()));
+    for (generation, version, fname, token) in &listed {
+        if !candidates.iter().any(|(_, _, f, _)| f == fname) {
+            candidates.push((*generation, *version, fname.clone(), token.clone()));
         }
     }
 
     if candidates.is_empty() {
         // Nothing under manifests/ and no usable pointer: fall back to the
         // legacy single manifest.bin (V1/V2), or None if the store is empty.
-        if mstore
+        if let Ok(meta) = mstore
             .store
             .head(&mstore.full_path(MANIFEST_FILENAME))
             .await
-            .is_ok()
         {
             let (header, cluster_map) = load_manifest(mstore).await?;
             return Ok(Some(ResolvedView {
@@ -965,17 +973,23 @@ pub async fn resolve_view(
                 version: 0,
                 header,
                 cluster_map,
-                manifest_filenames: Vec::new(),
+                manifest_filenames: vec![MANIFEST_FILENAME.to_string()],
+                view_token: object_token(&meta),
             }));
         }
         return Ok(None);
     }
 
-    let max_key = candidates.iter().map(|(g, v, _)| (*g, *v)).max().unwrap();
+    let max_key = candidates
+        .iter()
+        .map(|(g, v, _, _)| (*g, *v))
+        .max()
+        .unwrap();
     let mut cluster_map: BTreeMap<u32, ClusterManifestEntry> = BTreeMap::new();
     let mut header: Option<ManifestHeader> = None;
     let mut manifest_filenames = Vec::new();
-    for (generation, version, fname) in &candidates {
+    let mut tokens = Vec::new();
+    for (generation, version, fname, token) in &candidates {
         if (*generation, *version) != max_key {
             continue;
         }
@@ -985,17 +999,30 @@ pub async fn resolve_view(
         }
         cluster_map = merge_cluster_maps(&cluster_map, &map);
         manifest_filenames.push(fname.clone());
+        tokens.push(format!("{fname}@{token}"));
     }
     let header = header.ok_or(RabitqError::InvalidPersistence(
         "manifest list did not yield a header",
     ))?;
+    tokens.sort();
     Ok(Some(ResolvedView {
         generation: max_key.0,
         version: max_key.1,
         header,
         cluster_map,
         manifest_filenames,
+        view_token: tokens.join(","),
     }))
+}
+
+/// Stable identity string for an object's metadata.
+fn object_token(meta: &object_store::ObjectMeta) -> String {
+    format!(
+        "{}:{:?}:{}",
+        meta.size,
+        meta.last_modified,
+        meta.e_tag.as_deref().unwrap_or("")
+    )
 }
 
 /// Union two cluster maps: per cluster, append segments from `extra` that
@@ -1049,6 +1076,7 @@ pub async fn commit_delta(
                 header: header.clone(),
                 cluster_map: BTreeMap::new(),
                 manifest_filenames: Vec::new(),
+                view_token: String::new(),
             },
         };
         let target_gen = view.generation.max(1);
