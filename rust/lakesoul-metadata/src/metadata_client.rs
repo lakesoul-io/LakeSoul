@@ -223,14 +223,34 @@ impl MetaDataClient {
         Ok(())
     }
 
+    /// Atomically creates all metadata rows for a table.
     pub async fn create_table(&self, table_info: TableInfo) -> Result<()> {
         info!("create_table: {:?}", &table_info);
-        self.insert_table_path_id(&table_path_id_from_table_info(&table_info))
-            .await?;
-        self.insert_table_name_id(&table_name_id_from_table_info(&table_info))
-            .await?;
-        self.insert_table_info(&table_info).await?;
+        let inserted = self.insert_table_atomic(&table_info, false).await?;
+        if inserted != 1 {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "expected to insert one table, inserted {inserted}"
+            )));
+        }
         Ok(())
+    }
+
+    /// Atomically creates a table, or returns `false` when its name already exists.
+    ///
+    /// PostgreSQL's unique constraint on `(table_name, table_namespace)` is the
+    /// arbiter, so concurrent callers cannot both decide to create the table.
+    pub async fn create_table_if_not_exists(
+        &self,
+        table_info: TableInfo,
+    ) -> Result<bool> {
+        info!("create_table_if_not_exists: {:?}", &table_info);
+        match self.insert_table_atomic(&table_info, true).await? {
+            0 => Ok(false),
+            1 => Ok(true),
+            inserted => Err(LakeSoulMetaDataError::Internal(format!(
+                "expected to insert at most one table, inserted {inserted}"
+            ))),
+        }
     }
 
     pub async fn delete_namespace_by_namespace(&self, namespace: &str) -> Result<()> {
@@ -410,10 +430,18 @@ impl MetaDataClient {
         .await
     }
 
-    async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
-        info!("insert_table_info: {:?}", &table_info);
+    async fn insert_table_atomic(
+        &self,
+        table_info: &TableInfo,
+        if_not_exists: bool,
+    ) -> Result<i32> {
+        let dao_type = if if_not_exists {
+            DaoType::InsertTableIfNotExistsAtomic
+        } else {
+            DaoType::InsertTableAtomic
+        };
         self.execute_insert(
-            DaoType::InsertTableInfo as i32,
+            dao_type as i32,
             JniWrapper {
                 table_info: vec![table_info.clone()],
                 ..Default::default()
@@ -427,17 +455,6 @@ impl MetaDataClient {
             DaoType::InsertTableNameId as i32,
             JniWrapper {
                 table_name_id: vec![table_name_id.clone()],
-                ..Default::default()
-            },
-        )
-        .await
-    }
-
-    async fn insert_table_path_id(&self, table_path_id: &TablePathId) -> Result<i32> {
-        self.execute_insert(
-            DaoType::InsertTablePathId as i32,
-            JniWrapper {
-                table_path_id: vec![table_path_id.clone()],
                 ..Default::default()
             },
         )
@@ -1225,15 +1242,6 @@ impl MetaDataClient {
     }
 }
 
-pub fn table_path_id_from_table_info(table_info: &TableInfo) -> TablePathId {
-    TablePathId {
-        table_path: table_info.table_path.clone(),
-        table_id: table_info.table_id.clone(),
-        table_namespace: table_info.table_namespace.clone(),
-        domain: table_info.domain.clone(),
-    }
-}
-
 fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
     let mut deleted = HashSet::new();
     let mut active = Vec::new();
@@ -1296,15 +1304,6 @@ fn data_commit_info_list_from_files(
             }
         })
         .collect()
-}
-
-pub fn table_name_id_from_table_info(table_info: &TableInfo) -> TableNameId {
-    TableNameId {
-        table_name: table_info.table_name.clone(),
-        table_id: table_info.table_id.clone(),
-        table_namespace: table_info.table_namespace.clone(),
-        domain: table_info.domain.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -1397,6 +1396,77 @@ mod tests {
         assert_eq!(commits[0].timestamp, 123);
         assert_eq!(commits[0].domain, "public");
         assert!(commits.iter().all(|commit| commit.commit_id.is_some()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_create_table_if_not_exists_has_one_winner() {
+        // Separate clients exercise PostgreSQL arbitration rather than the
+        // per-client mutex.
+        let first_client = MetaDataClient::from_env().await.unwrap();
+        let second_client = MetaDataClient::from_env().await.unwrap();
+        let suffix = uuid::Uuid::new_v4();
+        let table_name = format!("concurrent_create_{suffix}");
+        let first = TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_namespace: "default".to_string(),
+            table_name: table_name.clone(),
+            table_path: format!("file:///tmp/{table_name}_first"),
+            properties: "{}".to_string(),
+            domain: "public".to_string(),
+            ..Default::default()
+        };
+        let second = TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_path: format!("file:///tmp/{table_name}_second"),
+            ..first.clone()
+        };
+
+        let (first_result, second_result) = tokio::join!(
+            first_client.create_table_if_not_exists(first.clone()),
+            second_client.create_table_if_not_exists(second.clone()),
+        );
+        let outcomes = [first_result.unwrap(), second_result.unwrap()];
+        assert_eq!(outcomes.into_iter().filter(|created| *created).count(), 1);
+
+        let stored = first_client
+            .get_table_info_by_table_name(&table_name, "default")
+            .await
+            .unwrap()
+            .expect("the winning table must be complete");
+        let winner = if stored.table_id == first.table_id {
+            &first
+        } else {
+            assert_eq!(stored.table_id, second.table_id);
+            &second
+        };
+        let loser = if winner.table_id == first.table_id {
+            &second
+        } else {
+            &first
+        };
+        assert_eq!(stored, *winner);
+        assert_eq!(
+            first_client
+                .get_table_path_id_by_table_path(&winner.table_path)
+                .await
+                .unwrap()
+                .unwrap()
+                .table_id,
+            winner.table_id
+        );
+        assert!(
+            first_client
+                .get_table_path_id_by_table_path(&loser.table_path)
+                .await
+                .unwrap()
+                .is_none(),
+            "the losing statement must not leave partial metadata"
+        );
+
+        first_client
+            .delete_table_by_table_info_cascade(&stored)
+            .await
+            .unwrap();
     }
 
     #[test]

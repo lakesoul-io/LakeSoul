@@ -12,11 +12,13 @@ use datafusion::catalog::{CatalogProvider, SchemaProvider, Session};
 use datafusion::error::{DataFusionError, Result};
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata_proto::entity::Namespace;
+use rootcause::report;
 
 use crate::catalog::LakeSoulNamespace;
 use crate::catalog::snapshot::{
     CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, wait_on_runtime,
 };
+use crate::error::df_external_err;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LakeSoulProviderOptions {
@@ -112,7 +114,7 @@ impl CatalogProvider for LakeSoulCatalog {
         // listing methods) concurrently and often, and blocking each call on a
         // metadata round trip parked runtime worker threads.
         self.snapshot.ensure_loaded();
-        if self.snapshot.never_refreshed() {
+        if self.snapshot.is_never_refreshed() {
             self.snapshot.spawn_refresh_if_stale();
         }
         self.snapshot.namespaces()
@@ -161,8 +163,9 @@ impl CatalogProvider for LakeSoulCatalog {
                     .get_namespace_by_namespace(&name)
                     .await
                     .map(|namespace| namespace.is_some())
-                    .map_err(|err| DataFusionError::External(Box::new(err)))
-            })?
+                    .map_err(|e| report!(e).into_dynamic())
+            })
+            .map_err(df_external_err)?
         };
         if !existed {
             // use default value
@@ -176,8 +179,9 @@ impl CatalogProvider for LakeSoulCatalog {
                 client
                     .create_namespace(np)
                     .await
-                    .map_err(|err| DataFusionError::External(Box::new(err)))
-            })?;
+                    .map_err(|e| report!(e).into_dynamic())
+            })
+            .map_err(df_external_err)?;
         }
         // Published to the view: the write must be visible to the next listing,
         // while a listing failure must never turn an already committed write
@@ -292,7 +296,7 @@ mod tests {
 
         // Built outside the runtime: the view is cold and stays empty until
         // somebody refreshes it from an async context.
-        assert!(catalog.snapshot().never_refreshed());
+        assert!(catalog.snapshot().is_never_refreshed());
         assert!(catalog.schema_names().is_empty());
         // Cold view: existence checks answer "no schema" instead of blocking
         // (or panicking) on a metadata query.

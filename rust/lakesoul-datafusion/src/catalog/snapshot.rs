@@ -45,12 +45,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use datafusion::error::DataFusionError;
 use parking_lot::{Mutex, RwLock};
+use rootcause::bail;
+use rootcause::prelude::ResultExt;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::MetaDataClientRef;
+use crate::Result;
 
 /// How often a catalog snapshot refreshes itself by default.
 pub const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -156,14 +158,14 @@ impl CatalogSnapshot {
 
     /// Whether `table` exists in `namespace` in the view (ASCII
     /// case-insensitive, like the metadata lookup it replaces).
-    pub fn table_exists(&self, namespace: &str, table: &str) -> bool {
+    pub fn is_table_exists(&self, namespace: &str, table: &str) -> bool {
         self.view.read().tables(namespace).is_some_and(|names| {
             names.iter().any(|name| name.eq_ignore_ascii_case(table))
         })
     }
 
     /// Whether the view has never been fully loaded.
-    pub fn never_refreshed(&self) -> bool {
+    pub fn is_never_refreshed(&self) -> bool {
         self.view.read().refreshed_at.is_none()
     }
 
@@ -173,7 +175,7 @@ impl CatalogSnapshot {
     /// Refreshes are serialized and the view is replaced only after every
     /// query succeeded, so a failed refresh keeps the last known-good view and
     /// a slow refresh cannot overwrite a newer one.
-    pub async fn refresh(&self) -> Result<(), DataFusionError> {
+    pub async fn refresh(&self) -> Result<()> {
         let _publish = self.refresh_lock.lock().await;
         self.fetch_and_publish().await
     }
@@ -182,30 +184,25 @@ impl CatalogSnapshot {
     ///
     /// Concurrent callers coalesce into a single metadata scan: the first one
     /// loads while the others wait for the lock and then return immediately.
-    pub async fn load(&self) -> Result<(), DataFusionError> {
-        if !self.never_refreshed() {
+    pub async fn load(&self) -> Result<()> {
+        if !self.is_never_refreshed() {
             return Ok(());
         }
         let _publish = self.refresh_lock.lock().await;
-        if !self.never_refreshed() {
+        if !self.is_never_refreshed() {
             return Ok(());
         }
         self.fetch_and_publish().await
     }
 
-    async fn fetch_and_publish(&self) -> Result<(), DataFusionError> {
-        let namespaces = self
-            .client
-            .get_all_namespace()
-            .await
-            .map_err(|err| DataFusionError::External(Box::new(err)))?;
+    async fn fetch_and_publish(&self) -> Result<()> {
+        let namespaces = self.client.get_all_namespace().await?;
         let mut tables = HashMap::with_capacity(namespaces.len());
         for namespace in &namespaces {
             let names = self
                 .client
                 .get_all_table_name_id_by_namespace(&namespace.namespace)
-                .await
-                .map_err(|err| DataFusionError::External(Box::new(err)))?;
+                .await?;
             tables.insert(
                 namespace.namespace.clone(),
                 names.into_iter().map(|id| id.table_name).collect(),
@@ -244,7 +241,7 @@ impl CatalogSnapshot {
     /// refresher and the caller may see an empty view once.
     pub fn ensure_loaded(self: &Arc<Self>) {
         self.ensure_refresher();
-        if !self.never_refreshed() {
+        if !self.is_never_refreshed() {
             return;
         }
         let snapshot = Arc::clone(self);
@@ -261,7 +258,11 @@ impl CatalogSnapshot {
             debug!("catalog snapshot has no tokio runtime yet: refresher deferred");
             return;
         };
-        if self.refresher_running.swap(true, Ordering::AcqRel) {
+        if self
+            .refresher_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return;
         }
         // Built before spawning and moved into the task: the flag is reset when
@@ -339,25 +340,18 @@ impl Drop for FlagGuard {
 /// (the previous `Handle::current()` implementation panicked there) and on a
 /// current-thread runtime, where waiting for a spawned task would deadlock
 /// (the previous `block_in_place` implementation aborted there).
-pub(crate) fn wait_on_runtime<T, F>(future: F) -> Result<T, DataFusionError>
+pub(crate) fn wait_on_runtime<T, F>(future: F) -> Result<T>
 where
-    F: Future<Output = Result<T, DataFusionError>> + Send + 'static,
+    F: Future<Output = Result<T>> + Send + 'static,
     T: Send + 'static,
 {
-    let handle = Handle::try_current().map_err(|_| {
-        DataFusionError::Configuration(
-            "LakeSoul metadata writes require a tokio runtime".to_string(),
-        )
-    })?;
+    let handle = Handle::try_current()
+        .context("LakeSoul metadata writes require a tokio runtime")?;
     if handle.runtime_flavor() != RuntimeFlavor::MultiThread {
-        return Err(DataFusionError::Configuration(
-            "LakeSoul metadata writes require a multi-thread tokio runtime".to_string(),
-        ));
+        bail!("LakeSoul metadata writes require a multi-thread tokio runtime")
     }
-    // `block_in_place` keeps this from blocking the runtime's workers: the
-    // runtime can poll the spawned metadata task on another worker.
-    tokio::task::block_in_place(|| futures::executor::block_on(handle.spawn(future)))
-        .map_err(|err| {
-            DataFusionError::Internal(format!("metadata task failed: {err}"))
-        })?
+    // `block_in_place` tells Tokio that this worker is about to block, allowing
+    // the multi-thread runtime to move other tasks to another worker while this
+    // thread synchronously drives the future with `Handle::block_on`.
+    tokio::task::block_in_place(|| handle.block_on(future))
 }

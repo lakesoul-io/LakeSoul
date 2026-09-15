@@ -20,6 +20,7 @@ pub mod cli;
 pub mod datasource;
 pub mod index;
 pub mod distributed;
+mod error;
 pub mod lakesoul_table;
 pub mod planner;
 pub mod session;
@@ -28,7 +29,6 @@ pub mod udf;
 pub mod vector_index;
 
 // re export
-pub use datafusion::*;
 pub use lakesoul_common::ser;
 pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 

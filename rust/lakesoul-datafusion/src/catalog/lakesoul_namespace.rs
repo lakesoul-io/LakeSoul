@@ -15,12 +15,16 @@ use datafusion::error::Result as DFResult;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use rootcause::compat::boxed_error::IntoBoxedError;
+use rootcause::prelude::ResultExt;
+use rootcause::report;
 
+use crate::Result;
 use crate::catalog::LakeSoulProviderOptions;
 use crate::catalog::snapshot::{
     CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, wait_on_runtime,
 };
 use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::error::df_external_err;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::lakesoul_table::helpers::case_fold_table_name;
 
@@ -73,7 +77,7 @@ impl LakeSoulNamespace {
     }
 
     /// Refreshes the snapshot this namespace lists its tables from.
-    pub async fn refresh(&self) -> Result<(), DataFusionError> {
+    pub async fn refresh(&self) -> Result<()> {
         self.snapshot.refresh().await
     }
 
@@ -176,49 +180,18 @@ impl SchemaProvider for LakeSoulNamespace {
                 })?;
 
         let client = self.metadata_client.clone();
-        let table_info = lakesoul_table.table_info();
-        let table_name = table_info.table_name.clone();
-        let table_info = table_info.as_ref().clone();
-        // Authoritative existence check: the view can be stale, and creating
-        // unconditionally would fail with a duplicate key — after partial
-        // metadata inserts — for `CREATE EXTERNAL TABLE IF NOT EXISTS`.
-        let existed = {
-            let client = client.clone();
-            let namespace = self.namespace.clone();
-            let table_name = table_name.clone();
-            wait_on_runtime(async move {
-                match LakeSoulTable::for_namespace_and_name(
-                    &namespace,
-                    &table_name,
-                    Some(client),
-                )
+        let table_info = lakesoul_table.table_info().as_ref().clone();
+        // Let PostgreSQL's unique constraint arbitrate concurrent creators.
+        // A check followed by create is racy even when the check reads live
+        // metadata: two sessions can both observe the table as absent.
+        let created = wait_on_runtime(async move {
+            client
+                .create_table_if_not_exists(table_info)
                 .await
-                {
-                    Ok(_) => Ok(true),
-                    // Only a missing table means "create it": a metadata
-                    // failure or an unreadable existing table must not be
-                    // turned into a create attempt.
-                    Err(report) => {
-                        if matches!(
-                            report.current_context(),
-                            LakeSoulMetaDataError::NotFound(_)
-                        ) {
-                            Ok(false)
-                        } else {
-                            Err(DataFusionError::External(report.into_boxed_error()))
-                        }
-                    }
-                }
-            })?
-        };
-        if !existed {
-            wait_on_runtime(async move {
-                client
-                    .create_table(table_info)
-                    .await
-                    .map_err(|e| DataFusionError::External(Box::new(e)))
-            })?;
-        }
+                .map_err(|e| report!(e).into_dynamic())
+        })
+        .map_err(|rep| DataFusionError::External(rep.into_boxed_error()))?;
+        let existed = !created;
         // Published to the view: the write must be visible to the next listing,
         // while a listing failure must never turn an already committed write
         // into an error for the caller.
@@ -227,7 +200,6 @@ impl SchemaProvider for LakeSoulNamespace {
     }
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
-    #[allow(unused_variables)]
     fn deregister_table(&self, name: &str) -> DFResult<Option<Arc<dyn TableProvider>>> {
         debug!(
             "LakeSoulNamespace::deregister_table - Deregistering table '{}' from namespace '{}'",
@@ -252,19 +224,16 @@ impl SchemaProvider for LakeSoulNamespace {
                     client
                         .delete_table_by_table_info_cascade(&table.table_info())
                         .await
-                        .map_err(|_| {
-                            DataFusionError::External("delete table info failed".into())
-                        })?;
-                    Ok(Some(table.as_provider(pushdown_filters).await.map_err(
-                        |e| DataFusionError::External(e.into_boxed_error()),
-                    )?))
+                        .context("delete table info failed")?;
+                    Ok(Some(table.as_provider(pushdown_filters).await?))
                 }
                 Err(report) => match report.current_context() {
                     LakeSoulMetaDataError::NotFound(_) => Ok(None),
-                    _ => Err(DataFusionError::External("get table info failed".into())),
+                    _ => Err(report!("get table info failed")),
                 },
             }
-        })?;
+        })
+        .map_err(df_external_err)?;
         // Published to the view: the write must be visible to the next listing,
         // while a listing failure must never turn an already committed write
         // into an error for the caller.
@@ -281,7 +250,7 @@ impl SchemaProvider for LakeSoulNamespace {
         info!("table_exist: {:?} {:?}", name, &self.namespace);
         // Answered from the snapshot; see `table_names`.
         self.snapshot.ensure_loaded();
-        let exists = self.snapshot.table_exists(&self.namespace, name);
+        let exists = self.snapshot.is_table_exists(&self.namespace, name);
         if !exists {
             // Unknown namespace *or* a table created since the last refresh:
             // converge in the background instead of reporting a permanent miss.
