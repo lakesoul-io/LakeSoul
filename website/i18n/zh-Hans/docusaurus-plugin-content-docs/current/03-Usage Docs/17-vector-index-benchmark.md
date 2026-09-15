@@ -219,8 +219,8 @@ recall 已降到约 0.8；逐簇规则在前几轮即触发，这正是 E1 中 `
   加载器现在对单 segment 簇直接复用、对已按 32 对齐的段直接拼接、其余在读取各簇的同时按
   batch 并行重打包。相比最初实现，**delta 较多的索引打开提速 4–5×**（GIST 1.31 s → 0.27 s），
   **全新索引最多约 12×**（GIST 0.69 s → 0.06 s）。
-- 由于检索在各状态下都能正常工作，重建可以独立于查询服务进行调度；reader 通过 manifest
-  的 `LATEST` 指针切换到新 generation。
+- 由于检索在各状态下都能正常工作，重建可以独立于查询服务进行调度；reader 在元数据
+  catalog 解析到新 commit 时切换到新 generation。
 
 ### E5 — DataFusion SQL 端到端（写入 + 检索）
 
@@ -312,8 +312,11 @@ manifest 仍解析到同一 commit 就直接复用；重建或增量提交会发
   `file_format`；现在使用支持多格式的 writer，建表可指定
   `file_format = "vortex"`。在 recall 相同的前提下，每次 SQL 查询 vortex 比 parquet 约快
   1.9×（GloVe）/ 3.1×（GIST），因为 vortex 的候选扫描剪枝更快。
-- **磁盘索引包含所有历史 generation**：segment 不可变且不做垃圾回收，因此重建后
-  `_vector_index/` 目录（此处 GIST 为 412 MB）大于当前 generation。压缩/GC 是自然的后续工作。
+- **索引文件会被垃圾回收**：commit 历史与读租约存放在元数据库的 `vector_index_*` 表中，
+  每次写入后，被取代且超过宽限期（`gc_grace_seconds`，默认 1 小时，配置在
+  `vector_index_columns` JSON 属性里）且没有活跃租约的 generation 会被清理。另有显式
+  `gc_vector_index` API（`LakeSoulTable` 上也可用）用于按需清理，并删除已 drop 分区的
+  控制面记录。
 
 ## 建议
 
