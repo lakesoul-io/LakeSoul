@@ -147,8 +147,8 @@ def test_e2e_glove_local_writer():
     for bid in bucket_files:
         idx_dir = f"{tmp_dir}/_vector_index/vec/-5/{bid}/"
         idx_files = glob.glob(f"{idx_dir}**", recursive=True)
-        assert any("LATEST" in f for f in idx_files), (
-            f"Bucket {bid}: missing LATEST in {idx_dir}"
+        assert any(f.endswith(".seg") for f in idx_files), (
+            f"Bucket {bid}: missing index segments in {idx_dir}"
         )
         print(f"      Bucket {bid}: {len(idx_files)} index file(s) at {idx_dir}")
     print(f"[4/6] {n_buckets} independent index directories verified")
@@ -277,7 +277,7 @@ def test_e2e_glove_catalog():
     import glob
 
     n_shards = 0
-    for f in glob.glob(f"{table_path}/_vector_index/vec/**/LATEST", recursive=True):
+    for f in glob.glob(f"{table_path}/_vector_index/vec/**/*.seg", recursive=True):
         n_shards += 1
     assert n_shards >= 2, f"Expected ≥2 shard indexes built, got {n_shards}"
     print(f"[2/7] Index auto-built after write: {n_shards} shard(s)")

@@ -243,7 +243,7 @@ def test_create_table_valid_config_creates_and_auto_builds(tmp_path) -> None:
             vector_index=[{"column": "vec", "dim": DIM, "nlist": 2, "total_bits": 7}],
         )
         table.write_arrow(_random_vectors_table(16))
-        assert glob.glob(f"{path}/_vector_index/vec/**/LATEST", recursive=True), (
+        assert glob.glob(f"{path}/_vector_index/vec/**/*.seg", recursive=True), (
             "valid config should auto-build indexes on write_arrow"
         )
     finally:
