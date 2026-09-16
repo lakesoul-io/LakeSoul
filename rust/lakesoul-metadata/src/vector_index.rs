@@ -213,6 +213,15 @@ impl std::fmt::Debug for PgCatalog {
 /// per process even when `script/meta_init.sql` was not re-applied.
 static TABLES_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
+/// Process-wide cache of resolved views, so warm queries only pay for a
+/// cheap commit-id check instead of fetching the (potentially large)
+/// segment list.
+static VIEW_CACHE: std::sync::LazyLock<
+    tokio::sync::Mutex<std::collections::HashMap<String, IndexCommitView>>,
+> = std::sync::LazyLock::new(
+    || tokio::sync::Mutex::new(std::collections::HashMap::new()),
+);
+
 impl PgCatalog {
     pub(crate) fn from_pooled(
         client: Arc<Mutex<PooledClient>>,
@@ -250,6 +259,48 @@ impl PgCatalog {
         self.ensure_tables().await?;
         let guard = self.client.lock().await;
         resolve_with(&guard, index_prefix).await
+    }
+
+    /// Resolve for the query hot path: check the commit id cheaply and only
+    /// fetch header/segments when the process has not seen this commit yet.
+    pub async fn resolve_cached(
+        &self,
+        index_prefix: &str,
+    ) -> Result<Option<IndexCommitView>> {
+        self.ensure_tables().await?;
+        let guard = self.client.lock().await;
+        let current: Option<i64> = guard
+            .query_opt(
+                "select commit_id from vector_index_commit c \
+                 join vector_index_shard sh using (shard_id) \
+                 where sh.index_prefix = $1 \
+                 order by generation desc, version desc limit 1",
+                QueryType::RO,
+                &[&index_prefix],
+            )
+            .await?
+            .map(|row| row.get(0));
+        let Some(commit_id) = current else {
+            return Ok(None);
+        };
+        {
+            let cache = VIEW_CACHE.lock().await;
+            if let Some(view) = cache.get(index_prefix)
+                && view.commit_id == commit_id
+            {
+                return Ok(Some(view.clone()));
+            }
+        }
+        let view = resolve_with(&guard, index_prefix).await?;
+        if let Some(view) = &view {
+            let mut cache = VIEW_CACHE.lock().await;
+            // Keep the map bounded by the number of live shards.
+            if cache.len() > 4096 {
+                cache.clear();
+            }
+            cache.insert(index_prefix.to_string(), view.clone());
+        }
+        Ok(view)
     }
 
     /// Publish a commit and return the refreshed view.
@@ -580,16 +631,13 @@ async fn resolve_with(
     client: &PooledClient,
     index_prefix: &str,
 ) -> Result<Option<IndexCommitView>> {
-    // One round trip: the current commit plus the cumulative segment list of
+    // One row: the current commit carries the cumulative segment list of
     // its generation.
     let row = client
         .query_opt(
-            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, \
-                    coalesce((select jsonb_agg(s.segments order by s.version) from vector_index_commit s \
-                              where s.shard_id = sh.shard_id and s.generation = c.generation \
-                                and s.version <= c.version), '[]'::jsonb) \
+            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, c.segments \
              from vector_index_shard sh \
-             join lateral (select commit_id, shard_id, generation, version, header \
+             join lateral (select commit_id, shard_id, generation, version, header, segments \
                            from vector_index_commit where shard_id = sh.shard_id \
                            order by generation desc, version desc limit 1) c on true \
              where sh.index_prefix = $1",
@@ -607,17 +655,7 @@ async fn resolve_with(
     let header: Vec<u8> = row.get(4);
     let segments_json: serde_json::Value = row.get(5);
 
-    let mut segments: Vec<IndexSegmentEntry> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    if let Some(commit_arrays) = segments_json.as_array() {
-        for entry in commit_arrays {
-            for segment in parse_segments(entry.clone())? {
-                if seen.insert(segment.filename.clone()) {
-                    segments.push(segment);
-                }
-            }
-        }
-    }
+    let mut segments = parse_segments(segments_json)?;
     // Deterministic base-then-deltas order per cluster.
     segments.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
 
@@ -703,16 +741,19 @@ async fn try_commit(
     let mut conn = client.get(QueryType::RW).await?;
     let tx = conn.transaction().await?;
 
-    let current: Option<(i64, i64)> = tx
+    let current: Option<(i64, i64, serde_json::Value)> = tx
         .query_opt(
-            "select generation, version from vector_index_commit \
+            "select generation, version, segments from vector_index_commit \
              where shard_id = $1 order by generation desc, version desc limit 1",
             &[&shard_id],
         )
         .await?
-        .map(|row| (row.get::<_, i64>(0), row.get::<_, i64>(1)));
+        .map(|row| (row.get(0), row.get(1), row.get(2)));
 
-    let (generation, version) = match (mode, current) {
+    let current_key = current
+        .as_ref()
+        .map(|(generation, version, _)| (*generation, *version));
+    let (generation, version) = match (mode, current_key) {
         (CommitMode::Delta, Some((generation, version))) => {
             (generation.max(1), version + 1)
         }
@@ -731,7 +772,24 @@ async fn try_commit(
         .await?;
     }
 
-    let segments_json = serde_json::to_value(segments)?;
+    // Every commit row carries the cumulative segment list of its
+    // generation, so resolve() reads a single row instead of aggregating
+    // the arrays of all versions.
+    let mut cumulative: Vec<IndexSegmentEntry> = match (mode, &current) {
+        (CommitMode::Delta, Some((_, _, value))) => parse_segments(value.clone())?,
+        _ => Vec::new(),
+    };
+    let mut seen: std::collections::HashSet<String> = cumulative
+        .iter()
+        .map(|segment| segment.filename.clone())
+        .collect();
+    for segment in segments {
+        if seen.insert(segment.filename.clone()) {
+            cumulative.push(segment.clone());
+        }
+    }
+    cumulative.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
+    let segments_json = serde_json::to_value(&cumulative)?;
     let row = tx
         .query_one(
             "insert into vector_index_commit \
@@ -756,7 +814,7 @@ async fn try_commit(
         generation: generation as u64,
         version: version as u64,
         header: header.to_vec(),
-        segments: segments.to_vec(),
+        segments: cumulative,
     })
 }
 
@@ -765,16 +823,20 @@ async fn collect_filenames(
     shard_id: i64,
     generations: &[i64],
 ) -> Result<Vec<String>> {
+    // The latest commit of each generation carries that generation's full
+    // cumulative segment list.
     let rows = if generations.is_empty() {
         tx.query(
-            "select segments from vector_index_commit where shard_id = $1",
+            "select distinct on (generation) generation, segments from vector_index_commit \
+             where shard_id = $1 order by generation, version desc",
             &[&shard_id],
         )
         .await?
     } else {
         tx.query(
-            "select segments from vector_index_commit \
-             where shard_id = $1 and generation = any($2)",
+            "select distinct on (generation) generation, segments from vector_index_commit \
+             where shard_id = $1 and generation = any($2) \
+             order by generation, version desc",
             &[&shard_id, &generations],
         )
         .await?
@@ -782,7 +844,7 @@ async fn collect_filenames(
     let mut filenames = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for row in rows {
-        for segment in parse_segments(row.get::<_, serde_json::Value>(0))? {
+        for segment in parse_segments(row.get::<_, serde_json::Value>(1))? {
             if seen.insert(segment.filename.clone()) {
                 filenames.push(segment.filename);
             }

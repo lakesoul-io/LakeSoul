@@ -949,17 +949,19 @@ impl FileExistCols for Footer {
 /// assert_eq!(extract_hash_bucket_id(path), Some(42));
 /// ```
 pub fn extract_hash_bucket_id(file_path: &str) -> Option<u32> {
-    use regex::Regex;
+    use std::sync::LazyLock;
+
+    // Compiled once: this is called for every file on hot paths (scan
+    // planning, index prefix derivation) and `Regex::new` per call used to
+    // cost hundreds of microseconds.
+    static HASH_BUCKET_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"part-.*_(\d+)(?:\..+)?$").expect("valid regex")
+    });
 
     // Get the file name from the path
     let file_name = file_path.split('/').next_back()?;
 
-    // Regex pattern to extract the hash bucket id between the last underscore and any suffix
-    // This pattern matches filenames starting with "part-" and containing an underscore
-    // followed by digits before any optional suffix
-    let re = Regex::new(r"part-.*_(\d+)(?:\..+)?$").ok()?;
-
-    if let Some(captures) = re.captures(file_name)
+    if let Some(captures) = HASH_BUCKET_RE.captures(file_name)
         && let Some(id_match) = captures.get(1)
     {
         return id_match.as_str().parse::<u32>().ok();

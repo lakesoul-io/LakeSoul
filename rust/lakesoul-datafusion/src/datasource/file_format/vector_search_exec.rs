@@ -145,16 +145,20 @@ impl LakeSoulVectorSearchExec {
         let mut resolved_shards = Vec::with_capacity(index_prefixes.len());
         let mut leases = Vec::with_capacity(index_prefixes.len());
         for (index_prefix, _bucket) in index_prefixes {
-            let view = self.catalog.resolve(&index_prefix).await.map_err(|error| {
-                DataFusionError::External(
-                    rootcause::report!(
-                        "failed to resolve vector index at '{}': {}",
-                        index_prefix,
-                        error
-                    )
-                    .into_boxed_error(),
-                )
-            })?;
+            let view =
+                self.catalog
+                    .resolve_cached(&index_prefix)
+                    .await
+                    .map_err(|error| {
+                        DataFusionError::External(
+                            rootcause::report!(
+                                "failed to resolve vector index at '{}': {}",
+                                index_prefix,
+                                error
+                            )
+                            .into_boxed_error(),
+                        )
+                    })?;
             let Some(view) = view else {
                 continue;
             };

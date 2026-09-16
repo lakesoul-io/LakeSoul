@@ -102,7 +102,7 @@ async fn resolve_vector_shards(
     let mut shards = Vec::with_capacity(prefixes.len());
     let mut leases = Vec::with_capacity(prefixes.len());
     for (index_prefix, _bucket) in prefixes {
-        let view = match catalog.resolve(&index_prefix).await {
+        let view = match catalog.resolve_cached(&index_prefix).await {
             Ok(Some(view)) => view,
             Ok(None) => continue,
             Err(error) => {
