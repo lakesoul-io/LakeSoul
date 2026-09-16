@@ -515,3 +515,85 @@ fn test_all_cases() {
     test_catalog_sql();
     test_catalog_sql_partitioned_insert_column_order();
 }
+
+/// Regression test for a silent data-loss bug: when inserting into a table that
+/// uses the LakeSoul hash sink (primary keys and/or range partitions), the
+/// planner wrapped the query plan in a `SortExec` that collapsed its input to a
+/// single partition. Only the first partition of a multi-partition source was
+/// therefore written. The TPC-H table functions are a convenient multi-partition
+/// source (`num_parts = 4` below).
+#[test]
+fn test_insert_from_multi_partition_source_keeps_all_rows() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let sc = create_lakesoul_session_ctx(client, &CoreArgs::default()).unwrap();
+        crate::tpch::register_tpch_udtfs(&sc).unwrap();
+
+        let rng = &mut rand::rng();
+        let namespace = format!("multi_part_{}", rng.random::<u32>());
+        let table_name = format!("supplier_{}", rng.random::<u32>());
+        let table_path = format!(
+            "file://{}/test_data/{}/{}",
+            env::current_dir()
+                .unwrap_or(env::temp_dir())
+                .to_str()
+                .unwrap(),
+            namespace,
+            table_name
+        );
+
+        sc.sql(&format!("create schema lakesoul.{namespace}"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        sc.sql(&format!(
+            "CREATE EXTERNAL TABLE lakesoul.{namespace}.{table_name} (
+                s_suppkey BIGINT NOT NULL,
+                s_name STRING NOT NULL,
+                s_address STRING NOT NULL,
+                s_nationkey BIGINT NOT NULL,
+                s_phone STRING NOT NULL,
+                s_acctbal DECIMAL(15,2) NOT NULL,
+                s_comment STRING NOT NULL,
+                PRIMARY KEY (s_suppkey)
+            )
+            STORED AS LAKESOUL
+            OPTIONS ('hashBucketNum' '4')
+            LOCATION '{table_path}'"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+        // TPC-H SF 0.1 has 1000 suppliers, generated across 4 partitions.
+        sc.sql(&format!(
+            "INSERT INTO lakesoul.{namespace}.{table_name} \
+             SELECT * FROM tpch_supplier(0.1, 4)"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+        let batches = sc
+            .sql(&format!(
+                "SELECT COUNT(*) AS c FROM lakesoul.{namespace}.{table_name}"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &["+------+", "| c    |", "+------+", "| 1000 |", "+------+"],
+            &batches
+        );
+    });
+}

@@ -14,7 +14,8 @@ use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr}
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use async_trait::async_trait;
@@ -147,12 +148,47 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             .map_err(|report| {
                                 DataFusionError::External(report.into_boxed_error())
                             })?;
-                            let sort_exec = Arc::new(SortExec::new(
-                                LexOrdering::new(sort_expr).ok_or(
-                                    DataFusionError::Plan("empty sort expr".into()),
-                                )?,
-                                physical_input,
-                            ));
+                            // The partitioning writer appends batches to the
+                            // range/bucket files in encounter order and never
+                            // sorts again, so it needs a single stream ordered by
+                            // `range_partitions + primary_keys` *globally*. This
+                            // wrapper runs after the input plan was already
+                            // optimized and the DML plan is never optimized again,
+                            // so the ordering has to be built here without losing
+                            // what the input already provides:
+                            // - a single-partition input is sorted in place;
+                            //   `SortExec` passes input through untouched at
+                            //   runtime when it already satisfies the ordering, so
+                            //   wrapping a CoalescePartitionsExec around it first
+                            //   (which clears the ordering metadata) would force
+                            //   an ordered input such as
+                            //   `INSERT ... SELECT ... ORDER BY pk` through another
+                            //   blocking sort;
+                            // - a multi-partition input sorts every partition and
+                            //   merges the sorted streams: a plain `SortExec` over
+                            //   several partitions only reads the first one, and
+                            //   coalescing first would funnel every row of the
+                            //   insert through a single blocking sorter, since the
+                            //   per-partition-sort + merge rewrite of the physical
+                            //   optimizer never runs on this plan.
+                            let ordering = LexOrdering::new(sort_expr)
+                                .ok_or(DataFusionError::Plan("empty sort expr".into()))?;
+                            let sorted_input: Arc<dyn ExecutionPlan> =
+                                if physical_input.output_partitioning().partition_count()
+                                    <= 1
+                                {
+                                    Arc::new(SortExec::new(ordering, physical_input))
+                                } else {
+                                    let per_partition = Arc::new(
+                                        SortExec::new(ordering.clone(), physical_input)
+                                            .with_preserve_partitioning(true),
+                                    );
+                                    Arc::new(SortPreservingMergeExec::new(
+                                        ordering,
+                                        per_partition,
+                                    ))
+                                };
+                            let sort_exec = sorted_input;
                             Arc::new(
                                 RepartitionByRangeAndHashExec::try_new(
                                     sort_exec,
