@@ -20,6 +20,10 @@ on:
       - "release/**"
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   run-pytest:
     runs-on: ubuntu-24.04

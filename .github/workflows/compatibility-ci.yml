@@ -49,6 +49,10 @@ on:
           - "smoke"
           - "full"
 
+defaults:
+  run:
+    shell: bash
+
 env:
   RUSTFLAGS: "-Awarnings"
   LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
