@@ -17,6 +17,7 @@ Requires a live PostgreSQL metadata store.
 
 from __future__ import annotations
 
+import glob
 import os
 import struct
 
@@ -93,7 +94,7 @@ def _assert_per_partition_indexes(table_path: str, result) -> int:
             segments.append(partition)
         segments += ["_vector_index", "vec", "-5", str(bucket)]
         idx_dir = os.path.join(*segments)
-        if not os.path.exists(os.path.join(idx_dir, "LATEST")):
+        if not glob.glob(os.path.join(idx_dir, "*.seg")):
             missing.append((partition, bucket, idx_dir))
     assert not missing, (
         f"missing per-(partition,bucket) indexes: {missing}. "

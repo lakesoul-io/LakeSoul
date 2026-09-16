@@ -264,12 +264,15 @@ fn vector_configs() -> Vec<crate::vector_index::VectorIndexTableConfig> {
         use_faster_config: true,
         rebuild_mode: "auto".to_string(),
         max_delta_ratio: 1.0,
+        gc_enabled: true,
+        gc_grace_seconds: 3600,
+        gc_keep_generations: 1,
     }]
 }
 
 /// Assert that the table's vector index is committed: the
-/// `_vector_index/vec` tree contains at least one `LATEST` manifest (each
-/// built shard directory is sealed with one).
+/// `_vector_index/vec` tree contains at least one segment file (the
+/// control plane row is committed by the metadata catalog).
 fn assert_vector_index_built(table_name: &str) {
     let root = std::env::current_dir()
         .unwrap()
@@ -277,21 +280,21 @@ fn assert_vector_index_built(table_name: &str) {
         .join(table_name);
     let index_dir = root.join("_vector_index").join("vec");
     assert!(index_dir.exists(), "no _vector_index dir at {index_dir:?}");
-    let mut latest_count = 0usize;
+    let mut segment_count = 0usize;
     let mut stack = vec![index_dir.clone()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.file_name().map(|n| n == "LATEST").unwrap_or(false) {
-                latest_count += 1;
+            } else if path.extension().map(|e| e == "seg").unwrap_or(false) {
+                segment_count += 1;
             }
         }
     }
     assert!(
-        latest_count >= 1,
-        "expected a committed LATEST manifest under {index_dir:?}"
+        segment_count >= 1,
+        "expected a committed segment under {index_dir:?}"
     );
 }
 
@@ -971,26 +974,20 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
 
 /// Read the `generation` field of every LATEST manifest under the table's
 /// `_vector_index` tree.
-fn latest_generations(table_name: &str) -> Vec<u64> {
+/// Current index generation of every index shard under the table
+/// directory, read from the metadata catalog.
+async fn latest_generations(client: &MetaDataClient, table_name: &str) -> Vec<u64> {
+    let catalog = lakesoul_metadata::vector_index::PgCatalog::from_client(client);
     let root = std::env::current_dir()
         .unwrap()
         .join("default")
         .join(table_name);
+    let prefix =
+        lakesoul_metadata::vector_index::normalize_index_prefix(root.to_str().unwrap());
     let mut out = Vec::new();
-    let mut stack = vec![root.join("_vector_index")];
-    while let Some(dir) = stack.pop() {
-        if !dir.exists() {
-            continue;
-        }
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.file_name().map(|n| n == "LATEST").unwrap_or(false) {
-                let text = std::fs::read_to_string(&path).unwrap();
-                let generation = text.split(':').next().unwrap().parse::<u64>().unwrap();
-                out.push(generation);
-            }
+    for shard in catalog.list_shards_under(&prefix).await.unwrap() {
+        if let Some(view) = catalog.resolve(&shard).await.unwrap() {
+            out.push(view.generation);
         }
     }
     out.sort_unstable();
@@ -1033,16 +1030,19 @@ async fn incremental_writes_auto_rebuild_when_delta_ratio_exceeded() {
     let mut stored = Vec::new();
     write(100, &mut stored).await;
     assert!(
-        latest_generations(table_name).iter().all(|g| *g == 1),
+        latest_generations(&client, table_name)
+            .await
+            .iter()
+            .all(|g| *g == 1),
         "fresh build publishes generation 1: {:?}",
-        latest_generations(table_name)
+        latest_generations(&client, table_name).await
     );
 
     // w2: 10 more rows (10% drift vs base=100) — still incremental (the
     // ratio is only checked on the *next* write), generation stays at 1.
     write(10, &mut stored).await;
     write(10, &mut stored).await;
-    let gens = latest_generations(table_name);
+    let gens = latest_generations(&client, table_name).await;
     assert!(
         gens.iter().any(|g| *g >= 2),
         "drift past max_delta_ratio must rebuild (new generation): {gens:?}"
@@ -1109,7 +1109,7 @@ async fn rebuild_mode_none_never_rebuilds() {
     write(50).await;
     write(50).await;
     write(50).await;
-    let gens = latest_generations(table_name);
+    let gens = latest_generations(&client, table_name).await;
     assert!(
         gens.iter().all(|g| *g == 1),
         "rebuild_mode 'none' must never rebuild: {gens:?}"
@@ -1150,17 +1150,23 @@ async fn manual_rebuild_vector_index_rebuilds_all_shards() {
         table.execute_upsert(batch).await.unwrap();
     }
     assert!(
-        latest_generations(table_name).iter().all(|g| *g == 1),
+        latest_generations(&client, table_name)
+            .await
+            .iter()
+            .all(|g| *g == 1),
         "no auto rebuild expected: {:?}",
-        latest_generations(table_name)
+        latest_generations(&client, table_name).await
     );
 
     let rebuilt = table.rebuild_vector_index().await.unwrap();
     assert!(rebuilt >= 1, "at least one shard rebuilt, got {rebuilt}");
     assert!(
-        latest_generations(table_name).iter().any(|g| *g >= 2),
+        latest_generations(&client, table_name)
+            .await
+            .iter()
+            .any(|g| *g >= 2),
         "manual rebuild must publish a new generation: {:?}",
-        latest_generations(table_name)
+        latest_generations(&client, table_name).await
     );
 
     // Search still works and reaches late rows.
@@ -1249,9 +1255,12 @@ async fn cluster_skew_triggers_rebuild_even_when_shard_ratio_is_low() {
     upsert(clustered_vectors(&anchors, 40, 0.05, &mut rng), next_id).await;
     next_id = 160;
     assert!(
-        latest_generations(table_name).iter().all(|g| *g == 1),
+        latest_generations(&client, table_name)
+            .await
+            .iter()
+            .all(|g| *g == 1),
         "fresh build publishes generation 1: {:?}",
-        latest_generations(table_name)
+        latest_generations(&client, table_name).await
     );
 
     // w2 + w3: 40 evenly-spread vectors each (10 per cluster, cumulative
@@ -1261,9 +1270,12 @@ async fn cluster_skew_triggers_rebuild_even_when_shard_ratio_is_low() {
         next_id += 40;
     }
     assert!(
-        latest_generations(table_name).iter().all(|g| *g == 1),
+        latest_generations(&client, table_name)
+            .await
+            .iter()
+            .all(|g| *g == 1),
         "mild uniform growth must not rebuild: {:?}",
-        latest_generations(table_name)
+        latest_generations(&client, table_name).await
     );
 
     // w4: 60 copies of anchor[0] all land in one cluster, taking its
@@ -1273,16 +1285,19 @@ async fn cluster_skew_triggers_rebuild_even_when_shard_ratio_is_low() {
     upsert(vec![anchors[0].to_vec(); 60], next_id).await;
     next_id += 60;
     assert!(
-        latest_generations(table_name).iter().all(|g| *g == 1),
+        latest_generations(&client, table_name)
+            .await
+            .iter()
+            .all(|g| *g == 1),
         "drift becomes visible on the write after the skewed flush: {:?}",
-        latest_generations(table_name)
+        latest_generations(&client, table_name).await
     );
 
     // w5: a tiny write.  Pre-write, one cluster has ~80 delta vs ~40 base
     // (ratio > 1.0) while the shard ratio is still 1.0: the per-cluster
     // rule rebuilds, the old shard-level (>1.0) rule would not.
     upsert(clustered_vectors(&anchors[..1], 2, 0.05, &mut rng), next_id).await;
-    let gens = latest_generations(table_name);
+    let gens = latest_generations(&client, table_name).await;
     assert!(
         gens.iter().any(|g| *g >= 2),
         "skewed cluster growth must trigger a rebuild: {gens:?}"
@@ -1362,7 +1377,7 @@ async fn uniform_growth_does_not_trigger_per_cluster_rebuild_before_ratio() {
         upsert(clustered_vectors(&anchors, 10, 0.05, &mut rng), next_id).await;
         next_id += 40;
     }
-    let gens = latest_generations(table_name);
+    let gens = latest_generations(&client, table_name).await;
     assert!(
         gens.iter().all(|g| *g == 1),
         "even growth below the per-cluster ratio must never rebuild: {gens:?}"

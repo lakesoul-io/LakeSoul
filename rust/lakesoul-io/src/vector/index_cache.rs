@@ -7,9 +7,8 @@
 //! Every query used to re-read and re-merge the whole index shard from the
 //! object store (tens to hundreds of milliseconds for large shards). The
 //! cache keeps the merged in-memory index per `(object store, prefix)` and
-//! reuses it while the manifest still reports the same
-//! `(generation, version)`. Callers resolve the manifest view first, so a
-//! commit (e.g. an index rebuild) invalidates the entry automatically.
+//! reuses it while the caller resolves the same commit id; a new commit
+//! (delta flush or rebuild) invalidates the entry automatically.
 //!
 //! Capacity is a byte budget ([`ENV_CACHE_BYTES`], default 512 MiB, `0`
 //! disables the cache); entries are evicted by weighted LRU.
@@ -17,11 +16,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
-use lakesoul_vector::rabitq::manifest::ResolvedView;
-use lakesoul_vector::{IvfRabitqIndex, ManifestStore, RabitqError};
+use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore};
+use lakesoul_vector::{IvfRabitqIndex, RabitqError};
 use moka::future::Cache;
 use object_store::ObjectStore;
 use tracing::{debug, info, warn};
+
+use crate::vector::builder::ResolvedIndexShard;
 
 /// Byte budget of the process-wide index cache; `0` disables caching.
 pub const ENV_CACHE_BYTES: &str = "LAKESOUL_VECTOR_INDEX_CACHE_BYTES";
@@ -54,27 +55,20 @@ static CACHE: LazyLock<Option<Cache<String, Arc<CachedIndex>>>> = LazyLock::new(
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
 
-/// A loaded index shard plus the manifest identity it was loaded from.
+/// A loaded index shard plus the commit it was loaded from.
 pub struct CachedIndex {
+    /// Catalog commit id the entry was loaded from.
+    pub commit_id: i64,
     pub generation: u64,
     pub version: u64,
-    /// Object identity of the resolved manifests; see [`ResolvedView::view_token`].
-    pub token: String,
     pub index: IvfRabitqIndex,
     pub bytes: usize,
 }
 
 impl CachedIndex {
-    /// `(generation, version)` key of this entry.
-    pub fn key(&self) -> (u64, u64) {
-        (self.generation, self.version)
-    }
-
-    /// Whether this entry was loaded from the exact commit resolved in `view`.
-    pub fn matches(&self, view: &ResolvedView) -> bool {
-        self.generation == view.generation
-            && self.version == view.version
-            && self.token == view.view_token
+    /// Whether this entry was loaded from the given commit.
+    pub fn matches(&self, commit_id: i64) -> bool {
+        self.commit_id == commit_id
     }
 }
 
@@ -90,40 +84,58 @@ fn cache_key(store: &Arc<dyn ObjectStore>, prefix: &str) -> String {
 async fn load_entry(
     store: Arc<dyn ObjectStore>,
     prefix: String,
-    view: ResolvedView,
+    resolved: ResolvedIndexShard,
 ) -> Result<CachedIndex, RabitqError> {
-    let mstore = ManifestStore::new(store, prefix);
-    let index = IvfRabitqIndex::load_from_view(&mstore, &view).await?;
+    let istore = IndexStore::new(store, prefix);
+    let header = IndexHeader::deserialize(&resolved.header)?;
+    let index =
+        IvfRabitqIndex::load_from_segments(&istore, &header, &resolved.segments).await?;
     let bytes = index.memory_bytes();
     Ok(CachedIndex {
-        generation: view.generation,
-        version: view.version,
-        token: view.view_token.clone(),
+        commit_id: resolved.commit_id,
+        generation: resolved.generation,
+        version: resolved.version,
         index,
         bytes,
     })
 }
 
-/// Return the index shard for `(store, prefix)` at the version of `view`,
+/// Whether the shard at `commit_id` is already loaded, so a query would not
+/// touch any file (and therefore needs no reader lease).
+pub async fn is_loaded(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    commit_id: i64,
+) -> bool {
+    let Some(cache) = CACHE.as_ref() else {
+        return false;
+    };
+    cache
+        .get(&cache_key(store, prefix))
+        .await
+        .is_some_and(|entry| entry.matches(commit_id))
+}
+
+/// Return the index shard for `(store, prefix)` at the resolved commit,
 /// loading and caching it when needed.
 ///
-/// The caller resolves `view` from the manifest before calling; a stale
-/// entry is replaced when the resolved version moved forward, so rebuilds
-/// and incremental commits are picked up on the next query.
+/// The caller resolves the catalog commit before calling; a stale entry is
+/// replaced when the commit id moved forward, so rebuilds and incremental
+/// commits are picked up on the next query.
 pub async fn get_or_load(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
-    view: &ResolvedView,
+    resolved: &ResolvedIndexShard,
 ) -> Result<Arc<CachedIndex>, Arc<RabitqError>> {
     let Some(cache) = CACHE.as_ref() else {
-        return load_entry(store.clone(), prefix.to_string(), view.clone())
+        return load_entry(store.clone(), prefix.to_string(), resolved.clone())
             .await
             .map(Arc::new)
             .map_err(Arc::new);
     };
     let key = cache_key(store, prefix);
     if let Some(entry) = cache.get(&key).await
-        && entry.matches(view)
+        && entry.matches(resolved.commit_id)
     {
         HITS.fetch_add(1, Ordering::Relaxed);
         debug!(prefix, "vector index cache hit");
@@ -138,8 +150,8 @@ pub async fn get_or_load(
         .try_get_with(key, {
             let store = store.clone();
             let prefix = prefix.to_string();
-            let view = view.clone();
-            async move { load_entry(store, prefix, view).await.map(Arc::new) }
+            let resolved = resolved.clone();
+            async move { load_entry(store, prefix, resolved).await.map(Arc::new) }
         })
         .await?;
     if let Some(capacity) = cache.policy().max_capacity()
@@ -152,18 +164,17 @@ pub async fn get_or_load(
             "vector index shard exceeds cache budget; reloading on every query"
         );
     }
-    if !entry.matches(view) {
+    if !entry.matches(resolved.commit_id) {
         // Lost a race against a loader of another commit; serve this query
         // directly instead of returning a mismatched index.
-        return load_entry(store.clone(), prefix.to_string(), view.clone())
+        return load_entry(store.clone(), prefix.to_string(), resolved.clone())
             .await
             .map(Arc::new)
             .map_err(Arc::new);
     }
     debug!(
         prefix,
-        generation = entry.generation,
-        version = entry.version,
+        commit_id = entry.commit_id,
         bytes = entry.bytes,
         elapsed = ?t0.elapsed(),
         "vector index cache miss, loaded"
@@ -174,8 +185,9 @@ pub async fn get_or_load(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lakesoul_vector::rabitq::manifest::resolve_view;
-    use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, Metric, RotatorType};
+    use lakesoul_vector::{
+        IdAndVecBatch, IndexStore, IvfRabitqBuilder, Metric, RotatorType,
+    };
     use object_store::ObjectStoreExt;
     use object_store::memory::InMemory;
 
@@ -196,8 +208,8 @@ mod tests {
         store: Arc<dyn ObjectStore>,
         prefix: &str,
         vectors: Vec<f32>,
-    ) -> ManifestStore {
-        let mstore = ManifestStore::new(store, prefix.to_string());
+        commit_id: i64,
+    ) -> ResolvedIndexShard {
         let mut builder = IvfRabitqBuilder::new(
             DIM,
             NLIST,
@@ -217,14 +229,46 @@ mod tests {
             ids: (0..vectors.len() as u64 / DIM as u64).collect(),
             vectors,
         }];
-        builder
+        let index = builder
             .build(|| futures::stream::iter(stream.clone()))
             .await
-            .unwrap()
-            .save_to_v4(&mstore)
+            .unwrap();
+        let istore = IndexStore::new(store, prefix.to_string());
+        let (header, segments) = index.write_base_segments(&istore).await.unwrap();
+        ResolvedIndexShard {
+            index_prefix: prefix.to_string(),
+            commit_id,
+            generation: 1,
+            version: 1,
+            header: header.serialize(),
+            segments,
+        }
+    }
+
+    async fn append_delta(
+        store: Arc<dyn ObjectStore>,
+        base: &ResolvedIndexShard,
+    ) -> ResolvedIndexShard {
+        let istore = IndexStore::new(store, base.index_prefix.clone());
+        let header = IndexHeader::deserialize(&base.header).unwrap();
+        let mut builder = IvfRabitqBuilder::load(&istore, &header, &base.segments)
             .await
             .unwrap();
-        mstore
+        builder
+            .insert_batch(IdAndVecBatch {
+                ids: vec![100],
+                vectors: vec![5.0, 5.0, 5.0, 5.0],
+            })
+            .unwrap();
+        let (_header, new_segments) = builder.flush(&istore).await.unwrap();
+        let mut segments = base.segments.clone();
+        segments.extend(new_segments);
+        ResolvedIndexShard {
+            commit_id: base.commit_id + 1,
+            version: base.version + 1,
+            segments,
+            ..base.clone()
+        }
     }
 
     async fn delete_prefix(store: &Arc<dyn ObjectStore>, prefix: &str) {
@@ -241,55 +285,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_reuses_loaded_index_until_version_changes() {
+    async fn cache_reuses_loaded_index_until_commit_changes() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let prefix = "cache_test";
-        let mstore = build_base(store.clone(), prefix, base_vectors()).await;
-        let view = resolve_view(&mstore).await.unwrap().unwrap();
+        let base = build_base(store.clone(), prefix, base_vectors(), 1).await;
 
-        let first = get_or_load(&store, prefix, &view).await.unwrap();
-        let second = get_or_load(&store, prefix, &view).await.unwrap();
+        let first = get_or_load(&store, prefix, &base).await.unwrap();
+        let second = get_or_load(&store, prefix, &base).await.unwrap();
         assert!(
             Arc::ptr_eq(&first, &second),
-            "same manifest version must reuse the cached index"
+            "same commit must reuse the cached index"
         );
         assert!(first.bytes > 0);
+        assert!(first.matches(base.commit_id));
 
-        // Append a delta: a new commit bumps the manifest version.
-        let mut builder = IvfRabitqBuilder::load(
-            &mstore,
-            DIM,
-            NLIST,
-            7,
-            Metric::L2,
-            RotatorType::FhtKacRotator,
-            42,
-            true,
-        )
-        .await
-        .unwrap();
-        builder
-            .insert_batch(IdAndVecBatch {
-                ids: vec![100],
-                vectors: vec![5.0, 5.0, 5.0, 5.0],
-            })
-            .unwrap();
-        builder.flush(&mstore).await.unwrap();
-
-        let view2 = resolve_view(&mstore).await.unwrap().unwrap();
-        assert_ne!(view.key(), view2.key(), "flush must commit a new version");
-        let after = get_or_load(&store, prefix, &view2).await.unwrap();
+        let delta = append_delta(store.clone(), &base).await;
+        let after = get_or_load(&store, prefix, &delta).await.unwrap();
         assert!(
             !Arc::ptr_eq(&first, &after),
-            "new manifest version must reload the index"
+            "new commit must reload the index"
         );
-        assert!(after.matches(&view2));
+        assert!(after.matches(delta.commit_id));
         assert_eq!(after.index.len(), 6, "delta vector visible after reload");
 
-        let cached_again = get_or_load(&store, prefix, &view2).await.unwrap();
+        let cached_again = get_or_load(&store, prefix, &delta).await.unwrap();
         assert!(
             Arc::ptr_eq(&after, &cached_again),
-            "reloaded entry must be cached for the new version"
+            "reloaded entry must be cached for the new commit"
         );
     }
 
@@ -297,15 +319,14 @@ mod tests {
     async fn cache_drops_entry_when_index_is_recreated_from_scratch() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let prefix = "cache_reset_test";
-        let mstore = build_base(store.clone(), prefix, base_vectors()).await;
-        let view = resolve_view(&mstore).await.unwrap().unwrap();
-        let first = get_or_load(&store, prefix, &view).await.unwrap();
+        let base = build_base(store.clone(), prefix, base_vectors(), 1).await;
+        let first = get_or_load(&store, prefix, &base).await.unwrap();
         assert_eq!(first.index.len(), 5);
 
         // Simulate table drop + recreate at the same location: wipe the
-        // index and build a fresh one, which restarts at generation 1.
+        // index and build a fresh one with a new commit id.
         delete_prefix(&store, prefix).await;
-        let mstore = build_base(
+        let recreated = build_base(
             store.clone(),
             prefix,
             vec![
@@ -313,20 +334,11 @@ mod tests {
                 1.0, 0.0, 0.0, 0.0, //
                 0.0, 1.0, 0.0, 0.0, //
             ],
+            2,
         )
         .await;
-        let view2 = resolve_view(&mstore).await.unwrap().unwrap();
-        assert_eq!(
-            view.key(),
-            view2.key(),
-            "recreated index restarts at the same (generation, version)"
-        );
-        assert_ne!(
-            view.view_token, view2.view_token,
-            "manifest object identity must differ after recreation"
-        );
 
-        let after = get_or_load(&store, prefix, &view2).await.unwrap();
+        let after = get_or_load(&store, prefix, &recreated).await.unwrap();
         assert!(
             !Arc::ptr_eq(&first, &after),
             "cache must not serve the dropped index"

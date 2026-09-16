@@ -36,6 +36,10 @@ env:
   PGPASSWORD: lakesoul_test
   MAVEN_OPTS: -Xmx8g
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   validate-release:
     name: Versions, coordinates, and policy

@@ -18,6 +18,10 @@ on:
 
 name: Rust CI
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   rust_ci:
     runs-on: ubuntu-24.04

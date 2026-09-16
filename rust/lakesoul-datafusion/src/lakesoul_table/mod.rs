@@ -382,6 +382,26 @@ impl LakeSoulTable {
         .await
     }
 
+    /// Garbage collect superseded vector index files of this table.
+    ///
+    /// Drops expired reader leases and generations superseded for longer
+    /// than the grace period from the catalog, deletes their segment
+    /// objects, and removes control-plane rows of shards whose directory is
+    /// gone (dropped partitions).
+    pub async fn gc_vector_index(
+        &self,
+        options: crate::vector_index::VectorIndexGcOptions,
+    ) -> Result<crate::vector_index::VectorIndexGcReport> {
+        crate::vector_index::gc_vector_index(
+            &self.client,
+            self.table_name(),
+            self.table_namespace(),
+            &HashMap::new(),
+            &options,
+        )
+        .await
+    }
+
     pub fn schema(&self) -> SchemaRef {
         self.table_schema.clone()
     }

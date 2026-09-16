@@ -24,6 +24,10 @@ env:
 permissions:
   actions: write
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   verify-hash-consistency:
     runs-on: ubuntu-24.04

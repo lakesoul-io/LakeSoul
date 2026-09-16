@@ -117,7 +117,7 @@ def test_daft_write_auto_build() -> None:
     print(f"[1/5] Daft wrote {n_train} rows (4 buckets)")
 
     # 2. Verify write_daft auto-built one index per bucket.
-    latests = glob.glob(f"{table_path}/_vector_index/vec/**/LATEST", recursive=True)
+    latests = glob.glob(f"{table_path}/_vector_index/vec/**/*.seg", recursive=True)
     assert len(latests) >= 2, f"Expected >=2 shard indexes, got {len(latests)}"
     print(f"[2/5] Index auto-built after write_daft: {len(latests)} shard(s)")
 
@@ -186,7 +186,7 @@ def test_daft_write_auto_build() -> None:
         thread_num=2,
         auto_build_vector_index=False,
     )
-    skip_latests = glob.glob(f"{table_path2}/_vector_index/**/LATEST", recursive=True)
+    skip_latests = glob.glob(f"{table_path2}/_vector_index/**/*.seg", recursive=True)
     assert skip_latests == [], (
         f"auto_build_vector_index=False should not build, got {skip_latests}"
     )

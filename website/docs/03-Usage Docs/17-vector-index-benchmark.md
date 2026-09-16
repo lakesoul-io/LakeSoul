@@ -260,8 +260,8 @@ vectors actually present in each index state.
   cuts index open by **4–5× for delta-heavy indexes** (GIST 1.31 s → 0.27 s)
   and **up to ~12× for fresh indexes** (GIST 0.69 s → 0.06 s).
 - Because search keeps working across states, rebuilds can be scheduled
-  independently of query serving; readers switch to the new generation through
-  the manifest `LATEST` pointer.
+  independently of query serving; readers switch to the new generation when
+  the metadata catalog resolves the refreshed commit.
 
 ### E5 — end-to-end DataFusion SQL (write + search)
 
@@ -389,10 +389,13 @@ and reads only the candidate rows.
   `file_format = "vortex"`.  At identical recall vortex is ~1.9×
   (GloVe) and ~3.1× (GIST) faster per SQL query than parquet, because the
   vortex candidate scan prunes faster.
-- **On-disk index size includes all generations:** segments are immutable and
-  not garbage-collected, so after rebuilds the `_vector_index/` directory
-  (412 MB for GIST here) is larger than the live generation.  Compaction or
-  GC is a natural follow-up.
+- **Index files are garbage-collected:** the commit history and reader leases
+  live in the metadata database (`vector_index_*` tables), and after every
+  write the superseded generations are collected once they are older than a
+  grace period (`gc_grace_seconds`, default 1 h, `vector_index_columns` JSON
+  property) and no reader holds a lease.  An explicit `gc_vector_index` API
+  (also exposed on `LakeSoulTable`) sweeps on demand and removes the
+  control-plane rows of dropped partitions.
 
 ## Recommendations
 

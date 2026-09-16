@@ -368,7 +368,7 @@ impl ClusterData {
 
     /// Reconstruct a ClusterData from deserialised segment data (used during
     /// incremental flush to merge old on-disk data with new pending vectors).
-    pub(crate) fn from_segment(seg: crate::rabitq::manifest::ClusterSegmentData) -> Self {
+    pub(crate) fn from_segment(seg: crate::rabitq::segment::ClusterSegmentData) -> Self {
         let nv = seg.ids.len();
         Self {
             centroid: seg.centroid,
@@ -396,7 +396,7 @@ impl ClusterData {
     /// merge unpacks each vector's codes/parameters and re-packs them into a
     /// single contiguous batch layout.
     pub(crate) fn merge_segments(
-        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+        segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
     ) -> Result<Self, RabitqError> {
         if segments.is_empty() {
             return Err(RabitqError::InvalidPersistence(
@@ -427,7 +427,7 @@ impl ClusterData {
     /// Concatenate segments whose batch layouts already line up (all but the
     /// last segment end on a 32-vector boundary).
     fn concat_aligned(
-        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+        segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
     ) -> Result<Self, RabitqError> {
         let mut it = segments.into_iter();
         let mut merged = ClusterData::from_segment(it.next().unwrap());
@@ -457,7 +457,7 @@ impl ClusterData {
     /// segment FastScan layouts into reusable per-thread buffers, and the
     /// per-vector metadata arrays are moved rather than cloned.
     fn repack_segments(
-        segments: Vec<crate::rabitq::manifest::ClusterSegmentData>,
+        segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
     ) -> Result<Self, RabitqError> {
         use rayon::prelude::*;
 

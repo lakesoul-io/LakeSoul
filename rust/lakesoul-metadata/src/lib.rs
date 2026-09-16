@@ -38,6 +38,7 @@ mod metadata_client;
 mod pooled_client;
 pub mod rbac;
 pub mod utils;
+pub mod vector_index;
 
 /// The offset of code for the Data Access Object type for query one.
 pub const DAO_TYPE_QUERY_ONE_OFFSET: i32 = 0;
@@ -1484,6 +1485,17 @@ pub async fn execute_insert(
     }
 }
 
+/// Best-effort vector index cleanup triggered by metadata deletions.
+///
+/// The index data lives in object storage and is removed with the dropped
+/// directory, so a failed cleanup only leaves orphan control-plane rows;
+/// never fail the caller's delete for it.
+fn log_vector_index_cleanup(result: Result<()>) {
+    if let Err(error) = result {
+        tracing::warn!("failed to clean vector index metadata: {error}");
+    }
+}
+
 /// Execute the update for the coded Data Access Object.
 #[instrument(level = "debug")]
 pub async fn execute_update(
@@ -1508,7 +1520,6 @@ pub async fn execute_update(
 
     let result = match update_type {
         DaoType::DeleteNamespaceByNamespace
-        | DaoType::DeletePartitionInfoByTableId
         | DaoType::DeleteDataCommitInfoByTableId
         | DaoType::DeleteTableNameIdByTableId
         | DaoType::DeleteTablePathIdByTableId
@@ -1519,6 +1530,15 @@ pub async fn execute_update(
         {
             client.execute(&statement, &[&params[0]]).await
         }
+        // Dropping all partitions removes the whole tree of index shards;
+        // the index data under the table path is gone with it.
+        DaoType::DeletePartitionInfoByTableId if params.len() == 1 => {
+            let result = client.execute(&statement, &[&params[0]]).await;
+            log_vector_index_cleanup(
+                crate::vector_index::clean_for_table_id(&client, &params[0]).await,
+            );
+            result
+        }
         DaoType::DeleteDiscardCompressedFileByFilterCondition if params.len() == 3 => {
             client
                 .execute(
@@ -1527,13 +1547,28 @@ pub async fn execute_update(
                 )
                 .await
         }
-        DaoType::DeleteTableInfoByIdAndPath
-        | DaoType::DeleteTableNameIdByTableNameAndNamespace
-        | DaoType::DeletePartitionInfoByTableIdAndPartitionDesc
+        DaoType::DeleteTableNameIdByTableNameAndNamespace
         | DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc
             if params.len() == 2 =>
         {
             client.execute(&statement, &[&params[0], &params[1]]).await
+        }
+        // Dropping a table removes the whole index directory.
+        DaoType::DeleteTableInfoByIdAndPath if params.len() == 2 => {
+            let result = client.execute(&statement, &[&params[0], &params[1]]).await;
+            log_vector_index_cleanup(
+                crate::vector_index::clean_for_table_path(&client, &params[1]).await,
+            );
+            result
+        }
+        // Dropping a partition removes its index shards.
+        DaoType::DeletePartitionInfoByTableIdAndPartitionDesc if params.len() == 2 => {
+            let result = client.execute(&statement, &[&params[0], &params[1]]).await;
+            log_vector_index_cleanup(
+                crate::vector_index::clean_for_partition(&client, &params[0], &params[1])
+                    .await,
+            );
+            result
         }
         DaoType::UpdateTableInfoPropertiesById
         | DaoType::UpdateNamespacePropertiesByNamespace
@@ -1748,7 +1783,8 @@ pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
             delete from table_path_id;
             delete from table_name_id;
             delete from partition_info;
-            delete from discard_compressed_file_info",
+            delete from discard_compressed_file_info;
+            delete from vector_index_shard",
             RW,
         )
         .await;

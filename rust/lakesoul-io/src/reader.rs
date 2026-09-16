@@ -309,6 +309,12 @@ impl LakeSoulReader {
             .runtime_env()
             .object_store(table_url.object_store())
             .map_err(|e| rootcause::report!("failed to get object store: {}", e))?;
+        let resolved_shards = io_config.resolved_index_shards_slice();
+        tracing::debug!(
+            resolved = resolved_shards.len(),
+            leases = io_config.index_leases().len(),
+            "vector search using caller-resolved index shards"
+        );
         let ids = crate::vector::search::search_matching_shards(
             &store,
             io_config.files_slice(),
@@ -319,6 +325,7 @@ impl LakeSoulReader {
             top_k,
             nprobe,
             metric,
+            resolved_shards,
         )
         .await?;
         if ids.is_empty() {

@@ -29,6 +29,10 @@ on:
       - "release/**"
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-rust-linux-x86_64:
     runs-on: ubuntu-24.04

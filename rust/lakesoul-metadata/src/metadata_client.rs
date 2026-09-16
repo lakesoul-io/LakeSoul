@@ -208,6 +208,16 @@ impl MetaDataClient {
         })
     }
 
+    /// The shared connection pool backing this client.
+    pub(crate) fn pooled_client(&self) -> Arc<Mutex<PooledClient>> {
+        self.client.clone()
+    }
+
+    /// The configured retry budget.
+    pub(crate) fn max_retry(&self) -> usize {
+        self.max_retry
+    }
+
     pub async fn create_namespace(&self, namespace: Namespace) -> Result<()> {
         self.insert_namespace(&namespace).await?;
         Ok(())

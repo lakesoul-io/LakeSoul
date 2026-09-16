@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use lakesoul_vector::{
-    IdAndVecBatch, IvfRabitqBuilder, IvfRabitqIndex, ManifestStore, Metric, RotatorType,
+    IdAndVecBatch, IndexStore, IvfRabitqBuilder, IvfRabitqIndex, Metric, RotatorType,
     SearchParams,
 };
 use object_store::memory::InMemory;
@@ -20,7 +20,7 @@ async fn merged_segments_keep_delta_vectors_searchable() {
     let dim = 4usize;
     let nlist = 1usize;
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-    let mstore = ManifestStore::new(store, "align".to_string());
+    let istore = IndexStore::new(store, "align".to_string());
 
     // base: 5 vectors (5 % 32 != 0)
     let base_vectors: Vec<f32> = vec![
@@ -53,31 +53,26 @@ async fn merged_segments_keep_delta_vectors_searchable() {
         .build(|| futures::stream::iter(stream.clone().into_iter()))
         .await
         .unwrap();
-    index.save_to_v4(&mstore).await.unwrap();
+    let (header, base_segments) = index.write_base_segments(&istore).await.unwrap();
 
     // delta: one new vector, far from the base ones
     let new_vec = vec![5.0, 5.0, 5.0, 5.0];
-    let mut builder = IvfRabitqBuilder::load(
-        &mstore,
-        dim,
-        nlist,
-        7,
-        Metric::L2,
-        RotatorType::FhtKacRotator,
-        42,
-        true,
-    )
-    .await
-    .unwrap();
+    let mut builder = IvfRabitqBuilder::load(&istore, &header, &base_segments)
+        .await
+        .unwrap();
     builder
         .insert_batch(IdAndVecBatch {
             ids: vec![100],
             vectors: new_vec.clone(),
         })
         .unwrap();
-    builder.flush(&mstore).await.unwrap();
+    let (_, delta_segments) = builder.flush(&istore).await.unwrap();
 
-    let loaded = IvfRabitqIndex::load_from_v4(&mstore).await.unwrap();
+    let mut all_segments = base_segments.clone();
+    all_segments.extend(delta_segments);
+    let loaded = IvfRabitqIndex::load_from_segments(&istore, &header, &all_segments)
+        .await
+        .unwrap();
     assert_eq!(loaded.len(), 6, "merged vector count");
 
     // Query exactly the new vector: it must be the top-1 with distance ~0.

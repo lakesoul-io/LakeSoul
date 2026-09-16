@@ -638,6 +638,8 @@ impl LakeSoulHashSinkExec {
             } else {
                 None
             };
+            let catalog =
+                lakesoul_metadata::vector_index::PgCatalog::from_client(&client);
             let built = tokio::task::spawn_blocking(move || {
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                     crate::vector_index::auto_build_vector_index(
@@ -646,6 +648,7 @@ impl LakeSoulHashSinkExec {
                         &object_store_options,
                         &committed_files,
                         all_active_files.as_deref(),
+                        &catalog,
                     ),
                 )
             })

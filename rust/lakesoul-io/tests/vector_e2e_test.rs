@@ -14,8 +14,10 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 
-use lakesoul_io::vector::builder::VectorShardIndexBuilder;
-use lakesoul_vector::{ManifestStore, Metric, VectorIndexConfig};
+use lakesoul_io::vector::builder::{ResolvedIndexShard, VectorShardIndexBuilder};
+use lakesoul_vector::{
+    IndexHeader, IndexStore, IvfRabitqIndex, Metric, VectorIndexConfig,
+};
 use object_store::local::LocalFileSystem;
 use tempfile::TempDir;
 
@@ -120,7 +122,7 @@ async fn test_glove_e2e_build_and_search() {
         HashMap::new(),
         None,
     );
-    builder.build().await.unwrap();
+    let outcome = builder.build().await.unwrap();
     println!("Index built successfully at {}", index_prefix);
 
     // Search: load index, query, check recall
@@ -131,11 +133,12 @@ async fn test_glove_e2e_build_and_search() {
         Some(5),
     );
 
-    let mstore = ManifestStore::new(store, index_prefix.to_string());
-    let index = lakesoul_vector::IvfRabitqIndex::load_from_v4(&mstore)
-        .await
-        // print the error
-        .unwrap_or_else(|e| panic!("load_from_v4 failed: {:?}", e));
+    let istore = IndexStore::new(store, outcome.index_prefix.clone());
+    let header = IndexHeader::deserialize(&outcome.header).unwrap();
+    let index =
+        IvfRabitqIndex::load_from_segments(&istore, &header, &outcome.new_segments)
+            .await
+            .unwrap_or_else(|e| panic!("load_from_segments failed: {:?}", e));
     let params = lakesoul_vector::SearchParams::new(10, 8);
 
     for (i, query) in queries.iter().enumerate() {
@@ -211,7 +214,6 @@ async fn test_read_parquet_schema() {
 async fn test_build_and_list_files() {
     let tmp = TempDir::new().unwrap();
     let store = Arc::new(LocalFileSystem::new());
-    let index_prefix = "_vector_index/vec/-5/0/";
 
     let config = VectorIndexConfig {
         column_name: "vec".to_string(),
@@ -234,7 +236,7 @@ async fn test_build_and_list_files() {
         HashMap::new(),
         None,
     );
-    builder.build().await.unwrap();
+    let outcome = builder.build().await.unwrap();
 
     // List files
     use std::process::Command;
@@ -250,8 +252,11 @@ async fn test_build_and_list_files() {
     );
 
     // Try load
-    let mstore = ManifestStore::new(store, index_prefix.to_string());
-    match lakesoul_vector::IvfRabitqIndex::load_from_v4(&mstore).await {
+    let istore = IndexStore::new(store, outcome.index_prefix.clone());
+    let header = IndexHeader::deserialize(&outcome.header).unwrap();
+    match IvfRabitqIndex::load_from_segments(&istore, &header, &outcome.new_segments)
+        .await
+    {
         Ok(idx) => println!("Load succeeded: {} vectors", idx.len()),
         Err(e) => println!("Load failed: {:?}", e),
     }
@@ -346,7 +351,15 @@ async fn test_reader_with_vector_search() {
         HashMap::new(),
         Some(format!("file://{}", tmp_path)),
     );
-    builder.build().await.unwrap();
+    let outcome = builder.build().await.unwrap();
+    let resolved = ResolvedIndexShard {
+        index_prefix: outcome.index_prefix.clone(),
+        commit_id: 1,
+        generation: 1,
+        version: 1,
+        header: outcome.header.clone(),
+        segments: outcome.new_segments.clone(),
+    };
     println!("Index built");
 
     // 3. Read via LakeSoulReader with vector search
@@ -386,6 +399,7 @@ async fn test_reader_with_vector_search() {
         .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, "4")
         .with_option("skip_merge_on_read", "true")
         .with_option("file_filter_pushdown", "false")
+        .with_resolved_index_shards(vec![resolved])
         .build();
 
     let mut reader = LakeSoulReader::new(config).unwrap();

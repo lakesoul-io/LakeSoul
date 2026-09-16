@@ -12,9 +12,13 @@ use datafusion_common::DataFusionError;
 use datafusion_execution::SendableRecordBatchStream;
 use futures::{StreamExt, stream::SelectAll};
 use lakesoul_io::{
-    config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    config::LakeSoulIOConfigBuilder,
     reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
+    vector::IndexLease,
+    vector::builder::ResolvedIndexShard,
 };
+use lakesoul_metadata::vector_index::PgCatalog;
+use lakesoul_vector::SegmentEntry;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
 use crate::Result;
@@ -27,6 +31,115 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_sync_reader, &m)?)?;
     m.add_function(wrap_pyfunction!(_one_reader, &m)?)?;
     Ok(())
+}
+
+/// Process-wide index catalog (PostgreSQL); `None` when the metadata
+/// database is not reachable, in which case vector search falls back to the
+/// reader's normal "no index" behavior.
+static CATALOG: tokio::sync::OnceCell<Option<PgCatalog>> = tokio::sync::OnceCell::const_new();
+
+async fn vector_catalog() -> Option<PgCatalog> {
+    CATALOG
+        .get_or_init(|| async {
+            match lakesoul_metadata::MetaDataClient::from_env().await {
+                Ok(client) => Some(PgCatalog::from_client(&client)),
+                Err(error) => {
+                    log::warn!("vector index catalog unavailable: {error}");
+                    None
+                }
+            }
+        })
+        .await
+        .clone()
+}
+
+fn option_value<'a>(options: &'a Option<Vec<(String, String)>>, key: &str) -> Option<&'a str> {
+    options
+        .as_ref()?
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+fn lease_ttl() -> std::time::Duration {
+    let seconds = std::env::var("LAKESOUL_VECTOR_INDEX_LEASE_TTL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(300);
+    std::time::Duration::from_secs(seconds)
+}
+
+fn lease_owner() -> String {
+    format!(
+        "{}:{}",
+        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
+        std::process::id()
+    )
+}
+
+/// Resolve the index commits of the shards behind `file_urls` and hold
+/// reader leases for them, so the native reader can search without any
+/// catalog access of its own.
+async fn resolve_vector_shards(
+    file_urls: &[String],
+    options: &Option<Vec<(String, String)>>,
+) -> (Vec<ResolvedIndexShard>, Vec<Arc<IndexLease>>) {
+    let Some(column) = option_value(options, "vector_search_column") else {
+        return (Vec::new(), Vec::new());
+    };
+    if option_value(options, "vector_search_query").is_none() {
+        return (Vec::new(), Vec::new());
+    }
+    let Some(catalog) = vector_catalog().await else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(first) = file_urls.first() else {
+        return (Vec::new(), Vec::new());
+    };
+    let table_prefix = derive_prefix_from_url(first);
+    let prefixes =
+        lakesoul_io::vector::search::derive_index_prefixes(file_urls, &table_prefix, column);
+    let mut shards = Vec::with_capacity(prefixes.len());
+    let mut leases = Vec::with_capacity(prefixes.len());
+    for (index_prefix, _bucket) in prefixes {
+        let view = match catalog.resolve_cached(&index_prefix).await {
+            Ok(Some(view)) => view,
+            Ok(None) => continue,
+            Err(error) => {
+                log::warn!("failed to resolve vector index at '{index_prefix}': {error}");
+                continue;
+            }
+        };
+        match catalog
+            .acquire_lease(&index_prefix, lease_ttl(), &lease_owner())
+            .await
+        {
+            Ok(Some(handle)) => leases.push(Arc::new(IndexLease::new(handle))),
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("failed to lease vector index at '{index_prefix}': {error}");
+            }
+        }
+        shards.push(ResolvedIndexShard {
+            index_prefix,
+            commit_id: view.commit_id,
+            generation: view.generation,
+            version: view.version,
+            header: view.header,
+            segments: view
+                .segments
+                .into_iter()
+                .map(|segment| SegmentEntry {
+                    cluster_id: segment.cluster_id,
+                    segment_version: segment.segment_version,
+                    segment_filename: segment.filename,
+                    num_vectors: segment.num_vectors,
+                    file_size: segment.file_size,
+                })
+                .collect(),
+        });
+    }
+    (shards, leases)
 }
 
 #[pyfunction]
@@ -45,23 +158,29 @@ fn _sync_reader(
 ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
     let schema = Arc::new(schema.0);
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
-    let config = build_io_config(
+    let builder = build_io_config_builder(
         batch_size,
         thread_num,
         schema,
         partition_schema,
-        file_urls,
+        file_urls.clone(),
         primary_keys,
         &partition_info,
         &oss_conf,
         filter,
-        options,
+        options.clone(),
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(thread_num)
         .build()?;
+
+    let (shards, leases) = runtime.block_on(resolve_vector_shards(&file_urls, &options));
+    let config = builder
+        .with_resolved_index_shards(shards)
+        .with_index_leases(leases)
+        .build();
 
     let reader = LakeSoulReader::new(config).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
@@ -96,31 +215,38 @@ fn _one_reader(
             partition_info.len()
         )));
     }
-    let readers = file_urls
-        .into_iter()
-        .zip(primary_keys)
-        .zip(partition_info)
-        .map(|((files, pks), part_info)| {
-            LakeSoulReader::new(build_io_config(
-                batch_size,
-                thread_num,
-                schema.clone(),
-                partition_schema.clone(),
-                files,
-                pks,
-                &part_info,
-                &oss_conf,
-                filter.clone(),
-                options.clone(),
-            ))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-        })
-        .collect::<PyResult<Vec<LakeSoulReader>>>()?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(thread_num)
         .build()?;
+
+    let readers = file_urls
+        .into_iter()
+        .zip(primary_keys)
+        .zip(partition_info)
+        .map(|((files, pks), part_info)| {
+            let builder = build_io_config_builder(
+                batch_size,
+                thread_num,
+                schema.clone(),
+                partition_schema.clone(),
+                files.clone(),
+                pks,
+                &part_info,
+                &oss_conf,
+                filter.clone(),
+                options.clone(),
+            );
+            let (shards, leases) = runtime.block_on(resolve_vector_shards(&files, &options));
+            let config = builder
+                .with_resolved_index_shards(shards)
+                .with_index_leases(leases)
+                .build();
+            LakeSoulReader::new(config).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+        .collect::<PyResult<Vec<LakeSoulReader>>>()?;
+
     let one = OneReader::try_new(schema, readers, runtime)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -161,7 +287,8 @@ fn derive_prefix_from_url(url: &str) -> String {
     url.to_string()
 }
 
-fn build_io_config(
+#[allow(clippy::too_many_arguments)]
+fn build_io_config_builder(
     batch_size: usize,
     thread_num: usize,
     schema: SchemaRef,
@@ -172,7 +299,7 @@ fn build_io_config(
     oss_conf: &[(String, String)],
     filter: Option<Vec<u8>>,
     options: Option<Vec<(String, String)>>,
-) -> LakeSoulIOConfig {
+) -> LakeSoulIOConfigBuilder {
     // Derive prefix from the first file's parent directory.
     // Preserve URL scheme + authority for S3 paths; std::path::Path
     // would strip the authority (e.g. s3://bucket → s3:/bucket).
@@ -220,7 +347,7 @@ fn build_io_config(
         }
     }
 
-    builder.build()
+    builder
 }
 
 struct OneReader {
