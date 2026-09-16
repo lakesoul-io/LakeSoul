@@ -440,49 +440,67 @@ impl RepartitionByRangeAndHashExec {
         hash_partitioning: Partitioning,
         metrics: ExecutionPlanMetricsSet,
     ) -> Result<Self> {
-        let preserve_order = false;
-        if let Some(ordering) = input.output_ordering() {
-            let lhs = ordering
-                .iter()
-                .map(|sort_expr| sort_expr.expr.clone())
-                .collect::<Vec<_>>();
-            let rhs = [
-                range_partitioning_expr.clone(),
-                match &hash_partitioning {
-                    Partitioning::Hash(hash_exprs, _) => hash_exprs.clone(),
-                    _ => {
-                        bail!(
-                            "Invalid hash_partitioning={} for RepartitionByRangeAndHashExec",
-                            hash_partitioning
-                        );
-                    }
-                },
-            ]
-            .concat();
-
-            if physical_exprs_equal(&lhs, &rhs) {
-                return Ok(Self {
-                    plan_properties: Arc::new(PlanProperties::new(
-                        EquivalenceProperties::new(input.schema()),
-                        hash_partitioning.clone(),
-                        EmissionType::Incremental,
-                        Boundedness::Bounded,
-                    )),
-                    input,
-                    range_partitioning_expr,
-                    hash_partitioning,
-                    state: Default::default(),
-                    metrics,
-                    preserve_order,
-                });
+        let hash_exprs = match &hash_partitioning {
+            Partitioning::Hash(hash_exprs, _) => hash_exprs.clone(),
+            _ => {
+                bail!(
+                    "Invalid hash_partitioning={} for RepartitionByRangeAndHashExec",
+                    hash_partitioning
+                );
             }
+        };
+        // Batches are split by range and then hashed by the primary keys, and
+        // the partitioning writer appends them to the range/bucket files in
+        // encounter order without sorting again. The files are only sorted
+        // (which merge-on-read relies on to deduplicate adjacent keys) if the
+        // input is ordered by `range_partitions + primary_keys`.
+        //
+        // Require that sequence to be a prefix of the input ordering: `SortExec`
+        // keeps the input's pre-existing ordering after the sort prefix, so the
+        // ordering it exposes can be longer than `range + hash`. An absent or
+        // unrelated ordering must still be rejected.
+        let required_order: Vec<Arc<dyn PhysicalExpr>> =
+            [range_partitioning_expr.clone(), hash_exprs].concat();
+        let input_ordering = match input.output_ordering() {
+            Some(ordering) => ordering,
+            None => bail!(
+                "Input is not ordered by the range partitions and primary keys required by RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
+                range_partitioning_expr,
+                hash_partitioning,
+            ),
+        };
+        let input_order: Vec<Arc<dyn PhysicalExpr>> = input_ordering
+            .iter()
+            .map(|sort_expr| sort_expr.expr.clone())
+            .collect();
+        if input_order.len() < required_order.len()
+            || !physical_exprs_equal(
+                &input_order[..required_order.len()],
+                &required_order,
+            )
+        {
+            bail!(
+                "Input ordering {:?} is not compatible with RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
+                input_ordering,
+                range_partitioning_expr,
+                hash_partitioning,
+            );
         }
-        bail!(
-            "Input ordering {:?} mismatch for RepartitionByRangeAndHashExec with range_partitioning_expr={:?}, hash_partitioning={}",
-            input.output_ordering(),
+        let preserve_order = false;
+        Ok(Self {
+            plan_properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(input.schema()),
+                hash_partitioning.clone(),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+            input,
             range_partitioning_expr,
             hash_partitioning,
-        )
+            state: Default::default(),
+            metrics,
+            preserve_order,
+        })
     }
 
     /// Return the sort expressions that are used to merge
@@ -921,5 +939,195 @@ impl RecordBatchStream for PerPartitionStream {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::Int32Array;
+    use arrow_schema::{DataType, Field, Schema, SortOptions};
+    use datafusion::physical_expr::PhysicalSortExpr;
+    use datafusion::physical_plan::memory::LazyMemoryExec;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion_physical_expr::expressions::col;
+    use parking_lot::lock_api::RwLock;
+
+    use crate::helpers::InMemGenerator;
+
+    /// The planner sorts the input by `range_partitions + primary_keys` before
+    /// this operator, but the optimizer may drop that sort when the input is
+    /// already ordered by a longer prefix (e.g. `(id, value)` for hash key
+    /// `id`). Construction must accept such inputs instead of failing.
+    #[test]
+    fn try_new_accepts_input_ordered_by_more_columns_than_required() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1, 2, 3])),
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            ],
+        )
+        .unwrap();
+        let memory = LazyMemoryExec::try_new(
+            schema.clone(),
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(vec![batch]).unwrap(),
+            ))],
+        )
+        .unwrap();
+        // The input is ordered by (id, value); the required hash key is only `id`.
+        let input = SortExec::new(
+            LexOrdering::new(vec![
+                PhysicalSortExpr::new(
+                    col("id", &schema).unwrap(),
+                    SortOptions::default(),
+                ),
+                PhysicalSortExpr::new(
+                    col("value", &schema).unwrap(),
+                    SortOptions::default(),
+                ),
+            ])
+            .unwrap(),
+            Arc::new(memory),
+        );
+        assert!(
+            input.properties().output_ordering().is_some(),
+            "test input must expose an ordering"
+        );
+
+        let hash_exprs = vec![col("id", &schema).unwrap()];
+        let exec = RepartitionByRangeAndHashExec::try_new(
+            Arc::new(input),
+            vec![],
+            Partitioning::Hash(hash_exprs, 2),
+            ExecutionPlanMetricsSet::new(),
+        );
+        assert!(
+            exec.is_ok(),
+            "expected construction to succeed, got {:?}",
+            exec.err()
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_missing_ordering() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let input = LazyMemoryExec::try_new(
+            schema.clone(),
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(vec![]).unwrap(),
+            ))],
+        )
+        .unwrap();
+        assert!(input.properties().output_ordering().is_none());
+
+        let exec = RepartitionByRangeAndHashExec::try_new(
+            Arc::new(input),
+            vec![],
+            Partitioning::Hash(vec![col("id", &schema).unwrap()], 2),
+            ExecutionPlanMetricsSet::new(),
+        );
+        assert!(exec.is_err(), "an unordered input must be rejected");
+    }
+
+    #[test]
+    fn try_new_rejects_incompatible_ordering() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let memory = LazyMemoryExec::try_new(
+            schema.clone(),
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(vec![]).unwrap(),
+            ))],
+        )
+        .unwrap();
+        // Ordered by (value, id), but the hash key is `id`.
+        let input = SortExec::new(
+            LexOrdering::new(vec![
+                PhysicalSortExpr::new(
+                    col("value", &schema).unwrap(),
+                    SortOptions::default(),
+                ),
+                PhysicalSortExpr::new(
+                    col("id", &schema).unwrap(),
+                    SortOptions::default(),
+                ),
+            ])
+            .unwrap(),
+            Arc::new(memory),
+        );
+
+        let exec = RepartitionByRangeAndHashExec::try_new(
+            Arc::new(input),
+            vec![],
+            Partitioning::Hash(vec![col("id", &schema).unwrap()], 2),
+            ExecutionPlanMetricsSet::new(),
+        );
+        assert!(exec.is_err(), "an unrelated ordering must be rejected");
+    }
+
+    #[test]
+    fn try_new_rejects_ordering_shorter_than_required() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("part", DataType::Int32, false),
+            Field::new("id", DataType::Int32, false),
+        ]));
+        let memory = LazyMemoryExec::try_new(
+            schema.clone(),
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(vec![]).unwrap(),
+            ))],
+        )
+        .unwrap();
+        // Required is (part, id); the input is only ordered by `id`.
+        let input = SortExec::new(
+            LexOrdering::new(vec![PhysicalSortExpr::new(
+                col("id", &schema).unwrap(),
+                SortOptions::default(),
+            )])
+            .unwrap(),
+            Arc::new(memory),
+        );
+
+        let exec = RepartitionByRangeAndHashExec::try_new(
+            Arc::new(input),
+            vec![col("part", &schema).unwrap()],
+            Partitioning::Hash(vec![col("id", &schema).unwrap()], 2),
+            ExecutionPlanMetricsSet::new(),
+        );
+        assert!(
+            exec.is_err(),
+            "an ordering shorter than range+hash must be rejected"
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_non_hash_partitioning() {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let input = LazyMemoryExec::try_new(
+            schema,
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(vec![]).unwrap(),
+            ))],
+        )
+        .unwrap();
+        let exec = RepartitionByRangeAndHashExec::try_new(
+            Arc::new(input),
+            vec![],
+            Partitioning::RoundRobinBatch(2),
+            ExecutionPlanMetricsSet::new(),
+        );
+        assert!(exec.is_err());
     }
 }
