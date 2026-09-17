@@ -103,6 +103,29 @@ pub struct Printer {
     _color: bool,
 }
 
+impl Printer {
+    /// Print the batches to stdout using the specified format
+    pub fn print_batches(
+        &self,
+        schema: SchemaRef,
+        batches: &[RecordBatch],
+        query_start_time: Instant,
+        row_count: usize,
+    ) -> Result<()> {
+        let stdout = std::io::stdout();
+        let mut writer = stdout.lock();
+
+        print_batches(&mut writer, schema, batches)?;
+
+        let formatted_exec_details =
+            get_execution_details_formatted(row_count, query_start_time);
+
+        writeln!(writer, "{formatted_exec_details}")?;
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -133,28 +156,5 @@ mod tests {
         assert!(output.contains("-- physical_plan --"));
         assert!(output.contains("AggregateExec\n  DataSourceExec"));
         assert!(!output.contains("| plan_type |"));
-    }
-}
-
-impl Printer {
-    /// Print the batches to stdout using the specified format
-    pub fn print_batches(
-        &self,
-        schema: SchemaRef,
-        batches: &[RecordBatch],
-        query_start_time: Instant,
-        row_count: usize,
-    ) -> Result<()> {
-        let stdout = std::io::stdout();
-        let mut writer = stdout.lock();
-
-        print_batches(&mut writer, schema, batches)?;
-
-        let formatted_exec_details =
-            get_execution_details_formatted(row_count, query_start_time);
-
-        writeln!(writer, "{formatted_exec_details}")?;
-
-        Ok(())
     }
 }

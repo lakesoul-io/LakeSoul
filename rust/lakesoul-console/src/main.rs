@@ -161,6 +161,23 @@ async fn main_inner(cli: Cli) -> Result<()> {
     exec_from_repl(&ctx, &printer).await
 }
 
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(cli.core.worker_threads)
+        .enable_all()
+        .build()
+    else {
+        eprintln!("initialize runtime failed");
+        return ExitCode::FAILURE;
+    };
+    if let Err(e) = rt.block_on(main_inner(cli)) {
+        eprintln!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,21 +216,4 @@ mod tests {
         assert!(cli.workers.is_empty());
         assert!(!cli.distributed_fallback_local);
     }
-}
-
-fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(cli.core.worker_threads)
-        .enable_all()
-        .build()
-    else {
-        eprintln!("initialize runtime failed");
-        return ExitCode::FAILURE;
-    };
-    if let Err(e) = rt.block_on(main_inner(cli)) {
-        eprintln!("{e}");
-        return ExitCode::FAILURE;
-    }
-    ExitCode::SUCCESS
 }

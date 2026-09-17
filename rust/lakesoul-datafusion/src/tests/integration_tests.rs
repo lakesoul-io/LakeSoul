@@ -19,10 +19,9 @@ use crate::tests::benchmarks::tpch::{
     TPCH_TABLES, get_tbl_tpch_table_primary_keys, get_tbl_tpch_table_schema,
     get_tpch_table_schema,
 };
+use crate::tests::create_table;
 use crate::{
-    Result,
-    catalog::{create_io_config_builder, create_table},
-    lakesoul_table::LakeSoulTable,
+    Result, catalog::create_io_config_builder, lakesoul_table::LakeSoulTable,
     planner::query_planner::LakeSoulQueryPlanner,
     tests::benchmarks::tpch::get_tbl_tpch_table_range_partitions,
 };

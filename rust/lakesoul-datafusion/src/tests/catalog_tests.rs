@@ -272,6 +272,10 @@ fn test_catalog_sql() {
                 lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
             }
         }
+        // Tables above are written directly through the metadata client, bypassing
+        // the registered catalog's write-through refresh. Refresh that exact
+        // snapshot before SHOW COLUMNS reads information_schema from it.
+        catalog.snapshot().refresh().await.unwrap();
         for (np, tables) in data.iter() {
             let schema =
                 LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
