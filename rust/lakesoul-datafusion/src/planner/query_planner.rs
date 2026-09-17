@@ -4,8 +4,9 @@
 
 use std::sync::Arc;
 
+use datafusion::catalog::Session;
 use datafusion::error::Result;
-use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::PhysicalPlanner;
@@ -30,7 +31,7 @@ impl QueryPlanner for LakeSoulQueryPlanner {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session_state: &dyn Session,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let planner = LakeSoulPhysicalPlanner::new();
         planner

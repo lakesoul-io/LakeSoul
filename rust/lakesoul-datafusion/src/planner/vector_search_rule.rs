@@ -341,5 +341,6 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
         projected_schema: ts.projected_schema.clone(),
         filters,
         fetch: ts.fetch,
+        statistics_requests: ts.statistics_requests.clone(),
     })
 }

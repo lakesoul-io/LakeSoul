@@ -17,7 +17,8 @@ use arrow_arith::boolean::and;
 use arrow_cast::cast;
 use datafusion::{
     common::DFSchema, error::DataFusionError, execution::context::ExecutionProps,
-    logical_expr::Expr, physical_expr::create_physical_expr,
+    logical_expr::Expr, logical_expr::physical_planning_context::PhysicalPlanningContext,
+    physical_expr::create_physical_expr,
 };
 use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
@@ -148,7 +149,13 @@ pub async fn prune_partitions(
 
     // Applies `filter` to `batch` returning `None` on error
     let do_filter = |filter| -> Option<ArrayRef> {
-        let expr = create_physical_expr(filter, &df_schema, &props).ok()?;
+        let expr = create_physical_expr(
+            filter,
+            &df_schema,
+            &props,
+            &PhysicalPlanningContext::default(),
+        )
+        .ok()?;
         expr.evaluate(&batch)
             .ok()?
             .into_array(all_partition_info.len())

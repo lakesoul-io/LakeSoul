@@ -474,14 +474,15 @@ mod tests {
 
     use arrow::array::{Date32Array, Decimal128Array, TimestampMicrosecondArray};
     use arrow::{
-        array::{ArrayRef, Int64Array},
+        array::{ArrayRef, Int32Array, Int64Array},
         record_batch::RecordBatch,
     };
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use chrono::{NaiveDate, NaiveDateTime};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use rand::{Rng, distr::SampleString};
+    use rand::rngs::StdRng;
+    use rand::{Rng, RngCore, SeedableRng, distr::SampleString};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
 
@@ -644,6 +645,62 @@ mod tests {
                 outputs[0].other_info.get("physical_format"),
                 Some(&"vortex-compact".to_string())
             );
+            Ok(())
+        })
+    }
+
+    /// Regression test for the Consistency CI failure with vortex 0.86: a
+    /// large, near-monotone integer column makes BtrBlocks pick the FastLanes
+    /// Delta encoding, whose serialized ID is not part of the default
+    /// session's enabled editions. Because the custom write strategy replaces
+    /// the default one, the compressor must be restricted to edition-permitted
+    /// encodings itself; otherwise the write fails with
+    /// `Serialized array ID fastlanes.delta not permitted by ctx`. The plain
+    /// (non-compact) vortex format reproduces this deterministically, since
+    /// the compact compressor prefers Pco for such data.
+    #[test]
+    fn test_vortex_file_sink_write_large_monotonic_column() -> Result<()> {
+        let runtime = Arc::new(Builder::new_multi_thread().enable_all().build().unwrap());
+        runtime.clone().block_on(async move {
+            // 16384 rows span two 8192-row blocks, each long enough for Delta
+            // selection (at least one 1024-value FastLanes chunk). The
+            // irregular small steps keep the residuals far narrower than the
+            // frame-of-reference span, and break exact arithmetic progressions
+            // so the Sequence scheme does not win instead.
+            let mut rng = StdRng::seed_from_u64(7u64);
+            let mut value = 500_000i32;
+            let col = Arc::new(Int32Array::from_iter_values((0..16384).map(|_| {
+                value += 1 + (rng.next_u32() % 6) as i32;
+                value
+            }))) as ArrayRef;
+            let to_write = RecordBatch::try_from_iter([("col", col)])?;
+            let temp_dir = tempfile::tempdir()?;
+            let path = temp_dir
+                .path()
+                .join("monotonic.vortex")
+                .into_os_string()
+                .into_string()
+                .unwrap();
+            let writer_io_config = LakeSoulIOConfigBuilder::new()
+                .with_files(vec![path.clone()])
+                .with_thread_num(2)
+                .with_batch_size(256)
+                .with_schema(to_write.schema())
+                .with_physical_format(PhysicalFormat::Vortex)
+                .build();
+
+            let mut async_writer = create_writer_with_io_config(writer_io_config).await?;
+            async_writer.write_record_batch(to_write.clone()).await?;
+            let outputs = async_writer.flush_and_close().await?;
+
+            assert_eq!(outputs.len(), 1);
+            assert!(outputs[0].file_path.ends_with(&path));
+            assert_eq!(outputs[0].row_count, to_write.num_rows());
+            assert_eq!(
+                outputs[0].other_info.get("physical_format"),
+                Some(&"vortex".to_string())
+            );
+            assert!(std::fs::metadata(path)?.len() > 0);
             Ok(())
         })
     }

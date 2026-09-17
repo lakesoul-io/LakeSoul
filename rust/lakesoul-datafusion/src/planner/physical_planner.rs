@@ -6,9 +6,10 @@
 
 use std::sync::Arc;
 
+use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, SchemaExt};
 use datafusion::error::{DataFusionError, Result as DFResult};
-use datafusion::execution::context::SessionState;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr};
 use datafusion::physical_plan::filter::FilterExec;
@@ -48,7 +49,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session_state: &dyn Session,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         debug!("create_physical_plan: {}", &logical_plan);
         match logical_plan {
@@ -66,6 +67,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                     &filter.predicate,
                     input_dfschema,
                     session_state,
+                    &PhysicalPlanningContext::default(),
                 )?;
                 Ok(Arc::new(FilterExec::try_new(runtime_expr, physical_input)?))
             }
@@ -239,9 +241,15 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         &self,
         expr: &Expr,
         input_dfschema: &DFSchema,
-        session_state: &SessionState,
+        session_state: &dyn Session,
+        planning_ctx: &PhysicalPlanningContext,
     ) -> DFResult<Arc<dyn PhysicalExpr>> {
         debug!("create_physical_expr: {}", &expr);
-        create_physical_expr(expr, input_dfschema, session_state.execution_props())
+        create_physical_expr(
+            expr,
+            input_dfschema,
+            session_state.execution_props(),
+            planning_ctx,
+        )
     }
 }

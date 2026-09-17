@@ -5,6 +5,7 @@
 //! Module for the async writer implementation of LakeSoul.
 use bytes::BytesMut;
 use datafusion_common::DataFusionError;
+use datafusion_common::tree_node::TreeNodeRecursion;
 
 mod file_sink_writer;
 pub use file_sink_writer::FileSinkWriter;
@@ -33,7 +34,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion_physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PlanProperties, stream::RecordBatchReceiverStreamBuilder,
@@ -206,6 +207,15 @@ impl ExecutionPlan for ReceiverStreamExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         unimplemented!()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> Result<TreeNodeRecursion, DataFusionError>,
+    ) -> Result<TreeNodeRecursion, DataFusionError> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
