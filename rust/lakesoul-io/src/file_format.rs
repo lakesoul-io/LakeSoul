@@ -222,7 +222,13 @@ impl FileFormat for LakeSoulParquetFormat {
                 )
             })
             .boxed() // Workaround https://github.com/rust-lang/rust/issues/64552
-            .buffered(state.config_options().execution.meta_fetch_concurrency)
+            .buffered(
+                state
+                    .config_options()
+                    .execution
+                    .meta_fetch_concurrency
+                    .into(),
+            )
             .try_collect()
             .await?;
 
@@ -393,7 +399,13 @@ impl FileFormat for LakeSoulVortexFormat {
                 }
             })
             .boxed()
-            .buffered(state.config_options().execution.meta_fetch_concurrency)
+            .buffered(
+                state
+                    .config_options()
+                    .execution
+                    .meta_fetch_concurrency
+                    .into(),
+            )
             .try_collect()
             .await?;
 
@@ -671,7 +683,7 @@ pub async fn flatten_file_scan_config(
                             debug!("flatten: file_schema: {}", file_schema);
                             // only file schema
                             let table_schema =
-                                TableSchema::new(file_schema.clone(), cols);
+                                TableSchema::new(file_schema.clone(), cols.to_vec());
                             let file_statistics = format
                                 .infer_stats(
                                     state,
@@ -782,7 +794,8 @@ pub async fn flatten_file_scan_config_for_format(
                             let cols = conf.table_partition_cols().clone();
                             debug!("partition cols: {:?}", cols);
                             debug!("flatten: file_schema: {}", file_schema);
-                            let table_schema = TableSchema::new(file_schema, cols);
+                            let table_schema =
+                                TableSchema::new(file_schema, cols.to_vec());
                             let file_statistics = format
                                 .infer_stats(
                                     state,

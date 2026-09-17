@@ -177,7 +177,7 @@ impl QueryParser for __ConnectionParser {
         client: &C,
         sql: &str,
         types: &[Option<Type>],
-    ) -> PgWireResult<Self::Statement>
+    ) -> PgWireResult<Option<Self::Statement>>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {

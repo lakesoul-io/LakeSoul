@@ -9,7 +9,7 @@ use arrow::datatypes::SchemaRef;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Field, SchemaBuilder};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::RecordBatchStream;
 use datafusion::physical_plan::display::DisplayFormatType;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -17,6 +17,7 @@ use datafusion::physical_plan::{DisplayAs, ExecutionPlan, PlanProperties};
 use datafusion::physical_plan::{
     ExecutionPlanProperties, Partitioning, SendableRecordBatchStream,
 };
+use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{DataFusionError, Result};
 use futures::Stream;
 use futures::StreamExt;
@@ -106,6 +107,13 @@ impl ExecutionPlan for SelfIncrementalIndexColumnExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

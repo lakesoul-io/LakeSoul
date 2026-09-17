@@ -12,11 +12,11 @@ use arrow_cast::pretty::pretty_format_batches;
 use chrono::Utc;
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::sql::TableReference;
 use datafusion::{
     arrow::record_batch::RecordBatch, dataframe::DataFrame, datasource::TableProvider,
     execution::context::SessionContext, logical_expr::LogicalPlanBuilder,
 };
+use datafusion_common::TableReference;
 use helpers::{case_fold_table_name, create_io_config_builder_from_table_info};
 use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::file_format::LakeSoulFormatRegistry;

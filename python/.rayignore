@@ -1,0 +1,12 @@
+# Keep Ray's working_dir packaging small and avoid worker-side project rebuilds:
+# build artifacts, virtualenvs, and Python project manifests that would make Ray's
+# uv integration try to rebuild the Rust extension inside the worker environment.
+.venv
+src/**/*.so
+pyproject.toml
+Cargo.toml
+Cargo.lock
+uv.lock
+build.rs
+.ruff_cache
+.pytest_cache

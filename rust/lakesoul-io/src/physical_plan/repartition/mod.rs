@@ -30,7 +30,9 @@ use datafusion::{
     },
 };
 use datafusion::{physical_expr::physical_exprs_equal, physical_plan::metrics};
+use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{DataFusionError, Result as DFResult, Statistics};
+use datafusion_physical_plan::apply_expression_roots;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 use rootcause::{Report, bail, compat::boxed_error::IntoBoxedError};
@@ -701,6 +703,20 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        let hash_exprs: &[Arc<dyn PhysicalExpr>] = match &self.hash_partitioning {
+            Partitioning::Hash(exprs, _) => exprs,
+            _ => &[],
+        };
+        apply_expression_roots(
+            self.range_partitioning_expr.iter().chain(hash_exprs.iter()),
+            f,
+        )
     }
 
     fn with_new_children(

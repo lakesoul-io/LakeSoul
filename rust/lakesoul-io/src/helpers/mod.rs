@@ -24,6 +24,7 @@ use datafusion_datasource::ListingTableUrl;
 use datafusion_datasource::file_format::FileFormat;
 use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_expr::binary::BinaryTypeCoercer;
+use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion_expr::{BinaryExpr, Expr, ExprSchemable, col};
 use datafusion_physical_expr::create_physical_sort_expr;
 use datafusion_physical_expr::{PhysicalSortExpr, create_physical_expr};
@@ -109,6 +110,7 @@ pub fn column_names_to_physical_sort_expr(
                 &col(column).sort(true, true),
                 input_dfschema,
                 session.execution_props(),
+                &PhysicalPlanningContext::default(),
             )
             .map_err(|e| e.into())
         })
@@ -134,7 +136,12 @@ pub fn column_names_to_physical_expr(
     let runtime_expr = columns
         .iter()
         .map(|column| {
-            create_physical_expr(&col(column), input_dfschema, session.execution_props())
+            create_physical_expr(
+                &col(column),
+                input_dfschema,
+                session.execution_props(),
+                &PhysicalPlanningContext::default(),
+            )
         })
         .collect::<Result<Vec<_>, DataFusionError>>()?;
     Ok(runtime_expr)
@@ -707,7 +714,13 @@ pub async fn get_file_object_meta(
             }
         })
         .boxed()
-        .buffered(session.config_options().execution.meta_fetch_concurrency)
+        .buffered(
+            session
+                .config_options()
+                .execution
+                .meta_fetch_concurrency
+                .into(),
+        )
         .try_collect()
         .await
 }

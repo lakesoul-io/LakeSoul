@@ -450,8 +450,12 @@ async fn test_datatypes() -> Result<()> {
         // ("Float16", Arc::new(Float16Array::from(vec![1.0])) as ArrayRef, true),
         (
             "FixedSizeBinary",
-            Arc::new(FixedSizeBinaryArray::from(vec![&[1u8][..], &[2u8][..]]))
-                as ArrayRef,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![&[1u8][..], &[2u8][..]].into_iter(),
+                )
+                .unwrap(),
+            ) as ArrayRef,
             true,
         ),
         (

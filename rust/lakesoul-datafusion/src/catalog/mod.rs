@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use datafusion::sql::TableReference;
+use datafusion_common::TableReference;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::MetaDataClientRef;

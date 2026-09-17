@@ -44,15 +44,16 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
         cmd: &CreateExternalTable,
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
         debug!(
-            "LakeSoulTableProviderFactory::create: {}, {}, {}, {}, {:#?}",
-            cmd.name, cmd.location, cmd.schema, cmd.constraints, cmd.options
+            "LakeSoulTableProviderFactory::create: {}, {:#?}, {}, {}, {:#?}",
+            cmd.name, cmd.locations, cmd.schema, cmd.constraints, cmd.options
         );
 
         let mut cmd = cmd.clone();
         if let Some(warehouse_prefix) = &self.warehouse_prefix {
             let schema = cmd.name.schema().unwrap_or("default");
             let table_name = cmd.name.table();
-            cmd.location = format!("{}/{}/{}", warehouse_prefix, schema, table_name);
+            cmd.locations =
+                vec![format!("{}/{}/{}", warehouse_prefix, schema, table_name)];
         }
         Ok(Arc::new(
             LakeSoulTableProvider::new_from_create_external_table(

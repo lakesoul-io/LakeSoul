@@ -31,13 +31,14 @@ use vortex::array::stream::ArrayStreamExt;
 use vortex::buffer::Buffer;
 use vortex::buffer::ByteBufferMut;
 use vortex::dtype::Nullability;
-use vortex::expr::{Expression, get_item, list_contains, lit, root};
+use vortex::expr::{BoundExpression, Expression, get_item, list_contains, lit, root};
 use vortex::file::{
     OpenOptionsSessionExt, VortexFile, WriteOptionsSessionExt, WriteStrategyBuilder,
 };
 use vortex::io::object_store::ObjectStoreReadAt;
 use vortex::io::session::RuntimeSessionExt;
 use vortex::scalar::Scalar;
+use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
 use vortex::session::VortexSession;
 
 fn probe_paths() -> Vec<std::path::PathBuf> {
@@ -85,6 +86,18 @@ fn in_list_expr(ids: &[i64]) -> Expression {
     list_contains(lit(list), get_item("id", root()))
 }
 
+fn root_projection(file: &VortexFile) -> BoundExpression {
+    root().bind(file.dtype()).unwrap()
+}
+
+fn id_projection(file: &VortexFile) -> BoundExpression {
+    get_item("id", root()).bind(file.dtype()).unwrap()
+}
+
+fn sorted_row_indices(indices: &[u64]) -> StrictSortedBuffer<u64> {
+    StrictSortedBuffer::try_new(Buffer::from_iter(indices.iter().copied())).unwrap()
+}
+
 async fn drain(
     stream: impl futures::Stream<Item = vortex::error::VortexResult<vortex::array::ArrayRef>>,
 ) -> usize {
@@ -101,7 +114,7 @@ async fn read_pks(file: &VortexFile, session: &VortexSession) -> Vec<i64> {
     let array = file
         .scan()
         .unwrap()
-        .with_projection(get_item("id", root()))
+        .with_projection(id_projection(file))
         .into_array_stream()
         .unwrap()
         .read_all()
@@ -194,8 +207,8 @@ async fn probe_in_list_vs_row_locator() {
             let stream = file
                 .scan()
                 .unwrap()
-                .with_projection(root())
-                .with_filter(expr.clone())
+                .with_projection(root_projection(file))
+                .with_filter(expr.clone().bind(file.dtype()).unwrap())
                 .into_array_stream()
                 .unwrap();
             rows += drain(stream).await;
@@ -209,7 +222,7 @@ async fn probe_in_list_vs_row_locator() {
             let stream = file
                 .scan()
                 .unwrap()
-                .with_projection(get_item("id", root()))
+                .with_projection(id_projection(file))
                 .into_array_stream()
                 .unwrap();
             rows += drain(stream).await;
@@ -226,8 +239,8 @@ async fn probe_in_list_vs_row_locator() {
             let stream = file
                 .scan()
                 .unwrap()
-                .with_projection(root())
-                .with_row_indices(Buffer::from_iter(indices.iter().copied()))
+                .with_projection(root_projection(file))
+                .with_row_indices(sorted_row_indices(indices))
                 .into_array_stream()
                 .unwrap();
             rows += drain(stream).await;
@@ -239,7 +252,7 @@ async fn probe_in_list_vs_row_locator() {
         let stream = files[0]
             .scan()
             .unwrap()
-            .with_projection(root())
+            .with_projection(root_projection(&files[0]))
             .into_array_stream()
             .unwrap();
         drain(stream).await
@@ -249,8 +262,8 @@ async fn probe_in_list_vs_row_locator() {
         let stream = files[0]
             .scan()
             .unwrap()
-            .with_projection(get_item("id", root()))
-            .with_filter(expr.clone())
+            .with_projection(id_projection(&files[0]))
+            .with_filter(expr.clone().bind(files[0].dtype()).unwrap())
             .into_array_stream()
             .unwrap();
         drain(stream).await
@@ -265,8 +278,8 @@ async fn probe_in_list_vs_row_locator() {
             let stream = file
                 .scan()
                 .unwrap()
-                .with_projection(get_item("id", root()))
-                .with_row_indices(Buffer::from_iter(indices.iter().copied()))
+                .with_projection(id_projection(file))
+                .with_row_indices(sorted_row_indices(indices))
                 .into_array_stream()
                 .unwrap();
             rows += drain(stream).await;
@@ -287,7 +300,7 @@ async fn probe_in_list_vs_row_locator() {
         files[biggest]
             .scan()
             .unwrap()
-            .with_projection(root())
+            .with_projection(root_projection(&files[biggest]))
             .with_row_range(range_start..range_start + 100)
             .into_array_stream()
             .unwrap()
@@ -300,8 +313,8 @@ async fn probe_in_list_vs_row_locator() {
         files[biggest]
             .scan()
             .unwrap()
-            .with_projection(root())
-            .with_row_indices(Buffer::from_iter(contiguous.iter().copied()))
+            .with_projection(root_projection(&files[biggest]))
+            .with_row_indices(sorted_row_indices(&contiguous))
             .into_array_stream()
             .unwrap()
             .read_all()
@@ -331,8 +344,8 @@ async fn probe_in_list_vs_row_locator() {
             let stream = file
                 .scan()
                 .unwrap()
-                .with_projection(root())
-                .with_row_indices(Buffer::from_iter(indices.iter().copied()))
+                .with_projection(root_projection(&file))
+                .with_row_indices(sorted_row_indices(indices))
                 .into_array_stream()
                 .unwrap();
             rows += drain(stream).await;
@@ -345,7 +358,7 @@ async fn probe_in_list_vs_row_locator() {
     let all = files[biggest]
         .scan()
         .unwrap()
-        .with_projection(root())
+        .with_projection(root_projection(&files[biggest]))
         .into_array_stream()
         .unwrap()
         .read_all()
@@ -368,8 +381,8 @@ async fn probe_in_list_vs_row_locator() {
             small
                 .scan()
                 .unwrap()
-                .with_projection(root())
-                .with_row_indices(Buffer::from_iter(found_per_file[0].iter().copied()))
+                .with_projection(root_projection(&small))
+                .with_row_indices(sorted_row_indices(&found_per_file[0]))
                 .into_array_stream()
                 .unwrap()
                 .read_all()
@@ -381,7 +394,7 @@ async fn probe_in_list_vs_row_locator() {
             small
                 .scan()
                 .unwrap()
-                .with_projection(root())
+                .with_projection(root_projection(&small))
                 .into_array_stream()
                 .unwrap()
                 .read_all()

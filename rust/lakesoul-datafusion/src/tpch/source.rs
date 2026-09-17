@@ -5,6 +5,8 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
+use datafusion::error::DataFusionError;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::{
     catalog::{Session, TableProvider, memory::DataSourceExec},
     datasource::source::DataSource,
@@ -14,6 +16,7 @@ use datafusion::{
     },
 };
 use datafusion_common::Statistics;
+use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_expr::{Expr, TableType};
 use futures::StreamExt;
 
@@ -26,6 +29,15 @@ pub(super) struct TpchSource {
 }
 
 impl DataSource for TpchSource {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> datafusion_common::Result<TreeNodeRecursion>,
+    ) -> datafusion_common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn open(
         &self,
         partition: usize,
@@ -35,7 +47,8 @@ impl DataSource for TpchSource {
         let g = self
             .kind
             .generator(self.scale_factor, partition, self.num_parts);
-        let stream = futures::stream::iter(g).map(Ok);
+        let stream =
+            futures::stream::iter(g).map(|item| item.map_err(DataFusionError::from));
         let schema = self.kind.schema();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }

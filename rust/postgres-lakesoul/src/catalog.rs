@@ -139,6 +139,12 @@ impl CatalogProvider for EmptyDatabaseCatalog {
 /// and tables. Listing the other namespaces as empty catalogs makes them
 /// visible as databases while keeping object visibility scoped to the
 /// current database.
+///
+/// The pinned `datafusion-postgres` fork (branch `pg-catalog-master`) restores
+/// `PgCatalogOptions::include_synthetic_postgres_database`, which LakeSoul
+/// sets to `false`: no synthetic `postgres` row is appended to
+/// `pg_catalog.pg_database`, so listings show exactly the LakeSoul
+/// namespaces. (Upstream master since 3ef93e6 always adds the row.)
 #[derive(Debug)]
 pub struct PgDatabaseCatalogList {
     /// The database selected by this connection at startup.

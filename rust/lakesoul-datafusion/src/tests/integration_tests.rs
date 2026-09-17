@@ -4,13 +4,10 @@
 
 use std::{path::Path, sync::Arc};
 
-use datafusion::{
-    datasource::{
-        TableProvider,
-        file_format::{FileFormat, csv::CsvFormat},
-        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
-    },
-    execution::context::SessionContext,
+use datafusion::datasource::{
+    TableProvider,
+    file_format::{FileFormat, csv::CsvFormat},
+    listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
 };
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::reader::LakeSoulReader;
@@ -30,11 +27,9 @@ use crate::{
     tests::benchmarks::tpch::get_tbl_tpch_table_range_partitions,
 };
 
-async fn get_table(ctx: &SessionContext, table: &str) -> Result<Arc<dyn TableProvider>> {
+async fn get_table(table: &str) -> Result<Arc<dyn TableProvider>> {
     let path = get_tpch_data_path()?;
 
-    // Obtain a snapshot of the SessionState
-    let state = ctx.state();
     let (format, path, extension): (Arc<dyn FileFormat>, String, &'static str) = {
         let path = format!("{path}/{table}.tbl");
         let format = CsvFormat::default()
@@ -44,9 +39,9 @@ async fn get_table(ctx: &SessionContext, table: &str) -> Result<Arc<dyn TablePro
         (Arc::new(format), path, ".tbl")
     };
 
-    let options = ListingOptions::new(format)
-        .with_file_extension(extension)
-        .with_collect_stat(state.config().collect_statistics());
+    // DF55: `ListingOptions::with_collect_stat` was removed; `ListingTable`
+    // now reads `ctx.config().collect_statistics()` at scan time instead.
+    let options = ListingOptions::new(format).with_file_extension(extension);
 
     let table_path = ListingTableUrl::parse(path)?;
     let config = ListingTableConfig::new(table_path).with_listing_options(options);
@@ -85,7 +80,7 @@ async fn load_tpch_data() -> Result<()> {
     )?;
 
     for table in TPCH_TABLES {
-        let table_provider = get_table(&ctx, table).await?;
+        let table_provider = get_table(table).await?;
         ctx.register_table(*table, table_provider)?;
         let schema = get_tpch_table_schema(table);
         let columns = schema

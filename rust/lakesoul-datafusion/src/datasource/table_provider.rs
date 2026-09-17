@@ -27,6 +27,7 @@ use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{
     CreateExternalTable, TableProviderFilterPushDown, TableType,
@@ -431,7 +432,7 @@ impl LakeSoulTableProvider {
             })
             .unwrap(),
             partitions: format_table_info_partitions(&range_partitions, &primary_keys),
-            table_path: if cmd.location.is_empty() {
+            table_path: if cmd.locations.is_empty() {
                 format!(
                     "file://{}/{}/{}",
                     env::current_dir().unwrap().to_str().unwrap(),
@@ -440,7 +441,9 @@ impl LakeSoulTableProvider {
                 )
             } else {
                 // hdfs is not checked
-                qualify_path(&cmd.location)?
+                qualify_path(cmd.locations.first().ok_or_else(|| {
+                    DataFusionError::Internal("missing location".to_string())
+                })?)?
             },
             domain: "public".to_string(),
         });
@@ -986,6 +989,7 @@ impl TableProvider for LakeSoulTableProvider {
                 &expr,
                 &table_df_schema,
                 session_state.execution_props(),
+                &PhysicalPlanningContext::default(),
             )?)
         } else {
             None
@@ -1130,6 +1134,7 @@ impl TableProvider for LakeSoulTableProvider {
                 &cdc_filter,
                 &dfschema,
                 session_state.execution_props(),
+                &PhysicalPlanningContext::default(),
             )?;
 
             Arc::new(FilterExec::try_new(expr, exec)?) as Arc<dyn ExecutionPlan>
