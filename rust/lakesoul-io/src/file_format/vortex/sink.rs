@@ -24,14 +24,21 @@ use datafusion_execution::SendableRecordBatchStream;
 use datafusion_execution::TaskContext;
 use datafusion_physical_plan::DisplayAs;
 use datafusion_physical_plan::DisplayFormatType;
+use datafusion_physical_plan::metrics::Count;
+use datafusion_physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion_physical_plan::metrics::MetricBuilder;
+use datafusion_physical_plan::metrics::MetricCategory;
 use datafusion_physical_plan::metrics::MetricsSet;
 use futures::StreamExt;
 use object_store::ObjectStore;
 use object_store::path::Path;
 use tokio_stream::wrappers::ReceiverStream;
+use vortex::array::ArrayId;
+use vortex::array::session::ArraySessionExt;
 use vortex::array::stream::ArrayStreamAdapter;
 use vortex::arrow::ArrowSessionExt;
 use vortex::compressor::BtrBlocksCompressorBuilder;
+use vortex::editions::{ComponentKind, EditionSessionExt};
 use vortex::file::Footer as FileFooter;
 use vortex::file::WriteOptionsSessionExt;
 use vortex::file::WriteStrategyBuilder;
@@ -39,6 +46,7 @@ use vortex::file::WriteSummary;
 use vortex::io::VortexWrite;
 use vortex::io::object_store::ObjectStoreWrite;
 use vortex::session::VortexSession;
+use vortex::utils::aliases::hash_set::HashSet;
 
 /// Row block size used for vector index columns.  Candidate rows are
 /// fetched by row index, and vortex reads random rows at row-block
@@ -46,6 +54,21 @@ use vortex::session::VortexSession;
 /// default of 8192 rows would read most of the vector column for a
 /// scattered candidate set.
 const VECTOR_ROW_BLOCK_SIZE: usize = 1024;
+
+/// The array encodings the session's enabled editions permit, derived the same
+/// way the default Vortex file writer does (`vortex-file`'s
+/// `new_array_context`): serialized IDs allowed by the editions, mapped to
+/// their registered in-memory encoding IDs.
+fn allowed_array_encodings(session: &VortexSession) -> HashSet<ArrayId> {
+    let arrays = session.arrays();
+    let registry = arrays.registry();
+    session
+        .enabled_component_ids(ComponentKind::Array)
+        .iter()
+        .filter_map(|serialized_id| registry.get(serialized_id))
+        .map(|plugin| plugin.id())
+        .collect()
+}
 
 pub struct VortexSink {
     config: FileSinkConfig,
@@ -56,6 +79,10 @@ pub struct VortexSink {
     vector_columns: Vec<String>,
     /// The Mutex is only used to allow inserting to HashMap from behind borrowed reference in DataSink::write_all.
     written: Arc<parking_lot::Mutex<HashMap<Path, FileFooter>>>,
+
+    metrics: ExecutionPlanMetricsSet,
+    rows_written: Count,
+    bytes_written: Count,
 }
 
 impl VortexSink {
@@ -67,6 +94,13 @@ impl VortexSink {
         is_compact: bool,
         vector_columns: Vec<String>,
     ) -> Self {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let rows_written = MetricBuilder::new(&metrics)
+            .with_category(MetricCategory::Rows)
+            .global_counter("rows_written");
+        let bytes_written = MetricBuilder::new(&metrics)
+            .with_category(MetricCategory::Bytes)
+            .global_counter("bytes_written");
         Self {
             config,
             schema,
@@ -74,6 +108,9 @@ impl VortexSink {
             is_compact,
             vector_columns,
             written: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            metrics,
+            rows_written,
+            bytes_written,
         }
     }
 
@@ -81,16 +118,22 @@ impl VortexSink {
     /// compact compressor, plus a small-row-block override for every vector
     /// index column.
     fn write_strategy(&self) -> Arc<dyn vortex::layout::LayoutStrategy> {
+        // The custom strategy replaces the default one, which would normally
+        // restrict BtrBlocks schemes to the encodings permitted by the
+        // session's enabled editions. Mirror that filtering here; otherwise
+        // the compressor can pick an encoding such as `fastlanes.delta` that
+        // the serialization context then rejects with "Serialized array ID
+        // ... not permitted by ctx" while writing the file.
+        let allowed = allowed_array_encodings(&self.session);
         let make_builder = || {
-            let builder = WriteStrategyBuilder::default();
-            if self.is_compact {
+            let compressor = if self.is_compact {
                 // use zstd in block level
-                builder.with_btrblocks_builder(
-                    BtrBlocksCompressorBuilder::default().with_compact(),
-                )
+                BtrBlocksCompressorBuilder::default().with_compact()
             } else {
-                builder
-            }
+                BtrBlocksCompressorBuilder::default()
+            };
+            WriteStrategyBuilder::default()
+                .with_btrblocks_builder(compressor.retain_allowed_encodings(&allowed))
         };
 
         let mut builder = make_builder();
@@ -138,7 +181,7 @@ impl DisplayAs for VortexSink {
 #[async_trait]
 impl DataSink for VortexSink {
     fn metrics(&self) -> Option<MetricsSet> {
-        None
+        Some(self.metrics.clone_inner())
     }
 
     /// Returns the sink schema
@@ -235,7 +278,13 @@ impl FileSink for VortexSink {
                 Ok(r) => {
                     let (path, summary) = r?;
 
-                    row_count += summary.row_count();
+                    let rows = summary.row_count();
+                    row_count += rows;
+
+                    self.rows_written
+                        .add(usize::try_from(rows).unwrap_or(usize::MAX));
+                    self.bytes_written
+                        .add(usize::try_from(summary.size()).unwrap_or(usize::MAX));
 
                     let mut written_files = self.written.lock();
                     match written_files.entry(path.clone()) {

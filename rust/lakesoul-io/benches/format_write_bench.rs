@@ -11,12 +11,16 @@ use parquet::{
 };
 use vortex::{
     VortexSessionDefault,
+    array::ArrayId,
+    array::session::ArraySessionExt,
     array::stream::ArrayStreamAdapter,
     arrow::ArrowSessionExt,
     compressor::BtrBlocksCompressorBuilder,
+    editions::{ComponentKind, EditionSessionExt},
     file::{WriteOptionsSessionExt, WriteStrategyBuilder},
     io::session::RuntimeSessionExt,
     session::VortexSession,
+    utils::aliases::hash_set::HashSet,
 };
 
 mod common;
@@ -116,10 +120,25 @@ fn vortex_compact_write_tokio(schema: SchemaRef, batches: &[RecordBatch]) {
                     .from_arrow_record_batch(record_batch, &import_schema)
             }));
 
+        // Keep the compressor aligned with the LakeSoul vortex sink: restrict
+        // schemes to the encodings the enabled editions permit, since the
+        // custom strategy bypasses the default writer's edition filtering.
+        let allowed: HashSet<ArrayId> = {
+            let arrays = session.arrays();
+            let registry = arrays.registry();
+            session
+                .enabled_component_ids(ComponentKind::Array)
+                .iter()
+                .filter_map(|serialized_id| registry.get(serialized_id))
+                .map(|plugin| plugin.id())
+                .collect()
+        };
         let write_options = session.write_options().with_strategy(
             WriteStrategyBuilder::default()
                 .with_btrblocks_builder(
-                    BtrBlocksCompressorBuilder::default().with_compact(),
+                    BtrBlocksCompressorBuilder::default()
+                        .with_compact()
+                        .retain_allowed_encodings(&allowed),
                 )
                 .build(),
         );
