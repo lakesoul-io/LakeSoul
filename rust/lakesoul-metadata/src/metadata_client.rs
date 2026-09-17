@@ -52,6 +52,72 @@ impl Debug for MetaDataClient {
 
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
+/// The changelog of one partition over the version window
+/// `(from_version_exclusive, to_version_inclusive]`.
+///
+/// The window is expressed in partition versions, not wall-clock time, so that
+/// same-millisecond commits cannot be skipped or read twice. See
+/// [`MetaDataClient::get_partition_changelog`] for the exact file semantics.
+#[derive(Debug, Clone, Default)]
+pub struct PartitionChangelog {
+    /// The partition this changelog belongs to.
+    pub partition_desc: String,
+    /// Files added by append/merge commits in commit order.
+    ///
+    /// Compaction output files are excluded (compaction is not changelog) and
+    /// `del` operations only suppress an earlier `add` of the same path.
+    pub added_files: Vec<DataFileInfo>,
+    /// Whether the partition was dropped by a delete commit inside the window.
+    pub partition_deleted: bool,
+    /// Whether the window contains an update commit, or the baseline snapshot is
+    /// missing; the caller must rebuild the partition from a snapshot instead of
+    /// applying `added_files` (which is empty in that case).
+    pub requires_rebuild: bool,
+    /// The last version included in the window. Equals the requested lower bound
+    /// when the window is empty.
+    pub to_version: i64,
+    /// The `partition_info.timestamp` of `to_version`, or of the baseline when
+    /// the window is empty.
+    pub to_timestamp: i64,
+}
+
+/// The changelog of one or several partitions of a table, as returned by
+/// [`MetaDataClient::get_incremental_files`].
+#[derive(Debug, Clone, Default)]
+pub struct IncrementalWindow {
+    /// Per-partition changelogs, ordered by `partition_desc` for table-wide reads.
+    pub partitions: Vec<PartitionChangelog>,
+    /// All added files of `partitions`, flattened in the same order.
+    pub added_files: Vec<DataFileInfo>,
+    /// Partitions dropped by a delete commit inside the window.
+    pub deleted_partitions: Vec<String>,
+    /// Whether any partition requires a rebuild.
+    pub requires_rebuild: bool,
+}
+
+impl IncrementalWindow {
+    fn from_partitions(partitions: Vec<PartitionChangelog>) -> Self {
+        let added_files = partitions
+            .iter()
+            .flat_map(|partition| partition.added_files.iter().cloned())
+            .collect();
+        let deleted_partitions = partitions
+            .iter()
+            .filter(|partition| partition.partition_deleted)
+            .map(|partition| partition.partition_desc.clone())
+            .collect();
+        let requires_rebuild = partitions
+            .iter()
+            .any(|partition| partition.requires_rebuild);
+        Self {
+            partitions,
+            added_files,
+            deleted_partitions,
+            requires_rebuild,
+        }
+    }
+}
+
 pub const PRIMARY_URL_PROP_KEY: &str = "lakesoul.pg.url=";
 pub const PRIMARY_URL_ENV_KEY: &str = "LAKESOUL_PG_URL";
 pub const SECONDARY_URL_PROP_KEY: &str = "lakesoul.pg.secondary.url=";
@@ -635,6 +701,9 @@ impl MetaDataClient {
                     new_partition_list.push(cur_partition_info);
                 }
 
+                new_partition_list.push(PartitionInfo {
+                    ..Default::default()
+                });
                 self.transaction_insert_partition_info(new_partition_list)
                     .await?;
                 Ok(())
@@ -669,6 +738,9 @@ impl MetaDataClient {
                     new_partition_list.push(cur_partition_info);
                 }
 
+                new_partition_list.push(PartitionInfo {
+                    ..Default::default()
+                });
                 self.transaction_insert_partition_info(new_partition_list)
                     .await?;
                 Ok(())
@@ -1090,6 +1162,287 @@ impl MetaDataClient {
         }
     }
 
+    /// Get the latest version of every partition of the table at or before `as_of_ms`.
+    ///
+    /// `as_of_ms` is compared against `partition_info.timestamp`, which is the
+    /// PostgreSQL wall clock (milliseconds) at which the partition version row was
+    /// inserted. Partitions created after `as_of_ms` are not returned.
+    pub async fn get_all_partition_info_as_of(
+        &self,
+        table_id: &str,
+        as_of_ms: i64,
+    ) -> Result<Vec<PartitionInfo>> {
+        match self
+            .execute_query(
+                DaoType::ListPartitionByTableIdAndTimestamp as i32,
+                [table_id, &as_of_ms.to_string()].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.partition_info),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get the latest version of one partition at or before `as_of_ms`.
+    ///
+    /// Returns `None` when the partition has no version committed at or before
+    /// `as_of_ms`. See [`MetaDataClient::get_all_partition_info_as_of`] for the
+    /// meaning of `as_of_ms`.
+    pub async fn get_partition_info_as_of(
+        &self,
+        table_id: &str,
+        partition_desc: &str,
+        as_of_ms: i64,
+    ) -> Result<Option<PartitionInfo>> {
+        match self
+            .execute_query(
+                DaoType::SelectOnePartitionVersionByTableIdAndDescAndTimestamp as i32,
+                [table_id, partition_desc, &as_of_ms.to_string()].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.partition_info.into_iter().next()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get one exact historical version of a partition.
+    ///
+    /// Returns `None` when there is no row for `(table_id, partition_desc, version)`.
+    pub async fn get_partition_info_by_version(
+        &self,
+        table_id: &str,
+        partition_desc: &str,
+        version: i32,
+    ) -> Result<Option<PartitionInfo>> {
+        match self
+            .execute_query(
+                DaoType::SelectPartitionVersionByTableIdAndDescAndVersion as i32,
+                [table_id, partition_desc, &version.to_string()].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.partition_info.into_iter().next()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_partition_versions_in_range(
+        &self,
+        table_id: &str,
+        partition_desc: &str,
+        from_version_inclusive: i64,
+        to_version_inclusive: i64,
+    ) -> Result<Vec<PartitionInfo>> {
+        if to_version_inclusive < from_version_inclusive {
+            return Ok(Vec::new());
+        }
+        match self
+            .execute_query(
+                DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
+                    as i32,
+                [
+                    table_id,
+                    partition_desc,
+                    &clamp_version(from_version_inclusive).to_string(),
+                    &clamp_version(to_version_inclusive).to_string(),
+                ]
+                .join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.partition_info),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read the changelog of one partition over the version window
+    /// `(from_version_exclusive, to_version_inclusive]`.
+    ///
+    /// The window is consumed by partition version instead of wall-clock time so
+    /// that millisecond timestamp collisions cannot skip or duplicate commits.
+    /// The returned files mirror the JVM incremental read
+    /// (`DataOperation.getSinglePartitionIncrementalDataInfos`):
+    ///
+    /// * append/merge snapshots are accumulated and subtracted against the
+    ///   baseline snapshot at `from_version_exclusive`;
+    /// * a compaction output (`snapshot[0]` of a compaction version) is excluded
+    ///   because compaction is not changelog, while `snapshot[1..]` (concurrent
+    ///   appends) is kept;
+    /// * `del` file operations only suppress an earlier `add` of the same path.
+    ///
+    /// Two behaviours deliberately differ from the JVM implementation: an update
+    /// commit inside the window (or a missing baseline) sets
+    /// [`PartitionChangelog::requires_rebuild`] instead of silently returning no
+    /// files, and a delete commit is surfaced through
+    /// [`PartitionChangelog::partition_deleted`].
+    pub async fn get_partition_changelog(
+        &self,
+        table_id: &str,
+        partition_desc: &str,
+        from_version_exclusive: i64,
+        to_version_inclusive: i64,
+    ) -> Result<PartitionChangelog> {
+        let mut changelog = PartitionChangelog {
+            partition_desc: partition_desc.to_string(),
+            to_version: from_version_exclusive,
+            ..Default::default()
+        };
+
+        let baseline = if from_version_exclusive >= 0 {
+            self.get_partition_info_by_version(
+                table_id,
+                partition_desc,
+                clamp_version(from_version_exclusive),
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some(baseline) = &baseline {
+            changelog.to_timestamp = baseline.timestamp;
+        }
+
+        let lower = from_version_exclusive.saturating_add(1).max(0);
+        let window = self
+            .get_partition_versions_in_range(
+                table_id,
+                partition_desc,
+                lower,
+                to_version_inclusive,
+            )
+            .await?;
+
+        if window.is_empty() {
+            if baseline.is_none() && from_version_exclusive >= 0 {
+                let latest = self
+                    .get_partition_info_by_table_id_and_partition_list(
+                        table_id,
+                        &[partition_desc.to_string()],
+                    )
+                    .await?
+                    .into_iter()
+                    .next();
+                match latest {
+                    Some(latest) => {
+                        // History below the cursor is gone: the diff cannot be trusted.
+                        changelog.requires_rebuild = true;
+                        changelog.to_timestamp = latest.timestamp;
+                    }
+                    None => changelog.partition_deleted = true,
+                }
+            }
+            return Ok(changelog);
+        }
+
+        if baseline.is_none() && from_version_exclusive >= 0 {
+            // Report the window bound for observability, then ask for a rebuild.
+            let last = window.last().expect("window is not empty");
+            changelog.to_version = i64::from(last.version);
+            changelog.to_timestamp = last.timestamp;
+            changelog.requires_rebuild = true;
+            return Ok(changelog);
+        }
+
+        let mut added_ids: Vec<entity::Uuid> = Vec::new();
+        let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+        for row in &window {
+            let commit_op = row.commit_op();
+            if commit_op == CommitOp::UpdateCommit {
+                changelog.requires_rebuild = true;
+            }
+            if commit_op == CommitOp::DeleteCommit && row.snapshot.is_empty() {
+                changelog.partition_deleted = true;
+            }
+            let snapshot_ids = if commit_op == CommitOp::CompactionCommit {
+                // snapshot[0] is the compaction output, everything after it is a
+                // concurrently appended commit that must stay in the changelog.
+                row.snapshot.get(1..).unwrap_or_default()
+            } else {
+                row.snapshot.as_slice()
+            };
+            for id in snapshot_ids {
+                push_unique_uuid(&mut added_ids, &mut seen_ids, id);
+            }
+            changelog.to_version = i64::from(row.version);
+            changelog.to_timestamp = row.timestamp;
+        }
+
+        if changelog.requires_rebuild || changelog.partition_deleted {
+            // A partial window must never be applied as a changelog.
+            return Ok(changelog);
+        }
+
+        if let Some(baseline) = &baseline {
+            let baseline_ids = baseline
+                .snapshot
+                .iter()
+                .map(|id| (id.high, id.low))
+                .collect::<HashSet<_>>();
+            added_ids.retain(|id| !baseline_ids.contains(&(id.high, id.low)));
+        }
+
+        if !added_ids.is_empty() {
+            let snapshot = PartitionInfo {
+                table_id: table_id.to_string(),
+                partition_desc: partition_desc.to_string(),
+                snapshot: added_ids,
+                ..Default::default()
+            };
+            let commits = self
+                .get_data_commit_info_of_single_partition(&snapshot)
+                .await?;
+            changelog.added_files = active_added_files(&commits);
+        }
+
+        Ok(changelog)
+    }
+
+    /// Read the changelog of one partition, or of every current partition when
+    /// `partition_desc` is `None`.
+    ///
+    /// When `partition_desc` is `None` the same `from_version_exclusive` is used
+    /// for every partition and each partition's window is capped at its latest
+    /// version. Partitions dropped through a delete commit are only reported when
+    /// their `partition_desc` is requested explicitly.
+    pub async fn get_incremental_files(
+        &self,
+        table_id: &str,
+        partition_desc: Option<&str>,
+        from_version_exclusive: i64,
+        to_version_inclusive: i64,
+    ) -> Result<IncrementalWindow> {
+        let changelogs = match partition_desc {
+            Some(partition_desc) => vec![
+                self.get_partition_changelog(
+                    table_id,
+                    partition_desc,
+                    from_version_exclusive,
+                    to_version_inclusive,
+                )
+                .await?,
+            ],
+            None => {
+                let latest_partitions = self.get_all_partition_info(table_id).await?;
+                let mut changelogs = Vec::with_capacity(latest_partitions.len());
+                for partition in latest_partitions {
+                    changelogs.push(
+                        self.get_partition_changelog(
+                            table_id,
+                            &partition.partition_desc,
+                            from_version_exclusive,
+                            to_version_inclusive.min(i64::from(partition.version)),
+                        )
+                        .await?,
+                    );
+                }
+                changelogs
+            }
+        };
+        Ok(IncrementalWindow::from_partitions(changelogs))
+    }
+
     pub async fn get_single_data_commit_info(
         &self,
         table_id: &str,
@@ -1255,6 +1608,56 @@ fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
     }
     active.reverse();
     active
+}
+
+/// Turn resolved commits into added files, mirroring the JVM `filterFiles`
+/// behaviour: the operations are walked backwards so a `del` suppresses an
+/// earlier `add` of the same path, then the commit order is restored. Only
+/// `add` operations are returned.
+fn active_added_files(commits: &[DataCommitInfo]) -> Vec<DataFileInfo> {
+    let operations = commits
+        .iter()
+        .flat_map(|commit| commit.file_ops.iter().map(move |file_op| (commit, file_op)))
+        .collect::<Vec<_>>();
+
+    let mut deleted_paths = HashSet::new();
+    let mut active = Vec::new();
+    for (commit, file_op) in operations.iter().rev() {
+        match file_op.file_op() {
+            entity::FileOp::Del => {
+                deleted_paths.insert(file_op.path.as_str());
+            }
+            entity::FileOp::Add if !deleted_paths.contains(file_op.path.as_str()) => {
+                active.push(DataFileInfo {
+                    partition_desc: commit.partition_desc.clone(),
+                    path: file_op.path.clone(),
+                    file_op: "add".to_string(),
+                    size: file_op.size,
+                    bucket_id: None,
+                    modification_time: commit.timestamp,
+                    file_exist_cols: file_op.file_exist_cols.clone(),
+                });
+            }
+            entity::FileOp::Add => {}
+        }
+    }
+    active.reverse();
+    active
+}
+
+/// Clamp a partition version into the `i32` range used by the metadata tables.
+fn clamp_version(version: i64) -> i32 {
+    version.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn push_unique_uuid(
+    ids: &mut Vec<entity::Uuid>,
+    seen: &mut HashSet<(u64, u64)>,
+    id: &entity::Uuid,
+) {
+    if seen.insert((id.high, id.low)) {
+        ids.push(*id);
+    }
 }
 
 fn data_commit_info_list_from_files(
@@ -1435,5 +1838,53 @@ mod tests {
             active_data_files(&commits),
             vec!["active.parquet", "readded.parquet", "new.parquet"]
         );
+    }
+
+    #[test]
+    fn added_files_drop_earlier_adds_of_deleted_paths() {
+        let file_op = |path: &str, operation: entity::FileOp| entity::DataFileOp {
+            path: path.to_string(),
+            file_op: operation.into(),
+            size: 7,
+            file_exist_cols: "id".to_string(),
+        };
+        let commit = |file_ops: Vec<entity::DataFileOp>| DataCommitInfo {
+            partition_desc: "part=a".to_string(),
+            timestamp: 42,
+            file_ops,
+            ..Default::default()
+        };
+        let commits = vec![
+            commit(vec![
+                file_op("replaced.parquet", entity::FileOp::Add),
+                file_op("readded.parquet", entity::FileOp::Add),
+                file_op("kept.parquet", entity::FileOp::Add),
+            ]),
+            commit(vec![
+                file_op("replaced.parquet", entity::FileOp::Del),
+                file_op("readded.parquet", entity::FileOp::Del),
+                file_op("readded.parquet", entity::FileOp::Add),
+            ]),
+        ];
+
+        let files = active_added_files(&commits);
+        let paths = files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        // `replaced.parquet` is deleted after it was added; `readded.parquet` is
+        // added again after its delete and must survive.
+        assert_eq!(paths, vec!["kept.parquet", "readded.parquet"]);
+        assert!(files.iter().all(|file| file.file_op == "add"));
+        assert!(files.iter().all(|file| file.partition_desc == "part=a"));
+        assert!(files.iter().all(|file| file.modification_time == 42));
+        assert!(files.iter().all(|file| file.size == 7));
+    }
+
+    #[test]
+    fn clamp_version_saturates_at_i32_bounds() {
+        assert_eq!(clamp_version(-1), -1);
+        assert_eq!(clamp_version(i64::from(i32::MAX) + 10), i32::MAX);
+        assert_eq!(clamp_version(i64::from(i32::MIN) - 10), i32::MIN);
     }
 }
