@@ -179,6 +179,25 @@ hash 桶列 == 合并键 == `TableInfo.partitions` 的 hash 段
 - 按 k 过滤只读该桶；merge-on-read 同 k 多行共存；与全量结果 EXCEPT ALL 为空。
 - 前缀校验负例报错。
 
+**实施记录（已完成）**
+
+- `LakeSoulIOConfig` 新增 `hash_partitioning_columns`，getter
+  `hash_partitioning_columns_slice()` 空值时回退 `primary_keys`；builder
+  `with_hash_partitioning_columns`。
+- writer（`partitioning_writer.rs`）hash 分区改用 bucket 列；排序键保持
+  `range ++ primary_keys ++ aux`，满足 `RepartitionByRangeAndHashExec` 对
+  "range+hash 是输入序前缀" 的要求。
+- reader（`reader.rs`）桶裁剪改用 bucket 列，并新增门控：**仅当 bucket 列恰好
+  1 个** 且过滤器把该列钉住时才裁剪（现有裁剪按单列标量哈希，多列 bucket 会
+  误裁剪；`row_id` 这类合并键列不再触发裁剪）。
+- `LakeSoulTableProperty` 新增 `lakesoul.ivm.internal` /
+  `lakesoul.ivm.bucket_columns`；`create_io_config_builder_from_table_info`
+  校验 "internal=true" 与 "bucket 列是 primary keys 前缀"，否则报错。
+- 测试：`rust/lakesoul-io/tests/bucket_prefix.rs`（同 k 跨批次同桶 + 合并键
+  保留；过滤 row_id 不被误裁剪）、config 单测 2 个、datafusion helpers 单测 4 个。
+- JVM 可见性按决策延后：后续 JVM 在 `list tables` 按 `lakesoul.ivm.internal`
+  过滤内部表。
+
 ## 5. P1-1 Rust commit 乐观并发（OCC）
 
 **现状**

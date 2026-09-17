@@ -162,16 +162,20 @@ impl LakeSoulReader {
             .await?;
 
         let io_config = self.io_session.io_config_mut();
-        // Check if filters are or-conjunction of primary column
+        // Check if filters are or-conjunction of bucket columns.
+        //
+        // Pruning hashes individual scalar values with a single-column hash, so
+        // it is only sound when exactly one bucket column exists and the
+        // filters pin that column. With more bucket columns all of them have to
+        // be pinned and hashed together, which is not supported here yet.
+        let bucket_columns = io_config.hash_partitioning_columns_slice();
         let skip_reader = if io_config.skip_merge_on_read()
-            && !io_config.primary_keys.is_empty()
+            && bucket_columns.len() == 1
             && !filters.is_empty()
         {
             // Refactored approach for OR-conjunction optimization
-            let or_conjunctive_filter = collect_or_conjunctive_filter_expressions(
-                &filters,
-                &io_config.primary_keys,
-            );
+            let or_conjunctive_filter =
+                collect_or_conjunctive_filter_expressions(&filters, bucket_columns);
 
             if !or_conjunctive_filter.is_empty() {
                 debug!(
