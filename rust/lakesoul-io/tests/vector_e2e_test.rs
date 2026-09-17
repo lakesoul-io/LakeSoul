@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 
-use lakesoul_io::vector::builder::{ResolvedIndexShard, VectorShardIndexBuilder};
+use lakesoul_common::IndexKind;
+use lakesoul_io::index::commit::ResolvedIndex;
+use lakesoul_io::vector::builder::VectorShardIndexBuilder;
 use lakesoul_vector::{
     IndexHeader, IndexStore, IvfRabitqIndex, Metric, VectorIndexConfig,
 };
@@ -264,7 +266,7 @@ async fn test_build_and_list_files() {
 
 /// Test: LakeSoulReader with vector_search options — full filter injection path.
 ///
-/// Verifies that LakeSoulReader::start() → inject_vector_search_filter →
+/// Verifies that LakeSoulReader::start() → inject_index_search_filters →
 /// search_matching_shards → IDs injected as filter → filtered results.
 #[tokio::test]
 async fn test_reader_with_vector_search() {
@@ -352,13 +354,14 @@ async fn test_reader_with_vector_search() {
         Some(format!("file://{}", tmp_path)),
     );
     let outcome = builder.build().await.unwrap();
-    let resolved = ResolvedIndexShard {
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
         index_prefix: outcome.index_prefix.clone(),
         commit_id: 1,
         generation: 1,
         version: 1,
         header: outcome.header.clone(),
-        segments: outcome.new_segments.clone(),
+        segments: serde_json::to_value(&outcome.new_segments).unwrap(),
     };
     println!("Index built");
 

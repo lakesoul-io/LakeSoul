@@ -673,7 +673,7 @@ impl LakeSoulTableProvider {
         else {
             return Ok(None);
         };
-        if declared.metric.to_uppercase().as_str() != request.metric {
+        if declared.params.metric.to_uppercase().as_str() != request.metric {
             return Ok(None);
         }
         let vec_field = match self.file_schema.field_with_name(&request.vec_column) {
@@ -727,7 +727,7 @@ impl LakeSoulTableProvider {
             self.primary_keys.clone(),
             self.io_config.object_store_options().clone(),
             request,
-            lakesoul_metadata::vector_index::PgCatalog::from_client(&self.client),
+            self.client.vector_index_catalog(),
         )?;
         Ok(Some(Arc::new(exec)))
     }

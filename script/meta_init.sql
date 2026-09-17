@@ -166,19 +166,22 @@ create table if not exists discard_compressed_file_info
     PRIMARY KEY (file_path)
 );
 
--- Vector index control plane: the index data (segments) lives in object
--- storage; these tables track the current commit per shard, the segment
--- files it references, and the leases held by readers while they load.
-create table if not exists vector_index_shard
+-- Index control plane: the index data (segments/splits) lives in object
+-- storage; these tables track the current commit per shard (scoped by the
+-- index kind), the files it references, and the leases held by readers
+-- while they load.
+create table if not exists index_shard
 (
     shard_id     bigserial primary key,
-    index_prefix text not null unique
+    kind         text not null,
+    index_prefix text not null,
+    unique (kind, index_prefix)
 );
 
-create table if not exists vector_index_commit
+create table if not exists index_commit
 (
     commit_id     bigserial primary key,
-    shard_id      bigint      not null references vector_index_shard (shard_id) on delete cascade,
+    shard_id      bigint      not null references index_shard (shard_id) on delete cascade,
     generation    bigint      not null,
     version       bigint      not null,
     header        bytea       not null,
@@ -188,13 +191,13 @@ create table if not exists vector_index_commit
     unique (shard_id, generation, version)
 );
 
-create index if not exists vector_index_commit_shard_key_index
-    on vector_index_commit (shard_id, generation desc, version desc);
+create index if not exists index_commit_shard_key_index
+    on index_commit (shard_id, generation desc, version desc);
 
-create table if not exists vector_index_lease
+create table if not exists index_lease
 (
     lease_id    uuid primary key,
-    shard_id    bigint      not null references vector_index_shard (shard_id) on delete cascade,
+    shard_id    bigint      not null references index_shard (shard_id) on delete cascade,
     generation  bigint      not null,
     version     bigint      not null,
     owner       text        not null,
@@ -202,5 +205,5 @@ create table if not exists vector_index_lease
     expires_at  timestamptz not null
 );
 
-create index if not exists vector_index_lease_expiry_index
-    on vector_index_lease (shard_id, expires_at);
+create index if not exists index_lease_expiry_index
+    on index_lease (shard_id, expires_at);

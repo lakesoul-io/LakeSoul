@@ -48,11 +48,11 @@ pub struct LakeSoulIOConfig {
     /// blocks so candidate rows can be fetched by row index cheaply.
     pub(crate) vector_columns: Vec<String>,
     /// Index commits resolved by the caller (the layer with metadata
-    /// access) for vector search.
-    pub(crate) resolved_index_shards: Vec<crate::vector::builder::ResolvedIndexShard>,
+    /// access) for index search.
+    pub(crate) resolved_index_shards: Vec<crate::index::commit::ResolvedIndex>,
     /// Leases held while this reader uses the resolved index shards; they
     /// are released when the config (and the reader) is dropped.
-    pub(crate) index_leases: Vec<Arc<crate::vector::IndexLease>>,
+    pub(crate) index_leases: Vec<Arc<crate::index::IndexLease>>,
     /// Names of range partition columns
     pub(crate) range_partitions: Vec<String>,
     /// Number of hash buckets for hash partitioning
@@ -150,15 +150,13 @@ impl LakeSoulIOConfig {
         &self.vector_columns
     }
 
-    /// Returns the index commits resolved by the caller for vector search.
-    pub fn resolved_index_shards_slice(
-        &self,
-    ) -> &[crate::vector::builder::ResolvedIndexShard] {
+    /// Returns the index commits resolved by the caller for index search.
+    pub fn resolved_index_shards_slice(&self) -> &[crate::index::commit::ResolvedIndex] {
         &self.resolved_index_shards
     }
 
     /// Returns the leases held while the resolved shards are in use.
-    pub fn index_leases(&self) -> &[Arc<crate::vector::IndexLease>] {
+    pub fn index_leases(&self) -> &[Arc<crate::index::IndexLease>] {
         &self.index_leases
     }
 
@@ -423,10 +421,10 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    /// Supplies the caller-resolved index commits for vector search.
+    /// Supplies the caller-resolved index commits for index search.
     pub fn with_resolved_index_shards(
         mut self,
-        shards: Vec<crate::vector::builder::ResolvedIndexShard>,
+        shards: Vec<crate::index::commit::ResolvedIndex>,
     ) -> Self {
         self.config.resolved_index_shards = shards;
         self
@@ -435,7 +433,7 @@ impl LakeSoulIOConfigBuilder {
     /// Holds leases for the resolved index shards for the reader's lifetime.
     pub fn with_index_leases(
         mut self,
-        leases: Vec<Arc<crate::vector::IndexLease>>,
+        leases: Vec<Arc<crate::index::IndexLease>>,
     ) -> Self {
         self.config.index_leases = leases;
         self

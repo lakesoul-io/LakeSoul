@@ -11,6 +11,9 @@
 //! builder performs an incremental delta update when the shard index
 //! already exists.
 //!
+//! The kind-agnostic parts (config parsing, shard grouping, delta/rebuild
+//! planning, committing and GC) live in [`crate::index`].
+//!
 //! # Rebuilds
 //!
 //! Incremental writes append vectors to the centroids trained at the
@@ -24,27 +27,35 @@
 //! longer represents that cluster's contents.  [`rebuild_vector_index`]
 //! exposes the same operation explicitly.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::collections::HashMap;
+use std::time::Duration;
 
-use lakesoul_io::helpers::extract_hash_bucket_id;
-use lakesoul_io::vector::builder::{
-    ResolvedIndexShard, VectorShardIndexBuilder, shard_index_prefix,
-};
-use lakesoul_metadata::vector_index::{
-    CommitMode, IndexCommitView, IndexSegmentEntry, PgCatalog, normalize_index_prefix,
+use lakesoul_common::IndexKind;
+use lakesoul_io::index::commit::ResolvedIndex;
+use lakesoul_io::index::prefix::shard_index_prefix;
+use lakesoul_io::vector::builder::VectorShardIndexBuilder;
+use lakesoul_metadata::index_catalog::{
+    CommitMode, IndexCommitView, VectorCatalog, VectorSegmentEntry,
 };
 use lakesoul_vector::{Metric, RotatorType, SegmentEntry, VectorIndexConfig};
-use object_store::local::LocalFileSystem;
-use object_store::{ObjectStore, ObjectStoreExt};
 use rootcause::{bail, report};
 use tracing::warn;
 
 use crate::Result;
+use crate::index::build::{
+    commit_if_non_empty, group_files_by_shard, group_shard_files, plan_shard_build,
+};
+use crate::index::config::{
+    IndexTableConfig, index_columns_to_json, parse_index_columns,
+    parse_index_from_table_properties,
+};
+use crate::index::gc::{IndexGcOptions, IndexGcReport, gc_index_shards, gc_shard_now};
+use crate::index::store_for_files;
+
+pub use crate::index::gc::DEFAULT_GC_GRACE_SECONDS;
 
 /// Property key holding the vector index configurations (JSON).
-pub const VECTOR_INDEX_COLUMNS_KEY: &str = "vector_index_columns";
+pub const VECTOR_INDEX_COLUMNS_KEY: &str = IndexKind::Vector.property_key();
 
 fn default_nlist() -> usize {
     256
@@ -70,19 +81,9 @@ fn default_use_faster_config() -> bool {
     true
 }
 
-fn default_rebuild_mode() -> String {
-    "auto".to_string()
-}
-
-fn default_max_delta_ratio() -> f32 {
-    1.0
-}
-
-/// One entry of the `vector_index_columns` table property (JSON).
+/// Vector-specific parameters of one `vector_index_columns` entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VectorIndexTableConfig {
-    /// Vector column name (must exist in the table schema).
-    pub column: String,
+pub struct VectorIndexParams {
     /// Vector dimension.
     pub dim: usize,
     /// Number of IVF clusters.
@@ -103,72 +104,57 @@ pub struct VectorIndexTableConfig {
     /// Fast quantization mode.
     #[serde(default = "default_use_faster_config")]
     pub use_faster_config: bool,
-    /// Index rebuild strategy: `"auto"` (default) rebuilds a shard from
-    /// scratch when any of its clusters' delta/base vector ratio exceeds
-    /// `max_delta_ratio`; `"none"` only ever appends delta segments.
-    #[serde(default = "default_rebuild_mode")]
-    pub rebuild_mode: String,
-    /// Auto-rebuild trigger: rebuild the shard when **any cluster** of it
-    /// has accumulated `delta_vectors / base_vectors` above this ratio
-    /// (per-cluster drift detection; a cluster with no base vectors but
-    /// deltas has infinite ratio).
-    #[serde(default = "default_max_delta_ratio")]
-    pub max_delta_ratio: f32,
-    /// Delete superseded index files after commits (best effort).
-    #[serde(default = "default_gc_enabled")]
-    pub gc_enabled: bool,
-    /// Files superseded for at least this long are eligible for deletion;
-    /// protects readers that resolved an older commit.
-    #[serde(default = "default_gc_grace_seconds")]
-    pub gc_grace_seconds: u64,
-    /// Generations to keep (including the current one) before deleting.
-    #[serde(default = "default_gc_keep_generations")]
-    pub gc_keep_generations: usize,
 }
 
-fn default_gc_enabled() -> bool {
-    true
-}
+/// One entry of the `vector_index_columns` table property (JSON).
+pub type VectorIndexTableConfig = IndexTableConfig<VectorIndexParams>;
 
-fn default_gc_grace_seconds() -> u64 {
-    3600
-}
-
-fn default_gc_keep_generations() -> usize {
-    1
-}
-
-impl VectorIndexTableConfig {
+impl IndexTableConfig<VectorIndexParams> {
     /// Convert into the native vector index configuration.
     pub fn to_vector_index_config(&self) -> Result<VectorIndexConfig> {
-        let metric = match self.metric.to_uppercase().as_str() {
+        let metric = match self.params.metric.to_uppercase().as_str() {
             "L2" => Metric::L2,
             "IP" | "INNERPRODUCT" => Metric::InnerProduct,
             other => bail!("unsupported vector index metric: {other}"),
         };
-        let rotator_type = match self.rotator_type.to_lowercase().as_str() {
+        let rotator_type = match self.params.rotator_type.to_lowercase().as_str() {
             "fhtkac" => RotatorType::FhtKacRotator,
             "matrix" => RotatorType::MatrixRotator,
             other => bail!("unsupported vector index rotator type: {other}"),
         };
         Ok(VectorIndexConfig {
             column_name: self.column.clone(),
-            dim: self.dim,
-            nlist: self.nlist,
-            total_bits: self.total_bits,
+            dim: self.params.dim,
+            nlist: self.params.nlist,
+            total_bits: self.params.total_bits,
             metric,
             rotator_type,
-            seed: self.seed,
-            use_faster_config: self.use_faster_config,
-            rebuild_mode: self.rebuild_mode.to_lowercase(),
-            max_delta_ratio: self.max_delta_ratio,
+            seed: self.params.seed,
+            use_faster_config: self.params.use_faster_config,
+            rebuild_mode: self.management.rebuild_mode.to_lowercase(),
+            max_delta_ratio: self.management.max_delta_ratio,
         })
     }
 }
 
 /// Serialize configurations into the `vector_index_columns` property value.
 pub fn vector_index_columns_to_json(configs: &[VectorIndexTableConfig]) -> String {
-    serde_json::to_string(configs).unwrap_or_else(|_| "[]".to_string())
+    index_columns_to_json(configs)
+}
+
+/// Parse a `vector_index_columns` property value.
+pub fn parse_vector_index_columns(
+    raw: Option<&str>,
+) -> Result<Vec<VectorIndexTableConfig>> {
+    parse_index_columns(raw)
+}
+
+/// Extract the vector index configurations from a table's raw properties
+/// JSON (the `TableInfo.properties` column).
+pub fn parse_vector_index_from_table_properties(
+    properties_json: &str,
+) -> Result<Vec<VectorIndexTableConfig>> {
+    parse_index_from_table_properties(properties_json, VECTOR_INDEX_COLUMNS_KEY)
 }
 
 /// Validate that a table schema can support the configured vector indexes,
@@ -204,20 +190,7 @@ pub fn validate_vector_index_configs(
     }
     for config in configs {
         let column = &config.column;
-        let rebuild_mode = config.rebuild_mode.to_lowercase();
-        if rebuild_mode != "auto" && rebuild_mode != "none" {
-            bail!(
-                "vector index column '{column}' rebuild_mode must be \"auto\" or \"none\", \
-                 got {:?}",
-                config.rebuild_mode
-            );
-        }
-        if config.max_delta_ratio <= 0.0 || config.max_delta_ratio.is_nan() {
-            bail!(
-                "vector index column '{column}' max_delta_ratio must be > 0, got {}",
-                config.max_delta_ratio
-            );
-        }
+        config.management.validate(IndexKind::Vector, column)?;
         let Some(column_index) = schema.index_of(column).ok() else {
             bail!("vector index column '{column}' not found in table schema");
         };
@@ -243,116 +216,61 @@ pub fn validate_vector_index_configs(
             ),
         }
         if let Some(len) = fixed_len
-            && config.dim != len
+            && config.params.dim != len
         {
             bail!(
                 "vector index column '{column}' dim {} does not match schema \
                  FixedSizeList size {len}",
-                config.dim
+                config.params.dim
             );
         }
     }
     Ok(())
 }
 
-/// Parse a `vector_index_columns` property value.
-///
-/// The value is normally a JSON string containing a JSON array; a raw JSON
-/// array is accepted as well.  Empty or missing values yield an empty list.
-pub fn parse_vector_index_columns(
-    raw: Option<&str>,
-) -> Result<Vec<VectorIndexTableConfig>> {
-    let Some(raw) = raw else {
-        return Ok(Vec::new());
-    };
-    let raw = raw.trim();
-    if raw.is_empty() || raw == "[]" {
-        return Ok(Vec::new());
-    }
-    let value: serde_json::Value = serde_json::from_str(raw)?;
-    let array = match value {
-        serde_json::Value::String(s) => {
-            let inner = s.trim();
-            if inner.is_empty() {
-                return Ok(Vec::new());
-            }
-            serde_json::from_str::<serde_json::Value>(inner)?
-        }
-        value => value,
-    };
-    Ok(serde_json::from_value(array)?)
-}
-
-/// Extract the vector index configurations from a table's raw properties
-/// JSON (the `TableInfo.properties` column).
-pub fn parse_vector_index_from_table_properties(
-    properties_json: &str,
-) -> Result<Vec<VectorIndexTableConfig>> {
-    let properties: serde_json::Value = serde_json::from_str(properties_json)?;
-    match properties.get(VECTOR_INDEX_COLUMNS_KEY) {
-        Some(serde_json::Value::String(s)) => parse_vector_index_columns(Some(s)),
-        Some(value) => Ok(serde_json::from_value(value.clone())?),
-        None => Ok(Vec::new()),
-    }
-}
-
-/// Default grace period before superseded index files may be deleted.
-pub const DEFAULT_GC_GRACE_SECONDS: u64 = 3600;
-
 /// Knobs for an explicit garbage collection run.
-#[derive(Debug, Clone)]
-pub struct VectorIndexGcOptions {
-    pub grace_seconds: u64,
-    pub keep_generations: usize,
-    /// Delete control-plane rows of shards whose directory is gone.
-    pub drop_orphan_shards: bool,
-}
-
-impl Default for VectorIndexGcOptions {
-    fn default() -> Self {
-        Self {
-            grace_seconds: DEFAULT_GC_GRACE_SECONDS,
-            keep_generations: 1,
-            drop_orphan_shards: true,
-        }
-    }
-}
+pub type VectorIndexGcOptions = IndexGcOptions;
 
 /// What a garbage collection run did.
-#[derive(Debug, Default, Clone, serde::Serialize)]
-pub struct VectorIndexGcReport {
-    pub shards_scanned: usize,
-    pub commits_deleted: u64,
-    pub objects_deleted: u64,
-    pub bytes_deleted: u64,
-    pub orphan_shards_deleted: u64,
+pub type VectorIndexGcReport = IndexGcReport;
+
+/// Whether an object file in a shard directory belongs to the vector index.
+fn is_vector_segment_file(name: &str) -> bool {
+    name.starts_with("cluster_") && name.ends_with(".seg")
 }
 
-fn to_resolved_shard(prefix: &str, view: &IndexCommitView) -> ResolvedIndexShard {
-    ResolvedIndexShard {
+fn to_resolved_shard(
+    prefix: &str,
+    view: &IndexCommitView<VectorSegmentEntry>,
+) -> Result<ResolvedIndex> {
+    let segments: Vec<SegmentEntry> = view
+        .segments
+        .iter()
+        .map(|segment| SegmentEntry {
+            cluster_id: segment.cluster_id,
+            segment_version: segment.segment_version,
+            segment_filename: segment.filename.clone(),
+            num_vectors: segment.num_vectors,
+            file_size: segment.file_size,
+        })
+        .collect();
+    Ok(ResolvedIndex {
+        kind: IndexKind::Vector,
         index_prefix: prefix.to_string(),
         commit_id: view.commit_id,
         generation: view.generation,
         version: view.version,
         header: view.header.clone(),
-        segments: view
-            .segments
-            .iter()
-            .map(|segment| SegmentEntry {
-                cluster_id: segment.cluster_id,
-                segment_version: segment.segment_version,
-                segment_filename: segment.filename.clone(),
-                num_vectors: segment.num_vectors,
-                file_size: segment.file_size,
-            })
-            .collect(),
-    }
+        segments: serde_json::to_value(&segments).map_err(|error| {
+            report!("failed to serialize vector index segments: {}", error)
+        })?,
+    })
 }
 
-fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<IndexSegmentEntry> {
+fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
     segments
         .iter()
-        .map(|segment| IndexSegmentEntry {
+        .map(|segment| VectorSegmentEntry {
             cluster_id: segment.cluster_id,
             segment_version: segment.segment_version,
             filename: segment.segment_filename.clone(),
@@ -362,88 +280,22 @@ fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<IndexSegmentEntry> {
         .collect()
 }
 
-/// List the segment objects of a shard that may be removed: unreferenced
-/// and last modified before the grace cutoff.
-async fn sweep_shard_objects(
-    store: &Arc<dyn ObjectStore>,
-    prefix: &str,
-    retained: &HashSet<String>,
-    grace: Duration,
-) -> Result<(u64, u64)> {
-    use futures::StreamExt;
-    let path = object_store::path::Path::from(prefix.trim_end_matches('/'));
-    let cutoff = chrono::DateTime::<chrono::Utc>::from(SystemTime::now() - grace);
-    let mut deleted_objects = 0u64;
-    let mut deleted_bytes = 0u64;
-    let mut stream = store.list(Some(&path));
-    while let Some(meta) = stream.next().await {
-        let meta = meta?;
-        let name = meta.location.filename().unwrap_or_default().to_string();
-        // Only ever delete our own segment files.
-        if !name.starts_with("cluster_") || !name.ends_with(".seg") {
-            continue;
-        }
-        if retained.contains(&name) {
-            continue;
-        }
-        if meta.last_modified > cutoff {
-            continue;
-        }
-        store.delete(&meta.location).await?;
-        deleted_objects += 1;
-        deleted_bytes += meta.size;
-    }
-    Ok((deleted_objects, deleted_bytes))
-}
-
-async fn shard_directory_is_empty(
-    store: &Arc<dyn ObjectStore>,
-    prefix: &str,
-) -> Result<bool> {
-    use futures::StreamExt;
-    let path = object_store::path::Path::from(prefix.trim_end_matches('/'));
-    let mut stream = store.list(Some(&path));
-    Ok(stream.next().await.is_none())
-}
-
-/// Garbage collect one shard: drop expired leases and superseded
-/// generations in the catalog, then delete the objects they referenced.
-async fn gc_shard_now(
-    store: &Arc<dyn ObjectStore>,
-    catalog: &PgCatalog,
-    prefix: &str,
-    grace: Duration,
-    keep_generations: usize,
-) -> Result<VectorIndexGcReport> {
-    let mut report = VectorIndexGcReport::default();
-    let plan = catalog.gc_shard(prefix, grace, keep_generations).await?;
-    report.commits_deleted = plan.deleted_commit_rows;
-    if plan.deleted_commit_rows == 0 && plan.removed_filenames.is_empty() {
-        return Ok(report);
-    }
-    let retained: HashSet<String> = plan.retained_filenames.into_iter().collect();
-    let (objects, bytes) = sweep_shard_objects(store, prefix, &retained, grace).await?;
-    report.objects_deleted = objects;
-    report.bytes_deleted = bytes;
-    Ok(report)
-}
-
 /// Build (or incrementally update, or rebuild) the vector index for newly
 /// committed files of a write, then optionally garbage collect.
 ///
 /// Files are grouped by `(partition_desc, hash_bucket_id)`; each group is
 /// one index shard.  The current commit of every shard is resolved from the
-/// catalog ([`PgCatalog`]): without a commit the shard is built fresh, with
-/// one the new vectors are appended as delta segments, and when any cluster
-/// has drifted past `max_delta_ratio` the whole shard is rebuilt from all
-/// of its active data files.
+/// catalog ([`VectorCatalog`]): without a commit the shard is built fresh,
+/// with one the new vectors are appended as delta segments, and when any
+/// cluster has drifted past `max_delta_ratio` the whole shard is rebuilt
+/// from all of its active data files.
 pub async fn auto_build_vector_index(
     configs: &[VectorIndexTableConfig],
     primary_keys: &[String],
     object_store_options: &HashMap<String, String>,
     partition_files: &HashMap<String, (Vec<String>, u64)>,
     all_active_files: Option<&[String]>,
-    catalog: &PgCatalog,
+    catalog: &VectorCatalog,
 ) -> Result<usize> {
     if configs.is_empty() || partition_files.is_empty() {
         return Ok(0);
@@ -462,42 +314,23 @@ pub async fn auto_build_vector_index(
     let mut built = 0usize;
     for config in configs {
         let vector_config = config.to_vector_index_config()?;
+        let management = &config.management;
         let auto_rebuild = vector_config.rebuild_mode == "auto";
         // Files of each shard, for a full rebuild when drift is detected.
         let shard_all_files: HashMap<String, Vec<String>> = if auto_rebuild {
             match all_active_files {
-                Some(all) => {
-                    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-                    for file in all {
-                        let prefix = shard_index_prefix(
-                            std::slice::from_ref(file),
-                            &config.column,
-                        );
-                        map.entry(prefix).or_default().push(file.clone());
-                    }
-                    map
-                }
+                Some(all) => group_files_by_shard(all, IndexKind::Vector, &config.column),
                 None => HashMap::new(),
             }
         } else {
             HashMap::new()
         };
         let mut failures: Vec<String> = Vec::new();
-        // One shard per (partition_desc, hash_bucket_id) — files from
-        // different range partitions must never share a shard.
-        let mut shards: HashMap<(String, u32), Vec<String>> = HashMap::new();
-        for (partition_desc, (files, _)) in partition_files {
-            for file in files {
-                if let Some(bucket) = extract_hash_bucket_id(file) {
-                    shards
-                        .entry((partition_desc.clone(), bucket))
-                        .or_default()
-                        .push(file.clone());
-                }
-            }
-        }
-        for ((partition_desc, bucket), bucket_files) in shards {
-            let prefix = shard_index_prefix(&bucket_files, &config.column);
+        for shard in group_shard_files(partition_files) {
+            let (partition_desc, bucket, bucket_files) =
+                (shard.partition_desc, shard.bucket, shard.files);
+            let prefix =
+                shard_index_prefix(&bucket_files, IndexKind::Vector, &config.column);
             let resolved = match catalog.resolve(&prefix).await {
                 Ok(view) => view,
                 Err(error) => {
@@ -512,40 +345,27 @@ pub async fn auto_build_vector_index(
                 && full_shard_files
                     .as_ref()
                     .is_some_and(|files| !files.is_empty())
-                && drift_exceeds_threshold(
-                    catalog,
-                    &prefix,
-                    vector_config.max_delta_ratio,
-                )
-                .await
-                .unwrap_or(false);
-            let (files, base, mode) = match (resolved.as_ref(), should_rebuild) {
-                (_, true) => (
-                    full_shard_files.unwrap_or_else(|| bucket_files.clone()),
-                    None,
-                    CommitMode::Rebuild,
-                ),
-                (Some(view), false) => {
-                    (bucket_files.clone(), Some(view.clone()), CommitMode::Delta)
-                }
-                (None, false) => (
-                    full_shard_files.unwrap_or_else(|| bucket_files.clone()),
-                    None,
-                    CommitMode::Rebuild,
-                ),
-            };
+                && drift_exceeds_threshold(catalog, &prefix, management.max_delta_ratio)
+                    .await
+                    .unwrap_or(false);
+            let plan = plan_shard_build(
+                resolved.as_ref(),
+                should_rebuild,
+                full_shard_files,
+                bucket_files,
+            );
             let mut builder = VectorShardIndexBuilder::new(
                 store.clone(),
                 vector_config.clone(),
-                files.clone(),
+                plan.files.clone(),
                 pk_column.clone(),
                 object_store_options.clone(),
                 None,
             );
-            if let Some(view) = &base {
-                builder = builder.with_base(to_resolved_shard(&prefix, view));
+            if let Some(view) = &plan.base {
+                builder = builder.with_base(to_resolved_shard(&prefix, view)?);
             }
-            let mut commit_mode = mode;
+            let mut commit_mode = plan.mode;
             let outcome = match builder.build().await {
                 Ok(outcome) => outcome,
                 Err(error) if commit_mode == CommitMode::Delta => {
@@ -562,7 +382,7 @@ pub async fn auto_build_vector_index(
                     match VectorShardIndexBuilder::new(
                         store.clone(),
                         vector_config.clone(),
-                        files,
+                        plan.files,
                         pk_column.clone(),
                         object_store_options.clone(),
                         None,
@@ -586,31 +406,33 @@ pub async fn auto_build_vector_index(
                     continue;
                 }
             };
-            if outcome.new_segments.is_empty() {
-                continue;
-            }
-            if let Err(error) = catalog
-                .commit(
-                    &prefix,
-                    &outcome.header,
-                    &to_catalog_segments(&outcome.new_segments),
-                    commit_mode,
-                )
-                .await
+            match commit_if_non_empty(
+                catalog,
+                &prefix,
+                &outcome.header,
+                &to_catalog_segments(&outcome.new_segments),
+                commit_mode,
+            )
+            .await
             {
-                failures.push(format!(
-                    "partition {partition_desc:?} bucket {bucket}: failed to commit index: {error}"
-                ));
-                continue;
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    failures.push(format!(
+                        "partition {partition_desc:?} bucket {bucket}: {error}"
+                    ));
+                    continue;
+                }
             }
             built += 1;
-            if config.gc_enabled
+            if management.gc_enabled
                 && let Err(error) = gc_shard_now(
                     &store,
                     catalog,
                     &prefix,
-                    Duration::from_secs(config.gc_grace_seconds),
-                    config.gc_keep_generations,
+                    Duration::from_secs(management.gc_grace_seconds),
+                    management.gc_keep_generations,
+                    &is_vector_segment_file,
                 )
                 .await
             {
@@ -632,7 +454,7 @@ pub async fn auto_build_vector_index(
 /// configured ratio (`delta_vectors / base_vectors` per cluster).  Only
 /// meaningful when a commit exists (returns `Ok(false)` otherwise).
 async fn drift_exceeds_threshold(
-    catalog: &PgCatalog,
+    catalog: &VectorCatalog,
     prefix: &str,
     max_delta_ratio: f32,
 ) -> Result<bool> {
@@ -677,21 +499,18 @@ pub async fn rebuild_vector_index(
         return Ok(0);
     };
     let store = store_for_files(first_file, &object_store_options)?;
-    let catalog = PgCatalog::from_client(client);
+    let catalog = client.vector_index_catalog();
 
     let mut rebuilt = 0usize;
     let mut failures: Vec<String> = Vec::new();
     for config in &configs {
         let vector_config = config.to_vector_index_config()?;
         // Group every active file into its shard.
-        let mut shards: HashMap<String, Vec<String>> = HashMap::new();
-        for file in &all_active_files {
-            if extract_hash_bucket_id(file).is_some() {
-                let prefix =
-                    shard_index_prefix(std::slice::from_ref(file), &config.column);
-                shards.entry(prefix).or_default().push(file.clone());
-            }
-        }
+        let mut shards: Vec<(String, Vec<String>)> =
+            group_files_by_shard(&all_active_files, IndexKind::Vector, &config.column)
+                .into_iter()
+                .collect();
+        shards.sort_by(|a, b| a.0.cmp(&b.0));
         for (prefix, files) in shards {
             let result = VectorShardIndexBuilder::new(
                 store.clone(),
@@ -705,22 +524,18 @@ pub async fn rebuild_vector_index(
             .await;
             match result {
                 Ok(outcome) => {
-                    if outcome.new_segments.is_empty() {
-                        continue;
-                    }
-                    match catalog
-                        .commit(
-                            &prefix,
-                            &outcome.header,
-                            &to_catalog_segments(&outcome.new_segments),
-                            CommitMode::Rebuild,
-                        )
-                        .await
+                    match commit_if_non_empty(
+                        &catalog,
+                        &prefix,
+                        &outcome.header,
+                        &to_catalog_segments(&outcome.new_segments),
+                        CommitMode::Rebuild,
+                    )
+                    .await
                     {
-                        Ok(_) => rebuilt += 1,
-                        Err(error) => {
-                            failures.push(format!("{prefix}: commit failed: {error}"))
-                        }
+                        Ok(true) => rebuilt += 1,
+                        Ok(false) => {}
+                        Err(error) => failures.push(format!("{prefix}: {error}")),
                     }
                 }
                 Err(error) => failures.push(format!("{prefix}: {error}")),
@@ -763,50 +578,23 @@ pub async fn gc_vector_index(
         return Ok(VectorIndexGcReport::default());
     };
     let store = store_for_files(first_file, object_store_options)?;
-    let catalog = PgCatalog::from_client(client);
-    let grace = Duration::from_secs(options.grace_seconds);
-
-    let table_prefix = normalize_index_prefix(&table_info.table_path);
-    let shards = catalog.list_shards_under(&table_prefix).await?;
-    let mut report = VectorIndexGcReport::default();
-    for prefix in shards {
-        report.shards_scanned += 1;
-        let plan =
-            gc_shard_now(&store, &catalog, &prefix, grace, options.keep_generations)
-                .await?;
-        report.commits_deleted += plan.commits_deleted;
-        report.objects_deleted += plan.objects_deleted;
-        report.bytes_deleted += plan.bytes_deleted;
-        if options.drop_orphan_shards {
-            let has_commit = catalog.resolve(&prefix).await?.is_some();
-            if !has_commit && shard_directory_is_empty(&store, &prefix).await? {
-                catalog.delete_shard(&prefix).await?;
-                report.orphan_shards_deleted += 1;
-            }
-        }
-    }
-    Ok(report)
-}
-
-/// Build an object store for the vector index from the table's files.
-fn store_for_files(
-    first_file: &str,
-    object_store_options: &HashMap<String, String>,
-) -> Result<Arc<dyn ObjectStore>> {
-    if first_file.starts_with("s3://") || first_file.starts_with("s3a://") {
-        Ok(Arc::new(
-            lakesoul_io::object_store::create_s3_store_from_options(
-                object_store_options,
-            )?,
-        ))
-    } else {
-        Ok(Arc::new(LocalFileSystem::new()))
-    }
+    let catalog = client.vector_index_catalog();
+    gc_index_shards(
+        &store,
+        &catalog,
+        &table_info.table_path,
+        options,
+        &is_vector_segment_file,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::index::config::IndexManagementConfig;
 
     fn schema() -> arrow::datatypes::Schema {
         use arrow::datatypes::{DataType, Field};
@@ -826,18 +614,20 @@ mod tests {
     fn config(rebuild_mode: &str, max_delta_ratio: f32) -> VectorIndexTableConfig {
         VectorIndexTableConfig {
             column: "vec".to_string(),
-            dim: 8,
-            nlist: 4,
-            total_bits: 7,
-            metric: "L2".to_string(),
-            rotator_type: "FhtKac".to_string(),
-            seed: 42,
-            use_faster_config: true,
-            rebuild_mode: rebuild_mode.to_string(),
-            max_delta_ratio,
-            gc_enabled: true,
-            gc_grace_seconds: 3600,
-            gc_keep_generations: 1,
+            params: VectorIndexParams {
+                dim: 8,
+                nlist: 4,
+                total_bits: 7,
+                metric: "L2".to_string(),
+                rotator_type: "FhtKac".to_string(),
+                seed: 42,
+                use_faster_config: true,
+            },
+            management: IndexManagementConfig {
+                rebuild_mode: rebuild_mode.to_string(),
+                max_delta_ratio,
+                ..Default::default()
+            },
         }
     }
 
@@ -845,15 +635,18 @@ mod tests {
     fn parse_and_validate_rebuild_options() {
         let configs =
             parse_vector_index_columns(Some(r#"[{"column":"vec","dim":8}]"#)).unwrap();
-        assert_eq!(configs[0].rebuild_mode, "auto", "default is auto");
-        assert_eq!(configs[0].max_delta_ratio, 1.0);
+        assert_eq!(
+            configs[0].management.rebuild_mode, "auto",
+            "default is auto"
+        );
+        assert_eq!(configs[0].management.max_delta_ratio, 1.0);
 
         let configs = parse_vector_index_columns(Some(
             r#"[{"column":"vec","dim":8,"rebuild_mode":"none","max_delta_ratio":0.25}]"#,
         ))
         .unwrap();
-        assert_eq!(configs[0].rebuild_mode, "none");
-        assert_eq!(configs[0].max_delta_ratio, 0.25);
+        assert_eq!(configs[0].management.rebuild_mode, "none");
+        assert_eq!(configs[0].management.max_delta_ratio, 0.25);
         validate_vector_index_configs(&configs, &schema(), &["id".to_string()]).unwrap();
     }
 

@@ -628,7 +628,7 @@ impl LakeSoulHashSinkExec {
             // not just the newly committed files).
             let wants_rebuild = configs
                 .iter()
-                .any(|c| c.rebuild_mode.eq_ignore_ascii_case("auto"));
+                .any(|c| c.management.rebuild_mode.eq_ignore_ascii_case("auto"));
             // Table dropped concurrently — nothing left to index.
             let all_active_files: Option<Vec<String>> = if wants_rebuild {
                 client
@@ -638,8 +638,7 @@ impl LakeSoulHashSinkExec {
             } else {
                 None
             };
-            let catalog =
-                lakesoul_metadata::vector_index::PgCatalog::from_client(&client);
+            let catalog = client.vector_index_catalog();
             let built = tokio::task::spawn_blocking(move || {
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                     crate::vector_index::auto_build_vector_index(

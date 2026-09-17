@@ -15,55 +15,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_schema::Schema;
+use lakesoul_common::IndexKind;
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, VectorIndexConfig};
 use object_store::ObjectStore;
 use tracing::{info, warn};
 
-use crate::config::LakeSoulIOConfigBuilder;
-use crate::session::LakeSoulIOSession;
+use crate::index::commit::ResolvedIndex;
+use crate::index::reader::read_shard_batches;
 use crate::vector::reader::extract_vector_batch;
-
-/// Derive the vector index store prefix for the shard containing `file_paths`.
-///
-/// All files of a shard share the same partition directory, so the first
-/// file determines the shard's `_vector_index/{column}/...` prefix (matching
-/// how the search path locates the index).
-pub fn shard_index_prefix(file_paths: &[String], column: &str) -> String {
-    let prefix = file_paths
-        .first()
-        .and_then(|u| {
-            let u = u
-                .trim_start_matches("file://")
-                .trim_start_matches("s3://")
-                .trim_start_matches("s3a://");
-            std::path::Path::new(u.trim_end_matches('/'))
-                .parent()?
-                .to_str()
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_default();
-    crate::vector::search::derive_index_prefixes(file_paths, &prefix, column)
-        .first()
-        .map(|(p, _)| p.clone())
-        .unwrap_or_else(|| format!("_vector_index/{column}/-5/0/"))
-}
-
-/// An index commit resolved by the caller from the metadata catalog.
-///
-/// The header is the opaque [`IndexHeader`] serialization; the segments are
-/// every file of the resolved view.  Types are deliberately plain so that
-/// this crate stays independent of the metadata layer.
-#[derive(Debug, Clone)]
-pub struct ResolvedIndexShard {
-    pub index_prefix: String,
-    pub commit_id: i64,
-    pub generation: u64,
-    pub version: u64,
-    pub header: Vec<u8>,
-    pub segments: Vec<SegmentEntry>,
-}
 
 /// Header and segment files produced by a build, for the caller to commit.
 #[derive(Debug, Clone)]
@@ -83,7 +43,7 @@ pub struct VectorShardIndexBuilder {
     pk_column: String,
     object_store_options: HashMap<String, String>,
     default_fs: Option<String>,
-    base: Option<ResolvedIndexShard>,
+    base: Option<ResolvedIndex>,
 }
 
 impl VectorShardIndexBuilder {
@@ -107,7 +67,7 @@ impl VectorShardIndexBuilder {
     }
 
     /// Run an incremental build on top of the resolved base commit.
-    pub fn with_base(mut self, base: ResolvedIndexShard) -> Self {
+    pub fn with_base(mut self, base: ResolvedIndex) -> Self {
         self.base = Some(base);
         self
     }
@@ -117,52 +77,12 @@ impl VectorShardIndexBuilder {
             .as_ref()
             .map(|base| base.index_prefix.clone())
             .unwrap_or_else(|| {
-                shard_index_prefix(&self.file_paths, &self.config.column_name)
+                crate::index::prefix::shard_index_prefix(
+                    &self.file_paths,
+                    IndexKind::Vector,
+                    &self.config.column_name,
+                )
             })
-    }
-
-    fn table_prefix(&self) -> String {
-        self.file_paths
-            .first()
-            .and_then(|u| {
-                let (scheme, rest) = if let Some(r) = u.strip_prefix("file://") {
-                    ("file://", r)
-                } else if let Some(r) = u.strip_prefix("s3://") {
-                    ("s3://", r)
-                } else if let Some(r) = u.strip_prefix("s3a://") {
-                    ("s3a://", r)
-                } else {
-                    ("", u.as_str())
-                };
-                std::path::Path::new(rest.trim_end_matches('/'))
-                    .parent()?
-                    .to_str()
-                    .map(|s| format!("{}{}", scheme, s))
-            })
-            .unwrap_or_default()
-    }
-
-    fn reader_config_builder(&self) -> LakeSoulIOConfigBuilder {
-        let mut config_builder = LakeSoulIOConfigBuilder::new()
-            .with_files(self.file_paths.clone())
-            .with_prefix(self.table_prefix())
-            .with_primary_keys(vec![self.pk_column.clone()]);
-
-        // Pass through object-store configuration.  The simplified keys used
-        // by create_object_store (access_key_id, endpoint, …) are harmless
-        // here — the reader only acts on the fs.s3a.* keys it recognises.
-        for (key, value) in &self.object_store_options {
-            if key != "type" {
-                config_builder =
-                    config_builder.with_object_store_option(key.clone(), value.clone());
-            }
-        }
-        if let Some(default_fs) = &self.default_fs {
-            config_builder = config_builder
-                .with_object_store_option("fs.defaultFS".to_string(), default_fs.clone());
-        }
-
-        config_builder
     }
 
     /// Build the shard: fresh when no base was supplied, incremental otherwise.
@@ -274,6 +194,9 @@ impl VectorShardIndexBuilder {
         let base = self.base.clone().expect("checked by caller");
         let index_prefix = base.index_prefix.clone();
         let header = IndexHeader::deserialize(&base.header)?;
+        let base_segments: Vec<SegmentEntry> = base
+            .segments_as()
+            .map_err(|e| RabitqError::Io(format!("invalid base segments: {}", e)))?;
         let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
 
         info!(
@@ -284,7 +207,7 @@ impl VectorShardIndexBuilder {
         );
 
         let mut builder =
-            IvfRabitqBuilder::load(&istore, &header, &base.segments).await?;
+            IvfRabitqBuilder::load(&istore, &header, &base_segments).await?;
 
         let all_batches = self
             .read_all_batches()
@@ -315,63 +238,23 @@ impl VectorShardIndexBuilder {
 
     /// Read all rows via LakeSoulReader (handles merge-on-read, CDC, etc.)
     pub async fn read_all_batches(&self) -> crate::Result<Vec<IdAndVecBatch>> {
-        let mut results = Vec::new();
         let vec_col = self.config.column_name.clone();
         let pk_col = self.pk_column.clone();
         let dim = self.config.dim;
 
-        if self.file_paths.is_empty() {
-            return Ok(results);
-        }
+        let batches = read_shard_batches(
+            &self.file_paths,
+            &pk_col,
+            std::slice::from_ref(&vec_col),
+            &self.object_store_options,
+            self.default_fs.as_deref(),
+        )
+        .await?;
 
-        // Infer through LakeSoul's format registry so Parquet, Vortex, and remote
-        // object stores all use the same schema path as the actual reader.
-        let inference_config = self
-            .reader_config_builder()
-            .set_inferring_schema(true)
-            .build();
-        let inference_session =
-            LakeSoulIOSession::try_new(inference_config).map_err(|e| {
-                rootcause::report!("failed to create schema inference session: {}", e)
-            })?;
-        let inferred_schema = inference_session
-            .get_table_schema()
-            .await
-            .map_err(|e| rootcause::report!("failed to infer data file schema: {}", e))?;
-        let file_schema = inferred_schema.file_schema();
-        let schema = Arc::new(Schema::new(vec![
-            file_schema
-                .field_with_name(&pk_col)
-                .map_err(|e| {
-                    rootcause::report!("PK column '{}' not found: {}", pk_col, e)
-                })?
-                .clone(),
-            file_schema
-                .field_with_name(&vec_col)
-                .map_err(|e| {
-                    rootcause::report!("vector column '{}' not found: {}", vec_col, e)
-                })?
-                .clone(),
-        ]));
-
-        let io_config = self.reader_config_builder().with_schema(schema).build();
-        let mut reader = crate::reader::LakeSoulReader::new(io_config)
-            .map_err(|e| rootcause::report!("failed to create reader: {}", e))?;
-        reader
-            .start()
-            .await
-            .map_err(|e| rootcause::report!("failed to start reader: {}", e))?;
-
-        while let Some(batch_result) = reader.next_rb().await {
-            let batch =
-                batch_result.map_err(|e| rootcause::report!("read error: {}", e))?;
-            if batch.num_rows() == 0 {
-                continue;
-            }
-            results.push(extract_vector_batch(&batch, &pk_col, &vec_col, dim)?);
-        }
-
-        Ok(results)
+        batches
+            .iter()
+            .map(|batch| extract_vector_batch(batch, &pk_col, &vec_col, dim))
+            .collect()
     }
 }
 
@@ -380,11 +263,12 @@ mod tests {
     use std::collections::HashMap;
 
     use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, UInt64Array};
-    use arrow_schema::{DataType, Field};
+    use arrow_schema::{DataType, Field, Schema};
     use lakesoul_vector::{Metric, RotatorType};
     use object_store::local::LocalFileSystem;
 
     use super::*;
+    use crate::config::LakeSoulIOConfigBuilder;
     use crate::file_format::PhysicalFormat;
     use crate::writer::create_writer_with_io_config;
 

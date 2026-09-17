@@ -11,10 +11,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lakesoul_io::vector::builder::{
-    ResolvedIndexShard, VectorShardIndexBuilder, shard_index_prefix,
-};
-use lakesoul_metadata::vector_index::{CommitMode, IndexCommitView, IndexSegmentEntry, PgCatalog};
+use lakesoul_common::IndexKind;
+use lakesoul_io::index::commit::ResolvedIndex;
+use lakesoul_io::index::prefix::shard_index_prefix;
+use lakesoul_io::vector::builder::VectorShardIndexBuilder;
+use lakesoul_metadata::index_catalog::{CommitMode, IndexCommitView, VectorSegmentEntry};
 use lakesoul_vector::{Metric, RotatorType, SegmentEntry, VectorIndexConfig};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
@@ -258,7 +259,7 @@ fn run_shard_vector_index(
         .cloned()
         .or_else(|| store_config.get("bucket").map(|b| format!("s3://{}", b)));
 
-    let index_prefix = shard_index_prefix(&file_paths, &config.column_name);
+    let index_prefix = shard_index_prefix(&file_paths, IndexKind::Vector, &config.column_name);
     let builder = VectorShardIndexBuilder::new(
         store,
         config,
@@ -283,7 +284,7 @@ fn run_shard_vector_index(
                     "vector index build requires metadata access: {error}"
                 ))
             })?;
-        let catalog = PgCatalog::from_client(&client);
+        let catalog = client.vector_index_catalog();
         let resolved = catalog.resolve(&index_prefix).await.map_err(|error| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                 "failed to resolve vector index at '{index_prefix}': {error}"
@@ -291,10 +292,14 @@ fn run_shard_vector_index(
         })?;
 
         let (mode, builder) = match &resolved {
-            Some(view) if !force_rebuild => (
-                CommitMode::Delta,
-                builder.with_base(to_resolved_shard(&index_prefix, view)),
-            ),
+            Some(view) if !force_rebuild => {
+                let resolved = to_resolved_shard(&index_prefix, view).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                        "failed to serialize vector index segments: {e}"
+                    ))
+                })?;
+                (CommitMode::Delta, builder.with_base(resolved))
+            }
             _ => (CommitMode::Rebuild, builder),
         };
         let outcome = if mode == CommitMode::Rebuild {
@@ -328,31 +333,36 @@ fn run_shard_vector_index(
     })
 }
 
-fn to_resolved_shard(prefix: &str, view: &IndexCommitView) -> ResolvedIndexShard {
-    ResolvedIndexShard {
+fn to_resolved_shard(
+    prefix: &str,
+    view: &IndexCommitView<VectorSegmentEntry>,
+) -> Result<ResolvedIndex, serde_json::Error> {
+    let segments: Vec<SegmentEntry> = view
+        .segments
+        .iter()
+        .map(|segment| SegmentEntry {
+            cluster_id: segment.cluster_id,
+            segment_version: segment.segment_version,
+            segment_filename: segment.filename.clone(),
+            num_vectors: segment.num_vectors,
+            file_size: segment.file_size,
+        })
+        .collect();
+    Ok(ResolvedIndex {
+        kind: IndexKind::Vector,
         index_prefix: prefix.to_string(),
         commit_id: view.commit_id,
         generation: view.generation,
         version: view.version,
         header: view.header.clone(),
-        segments: view
-            .segments
-            .iter()
-            .map(|segment| SegmentEntry {
-                cluster_id: segment.cluster_id,
-                segment_version: segment.segment_version,
-                segment_filename: segment.filename.clone(),
-                num_vectors: segment.num_vectors,
-                file_size: segment.file_size,
-            })
-            .collect(),
-    }
+        segments: serde_json::to_value(&segments)?,
+    })
 }
 
-fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<IndexSegmentEntry> {
+fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
     segments
         .iter()
-        .map(|segment| IndexSegmentEntry {
+        .map(|segment| VectorSegmentEntry {
             cluster_id: segment.cluster_id,
             segment_version: segment.segment_version,
             filename: segment.segment_filename.clone(),

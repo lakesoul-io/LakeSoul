@@ -18,6 +18,7 @@ use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 pub mod catalog;
 pub mod cli;
 pub mod datasource;
+pub mod index;
 pub mod lakesoul_table;
 pub mod planner;
 pub mod session;

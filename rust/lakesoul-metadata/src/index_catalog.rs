@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! PostgreSQL-backed control plane for vector indexes.
+//! PostgreSQL-backed control plane for secondary indexes.
 //!
-//! The index data (segment files) lives in object storage next to the table
-//! data; this module tracks, per index shard (identified by its normalized
-//! `index_prefix`):
+//! The index data (segment or split files) lives in object storage next to
+//! the table data; this module tracks, per index shard (identified by the
+//! pair of [`IndexKind`] and normalized `index_prefix`):
 //!
 //! * the *commits* — an immutable `(generation, version)` pair plus the
 //!   serialized index header and the segment files the commit references;
@@ -19,37 +19,50 @@
 //! Commits are published with an optimistic unique constraint: concurrent
 //! writers race on `(shard_id, generation, version)` and retry against the
 //! refreshed view, so no locks are held while building.
+//!
+//! The catalog is generic over the segment payload
+//! ([`CatalogSegment`]): the vector index stores IVF segment entries, the
+//! text index stores split entries, and both share the same tables
+//! (`index_shard` / `index_commit` / `index_lease`), scoped by the `kind`
+//! column.
 
-use std::sync::Arc;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use lakesoul_common::IndexKind;
 use postgres_types::Json;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::MetaDataClient;
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::pooled_client::{PooledClient, QueryType};
-use crate::{MetaDataClient, MetaDataClientRef};
 
 /// Maximum number of publish attempts per commit.
 pub const COMMIT_RETRIES: usize = 3;
 
-/// DDL for the vector index control-plane tables.
+/// DDL for the index control-plane tables.
 ///
 /// Canonical copy lives in `script/meta_init.sql`; this constant lets tests
 /// and tools bootstrap a database without applying the full metadata schema.
 pub const CREATE_TABLES_SQL: &str = r#"
-create table if not exists vector_index_shard
+create table if not exists index_shard
 (
     shard_id     bigserial primary key,
-    index_prefix text not null unique
+    kind         text not null,
+    index_prefix text not null,
+    unique (kind, index_prefix)
 );
 
-create table if not exists vector_index_commit
+create table if not exists index_commit
 (
     commit_id     bigserial primary key,
-    shard_id      bigint      not null references vector_index_shard (shard_id) on delete cascade,
+    shard_id      bigint      not null references index_shard (shard_id) on delete cascade,
     generation    bigint      not null,
     version       bigint      not null,
     header        bytea       not null,
@@ -59,13 +72,13 @@ create table if not exists vector_index_commit
     unique (shard_id, generation, version)
 );
 
-create index if not exists vector_index_commit_shard_key_index
-    on vector_index_commit (shard_id, generation desc, version desc);
+create index if not exists index_commit_shard_key_index
+    on index_commit (shard_id, generation desc, version desc);
 
-create table if not exists vector_index_lease
+create table if not exists index_lease
 (
     lease_id    uuid primary key,
-    shard_id    bigint      not null references vector_index_shard (shard_id) on delete cascade,
+    shard_id    bigint      not null references index_shard (shard_id) on delete cascade,
     generation  bigint      not null,
     version     bigint      not null,
     owner       text        not null,
@@ -73,13 +86,28 @@ create table if not exists vector_index_lease
     expires_at  timestamptz not null
 );
 
-create index if not exists vector_index_lease_expiry_index
-    on vector_index_lease (shard_id, expires_at);
+create index if not exists index_lease_expiry_index
+    on index_lease (shard_id, expires_at);
 "#;
 
-/// One segment file referenced by an index commit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndexSegmentEntry {
+/// One segment referenced by an index commit.
+///
+/// Implementations are serialized into `index_commit.segments`; the catalog
+/// only relies on the file name (dedup and GC retention) and a stable sort
+/// key (base files before deltas, deterministic commit content).
+pub trait CatalogSegment:
+    Serialize + DeserializeOwned + Clone + Send + Sync + 'static
+{
+    /// File name of the segment, relative to the shard prefix.
+    fn filename(&self) -> &str;
+
+    /// Deterministic ordering key of the segment inside a commit.
+    fn sort_key(&self) -> (u64, u64);
+}
+
+/// One IVF segment file referenced by a vector index commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct VectorSegmentEntry {
     pub cluster_id: u32,
     pub segment_version: u32,
     pub filename: String,
@@ -87,9 +115,22 @@ pub struct IndexSegmentEntry {
     pub file_size: u64,
 }
 
+impl CatalogSegment for VectorSegmentEntry {
+    fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    fn sort_key(&self) -> (u64, u64) {
+        (self.cluster_id as u64, self.segment_version as u64)
+    }
+}
+
+/// Catalog of the vector index kind.
+pub type VectorCatalog = IndexCatalog<VectorSegmentEntry>;
+
 /// A resolved commit of an index shard.
 #[derive(Debug, Clone)]
-pub struct IndexCommitView {
+pub struct IndexCommitView<S> {
     pub shard_id: i64,
     pub commit_id: i64,
     pub generation: u64,
@@ -97,7 +138,7 @@ pub struct IndexCommitView {
     /// Serialized index header (dim/padded_dim/metric/rotator/…).
     pub header: Vec<u8>,
     /// Every segment of the current generation up to `version`.
-    pub segments: Vec<IndexSegmentEntry>,
+    pub segments: Vec<S>,
 }
 
 /// How a commit advances the index.
@@ -109,7 +150,7 @@ pub enum CommitMode {
     Rebuild,
 }
 
-/// Per-cluster drift statistics of the current view.
+/// Per-cluster drift statistics of a vector index's current view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterIndexStat {
     pub cluster_id: u32,
@@ -144,10 +185,49 @@ pub struct GcShardPlan {
     pub removed_filenames: Vec<String>,
 }
 
+/// Shared connection state of a catalog; non-generic so [`LeaseHandle`] can
+/// release itself without knowing the segment payload type.
+struct CatalogCore {
+    client: Arc<Mutex<PooledClient>>,
+    max_retry: usize,
+    kind: IndexKind,
+}
+
+/// Process-wide guard so the control-plane tables are created at most once
+/// per process even when `script/meta_init.sql` was not re-applied.
+static TABLES_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+impl CatalogCore {
+    /// Create the control-plane tables if they do not exist (once per process).
+    async fn ensure_tables(&self) -> Result<()> {
+        TABLES_INIT
+            .get_or_try_init(|| self.init_tables())
+            .await
+            .map(|_| ())
+    }
+
+    async fn init_tables(&self) -> Result<()> {
+        let guard = self.client.lock().await;
+        guard.batch_execute(CREATE_TABLES_SQL, QueryType::RW).await
+    }
+
+    async fn release_lease(&self, lease_id: Uuid) -> Result<()> {
+        let guard = self.client.lock().await;
+        guard
+            .execute(
+                "delete from index_lease where lease_id = $1",
+                QueryType::RW,
+                &[&lease_id],
+            )
+            .await?;
+        Ok(())
+    }
+}
+
 /// A reader lease.  Dropping it releases the row on a best-effort basis;
 /// the TTL is the hard bound.
 pub struct LeaseHandle {
-    catalog: PgCatalog,
+    core: Arc<CatalogCore>,
     pub lease_id: Uuid,
     pub generation: u64,
     pub version: u64,
@@ -168,7 +248,7 @@ impl LeaseHandle {
     /// Release the lease explicitly.
     pub async fn release(mut self) -> Result<()> {
         self.released = true;
-        self.catalog.release_lease(self.lease_id).await
+        self.core.release_lease(self.lease_id).await
     }
 
     /// Whether the lease row is still held by this handle.
@@ -185,80 +265,84 @@ impl Drop for LeaseHandle {
         // Drop cannot await; fire and forget on the current runtime when
         // there is one, otherwise rely on the lease TTL.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let catalog = self.catalog.clone();
+            let core = self.core.clone();
             let lease_id = self.lease_id;
+            let kind = self.core.kind;
             handle.spawn(async move {
-                if let Err(error) = catalog.release_lease(lease_id).await {
-                    tracing::warn!("failed to release vector index lease: {error}");
+                if let Err(error) = core.release_lease(lease_id).await {
+                    tracing::warn!("failed to release {kind} index lease: {error}");
                 }
             });
         }
     }
 }
 
-/// PostgreSQL-backed index catalog.
-#[derive(Clone)]
-pub struct PgCatalog {
-    client: Arc<Mutex<PooledClient>>,
-    max_retry: usize,
-}
-
-impl std::fmt::Debug for PgCatalog {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PgCatalog").finish()
-    }
-}
-
-/// Process-wide guard so the control-plane tables are created at most once
-/// per process even when `script/meta_init.sql` was not re-applied.
-static TABLES_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 /// Process-wide cache of resolved views, so warm queries only pay for a
 /// cheap commit-id check instead of fetching the (potentially large)
-/// segment list.
-static VIEW_CACHE: std::sync::LazyLock<
-    tokio::sync::Mutex<std::collections::HashMap<String, IndexCommitView>>,
-> = std::sync::LazyLock::new(
-    || tokio::sync::Mutex::new(std::collections::HashMap::new()),
-);
+/// segment list.  Entries are type-erased because one process may hold
+/// catalogs of several kinds.
+type CachedView = Arc<dyn Any + Send + Sync>;
 
-impl PgCatalog {
-    pub(crate) fn from_pooled(
+static VIEW_CACHE: LazyLock<Mutex<HashMap<(IndexKind, String), CachedView>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// PostgreSQL-backed index catalog for one [`IndexKind`].
+pub struct IndexCatalog<S: CatalogSegment> {
+    core: Arc<CatalogCore>,
+    _marker: PhantomData<fn() -> S>,
+}
+
+impl<S: CatalogSegment> Clone for IndexCatalog<S> {
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: CatalogSegment> std::fmt::Debug for IndexCatalog<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IndexCatalog")
+            .field("kind", &self.core.kind)
+            .finish()
+    }
+}
+
+impl<S: CatalogSegment> IndexCatalog<S> {
+    fn from_pooled(
         client: Arc<Mutex<PooledClient>>,
         max_retry: usize,
+        kind: IndexKind,
     ) -> Self {
-        Self { client, max_retry }
+        Self {
+            core: Arc::new(CatalogCore {
+                client,
+                max_retry,
+                kind,
+            }),
+            _marker: PhantomData,
+        }
     }
 
-    /// Create the control-plane tables if they do not exist (once per process).
-    async fn ensure_tables(&self) -> Result<()> {
-        TABLES_INIT
-            .get_or_try_init(|| self.init_tables())
-            .await
-            .map(|_| ())
-    }
-
-    /// Build a catalog backed by the same connection pool as `client`.
-    pub fn from_client(client: &MetaDataClient) -> Self {
-        client.vector_index_catalog()
-    }
-
-    /// Build a catalog from environment configuration (`LAKESOUL_PG_*`).
-    pub async fn from_env() -> Result<Self> {
-        Ok(MetaDataClient::from_env().await?.vector_index_catalog())
+    /// The index kind this catalog is scoped to.
+    pub fn kind(&self) -> IndexKind {
+        self.core.kind
     }
 
     /// Create the control-plane tables if they do not exist.
     pub async fn init_tables(&self) -> Result<()> {
-        let guard = self.client.lock().await;
-        guard.batch_execute(CREATE_TABLES_SQL, QueryType::RW).await
+        self.core.init_tables().await
     }
 
     /// Resolve the current commit of a shard, if any.
-    pub async fn resolve(&self, index_prefix: &str) -> Result<Option<IndexCommitView>> {
-        self.ensure_tables().await?;
-        let guard = self.client.lock().await;
-        resolve_with(&guard, index_prefix).await
+    pub async fn resolve(
+        &self,
+        index_prefix: &str,
+    ) -> Result<Option<IndexCommitView<S>>> {
+        self.core.ensure_tables().await?;
+        let guard = self.core.client.lock().await;
+        resolve_with(&guard, self.core.kind, index_prefix).await
     }
 
     /// Resolve for the query hot path: check the commit id cheaply and only
@@ -266,39 +350,42 @@ impl PgCatalog {
     pub async fn resolve_cached(
         &self,
         index_prefix: &str,
-    ) -> Result<Option<IndexCommitView>> {
-        self.ensure_tables().await?;
-        let guard = self.client.lock().await;
+    ) -> Result<Option<IndexCommitView<S>>> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
         let current: Option<i64> = guard
             .query_opt(
-                "select commit_id from vector_index_commit c \
-                 join vector_index_shard sh using (shard_id) \
-                 where sh.index_prefix = $1 \
+                "select commit_id from index_commit c \
+                 join index_shard sh using (shard_id) \
+                 where sh.kind = $1 and sh.index_prefix = $2 \
                  order by generation desc, version desc limit 1",
                 QueryType::RO,
-                &[&index_prefix],
+                &[&kind.as_str(), &index_prefix],
             )
             .await?
             .map(|row| row.get(0));
         let Some(commit_id) = current else {
             return Ok(None);
         };
+        let cache_key = (kind, index_prefix.to_string());
         {
             let cache = VIEW_CACHE.lock().await;
-            if let Some(view) = cache.get(index_prefix)
+            if let Some(entry) = cache.get(&cache_key)
+                && let Some(view) = entry.downcast_ref::<IndexCommitView<S>>()
                 && view.commit_id == commit_id
             {
                 return Ok(Some(view.clone()));
             }
         }
-        let view = resolve_with(&guard, index_prefix).await?;
+        let view = resolve_with(&guard, kind, index_prefix).await?;
         if let Some(view) = &view {
             let mut cache = VIEW_CACHE.lock().await;
             // Keep the map bounded by the number of live shards.
             if cache.len() > 4096 {
                 cache.clear();
             }
-            cache.insert(index_prefix.to_string(), view.clone());
+            cache.insert(cache_key, Arc::new(view.clone()));
         }
         Ok(view)
     }
@@ -310,15 +397,16 @@ impl PgCatalog {
         &self,
         index_prefix: &str,
         header: &[u8],
-        segments: &[IndexSegmentEntry],
+        segments: &[S],
         mode: CommitMode,
-    ) -> Result<IndexCommitView> {
-        self.ensure_tables().await?;
+    ) -> Result<IndexCommitView<S>> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
         let mut last_error: Option<LakeSoulMetaDataError> = None;
-        for _ in 0..self.max_retry.max(1) {
-            let guard = self.client.lock().await;
-            let shard_id = ensure_shard(&guard, index_prefix).await?;
-            match try_commit(&guard, shard_id, header, segments, mode).await {
+        for _ in 0..self.core.max_retry.max(1) {
+            let guard = self.core.client.lock().await;
+            let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
+            match try_commit::<S>(&guard, shard_id, header, segments, mode).await {
                 Ok(view) => return Ok(view),
                 Err(error) if is_unique_violation(&error) => {
                     last_error = Some(error);
@@ -328,9 +416,9 @@ impl PgCatalog {
             }
         }
         Err(last_error.unwrap_or_else(|| {
-            LakeSoulMetaDataError::Internal(
-                "vector index commit exceeded its retry budget".to_string(),
-            )
+            LakeSoulMetaDataError::Internal(format!(
+                "{kind} index commit exceeded its retry budget"
+            ))
         }))
     }
 
@@ -343,25 +431,27 @@ impl PgCatalog {
         ttl: Duration,
         owner: &str,
     ) -> Result<Option<LeaseHandle>> {
-        self.ensure_tables().await?;
-        let guard = self.client.lock().await;
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
         let mut conn = guard.get(QueryType::RW).await?;
         let tx = conn.transaction().await?;
 
-        let Some((shard_id, commit)) = current_commit(&tx, index_prefix).await? else {
+        let Some((shard_id, commit)) = current_commit(&tx, kind, index_prefix).await?
+        else {
             tx.commit().await?;
             return Ok(None);
         };
         // Opportunistically drop expired leases while holding the shard.
         tx.execute(
-            "delete from vector_index_lease where shard_id = $1 and expires_at <= now()",
+            "delete from index_lease where shard_id = $1 and expires_at <= now()",
             &[&shard_id],
         )
         .await?;
 
         let lease_id = Uuid::new_v4();
         tx.execute(
-            "insert into vector_index_lease \
+            "insert into index_lease \
              (lease_id, shard_id, generation, version, owner, expires_at) \
              values ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))",
             &[
@@ -377,7 +467,7 @@ impl PgCatalog {
         tx.commit().await?;
 
         Ok(Some(LeaseHandle {
-            catalog: self.clone(),
+            core: self.core.clone(),
             lease_id,
             generation: commit.generation,
             version: commit.version,
@@ -387,10 +477,10 @@ impl PgCatalog {
 
     /// Extend a lease; returns `false` when the row no longer exists.
     pub async fn renew_lease(&self, lease: &LeaseHandle, ttl: Duration) -> Result<bool> {
-        let guard = self.client.lock().await;
+        let guard = self.core.client.lock().await;
         let updated = guard
             .execute(
-                "update vector_index_lease set expires_at = now() + make_interval(secs => $2) \
+                "update index_lease set expires_at = now() + make_interval(secs => $2) \
                  where lease_id = $1",
                 QueryType::RW,
                 &[&lease.lease_id, &ttl.as_secs_f64()],
@@ -399,18 +489,174 @@ impl PgCatalog {
         Ok(updated > 0)
     }
 
-    async fn release_lease(&self, lease_id: Uuid) -> Result<()> {
-        let guard = self.client.lock().await;
-        guard
+    /// Delete expired leases, drop generations superseded longer than
+    /// `grace` ago (keeping the newest `keep_generations`), and report the
+    /// segment files that must survive.
+    ///
+    /// Object deletion itself is left to the caller: it lists the segment
+    /// files under the shard prefix and removes every object that is not in
+    /// [`GcShardPlan::retained_filenames`] and older than `grace`.
+    pub async fn gc_shard(
+        &self,
+        index_prefix: &str,
+        grace: Duration,
+        keep_generations: usize,
+    ) -> Result<GcShardPlan> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
+        let mut conn = guard.get(QueryType::RW).await?;
+        let tx = conn.transaction().await?;
+
+        let shard_id: Option<i64> = tx
+            .query_opt(
+                "select shard_id from index_shard \
+                 where kind = $1 and index_prefix = $2",
+                &[&kind.as_str(), &index_prefix],
+            )
+            .await?
+            .map(|row| row.get(0));
+        let Some(shard_id) = shard_id else {
+            tx.commit().await?;
+            return Ok(GcShardPlan::default());
+        };
+
+        let deleted_lease_rows = tx
             .execute(
-                "delete from vector_index_lease where lease_id = $1",
-                QueryType::RW,
-                &[&lease_id],
+                "delete from index_lease where shard_id = $1 and expires_at <= now()",
+                &[&shard_id],
             )
             .await?;
-        Ok(())
+
+        let current_generation: Option<i64> = tx
+            .query_opt(
+                "select generation from index_commit where shard_id = $1 \
+                 order by generation desc, version desc limit 1",
+                &[&shard_id],
+            )
+            .await?
+            .map(|row| row.get(0));
+        let Some(current_generation) = current_generation else {
+            tx.commit().await?;
+            return Ok(GcShardPlan {
+                deleted_lease_rows,
+                ..Default::default()
+            });
+        };
+        let keep = keep_generations.max(1) as i64;
+        let cutoff = current_generation - keep + 1;
+
+        let removable: Vec<i64> = tx
+            .query(
+                "select distinct generation from index_commit \
+                 where shard_id = $1 and generation < $2 \
+                   and superseded_at is not null and superseded_at <= now() - make_interval(secs => $3) \
+                   and generation not in \
+                       (select generation from index_lease \
+                        where shard_id = $1 and expires_at > now())",
+                &[&shard_id, &cutoff, &grace.as_secs_f64()],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
+
+        let removed = collect_filenames::<S>(&tx, shard_id, &removable).await?;
+
+        let deleted_commit_rows = if removable.is_empty() {
+            0
+        } else {
+            let mut deleted = 0;
+            for generation in &removable {
+                deleted += tx
+                    .execute(
+                        "delete from index_commit where shard_id = $1 and generation = $2",
+                        &[&shard_id, generation],
+                    )
+                    .await?;
+            }
+            deleted
+        };
+
+        let retained = collect_filenames::<S>(&tx, shard_id, &[]).await?;
+        tx.commit().await?;
+
+        Ok(GcShardPlan {
+            current_generation: Some(current_generation as u64),
+            deleted_commit_rows,
+            deleted_lease_rows,
+            retained_filenames: retained,
+            removed_filenames: removed,
+        })
     }
 
+    /// Delete every shard of this kind whose `index_prefix` lives under
+    /// `directory` (used when a table or partition is dropped).
+    ///
+    /// `directory` is normalized with [`normalize_index_prefix`] and matched
+    /// with a trailing slash so sibling paths with a shared prefix are not
+    /// affected.
+    pub async fn delete_under_prefix(&self, directory: &str) -> Result<u64> {
+        self.core.ensure_tables().await?;
+        let normalized = normalize_index_prefix(directory);
+        if normalized.is_empty() {
+            return Ok(0);
+        }
+        let kind = self.core.kind;
+        let pattern = format!("{}/", normalized.trim_end_matches('/'));
+        let guard = self.core.client.lock().await;
+        let deleted = guard
+            .execute(
+                "delete from index_shard \
+                 where kind = $1 and left(index_prefix, length($2)) = $2",
+                QueryType::RW,
+                &[&kind.as_str(), &pattern],
+            )
+            .await?;
+        Ok(deleted)
+    }
+
+    /// List every shard prefix of this kind under `directory`.
+    pub async fn list_shards_under(&self, directory: &str) -> Result<Vec<String>> {
+        self.core.ensure_tables().await?;
+        let normalized = normalize_index_prefix(directory);
+        let normalized = normalized.trim_end_matches('/');
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        let kind = self.core.kind;
+        let pattern = format!("{normalized}/");
+        let guard = self.core.client.lock().await;
+        let rows = guard
+            .query(
+                "select index_prefix from index_shard \
+                 where kind = $1 and left(index_prefix, length($2)) = $2 \
+                 order by index_prefix",
+                QueryType::RO,
+                &[&kind.as_str(), &pattern],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// Delete all commits, leases and the shard row of a single prefix.
+    pub async fn delete_shard(&self, index_prefix: &str) -> Result<u64> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
+        let deleted = guard
+            .execute(
+                "delete from index_shard where kind = $1 and index_prefix = $2",
+                QueryType::RW,
+                &[&kind.as_str(), &index_prefix],
+            )
+            .await?;
+        Ok(deleted)
+    }
+}
+
+/// Vector-specific analysis on top of the generic catalog.
+impl IndexCatalog<VectorSegmentEntry> {
     /// Per-cluster drift statistics of the current view.
     pub async fn cluster_stats(
         &self,
@@ -435,191 +681,17 @@ impl PgCatalog {
         }
         Ok(Some(stats.into_values().collect()))
     }
-
-    /// Delete expired leases, drop generations superseded longer than
-    /// `grace` ago (keeping the newest `keep_generations`), and report the
-    /// segment files that must survive.
-    ///
-    /// Object deletion itself is left to the caller: it lists the segment
-    /// files under the shard prefix and removes every object that is not in
-    /// [`GcShardPlan::retained_filenames`] and older than `grace`.
-    pub async fn gc_shard(
-        &self,
-        index_prefix: &str,
-        grace: Duration,
-        keep_generations: usize,
-    ) -> Result<GcShardPlan> {
-        self.ensure_tables().await?;
-        let guard = self.client.lock().await;
-        let mut conn = guard.get(QueryType::RW).await?;
-        let tx = conn.transaction().await?;
-
-        let shard_id: Option<i64> = tx
-            .query_opt(
-                "select shard_id from vector_index_shard where index_prefix = $1",
-                &[&index_prefix],
-            )
-            .await?
-            .map(|row| row.get(0));
-        let Some(shard_id) = shard_id else {
-            tx.commit().await?;
-            return Ok(GcShardPlan::default());
-        };
-
-        let deleted_lease_rows = tx
-            .execute(
-                "delete from vector_index_lease where shard_id = $1 and expires_at <= now()",
-                &[&shard_id],
-            )
-            .await?;
-
-        let current_generation: Option<i64> = tx
-            .query_opt(
-                "select generation from vector_index_commit where shard_id = $1 \
-                 order by generation desc, version desc limit 1",
-                &[&shard_id],
-            )
-            .await?
-            .map(|row| row.get(0));
-        let Some(current_generation) = current_generation else {
-            tx.commit().await?;
-            return Ok(GcShardPlan {
-                deleted_lease_rows,
-                ..Default::default()
-            });
-        };
-        let keep = keep_generations.max(1) as i64;
-        let cutoff = current_generation - keep + 1;
-
-        let removable: Vec<i64> = tx
-            .query(
-                "select distinct generation from vector_index_commit \
-                 where shard_id = $1 and generation < $2 \
-                   and superseded_at is not null and superseded_at <= now() - make_interval(secs => $3) \
-                   and generation not in \
-                       (select generation from vector_index_lease \
-                        where shard_id = $1 and expires_at > now())",
-                &[&shard_id, &cutoff, &grace.as_secs_f64()],
-            )
-            .await?
-            .into_iter()
-            .map(|row| row.get(0))
-            .collect();
-
-        let removed = collect_filenames(&tx, shard_id, &removable).await?;
-
-        let deleted_commit_rows = if removable.is_empty() {
-            0
-        } else {
-            let mut deleted = 0;
-            for generation in &removable {
-                deleted += tx
-                    .execute(
-                        "delete from vector_index_commit where shard_id = $1 and generation = $2",
-                        &[&shard_id, generation],
-                    )
-                    .await?;
-            }
-            deleted
-        };
-
-        let retained = collect_filenames(&tx, shard_id, &[]).await?;
-        tx.commit().await?;
-
-        Ok(GcShardPlan {
-            current_generation: Some(current_generation as u64),
-            deleted_commit_rows,
-            deleted_lease_rows,
-            retained_filenames: retained,
-            removed_filenames: removed,
-        })
-    }
-
-    /// Delete every shard whose `index_prefix` lives under `directory`
-    /// (used when a table or partition is dropped).
-    ///
-    /// `directory` is normalized with [`normalize_index_prefix`] and matched
-    /// with a trailing slash so sibling paths with a shared prefix are not
-    /// affected.
-    pub async fn delete_under_prefix(&self, directory: &str) -> Result<u64> {
-        self.ensure_tables().await?;
-        let normalized = normalize_index_prefix(directory);
-        if normalized.is_empty() {
-            return Ok(0);
-        }
-        let pattern = format!("{}/", normalized.trim_end_matches('/'));
-        let guard = self.client.lock().await;
-        let deleted = guard
-            .execute(
-                "delete from vector_index_shard where left(index_prefix, length($1)) = $1",
-                QueryType::RW,
-                &[&pattern],
-            )
-            .await?;
-        Ok(deleted)
-    }
-
-    /// List every shard prefix under `directory`.
-    pub async fn list_shards_under(&self, directory: &str) -> Result<Vec<String>> {
-        self.ensure_tables().await?;
-        let normalized = normalize_index_prefix(directory);
-        let normalized = normalized.trim_end_matches('/');
-        if normalized.is_empty() {
-            return Ok(Vec::new());
-        }
-        let pattern = format!("{normalized}/");
-        let guard = self.client.lock().await;
-        let rows = guard
-            .query(
-                "select index_prefix from vector_index_shard \
-                 where left(index_prefix, length($1)) = $1 order by index_prefix",
-                QueryType::RO,
-                &[&pattern],
-            )
-            .await?;
-        Ok(rows.into_iter().map(|row| row.get(0)).collect())
-    }
-
-    /// Delete all commits, leases and the shard row of a single prefix.
-    pub async fn delete_shard(&self, index_prefix: &str) -> Result<u64> {
-        self.ensure_tables().await?;
-        let guard = self.client.lock().await;
-        let deleted = guard
-            .execute(
-                "delete from vector_index_shard where index_prefix = $1",
-                QueryType::RW,
-                &[&index_prefix],
-            )
-            .await?;
-        Ok(deleted)
-    }
 }
 
 impl MetaDataClient {
+    /// Catalog of the given index kind, backed by this client's pool.
+    pub fn index_catalog<S: CatalogSegment>(&self, kind: IndexKind) -> IndexCatalog<S> {
+        IndexCatalog::from_pooled(self.pooled_client(), self.max_retry(), kind)
+    }
+
     /// Catalog for vector index control-plane operations.
-    pub fn vector_index_catalog(&self) -> PgCatalog {
-        PgCatalog::from_pooled(self.pooled_client(), self.max_retry())
-    }
-
-    /// Delete every vector index shard under a table directory.
-    ///
-    /// Best-effort helper for the drop paths: failures are logged, not
-    /// propagated, because the directory (and therefore the index data) is
-    /// being removed anyway.
-    pub async fn delete_vector_index_under(&self, directory: &str) -> Result<u64> {
-        self.vector_index_catalog()
-            .delete_under_prefix(directory)
-            .await
-    }
-
-    /// Delete every vector index shard under a table directory, logging
-    /// failures instead of returning them.
-    pub async fn delete_vector_index_under_best_effort(&self, directory: &str) {
-        if let Err(error) = self.delete_vector_index_under(directory).await {
-            tracing::warn!(
-                "failed to clean vector index metadata under '{directory}': {error}"
-            );
-        }
+    pub fn vector_index_catalog(&self) -> IndexCatalog<VectorSegmentEntry> {
+        self.index_catalog(IndexKind::Vector)
     }
 }
 
@@ -627,22 +699,23 @@ fn to_i64(value: u64) -> i64 {
     value as i64
 }
 
-async fn resolve_with(
+async fn resolve_with<S: CatalogSegment>(
     client: &PooledClient,
+    kind: IndexKind,
     index_prefix: &str,
-) -> Result<Option<IndexCommitView>> {
+) -> Result<Option<IndexCommitView<S>>> {
     // One row: the current commit carries the cumulative segment list of
     // its generation.
     let row = client
         .query_opt(
             "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, c.segments \
-             from vector_index_shard sh \
+             from index_shard sh \
              join lateral (select commit_id, shard_id, generation, version, header, segments \
-                           from vector_index_commit where shard_id = sh.shard_id \
+                           from index_commit where shard_id = sh.shard_id \
                            order by generation desc, version desc limit 1) c on true \
-             where sh.index_prefix = $1",
+             where sh.kind = $1 and sh.index_prefix = $2",
             QueryType::RO,
-            &[&index_prefix],
+            &[&kind.as_str(), &index_prefix],
         )
         .await?;
     let Some(row) = row else {
@@ -655,9 +728,9 @@ async fn resolve_with(
     let header: Vec<u8> = row.get(4);
     let segments_json: serde_json::Value = row.get(5);
 
-    let mut segments = parse_segments(segments_json)?;
-    // Deterministic base-then-deltas order per cluster.
-    segments.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
+    let mut segments = parse_segments::<S>(segments_json)?;
+    // Deterministic base-then-deltas order.
+    segments.sort_by_key(|segment| segment.sort_key());
 
     Ok(Some(IndexCommitView {
         shard_id,
@@ -676,12 +749,14 @@ struct CurrentCommit {
 
 async fn current_commit(
     tx: &tokio_postgres::Transaction<'_>,
+    kind: IndexKind,
     index_prefix: &str,
 ) -> Result<Option<(i64, CurrentCommit)>> {
     let Some(row) = tx
         .query_opt(
-            "select shard_id from vector_index_shard where index_prefix = $1",
-            &[&index_prefix],
+            "select shard_id from index_shard \
+             where kind = $1 and index_prefix = $2",
+            &[&kind.as_str(), &index_prefix],
         )
         .await?
     else {
@@ -690,7 +765,7 @@ async fn current_commit(
     let shard_id: i64 = row.get(0);
     let Some(row) = tx
         .query_opt(
-            "select generation, version from vector_index_commit \
+            "select generation, version from index_commit \
              where shard_id = $1 order by generation desc, version desc limit 1",
             &[&shard_id],
         )
@@ -707,43 +782,48 @@ async fn current_commit(
     )))
 }
 
-async fn ensure_shard(client: &PooledClient, index_prefix: &str) -> Result<i64> {
+async fn ensure_shard(
+    client: &PooledClient,
+    kind: IndexKind,
+    index_prefix: &str,
+) -> Result<i64> {
     client
         .execute(
-            "insert into vector_index_shard (index_prefix) values ($1) \
-             on conflict (index_prefix) do nothing",
+            "insert into index_shard (kind, index_prefix) values ($1, $2) \
+             on conflict (kind, index_prefix) do nothing",
             QueryType::RW,
-            &[&index_prefix],
+            &[&kind.as_str(), &index_prefix],
         )
         .await?;
     let row = client
         .query_opt(
-            "select shard_id from vector_index_shard where index_prefix = $1",
+            "select shard_id from index_shard \
+             where kind = $1 and index_prefix = $2",
             QueryType::RW,
-            &[&index_prefix],
+            &[&kind.as_str(), &index_prefix],
         )
         .await?
         .ok_or_else(|| {
-            LakeSoulMetaDataError::Internal(
-                "vector index shard disappeared after insert".to_string(),
-            )
+            LakeSoulMetaDataError::Internal(format!(
+                "{kind} index shard disappeared after insert"
+            ))
         })?;
     Ok(row.get(0))
 }
 
-async fn try_commit(
+async fn try_commit<S: CatalogSegment>(
     client: &PooledClient,
     shard_id: i64,
     header: &[u8],
-    segments: &[IndexSegmentEntry],
+    segments: &[S],
     mode: CommitMode,
-) -> Result<IndexCommitView> {
+) -> Result<IndexCommitView<S>> {
     let mut conn = client.get(QueryType::RW).await?;
     let tx = conn.transaction().await?;
 
     let current: Option<(i64, i64, serde_json::Value)> = tx
         .query_opt(
-            "select generation, version, segments from vector_index_commit \
+            "select generation, version, segments from index_commit \
              where shard_id = $1 order by generation desc, version desc limit 1",
             &[&shard_id],
         )
@@ -764,7 +844,7 @@ async fn try_commit(
 
     if mode == CommitMode::Rebuild {
         tx.execute(
-            "update vector_index_commit set superseded_at = now() \
+            "update index_commit set superseded_at = now() \
              where shard_id = $1 and (generation, version) < ($2, $3) \
                and superseded_at is null",
             &[&shard_id, &generation, &version],
@@ -775,24 +855,24 @@ async fn try_commit(
     // Every commit row carries the cumulative segment list of its
     // generation, so resolve() reads a single row instead of aggregating
     // the arrays of all versions.
-    let mut cumulative: Vec<IndexSegmentEntry> = match (mode, &current) {
-        (CommitMode::Delta, Some((_, _, value))) => parse_segments(value.clone())?,
+    let mut cumulative: Vec<S> = match (mode, &current) {
+        (CommitMode::Delta, Some((_, _, value))) => parse_segments::<S>(value.clone())?,
         _ => Vec::new(),
     };
-    let mut seen: std::collections::HashSet<String> = cumulative
+    let mut seen: HashSet<String> = cumulative
         .iter()
-        .map(|segment| segment.filename.clone())
+        .map(|segment| segment.filename().to_string())
         .collect();
     for segment in segments {
-        if seen.insert(segment.filename.clone()) {
+        if seen.insert(segment.filename().to_string()) {
             cumulative.push(segment.clone());
         }
     }
-    cumulative.sort_by_key(|segment| (segment.cluster_id, segment.segment_version));
+    cumulative.sort_by_key(|segment| segment.sort_key());
     let segments_json = serde_json::to_value(&cumulative)?;
     let row = tx
         .query_one(
-            "insert into vector_index_commit \
+            "insert into index_commit \
              (shard_id, generation, version, header, segments) \
              values ($1, $2, $3, $4, $5) \
              returning commit_id",
@@ -818,7 +898,7 @@ async fn try_commit(
     })
 }
 
-async fn collect_filenames(
+async fn collect_filenames<S: CatalogSegment>(
     tx: &tokio_postgres::Transaction<'_>,
     shard_id: i64,
     generations: &[i64],
@@ -827,14 +907,14 @@ async fn collect_filenames(
     // cumulative segment list.
     let rows = if generations.is_empty() {
         tx.query(
-            "select distinct on (generation) generation, segments from vector_index_commit \
+            "select distinct on (generation) generation, segments from index_commit \
              where shard_id = $1 order by generation, version desc",
             &[&shard_id],
         )
         .await?
     } else {
         tx.query(
-            "select distinct on (generation) generation, segments from vector_index_commit \
+            "select distinct on (generation) generation, segments from index_commit \
              where shard_id = $1 and generation = any($2) \
              order by generation, version desc",
             &[&shard_id, &generations],
@@ -842,18 +922,18 @@ async fn collect_filenames(
         .await?
     };
     let mut filenames = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     for row in rows {
-        for segment in parse_segments(row.get::<_, serde_json::Value>(1))? {
-            if seen.insert(segment.filename.clone()) {
-                filenames.push(segment.filename);
+        for segment in parse_segments::<S>(row.get::<_, serde_json::Value>(1))? {
+            if seen.insert(segment.filename().to_string()) {
+                filenames.push(segment.filename().to_string());
             }
         }
     }
     Ok(filenames)
 }
 
-fn parse_segments(value: serde_json::Value) -> Result<Vec<IndexSegmentEntry>> {
+fn parse_segments<S: CatalogSegment>(value: serde_json::Value) -> Result<Vec<S>> {
     serde_json::from_value(value).map_err(LakeSoulMetaDataError::from)
 }
 
@@ -870,7 +950,7 @@ fn is_unique_violation(error: &LakeSoulMetaDataError) -> bool {
 /// index prefixes: strips the URL scheme, the S3 bucket (the object store
 /// already knows it) and any trailing slash.
 ///
-/// Mirrors `lakesoul_io::vector::search::derive_index_prefixes`.
+/// Mirrors the prefix derivation in `lakesoul-io`.
 pub fn normalize_index_prefix(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     if let Some(rest) = trimmed
@@ -891,6 +971,21 @@ pub fn normalize_index_prefix(path: &str) -> String {
         .to_string()
 }
 
+async fn delete_kind_under_pattern(
+    client: &crate::pooled_client::PgConnection<'_>,
+    kind: IndexKind,
+    pattern: &str,
+) -> Result<()> {
+    client
+        .execute(
+            "delete from index_shard \
+             where kind = $1 and left(index_prefix, length($2)) = $2",
+            &[&kind.as_str(), &pattern],
+        )
+        .await?;
+    Ok(())
+}
+
 /// Best-effort cleanup for a table path when `table_info` is already gone.
 pub(crate) async fn clean_for_table_path(
     client: &crate::pooled_client::PgConnection<'_>,
@@ -902,12 +997,9 @@ pub(crate) async fn clean_for_table_path(
         return Ok(());
     }
     let pattern = format!("{normalized}/");
-    client
-        .execute(
-            "delete from vector_index_shard where left(index_prefix, length($1)) = $1",
-            &[&pattern],
-        )
-        .await?;
+    for kind in IndexKind::ALL {
+        delete_kind_under_pattern(client, kind, &pattern).await?;
+    }
     Ok(())
 }
 
@@ -926,17 +1018,7 @@ pub(crate) async fn clean_for_table_id(
         return Ok(());
     };
     let table_path: String = row.get(0);
-    let pattern = format!(
-        "{}/",
-        normalize_index_prefix(&table_path).trim_end_matches('/')
-    );
-    client
-        .execute(
-            "delete from vector_index_shard where left(index_prefix, length($1)) = $1",
-            &[&pattern],
-        )
-        .await?;
-    Ok(())
+    clean_for_table_path(client, &table_path).await
 }
 
 /// Best-effort partition-level cleanup for the drop path.
@@ -966,21 +1048,10 @@ pub(crate) async fn clean_for_partition(
     } else {
         format!("{base}/{partition}/")
     };
-    client
-        .execute(
-            "delete from vector_index_shard where left(index_prefix, length($1)) = $1",
-            &[&pattern],
-        )
-        .await?;
+    for kind in IndexKind::ALL {
+        delete_kind_under_pattern(client, kind, &pattern).await?;
+    }
     Ok(())
-}
-
-/// Convenience for callers that hold a [`MetaDataClientRef`].
-pub async fn delete_under_prefix_for_client(
-    client: &MetaDataClientRef,
-    directory: &str,
-) -> Result<u64> {
-    client.delete_vector_index_under(directory).await
 }
 
 #[cfg(test)]
@@ -1015,5 +1086,24 @@ mod tests {
             delta_vectors: 0,
         };
         assert_eq!(empty.delta_ratio(), 0.0);
+    }
+
+    #[test]
+    fn vector_segment_sort_key_is_base_then_deltas() {
+        let base = VectorSegmentEntry {
+            cluster_id: 2,
+            segment_version: 0,
+            filename: "b".to_string(),
+            num_vectors: 1,
+            file_size: 1,
+        };
+        let delta = VectorSegmentEntry {
+            cluster_id: 1,
+            segment_version: 3,
+            filename: "d".to_string(),
+            num_vectors: 1,
+            file_size: 1,
+        };
+        assert!(base.sort_key() > delta.sort_key());
     }
 }

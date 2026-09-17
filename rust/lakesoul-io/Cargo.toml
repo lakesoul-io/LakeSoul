@@ -32,6 +32,7 @@ harness = false
 # lakesoul
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-vector = { path = "../lakesoul-vector" }
+lakesoul-common = { path = "../lakesoul-common" }
 # datafusion
 datafusion = { workspace = true }
 datafusion-common = { workspace = true }

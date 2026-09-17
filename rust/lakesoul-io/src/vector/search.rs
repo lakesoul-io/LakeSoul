@@ -5,34 +5,90 @@
 //! Vector similarity search via rabitq-rs IVF+RaBitQ index.
 //!
 //! The catalog is resolved by the caller (which has metadata access); this
-//! module searches an already-resolved [`ResolvedIndexShard`] and derives
-//! index prefixes from data file paths.
+//! module searches an already-resolved [`ResolvedIndex`] and derives index
+//! prefixes from data file paths through the shared index framework.
 
 use std::sync::Arc;
 
-use lakesoul_vector::{IvfRabitqIndex, Metric, SearchParams};
+use lakesoul_common::IndexKind;
+use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
+use lakesoul_vector::{IvfRabitqIndex, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
 use tracing::info;
 
 use crate::Result as IoResult;
-use crate::vector::builder::ResolvedIndexShard;
-use crate::vector::index_cache;
+use crate::config::LakeSoulIOConfig;
+use crate::index::Candidate;
+use crate::index::cache::{self, IndexCacheEntry};
+use crate::index::commit::ResolvedIndex;
+use crate::index::options::{SearchRequest, option_key};
+use crate::index::prefix::derive_index_prefixes;
+
+/// A loaded vector index shard plus the commit it was loaded from.
+pub struct CachedVectorIndex {
+    pub commit_id: i64,
+    pub index: IvfRabitqIndex,
+    pub bytes: usize,
+}
+
+impl IndexCacheEntry for CachedVectorIndex {
+    fn commit_id(&self) -> i64 {
+        self.commit_id
+    }
+
+    fn memory_bytes(&self) -> usize {
+        self.bytes
+    }
+}
 
 /// Search one resolved shard (base + deltas of its current commit).
 pub async fn search_resolved_shard(
     store: &Arc<dyn ObjectStore>,
-    resolved: &ResolvedIndexShard,
+    resolved: &ResolvedIndex,
     query: &[f32],
     top_k: usize,
     nprobe: usize,
-) -> IoResult<Option<Vec<u64>>> {
-    let prefix = resolved.index_prefix.trim_end_matches('/');
-    let entry = index_cache::get_or_load(store, prefix, resolved)
+) -> IoResult<Vec<Candidate>> {
+    if !resolved.is_kind(IndexKind::Vector) {
+        return Err(rootcause::report!(
+            "resolved index '{}' is not a vector index",
+            resolved.index_prefix
+        ));
+    }
+    let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
+    let cache_prefix = prefix.clone();
+    let commit_id = resolved.commit_id;
+    let header = resolved.header.clone();
+    let segments: Vec<SegmentEntry> = resolved.segments_as()?;
+    let entry =
+        cache::get_or_load(store, IndexKind::Vector, &prefix, commit_id, move || {
+            let store = store.clone();
+            let prefix = cache_prefix.clone();
+            let header = header.clone();
+            let segments = segments.clone();
+            async move {
+                let istore = IndexStore::new(store, prefix);
+                let header = IndexHeader::deserialize(&header)?;
+                let index =
+                    IvfRabitqIndex::load_from_segments(&istore, &header, &segments)
+                        .await?;
+                let bytes = index.memory_bytes();
+                Ok::<CachedVectorIndex, RabitqError>(CachedVectorIndex {
+                    commit_id,
+                    index,
+                    bytes,
+                })
+            }
+        })
         .await
         .map_err(|e| {
-            rootcause::report!("failed to load vector index at '{}': {}", prefix, e)
+            rootcause::report!(
+                "failed to load vector index at '{}': {:?}",
+                resolved.index_prefix,
+                e
+            )
         })?;
-    search_loaded_index(&entry.index, prefix, query, top_k, nprobe)
+    search_loaded_index(&entry.index, &resolved.index_prefix, query, top_k, nprobe)
 }
 
 /// Search the vector index matching a single bucket's files.
@@ -46,31 +102,67 @@ pub async fn search_matching_shards(
     file_paths: &[String],
     vector_column: &str,
     prefix: &str,
-    _range_partitions: &[String],
+    range_partitions: &[String],
     query: &[f32],
     top_k: usize,
     nprobe: usize,
-    _metric: Metric,
-    resolved_shards: &[ResolvedIndexShard],
-) -> IoResult<Vec<u64>> {
-    let prefixes = derive_index_prefixes(file_paths, prefix, vector_column);
+    metric: Metric,
+    resolved_shards: &[ResolvedIndex],
+) -> IoResult<Vec<Candidate>> {
+    let _ = (range_partitions, metric);
+    let prefixes =
+        derive_index_prefixes(file_paths, prefix, IndexKind::Vector, vector_column);
     let Some((index_prefix, _bucket_id)) = prefixes.first() else {
         return Ok(Vec::new());
     };
     let normalized = index_prefix.trim_end_matches('/');
-    let Some(resolved) = resolved_shards
-        .iter()
-        .find(|shard| shard.index_prefix.trim_end_matches('/') == normalized)
-    else {
+    let Some(resolved) = resolved_shards.iter().find(|shard| {
+        shard.is_kind(IndexKind::Vector)
+            && shard.index_prefix.trim_end_matches('/') == normalized
+    }) else {
         return Err(rootcause::report!(
             "vector index at '{}' was not resolved by the caller; rebuild the index \
              if it was created by an unsupported (legacy) writer",
             normalized
         ));
     };
-    Ok(search_resolved_shard(store, resolved, query, top_k, nprobe)
-        .await?
-        .unwrap_or_default())
+    search_resolved_shard(store, resolved, query, top_k, nprobe).await
+}
+
+/// Run the vector search selected by a parsed [`SearchRequest`].
+pub async fn search_request(
+    config: &LakeSoulIOConfig,
+    store: &Arc<dyn ObjectStore>,
+    request: &SearchRequest,
+    table_prefix: &str,
+) -> IoResult<Vec<Candidate>> {
+    let nprobe: usize = config
+        .option(&option_key(request.kind, "nprobe"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+    let metric = match config
+        .option(&option_key(request.kind, "metric"))
+        .map(|s| s.to_uppercase())
+        .unwrap_or_else(|| "L2".to_string())
+        .as_str()
+    {
+        "IP" | "INNERPRODUCT" => Metric::InnerProduct,
+        _ => Metric::L2,
+    };
+    let query = parse_query_vector(&request.query, None)?;
+    search_matching_shards(
+        store,
+        config.files_slice(),
+        &request.column,
+        table_prefix,
+        config.range_partitions_slice(),
+        &query,
+        request.top_k,
+        nprobe,
+        metric,
+        config.resolved_index_shards_slice(),
+    )
+    .await
 }
 
 fn search_loaded_index(
@@ -79,98 +171,22 @@ fn search_loaded_index(
     query: &[f32],
     top_k: usize,
     nprobe: usize,
-) -> IoResult<Option<Vec<u64>>> {
+) -> IoResult<Vec<Candidate>> {
     let params = SearchParams::new(top_k, nprobe);
     let results = index.search(query, params).map_err(|e| {
         rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
     })?;
-    let ids: Vec<u64> = results.into_iter().map(|r| r.id).collect();
+    let candidates: Vec<Candidate> = results
+        .into_iter()
+        .map(|result| Candidate::scored(result.id, result.score))
+        .collect();
     info!(
         "Vector search at '{}': {} results (nprobe={})",
         prefix,
-        ids.len(),
+        candidates.len(),
         nprobe
     );
-    Ok(Some(ids))
-}
-
-/// Derive the vector index prefix from file paths and table prefix.
-///
-/// Extracts partition_desc and bucket_id from each file path, then
-/// constructs `{table_prefix}/_vector_index/{column}/{partition_desc}/{bucket_id}/`.
-///
-/// Returns a list of (index_prefix, bucket_id) pairs.
-pub fn derive_index_prefixes(
-    file_paths: &[String],
-    table_prefix: &str,
-    vector_column: &str,
-) -> Vec<(String, u32)> {
-    use std::collections::HashSet;
-
-    let is_s3 = !file_paths.is_empty()
-        && (file_paths[0].starts_with("s3://") || file_paths[0].starts_with("s3a://"));
-    let prefix = table_prefix
-        .trim_start_matches("file://")
-        .trim_start_matches("s3://")
-        .trim_start_matches("s3a://");
-    // For S3 paths the first component is the bucket name.  Strip it
-    // because the ObjectStore already knows the bucket.
-    let store_prefix: &str = if is_s3 {
-        prefix
-            .split_once('/')
-            .map(|(_, rest)| rest)
-            .unwrap_or(prefix)
-    } else {
-        prefix
-    };
-    let mut seen: HashSet<(String, u32)> = HashSet::new();
-    let mut result = Vec::new();
-    for file_path in file_paths {
-        let Some(bucket_id) = crate::helpers::extract_hash_bucket_id(file_path) else {
-            continue;
-        };
-        let clean_path = file_path
-            .trim_start_matches("file://")
-            .trim_start_matches("s3://")
-            .trim_start_matches("s3a://");
-        // Strip the bucket from S3 clean paths too, for consistent
-        // relative-path computation.
-        let store_clean_path: &str = if is_s3 {
-            clean_path
-                .split_once('/')
-                .map(|(_, rest)| rest)
-                .unwrap_or(clean_path)
-        } else {
-            clean_path
-        };
-        let relative = store_clean_path
-            .strip_prefix(store_prefix)
-            .unwrap_or(store_clean_path)
-            .trim_start_matches('/');
-        let parent_dir = std::path::Path::new(relative)
-            .parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or("");
-        let partition_desc = if parent_dir.is_empty() {
-            "-5".to_string()
-        } else {
-            parent_dir.to_string()
-        };
-        let key = (partition_desc, bucket_id);
-        if seen.insert(key.clone()) {
-            result.push((
-                format!(
-                    "{}/_vector_index/{}/{}/{}",
-                    store_prefix.trim_end_matches('/'),
-                    vector_column,
-                    key.0,
-                    key.1
-                ),
-                bucket_id,
-            ));
-        }
-    }
-    result
+    Ok(candidates)
 }
 
 pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<f32>> {
@@ -189,29 +205,4 @@ pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<
         ));
     }
     Ok(vec)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::derive_index_prefixes;
-
-    #[test]
-    fn derive_prefixes_from_local_files() {
-        let files = vec![
-            "/tmp/table/part=1/part-x_0.parquet".to_string(),
-            "/tmp/table/part=1/part-y_0.parquet".to_string(),
-        ];
-        let prefixes = derive_index_prefixes(&files, "/tmp/table", "vec");
-        assert_eq!(prefixes.len(), 1);
-        assert_eq!(prefixes[0].0, "/tmp/table/_vector_index/vec/part=1/0");
-        assert_eq!(prefixes[0].1, 0);
-    }
-
-    #[test]
-    fn derive_prefixes_strips_s3_bucket() {
-        let files = vec!["s3://bucket/table/part-x_0.parquet".to_string()];
-        let prefixes = derive_index_prefixes(&files, "s3://bucket/table", "vec");
-        assert_eq!(prefixes.len(), 1);
-        assert_eq!(prefixes[0].0, "table/_vector_index/vec/-5/0");
-    }
 }

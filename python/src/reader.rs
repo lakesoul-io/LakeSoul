@@ -11,13 +11,14 @@ use arrow_schema::{ArrowError, Schema, SchemaRef};
 use datafusion_common::DataFusionError;
 use datafusion_execution::SendableRecordBatchStream;
 use futures::{StreamExt, stream::SelectAll};
+use lakesoul_common::IndexKind;
 use lakesoul_io::{
     config::LakeSoulIOConfigBuilder,
+    index::IndexLease,
+    index::commit::ResolvedIndex,
     reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
-    vector::IndexLease,
-    vector::builder::ResolvedIndexShard,
 };
-use lakesoul_metadata::vector_index::PgCatalog;
+use lakesoul_metadata::index_catalog::VectorCatalog;
 use lakesoul_vector::SegmentEntry;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
@@ -36,13 +37,13 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
 /// Process-wide index catalog (PostgreSQL); `None` when the metadata
 /// database is not reachable, in which case vector search falls back to the
 /// reader's normal "no index" behavior.
-static CATALOG: tokio::sync::OnceCell<Option<PgCatalog>> = tokio::sync::OnceCell::const_new();
+static CATALOG: tokio::sync::OnceCell<Option<VectorCatalog>> = tokio::sync::OnceCell::const_new();
 
-async fn vector_catalog() -> Option<PgCatalog> {
+async fn vector_catalog() -> Option<VectorCatalog> {
     CATALOG
         .get_or_init(|| async {
             match lakesoul_metadata::MetaDataClient::from_env().await {
-                Ok(client) => Some(PgCatalog::from_client(&client)),
+                Ok(client) => Some(client.vector_index_catalog()),
                 Err(error) => {
                     log::warn!("vector index catalog unavailable: {error}");
                     None
@@ -53,93 +54,31 @@ async fn vector_catalog() -> Option<PgCatalog> {
         .clone()
 }
 
-fn option_value<'a>(options: &'a Option<Vec<(String, String)>>, key: &str) -> Option<&'a str> {
-    options
-        .as_ref()?
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
-}
-
-fn lease_ttl() -> std::time::Duration {
-    let seconds = std::env::var("LAKESOUL_VECTOR_INDEX_LEASE_TTL_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(300);
-    std::time::Duration::from_secs(seconds)
-}
-
-fn lease_owner() -> String {
-    format!(
-        "{}:{}",
-        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
-        std::process::id()
-    )
-}
-
 /// Resolve the index commits of the shards behind `file_urls` and hold
 /// reader leases for them, so the native reader can search without any
 /// catalog access of its own.
 async fn resolve_vector_shards(
     file_urls: &[String],
     options: &Option<Vec<(String, String)>>,
-) -> (Vec<ResolvedIndexShard>, Vec<Arc<IndexLease>>) {
-    let Some(column) = option_value(options, "vector_search_column") else {
-        return (Vec::new(), Vec::new());
-    };
-    if option_value(options, "vector_search_query").is_none() {
-        return (Vec::new(), Vec::new());
-    }
+) -> (Vec<ResolvedIndex>, Vec<Arc<IndexLease>>) {
     let Some(catalog) = vector_catalog().await else {
         return (Vec::new(), Vec::new());
     };
-    let Some(first) = file_urls.first() else {
-        return (Vec::new(), Vec::new());
-    };
-    let table_prefix = derive_prefix_from_url(first);
-    let prefixes =
-        lakesoul_io::vector::search::derive_index_prefixes(file_urls, &table_prefix, column);
-    let mut shards = Vec::with_capacity(prefixes.len());
-    let mut leases = Vec::with_capacity(prefixes.len());
-    for (index_prefix, _bucket) in prefixes {
-        let view = match catalog.resolve_cached(&index_prefix).await {
-            Ok(Some(view)) => view,
-            Ok(None) => continue,
-            Err(error) => {
-                log::warn!("failed to resolve vector index at '{index_prefix}': {error}");
-                continue;
-            }
-        };
-        match catalog
-            .acquire_lease(&index_prefix, lease_ttl(), &lease_owner())
-            .await
-        {
-            Ok(Some(handle)) => leases.push(Arc::new(IndexLease::new(handle))),
-            Ok(None) => {}
-            Err(error) => {
-                log::warn!("failed to lease vector index at '{index_prefix}': {error}");
-            }
-        }
-        shards.push(ResolvedIndexShard {
-            index_prefix,
-            commit_id: view.commit_id,
-            generation: view.generation,
-            version: view.version,
-            header: view.header,
-            segments: view
-                .segments
-                .into_iter()
-                .map(|segment| SegmentEntry {
-                    cluster_id: segment.cluster_id,
-                    segment_version: segment.segment_version,
-                    segment_filename: segment.filename,
-                    num_vectors: segment.num_vectors,
-                    file_size: segment.file_size,
-                })
-                .collect(),
-        });
-    }
-    (shards, leases)
+    crate::index::resolve_index_shards(IndexKind::Vector, &catalog, file_urls, options, |view| {
+        let segments: Vec<SegmentEntry> = view
+            .segments
+            .iter()
+            .map(|segment| SegmentEntry {
+                cluster_id: segment.cluster_id,
+                segment_version: segment.segment_version,
+                segment_filename: segment.filename.clone(),
+                num_vectors: segment.num_vectors,
+                file_size: segment.file_size,
+            })
+            .collect();
+        serde_json::to_value(&segments).ok()
+    })
+    .await
 }
 
 #[pyfunction]
@@ -253,40 +192,6 @@ fn _one_reader(
     Ok(PyArrowType(Box::new(one)))
 }
 
-/// Derive table prefix from a file URL, preserving the scheme and authority
-/// for non-local paths so that S3 URLs remain well-formed.
-fn derive_prefix_from_url(url: &str) -> String {
-    let url = url.trim_end_matches('/');
-    // file:// URL: use path-based parent
-    if let Some(rest) = url.strip_prefix("file://") {
-        return std::path::Path::new(rest)
-            .parent()
-            .and_then(|p| p.to_str())
-            .map(|s| format!("file://{}", s))
-            .unwrap_or_else(|| url.to_string());
-    }
-    // s3:// or s3a:// URL: find parent directory after the bucket
-    for scheme in &["s3://", "s3a://"] {
-        if let Some(rest) = url.strip_prefix(scheme) {
-            // rest = "bucket/prefix/file.parquet" or just "bucket/file.parquet"
-            let parts: Vec<&str> = rest.splitn(2, '/').collect();
-            if parts.len() < 2 {
-                // Just bucket, no path — return scheme + bucket
-                return format!("{}{}", scheme, rest);
-            }
-            let bucket = parts[0]; // "bucket"
-            let path = parts[1]; // "prefix/file.parquet" or "file.parquet"
-            let parent = std::path::Path::new(path).parent().and_then(|p| p.to_str());
-            return match parent {
-                Some("") | None => format!("{}{}", scheme, bucket),
-                Some(parent) => format!("{}{}/{}", scheme, bucket, parent),
-            };
-        }
-    }
-    // Fallback for unknown schemes
-    url.to_string()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn build_io_config_builder(
     batch_size: usize,
@@ -305,7 +210,7 @@ fn build_io_config_builder(
     // would strip the authority (e.g. s3://bucket → s3:/bucket).
     let prefix = file_urls
         .first()
-        .map(|u| derive_prefix_from_url(u))
+        .map(|u| crate::index::derive_prefix_from_url(u))
         .unwrap_or_default();
 
     let mut builder = LakeSoulIOConfigBuilder::default()
