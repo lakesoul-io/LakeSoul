@@ -35,9 +35,9 @@ use arrow_flight::{
 };
 use core::fmt;
 use dashmap::DashMap;
+use datafusion::common::TableReference;
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
-use datafusion::sql::TableReference;
 use datafusion::sql::parser::{DFParser, Statement};
 use datafusion::sql::sqlparser::ast::CreateTable;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;

@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::error::ArrowError;
 use std::fmt::Debug;
 use std::sync::Arc;
 use tpchgen::generators::{
@@ -11,7 +13,7 @@ use tpchgen::generators::{
 };
 use tpchgen_arrow::{
     CustomerArrow, LineItemArrow, NationArrow, OrderArrow, PartArrow, PartSuppArrow,
-    RecordBatchIterator, RegionArrow, SupplierArrow,
+    RegionArrow, SupplierArrow,
 };
 
 mod schemas;
@@ -53,7 +55,8 @@ impl TpchTableKind {
         scale_factor: f64,
         part: usize,
         num_parts: usize,
-    ) -> Box<dyn RecordBatchIterator> {
+    ) -> Box<dyn Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Send>
+    {
         match *self {
             TpchTableKind::LineItem => {
                 let generator = LineItemGenerator::new(

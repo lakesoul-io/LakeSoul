@@ -18,24 +18,25 @@ use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::SessionContext;
 use datafusion_common::{
-    DFSchema, DataFusionError, Result, Statistics, ToDFSchema, config::TableOptions,
+    DFSchema, DataFusionError, Result, Statistics, ToDFSchema,
+    config::{ConfigNonZeroUsize, TableOptions},
     project_schema,
 };
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
 use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
-use datafusion_execution::cache::DefaultListFilesCache;
+use datafusion_execution::cache::TableScopedPath;
 use datafusion_execution::cache::cache_manager::CacheManagerConfig;
-use datafusion_execution::cache::file_statistics_cache::{
-    DefaultFileStatisticsCache, DefaultFilesMetadataCache,
-};
+use datafusion_execution::cache::cache_manager::{CachedFileList, CachedFileMetadata};
+use datafusion_execution::cache::default_cache::DefaultCache;
 use datafusion_execution::config::SessionConfig;
 use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
+use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion_expr::registry::ExtensionTypeRegistryRef;
 use datafusion_expr::utils::conjunction;
 use datafusion_expr::{
@@ -47,7 +48,7 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::empty::EmptyExec;
 use datafusion_physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion_physical_plan::projection::ProjectionExec;
-use datafusion_session::Session;
+use datafusion_session::{CatalogProviderList, EmptyCatalogProviderList, Session};
 use object_store::ObjectMeta;
 use rootcause::prelude::ResultExt;
 use rootcause::{Report, report};
@@ -94,11 +95,15 @@ static GLOBAL_META_CACHE: LazyLock<CacheManagerConfig> = LazyLock::new(|| {
         CacheManagerConfig::default().with_metadata_cache_limit(0)
     } else {
         CacheManagerConfig::default()
-            .with_list_files_cache(Some(Arc::new(DefaultListFilesCache::default())))
-            .with_file_statistics_cache(Some(Arc::new(
-                DefaultFileStatisticsCache::default(),
+            .with_list_files_cache(Some(Arc::new(
+                DefaultCache::<TableScopedPath, CachedFileList>::new_with_ttl(1024, None)
+                    .with_name("DefaultListFilesCache"),
             )))
-            .with_file_metadata_cache(Some(Arc::new(DefaultFilesMetadataCache::new(
+            .with_file_statistics_cache(Some(Arc::new(
+                DefaultCache::<TableScopedPath, CachedFileMetadata>::new(1024)
+                    .with_name("DefaultFileStatisticsCache"),
+            )))
+            .with_file_metadata_cache(Some(Arc::new(DefaultCache::new(
                 file_meta_cache_limit,
             ))))
             .with_metadata_cache_limit(file_meta_cache_limit)
@@ -303,7 +308,8 @@ impl LakeSoulIOSession {
                 .sort_in_place_threshold_bytes = byte_size!("4mb");
             // this is used in df's reparition
             sess_conf.options_mut().execution.max_spill_file_size_bytes =
-                byte_size!("256mb");
+                ConfigNonZeroUsize::try_new(byte_size!("256mb"))
+                    .expect("non-zero max_spill_file_size_bytes");
             runtime_conf =
                 runtime_conf.with_max_temp_directory_size(byte_size!("100G") as u64);
             let dir = io_config
@@ -900,6 +906,7 @@ impl LakeSoulIOSession {
                 &expr,
                 &table_df_schema,
                 self.execution_props(),
+                &PhysicalPlanningContext::default(),
             )?;
             debug!("physical filter expr: {}", filter_expr);
             debug!("configs: {:?}", self.config_options());
@@ -1012,6 +1019,7 @@ impl LakeSoulIOSession {
                 &expr,
                 &table_df_schema,
                 self.execution_props(),
+                &PhysicalPlanningContext::default(),
             )?;
 
             let indices =
@@ -1114,6 +1122,10 @@ impl Session for LakeSoulIOSession {
 
     fn config(&self) -> &SessionConfig {
         &self.inner.session_config
+    }
+
+    fn catalog_list(&self) -> Arc<dyn CatalogProviderList> {
+        Arc::new(EmptyCatalogProviderList)
     }
 
     async fn create_physical_plan(

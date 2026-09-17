@@ -14,7 +14,9 @@ use datafusion::datasource::physical_plan::FileScanConfigBuilder;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalSortExpr};
+use datafusion::physical_expr::{
+    EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::prelude::SessionContext;
@@ -25,6 +27,7 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream,
     },
 };
+use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{DFSchemaRef, DataFusionError, Result as DFResult};
 use datafusion_substrait::substrait::proto::Plan;
 use rootcause::compat::boxed_error::IntoBoxedError;
@@ -258,6 +261,13 @@ impl ExecutionPlan for MergeParquetExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.inputs.iter().collect()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

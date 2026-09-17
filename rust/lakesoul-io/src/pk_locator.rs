@@ -50,6 +50,7 @@ use vortex::expr::{get_item, root};
 use vortex::file::{OpenOptionsSessionExt, VortexFile};
 use vortex::io::object_store::ObjectStoreReadAt;
 use vortex::io::session::RuntimeSessionExt;
+use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
 use vortex::session::VortexSession;
 
 use crate::config::LakeSoulIOConfig;
@@ -293,10 +294,13 @@ async fn build_cached_file(
         .open_read(read_at)
         .await
         .map_err(|e| open_error(&location, e))?;
+    let projection = get_item(pk_column, root())
+        .bind(file.dtype())
+        .map_err(|e| open_error(&location, e))?;
     let mut stream = file
         .scan()
         .map_err(|e| open_error(&location, e))?
-        .with_projection(get_item(pk_column, root()))
+        .with_projection(projection)
         .into_array_stream()
         .map_err(|e| open_error(&location, e))?;
     let mut ctx = session.create_execution_ctx();
@@ -541,11 +545,17 @@ async fn take_rows(
     projected_schema: &SchemaRef,
     projection_names: &[String],
 ) -> crate::Result<Vec<RecordBatch>> {
+    let projection = root()
+        .bind(file.dtype())
+        .map_err(|e| open_error(location, e))?;
+    let row_indices =
+        StrictSortedBuffer::try_new(Buffer::from_iter(indices.iter().copied()))
+            .map_err(|e| open_error(location, e))?;
     let mut stream = file
         .scan()
         .map_err(|e| open_error(location, e))?
-        .with_projection(root())
-        .with_row_indices(Buffer::from_iter(indices.iter().copied()))
+        .with_projection(projection)
+        .with_row_indices(row_indices)
         .into_array_stream()
         .map_err(|e| open_error(location, e))?;
     let mut ctx = session.create_execution_ctx();

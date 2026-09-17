@@ -24,6 +24,8 @@ use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::{
     EquivalenceProperties, LexOrdering, LexRequirement, OrderingRequirements,
     create_physical_expr,
@@ -38,7 +40,6 @@ use datafusion::physical_plan::{
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::prelude::{ident, lit};
-use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
         file_format::{FileFormat, parquet::ParquetFormat},
@@ -47,6 +48,8 @@ use datafusion::{
     error::Result as DFResult,
     physical_plan::ExecutionPlan,
 };
+use datafusion_common::TableReference;
+use datafusion_common::tree_node::TreeNodeRecursion;
 use futures::StreamExt;
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::file_format::{
@@ -325,8 +328,12 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         let exec = if !cdc_column.is_empty() {
             let dfschema = DFSchema::try_from(exec.schema().as_ref().clone())?;
             let cdc_filter = ident(cdc_column).not_eq(lit("delete"));
-            let expr =
-                create_physical_expr(&cdc_filter, &dfschema, state.execution_props())?;
+            let expr = create_physical_expr(
+                &cdc_filter,
+                &dfschema,
+                state.execution_props(),
+                &PhysicalPlanningContext::default(),
+            )?;
 
             Arc::new(FilterExec::try_new(expr, exec)?)
         } else {
@@ -744,6 +751,13 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

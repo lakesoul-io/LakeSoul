@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow_schema::SchemaRef;
+use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::{
     DisplayAs, ExecutionPlan, PlanProperties,
@@ -73,6 +74,15 @@ impl ExecutionPlan for EmptySchemaExec {
 
     fn children(&self) -> Vec<&std::sync::Arc<dyn ExecutionPlan>> {
         Vec::new()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &std::sync::Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<TreeNodeRecursion>,
+    ) -> datafusion_common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -153,6 +163,15 @@ impl ExecutionPlan for EmptyScanCountExec {
 
     fn children(&self) -> Vec<&std::sync::Arc<dyn ExecutionPlan>> {
         vec![&self.child]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &std::sync::Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<TreeNodeRecursion>,
+    ) -> datafusion_common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
