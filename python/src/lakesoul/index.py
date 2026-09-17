@@ -241,9 +241,7 @@ def config_for_column(
     """
     selected: Mapping[str, Any] | None = None
     if column is not None:
-        selected = next(
-            (c for c in configs if c.get("column") == column), None
-        )
+        selected = next((c for c in configs if c.get("column") == column), None)
     elif configs:
         selected = configs[0]
     resolved: dict[str, Any] = dict(selected) if selected is not None else {}
@@ -253,9 +251,7 @@ def config_for_column(
         if value is not None:
             resolved[key] = value
     if "column" not in resolved or resolved["column"] is None:
-        raise ValueError(
-            "index column not specified and not found in table properties"
-        )
+        raise ValueError("index column not specified and not found in table properties")
     return resolved
 
 
@@ -280,11 +276,7 @@ def default_object_store_config(catalog: Any, table: Any) -> dict:
 
 
 def _s3_clean_table_path(table_path: str) -> str:
-    return (
-        table_path.replace("file://", "")
-        .replace("s3://", "")
-        .replace("s3a://", "")
-    )
+    return table_path.replace("file://", "").replace("s3://", "").replace("s3a://", "")
 
 
 def build_shard(
@@ -340,9 +332,7 @@ def build_partition_index(
     pk_column = pk_cols[0]
     table_path = _s3_clean_table_path(table_info.table_path)
 
-    shards = group_files_by_shard(
-        client, table_info.table_id, partition_desc, pk_cols
-    )
+    shards = group_files_by_shard(client, table_info.table_id, partition_desc, pk_cols)
     if not shards:
         return {
             "status": "ok",
@@ -372,8 +362,7 @@ def build_partition_index(
                 failed += 1
         except Exception as error:  # noqa: BLE001 - report per-shard status
             print(
-                f"ERROR building {kind} index for partition "
-                f"{partition_desc}: {error}"
+                f"ERROR building {kind} index for partition {partition_desc}: {error}"
             )
             failed += 1
 
@@ -494,9 +483,7 @@ def incremental_build_index(
 
     if failed > 0:
         total = sum(len(shards) for _ in configs)
-        raise RuntimeError(
-            f"{kind} index build failed for {failed}/{total} shard(s)"
-        )
+        raise RuntimeError(f"{kind} index build failed for {failed}/{total} shard(s)")
     return succeeded
 
 
@@ -538,7 +525,7 @@ def shard_build_rows(
         "kind": [],
         "config_json": [],
     }
-    for (partition_desc, bucket_id) in sorted(shards):
+    for partition_desc, bucket_id in sorted(shards):
         files = sorted(shards[(partition_desc, bucket_id)])
         for config in configs:
             rows["file_paths"].append(files)
