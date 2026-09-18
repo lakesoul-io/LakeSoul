@@ -26,6 +26,7 @@ use lakesoul_io::config::{
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, path::Path};
+use rootcause::report;
 use url::Url;
 
 use crate::Result;
@@ -52,6 +53,39 @@ pub(crate) fn create_io_config_builder_from_table_info(
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
 
     let physical_format = crate::catalog::table_file_format(&table_info.properties)?;
+    // Internal IVM tables may bucket by a prefix of the merge key. The property
+    // is only honoured for tables explicitly marked internal, and the bucket
+    // columns must be a prefix of the primary keys so merge-on-read keeps
+    // working on the bucket-ordered files.
+    let bucket_columns = match properties.ivm_bucket_columns.as_deref() {
+        Some(columns) => {
+            if properties.ivm_internal.as_deref() != Some("true") {
+                return Err(report!(
+                    "lakesoul.ivm.bucket_columns requires lakesoul.ivm.internal=true"
+                ));
+            }
+            let columns = columns
+                .split(',')
+                .map(str::trim)
+                .filter(|column| !column.is_empty())
+                .map(String::from)
+                .collect::<Vec<_>>();
+            let is_prefix = columns.len() <= hash_partitions.len()
+                && columns
+                    .iter()
+                    .zip(hash_partitions.iter())
+                    .all(|(bucket, key)| bucket == key);
+            if !is_prefix {
+                return Err(report!(
+                    "lakesoul.ivm.bucket_columns {:?} must be a prefix of the primary keys {:?}",
+                    columns,
+                    hash_partitions
+                ));
+            }
+            columns
+        }
+        None => Vec::new(),
+    };
     // Vector index columns get small row blocks on write so the candidate
     // rows can later be fetched by row index cheaply.
     let vector_columns = crate::vector_index::parse_vector_index_columns(
@@ -70,6 +104,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_prefix(table_info.table_path.clone())
         .with_physical_format(physical_format)
         .with_primary_keys(hash_partitions)
+        .with_hash_partitioning_columns(bucket_columns)
         .with_vector_columns(vector_columns)
         .with_range_partitions(range_partitions)
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(String::from("1")))
@@ -251,4 +286,83 @@ pub fn case_fold_table_name(name: &str) -> String {
 /// Case fold the column name.
 pub fn case_fold_column_name(name: &str) -> String {
     name.to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ivm_table_info(properties: &str) -> Arc<TableInfo> {
+        let schema = Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("row_id", DataType::Int64, false),
+        ]);
+        Arc::new(TableInfo {
+            table_id: "table_ivm".to_string(),
+            table_schema: lakesoul_common::ser::arrow_java::schema_to_metadata_str(
+                &schema,
+            ),
+            properties: properties.to_string(),
+            partitions: ";k,row_id".to_string(),
+            ..Default::default()
+        })
+    }
+
+    fn ivm_io_config(properties: &str) -> Result<lakesoul_io::config::LakeSoulIOConfig> {
+        Ok(create_io_config_builder_from_table_info(
+            ivm_table_info(properties),
+            HashMap::new(),
+            HashMap::new(),
+        )?
+        .build())
+    }
+
+    #[test]
+    fn bucket_columns_prefix_is_applied() {
+        let config = ivm_io_config(
+            r#"{"lakesoul.ivm.internal":"true","lakesoul.ivm.bucket_columns":"k"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.primary_keys_slice(),
+            &["k".to_string(), "row_id".to_string()]
+        );
+        assert_eq!(config.hash_partitioning_columns_slice(), &["k".to_string()]);
+    }
+
+    #[test]
+    fn bucket_columns_default_to_primary_keys() {
+        let config = ivm_io_config("{}").unwrap();
+
+        assert_eq!(
+            config.hash_partitioning_columns_slice(),
+            config.primary_keys_slice()
+        );
+    }
+
+    #[test]
+    fn bucket_columns_must_be_a_prefix_of_primary_keys() {
+        let error = ivm_io_config(
+            r#"{"lakesoul.ivm.internal":"true","lakesoul.ivm.bucket_columns":"row_id"}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("must be a prefix"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn bucket_columns_require_internal_table() {
+        let error = ivm_io_config(r#"{"lakesoul.ivm.bucket_columns":"k"}"#).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires lakesoul.ivm.internal=true"),
+            "unexpected error: {error}"
+        );
+    }
 }

@@ -60,6 +60,11 @@ pub struct LakeSoulIOConfig {
     pub(crate) files: Vec<String>,
     /// Names of primary key columns
     pub(crate) primary_keys: Vec<String>,
+    /// Columns used for hash partitioning when they differ from the merge key
+    /// (`primary_keys`). Empty means the merge key is used. Must be a prefix of
+    /// `primary_keys`; internal tables (e.g. IVM join state) use this to bucket
+    /// by a key prefix while keeping the full merge key.
+    pub(crate) hash_partitioning_columns: Vec<String>,
     /// Vector index columns; the writer gives these columns small row
     /// blocks so candidate rows can be fetched by row index cheaply.
     pub(crate) vector_columns: Vec<String>,
@@ -161,6 +166,18 @@ impl LakeSoulIOConfig {
     /// Returns a slice of primary key column names
     pub fn primary_keys_slice(&self) -> &[String] {
         &self.primary_keys
+    }
+
+    /// Returns the columns used for hash partitioning.
+    ///
+    /// Falls back to the primary keys when no dedicated bucket columns are set,
+    /// so regular tables keep their existing behaviour.
+    pub fn hash_partitioning_columns_slice(&self) -> &[String] {
+        if self.hash_partitioning_columns.is_empty() {
+            &self.primary_keys
+        } else {
+            &self.hash_partitioning_columns
+        }
     }
 
     /// Returns a slice of vector index column names
@@ -445,6 +462,19 @@ impl LakeSoulIOConfigBuilder {
     /// * `pks` - The list of primary keys to add
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
+        self
+    }
+
+    /// Sets the columns used for hash partitioning.
+    ///
+    /// They must be a prefix of the primary keys. When unset (or empty) the
+    /// primary keys are used, which is the behaviour regular tables rely on.
+    ///
+    /// # Arguments
+    ///
+    /// * `columns` - The bucket columns
+    pub fn with_hash_partitioning_columns(mut self, columns: Vec<String>) -> Self {
+        self.config.hash_partitioning_columns = columns;
         self
     }
 
@@ -882,5 +912,31 @@ mod tests {
 
         assert_eq!(config.hash_bucket_num(), 1);
         assert_eq!(config.get_hash_bucket_num().unwrap(), 1);
+    }
+
+    #[test]
+    fn hash_partitioning_falls_back_to_primary_keys() {
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["k".to_string(), "row_id".to_string()])
+            .build();
+
+        assert_eq!(
+            config.hash_partitioning_columns_slice(),
+            &["k".to_string(), "row_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn with_hash_partitioning_columns_overrides_primary_keys() {
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["k".to_string(), "row_id".to_string()])
+            .with_hash_partitioning_columns(vec!["k".to_string()])
+            .build();
+
+        assert_eq!(config.hash_partitioning_columns_slice(), &["k".to_string()]);
+        assert_eq!(
+            config.primary_keys_slice(),
+            &["k".to_string(), "row_id".to_string()]
+        );
     }
 }

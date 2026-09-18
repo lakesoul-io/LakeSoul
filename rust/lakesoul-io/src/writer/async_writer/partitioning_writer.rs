@@ -222,7 +222,7 @@ impl PartitioningAsyncWriter {
                 .collect::<Result<Vec<_>>>()?;
 
             let hash_partitioning_expr: Vec<Arc<dyn PhysicalExpr>> = io_config
-                .primary_keys
+                .hash_partitioning_columns_slice()
                 .iter()
                 .map(|col| {
                     let idx = sorted_schema.index_of(col.as_str())?;
