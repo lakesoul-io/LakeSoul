@@ -25,9 +25,10 @@ use lakesoul_io::{
     writer::create_writer_with_io_config,
 };
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
-use lakesoul_metadata_proto::entity::TableInfo;
+use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
 
 use crate::error::Result;
+use crate::metadata::PartitionVersion;
 
 /// The row kind column of materialized view outputs (`insert` / `delete`).
 pub const IVM_ROW_KINDS_COLUMN: &str = "rowKinds";
@@ -266,5 +267,74 @@ impl IvmTable {
             );
         }
         self.read_files(files).await
+    }
+
+    /// Read the given partition versions with this table's schema and merge key.
+    ///
+    /// This is how a consumer pins the state of an epoch: the epoch row records
+    /// the MV partition versions it produced.
+    pub async fn read_at_versions(
+        &self,
+        client: &MetaDataClient,
+        versions: &[PartitionVersion],
+    ) -> Result<Vec<RecordBatch>> {
+        let mut files = Vec::new();
+        for version in versions {
+            let version_i32 = version
+                .version
+                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                as i32;
+            if let Some(partition) = client
+                .get_partition_info_by_version(
+                    &self.table_id,
+                    &version.partition_desc,
+                    version_i32,
+                )
+                .await?
+            {
+                files.extend(
+                    client
+                        .get_data_files_of_single_partition(&partition)
+                        .await?,
+                );
+            }
+        }
+        self.read_files(files).await
+    }
+
+    /// Clear every partition snapshot of the table, starting a rebuild from an
+    /// empty state. The data files stay on disk for the retention cleanup.
+    ///
+    /// An empty compaction snapshot is used instead of a delete commit: a
+    /// delete commit would reject the following merge/append via the commit
+    /// conflict rules, while a compaction leaves the partition writable again.
+    pub async fn truncate(&self, client: &MetaDataClient) -> Result<()> {
+        let partitions = client.get_all_partition_info(&self.table_id).await?;
+        if partitions.is_empty() {
+            return Ok(());
+        }
+        let table_info = client
+            .get_table_info_by_table_id(&self.table_id)
+            .await?
+            .ok_or_else(|| rootcause::report!("table {} not found", self.table_id))?;
+        let list_partition = partitions
+            .iter()
+            .map(|partition| PartitionInfo {
+                table_id: self.table_id.clone(),
+                partition_desc: partition.partition_desc.clone(),
+                ..Default::default()
+            })
+            .collect();
+        client
+            .commit_data(
+                MetaInfo {
+                    table_info: Some(table_info),
+                    list_partition,
+                    read_partition_info: partitions,
+                },
+                CommitOp::CompactionCommit,
+            )
+            .await?;
+        Ok(())
     }
 }

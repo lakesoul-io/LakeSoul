@@ -20,6 +20,7 @@ arrow-schema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-postgres = { version = "0.7.8", features = ["with-serde_json-1"] }
 tracing = { workspace = true }
 rootcause = { workspace = true }
 uuid = { workspace = true }

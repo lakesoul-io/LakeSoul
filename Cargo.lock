@@ -5188,6 +5188,7 @@ dependencies = [
  "tempfile",
  "test-log",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "tracing-subscriber",
  "uuid",

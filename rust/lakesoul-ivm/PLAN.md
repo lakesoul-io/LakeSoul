@@ -297,7 +297,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   2. PK=(k,row_id)、bucket=(k) 状态表跨批次写入后 MOR 读回全部行（F3 的
      "join 状态表读写"部分）。
 - 已知缺口（下一步）：MV 提交与 cursor 更新之间无原子性，crash 可能重放窗口；
-  epoch 幂等（`__ivm_epoch` + `ivm.epochs` 发布）尚未实现；SQL 视图前端未开始。
+  epoch 幂等尚未实现（后续记录与 `EPOCH.md` 已给出方案）；SQL 视图前端未开始。
 
 **Crash 重放保护实施记录（已完成）**
 
@@ -311,8 +311,42 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （`applied_output_epochs`），命中则跳过本次 append，只推进 cursor。
 - 测试：模拟"数据已提交、cursor 未推进"（把 cursor 回拨后重跑）——
   sum/count 状态与 MV 版本号不变、返回 epoch 相同；join 输出不重复、epoch 相同。
-- 仍未完成：`ivm.epochs`（epoch → commit_id 发布，需要 commit API 返回 commit id）
-  与 `ivm.states`；join 输出的 epoch 扫描目前是全量读，后续可用 epoch 索引表替代。
+- 仍未完成：按 `EPOCH.md` 的设计落地"元数据优先"的 epoch 协议——
+  `ivm.epochs`（单调 epoch + `window_key` 去重 + `mv_versions_before` 比较）替代
+  join 的全量 epoch 扫描；`ivm.states`、SQL 视图前端仍未开始。
+
+**Epoch 协议实施记录（已完成 `EPOCH.md` 步骤 1–3）**
+
+- `ivm.views` 增加 `last_epoch` / `generation`；新增 `ivm.epochs`
+  （`view_id, generation, epoch` 主键，`window_key` 唯一索引，
+  `to_versions` / `mv_versions_before` / `mv_versions` / `status`）。
+- `IvmMetadata`：`begin_epoch`（已 committed → 跳过；pending → 恢复；否则用
+  `views.last_epoch` 分配单调 epoch 并插入 pending）、`mark_epoch_committed`、
+  `get_epoch`、`list_committed_epochs`、`max_committed_to_versions`，
+  以及测试/恢复辅助 `set_epoch_pending`。
+- runtime：`window_key` 规范串取代哈希 epoch；刷新前一次 `ivm.epochs` 点查 +
+  一次分区版本比较即可判定"是否已应用"，正常重放与 pending 恢复都不再读数据；
+  窗口下界必须等于该源已提交的最大 `to_version`，否则报错要求重建（cursor 回退
+  超过上一窗口时不再静默重复）。
+- 删除 join 的 `applied_output_epochs` 全量扫描；`__ivm_epoch` 列保留为审计/兜底。
+- 测试：`tests/epoch_protocol.rs`（pending 已写跳过、pending 未写应用、
+  回退越界报错）与 join 的 pending 跳过用例。
+- 未完成：`ivm.states`、SQL 视图前端；consumer 水位 GC 见 `EPOCH.md` §9。
+
+**Rebuild 与消费者读取实施记录（已完成 `EPOCH.md` 步骤 4–5）**
+
+- `IvmMetadata`：`set_view_status` / `view_status` / `bump_generation` /
+  `delete_cursors` / `latest_committed_epoch`。
+- `IvmTable`：`truncate`（空 snapshot 的 CompactionCommit 清分区，避免 Delete 后
+  无法再 Merge/Append）、`read_at_versions`（按 epoch 记录的 MV 版本读快照）。
+- `IvmRuntime`：`rebuild_sum_count` / `rebuild_join`（rebuilding → generation+1 →
+  删 cursor → truncate → 读源全量状态重算 → `rebuild:<generation>` epoch 提交 →
+  cursor 重置到最新 → active）；`view_state_at_epoch` / `latest_epoch` 供消费者
+  按 epoch 定位一致快照。
+- 测试 `tests/rebuild.rs`：重建后状态==全量聚合、cursor/generation/window_key 正确、
+  重建后仅消费新提交；join 重建输出==全量 join；`view_state_at_epoch` 能分别读出
+  两个 epoch 的历史快照；回退报错后 rebuild 恢复。
+- 未完成：consumer 水位 GC（`ivm.consumers`）、SQL 视图前端。
 
 **Join 增量刷新实施记录（已完成冒烟切片）**
 

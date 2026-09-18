@@ -25,7 +25,9 @@ use rootcause::report;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::metadata::{Cursor, IvmMetadata};
+use crate::metadata::{
+    BeginEpoch, Cursor, EpochRecord, IvmMetadata, PartitionVersion, SourceVersionRange,
+};
 use crate::table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
 };
@@ -272,10 +274,20 @@ impl IvmRuntime {
             return Ok(None);
         }
 
-        let epoch = window_epoch(&view.view_id, &window.identity);
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
 
         let delta_batches = view.source.read_files(window.added_files).await?;
-        let delta = aggregate_delta(view, delta_batches).await?;
+        let delta = aggregate_groups(view, delta_batches).await?;
         if !delta.is_empty() {
             let state_batches = view.mv.read_current(&self.client).await?;
             let state = current_state(view, state_batches)?;
@@ -283,6 +295,10 @@ impl IvmRuntime {
             view.mv.append_batch(&self.client, batch).await?;
         }
 
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
     }
@@ -310,30 +326,26 @@ impl IvmRuntime {
             return Ok(None);
         }
 
-        let epoch = window_epoch(
-            &view.view_id,
-            &left_window
-                .identity
-                .iter()
-                .chain(right_window.identity.iter())
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-
-        // The output carries the epoch of the window that produced each row, so
-        // a refresh that crashed before advancing its cursors can detect that
-        // the window was already applied and skip it instead of appending the
-        // same join pairs again.
-        if applied_output_epochs(&view.output, &self.client)
+        let identity = left_window
+            .identity
+            .iter()
+            .chain(right_window.identity.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.output)
             .await?
-            .contains(&epoch)
         {
-            self.advance_cursors(&view.view_id, left_window.cursors)
-                .await?;
-            self.advance_cursors(&view.view_id, right_window.cursors)
-                .await?;
-            return Ok(Some(epoch));
-        }
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, left_window.cursors)
+                    .await?;
+                self.advance_cursors(&view.view_id, right_window.cursors)
+                    .await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
 
         let left_delta = view
             .left
@@ -365,11 +377,207 @@ impl IvmRuntime {
             view.output.append_batch(&self.client, batch).await?;
         }
 
+        let mv_versions = output_partition_versions(&self.client, &view.output).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
         self.advance_cursors(&view.view_id, right_window.cursors)
             .await?;
         Ok(Some(epoch))
+    }
+
+    /// Rebuild a `SUM`/`COUNT` view from the full source state.
+    ///
+    /// Used when a refresh reports `requires_rebuild` (an update/delete inside
+    /// the window or a missing baseline) or when a cursor rewind is not aligned
+    /// with the last window. The MV is truncated, recomputed from the current
+    /// source state and published as the epoch `rebuild:<generation>`; cursors
+    /// are re-baselined to the latest source version. The generation bump
+    /// isolates the epochs of the previous incarnation.
+    pub async fn rebuild_sum_count(&self, view: &SumCountView) -> Result<i64> {
+        self.register_view(view).await?;
+        ensure_append_only(&view.source, &view.view_id)?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let full = aggregate_groups(view, baseline.batches).await?;
+
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let batch = build_full_batch(view, &full, epoch)?;
+        view.mv.append_batch(&self.client, batch).await?;
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Rebuild an inner-join view from the full state of both sources.
+    ///
+    /// The output is truncated and refilled with the full join, published as
+    /// the epoch `rebuild:<generation>`.
+    pub async fn rebuild_join(&self, view: &JoinView) -> Result<i64> {
+        self.register_join_view(view).await?;
+        ensure_append_only(&view.left, &view.view_id)?;
+        ensure_append_only(&view.right, &view.view_id)?;
+        self.ensure_unpartitioned(&view.left).await?;
+        self.ensure_unpartitioned(&view.right).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.output.truncate(&self.client).await?;
+
+        let left_baseline = self.source_baseline(&view.left).await?;
+        let right_baseline = self.source_baseline(&view.right).await?;
+        let to_versions = left_baseline
+            .to_versions
+            .iter()
+            .chain(right_baseline.to_versions.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.output).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, left_baseline.cursors)
+                    .await?;
+                self.advance_cursors(&view.view_id, right_baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let context = SessionContext::new();
+        let joined = join_term(
+            &context,
+            &left_baseline.batches,
+            &right_baseline.batches,
+            view,
+        )?;
+        if let Some(batch) = build_join_batch(&joined.collect().await?, epoch)? {
+            view.output.append_batch(&self.client, batch).await?;
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.output).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, left_baseline.cursors)
+            .await?;
+        self.advance_cursors(&view.view_id, right_baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// The read side of an epoch: the MV state pinned to the partition
+    /// versions the epoch produced.
+    pub async fn view_state_at_epoch(
+        &self,
+        output: &IvmTable,
+        record: &EpochRecord,
+    ) -> Result<Vec<RecordBatch>> {
+        output
+            .read_at_versions(&self.client, &record.mv_versions)
+            .await
+    }
+
+    /// The latest committed epoch of the current generation, if any.
+    pub async fn latest_epoch(&self, view_id: &str) -> Result<Option<EpochRecord>> {
+        let generation = self.metadata.view_generation(view_id).await?;
+        self.metadata
+            .latest_committed_epoch(view_id, generation)
+            .await
+    }
+
+    /// Read the full current state of a source and the cursors / source ranges
+    /// that represent it (a rebuild baseline).
+    async fn source_baseline(&self, source: &IvmTable) -> Result<SourceBaseline> {
+        let mut files = Vec::new();
+        let mut cursors = Vec::new();
+        let mut to_versions = Vec::new();
+        for partition in self.client.get_all_partition_info(&source.table_id).await? {
+            files.extend(
+                self.client
+                    .get_data_files_of_single_partition(&partition)
+                    .await?,
+            );
+            cursors.push(Cursor {
+                source_table_id: source.table_id.clone(),
+                partition_desc: partition.partition_desc.clone(),
+                last_version: i64::from(partition.version),
+                last_timestamp: partition.timestamp,
+            });
+            to_versions.push(SourceVersionRange {
+                source_table_id: source.table_id.clone(),
+                partition_desc: partition.partition_desc.clone(),
+                from_version: -1,
+                to_version: i64::from(partition.version),
+            });
+        }
+        let batches = source.read_files(files).await?;
+        Ok(SourceBaseline {
+            batches,
+            cursors,
+            to_versions,
+        })
     }
 
     /// Read the changelog window of every partition of a source.
@@ -427,6 +635,7 @@ impl IvmRuntime {
             identity.push((
                 source.table_id.clone(),
                 partition.partition_desc.clone(),
+                last_version,
                 window.to_version,
             ));
             new_cursors.push(Cursor {
@@ -443,6 +652,84 @@ impl IvmRuntime {
             identity,
             before_timestamp,
         })
+    }
+
+    /// Gate a refresh window through `ivm.epochs`.
+    ///
+    /// Returns [`WindowStart::Apply`] when the window still has to be applied,
+    /// [`WindowStart::AlreadyApplied`] when a previous attempt (or an earlier
+    /// replay) already wrote it. A pending row whose MV versions moved past
+    /// `mv_versions_before` is the crash case "data written, epoch not marked";
+    /// the window is then marked committed without touching the data.
+    ///
+    /// The window must start where the last committed window ended, otherwise
+    /// the recomputed window would overlap applied history (a cursor rewind
+    /// that is not aligned with a previous window boundary) and a rebuild is
+    /// required.
+    async fn begin_window(
+        &self,
+        view_id: &str,
+        identity: &[(String, String, i64, i64)],
+        output: &IvmTable,
+    ) -> Result<WindowStart> {
+        let window_key = window_key(identity);
+        let to_versions = identity
+            .iter()
+            .map(
+                |(source_table_id, partition_desc, from_version, to_version)| {
+                    SourceVersionRange {
+                        source_table_id: source_table_id.clone(),
+                        partition_desc: partition_desc.clone(),
+                        from_version: *from_version,
+                        to_version: *to_version,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        let mv_versions_before = output_partition_versions(&self.client, output).await?;
+
+        let record = match self
+            .metadata
+            .begin_epoch(view_id, &window_key, &to_versions, &mv_versions_before)
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                return Ok(WindowStart::AlreadyApplied(record.epoch));
+            }
+            BeginEpoch::Created(record) => record,
+            BeginEpoch::Pending(record) => {
+                let current = output_partition_versions(&self.client, output).await?;
+                if current != record.mv_versions_before {
+                    self.metadata
+                        .mark_epoch_committed(&record, &current)
+                        .await?;
+                    return Ok(WindowStart::AlreadyApplied(record.epoch));
+                }
+                record
+            }
+        };
+
+        let max_to = self
+            .metadata
+            .max_committed_to_versions(view_id, record.generation)
+            .await?;
+        for range in &record.to_versions {
+            let expected = max_to
+                .get(&(range.source_table_id.clone(), range.partition_desc.clone()))
+                .copied()
+                .unwrap_or(-1);
+            if range.from_version != expected {
+                return Err(report!(
+                    "view {view_id} window for source {} partition {} starts at version {}, \
+                     but the last committed window ended at {expected}; a rebuild is required",
+                    range.source_table_id,
+                    range.partition_desc,
+                    range.from_version
+                ));
+            }
+        }
+
+        Ok(WindowStart::Apply(record))
     }
 
     async fn advance_cursors(&self, view_id: &str, cursors: Vec<Cursor>) -> Result<()> {
@@ -481,52 +768,59 @@ impl IvmRuntime {
 struct SourceWindow {
     added_files: Vec<String>,
     cursors: Vec<Cursor>,
-    /// `(source_table_id, partition_desc, to_version)` of every consumed
-    /// partition; together with the view id this is the window identity the
-    /// epoch is derived from.
-    identity: Vec<(String, String, i64)>,
+    /// `(source_table_id, partition_desc, from_version, to_version)` of every
+    /// consumed partition; this is the window identity the epoch is keyed by.
+    identity: Vec<(String, String, i64, i64)>,
     before_timestamp: i64,
 }
 
-/// The deterministic epoch of a refresh window.
-///
-/// The epoch is a stable FNV-1a hash of the view id and of every consumed
-/// `(source, partition, version)`, so retrying the same window after a crash
-/// derives the same epoch and the target table can detect that the window was
-/// already applied. It also makes the value independent of wall clocks.
-fn window_epoch(view_id: &str, identity: &[(String, String, i64)]) -> i64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut write = |bytes: &[u8]| {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100_0000_01b3);
-        }
-    };
-    write(view_id.as_bytes());
-    let mut sorted = identity.to_vec();
-    sorted.sort();
-    for (source, partition, version) in &sorted {
-        write(source.as_bytes());
-        write(partition.as_bytes());
-        write(&version.to_le_bytes());
-    }
-    hash as i64
+/// The full current state of one source, as read by a rebuild.
+struct SourceBaseline {
+    batches: Vec<RecordBatch>,
+    cursors: Vec<Cursor>,
+    to_versions: Vec<SourceVersionRange>,
 }
 
-/// The epochs already present in the append-only join output.
-async fn applied_output_epochs(
-    output: &IvmTable,
+/// The canonical identity of a refresh window.
+///
+/// Entries are `(source_table_id, partition_desc, from_version, to_version)`
+/// and are sorted, so the same consumed window always produces the same key;
+/// the key is persisted as `ivm.epochs.window_key` and is what makes a retried
+/// window recognizable without touching the MV data.
+pub fn window_key(identity: &[(String, String, i64, i64)]) -> String {
+    let mut sorted = identity.to_vec();
+    sorted.sort();
+    sorted
+        .iter()
+        .map(|(source, partition, from, to)| format!("{source}|{partition}|{from}|{to}"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// Whether the refresh window still has to be applied.
+enum WindowStart {
+    /// The caller must apply the window with `EpochRecord::epoch`.
+    Apply(EpochRecord),
+    /// The window was already applied; only the cursor has to advance.
+    AlreadyApplied(i64),
+}
+
+/// The current partition versions of a table, sorted by partition.
+async fn output_partition_versions(
     client: &MetaDataClient,
-) -> Result<std::collections::HashSet<i64>> {
-    let mut epochs = std::collections::HashSet::new();
-    for batch in output.read_current(client).await? {
-        let index = batch.schema().index_of(IVM_EPOCH_COLUMN)?;
-        let column = int64_column(&batch, index, IVM_EPOCH_COLUMN)?;
-        for row in 0..batch.num_rows() {
-            epochs.insert(column.value(row));
-        }
-    }
-    Ok(epochs)
+    table: &IvmTable,
+) -> Result<Vec<PartitionVersion>> {
+    let mut versions = client
+        .get_all_partition_info(&table.table_id)
+        .await?
+        .into_iter()
+        .map(|partition| PartitionVersion {
+            partition_desc: partition.partition_desc,
+            version: i64::from(partition.version),
+        })
+        .collect::<Vec<_>>();
+    versions.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
+    Ok(versions)
 }
 
 fn ensure_append_only(source: &IvmTable, view_id: &str) -> Result<()> {
@@ -569,10 +863,16 @@ async fn compute_join_delta(
         collected.extend(term.collect().await?);
     }
 
+    build_join_batch(&collected, epoch)
+}
+
+/// Turn joined `(join_key, left_value, right_value)` batches into the
+/// append-only output batch stamped with `epoch`.
+fn build_join_batch(batches: &[RecordBatch], epoch: i64) -> Result<Option<RecordBatch>> {
     let mut keys = Vec::new();
     let mut left_values = Vec::new();
     let mut right_values = Vec::new();
-    for batch in &collected {
+    for batch in batches {
         let batch_keys = int64_column(batch, 0, "join_key")?;
         let batch_left = int64_column(batch, 1, "left_value")?;
         let batch_right = int64_column(batch, 2, "right_value")?;
@@ -620,8 +920,8 @@ fn join_term(
         .select(vec![col("join_key"), col("left_value"), col("right_value")])?)
 }
 
-/// Aggregate the changelog batch into `group_key -> (sum, count)`.
-async fn aggregate_delta(
+/// Aggregate sum/count batches into `group_key -> (sum, count)`.
+async fn aggregate_groups(
     view: &SumCountView,
     batches: Vec<arrow::record_batch::RecordBatch>,
 ) -> Result<HashMap<i64, (i64, i64)>> {
@@ -739,6 +1039,44 @@ fn build_mv_batch(
     }
 
     Ok(arrow::record_batch::RecordBatch::try_new(
+        view.mv.schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(keys)),
+            Arc::new(Int64Array::from(sums)),
+            Arc::new(Int64Array::from(counts)),
+            Arc::new(StringArray::from(kinds)),
+            Arc::new(Int64Array::from(epochs)),
+        ],
+    )?)
+}
+
+/// Build the `insert`-only batch of a full rebuild.
+fn build_full_batch(
+    view: &SumCountView,
+    full: &HashMap<i64, (i64, i64)>,
+    epoch: i64,
+) -> Result<RecordBatch> {
+    let mut keys = Vec::new();
+    let mut sums = Vec::new();
+    let mut counts = Vec::new();
+    let mut kinds = Vec::new();
+    let mut epochs = Vec::new();
+
+    let mut affected = full.keys().copied().collect::<Vec<_>>();
+    affected.sort_unstable();
+    for key in affected {
+        let (sum, count) = full[&key];
+        if count == 0 {
+            continue;
+        }
+        keys.push(key);
+        sums.push(sum);
+        counts.push(count);
+        kinds.push("insert");
+        epochs.push(epoch);
+    }
+
+    Ok(RecordBatch::try_new(
         view.mv.schema.clone(),
         vec![
             Arc::new(Int64Array::from(keys)),

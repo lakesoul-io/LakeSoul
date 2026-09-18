@@ -11,7 +11,13 @@
 //!
 //! The first supported view shapes are `SUM`/`COUNT` over an append-only
 //! source ([`runtime::SumCountView`]) and an inner equi-join of two
-//! append-only sources ([`runtime::JoinView`]).
+//! append-only sources ([`runtime::JoinView`]). Refreshes are incremental and
+//! replay safe: every window is recorded in `ivm.epochs` (see `EPOCH.md`), so
+//! a retry skips data that is already written. A view whose source history
+//! cannot be consumed incrementally (updates/deletes in the window, or an
+//! unaligned cursor rewind) can be rebuilt from the full source state with
+//! [`runtime::IvmRuntime::rebuild_sum_count`] /
+//! [`runtime::IvmRuntime::rebuild_join`].
 //!
 //! # Retention
 //!
@@ -37,10 +43,13 @@ pub mod runtime;
 pub mod table;
 
 pub use error::Result;
-pub use metadata::{Cursor, IvmMetadata};
+pub use metadata::{
+    BeginEpoch, Cursor, EpochRecord, EpochStatus, IvmMetadata, PartitionVersion,
+    SourceVersionRange,
+};
 pub use runtime::{
     IVM_COUNT_COLUMN, IVM_SUM_COLUMN, IvmRuntime, JoinView, SumCountView, ViewSpec,
-    join_view_schema, sum_count_mv_schema,
+    join_view_schema, sum_count_mv_schema, window_key,
 };
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
