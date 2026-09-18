@@ -47,3 +47,13 @@ pub static OPTION_KEY_VECTOR_SEARCH_NPROBE: &str = "vector_search_nprobe";
 pub static OPTION_KEY_VECTOR_SEARCH_METRIC: &str = "vector_search_metric";
 /// Vector search: direct index prefix path (alternative to auto-detection from files)
 pub static OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX: &str = "vector_search_index_prefix";
+/// Text search: column name of the text index to query
+pub static OPTION_KEY_TEXT_SEARCH_COLUMN: &str = "text_search_column";
+/// Text search: query string parsed by the text index
+pub static OPTION_KEY_TEXT_SEARCH_QUERY: &str = "text_search_query";
+/// Text search: top-K candidates to retrieve
+pub static OPTION_KEY_TEXT_SEARCH_TOP_K: &str = "text_search_top_k";
+/// Text search: run the exact post-merge verification pass (default true);
+/// SQL pushdown disables it because the residual `text_match` predicate
+/// verifies above the scan.
+pub static OPTION_KEY_TEXT_SEARCH_VERIFY: &str = "text_search_verify";

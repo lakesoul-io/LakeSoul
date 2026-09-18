@@ -328,6 +328,11 @@ impl LakeSoulTable {
                     &self.table_info().properties,
                 )
                 .unwrap_or_default(),
+            text_index_configs:
+                crate::text_index::parse_text_index_from_table_properties(
+                    &self.table_info().properties,
+                )
+                .unwrap_or_default(),
             format_registry,
         }))
     }

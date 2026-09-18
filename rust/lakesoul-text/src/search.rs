@@ -13,7 +13,7 @@ use tantivy::query::QueryParser;
 
 use crate::TextError;
 use crate::error::Result;
-use crate::schema::PK_FIELD;
+use crate::schema::{PK_FIELD, TextSchema};
 
 /// A matching row: its primary key and BM25 score.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,19 +23,13 @@ pub struct TextHit {
 }
 
 /// Search one split and return its top `top_k` hits by BM25 score.
-pub fn search_index(
-    index: &Index,
-    column_name: &str,
-    query: &str,
-    top_k: usize,
-) -> Result<Vec<TextHit>> {
+pub fn search_index(index: &Index, query: &str, top_k: usize) -> Result<Vec<TextHit>> {
     if top_k == 0 {
         return Ok(Vec::new());
     }
-    let schema = index.schema();
-    let text_field = schema.get_field(column_name)?;
+    let text_schema = TextSchema::resolve(&index.schema())?;
     let reader = index.reader()?.searcher();
-    let parser = QueryParser::for_index(index, vec![text_field]);
+    let parser = QueryParser::for_index(index, vec![text_schema.text_field]);
     let parsed = parser.parse_query(query)?;
     let top_docs =
         reader.search(&parsed, &TopDocs::with_limit(top_k).order_by_score())?;
@@ -85,14 +79,13 @@ pub fn merge_hits(hits: impl IntoIterator<Item = TextHit>, top_k: usize) -> Vec<
 /// Search every split and return the merged top-k.
 pub fn search_splits(
     indexes: &[Index],
-    column_name: &str,
     query: &str,
     top_k_per_split: usize,
     top_k: usize,
 ) -> Result<Vec<TextHit>> {
     let mut all = Vec::new();
     for index in indexes {
-        all.extend(search_index(index, column_name, query, top_k_per_split)?);
+        all.extend(search_index(index, query, top_k_per_split)?);
     }
     Ok(merge_hits(all, top_k))
 }

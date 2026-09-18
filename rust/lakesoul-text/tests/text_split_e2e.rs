@@ -56,15 +56,15 @@ async fn build_upload_materialize_and_search_english() {
     let cache = SplitCache::new(cache_dir.path());
     let index = cache.open(&store, prefix, &entry).await.unwrap();
 
-    let hits = search_index(&index, "body", "old man sea", 3).unwrap();
+    let hits = search_index(&index, "old man sea", 3).unwrap();
     assert_eq!(hits[0].id, 1, "top hit should be the old man");
 
-    let hits = search_index(&index, "body", "systems programming", 3).unwrap();
+    let hits = search_index(&index, "systems programming", 3).unwrap();
     assert_eq!(hits[0].id, 3);
 
     // The materialized directory is reused on the next open.
     let reopened = cache.open(&store, prefix, &entry).await.unwrap();
-    assert_eq!(search_index(&reopened, "body", "fox", 1).unwrap()[0].id, 2);
+    assert_eq!(search_index(&reopened, "fox", 1).unwrap()[0].id, 2);
 }
 
 #[tokio::test]
@@ -80,10 +80,10 @@ async fn chinese_text_is_segmented_by_jieba() {
     let cache = SplitCache::new(cache_dir.path());
     let index = cache.open(&store, prefix, &entry).await.unwrap();
 
-    let hits = search_index(&index, "body", "机器学习", 3).unwrap();
+    let hits = search_index(&index, "机器学习", 3).unwrap();
     assert_eq!(hits[0].id, 10);
 
-    let hits = search_index(&index, "body", "倒排索引", 3).unwrap();
+    let hits = search_index(&index, "倒排索引", 3).unwrap();
     assert_eq!(hits[0].id, 12);
 }
 
@@ -108,7 +108,7 @@ async fn multiple_splits_merge_into_a_global_top_k() {
 
     // "old" only appears in the English split, "机器学习" only in the Chinese
     // one; a merged search returns hits from both.
-    let hits = search_splits(&indexes, "body", "old 机器学习", 10, 5).unwrap();
+    let hits = search_splits(&indexes, "old 机器学习", 10, 5).unwrap();
     let ids: Vec<u64> = hits.iter().map(|hit| hit.id).collect();
     assert!(ids.contains(&1), "english hit missing: {ids:?}");
     assert!(ids.contains(&10), "chinese hit missing: {ids:?}");

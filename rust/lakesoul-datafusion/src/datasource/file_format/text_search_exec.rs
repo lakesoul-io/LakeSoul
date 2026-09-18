@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2026 LakeSoul contributors
 
-//! Physical execution plan that reads the vector-index candidates for a
-//! table.
+//! Physical execution plan that reads text-index candidates for a table.
 //!
-//! The plan is produced by [`LakeSoulTableProvider::scan`] when the logical
-//! plan carries the vector-search marker (see
-//! [`VectorSearchPushdownRule`](crate::planner::vector_search_rule::VectorSearchPushdownRule)).
-//! It reads each partition/bucket through the native [`LakeSoulReader`]
-//! configured with the `vector_search_*` options, so the reader runs the
-//! ANN search against that bucket's IVF+RaBitQ index and returns only the
-//! candidate rows.  The `Sort` + `Limit` nodes above the scan then compute
-//! the exact global top-k over the (small) candidate set.
+//! Produced by [`LakeSoulTableProvider::scan`] when the logical plan carries
+//! the text-search marker (see
+//! [`TextSearchPushdownRule`](crate::planner::text_search_rule::TextSearchPushdownRule)).
+//! Each partition/bucket is read through the native [`LakeSoulReader`]
+//! configured with the `text_search_*` options, so the reader searches that
+//! bucket's Tantivy splits and returns candidate rows.  The exact
+//! `text_match` predicate above the scan removes stale candidates, and the
+//! `Limit` trims the result.
 
 use std::collections::HashMap;
 use std::fmt::Formatter;
@@ -34,28 +33,28 @@ use datafusion::physical_plan::{
     metrics::{ExecutionPlanMetricsSet, MetricsSet},
     stream::RecordBatchStreamAdapter,
 };
-use object_store::path::Path as StorePath;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use lakesoul_common::IndexKind;
 use lakesoul_io::config::{
-    LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
-    OPTION_KEY_VECTOR_SEARCH_METRIC, OPTION_KEY_VECTOR_SEARCH_NPROBE,
-    OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN,
+    OPTION_KEY_TEXT_SEARCH_COLUMN, OPTION_KEY_TEXT_SEARCH_QUERY,
+    OPTION_KEY_TEXT_SEARCH_TOP_K, OPTION_KEY_TEXT_SEARCH_VERIFY,
 };
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_metadata::index_catalog::VectorCatalog;
-use lakesoul_vector::SegmentEntry;
+use lakesoul_metadata::index_catalog::IndexCatalog;
+use lakesoul_text::{TextIndexConfig, TextSplitEntry};
 
-use crate::udf::vector_search_marker::{
-    LakeSoulVectorSearchOptions, VectorSearchRequest,
+use super::vector_search_exec::{
+    derive_prefix, file_uri, lease_owner, lease_ttl, scalar_to_string,
 };
+use crate::udf::text_search_marker::TextSearchRequest;
 
-/// Execution plan for the vector-index candidate scan.
+/// Execution plan for the text-index candidate scan.
 #[derive(Debug)]
-pub struct LakeSoulVectorSearchExec {
+pub struct LakeSoulTextSearchExec {
     /// Output schema: file columns followed by partition columns.
     schema: SchemaRef,
     /// File columns (partition columns excluded).
@@ -64,30 +63,31 @@ pub struct LakeSoulVectorSearchExec {
     partition_cols: Vec<(String, DataType)>,
     /// One group of files (one partition/bucket) per partition of the scan.
     file_groups: Vec<Vec<PartitionedFile>>,
-    /// Values of the partition columns for each file group (aligned with
-    /// `partition_cols`).
+    /// Values of the partition columns for each file group.
     partition_values: Vec<Vec<ScalarValue>>,
     /// Object store URL used to reconstruct reader file URIs.
     object_store_url: ObjectStoreUrl,
-    /// Primary key columns (the vector index returns primary key ids).
+    /// Primary key columns (the text index returns primary key ids).
     primary_keys: Vec<String>,
     /// Object store configuration options (e.g. S3 credentials).
     object_store_options: HashMap<String, String>,
     /// CDC change column; when set, delete tombstones are dropped after the
     /// merge-on-read merge.
     cdc_column: String,
-    /// Vector search parameters.
-    vector_search: VectorSearchRequest,
+    /// Analyzer configuration recovered from the table property.
+    config: TextIndexConfig,
+    /// Text search parameters.
+    text_search: TextSearchRequest,
     /// Catalog used to resolve index commits and hold reader leases.
-    catalog: VectorCatalog,
+    catalog: IndexCatalog<TextSplitEntry>,
     /// Runtime metrics.
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties.
     properties: Arc<PlanProperties>,
 }
 
-impl LakeSoulVectorSearchExec {
-    /// Create a new vector-search scan plan.
+impl LakeSoulTextSearchExec {
+    /// Create a new text-search scan plan.
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         schema: SchemaRef,
@@ -99,8 +99,9 @@ impl LakeSoulVectorSearchExec {
         primary_keys: Vec<String>,
         object_store_options: HashMap<String, String>,
         cdc_column: String,
-        vector_search: VectorSearchRequest,
-        catalog: VectorCatalog,
+        config: TextIndexConfig,
+        text_search: TextSearchRequest,
+        catalog: IndexCatalog<TextSplitEntry>,
     ) -> DFResult<Self> {
         Ok(Self {
             schema: Arc::clone(&schema),
@@ -112,7 +113,8 @@ impl LakeSoulVectorSearchExec {
             primary_keys,
             object_store_options,
             cdc_column,
-            vector_search,
+            config,
+            text_search,
             catalog,
             metrics: ExecutionPlanMetricsSet::new(),
             properties: Arc::new(PlanProperties::new(
@@ -125,31 +127,26 @@ impl LakeSoulVectorSearchExec {
     }
 
     /// Build the native reader configuration for one file group.
-    ///
-    /// Resolves the shard's current index commit from the catalog and holds
-    /// a reader lease for it; the native reader then searches the injected
-    /// commit without touching the catalog itself.
     async fn reader_config(
         &self,
         store: &Arc<dyn object_store::ObjectStore>,
         files: &[PartitionedFile],
         partition_values: &[ScalarValue],
-        nprobe: usize,
     ) -> DFResult<LakeSoulIOConfig> {
         let file_uris = files
             .iter()
             .map(|f| file_uri(&self.object_store_url, &f.object_meta.location))
             .collect::<Vec<_>>();
         let first = file_uris.first().cloned().ok_or_else(|| {
-            DataFusionError::Internal("empty vector-search file group".into())
+            DataFusionError::Internal("empty text-search file group".into())
         })?;
 
         let table_prefix = derive_prefix(&first);
         let index_prefixes = lakesoul_io::index::prefix::derive_index_prefixes(
             &file_uris,
             &table_prefix,
-            IndexKind::Vector,
-            &self.vector_search.vec_column,
+            IndexKind::Text,
+            &self.config.column_name,
         );
         let mut resolved_shards = Vec::with_capacity(index_prefixes.len());
         let mut leases = Vec::with_capacity(index_prefixes.len());
@@ -161,7 +158,7 @@ impl LakeSoulVectorSearchExec {
                     .map_err(|error| {
                         DataFusionError::External(
                             rootcause::report!(
-                                "failed to resolve vector index at '{}': {}",
+                                "failed to resolve text index at '{}': {}",
                                 index_prefix,
                                 error
                             )
@@ -171,11 +168,9 @@ impl LakeSoulVectorSearchExec {
             let Some(view) = view else {
                 continue;
             };
-            // A lease is only needed while the index is being loaded; a
-            // cache hit reads no file at all.
             if !lakesoul_io::index::cache::is_loaded(
                 store,
-                IndexKind::Vector,
+                IndexKind::Text,
                 index_prefix.trim_end_matches('/'),
                 view.commit_id,
             )
@@ -188,7 +183,7 @@ impl LakeSoulVectorSearchExec {
                     .map_err(|error| {
                         DataFusionError::External(
                             rootcause::report!(
-                                "failed to lease vector index at '{}': {}",
+                                "failed to lease text index at '{}': {}",
                                 index_prefix,
                                 error
                             )
@@ -199,33 +194,23 @@ impl LakeSoulVectorSearchExec {
                     leases.push(Arc::new(IndexLease::new(handle)));
                 }
             }
-            let segments: Vec<SegmentEntry> = view
-                .segments
-                .iter()
-                .map(|segment| SegmentEntry {
-                    cluster_id: segment.cluster_id,
-                    segment_version: segment.segment_version,
-                    segment_filename: segment.filename.clone(),
-                    num_vectors: segment.num_vectors,
-                    file_size: segment.file_size,
-                })
-                .collect();
+            let segments = serde_json::to_value(&view.segments).map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!(
+                        "failed to serialize text index splits: {}",
+                        error
+                    )
+                    .into_boxed_error(),
+                )
+            })?;
             resolved_shards.push(ResolvedIndex {
-                kind: IndexKind::Vector,
+                kind: IndexKind::Text,
                 index_prefix,
                 commit_id: view.commit_id,
                 generation: view.generation,
                 version: view.version,
                 header: view.header,
-                segments: serde_json::to_value(&segments).map_err(|error| {
-                    DataFusionError::External(
-                        rootcause::report!(
-                            "failed to serialize vector index segments: {}",
-                            error
-                        )
-                        .into_boxed_error(),
-                    )
-                })?,
+                segments,
             });
         }
 
@@ -234,14 +219,8 @@ impl LakeSoulVectorSearchExec {
             .with_primary_keys(self.primary_keys.clone())
             .with_schema(Arc::clone(&self.file_schema))
             .with_prefix(derive_prefix(&first))
-            // Push the candidate pk filter into the file scans so the merge
-            // only sees the (few) matching rows instead of every row of every
-            // file.  DataFusion still re-applies the filter above for
-            // correctness (our pushdown is best-effort/Inexact).
-            .with_option(lakesoul_io::config::OPTION_KEY_FILE_FILTER_PUSHDOWN, "true");
+            .with_option(OPTION_KEY_FILE_FILTER_PUSHDOWN, "true");
         if !self.cdc_column.is_empty() {
-            // CDC delete tombstones must be dropped after the merge, so the
-            // native reader applies `cdc_column != 'delete'`.
             builder = builder.with_option(
                 lakesoul_io::config::OPTION_KEY_CDC_COLUMN,
                 self.cdc_column.clone(),
@@ -282,34 +261,28 @@ impl LakeSoulVectorSearchExec {
             .with_resolved_index_shards(resolved_shards)
             .with_index_leases(leases)
             .with_option(
-                OPTION_KEY_VECTOR_SEARCH_COLUMN,
-                self.vector_search.vec_column.clone(),
+                OPTION_KEY_TEXT_SEARCH_COLUMN,
+                self.text_search.column.clone(),
             )
+            .with_option(OPTION_KEY_TEXT_SEARCH_QUERY, self.text_search.query.clone())
+            // Fetch extra candidates so the exact predicate above and the
+            // final LIMIT have margin against stale index entries.
             .with_option(
-                OPTION_KEY_VECTOR_SEARCH_QUERY,
-                self.vector_search.query_csv.clone(),
-            )
-            // Fetch extra candidates per bucket so the exact global sort
-            // above has recall margin against the approximate within-shard
-            // ranking; the physical `Sort` + `Limit` trims back to top_k.
-            .with_option(
-                OPTION_KEY_VECTOR_SEARCH_TOP_K,
-                self.vector_search
+                OPTION_KEY_TEXT_SEARCH_TOP_K,
+                self.text_search
                     .top_k
                     .saturating_mul(10)
                     .max(100)
                     .to_string(),
             )
-            .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, nprobe.to_string())
-            .with_option(
-                OPTION_KEY_VECTOR_SEARCH_METRIC,
-                self.vector_search.metric.clone(),
-            );
+            // The exact `text_match` predicate above the scan verifies, so
+            // the reader's own pass is redundant here.
+            .with_option(OPTION_KEY_TEXT_SEARCH_VERIFY, "false");
         Ok(builder.build())
     }
 }
 
-impl ExecutionPlanProperties for LakeSoulVectorSearchExec {
+impl ExecutionPlanProperties for LakeSoulTextSearchExec {
     fn output_partitioning(&self) -> &Partitioning {
         &Partitioning::UnknownPartitioning(1)
     }
@@ -331,9 +304,9 @@ impl ExecutionPlanProperties for LakeSoulVectorSearchExec {
     }
 }
 
-impl ExecutionPlan for LakeSoulVectorSearchExec {
+impl ExecutionPlan for LakeSoulTextSearchExec {
     fn name(&self) -> &str {
-        "LakeSoulVectorSearchExec"
+        "LakeSoulTextSearchExec"
     }
 
     fn schema(&self) -> SchemaRef {
@@ -363,7 +336,7 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             Ok(self)
         } else {
             Err(DataFusionError::Internal(
-                "LakeSoulVectorSearchExec has no children".to_string(),
+                "LakeSoulTextSearchExec has no children".to_string(),
             ))
         }
     }
@@ -375,15 +348,9 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
     ) -> DFResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::Internal(format!(
-                "LakeSoulVectorSearchExec only supports 1 partition, got {partition}"
+                "LakeSoulTextSearchExec only supports 1 partition, got {partition}"
             )));
         }
-        let nprobe = context
-            .session_config()
-            .get_extension::<LakeSoulVectorSearchOptions>()
-            .map(|o| o.nprobe)
-            .unwrap_or(64);
-
         let store = context
             .runtime_env()
             .object_store(self.object_store_url.clone())
@@ -397,67 +364,46 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         for (group, values) in self.file_groups.iter().zip(&self.partition_values) {
             let config = tokio::task::block_in_place(|| {
                 lakesoul_io::session::GLOBAL_RUNTIME
-                    .block_on(self.reader_config(&store, group, values, nprobe))
+                    .block_on(self.reader_config(&store, group, values))
             })?;
             configs.push(config);
         }
         let schema = Arc::clone(&self.schema);
 
-        // Read every bucket's candidates through the native reader.  The
-        // reader's async API is not `Send`, so it is driven through the
-        // blocking wrapper on the global runtime; the candidate set is
-        // bounded by top_k × bucket_count and cheap to collect.  Buckets are
-        // independent — their indexes and data files do not overlap — so
-        // they are read in parallel, one scoped thread per bucket.
         fn read_bucket(
             config: LakeSoulIOConfig,
-            profile: bool,
         ) -> DFResult<Vec<arrow::record_batch::RecordBatch>> {
-            let t_create = std::time::Instant::now();
             let reader = LakeSoulReader::new(config)
                 .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
             let mut sync_reader =
                 SyncSendableMutableLakeSoulReader::new_with_global_runtime(reader);
-            let create = t_create.elapsed();
-            let t_start = std::time::Instant::now();
             sync_reader
                 .start_blocked()
                 .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
-            let start = t_start.elapsed();
-            let t_scan = std::time::Instant::now();
-            let mut rows = 0usize;
             let mut batches = Vec::new();
             while let Some(batch) = sync_reader.next_rb_blocked() {
                 let batch =
                     batch.map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
-                rows += batch.num_rows();
                 batches.push(batch);
-            }
-            if profile {
-                eprintln!(
-                    "vector_search_exec: create={create:?} start(index+plan)={start:?}                          scan={:?} rows={rows}",
-                    t_scan.elapsed()
-                );
             }
             Ok(batches)
         }
 
-        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let batches = tokio::task::block_in_place(|| {
             if configs.len() == 1 {
                 let config = configs.pop().expect("one config");
-                return read_bucket(config, profile);
+                return read_bucket(config);
             }
             std::thread::scope(|scope| {
                 let handles: Vec<_> = configs
                     .into_iter()
-                    .map(|config| scope.spawn(move || read_bucket(config, profile)))
+                    .map(|config| scope.spawn(move || read_bucket(config)))
                     .collect();
                 let mut batches: Vec<arrow::record_batch::RecordBatch> = Vec::new();
                 for handle in handles {
                     let mut bucket_batches = handle.join().map_err(|_| {
                         DataFusionError::Execution(
-                            "vector search bucket reader panicked".to_string(),
+                            "text search bucket reader panicked".to_string(),
                         )
                     })??;
                     batches.append(&mut bucket_batches);
@@ -475,76 +421,12 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
     }
 }
 
-impl DisplayAs for LakeSoulVectorSearchExec {
+impl DisplayAs for LakeSoulTextSearchExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "LakeSoulVectorSearchExec(vec={}, top_k={}, metric={})",
-            self.vector_search.vec_column,
-            self.vector_search.top_k,
-            self.vector_search.metric
+            "LakeSoulTextSearchExec(column={}, query={:?}, top_k={})",
+            self.text_search.column, self.text_search.query, self.text_search.top_k
         )
-    }
-}
-
-/// Lease time-to-live for index readers (seconds).
-pub(crate) fn lease_ttl() -> std::time::Duration {
-    let seconds = std::env::var("LAKESOUL_VECTOR_INDEX_LEASE_TTL_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(300);
-    std::time::Duration::from_secs(seconds)
-}
-
-/// Owner tag recorded on reader leases.
-pub(crate) fn lease_owner() -> String {
-    format!(
-        "{}:{}",
-        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
-        std::process::id()
-    )
-}
-
-/// Reconstruct a full file URI for the native reader from the object store
-/// URL and the store-relative location.
-pub(crate) fn file_uri(
-    object_store_url: &ObjectStoreUrl,
-    location: &StorePath,
-) -> String {
-    let url = object_store_url.to_string();
-    if url.starts_with("file:") {
-        format!("file:///{}", location.as_ref())
-    } else {
-        format!("{}/{}", url.trim_end_matches('/'), location.as_ref())
-    }
-}
-
-/// Derive the store prefix (parent directory) from a file URI, preserving
-/// the scheme and authority.
-pub(crate) fn derive_prefix(first_file: &str) -> String {
-    let (scheme, rest) = match first_file.split_once("://") {
-        Some((scheme, rest)) => (format!("{scheme}://"), rest),
-        None => ("".to_string(), first_file),
-    };
-    let parent = std::path::Path::new(rest.trim_end_matches('/'))
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    if scheme.is_empty() {
-        parent
-    } else {
-        format!("{scheme}{parent}")
-    }
-}
-
-/// Render a partition value as the string form used by the native reader.
-pub(crate) fn scalar_to_string(value: &ScalarValue) -> String {
-    match value {
-        ScalarValue::Utf8(Some(s)) => s.clone(),
-        ScalarValue::Utf8View(Some(s)) => s.to_string(),
-        ScalarValue::Int64(Some(v)) => v.to_string(),
-        ScalarValue::Int32(Some(v)) => v.to_string(),
-        ScalarValue::Date32(Some(v)) => v.to_string(),
-        _ => value.to_string(),
     }
 }

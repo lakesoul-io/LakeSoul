@@ -3,4 +3,5 @@
 
 //! Internal scalar UDFs and session options for LakeSoul.
 
+pub mod text_search_marker;
 pub mod vector_search_marker;

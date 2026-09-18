@@ -19,6 +19,13 @@ use crate::config::TextIndexConfig;
 /// Field name of the primary key inside a split.
 pub const PK_FIELD: &str = "__lakesoul_pk";
 
+/// Internal Tantivy field name of the indexed text.
+///
+/// The Arrow column name (which may contain characters Tantivy rejects in
+/// field names) is only used to read the column; the index itself always
+/// uses this fixed name.
+pub const TEXT_FIELD: &str = "text";
+
 /// The resolved fields of a text index schema.
 #[derive(Debug, Clone)]
 pub struct TextSchema {
@@ -44,7 +51,7 @@ impl TextSchema {
         if config.stored {
             text_options = text_options.set_stored();
         }
-        let text_field = builder.add_text_field(&config.column_name, text_options);
+        let text_field = builder.add_text_field(TEXT_FIELD, text_options);
         Self {
             schema: builder.build(),
             pk_field,
@@ -53,11 +60,11 @@ impl TextSchema {
     }
 
     /// Resolve the fields of an already built schema.
-    pub fn resolve(schema: &Schema, column_name: &str) -> tantivy::Result<Self> {
+    pub fn resolve(schema: &Schema) -> tantivy::Result<Self> {
         Ok(Self {
             schema: schema.clone(),
             pk_field: schema.get_field(PK_FIELD)?,
-            text_field: schema.get_field(column_name)?,
+            text_field: schema.get_field(TEXT_FIELD)?,
         })
     }
 }
@@ -76,7 +83,7 @@ mod tests {
         };
         let text_schema = TextSchema::build(&config);
         assert!(text_schema.schema.get_field(PK_FIELD).is_ok());
-        assert!(text_schema.schema.get_field("body").is_ok());
+        assert!(text_schema.schema.get_field(TEXT_FIELD).is_ok());
         assert!(matches!(
             text_schema
                 .schema

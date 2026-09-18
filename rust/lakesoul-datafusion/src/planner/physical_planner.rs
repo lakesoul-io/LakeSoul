@@ -63,8 +63,18 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 debug!("input_schema: {}", &input_schema);
                 debug!("input_dfschema: {}", &input_dfschema);
 
-                let runtime_expr = self.create_physical_expr(
+                // Text search: the logical predicate keeps the user-facing
+                // 2-argument `text_match`; here the table provider is
+                // available, so it is rewritten to the table's configured
+                // analyzer before physical evaluation.
+                let predicate = crate::udf::text_search_marker::configure_predicate(
                     &filter.predicate,
+                    &filter.input,
+                    session_state,
+                )
+                .await?;
+                let runtime_expr = self.create_physical_expr(
+                    &predicate,
                     input_dfschema,
                     session_state,
                     &PhysicalPlanningContext::default(),

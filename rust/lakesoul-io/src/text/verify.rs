@@ -40,6 +40,15 @@ pub struct TextVerifyRequest {
 /// Build the verification request of the reader's text search options, when
 /// a text search is configured and its index commit was resolved.
 pub fn text_verify_request(io_config: &LakeSoulIOConfig) -> Option<TextVerifyRequest> {
+    // SQL pushdown keeps an exact `text_match` predicate above the scan and
+    // turns this pass off to avoid verifying twice.
+    if io_config
+        .option(crate::config::OPTION_KEY_TEXT_SEARCH_VERIFY)
+        .as_deref()
+        == Some("false")
+    {
+        return None;
+    }
     let request = SearchRequest::from_config(io_config, IndexKind::Text)?;
     let shard = io_config
         .resolved_index_shards_slice()

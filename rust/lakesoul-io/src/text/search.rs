@@ -9,8 +9,7 @@ use std::sync::Arc;
 use lakesoul_common::IndexKind;
 use lakesoul_text::tantivy::Index;
 use lakesoul_text::{
-    SplitCache, TextError, TextHit, TextIndexConfig, TextSplitEntry, merge_hits,
-    search_index,
+    SplitCache, TextError, TextHit, TextSplitEntry, merge_hits, search_index,
 };
 use object_store::ObjectStore;
 
@@ -52,14 +51,6 @@ pub async fn search_resolved_shard(
             resolved.index_prefix
         ));
     }
-    let config: TextIndexConfig =
-        serde_json::from_slice(&resolved.header).map_err(|error| {
-            rootcause::report!(
-                "invalid text index header at '{}': {}",
-                resolved.index_prefix,
-                error
-            )
-        })?;
     let splits: Vec<TextSplitEntry> = resolved.segments_as()?;
 
     let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
@@ -96,15 +87,13 @@ pub async fn search_resolved_shard(
 
     let mut hits: Vec<TextHit> = Vec::new();
     for index in &entry.indexes {
-        hits.extend(
-            search_index(index, &config.column_name, query, top_k).map_err(|error| {
-                rootcause::report!(
-                    "text search failed at '{}': {}",
-                    resolved.index_prefix,
-                    error
-                )
-            })?,
-        );
+        hits.extend(search_index(index, query, top_k).map_err(|error| {
+            rootcause::report!(
+                "text search failed at '{}': {}",
+                resolved.index_prefix,
+                error
+            )
+        })?);
     }
     let merged = merge_hits(hits, top_k);
     tracing::info!(
