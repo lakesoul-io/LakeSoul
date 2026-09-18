@@ -8,6 +8,7 @@ use std::str::FromStr;
 use pyo3::prelude::*;
 use rootcause::Report;
 
+mod index;
 mod metadata;
 mod reader;
 mod utils;

@@ -157,7 +157,9 @@ impl LakeSoulReader {
                 .get_filter_exprs(table_schema.table_schema().as_ref())
                 .await?
         };
-        let filters = self.inject_vector_search_filter(filters).await?;
+        let filters = self
+            .inject_index_search_filters(filters, &table_schema)
+            .await?;
 
         let io_config = self.io_session.io_config_mut();
         // Check if filters are or-conjunction of primary column
@@ -252,51 +254,27 @@ impl LakeSoulReader {
         Ok(())
     }
 
-    /// Run vector similarity search and inject result IDs as a filter on the PK column.
-    async fn inject_vector_search_filter(
+    /// Run the configured index searches and inject their candidate primary
+    /// keys as a filter.
+    ///
+    /// Every index kind selected by the reader options contributes one
+    /// candidate set; the sets are ANDed through the chained `pk IN (...)`
+    /// filters (the framework is ready for a different fusion strategy).
+    async fn inject_index_search_filters(
         &self,
         filters: Vec<datafusion_expr::Expr>,
+        table_schema: &datafusion_datasource::TableSchema,
     ) -> Result<Vec<datafusion_expr::Expr>> {
-        use crate::config::{
-            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_METRIC,
-            OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
-            OPTION_KEY_VECTOR_SEARCH_TOP_K,
-        };
-        use datafusion_common::ScalarValue;
-        use datafusion_expr::Expr;
+        use lakesoul_common::IndexKind;
+
+        use crate::index::options::parse_search_requests;
+
+        let requests = parse_search_requests(self.io_session.io_config());
+        if requests.is_empty() {
+            return Ok(filters);
+        }
 
         let io_config = self.io_session.io_config();
-        let column = match io_config.option(OPTION_KEY_VECTOR_SEARCH_COLUMN) {
-            Some(c) => c,
-            None => return Ok(filters),
-        };
-        let query_str = match io_config.option(OPTION_KEY_VECTOR_SEARCH_QUERY) {
-            Some(q) => q,
-            None => return Ok(filters),
-        };
-        let top_k: usize = io_config
-            .option(OPTION_KEY_VECTOR_SEARCH_TOP_K)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(10);
-        let nprobe: usize = io_config
-            .option(OPTION_KEY_VECTOR_SEARCH_NPROBE)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
-        let metric = match io_config
-            .option(OPTION_KEY_VECTOR_SEARCH_METRIC)
-            .map(|s| s.to_uppercase())
-            .unwrap_or_else(|| "L2".to_string())
-            .as_str()
-        {
-            "IP" | "INNERPRODUCT" => lakesoul_vector::Metric::InnerProduct,
-            _ => lakesoul_vector::Metric::L2,
-        };
-        let query = crate::vector::search::parse_query_vector(&query_str, None)?;
-        let pk_column = io_config
-            .primary_keys
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "id".to_string());
         let raw_prefix = io_config.prefix().trim_end_matches('/');
         let table_path = raw_prefix
             .trim_start_matches("file://")
@@ -309,69 +287,60 @@ impl LakeSoulReader {
             .runtime_env()
             .object_store(table_url.object_store())
             .map_err(|e| rootcause::report!("failed to get object store: {}", e))?;
-        let resolved_shards = io_config.resolved_index_shards_slice();
-        tracing::debug!(
-            resolved = resolved_shards.len(),
-            leases = io_config.index_leases().len(),
-            "vector search using caller-resolved index shards"
-        );
-        let ids = crate::vector::search::search_matching_shards(
-            &store,
-            io_config.files_slice(),
-            &column,
-            table_path,
-            io_config.range_partitions_slice(),
-            &query,
-            top_k,
-            nprobe,
-            metric,
-            resolved_shards,
-        )
-        .await?;
-        if ids.is_empty() {
-            tracing::info!("Vector search returned no results — producing empty result");
-            // Inject a filter that matches nothing, so the scan returns zero rows
-            let no_match = Expr::Literal(ScalarValue::Boolean(Some(false)), None);
-            return Ok(filters
-                .into_iter()
-                .chain(std::iter::once(no_match))
-                .collect());
-        }
-        tracing::info!("Vector search found {} matching IDs", ids.len());
-        let pk_expr =
-            Expr::Column(datafusion_common::Column::new_unqualified(&pk_column));
-        // The index stores vector ids as u64; build the pk filter literal
-        // with the pk column's own type so Int64 primary keys (e.g. SQL
-        // BIGINT) compare correctly instead of failing Int64 == UInt64.
-        let table_schema = self.io_session.get_table_schema().await?;
+        let pk_column = io_config
+            .primary_keys
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "id".to_string());
+        // The index stores ids as u64; build the pk filter literal with the
+        // pk column's own type so Int64 primary keys (e.g. SQL BIGINT)
+        // compare correctly instead of failing Int64 == UInt64.
         let pk_data_type = table_schema
             .table_schema()
             .field_with_name(&pk_column)
-            .map(|f| f.data_type().clone())
-            .unwrap_or_else(|_| arrow_schema::DataType::UInt64);
-        let mut id_filter: Option<Expr> = None;
-        let literals: Vec<Expr> = ids
-            .iter()
-            .map(|id| {
-                let literal = match pk_data_type {
-                    arrow_schema::DataType::Int64 => ScalarValue::Int64(Some(*id as i64)),
-                    arrow_schema::DataType::Int32 => ScalarValue::Int32(Some(*id as i32)),
-                    _ => ScalarValue::UInt64(Some(*id)),
-                };
-                Expr::Literal(literal, None)
-            })
-            .collect();
-        if !literals.is_empty() {
-            // A single `pk IN (...)` instead of a chain of ORs: much cheaper
-            // to evaluate and to push into file scans.
-            id_filter = Some(Expr::InList(datafusion_expr::expr::InList::new(
-                Box::new(pk_expr.clone()),
-                literals,
-                false,
-            )));
-        }
-        if let Some(f) = id_filter {
-            return Ok(filters.into_iter().chain(std::iter::once(f)).collect());
+            .map(|field| field.data_type().clone())
+            .unwrap_or(arrow_schema::DataType::UInt64);
+        tracing::debug!(
+            resolved = io_config.resolved_index_shards_slice().len(),
+            leases = io_config.index_leases().len(),
+            "index search using caller-resolved index shards"
+        );
+
+        let mut filters = filters;
+        for request in requests {
+            let candidates = match request.kind {
+                IndexKind::Vector => {
+                    crate::vector::search::search_request(
+                        self.io_session.io_config(),
+                        &store,
+                        &request,
+                        table_path,
+                    )
+                    .await?
+                }
+                IndexKind::Text => {
+                    // The text index kind is not wired into the reader yet;
+                    // behave like an empty result set instead of scanning.
+                    tracing::warn!(
+                        "text index search requested on column '{}' but the text \
+                         index kind is not available",
+                        request.column
+                    );
+                    Vec::new()
+                }
+            };
+            tracing::info!(
+                "{} index search on '{}' returned {} candidates",
+                request.kind,
+                request.column,
+                candidates.len()
+            );
+            filters = crate::index::candidate::inject_candidates(
+                filters,
+                &pk_column,
+                &pk_data_type,
+                &candidates,
+            );
         }
         Ok(filters)
     }

@@ -37,6 +37,8 @@ serde_json = { workspace = true }
 # protobuf
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 prost = { workspace = true }
+# shared index kind descriptors
+lakesoul-common = { path = "../lakesoul-common" }
 # cache
 cached = { workspace = true }
 # web

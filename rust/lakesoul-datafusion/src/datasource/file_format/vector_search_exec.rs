@@ -37,15 +37,16 @@ use datafusion::physical_plan::{
 use object_store::path::Path as StorePath;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
+use lakesoul_common::IndexKind;
 use lakesoul_io::config::{
     LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
     OPTION_KEY_VECTOR_SEARCH_METRIC, OPTION_KEY_VECTOR_SEARCH_NPROBE,
     OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
 };
+use lakesoul_io::index::IndexLease;
+use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_io::vector::IndexLease;
-use lakesoul_io::vector::builder::ResolvedIndexShard;
-use lakesoul_metadata::vector_index::PgCatalog;
+use lakesoul_metadata::index_catalog::VectorCatalog;
 use lakesoul_vector::SegmentEntry;
 
 use crate::udf::vector_search_marker::{
@@ -75,7 +76,7 @@ pub struct LakeSoulVectorSearchExec {
     /// Vector search parameters.
     vector_search: VectorSearchRequest,
     /// Catalog used to resolve index commits and hold reader leases.
-    catalog: PgCatalog,
+    catalog: VectorCatalog,
     /// Runtime metrics.
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties.
@@ -95,7 +96,7 @@ impl LakeSoulVectorSearchExec {
         primary_keys: Vec<String>,
         object_store_options: HashMap<String, String>,
         vector_search: VectorSearchRequest,
-        catalog: PgCatalog,
+        catalog: VectorCatalog,
     ) -> DFResult<Self> {
         Ok(Self {
             schema: Arc::clone(&schema),
@@ -139,9 +140,10 @@ impl LakeSoulVectorSearchExec {
         })?;
 
         let table_prefix = derive_prefix(&first);
-        let index_prefixes = lakesoul_io::vector::search::derive_index_prefixes(
+        let index_prefixes = lakesoul_io::index::prefix::derive_index_prefixes(
             &file_uris,
             &table_prefix,
+            IndexKind::Vector,
             &self.vector_search.vec_column,
         );
         let mut resolved_shards = Vec::with_capacity(index_prefixes.len());
@@ -166,8 +168,9 @@ impl LakeSoulVectorSearchExec {
             };
             // A lease is only needed while the index is being loaded; a
             // cache hit reads no file at all.
-            if !lakesoul_io::vector::index_cache::is_loaded(
+            if !lakesoul_io::index::cache::is_loaded(
                 store,
+                IndexKind::Vector,
                 index_prefix.trim_end_matches('/'),
                 view.commit_id,
             )
@@ -191,23 +194,33 @@ impl LakeSoulVectorSearchExec {
                     leases.push(Arc::new(IndexLease::new(handle)));
                 }
             }
-            resolved_shards.push(ResolvedIndexShard {
+            let segments: Vec<SegmentEntry> = view
+                .segments
+                .iter()
+                .map(|segment| SegmentEntry {
+                    cluster_id: segment.cluster_id,
+                    segment_version: segment.segment_version,
+                    segment_filename: segment.filename.clone(),
+                    num_vectors: segment.num_vectors,
+                    file_size: segment.file_size,
+                })
+                .collect();
+            resolved_shards.push(ResolvedIndex {
+                kind: IndexKind::Vector,
                 index_prefix,
                 commit_id: view.commit_id,
                 generation: view.generation,
                 version: view.version,
                 header: view.header,
-                segments: view
-                    .segments
-                    .into_iter()
-                    .map(|segment| SegmentEntry {
-                        cluster_id: segment.cluster_id,
-                        segment_version: segment.segment_version,
-                        segment_filename: segment.filename,
-                        num_vectors: segment.num_vectors,
-                        file_size: segment.file_size,
-                    })
-                    .collect(),
+                segments: serde_json::to_value(&segments).map_err(|error| {
+                    DataFusionError::External(
+                        rootcause::report!(
+                            "failed to serialize vector index segments: {}",
+                            error
+                        )
+                        .into_boxed_error(),
+                    )
+                })?,
             });
         }
 

@@ -42,16 +42,20 @@ use datafusion::catalog::{
     CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
 };
 use datafusion::datasource::memory::MemTable;
+use lakesoul_common::IndexKind;
 use lakesoul_datafusion::cli::CoreArgs;
+use lakesoul_datafusion::index::IndexManagementConfig;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchOptions;
 use lakesoul_datafusion::vector_index::{
-    VectorIndexTableConfig, auto_build_vector_index, vector_index_columns_to_json,
+    VectorIndexParams, VectorIndexTableConfig, auto_build_vector_index,
+    vector_index_columns_to_json,
 };
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
-use lakesoul_io::vector::builder::{VectorShardIndexBuilder, shard_index_prefix};
+use lakesoul_io::index::prefix::shard_index_prefix;
+use lakesoul_io::vector::builder::VectorShardIndexBuilder;
 use lakesoul_io::writer::create_writer_with_io_config;
-use lakesoul_metadata::vector_index::{CommitMode, PgCatalog};
+use lakesoul_metadata::index_catalog::{CommitMode, VectorCatalog};
 use lakesoul_vector::{
     IndexHeader, IndexStore, IvfRabitqIndex, Metric, RotatorType, SearchParams,
     SegmentEntry, VectorIndexConfig,
@@ -974,15 +978,15 @@ fn vector_index_config(args: &Args, dim: usize) -> VectorIndexConfig {
     }
 }
 
-async fn bench_catalog() -> Result<PgCatalog, String> {
+async fn bench_catalog() -> Result<VectorCatalog, String> {
     lakesoul_metadata::MetaDataClient::from_env()
         .await
-        .map(|client| PgCatalog::from_client(&client))
+        .map(|client| client.vector_index_catalog())
         .map_err(|e| format!("metadata client: {e}"))
 }
 
 fn catalog_segments(
-    segments: &[lakesoul_metadata::vector_index::IndexSegmentEntry],
+    segments: &[lakesoul_metadata::index_catalog::VectorSegmentEntry],
 ) -> Vec<SegmentEntry> {
     segments
         .iter()
@@ -998,11 +1002,11 @@ fn catalog_segments(
 
 fn vector_segments(
     segments: &[SegmentEntry],
-) -> Vec<lakesoul_metadata::vector_index::IndexSegmentEntry> {
+) -> Vec<lakesoul_metadata::index_catalog::VectorSegmentEntry> {
     segments
         .iter()
         .map(
-            |segment| lakesoul_metadata::vector_index::IndexSegmentEntry {
+            |segment| lakesoul_metadata::index_catalog::VectorSegmentEntry {
                 cluster_id: segment.cluster_id,
                 segment_version: segment.segment_version,
                 filename: segment.segment_filename.clone(),
@@ -1014,7 +1018,7 @@ fn vector_segments(
 }
 
 async fn commit_outcome(
-    catalog: &PgCatalog,
+    catalog: &VectorCatalog,
     outcome: &lakesoul_io::vector::builder::ShardBuildOutcome,
     mode: CommitMode,
 ) -> Result<(), String> {
@@ -1033,7 +1037,10 @@ async fn commit_outcome(
         .map_err(|e| format!("index commit: {e}"))
 }
 
-async fn load_index(catalog: &PgCatalog, prefix: &str) -> Result<IvfRabitqIndex, String> {
+async fn load_index(
+    catalog: &VectorCatalog,
+    prefix: &str,
+) -> Result<IvfRabitqIndex, String> {
     let view = catalog
         .resolve(prefix)
         .await
@@ -1065,10 +1072,15 @@ fn all_shard_prefixes(files: &[String], column: &str) -> Vec<String> {
                 .map(|s| s.to_string())
         })
         .unwrap_or_default();
-    lakesoul_io::vector::search::derive_index_prefixes(files, &base, column)
-        .into_iter()
-        .map(|(prefix, _)| prefix)
-        .collect()
+    lakesoul_io::index::prefix::derive_index_prefixes(
+        files,
+        &base,
+        IndexKind::Vector,
+        column,
+    )
+    .into_iter()
+    .map(|(prefix, _)| prefix)
+    .collect()
 }
 
 /// Aggregate [`RoundStats`] over every shard of the table's index.
@@ -1233,7 +1245,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let rss_after = rss_mb();
 
     // 3. Collect index stats.
-    let build_prefix = shard_index_prefix(&files, VEC_COLUMN);
+    let build_prefix = shard_index_prefix(&files, IndexKind::Vector, VEC_COLUMN);
     let view = catalog
         .resolve(&build_prefix)
         .await
@@ -1295,7 +1307,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     }
 
     let catalog = bench_catalog().await?;
-    let search_prefix = shard_index_prefix(&files, VEC_COLUMN);
+    let search_prefix = shard_index_prefix(&files, IndexKind::Vector, VEC_COLUMN);
     let has_index = catalog
         .resolve(&search_prefix)
         .await
@@ -1420,18 +1432,22 @@ fn table_config(
 ) -> VectorIndexTableConfig {
     VectorIndexTableConfig {
         column: VEC_COLUMN.to_string(),
-        dim,
-        nlist: args.nlist,
-        total_bits: args.total_bits,
-        metric: metric_str(args.metric).to_string(),
-        rotator_type: "FhtKac".to_string(),
-        seed: args.seed,
-        use_faster_config: true,
-        rebuild_mode: rebuild_mode.to_string(),
-        max_delta_ratio,
-        gc_enabled: true,
-        gc_grace_seconds: 3600,
-        gc_keep_generations: 1,
+        params: VectorIndexParams {
+            dim,
+            nlist: args.nlist,
+            total_bits: args.total_bits,
+            metric: metric_str(args.metric).to_string(),
+            rotator_type: "FhtKac".to_string(),
+            seed: args.seed,
+            use_faster_config: true,
+        },
+        management: IndexManagementConfig {
+            rebuild_mode: rebuild_mode.to_string(),
+            max_delta_ratio,
+            gc_enabled: true,
+            gc_grace_seconds: 3600,
+            gc_keep_generations: 1,
+        },
     }
 }
 
@@ -1464,7 +1480,7 @@ impl RoundStats {
 }
 
 async fn collect_round_stats(
-    catalog: &PgCatalog,
+    catalog: &VectorCatalog,
     prefix: &str,
 ) -> Result<RoundStats, String> {
     let clusters = catalog
@@ -1749,7 +1765,7 @@ async fn run_stream_inner(
     let (mut sampler, mut query_sampler) = make_samplers(args, dataset);
 
     let catalog = bench_catalog().await?;
-    let stream_prefix = shard_index_prefix(&all_files, VEC_COLUMN);
+    let stream_prefix = shard_index_prefix(&all_files, IndexKind::Vector, VEC_COLUMN);
     let mut vectors = dataset.base.data.clone();
     let mut next_id = dataset.base.n as u64;
 
@@ -2048,18 +2064,22 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     // 1. Create the table through SQL DDL with the vector index property.
     let config = VectorIndexTableConfig {
         column: VEC_COLUMN.to_string(),
-        dim,
-        nlist: args.nlist,
-        total_bits: args.total_bits,
-        metric: metric_str(args.metric).to_string(),
-        rotator_type: "FhtKac".to_string(),
-        seed: args.seed,
-        use_faster_config: true,
-        rebuild_mode: "auto".to_string(),
-        max_delta_ratio: args.max_delta_ratio,
-        gc_enabled: true,
-        gc_grace_seconds: 3600,
-        gc_keep_generations: 1,
+        params: VectorIndexParams {
+            dim,
+            nlist: args.nlist,
+            total_bits: args.total_bits,
+            metric: metric_str(args.metric).to_string(),
+            rotator_type: "FhtKac".to_string(),
+            seed: args.seed,
+            use_faster_config: true,
+        },
+        management: IndexManagementConfig {
+            rebuild_mode: "auto".to_string(),
+            max_delta_ratio: args.max_delta_ratio,
+            gc_enabled: true,
+            gc_grace_seconds: 3600,
+            gc_keep_generations: 1,
+        },
     };
     let property = vector_index_columns_to_json(std::slice::from_ref(&config));
     let create_sql = format!(

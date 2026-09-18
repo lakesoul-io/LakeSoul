@@ -255,18 +255,22 @@ fn default_args() -> CoreArgs {
 fn vector_configs() -> Vec<crate::vector_index::VectorIndexTableConfig> {
     vec![crate::vector_index::VectorIndexTableConfig {
         column: "vec".to_string(),
-        dim: DIM,
-        nlist: 4,
-        total_bits: 7,
-        metric: "L2".to_string(),
-        rotator_type: "FhtKac".to_string(),
-        seed: 42,
-        use_faster_config: true,
-        rebuild_mode: "auto".to_string(),
-        max_delta_ratio: 1.0,
-        gc_enabled: true,
-        gc_grace_seconds: 3600,
-        gc_keep_generations: 1,
+        params: crate::vector_index::VectorIndexParams {
+            dim: DIM,
+            nlist: 4,
+            total_bits: 7,
+            metric: "L2".to_string(),
+            rotator_type: "FhtKac".to_string(),
+            seed: 42,
+            use_faster_config: true,
+        },
+        management: crate::index::IndexManagementConfig {
+            rebuild_mode: "auto".to_string(),
+            max_delta_ratio: 1.0,
+            gc_enabled: true,
+            gc_grace_seconds: 3600,
+            gc_keep_generations: 1,
+        },
     }]
 }
 
@@ -673,7 +677,7 @@ async fn sql_create_table_declares_vector_index_via_option() {
     .unwrap();
     assert_eq!(configs.len(), 1);
     assert_eq!(configs[0].column, "vec");
-    assert_eq!(configs[0].dim, DIM);
+    assert_eq!(configs[0].params.dim, DIM);
 
     // An invalid option value is rejected before any metadata is created.
     let table_name2 = "vec_search_sql_create_badopt";
@@ -977,13 +981,13 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
 /// Current index generation of every index shard under the table
 /// directory, read from the metadata catalog.
 async fn latest_generations(client: &MetaDataClient, table_name: &str) -> Vec<u64> {
-    let catalog = lakesoul_metadata::vector_index::PgCatalog::from_client(client);
+    let catalog = client.vector_index_catalog();
     let root = std::env::current_dir()
         .unwrap()
         .join("default")
         .join(table_name);
     let prefix =
-        lakesoul_metadata::vector_index::normalize_index_prefix(root.to_str().unwrap());
+        lakesoul_metadata::index_catalog::normalize_index_prefix(root.to_str().unwrap());
     let mut out = Vec::new();
     for shard in catalog.list_shards_under(&prefix).await.unwrap() {
         if let Some(view) = catalog.resolve(&shard).await.unwrap() {
@@ -1006,8 +1010,8 @@ async fn incremental_writes_auto_rebuild_when_delta_ratio_exceeded() {
     // Aggressive ratio: two incremental writes of ~10% drift already
     // exceed it, so the third write must trigger a full rebuild.
     let mut configs = vector_configs();
-    configs[0].rebuild_mode = "auto".to_string();
-    configs[0].max_delta_ratio = 0.05;
+    configs[0].management.rebuild_mode = "auto".to_string();
+    configs[0].management.max_delta_ratio = 0.05;
     let builder = LakeSoulIOConfigBuilder::new()
         .with_schema(vector_schema())
         .with_primary_keys(vec!["id".to_string()])
@@ -1086,7 +1090,7 @@ async fn rebuild_mode_none_never_rebuilds() {
     clean_table_dir(table_name);
 
     let mut configs = vector_configs();
-    configs[0].rebuild_mode = "none".to_string();
+    configs[0].management.rebuild_mode = "none".to_string();
     let builder = LakeSoulIOConfigBuilder::new()
         .with_schema(vector_schema())
         .with_primary_keys(vec!["id".to_string()])
@@ -1129,7 +1133,7 @@ async fn manual_rebuild_vector_index_rebuilds_all_shards() {
     // Disable auto rebuild so the manual call is the only way generations
     // bump.
     let mut configs = vector_configs();
-    configs[0].rebuild_mode = "none".to_string();
+    configs[0].management.rebuild_mode = "none".to_string();
     let builder = LakeSoulIOConfigBuilder::new()
         .with_schema(vector_schema())
         .with_primary_keys(vec!["id".to_string()])

@@ -60,10 +60,9 @@ def write_lakesoul(
 ) -> WriteResult:
     """Write a Daft DataFrame through Daft's distributed DataSink API.
 
-    After the write commits, if the table declares ``vector_index_columns``
-    table properties, the configured vector indexes are built/updated
-    incrementally using a distributed ``@daft.cls`` actor-pool UDF over the
-    new files.
+    After the write commits, if the table declares ``*_index_columns``
+    table properties, the configured indexes are built/updated incrementally
+    using a distributed ``@daft.cls`` actor-pool UDF over the new files.
     """
     _require_daft()
     del (
@@ -77,7 +76,7 @@ def write_lakesoul(
     # Placeholder/fake tables (unit tests) are skipped; the post-commit
     # auto-build applies the same guard.
     if auto_build_vector_index and _is_lakesoul_table(table):
-        table._require_vector_index_writable()
+        table._require_index_writable()
 
     from lakesoul.daft.sink import LakeSoulDataSink
 
@@ -100,9 +99,9 @@ def write_lakesoul(
         raise RuntimeError("Daft sink completed without a LakeSoul write result")
 
     if auto_build_vector_index:
-        from lakesoul.daft.index_build import build_vector_index_daft
+        from lakesoul.daft.index_build import build_index_daft
 
-        build_vector_index_daft(table, result, cpus=vector_index_cpus)
+        build_index_daft(table, result, cpus=vector_index_cpus)
     return result
 
 

@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""LakeSoul vector index builder orchestration.
+"""LakeSoul vector index orchestration.
 
-Given a table name, partition, and vector column configs, this module:
-1. Queries PG metadata for partition info and data files
-2. Groups files by (partition_desc, hash_bucket_id)
-3. Calls the Rust ``build_shard_vector_index`` PyO3 binding per shard
+This module is the vector kind's thin layer on top of
+:mod:`lakesoul.index`: it maps the vector configuration onto the native
+IVF+RaBitQ builder and exposes the user-facing build entry points.
 
 Usage::
 
@@ -26,70 +25,106 @@ Usage::
 
 from __future__ import annotations
 
-import json
-import re
-import collections
-from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
-from ._lib.vector import build_shard_vector_index, rebuild_shard_vector_index
-from .metadata.native_client import NativeMetadataClient
+from . import index as _index
+from .index import (
+    IndexKindSpec,
+    ShardInfo,
+    build_partition_index,
+    build_table_index,
+    extract_bucket_id as _extract_bucket_id,
+    group_files_by_shard as _group_files_by_shard,
+    rename_summary_key as _rename_summary_key,
+)
 
-
-@dataclass
-class ShardInfo:
-    """A set of files belonging to one (partition, bucket) shard."""
-
-    partition_desc: str
-    bucket_id: int
-    file_paths: list[str]
-    primary_keys: list[str]
-
-
-def _extract_bucket_id(file_path: str) -> int:
-    """Extract hash bucket id from a parquet file path.
-
-    File names follow the pattern ``part-{random}_{bucket_id:0>4}.parquet``.
-    """
-    match = re.search(r".*_(\d+)(?:\..*)?$", file_path)
-    if not match:
-        raise ValueError(f"Cannot determine bucket id from file name {file_path}")
-    return int(match.group(1))
+# Re-exported for compatibility with earlier imports.
+__all__ = [
+    "ShardInfo",
+    "build_partition_vector_index",
+    "build_table_vector_index",
+    "rerank_by_distance",
+]
 
 
-def _group_files_by_shard(
-    client: NativeMetadataClient,
-    table_id: str,
-    partition_desc: str,
-    pk_cols: list[str],
-) -> list[ShardInfo]:
-    """Query PG for a partition's current data files and group by bucket."""
-    partition_infos = client.get_partition_info_by_table_id_and_desc(
-        table_id, partition_desc
+def _build_shard(
+    store_config: Any,
+    file_paths: list[str],
+    pk_column: str,
+    config: Any,
+    rebuild: bool,
+) -> str:
+    """Build one vector index shard through the native PyO3 binding."""
+    from ._lib.vector import build_shard_vector_index, rebuild_shard_vector_index
+
+    builder = rebuild_shard_vector_index if rebuild else build_shard_vector_index
+    return builder(
+        store_config=store_config,
+        file_paths=list(file_paths),
+        pk_column=pk_column,
+        vector_column=config["column"],
+        dim=config["dim"],
+        nlist=config.get("nlist", 256),
+        total_bits=config.get("total_bits", 7),
+        metric=config.get("metric", "L2"),
+        rotator_type=config.get("rotator_type", "FhtKac"),
+        seed=config.get("seed", 42),
+        use_faster_config=config.get("use_faster_config", True),
     )
-    if not partition_infos:
-        return []
 
-    latest = max(partition_infos, key=lambda p: p.version)
-    bucket_files: dict[int, list[str]] = collections.defaultdict(list)
-    data_commits = client.list_data_commit_info(
-        latest.table_id, latest.partition_desc, latest.snapshot
-    )
-    for commit in data_commits:
-        for file_op in commit.file_ops:
-            if file_op.file_op == 0:  # FileOp.add
-                bid = _extract_bucket_id(file_op.path)
-                bucket_files[bid].append(file_op.path)
 
-    return [
-        ShardInfo(
-            partition_desc=partition_desc,
-            bucket_id=bid,
-            file_paths=paths,
-            primary_keys=pk_cols,
-        )
-        for bid, paths in sorted(bucket_files.items())
-    ]
+def _validate(
+    configs: Any,
+    schema: Any,
+    primary_keys: Any,
+) -> None:
+    from .catalog import _validate_vector_index_configs
+
+    _validate_vector_index_configs(configs, schema, primary_keys)
+
+
+def _parse(raw: str) -> list[dict[str, Any]]:
+    from ._lib.vector import parse_vector_index_configs
+
+    return list(parse_vector_index_configs(raw))
+
+
+VECTOR_KIND_SPEC = IndexKindSpec(
+    name="vector",
+    property_key="vector_index_columns",
+    parse_configs=_parse,
+    validate=_validate,
+    build_shard=_build_shard,
+    required_params=("dim",),
+)
+_index.register_index_kind(VECTOR_KIND_SPEC)
+
+
+def _vector_config(
+    vector_column: str,
+    dim: int,
+    nlist: int,
+    total_bits: int,
+    metric: str,
+    rotator_type: str,
+    seed: int,
+    use_faster_config: bool,
+) -> dict[str, Any]:
+    return {
+        "column": vector_column,
+        "dim": dim,
+        "nlist": nlist,
+        "total_bits": total_bits,
+        "metric": metric,
+        "rotator_type": rotator_type,
+        "seed": seed,
+        "use_faster_config": use_faster_config,
+    }
+
+
+def _as_vector_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Rename the generic ``column`` summary key for vector callers."""
+    return _rename_summary_key(result, "vector_column")
 
 
 def build_partition_vector_index(
@@ -133,8 +168,6 @@ def build_partition_vector_index(
             ``{"type": "s3", "bucket": "...", "region": "...",
                "access_key_id": "...", "secret_access_key": "...", ...}``.
             If not provided, reads ``LAKESOUL_OBJECT_STORE_*`` env vars.
-
-    Args:
         rebuild: When true, every shard is rebuilt from scratch (fresh IVF
             k-means over all of the shard's active data files, published as
             a new index generation) instead of receiving an incremental
@@ -156,78 +189,25 @@ def build_partition_vector_index(
     Raises:
         RuntimeError: If any shard's index build fails.
     """
-    store_config = store_config or {"type": "local"}
-    client = NativeMetadataClient.from_env()
-
-    # 1. Get table metadata from PG
-    table_info = client.get_table_info_by_name(table_name, namespace)
-    _, pk_cols = client.get_partition_and_pk_cols(table_info)
-    if not pk_cols:
-        raise ValueError(
-            f"Table '{table_name}' has no primary key columns defined. "
-            f"Vector index requires a u64 primary key."
-        )
-    pk_column = pk_cols[0]
-
-    table_path = table_info.table_path
-    table_path = (
-        table_path.replace("file://", "").replace("s3://", "").replace("s3a://", "")
+    result = build_partition_index(
+        "vector",
+        table_name=table_name,
+        namespace=namespace,
+        partition_desc=partition_desc,
+        config=_vector_config(
+            vector_column,
+            dim,
+            nlist,
+            total_bits,
+            metric,
+            rotator_type,
+            seed,
+            use_faster_config,
+        ),
+        store_config=store_config,
+        rebuild=rebuild,
     )
-
-    # 2. Group files by (partition, bucket)
-    shards = _group_files_by_shard(client, table_info.table_id, partition_desc, pk_cols)
-    if not shards:
-        return {
-            "status": "ok",
-            "shards_total": 0,
-            "shards_succeeded": 0,
-            "table_path": table_path,
-            "vector_column": vector_column,
-            "partition_desc": partition_desc,
-            "message": "no data files found",
-        }
-
-    # 3. Build index for each shard
-    succeeded = 0
-    failed = 0
-    shard_builder = rebuild_shard_vector_index if rebuild else build_shard_vector_index
-    for shard in shards:
-        try:
-            result = shard_builder(
-                store_config=store_config,
-                file_paths=shard.file_paths,
-                pk_column=pk_column,
-                vector_column=vector_column,
-                dim=dim,
-                nlist=nlist,
-                total_bits=total_bits,
-                metric=metric,
-                rotator_type=rotator_type,
-                seed=seed,
-                use_faster_config=use_faster_config,
-            )
-            if result == "ok":
-                succeeded += 1
-            else:
-                failed += 1
-        except Exception as e:
-            print(f"ERROR building index for partition {partition_desc}: {e}")
-            failed += 1
-
-    if failed > 0:
-        raise RuntimeError(
-            f"Vector index build failed for {failed}/{len(shards)} shards "
-            f"of partition '{partition_desc}'"
-        )
-
-    return {
-        "status": "ok",
-        "shards_total": len(shards),
-        "shards_succeeded": succeeded,
-        "table_path": table_path,
-        "vector_column": vector_column,
-        "partition_desc": partition_desc,
-    }
+    return _as_vector_result(result)
 
 
 def build_table_vector_index(
@@ -253,38 +233,26 @@ def build_table_vector_index(
     Returns:
         Dict with per-partition results.
     """
-    store_config = store_config or {"type": "local"}
-    client = NativeMetadataClient.from_env()
-    table_info = client.get_table_info_by_name(table_name, namespace)
-    partition_infos = client.get_all_partition_info(table_info.table_id)
-
-    results = []
-    for pinfo in partition_infos:
-        result = build_partition_vector_index(
-            table_name=table_name,
-            namespace=namespace,
-            partition_desc=pinfo.partition_desc,
-            vector_column=vector_column,
-            dim=dim,
-            nlist=nlist,
-            total_bits=total_bits,
-            metric=metric,
-            rotator_type=rotator_type,
-            seed=seed,
-            use_faster_config=use_faster_config,
-            store_config=store_config,
-            rebuild=rebuild,
-        )
-        results.append(result)
-
-    return {
-        "status": "ok",
-        "table_name": table_name,
-        "vector_column": vector_column,
-        "partitions_total": len(results),
-        "partitions_processed": sum(1 for r in results if r["status"] == "ok"),
-        "details": results,
-    }
+    result = build_table_index(
+        "vector",
+        table_name=table_name,
+        namespace=namespace,
+        configs=[
+            _vector_config(
+                vector_column,
+                dim,
+                nlist,
+                total_bits,
+                metric,
+                rotator_type,
+                seed,
+                use_faster_config,
+            )
+        ],
+        store_config=store_config,
+        rebuild=rebuild,
+    )
+    return _as_vector_result(result)
 
 
 def rerank_by_distance(

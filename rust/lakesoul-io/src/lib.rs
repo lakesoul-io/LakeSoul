@@ -68,6 +68,7 @@ pub mod constant;
 pub mod file_format;
 pub mod filter;
 pub mod helpers;
+pub mod index;
 pub mod object_store;
 pub mod physical_plan;
 pub mod pk_locator;

@@ -12,12 +12,16 @@ use std::time::Duration;
 
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::error::Result;
-use lakesoul_metadata::vector_index::{
-    CommitMode, IndexSegmentEntry, PgCatalog, normalize_index_prefix,
+use lakesoul_metadata::index_catalog::{
+    CommitMode, VectorCatalog, VectorSegmentEntry, normalize_index_prefix,
 };
 
-fn segment(cluster_id: u32, segment_version: u32, num_vectors: u32) -> IndexSegmentEntry {
-    IndexSegmentEntry {
+fn segment(
+    cluster_id: u32,
+    segment_version: u32,
+    num_vectors: u32,
+) -> VectorSegmentEntry {
+    VectorSegmentEntry {
         cluster_id,
         segment_version,
         filename: format!(
@@ -37,7 +41,7 @@ fn rand_u32() -> u32 {
         .subsec_nanos()
 }
 
-async fn catalog() -> Result<PgCatalog> {
+async fn catalog() -> Result<VectorCatalog> {
     static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     let client = MetaDataClient::from_env().await?;
     let catalog = client.vector_index_catalog();
