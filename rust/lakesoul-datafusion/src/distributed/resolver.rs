@@ -8,10 +8,11 @@
 //! `get_urls()` is synchronous and is called several times per query (task
 //! counting, then routing right before execution). Both implementations
 //! therefore answer from an **in-memory snapshot** only:
-//!
 //! - [`StaticWorkerResolver`]: a fixed URL list (local development, bare
-//!   metal). Workers are assumed ready; the operator is responsible for
-//!   listing only compatible workers.
+//!   metal). Building the resolver and [`StaticWorkerResolver::update`] probe
+//!   every listed worker once and drop those answering with a different
+//!   protocol version; unreachable workers stay listed and fail at dispatch
+//!   time as before.
 //! - [`KubernetesWorkerResolver`]: a background task watches the Kubernetes
 //!   API (EndpointSlice listing refreshed on a fixed interval) and probes each
 //!   discovered endpoint's protocol version over the worker gRPC channel.
@@ -132,6 +133,13 @@ impl KubernetesDiscovery {
 ///
 /// Intended for local development and bare-metal deployments where workers
 /// are launched out-of-band. It never performs I/O in `get_urls()`.
+///
+/// Unlike [`KubernetesWorkerResolver`] there is no background watcher: the
+/// configured list is probed synchronously when the resolver is built and
+/// on [`StaticWorkerResolver::update`], dropping workers that answer with a
+/// different [`DISTRIBUTED_PROTOCOL_VERSION`]. A worker restarted with a
+/// different build is therefore re-evaluated the next time a resolver is
+/// built or the list is updated.
 #[derive(Debug, Clone)]
 pub struct StaticWorkerResolver {
     snapshot: Arc<RwLock<WorkerSnapshot>>,
@@ -142,13 +150,17 @@ impl StaticWorkerResolver {
     /// instead of at query time.
     pub fn new(urls: Vec<String>) -> Result<Self> {
         Ok(Self {
-            snapshot: Arc::new(RwLock::new(WorkerSnapshot::new(parse_urls(urls)?))),
+            snapshot: Arc::new(RwLock::new(WorkerSnapshot::new(
+                drop_version_mismatched_blocking(parse_urls(urls)?),
+            ))),
         })
     }
 
-    /// Replaces the URL list (e.g. after an operator-side rebalance).
+    /// Replaces the URL list (e.g. after an operator-side rebalance). The
+    /// new list is version-probed like [`StaticWorkerResolver::new`].
     pub fn update(&self, urls: Vec<String>) -> Result<()> {
-        *self.snapshot.write() = WorkerSnapshot::new(parse_urls(urls)?);
+        let filtered = drop_version_mismatched_blocking(parse_urls(urls)?);
+        *self.snapshot.write() = WorkerSnapshot::new(filtered);
         Ok(())
     }
 
@@ -207,7 +219,7 @@ impl KubernetesWorkerResolver {
                 .await
                 {
                     Ok(candidates) => {
-                        let eligible = probe_versions(candidates).await;
+                        let eligible = filter_version_matched(candidates).await;
                         let Some(handle) = handle.upgrade() else {
                             // All resolver clones dropped: stop watching.
                             break;
@@ -374,44 +386,132 @@ pub fn ready_worker_urls(list_json: &str) -> Result<Vec<Url>> {
     Ok(urls)
 }
 
-/// Probes `candidates` over the worker gRPC channel and keeps only those
-/// reporting the expected [`DISTRIBUTED_PROTOCOL_VERSION`].
-///
-/// Every refresh re-probes rather than caching verdicts: the version request
-/// doubles as a liveness check, so a remembered "matches" could admit a worker
-/// that has stopped answering.
-async fn probe_versions(candidates: Vec<Url>) -> Vec<Url> {
-    futures::future::join_all(candidates.into_iter().map(|url| async move {
-        let matched = tokio::time::timeout(PROBE_TIMEOUT, probe_version(&url))
-            .await
-            .unwrap_or(false);
-        matched.then_some(url)
-    }))
-    .await
-    .into_iter()
-    .flatten()
-    .collect()
+/// Result of probing a worker's advertised protocol version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionProbe {
+    /// The worker reports [`DISTRIBUTED_PROTOCOL_VERSION`].
+    Match,
+    /// The worker answered but reports a different protocol version.
+    Mismatch,
+    /// The worker did not answer within the probe timeout.
+    Unreachable,
 }
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-async fn probe_version(url: &Url) -> bool {
+/// Timeout for the synchronous probes run while building or updating a
+/// [`StaticWorkerResolver`]. Shorter than [`PROBE_TIMEOUT`]: an unreachable
+/// worker must not stall session creation noticeably.
+const STATIC_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Probes `candidates` over the worker gRPC channel and pairs every URL
+/// with its verdict.
+async fn probe_versions(
+    candidates: Vec<Url>,
+    timeout: Duration,
+) -> Vec<(Url, VersionProbe)> {
+    futures::future::join_all(candidates.into_iter().map(|url| async move {
+        let verdict = tokio::time::timeout(timeout, probe_version(&url))
+            .await
+            .unwrap_or(VersionProbe::Unreachable);
+        (url, verdict)
+    }))
+    .await
+}
+
+/// Queries one worker's advertised protocol version.
+async fn probe_version(url: &Url) -> VersionProbe {
     let resolver = grpc::DefaultChannelResolver::default();
     let Ok(mut client) = resolver.get_worker_client_for_url(url).await else {
-        return false;
+        return VersionProbe::Unreachable;
     };
     let Ok(info) = client.get_worker_info(GetWorkerInfoRequest {}).await else {
-        return false;
+        return VersionProbe::Unreachable;
     };
-    info.version == DISTRIBUTED_PROTOCOL_VERSION
+    if info.version == DISTRIBUTED_PROTOCOL_VERSION {
+        VersionProbe::Match
+    } else {
+        VersionProbe::Mismatch
+    }
+}
+
+/// Probes `candidates` and keeps only those reporting the expected
+/// [`DISTRIBUTED_PROTOCOL_VERSION`].
+///
+/// Every refresh re-probes rather than caching verdicts: the version request
+/// doubles as a liveness check, so a remembered "matches" could admit a worker
+/// that has stopped answering.
+async fn filter_version_matched(candidates: Vec<Url>) -> Vec<Url> {
+    probe_versions(candidates, PROBE_TIMEOUT)
+        .await
+        .into_iter()
+        .filter_map(|(url, verdict)| (verdict == VersionProbe::Match).then_some(url))
+        .collect()
+}
+
+/// Drops entries of `urls` that answer with a protocol version other than
+/// [`DISTRIBUTED_PROTOCOL_VERSION`].
+///
+/// Unlike [`filter_version_matched`], an unreachable worker is kept: without
+/// an answer there is no evidence of incompatibility, and a worker may merely
+/// be starting up. Such a worker fails at dispatch time exactly as before.
+async fn drop_version_mismatched(urls: Vec<Url>) -> Vec<Url> {
+    if urls.is_empty() {
+        return urls;
+    }
+    probe_versions(urls, STATIC_PROBE_TIMEOUT)
+        .await
+        .into_iter()
+        .filter_map(|(url, verdict)| match verdict {
+            VersionProbe::Mismatch => {
+                warn!(
+                    "LakeSoul worker discovery: dropping static worker {url}: \
+                     reported protocol version differs from \
+                     {DISTRIBUTED_PROTOCOL_VERSION}"
+                );
+                None
+            }
+            _ => Some(url),
+        })
+        .collect()
+}
+
+/// Runs `drop_version_mismatched` on a dedicated thread with its own
+/// single-threaded Tokio runtime, avoiding nested `block_on` and any
+/// dependency on an ambient Tokio runtime.
+fn drop_version_mismatched_blocking(urls: Vec<Url>) -> Vec<Url> {
+    let probe_urls = urls.clone();
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(move || -> crate::Result<Vec<Url>> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("building version probe runtime")?;
+            Ok(runtime.block_on(drop_version_mismatched(probe_urls)))
+        });
+        match handle.join() {
+            Ok(Ok(filtered)) => filtered,
+            // A failed probe must not silently drain the list: keep every
+            // URL so routing degrades to the pre-probe behavior (dispatch-
+            // time failures) instead of reporting "no ready workers".
+            _ => urls,
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::distributed::worker::LakeSoulWorkerSessionBuilder;
+    use datafusion::execution::runtime_env::RuntimeEnv;
+    use datafusion_distributed::Worker;
+    use tokio_stream::wrappers::TcpListenerStream;
 
     #[test]
-    fn static_resolver_parses_and_serves_snapshot() {
+    fn static_resolver_keeps_unreachable_worker() {
+        // Nothing listens on 10.0.0.1; without an answer the resolver cannot
+        // call the worker incompatible, so it must stay listed (and fail at
+        // dispatch time exactly as before version probing).
         let resolver =
             StaticWorkerResolver::new(vec!["http://10.0.0.1:50051".into()]).unwrap();
         assert_eq!(
@@ -506,9 +606,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn version_probe_rejects_unreachable() {
-        // Nothing listens here; the probe must return false (and never panic).
+    async fn version_probe_reports_unreachable() {
+        // Nothing listens here; the probe must report Unreachable (and never
+        // panic).
         let url = Url::parse("http://127.0.0.1:1").unwrap();
-        assert!(!probe_version(&url).await);
+        assert_eq!(probe_version(&url).await, VersionProbe::Unreachable);
+    }
+
+    /// Serves a worker gRPC endpoint reporting `version` on an ephemeral
+    /// port, on its own OS thread and runtime.
+    ///
+    /// The runtime cannot be the test's own: `StaticWorkerResolver::new`
+    /// probes synchronously, blocking the calling thread while the probe
+    /// round-trips, and a worker hosted on the blocked runtime could not
+    /// answer it. Waiting for the first probe answer keeps the verdicts in
+    /// the callers deterministic.
+    async fn spawn_test_worker(version: &'static str) -> Url {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url =
+            Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                listener.set_nonblocking(true).unwrap();
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let worker = Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
+                    .with_runtime_env(Arc::new(RuntimeEnv::default()))
+                    .with_version(version);
+                tonic::transport::Server::builder()
+                    .add_service(worker.into_worker_server())
+                    .serve_with_incoming(TcpListenerStream::new(listener))
+                    .await
+                    .unwrap();
+            });
+        });
+        for _ in 0..100 {
+            if probe_version(&url).await != VersionProbe::Unreachable {
+                return url;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("test worker on {url} never answered a version probe");
+    }
+
+    #[tokio::test]
+    async fn static_resolver_admits_version_matching_worker() {
+        let url = spawn_test_worker(DISTRIBUTED_PROTOCOL_VERSION).await;
+        let resolver = StaticWorkerResolver::new(vec![url.to_string()]).unwrap();
+        assert_eq!(resolver.get_urls().unwrap(), vec![url]);
+    }
+
+    #[tokio::test]
+    async fn static_resolver_drops_version_mismatched_worker() {
+        // A /1 worker would silently accept plans written by the versioned
+        // encoder (protobuf ignores unknown fields), so discovery must drop
+        // it before any dispatch.
+        let url = spawn_test_worker("lakesoul-distributed/1").await;
+        let resolver = StaticWorkerResolver::new(vec![url.to_string()]).unwrap();
+        assert!(resolver.get_urls().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn static_resolver_update_drops_version_mismatched_worker() {
+        let matching = spawn_test_worker(DISTRIBUTED_PROTOCOL_VERSION).await;
+        let mismatched = spawn_test_worker("lakesoul-distributed/1").await;
+        let resolver = StaticWorkerResolver::new(vec![matching.to_string()]).unwrap();
+        resolver
+            .update(vec![matching.to_string(), mismatched.to_string()])
+            .unwrap();
+        assert_eq!(resolver.get_urls().unwrap(), vec![matching]);
     }
 }

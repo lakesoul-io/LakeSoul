@@ -9,12 +9,11 @@
 //! distributed planner (see [`session::LakeSoulSessionFactory`]); standalone
 //! workers are created with [`lakesoul_worker`] and served over gRPC.
 //!
-//! Protocol compatibility between a coordinator and its workers is pinned by
 //! [`DISTRIBUTED_PROTOCOL_VERSION`]: workers advertise it through their
-//! `GetWorkerInfo` gRPC endpoint and discovery only admits matching workers.
-//! The version must be bumped whenever the physical-plan encoding changes
-//! (e.g. the [`codec::LakeSoulCodec`] wire format or the grouping of scan
-//! leaves), so that a mixed cluster fails fast instead of misinterpreting
+//! `GetWorkerInfo` gRPC endpoint. Both discovery backends consult it —
+//! Kubernetes discovery admits only matching workers, and static worker
+//! lists are probed (and mismatches dropped) when a resolver is built or
+//! updated — so that a mixed cluster fails fast instead of misinterpreting
 //! plans.
 
 pub mod codec;
@@ -32,7 +31,18 @@ pub use resolver::{
 ///
 /// Discovery filters workers whose reported version does not match, and
 /// workers with a different build reject encoded plans loudly at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/1";
+///
+/// # Generations
+///
+/// The version identifies a *protocol generation*, not just this crate's
+/// release: bump it whenever the physical-plan encoding changes. Introducing
+/// the explicit [`codec::CODEC_VERSION`] field was such a change — the
+/// previous generation advertised `lakesoul-distributed/1` with an unversioned
+/// `MergeParquetExecProto`, and protobuf decoders ignore unknown fields rather
+/// than rejecting them, so a plan written by the versioned encoder would have
+/// been silently accepted by a `/1` worker. Advertising `/2` filters those
+/// workers out at discovery and closes the other direction at decode time.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

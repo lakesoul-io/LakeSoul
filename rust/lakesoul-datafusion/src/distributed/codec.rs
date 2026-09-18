@@ -11,6 +11,16 @@
 //! [`MergeParquetExec`] is encoded by this codec, which is composed after the
 //! distributed codec via `with_distributed_user_codec` on both the coordinator
 //! and the worker sessions.
+//!
+//! The wire format is versioned by [`CODEC_VERSION`]: the encoder stamps it and
+//! the decoder refuses any other value, so a mixed-version cluster fails loudly
+//! at decode time instead of misinterpreting a plan.
+//!
+//! Credentials are deliberately not part of the format: only
+//! [`LakeSoulIOConfig::options`](lakesoul_io::config::LakeSoulIOConfig::options)
+//! is encoded, never `object_store_options`, where the S3/HDFS credentials
+//! live. Workers obtain storage credentials from their own environment
+//! (workload identity, IRSA, mounted secrets).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,12 +39,22 @@ use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::physical_plan::MergeParquetExec;
 use prost::Message as _;
 
+/// Wire-format version of [`MergeParquetExecProto`].
+///
+/// The encoder stamps it into every plan and the decoder refuses any other
+/// value. Bump it whenever the encoding changes — and bump
+/// [`crate::distributed::DISTRIBUTED_PROTOCOL_VERSION`] with it, since worker
+/// discovery filters by that version (a test keeps the two in sync). Version 0
+/// means "written before the field existed" and is always refused.
+pub const CODEC_VERSION: u32 = 2;
+
 /// Wire format for [`MergeParquetExec`].
 ///
 /// Children are re-attached by the codec driver, so only merge-specific state
 /// is encoded. The config subset mirrors exactly what the merge operator reads
 /// at execution time (`files`, primary keys, merge operators, and the
 /// `options` map carrying the `is_compacted` / `skip_merge_on_read` flags).
+/// Object-store credentials are not part of the format; see the module docs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MergeParquetExecProto {
     #[prost(message, optional, tag = "1")]
@@ -49,6 +69,10 @@ pub struct MergeParquetExecProto {
     pub files: Vec<String>,
     #[prost(map = "string, string", tag = "6")]
     pub options: HashMap<String, String>,
+    /// [`CODEC_VERSION`] of the encoder; appended rather than numbered first so
+    /// the layout stays additively evolvable.
+    #[prost(uint32, tag = "7")]
+    pub codec_version: u32,
 }
 
 /// [`PhysicalExtensionCodec`] for LakeSoul execution plan nodes.
@@ -70,6 +94,7 @@ pub fn composed_codec() -> ComposedPhysicalExtensionCodec {
 impl LakeSoulCodec {
     fn proto_from_merge_exec(exec: &MergeParquetExec) -> MergeParquetExecProto {
         MergeParquetExecProto {
+            codec_version: CODEC_VERSION,
             schema: Some(
                 exec.schema()
                     .as_ref()
@@ -109,6 +134,16 @@ impl PhysicalExtensionCodec for LakeSoulCodec {
         let proto = MergeParquetExecProto::decode(buf).map_err(|err| {
             DataFusionError::Internal(format!("decode MergeParquetExec: {err}"))
         })?;
+        // Fail loudly instead of guessing: a plan from another build may use a
+        // different encoding for the same fields.
+        if proto.codec_version != CODEC_VERSION {
+            return Err(DataFusionError::Internal(format!(
+                "MergeParquetExec plan encoded with codec version {} but this build \
+                 speaks {CODEC_VERSION}: coordinator and workers must run compatible \
+                 LakeSoul builds",
+                proto.codec_version
+            )));
+        }
         let schema: SchemaRef = Arc::new(
             proto
                 .schema
