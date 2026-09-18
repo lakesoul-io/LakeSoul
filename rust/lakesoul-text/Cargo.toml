@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lakesoul-text"
+version.workspace = true
+publish = false
+edition.workspace = true
+
+[dependencies]
+# lakesoul
+lakesoul-common = { path = "../lakesoul-common" }
+
+# object store
+object_store = { workspace = true }
+
+# full-text index
+tantivy = "0.26"
+tantivy-jieba = "0.20"
+
+# serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# integrity / ids
+crc32fast = "1.3"
+uuid = { workspace = true }
+
+# temp dirs and logging
+tempfile = { workspace = true }
+tracing = { workspace = true }
+
+# error
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
