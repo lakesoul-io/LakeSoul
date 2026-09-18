@@ -223,6 +223,29 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 并发 append+append、append+compaction、update+append 三组测试在
 `rust/lakesoul-metadata/tests/` 下无丢文件、snapshot 正确、版本单调。
 
+**实施记录（已完成）**
+
+- `commit_data` 改为有界重试循环（`MAX_COMMIT_ATTEMPTS = 5`，对齐
+  `DBConfig.MAX_COMMIT_ATTEMPTS`）：每轮重新读 `cur_map` 并规划分区行。
+- 冲突判定复用现有返回语义：`TransactionInsertPartitionInfo` 在唯一键冲突时
+  已 rollback 并返回 `Ok(0)`，因此按 "返回行数 != 期望行数" 判定冲突并重试，
+  无需改动 lib.rs 的 JNI 行为（原计划的 SQLSTATE 23505 检测由此替代）。
+- `plan_partition_commit` 镜像 `DBManager.commitData` 及其
+  `appendConflict`/`mergeConflict`/`updateConflict`/`compactionConflict`：
+  - Append/Merge：跨轮次缓存计划行（`planned`），仅在本分区无新提交时复用；
+    当前 op 为 Delete 时报错。
+  - Update：中间含 Update，或含多个 op 且有 Compaction → 报错；中间是单个
+    无并发追加的 Compaction → 折叠；否则 `submitted ++ (cur − read)` 合并。
+  - Compaction：中间含 Update/Compaction → 跳过该分区；否则合并快照。
+  - Delete：保持原语义（要求 read 提供 desc，版本 +1、清空 snapshot）。
+  - 首次提交的分区版本从 -1 起算（对齐 JVM `getOrCreateCurPartitionInfo`）。
+- 新增 `merge_submitted_snapshot`（JVM `updateSubmitPartitionSnapshot` 语义）与
+  `get_commit_ops_between_versions`（`ListCommitOpsBetweenVersions` DAO wrapper）。
+- 测试 `rust/lakesoul-metadata/tests/commit_occ.rs` 6 例：4 写者并发 append
+  无丢文件；Compaction/Update 与并发 Append 合并；stale Update 与 Update 冲突
+  报错；stale Compaction 在有 Update 时跳过；stale Update 越过带并发追加的
+  Compaction 报错。
+
 ## 6. P1-2 保留策略与 cursor 约束
 
 - 事实：默认**不自动删除**历史；唯一风险来自 opt-in 的 `partition.ttl` /

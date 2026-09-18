@@ -128,6 +128,10 @@ const DEFAULT_PG_URL: &str =
 const DEFAULT_PG_USERNAME: &str = "lakesoul_test";
 const DEFAULT_PG_PASSWORD: &str = "lakesoul_test";
 
+/// Maximum number of commit attempts when concurrent writers touch the same
+/// partition (mirrors `DBConfig.MAX_COMMIT_ATTEMPTS`).
+const MAX_COMMIT_ATTEMPTS: usize = 5;
+
 fn secondary_url_not_found() -> LakeSoulMetaDataError {
     LakeSoulMetaDataError::NotFound("Secondary url not found".to_string())
 }
@@ -587,138 +591,260 @@ impl MetaDataClient {
 
         // self.update_table_properties(&table_info.table_id, &table_info.properties).await?;
 
+        let domain = self
+            .get_table_domain(table_info.table_id.as_str())
+            .await?
+            .domain;
         let partition_desc_list = meta_info
             .list_partition
             .iter()
             .map(|partition_info| partition_info.partition_desc.clone())
             .collect::<Vec<String>>();
-
-        let _snapshot_list = meta_info
-            .list_partition
+        let read_partition_map = meta_info
+            .read_partition_info
             .iter()
-            .flat_map(|partition_info| partition_info.snapshot.clone())
-            .collect::<Vec<entity::Uuid>>();
+            .map(|partition_info| {
+                (
+                    partition_info.partition_desc.clone(),
+                    partition_info.clone(),
+                )
+            })
+            .collect::<HashMap<String, PartitionInfo>>();
 
-        let cur_map = self
-            .get_cur_partition_map(&table_info.table_id, &partition_desc_list)
-            .await?;
-        let domain = self
-            .get_table_domain(table_info.table_id.as_str())
-            .await?
-            .domain;
+        // Optimistic concurrency: a stale read of the current version is
+        // resolved against the commits that landed in between, and the insert
+        // is retried with a fresh version. Mirrors `DBManager.commitData`.
+        let mut planned = HashMap::<String, PartitionInfo>::new();
+        for attempt in 1..=MAX_COMMIT_ATTEMPTS {
+            let cur_map = self
+                .get_cur_partition_map(&table_info.table_id, &partition_desc_list)
+                .await?;
+            let new_partition_list = self
+                .plan_partition_commit(
+                    &table_info,
+                    &domain,
+                    commit_op,
+                    &meta_info.list_partition,
+                    &read_partition_map,
+                    &cur_map,
+                    &mut planned,
+                )
+                .await?;
 
+            if new_partition_list.is_empty() {
+                return Ok(());
+            }
+
+            let expected = new_partition_list.len();
+            let mut partition_info_list = new_partition_list;
+            partition_info_list.push(PartitionInfo::default());
+            let inserted = self
+                .transaction_insert_partition_info(partition_info_list)
+                .await?;
+            if inserted as usize == expected {
+                return Ok(());
+            }
+            debug!(
+                "commit of {:?} conflicted on attempt {} (expected {} partition rows, inserted {})",
+                commit_op, attempt, expected, inserted
+            );
+        }
+
+        Err(LakeSoulMetaDataError::Internal(format!(
+            "commit of {commit_op:?} failed after {MAX_COMMIT_ATTEMPTS} attempts because of concurrent writers on table {}",
+            table_info.table_id
+        )))
+    }
+
+    /// Plan the partition rows inserted by one commit attempt.
+    ///
+    /// Mirrors `DBManager.commitData` with its `appendConflict` /
+    /// `mergeConflict` / `updateConflict` / `compactionConflict` retries folded
+    /// in: when the version the caller read is stale, the commits that landed
+    /// in between decide whether this commit can be merged, must be rejected or
+    /// must skip the partition. `planned` carries rows computed by a previous
+    /// attempt so an append that only conflicted on another partition is not
+    /// applied twice.
+    #[allow(clippy::too_many_arguments)]
+    async fn plan_partition_commit(
+        &self,
+        table_info: &TableInfo,
+        domain: &str,
+        commit_op: CommitOp,
+        list_partition: &[PartitionInfo],
+        read_partition_map: &HashMap<String, PartitionInfo>,
+        cur_map: &HashMap<String, PartitionInfo>,
+        planned: &mut HashMap<String, PartitionInfo>,
+    ) -> Result<Vec<PartitionInfo>> {
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
-                let mut new_partition_list = meta_info
-                    .list_partition
-                    .iter()
-                    .map(|partition_info| {
-                        let partition_desc = &partition_info.partition_desc;
-                        match cur_map.get(partition_desc) {
-                            Some(cur_partition_info) => {
-                                let mut cur_partition_info = cur_partition_info.clone();
-                                cur_partition_info.domain = domain.clone();
-                                cur_partition_info
-                                    .snapshot
-                                    .extend_from_slice(&partition_info.snapshot[..]);
-                                cur_partition_info.version += 1;
-                                cur_partition_info.commit_op = commit_op as i32;
-                                cur_partition_info.expression =
-                                    partition_info.expression.clone();
-                                Ok(cur_partition_info)
-                            }
-                            None => Ok(PartitionInfo {
-                                table_id: table_info.table_id.clone(),
-                                partition_desc: partition_desc.clone(),
-                                version: 0,
-                                snapshot: Vec::from(&partition_info.snapshot[..]),
-                                domain: domain.clone(),
-                                commit_op: commit_op as i32,
-                                expression: partition_info.expression.clone(),
-                                ..Default::default()
-                            }),
-                        }
-                    })
-                    .collect::<Result<Vec<PartitionInfo>>>()?;
-                new_partition_list.push(PartitionInfo {
-                    ..Default::default()
-                });
-                let partition_version = new_partition_list
-                    .iter()
-                    .map(|p| p.version)
-                    .max()
-                    .unwrap_or(0);
-                self.transaction_insert_partition_info(new_partition_list)
-                    .await?;
-                info!(
-                    "Commit Done for {:?}, partition_version={:?}",
-                    commit_op, partition_version
-                );
-                Ok(())
+                let mut new_partition_list = Vec::with_capacity(list_partition.len());
+                for partition_info in list_partition {
+                    let partition_desc = &partition_info.partition_desc;
+                    let cur_version = cur_map
+                        .get(partition_desc)
+                        .map(|info| i64::from(info.version))
+                        .unwrap_or(-1);
+
+                    if let Some(previous) = planned.get(partition_desc)
+                        && cur_version + 1 == i64::from(previous.version)
+                    {
+                        new_partition_list.push(previous.clone());
+                        continue;
+                    }
+
+                    let mut cur_partition_info = match cur_map.get(partition_desc) {
+                        Some(info) => info.clone(),
+                        None => PartitionInfo {
+                            table_id: table_info.table_id.clone(),
+                            partition_desc: partition_desc.clone(),
+                            version: -1,
+                            domain: domain.to_string(),
+                            ..Default::default()
+                        },
+                    };
+                    let cur_op = cur_partition_info.commit_op();
+                    let compatible = if commit_op == CommitOp::AppendCommit {
+                        matches!(
+                            cur_op,
+                            CommitOp::AppendCommit
+                                | CommitOp::MergeCommit
+                                | CommitOp::CompactionCommit
+                                | CommitOp::UpdateCommit
+                        )
+                    } else {
+                        matches!(
+                            cur_op,
+                            CommitOp::MergeCommit
+                                | CommitOp::CompactionCommit
+                                | CommitOp::UpdateCommit
+                        )
+                    };
+                    if !compatible {
+                        return Err(LakeSoulMetaDataError::Internal(format!(
+                            "commit of {commit_op:?} conflicts with {:?} on table {} partition {}",
+                            cur_op, table_info.table_id, partition_desc
+                        )));
+                    }
+
+                    cur_partition_info
+                        .snapshot
+                        .extend_from_slice(&partition_info.snapshot);
+                    cur_partition_info.version += 1;
+                    cur_partition_info.commit_op = commit_op as i32;
+                    cur_partition_info.expression = partition_info.expression.clone();
+                    planned.insert(partition_desc.clone(), cur_partition_info.clone());
+                    new_partition_list.push(cur_partition_info);
+                }
+                Ok(new_partition_list)
             }
 
             CommitOp::CompactionCommit | CommitOp::UpdateCommit => {
-                let read_partition_map: HashMap<String, PartitionInfo> = meta_info
-                    .read_partition_info
-                    .iter()
-                    .map(|p| (p.partition_desc.clone(), p.clone()))
-                    .collect();
-
                 let mut new_partition_list = Vec::new();
-
-                for partition_info in &meta_info.list_partition {
+                for partition_info in list_partition {
                     let partition_desc = &partition_info.partition_desc;
                     let mut cur_partition_info = match cur_map.get(partition_desc) {
                         Some(info) => info.clone(),
                         None => PartitionInfo {
                             table_id: table_info.table_id.clone(),
                             partition_desc: partition_desc.clone(),
-                            version: 0,
-                            domain: self
-                                .get_table_domain(&table_info.table_id)
-                                .await?
-                                .domain,
+                            version: -1,
+                            domain: domain.to_string(),
                             ..Default::default()
                         },
                     };
 
                     let read_version = read_partition_map
                         .get(partition_desc)
-                        .map(|p| p.version)
+                        .map(|info| i64::from(info.version))
                         .unwrap_or(0);
+                    let cur_version = i64::from(cur_partition_info.version);
 
-                    if read_version == cur_partition_info.version {
+                    if read_version == cur_version {
                         cur_partition_info.snapshot = partition_info.snapshot.clone();
                     } else {
-                        // 处理版本冲突
-                        // TODO: 实现版本冲突检查逻辑
+                        let middle_ops = self
+                            .get_commit_ops_between_versions(
+                                &table_info.table_id,
+                                partition_desc,
+                                read_version + 1,
+                                cur_version,
+                            )
+                            .await?;
+                        let has_update = middle_ops.contains(&CommitOp::UpdateCommit);
+                        let has_compaction =
+                            middle_ops.contains(&CommitOp::CompactionCommit);
+
+                        if commit_op == CommitOp::UpdateCommit {
+                            if read_version > 0
+                                && (has_update
+                                    || (middle_ops.len() > 1 && has_compaction))
+                            {
+                                return Err(LakeSoulMetaDataError::Internal(format!(
+                                    "update commit conflicts with concurrent writes on table {} partition {} (read version {read_version}, current version {cur_version}, middle commits {middle_ops:?})",
+                                    table_info.table_id, partition_desc
+                                )));
+                            }
+                            if middle_ops.len() == 1 && has_compaction {
+                                let middle_versions = self
+                                    .get_partition_versions_in_range(
+                                        &table_info.table_id,
+                                        partition_desc,
+                                        read_version + 1,
+                                        cur_version,
+                                    )
+                                    .await?;
+                                let compaction_has_concurrent_appends =
+                                    middle_versions.iter().any(|version| {
+                                        version.commit_op() == CommitOp::CompactionCommit
+                                            && version.snapshot.len() > 1
+                                    });
+                                if compaction_has_concurrent_appends {
+                                    return Err(LakeSoulMetaDataError::Internal(
+                                        format!(
+                                            "update commit conflicts with a compaction on table {} partition {}",
+                                            table_info.table_id, partition_desc
+                                        ),
+                                    ));
+                                }
+                                cur_partition_info.snapshot =
+                                    partition_info.snapshot.clone();
+                            } else {
+                                merge_submitted_snapshot(
+                                    &mut cur_partition_info,
+                                    partition_info,
+                                    read_partition_map.get(partition_desc),
+                                );
+                            }
+                        } else {
+                            // A compaction only folds the files it read; a
+                            // concurrent append is preserved in the merged
+                            // snapshot. If a compaction or update landed in
+                            // between, drop this partition from the commit:
+                            // the concurrent writer already owns a valid
+                            // snapshot.
+                            if has_update || has_compaction {
+                                continue;
+                            }
+                            merge_submitted_snapshot(
+                                &mut cur_partition_info,
+                                partition_info,
+                                read_partition_map.get(partition_desc),
+                            );
+                        }
                     }
 
                     cur_partition_info.version += 1;
                     cur_partition_info.commit_op = commit_op as i32;
                     cur_partition_info.expression = partition_info.expression.clone();
-
                     new_partition_list.push(cur_partition_info);
                 }
-
-                new_partition_list.push(PartitionInfo {
-                    ..Default::default()
-                });
-                self.transaction_insert_partition_info(new_partition_list)
-                    .await?;
-                Ok(())
+                Ok(new_partition_list)
             }
 
             CommitOp::DeleteCommit => {
-                let read_partition_map: HashMap<String, PartitionInfo> = meta_info
-                    .read_partition_info
-                    .iter()
-                    .map(|p| (p.partition_desc.clone(), p.clone()))
-                    .collect();
-
                 let mut new_partition_list = Vec::new();
-
-                for partition_info in &meta_info.list_partition {
+                for partition_info in list_partition {
                     let partition_desc = &partition_info.partition_desc;
 
                     if !read_partition_map.contains_key(partition_desc) {
@@ -737,15 +863,40 @@ impl MetaDataClient {
 
                     new_partition_list.push(cur_partition_info);
                 }
-
-                new_partition_list.push(PartitionInfo {
-                    ..Default::default()
-                });
-                self.transaction_insert_partition_info(new_partition_list)
-                    .await?;
-                Ok(())
+                Ok(new_partition_list)
             }
         }
+    }
+
+    /// The distinct commit ops of the partition versions in
+    /// `[from_version, to_version]`.
+    async fn get_commit_ops_between_versions(
+        &self,
+        table_id: &str,
+        partition_desc: &str,
+        from_version: i64,
+        to_version: i64,
+    ) -> Result<Vec<CommitOp>> {
+        if to_version < from_version {
+            return Ok(Vec::new());
+        }
+        let wrapper = self
+            .execute_query(
+                DaoType::ListCommitOpsBetweenVersions as i32,
+                [
+                    table_id,
+                    partition_desc,
+                    &clamp_version(from_version).to_string(),
+                    &clamp_version(to_version).to_string(),
+                ]
+                .join(PARAM_DELIM),
+            )
+            .await?;
+        Ok(wrapper
+            .partition_info
+            .iter()
+            .map(|info| info.commit_op())
+            .collect())
     }
 
     async fn get_cur_partition_map(
@@ -1658,6 +1809,29 @@ fn push_unique_uuid(
     if seen.insert((id.high, id.low)) {
         ids.push(*id);
     }
+}
+
+/// Merge the snapshot submitted by a stale commit with the commits that landed
+/// concurrently: `submitted ++ (current − read)`, mirroring the JVM
+/// `updateSubmitPartitionSnapshot`.
+fn merge_submitted_snapshot(
+    current: &mut PartitionInfo,
+    submitted: &PartitionInfo,
+    read: Option<&PartitionInfo>,
+) {
+    let mut snapshot = submitted.snapshot.clone();
+    let read_ids = read
+        .map(|info| {
+            info.snapshot
+                .iter()
+                .map(|id| (id.high, id.low))
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut concurrent = std::mem::take(&mut current.snapshot);
+    concurrent.retain(|id| !read_ids.contains(&(id.high, id.low)));
+    snapshot.extend(concurrent);
+    current.snapshot = snapshot;
 }
 
 fn data_commit_info_list_from_files(
