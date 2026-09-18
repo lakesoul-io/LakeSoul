@@ -99,6 +99,24 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub file_format: Option<String>,
+    /// Marks a table as internal to the IVM pipeline. Internal tables are not
+    /// meant to be read or written by user SQL and may carry a bucket layout
+    /// that differs from the merge key.
+    #[serde(
+        rename = "lakesoul.ivm.internal",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ivm_internal: Option<String>,
+    /// Bucket columns for an IVM internal table when they differ from the merge
+    /// key. They must be a prefix of the primary keys. Only honoured when
+    /// `lakesoul.ivm.internal` is `"true"`.
+    #[serde(
+        rename = "lakesoul.ivm.bucket_columns",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ivm_bucket_columns: Option<String>,
 }
 
 /// Resolve the file format declared by a table's properties
