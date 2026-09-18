@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lakesoul-ivm"
+version = { workspace = true }
+publish = false
+edition = { workspace = true }
+
+[dependencies]
+lakesoul-common = { path = "../lakesoul-common" }
+lakesoul-io = { path = "../lakesoul-io" }
+lakesoul-metadata = { path = "../lakesoul-metadata" }
+lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
+datafusion = { workspace = true }
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rootcause = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+test-log = { workspace = true, features = ["trace"] }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

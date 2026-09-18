@@ -20,8 +20,8 @@ pub use crate::metadata_client::{
     PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY,
     SECONDARY_URL_PROP_KEY,
 };
-pub use crate::pooled_client::PooledClient;
-use crate::pooled_client::{PgConnection, QueryType};
+use crate::pooled_client::PgConnection;
+pub use crate::pooled_client::{PooledClient, QueryType};
 pub use error::{LakeSoulMetaDataError, Result};
 use lakesoul_metadata_proto::entity;
 pub use metadata_client::{

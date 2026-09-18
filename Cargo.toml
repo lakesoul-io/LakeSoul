@@ -17,6 +17,7 @@ members = [
   "rust/lakesoul-console",
   "rust/lakesoul-common",
   "rust/lakesoul-vector",
+  "rust/lakesoul-ivm",
   "python",
   "rust/postgres-lakesoul",
 ]

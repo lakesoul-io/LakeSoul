@@ -275,6 +275,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | F2 | P0-3 bucket=key 前缀（writer/reader/属性校验） | 状态表读写与 EXCEPT ALL 通过 |
 | F3 | IVM 冒烟：单表 SUM/COUNT 增量刷新 + join 状态表读写 | MV 与全量查询双向 EXCEPT ALL 为空 |
 
+**F3 实施记录（已完成冒烟切片）**
+
+- 新 crate `rust/lakesoul-ivm`：
+  - `metadata`：PG schema `ivm`（`views` / `cursors`）及 CRUD；DDL 用
+    `do $$ ... exception when duplicate_schema/duplicate_table` 保证并发初始化安全。
+  - `table`：内部表创建（`lakesoul.ivm.internal=true`、bucket 前缀属性、parquet）+
+    `append_batch`（keyed 表走 partitioning writer + stable sort，一次提交
+    delete/insert）+ `read_files`/`read_current`（MOR）。
+  - `runtime`：`SumCountView` 声明式视图（`SUM`/`COUNT` over append-only 源表）。
+    `refresh_sum_count` 按分区 cursor 消费 changelog（P0-2），用 DataFusion 聚合 delta，
+    与 MV 当前状态合并后写 `delete(old) + insert(new)`，提交成功后再推进 cursor。
+- 测试 `tests/aggregate_refresh.rs`：
+  1. 两轮增量刷新后 MV 状态 == 源表全量 `GROUP BY`（含第二轮同 key 更新）；
+     cursor 版本/时间戳正确、无新提交时 refresh 为 no-op；
+  2. PK=(k,row_id)、bucket=(k) 状态表跨批次写入后 MOR 读回全部行（F3 的
+     "join 状态表读写"部分）。
+- 已知缺口（下一步）：MV 提交与 cursor 更新之间无原子性，crash 可能重放窗口；
+  epoch 幂等（`__ivm_epoch` + `ivm.epochs` 发布）尚未实现；SQL 视图前端与
+  join delta（inclusion-exclusion）未开始。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
