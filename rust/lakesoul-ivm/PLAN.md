@@ -254,6 +254,11 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 后续（P2）：新建 `ivm.cursors` 水位检查点，清理前校验 `min(cursor) - grace`；
   可参考 `vector_index_lease` 模式（`rust/lakesoul-metadata/src/vector_index.rs:65,149`）。
 
+**实施记录（已完成）**：约束写入 crate 级文档
+（`rust/lakesoul-ivm/src/lib.rs` 的 `# Retention` 一节）：IVM 消费的表必须保持默认
+保留策略，不配置 `partition.ttl` / `compaction.ttl` / `dataExpiredTime`，也不启用
+`cleanOldCompaction`；cursor-aware GC 留待后续。
+
 ## 7. P2 预研项（明确暂缓）
 
 - `pk_locator` 泛化（任意列/字符串/parquet/非唯一键）：v1 join 用"桶裁剪 +
@@ -292,8 +297,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   2. PK=(k,row_id)、bucket=(k) 状态表跨批次写入后 MOR 读回全部行（F3 的
      "join 状态表读写"部分）。
 - 已知缺口（下一步）：MV 提交与 cursor 更新之间无原子性，crash 可能重放窗口；
-  epoch 幂等（`__ivm_epoch` + `ivm.epochs` 发布）尚未实现；SQL 视图前端与
-  join delta（inclusion-exclusion）未开始。
+  epoch 幂等（`__ivm_epoch` + `ivm.epochs` 发布）尚未实现；SQL 视图前端未开始。
+
+**Join 增量刷新实施记录（已完成冒烟切片）**
+
+- `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算
+  `ΔL ⋈ R_before + L_before ⋈ ΔR + ΔL ⋈ ΔR`（inclusion-exclusion），
+  `before` 用 P0-1 的 as-of 读（`IvmTable::read_as_of`）按各自 cursor 时间戳重建。
+- 输出表 append-only（`join_key, left_value, right_value, __ivm_epoch`）；
+  只要两侧只增，每个 join pair 恰好产生一次，累计输出恒等于 `L_now ⋈ R_now`。
+- 测试 `tests/join_refresh.rs`：两轮双边窗口（第二轮三项都有贡献）后逐行等于
+  全量 join；无新提交时 no-op；每侧 cursor 正确推进。
+- 已知缺口：仅支持 inner join + Int64 key/value + 未分区 + append-only 源；
+  非 append-only 源需要带 retraction 的 join delta（inclusion-exclusion 配合
+  状态表），留待下一阶段。
 
 ## 9. 风险与开放问题
 

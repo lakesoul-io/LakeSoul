@@ -244,4 +244,27 @@ impl IvmTable {
         }
         self.read_files(files).await
     }
+
+    /// Read the state of the table as of `as_of_ms` (inclusive).
+    ///
+    /// Used by the join refresh to reconstruct the state each delta was
+    /// joined against.
+    pub async fn read_as_of(
+        &self,
+        client: &MetaDataClient,
+        as_of_ms: i64,
+    ) -> Result<Vec<RecordBatch>> {
+        let mut files = Vec::new();
+        for partition in client
+            .get_all_partition_info_as_of(&self.table_id, as_of_ms)
+            .await?
+        {
+            files.extend(
+                client
+                    .get_data_files_of_single_partition(&partition)
+                    .await?,
+            );
+        }
+        self.read_files(files).await
+    }
 }

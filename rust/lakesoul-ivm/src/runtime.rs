@@ -14,10 +14,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::functions_aggregate::{count::count, sum::sum};
-use datafusion::prelude::{SessionContext, col, lit};
+use datafusion::prelude::{DataFrame, JoinType, SessionContext, col, lit};
+use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use rootcause::report;
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,24 @@ pub enum ViewSpec {
         group_key: String,
         /// The summed column; `None` means `SUM(0)`, i.e. count only.
         value_column: Option<String>,
+    },
+    /// Inner equi-join of the append-only changelogs of two sources, appended
+    /// to an append-only output table.
+    Join {
+        /// The view id.
+        view_id: String,
+        /// The left source table id.
+        left_table_id: String,
+        /// The right source table id.
+        right_table_id: String,
+        /// The append-only output table id.
+        output_table_id: String,
+        /// The equi-join key, present in both sources.
+        join_key: String,
+        /// The payload column of the left source.
+        left_value: String,
+        /// The payload column of the right source.
+        right_value: String,
     },
 }
 
@@ -111,6 +131,79 @@ pub fn sum_count_mv_schema(group_key: &str) -> SchemaRef {
     ]))
 }
 
+/// An inner equi-join view over two append-only sources.
+///
+/// The output is append-only: as long as both sides only grow, every joined
+/// pair is produced exactly once across refreshes. Each refresh computes the
+/// inclusion-exclusion delta
+/// `ΔL ⋈ R_before + L_before ⋈ ΔR + ΔL ⋈ ΔR`, so the accumulated output always
+/// equals `L_now ⋈ R_now`.
+#[derive(Debug, Clone)]
+pub struct JoinView {
+    /// The view id.
+    pub view_id: String,
+    /// The left append-only source.
+    pub left: IvmTable,
+    /// The right append-only source.
+    pub right: IvmTable,
+    /// The append-only output table.
+    pub output: IvmTable,
+    /// The equi-join key, present in both sources (must be `Int64`).
+    pub join_key: String,
+    /// The `Int64` payload column of the left source.
+    pub left_value: String,
+    /// The `Int64` payload column of the right source.
+    pub right_value: String,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl JoinView {
+    /// A new join view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        left: IvmTable,
+        right: IvmTable,
+        output: IvmTable,
+        join_key: impl Into<String>,
+        left_value: impl Into<String>,
+        right_value: impl Into<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            left,
+            right,
+            output,
+            join_key: join_key.into(),
+            left_value: left_value.into(),
+            right_value: right_value.into(),
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::Join {
+            view_id: self.view_id.clone(),
+            left_table_id: self.left.table_id.clone(),
+            right_table_id: self.right.table_id.clone(),
+            output_table_id: self.output.table_id.clone(),
+            join_key: self.join_key.clone(),
+            left_value: self.left_value.clone(),
+            right_value: self.right_value.clone(),
+        }
+    }
+}
+
+/// The schema of a [`JoinView`] output.
+pub fn join_view_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("join_key", DataType::Int64, false),
+        Field::new("left_value", DataType::Int64, false),
+        Field::new("right_value", DataType::Int64, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]))
+}
+
 /// The IVM runtime: a metadata client plus the `ivm` schema access layer.
 pub struct IvmRuntime {
     client: MetaDataClient,
@@ -146,8 +239,16 @@ impl IvmRuntime {
         create_ivm_table(&self.client, options).await
     }
 
-    /// Persist the view spec (idempotent).
+    /// Persist a sum/count view spec (idempotent).
     pub async fn register_view(&self, view: &SumCountView) -> Result<()> {
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a join view spec (idempotent).
+    pub async fn register_join_view(&self, view: &JoinView) -> Result<()> {
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -162,22 +263,126 @@ impl IvmRuntime {
     /// rebuild the view.
     pub async fn refresh_sum_count(&self, view: &SumCountView) -> Result<Option<i64>> {
         self.register_view(view).await?;
+        ensure_append_only(&view.source, &view.view_id)?;
 
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+
+        let epoch = window
+            .cursors
+            .iter()
+            .map(|cursor| cursor.last_timestamp)
+            .max()
+            .unwrap_or_else(crate::now_ms);
+
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let delta = aggregate_delta(view, delta_batches).await?;
+        if !delta.is_empty() {
+            let state_batches = view.mv.read_current(&self.client).await?;
+            let state = current_state(view, state_batches)?;
+            let batch = build_mv_batch(view, &delta, &state, epoch)?;
+            view.mv.append_batch(&self.client, batch).await?;
+        }
+
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Refresh an inner equi-join view over two append-only sources.
+    ///
+    /// Returns the epoch written, or `None` when neither source had new rows.
+    /// Each refresh appends `ΔL ⋈ R_before + L_before ⋈ ΔR + ΔL ⋈ ΔR`, so the
+    /// accumulated output equals `L_now ⋈ R_now`; `R_before`/`L_before` are
+    /// read as of each side's cursor with the as-of API (P0-1).
+    pub async fn refresh_join(&self, view: &JoinView) -> Result<Option<i64>> {
+        self.register_join_view(view).await?;
+        ensure_append_only(&view.left, &view.view_id)?;
+        ensure_append_only(&view.right, &view.view_id)?;
+        self.ensure_unpartitioned(&view.left).await?;
+        self.ensure_unpartitioned(&view.right).await?;
+
+        let left_window = self
+            .collect_source_window(&view.view_id, &view.left)
+            .await?;
+        let right_window = self
+            .collect_source_window(&view.view_id, &view.right)
+            .await?;
+        if left_window.added_files.is_empty() && right_window.added_files.is_empty() {
+            return Ok(None);
+        }
+
+        let epoch = left_window
+            .cursors
+            .iter()
+            .chain(right_window.cursors.iter())
+            .map(|cursor| cursor.last_timestamp)
+            .max()
+            .unwrap_or_else(crate::now_ms);
+
+        let left_delta = view
+            .left
+            .read_files(left_window.added_files.clone())
+            .await?;
+        let right_delta = view
+            .right
+            .read_files(right_window.added_files.clone())
+            .await?;
+        let left_before = view
+            .left
+            .read_as_of(&self.client, left_window.before_timestamp)
+            .await?;
+        let right_before = view
+            .right
+            .read_as_of(&self.client, right_window.before_timestamp)
+            .await?;
+
+        if let Some(batch) = compute_join_delta(
+            view,
+            &left_delta,
+            &right_delta,
+            &left_before,
+            &right_before,
+            epoch,
+        )
+        .await?
+        {
+            view.output.append_batch(&self.client, batch).await?;
+        }
+
+        self.advance_cursors(&view.view_id, left_window.cursors)
+            .await?;
+        self.advance_cursors(&view.view_id, right_window.cursors)
+            .await?;
+        Ok(Some(epoch))
+    }
+
+    /// Read the changelog window of every partition of a source.
+    async fn collect_source_window(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+    ) -> Result<SourceWindow> {
         let cursors = self
             .metadata
-            .list_cursors(&view.view_id)
+            .list_cursors(view_id)
             .await?
             .into_iter()
+            .filter(|cursor| cursor.source_table_id == source.table_id)
             .map(|cursor| (cursor.partition_desc.clone(), cursor))
             .collect::<HashMap<String, Cursor>>();
+        let before_timestamp = cursors
+            .values()
+            .map(|cursor| cursor.last_timestamp)
+            .max()
+            .unwrap_or(0);
 
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
-        for partition in self
-            .client
-            .get_all_partition_info(&view.source.table_id)
-            .await?
-        {
+        for partition in self.client.get_all_partition_info(&source.table_id).await? {
             let last_version = cursors
                 .get(&partition.partition_desc)
                 .map(|cursor| cursor.last_version)
@@ -189,7 +394,7 @@ impl IvmRuntime {
             let window = self
                 .client
                 .get_partition_changelog(
-                    &view.source.table_id,
+                    &source.table_id,
                     &partition.partition_desc,
                     last_version,
                     i64::from(partition.version),
@@ -197,8 +402,7 @@ impl IvmRuntime {
                 .await?;
             if window.requires_rebuild {
                 return Err(report!(
-                    "view {} source partition {} requires a rebuild",
-                    view.view_id,
+                    "view {view_id} source partition {} requires a rebuild",
                     partition.partition_desc
                 ));
             }
@@ -208,36 +412,25 @@ impl IvmRuntime {
 
             added_files.extend(window.added_files.iter().map(|file| file.path.clone()));
             new_cursors.push(Cursor {
-                source_table_id: view.source.table_id.clone(),
+                source_table_id: source.table_id.clone(),
                 partition_desc: partition.partition_desc.clone(),
                 last_version: window.to_version,
                 last_timestamp: window.to_timestamp,
             });
         }
 
-        if added_files.is_empty() {
-            return Ok(None);
-        }
+        Ok(SourceWindow {
+            added_files,
+            cursors: new_cursors,
+            before_timestamp,
+        })
+    }
 
-        let epoch = new_cursors
-            .iter()
-            .map(|cursor| cursor.last_timestamp)
-            .max()
-            .unwrap_or_else(crate::now_ms);
-
-        let delta_batches = view.source.read_files(added_files).await?;
-        let delta = aggregate_delta(view, delta_batches).await?;
-        if !delta.is_empty() {
-            let state_batches = view.mv.read_current(&self.client).await?;
-            let state = current_state(view, state_batches)?;
-            let batch = build_mv_batch(view, &delta, &state, epoch)?;
-            view.mv.append_batch(&self.client, batch).await?;
-        }
-
-        for cursor in new_cursors {
+    async fn advance_cursors(&self, view_id: &str, cursors: Vec<Cursor>) -> Result<()> {
+        for cursor in cursors {
             self.metadata
                 .upsert_cursor(
-                    &view.view_id,
+                    view_id,
                     &cursor.source_table_id,
                     &cursor.partition_desc,
                     cursor.last_version,
@@ -245,9 +438,122 @@ impl IvmRuntime {
                 )
                 .await?;
         }
-
-        Ok(Some(epoch))
+        Ok(())
     }
+
+    /// Join sources must be unpartitioned: the inclusion-exclusion terms use
+    /// one as-of timestamp per side and a per-partition cursor mix would make
+    /// the before-state inconsistent.
+    async fn ensure_unpartitioned(&self, source: &IvmTable) -> Result<()> {
+        for partition in self.client.get_all_partition_info(&source.table_id).await? {
+            if partition.partition_desc != DEFAULT_PARTITION_DESC {
+                return Err(report!(
+                    "join source {} must not be range partitioned yet (partition {})",
+                    source.table_name,
+                    partition.partition_desc
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The changelog window of every partition of one source.
+struct SourceWindow {
+    added_files: Vec<String>,
+    cursors: Vec<Cursor>,
+    before_timestamp: i64,
+}
+
+fn ensure_append_only(source: &IvmTable, view_id: &str) -> Result<()> {
+    if !source.primary_keys.is_empty() {
+        return Err(report!(
+            "view {view_id} source {} must be append-only (has primary keys)",
+            source.table_name
+        ));
+    }
+    Ok(())
+}
+
+/// Build the inclusion-exclusion delta of an inner join.
+#[allow(clippy::too_many_arguments)]
+async fn compute_join_delta(
+    view: &JoinView,
+    left_delta: &[RecordBatch],
+    right_delta: &[RecordBatch],
+    left_before: &[RecordBatch],
+    right_before: &[RecordBatch],
+    epoch: i64,
+) -> Result<Option<RecordBatch>> {
+    let context = SessionContext::new();
+    let mut terms: Vec<DataFrame> = Vec::new();
+    if !left_delta.is_empty() && !right_before.is_empty() {
+        terms.push(join_term(&context, left_delta, right_before, view)?);
+    }
+    if !left_before.is_empty() && !right_delta.is_empty() {
+        terms.push(join_term(&context, left_before, right_delta, view)?);
+    }
+    if !left_delta.is_empty() && !right_delta.is_empty() {
+        terms.push(join_term(&context, left_delta, right_delta, view)?);
+    }
+    if terms.is_empty() {
+        return Ok(None);
+    }
+
+    let mut collected = Vec::new();
+    for term in terms {
+        collected.extend(term.collect().await?);
+    }
+
+    let mut keys = Vec::new();
+    let mut left_values = Vec::new();
+    let mut right_values = Vec::new();
+    for batch in &collected {
+        let batch_keys = int64_column(batch, 0, "join_key")?;
+        let batch_left = int64_column(batch, 1, "left_value")?;
+        let batch_right = int64_column(batch, 2, "right_value")?;
+        for row in 0..batch.num_rows() {
+            keys.push(batch_keys.value(row));
+            left_values.push(batch_left.value(row));
+            right_values.push(batch_right.value(row));
+        }
+    }
+    if keys.is_empty() {
+        return Ok(None);
+    }
+
+    let row_count = keys.len();
+    Ok(Some(RecordBatch::try_new(
+        join_view_schema(),
+        vec![
+            Arc::new(Int64Array::from(keys)),
+            Arc::new(Int64Array::from(left_values)),
+            Arc::new(Int64Array::from(right_values)),
+            Arc::new(Int64Array::from_iter_values(std::iter::repeat_n(
+                epoch, row_count,
+            ))),
+        ],
+    )?))
+}
+
+/// Join two batch sets on the view key, projecting to the output columns.
+fn join_term(
+    context: &SessionContext,
+    left: &[RecordBatch],
+    right: &[RecordBatch],
+    view: &JoinView,
+) -> Result<DataFrame> {
+    let left = context.read_batches(left.to_vec())?.select(vec![
+        col(view.join_key.as_str()).alias("join_key"),
+        col(view.left_value.as_str()).alias("left_value"),
+    ])?;
+    let right = context.read_batches(right.to_vec())?.select(vec![
+        col(view.join_key.as_str()).alias("right_key"),
+        col(view.right_value.as_str()).alias("right_value"),
+    ])?;
+    Ok(left
+        .join(right, JoinType::Inner, &["join_key"], &["right_key"], None)?
+        .select(vec![col("join_key"), col("left_value"), col("right_value")])?)
 }
 
 /// Aggregate the changelog batch into `group_key -> (sum, count)`.
