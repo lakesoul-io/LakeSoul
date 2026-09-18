@@ -72,6 +72,7 @@ impl NativeWriter {
         format = "vortex-compact",
         primary_keys = Vec::new(),
         partition_by = Vec::new(),
+        vector_columns = Vec::new(),
         hash_bucket_num = 1,
         batch_size = 8192,
         thread_num = 1,
@@ -88,6 +89,7 @@ impl NativeWriter {
         format: &str,
         primary_keys: Vec<String>,
         partition_by: Vec<String>,
+        vector_columns: Vec<String>,
         hash_bucket_num: usize,
         batch_size: usize,
         thread_num: usize,
@@ -101,6 +103,7 @@ impl NativeWriter {
             &schema.0,
             &primary_keys,
             &partition_by,
+            &vector_columns,
             hash_bucket_num,
             batch_size,
             thread_num,
@@ -123,6 +126,7 @@ impl NativeWriter {
             .with_schema(Arc::new(schema.0))
             .with_primary_keys(primary_keys)
             .with_range_partitions(partition_by.clone())
+            .with_vector_columns(vector_columns)
             .with_hash_bucket_num(hash_bucket_num.to_string())
             .with_batch_size(batch_size)
             .with_thread_num(thread_num)
@@ -204,6 +208,7 @@ fn validate_config(
     schema: &Schema,
     primary_keys: &[String],
     partition_by: &[String],
+    vector_columns: &[String],
     hash_bucket_num: usize,
     batch_size: usize,
     thread_num: usize,
@@ -239,7 +244,11 @@ fn validate_config(
         ));
     }
 
-    for column in primary_keys.iter().chain(partition_by) {
+    for column in primary_keys
+        .iter()
+        .chain(partition_by)
+        .chain(vector_columns)
+    {
         schema
             .field_with_name(column)
             .map_err(|_| PyValueError::new_err(format!("column not in schema: {column}")))?;

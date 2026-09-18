@@ -44,6 +44,7 @@ class TableWriteConfig:
     partition_by: tuple[str, ...]
     hash_bucket_num: int
     format: PhysicalFormat
+    vector_columns: tuple[str, ...] = ()
 
 
 class LakeSoulCatalog:
@@ -406,6 +407,17 @@ class LakeSoulTable:
             raise ValueError(f"invalid hashBucketNum table property: {raw_value!r}")
         return value
 
+    @property
+    def vector_index_columns(self) -> tuple[str, ...]:
+        """Columns declared in the ``vector_index_columns`` table property.
+
+        Writers give these columns small row blocks so index builds and row
+        lookups fetch less data per random access.
+        """
+        if "vector_index_columns" not in self.properties:
+            return ()
+        return tuple(str(config["column"]) for config in self._vector_configs())
+
     def scan(
         self,
         *,
@@ -466,6 +478,7 @@ class LakeSoulTable:
             partition_by=self.partition_by,
             hash_bucket_num=self.hash_bucket_num,
             format=format,
+            vector_columns=self.vector_index_columns,
         )
 
     def write_arrow(
@@ -499,6 +512,7 @@ class LakeSoulTable:
             format=write_config.format,
             primary_keys=write_config.primary_keys,
             partition_by=write_config.partition_by,
+            vector_columns=write_config.vector_columns,
             hash_bucket_num=write_config.hash_bucket_num,
             batch_size=batch_size,
             thread_num=thread_num,

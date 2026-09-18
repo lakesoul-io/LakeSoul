@@ -27,6 +27,7 @@ class IOConfig:
     format: Literal["parquet", "vortex", "vortex-compact"] = "vortex-compact"
     primary_keys: Sequence[str] = ()
     partition_by: Sequence[str] = ()
+    vector_columns: Sequence[str] = ()
     hash_bucket_num: int = 1
     batch_size: int = 8192
     thread_num: int | None = None
@@ -147,6 +148,7 @@ class Writer:
             format=config.format.lower(),
             primary_keys=list(config.primary_keys),
             partition_by=list(config.partition_by),
+            vector_columns=list(config.vector_columns),
             hash_bucket_num=config.hash_bucket_num,
             batch_size=config.batch_size,
             thread_num=_resolve_thread_num(config.thread_num),
@@ -265,8 +267,9 @@ def _validate_config(config: IOConfig) -> None:
 
     primary_keys = _validate_columns("primary_keys", config.primary_keys)
     partition_by = _validate_columns("partition_by", config.partition_by)
+    vector_columns = _validate_columns("vector_columns", config.vector_columns)
     schema_names = set(config.schema.names)
-    for column in (*primary_keys, *partition_by):
+    for column in (*primary_keys, *partition_by, *vector_columns):
         if column not in schema_names:
             raise ValueError(f"column not in schema: {column}")
 
