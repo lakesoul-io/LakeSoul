@@ -299,6 +299,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 已知缺口（下一步）：MV 提交与 cursor 更新之间无原子性，crash 可能重放窗口；
   epoch 幂等（`__ivm_epoch` + `ivm.epochs` 发布）尚未实现；SQL 视图前端未开始。
 
+**Crash 重放保护实施记录（已完成）**
+
+- epoch 改为窗口确定性哈希（`window_epoch`：FNV-1a over view_id + 排序后的
+  `(source_table_id, partition_desc, to_version)`），同一窗口重试得到同一 epoch，
+  不依赖时钟且与窗口一一对应。
+- sum/count：状态读取同时取每组的 `__ivm_epoch`；构建写入批次时，若某组状态
+  epoch 已等于当前窗口 epoch，说明该窗口已应用，跳过该组（幂等），避免
+  crash 后重放导致重复计数。
+- join：输出行携带 `__ivm_epoch`；append 前扫描输出已有 epoch
+  （`applied_output_epochs`），命中则跳过本次 append，只推进 cursor。
+- 测试：模拟"数据已提交、cursor 未推进"（把 cursor 回拨后重跑）——
+  sum/count 状态与 MV 版本号不变、返回 epoch 相同；join 输出不重复、epoch 相同。
+- 仍未完成：`ivm.epochs`（epoch → commit_id 发布，需要 commit API 返回 commit id）
+  与 `ivm.states`；join 输出的 epoch 扫描目前是全量读，后续可用 epoch 索引表替代。
+
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
 - `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算

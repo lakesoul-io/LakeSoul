@@ -272,12 +272,7 @@ impl IvmRuntime {
             return Ok(None);
         }
 
-        let epoch = window
-            .cursors
-            .iter()
-            .map(|cursor| cursor.last_timestamp)
-            .max()
-            .unwrap_or_else(crate::now_ms);
+        let epoch = window_epoch(&view.view_id, &window.identity);
 
         let delta_batches = view.source.read_files(window.added_files).await?;
         let delta = aggregate_delta(view, delta_batches).await?;
@@ -315,13 +310,30 @@ impl IvmRuntime {
             return Ok(None);
         }
 
-        let epoch = left_window
-            .cursors
-            .iter()
-            .chain(right_window.cursors.iter())
-            .map(|cursor| cursor.last_timestamp)
-            .max()
-            .unwrap_or_else(crate::now_ms);
+        let epoch = window_epoch(
+            &view.view_id,
+            &left_window
+                .identity
+                .iter()
+                .chain(right_window.identity.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+
+        // The output carries the epoch of the window that produced each row, so
+        // a refresh that crashed before advancing its cursors can detect that
+        // the window was already applied and skip it instead of appending the
+        // same join pairs again.
+        if applied_output_epochs(&view.output, &self.client)
+            .await?
+            .contains(&epoch)
+        {
+            self.advance_cursors(&view.view_id, left_window.cursors)
+                .await?;
+            self.advance_cursors(&view.view_id, right_window.cursors)
+                .await?;
+            return Ok(Some(epoch));
+        }
 
         let left_delta = view
             .left
@@ -382,6 +394,7 @@ impl IvmRuntime {
 
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
+        let mut identity = Vec::new();
         for partition in self.client.get_all_partition_info(&source.table_id).await? {
             let last_version = cursors
                 .get(&partition.partition_desc)
@@ -411,6 +424,11 @@ impl IvmRuntime {
             }
 
             added_files.extend(window.added_files.iter().map(|file| file.path.clone()));
+            identity.push((
+                source.table_id.clone(),
+                partition.partition_desc.clone(),
+                window.to_version,
+            ));
             new_cursors.push(Cursor {
                 source_table_id: source.table_id.clone(),
                 partition_desc: partition.partition_desc.clone(),
@@ -422,6 +440,7 @@ impl IvmRuntime {
         Ok(SourceWindow {
             added_files,
             cursors: new_cursors,
+            identity,
             before_timestamp,
         })
     }
@@ -462,7 +481,52 @@ impl IvmRuntime {
 struct SourceWindow {
     added_files: Vec<String>,
     cursors: Vec<Cursor>,
+    /// `(source_table_id, partition_desc, to_version)` of every consumed
+    /// partition; together with the view id this is the window identity the
+    /// epoch is derived from.
+    identity: Vec<(String, String, i64)>,
     before_timestamp: i64,
+}
+
+/// The deterministic epoch of a refresh window.
+///
+/// The epoch is a stable FNV-1a hash of the view id and of every consumed
+/// `(source, partition, version)`, so retrying the same window after a crash
+/// derives the same epoch and the target table can detect that the window was
+/// already applied. It also makes the value independent of wall clocks.
+fn window_epoch(view_id: &str, identity: &[(String, String, i64)]) -> i64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut write = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    write(view_id.as_bytes());
+    let mut sorted = identity.to_vec();
+    sorted.sort();
+    for (source, partition, version) in &sorted {
+        write(source.as_bytes());
+        write(partition.as_bytes());
+        write(&version.to_le_bytes());
+    }
+    hash as i64
+}
+
+/// The epochs already present in the append-only join output.
+async fn applied_output_epochs(
+    output: &IvmTable,
+    client: &MetaDataClient,
+) -> Result<std::collections::HashSet<i64>> {
+    let mut epochs = std::collections::HashSet::new();
+    for batch in output.read_current(client).await? {
+        let index = batch.schema().index_of(IVM_EPOCH_COLUMN)?;
+        let column = int64_column(&batch, index, IVM_EPOCH_COLUMN)?;
+        for row in 0..batch.num_rows() {
+            epochs.insert(column.value(row));
+        }
+    }
+    Ok(epochs)
 }
 
 fn ensure_append_only(source: &IvmTable, view_id: &str) -> Result<()> {
@@ -591,11 +655,11 @@ async fn aggregate_delta(
     Ok(delta)
 }
 
-/// Read the current merge-on-read state as `group_key -> (sum, count)`.
+/// Read the current merge-on-read state as `group_key -> (sum, count, epoch)`.
 fn current_state(
     view: &SumCountView,
     batches: Vec<arrow::record_batch::RecordBatch>,
-) -> Result<HashMap<i64, (i64, i64)>> {
+) -> Result<HashMap<i64, (i64, i64, i64)>> {
     let mut state = HashMap::new();
     for batch in batches {
         let schema = batch.schema();
@@ -603,10 +667,12 @@ fn current_state(
         let sum_index = schema.index_of(IVM_SUM_COLUMN)?;
         let count_index = schema.index_of(IVM_COUNT_COLUMN)?;
         let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
+        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
 
         let keys = int64_column(&batch, key_index, &view.group_key)?;
         let sums = int64_column(&batch, sum_index, IVM_SUM_COLUMN)?;
         let counts = int64_column(&batch, count_index, IVM_COUNT_COLUMN)?;
+        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
         let kinds = batch
             .column(kind_index)
             .as_any()
@@ -616,7 +682,8 @@ fn current_state(
         for row in 0..batch.num_rows() {
             let key = keys.value(row);
             if kinds.value(row) == "insert" {
-                state.insert(key, (sums.value(row), counts.value(row)));
+                state
+                    .insert(key, (sums.value(row), counts.value(row), epochs.value(row)));
             } else if !state.contains_key(&key) {
                 state.remove(&key);
             }
@@ -626,10 +693,14 @@ fn current_state(
 }
 
 /// Build the `delete(old) + insert(new)` batch for the affected groups.
+///
+/// Groups whose state already carries `epoch` were written by a previous
+/// attempt of the same window (a refresh that crashed before advancing its
+/// cursors) and are skipped, which makes the refresh idempotent.
 fn build_mv_batch(
     view: &SumCountView,
     delta: &HashMap<i64, (i64, i64)>,
-    state: &HashMap<i64, (i64, i64)>,
+    state: &HashMap<i64, (i64, i64, i64)>,
     epoch: i64,
 ) -> Result<arrow::record_batch::RecordBatch> {
     let mut keys = Vec::new();
@@ -643,6 +714,11 @@ fn build_mv_batch(
     for key in affected {
         let (delta_sum, delta_count) = delta[&key];
         let previous = state.get(&key).copied();
+        if previous.is_some_and(|(_, _, state_epoch)| state_epoch == epoch) {
+            continue;
+        }
+        let previous = previous.map(|(sum, count, _)| (sum, count));
+
         if let Some((old_sum, old_count)) = previous {
             keys.push(key);
             sums.push(old_sum);

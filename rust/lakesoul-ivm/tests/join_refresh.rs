@@ -231,3 +231,100 @@ async fn join_refresh_matches_full_join_with_two_sided_windows() {
         .await
         .unwrap();
 }
+
+#[test_log::test(tokio::test)]
+async fn join_refresh_is_idempotent_when_cursors_are_replayed() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let view_id = format!("join_idem_{suffix}");
+    let left_name = format!("ivm_left_idem_{suffix}");
+    let right_name = format!("ivm_right_idem_{suffix}");
+    let output_name = format!("ivm_join_idem_{suffix}");
+
+    let left = runtime
+        .create_table(IvmTableOptions::new(
+            left_name.clone(),
+            table_path(&dir, "left"),
+            source_schema(),
+        ))
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(IvmTableOptions::new(
+            right_name.clone(),
+            table_path(&dir, "right"),
+            source_schema(),
+        ))
+        .await
+        .unwrap();
+    let output = runtime
+        .create_table(IvmTableOptions::new(
+            output_name.clone(),
+            table_path(&dir, "join"),
+            join_view_schema(),
+        ))
+        .await
+        .unwrap();
+    let view = JoinView::new(
+        view_id.clone(),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        "k",
+        "v",
+        "v",
+    );
+
+    left.append_batch(runtime.client(), source_batch(&[(1, 10), (2, 20)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), source_batch(&[(2, 200)]))
+        .await
+        .unwrap();
+    let first = runtime.refresh_join(&view).await.unwrap().unwrap();
+    let rows = join_rows(&runtime, &output).await;
+    assert_eq!(rows, vec![(2, 20, 200)]);
+
+    // Simulate a crash after the output append but before the cursors moved.
+    for table in [&left, &right] {
+        runtime
+            .metadata()
+            .upsert_cursor(
+                &view_id,
+                &table.table_id,
+                lakesoul_io::constant::DEFAULT_PARTITION_DESC,
+                -1,
+                0,
+            )
+            .await
+            .unwrap();
+    }
+
+    let replayed = runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(replayed, first);
+    // the output carries the window epoch, so the replay appends nothing
+    assert_eq!(join_rows(&runtime, &output).await, rows);
+
+    let cursors = runtime.metadata().list_cursors(&view_id).await.unwrap();
+    assert_eq!(cursors.len(), 2);
+    assert!(cursors.iter().all(|cursor| cursor.last_version == 0));
+
+    runtime
+        .client()
+        .drop_table(&left_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&right_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&output_name, "default")
+        .await
+        .unwrap();
+}

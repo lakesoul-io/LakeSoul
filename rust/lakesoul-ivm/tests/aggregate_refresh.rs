@@ -157,7 +157,7 @@ async fn sum_count_refresh_matches_full_aggregation() {
         .await
         .unwrap();
     let epoch = runtime.refresh_sum_count(&view).await.unwrap().unwrap();
-    assert!(epoch > 0);
+    assert_ne!(epoch, 0);
     assert_eq!(
         mv_state(&runtime, &mv).await,
         HashMap::from([(1, (10, 1)), (2, (5, 1))])
@@ -169,7 +169,7 @@ async fn sum_count_refresh_matches_full_aggregation() {
         .await
         .unwrap();
     let second_epoch = runtime.refresh_sum_count(&view).await.unwrap().unwrap();
-    assert!(second_epoch >= epoch);
+    assert_ne!(second_epoch, epoch);
     assert_eq!(
         mv_state(&runtime, &mv).await,
         HashMap::from([(1, (17, 2)), (2, (5, 1)), (3, (3, 1))])
@@ -183,7 +183,7 @@ async fn sum_count_refresh_matches_full_aggregation() {
         lakesoul_io::constant::DEFAULT_PARTITION_DESC
     );
     assert_eq!(cursors[0].last_version, 1);
-    assert_eq!(cursors[0].last_timestamp, second_epoch);
+    assert!(cursors[0].last_timestamp > 0);
 
     // A refresh without new source commits does not write the MV again.
     let mv_version = runtime
@@ -303,4 +303,98 @@ async fn state_table_reads_rows_bucketed_by_key_prefix() {
     assert_eq!(rows, vec![(1, 1, 10), (1, 2, 30), (2, 1, 20)]);
 
     runtime.client().drop_table(&name, "default").await.unwrap();
+}
+
+#[test_log::test(tokio::test)]
+async fn refresh_is_idempotent_when_the_cursor_is_replayed() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let view_id = format!("sum_count_idem_{suffix}");
+    let source_name = format!("ivm_src_idem_{suffix}");
+    let mv_name = format!("ivm_mv_idem_{suffix}");
+
+    let source = runtime
+        .create_table(IvmTableOptions::new(
+            source_name.clone(),
+            table_path(&dir, "src"),
+            source_schema(),
+        ))
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                mv_name.clone(),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema("k"),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = SumCountView::new(
+        view_id.clone(),
+        source.clone(),
+        mv.clone(),
+        "k",
+        Some("v".to_string()),
+    );
+
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, 10), (2, 5)]))
+        .await
+        .unwrap();
+    let first = runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    let state = mv_state(&runtime, &mv).await;
+    let mv_version = runtime
+        .client()
+        .get_all_partition_info(&mv.table_id)
+        .await
+        .unwrap()[0]
+        .version;
+
+    // Simulate a crash after the MV commit but before the cursor advanced.
+    runtime
+        .metadata()
+        .upsert_cursor(
+            &view_id,
+            &source.table_id,
+            lakesoul_io::constant::DEFAULT_PARTITION_DESC,
+            -1,
+            0,
+        )
+        .await
+        .unwrap();
+
+    let replayed = runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    // the epoch is derived from the window, so the replay gets the same value
+    assert_eq!(replayed, first);
+    // and the state rows already carrying that epoch are not applied twice
+    assert_eq!(mv_state(&runtime, &mv).await, state);
+    assert_eq!(
+        runtime
+            .client()
+            .get_all_partition_info(&mv.table_id)
+            .await
+            .unwrap()[0]
+            .version,
+        mv_version
+    );
+
+    let cursors = runtime.metadata().list_cursors(&view_id).await.unwrap();
+    assert_eq!(cursors.len(), 1);
+    assert_eq!(cursors[0].last_version, 0);
+
+    runtime
+        .client()
+        .drop_table(&source_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&mv_name, "default")
+        .await
+        .unwrap();
 }
