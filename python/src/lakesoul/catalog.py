@@ -1043,6 +1043,11 @@ class LakeSoulScan:
         to repeat the column.
         """
         reader_options = dict(self._reader_options)
+        # CDC tables: the native reader drops delete tombstones after the
+        # merge-on-read merge, so forward the configured change column.
+        cdc_column = dict(self._table.properties).get("cdc_change_column")
+        if cdc_column:
+            reader_options.setdefault("cdc_column", str(cdc_column))
         if "vector_search_query" not in reader_options:
             return reader_options
         configs = self._table._vector_configs()

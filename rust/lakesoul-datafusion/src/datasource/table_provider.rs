@@ -729,6 +729,7 @@ impl LakeSoulTableProvider {
             self.table_paths()[0].object_store(),
             self.primary_keys.clone(),
             self.io_config.object_store_options().clone(),
+            self.io_config.cdc_column(),
             request,
             self.client.vector_index_catalog(),
         )?;

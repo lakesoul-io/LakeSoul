@@ -73,6 +73,9 @@ pub struct LakeSoulVectorSearchExec {
     primary_keys: Vec<String>,
     /// Object store configuration options (e.g. S3 credentials).
     object_store_options: HashMap<String, String>,
+    /// CDC change column; when set, delete tombstones are dropped after the
+    /// merge-on-read merge.
+    cdc_column: String,
     /// Vector search parameters.
     vector_search: VectorSearchRequest,
     /// Catalog used to resolve index commits and hold reader leases.
@@ -95,6 +98,7 @@ impl LakeSoulVectorSearchExec {
         object_store_url: ObjectStoreUrl,
         primary_keys: Vec<String>,
         object_store_options: HashMap<String, String>,
+        cdc_column: String,
         vector_search: VectorSearchRequest,
         catalog: VectorCatalog,
     ) -> DFResult<Self> {
@@ -107,6 +111,7 @@ impl LakeSoulVectorSearchExec {
             object_store_url,
             primary_keys,
             object_store_options,
+            cdc_column,
             vector_search,
             catalog,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -234,6 +239,14 @@ impl LakeSoulVectorSearchExec {
             // file.  DataFusion still re-applies the filter above for
             // correctness (our pushdown is best-effort/Inexact).
             .with_option(lakesoul_io::config::OPTION_KEY_FILE_FILTER_PUSHDOWN, "true");
+        if !self.cdc_column.is_empty() {
+            // CDC delete tombstones must be dropped after the merge, so the
+            // native reader applies `cdc_column != 'delete'`.
+            builder = builder.with_option(
+                lakesoul_io::config::OPTION_KEY_CDC_COLUMN,
+                self.cdc_column.clone(),
+            );
+        }
 
         if !self.partition_cols.is_empty() {
             let partition_schema = Arc::new(Schema::new(
