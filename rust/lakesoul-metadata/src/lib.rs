@@ -24,7 +24,10 @@ pub use crate::pooled_client::PooledClient;
 use crate::pooled_client::{PgConnection, QueryType};
 pub use error::{LakeSoulMetaDataError, Result};
 use lakesoul_metadata_proto::entity;
-pub use metadata_client::{MetaDataClient, MetaDataClientRef, pg_config_from_env};
+pub use metadata_client::{
+    IncrementalWindow, MetaDataClient, MetaDataClientRef, PartitionChangelog,
+    pg_config_from_env,
+};
 
 pub mod transfusion;
 
@@ -148,6 +151,9 @@ pub enum DaoType {
     SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
     /// The coded type for the Data Access Object for select discard compressed file info by file path.
     SelectDiscardCompressedFileInfoByFilePath = DAO_TYPE_QUERY_ONE_OFFSET + 11,
+    /// The coded type for the Data Access Object for select the latest partition version by table id, partition description and timestamp (inclusive).
+    SelectOnePartitionVersionByTableIdAndDescAndTimestamp =
+        DAO_TYPE_QUERY_ONE_OFFSET + 12,
 
     // ==== Coded Table List ====
     /// The coded type for the Data Access Object for list namespaces.
@@ -192,6 +198,8 @@ pub enum DaoType {
     ListTableNamesByDomain = DAO_TYPE_QUERY_LIST_OFFSET + 15,
 
     ListPartitionByTableIdAndFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 16,
+    /// The coded type for the Data Access Object for list the latest partition version of each partition by table id at or before a timestamp (inclusive).
+    ListPartitionByTableIdAndTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 17,
 
     // ==== Coded Insert One ====
     /// The coded type for the Data Access Object for insert namespace.
@@ -373,6 +381,13 @@ async fn get_prepared_statement<'a>(
                 where table_id = $1::TEXT and partition_desc = $2::TEXT order by table_id, partition_desc, version desc limit 1) t
                 left join partition_info m on t.table_id = m.table_id
                 and t.partition_desc = m.partition_desc and t.version = m.version",
+        DaoType::SelectOnePartitionVersionByTableIdAndDescAndTimestamp =>
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
+                select table_id,partition_desc,version from partition_info
+                where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT
+                order by table_id, partition_desc, version desc limit 1) t
+                left join partition_info m on t.table_id = m.table_id
+                and t.partition_desc = m.partition_desc and t.version = m.version",
         DaoType::ListPartitionByTableIdAndDesc =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
             from partition_info
@@ -393,7 +408,8 @@ async fn get_prepared_statement<'a>(
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
             from partition_info
-            where table_id = $1::TEXT and partition_desc = $2::TEXT and version >= $3::INT and version <= $4::INT",
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and version >= $3::INT and version <= $4::INT
+            order by version",
 
         // Select DataCommitInfo
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
@@ -428,6 +444,11 @@ async fn get_prepared_statement<'a>(
             ) t
             left join partition_info m
             on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max_version = m.version",
+        DaoType::ListPartitionByTableIdAndTimestamp =>
+            "select DISTINCT ON (table_id, partition_desc) table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+             from partition_info
+             where table_id = $1::TEXT and timestamp <= $2::BIGINT
+             ORDER BY table_id DESC, partition_desc DESC, version DESC",
         // Select Table Domain by id
         DaoType::SelectTableDomainById =>
             "select table_name, table_id, table_namespace, domain
@@ -755,6 +776,30 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::SelectOnePartitionVersionByTableIdAndDescAndTimestamp
+            if params.len() == 3 =>
+        {
+            let result = conn
+                .query_opt(
+                    &statement,
+                    &[&params[0], &params[1], &i64::from_str(&params[2])?],
+                )
+                .await;
+            match result {
+                Ok(Some(row)) => vec![row],
+                Ok(None) => vec![],
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
+        DaoType::ListPartitionByTableIdAndTimestamp if params.len() == 2 => {
+            let result = conn
+                .query(&statement, &[&params[0], &i64::from_str(&params[1])?])
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::SelectTableNameIdByTableName
         | DaoType::SelectTableInfoByTableNameAndNameSpace
         | DaoType::SelectTableInfoByIdAndTablePath
@@ -937,9 +982,11 @@ pub async fn execute_query(
         | DaoType::ListPartitionDescByTableIdAndParList
         | DaoType::SelectPartitionVersionByTableIdAndDescAndVersion
         | DaoType::SelectOnePartitionVersionByTableIdAndDesc
+        | DaoType::SelectOnePartitionVersionByTableIdAndDescAndTimestamp
         | DaoType::ListPartitionByTableIdAndDesc
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
+        | DaoType::ListPartitionByTableIdAndTimestamp
         | DaoType::ListPartitionByTableIdAndFilterCondition => ResultType::PartitionInfo,
 
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId

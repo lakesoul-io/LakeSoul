@@ -37,6 +37,7 @@ class Dataset(torch.utils.data.IterableDataset):
                 list(self._scan.columns) if self._scan.columns is not None else None
             ),
             filter=self._scan.expression,
+            batch_size=scan_config.batch_size,
         )
 
 
