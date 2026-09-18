@@ -385,8 +385,6 @@ def check_parameters(
     *,
     check_columns: bool = True,
     check_filter: bool = True,
-    check_batch_readahead: bool = True,
-    check_fragment_readahead: bool = True,
     check_fragment_scan_options: bool = True,
     check_cache_metadata: bool = True,
     check_memory_pool: bool = True,
@@ -411,10 +409,6 @@ def check_parameters(
                 raise NotImplementedError(
                     f"filter type {type(kwargs['filter'])} is not supported"
                 )
-            if check_batch_readahead and kwargs["batch_readahead"] is not None:
-                raise NotImplementedError("batch_readahead is not supported")
-            if check_fragment_readahead and kwargs["fragment_readahead"] is not None:
-                raise NotImplementedError("fragment_readahead is not supported")
             if (
                 check_fragment_scan_options
                 and kwargs["fragment_scan_options"] is not None
@@ -648,6 +642,37 @@ def schema_projection(origin: pa.Schema, projections: list[str]) -> pa.Schema:
     return pa.schema(fields)
 
 
+def _apply_readahead_options(
+    scanner: Scanner,
+    batch_readahead: int | None,
+    fragment_readahead: int | None,
+) -> None:
+    """Map pyarrow-style readahead knobs onto the native reader.
+
+    ``batch_readahead`` becomes the native ``prefetch_size``: the reader pulls
+    that many batches ahead of the consumer. ``fragment_readahead`` is already
+    satisfied because every scan fragment's reader starts concurrently.
+    """
+    if batch_readahead is not None:
+        _validate_readahead("batch_readahead", batch_readahead)
+        scanner._reader_options = {
+            **getattr(scanner, "_reader_options", {}),
+            "prefetch_size": str(batch_readahead),
+        }
+    if fragment_readahead is not None:
+        _validate_readahead("fragment_readahead", fragment_readahead)
+        logging.debug(
+            "fragment_readahead=%s is already satisfied: "
+            "all fragments stream concurrently",
+            fragment_readahead,
+        )
+
+
+def _validate_readahead(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
 @final
 class Scanner(ds.Scanner):
     def __init__(  # pyright: ignore[reportMissingSuperCall]
@@ -732,6 +757,7 @@ class Scanner(ds.Scanner):
             filter,
         )
         scanner._reader_options = getattr(dataset, "_reader_options", {})
+        _apply_readahead_options(scanner, batch_readahead, fragment_readahead)
         return scanner
 
     @staticmethod
@@ -764,7 +790,7 @@ class Scanner(ds.Scanner):
         if columns is not None:
             schema = schema_projection(schema, columns)
 
-        return Scanner(
+        scanner = Scanner(
             batch_size,
             thread_count,
             schema,
@@ -775,6 +801,8 @@ class Scanner(ds.Scanner):
             fragment.partition_schema(),
             filter,
         )
+        _apply_readahead_options(scanner, batch_readahead, fragment_readahead)
+        return scanner
 
     def head(self, num_rows: int) -> pa.Table:
         reader = self.to_reader()

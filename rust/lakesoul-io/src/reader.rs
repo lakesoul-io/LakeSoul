@@ -44,6 +44,7 @@ use datafusion_session::Session;
 use futures::StreamExt;
 use rootcause::{bail, compat::boxed_error::IntoBoxedError};
 use tokio::{runtime::Runtime, sync::Mutex, task::JoinHandle};
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::session::GLOBAL_RUNTIME;
 use crate::{
@@ -101,6 +102,32 @@ pub struct LakeSoulReader {
     io_session: LakeSoulIOSession,
     stream: Option<SendableRecordBatchStream>,
     pub(crate) schema: Option<SchemaRef>,
+}
+
+/// Pull up to `prefetch_size` batches ahead of the consumer so decoding of the
+/// next batch overlaps with processing of the current one. Values below 2
+/// return the stream unchanged.
+fn maybe_prefetch(
+    stream: SendableRecordBatchStream,
+    prefetch_size: usize,
+) -> SendableRecordBatchStream {
+    if prefetch_size <= 1 {
+        return stream;
+    }
+    let schema = stream.schema();
+    let (tx, rx) = tokio::sync::mpsc::channel(prefetch_size);
+    let mut source = stream;
+    tokio::spawn(async move {
+        while let Some(item) = source.next().await {
+            if tx.send(item).await.is_err() {
+                break;
+            }
+        }
+    });
+    Box::pin(RecordBatchStreamAdapter::new(
+        schema,
+        ReceiverStream::new(rx),
+    ))
 }
 
 impl LakeSoulReader {
@@ -244,7 +271,9 @@ impl LakeSoulReader {
                     datafusion::physical_plan::displayable(plan.as_ref()).indent(true)
                 );
             }
-            execute_stream(plan, self.io_session.task_ctx())?
+            let stream = execute_stream(plan, self.io_session.task_ctx())?;
+            let prefetch_size = self.io_session.io_config().prefetch_size();
+            maybe_prefetch(stream, prefetch_size)
         };
         let schema = stream.schema();
         debug!("reader schema: {}", schema);
@@ -813,5 +842,71 @@ mod tests {
         }
         println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion_common::DataFusionError;
+    use datafusion_execution::SendableRecordBatchStream;
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+    use futures::StreamExt;
+    use futures::stream;
+
+    use super::maybe_prefetch;
+
+    fn batch(values: &[i32]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int32,
+            false,
+        )]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(values.to_vec())) as ArrayRef],
+        )
+        .unwrap()
+    }
+
+    fn stream_of(
+        items: Vec<Result<RecordBatch, DataFusionError>>,
+    ) -> SendableRecordBatchStream {
+        let schema = batch(&[]).schema();
+        Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            stream::iter(items).boxed(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn prefetch_preserves_order_and_errors() {
+        let error = DataFusionError::Execution("boom".to_string());
+        let mut stream = maybe_prefetch(
+            stream_of(vec![Ok(batch(&[1])), Err(error), Ok(batch(&[2, 3]))]),
+            2,
+        );
+
+        let mut seen = Vec::new();
+        while let Some(item) = stream.next().await {
+            seen.push(item);
+        }
+
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].as_ref().unwrap().num_rows(), 1);
+        assert!(seen[1].is_err());
+        assert_eq!(seen[2].as_ref().unwrap().num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn prefetch_size_one_passes_through() {
+        let mut stream = maybe_prefetch(stream_of(vec![Ok(batch(&[7]))]), 1);
+
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.num_rows(), 1);
+        assert!(stream.next().await.is_none());
     }
 }

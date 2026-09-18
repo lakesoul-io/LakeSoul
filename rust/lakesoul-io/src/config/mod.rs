@@ -31,6 +31,22 @@ impl Default for IOSchema {
     }
 }
 
+/// Per-column write layout override.
+///
+/// Every field is optional; `None` keeps the writer default for that aspect.
+/// Columns not listed fall back to the built-in defaults: vector index columns
+/// get small row blocks, binary/blob columns are written without compression so
+/// already-compressed payloads (e.g. H.264 GOPs) are not compressed twice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ColumnPolicy {
+    /// `Some(false)` writes the column without the BtrBlocks compressor.
+    pub compress: Option<bool>,
+    /// Overrides the row block size used for row repartitioning.
+    pub row_block_size: Option<usize>,
+    /// Overrides the target uncompressed byte size for block coalescing.
+    pub data_block_target_bytes: Option<u64>,
+}
+
 /// Configuration for LakeSoul IO operations.
 ///
 /// This struct contains all the necessary parameters for configuring LakeSoul IO operations,
@@ -47,6 +63,8 @@ pub struct LakeSoulIOConfig {
     /// Vector index columns; the writer gives these columns small row
     /// blocks so candidate rows can be fetched by row index cheaply.
     pub(crate) vector_columns: Vec<String>,
+    /// Per-column write layout overrides, keyed by column name.
+    pub(crate) column_policies: HashMap<String, ColumnPolicy>,
     /// Index commits resolved by the caller (the layer with metadata
     /// access) for index search.
     pub(crate) resolved_index_shards: Vec<crate::index::commit::ResolvedIndex>,
@@ -148,6 +166,22 @@ impl LakeSoulIOConfig {
     /// Returns a slice of vector index column names
     pub fn vector_columns_slice(&self) -> &[String] {
         &self.vector_columns
+    }
+
+    /// Returns the per-column write layout overrides.
+    pub fn column_policies(&self) -> &HashMap<String, ColumnPolicy> {
+        &self.column_policies
+    }
+
+    /// Number of batches the reader keeps in flight ahead of the consumer.
+    ///
+    /// The `prefetch_size` option overrides the builder value; values below 2
+    /// disable prefetching.
+    pub fn prefetch_size(&self) -> usize {
+        self.option(OPTION_KEY_PREFETCH_SIZE)
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(self.prefetch_size)
     }
 
     /// Returns the index commits resolved by the caller for index search.
@@ -418,6 +452,25 @@ impl LakeSoulIOConfigBuilder {
     /// columns small row blocks for cheap row-index fetches.
     pub fn with_vector_columns(mut self, columns: Vec<String>) -> Self {
         self.config.vector_columns = columns;
+        self
+    }
+
+    /// Sets one column's write layout override.
+    pub fn with_column_policy(
+        mut self,
+        column: impl Into<String>,
+        policy: ColumnPolicy,
+    ) -> Self {
+        self.config.column_policies.insert(column.into(), policy);
+        self
+    }
+
+    /// Replaces all column write layout overrides.
+    pub fn with_column_policies(
+        mut self,
+        policies: HashMap<String, ColumnPolicy>,
+    ) -> Self {
+        self.config.column_policies = policies;
         self
     }
 

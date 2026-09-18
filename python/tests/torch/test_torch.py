@@ -47,9 +47,10 @@ def _scan_config(
 
 def _capture_arrow_dataset(monkeypatch, captured):
     class FakeArrowDataset:
-        def to_batches(self, *, columns, filter):
+        def to_batches(self, *, columns, filter, batch_size=None):
             captured["columns"] = columns
             captured["filter"] = filter
+            captured["batch_size"] = batch_size
             yield pa.record_batch({"id": [1, 2, 3]})
 
     def fake_lakesoul_dataset(scan_config):
@@ -76,6 +77,7 @@ def test_torch_dataset_reads_unsharded_scan(monkeypatch) -> None:
     assert captured["scan_config"].world_size is None
     assert captured["columns"] == ["id"]
     assert captured["filter"] is None
+    assert captured["batch_size"] == captured["scan_config"].batch_size
 
 
 def test_torch_dataset_applies_distributed_shard(monkeypatch) -> None:
