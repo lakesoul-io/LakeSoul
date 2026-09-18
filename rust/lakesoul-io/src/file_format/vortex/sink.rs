@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
+use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
@@ -34,19 +35,25 @@ use object_store::ObjectStore;
 use object_store::path::Path;
 use tokio_stream::wrappers::ReceiverStream;
 use vortex::array::ArrayId;
+use vortex::array::ArrayRef;
+use vortex::array::ExecutionCtx;
 use vortex::array::session::ArraySessionExt;
 use vortex::array::stream::ArrayStreamAdapter;
 use vortex::arrow::ArrowSessionExt;
 use vortex::compressor::BtrBlocksCompressorBuilder;
 use vortex::editions::{ComponentKind, EditionSessionExt};
+use vortex::error::VortexResult;
 use vortex::file::Footer as FileFooter;
 use vortex::file::WriteOptionsSessionExt;
 use vortex::file::WriteStrategyBuilder;
 use vortex::file::WriteSummary;
 use vortex::io::VortexWrite;
 use vortex::io::object_store::ObjectStoreWrite;
+use vortex::layout::layouts::compressed::CompressorPlugin;
 use vortex::session::VortexSession;
 use vortex::utils::aliases::hash_set::HashSet;
+
+use crate::config::ColumnPolicy;
 
 /// Row block size used for vector index columns.  Candidate rows are
 /// fetched by row index, and vortex reads random rows at row-block
@@ -70,13 +77,90 @@ fn allowed_array_encodings(session: &VortexSession) -> HashSet<ArrayId> {
         .collect()
 }
 
+/// Effective write layout for one column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ColumnOverride {
+    /// Whether the BtrBlocks compressor is applied to the column.
+    compress: bool,
+    /// Row block size override; `None` keeps the writer default.
+    row_block_size: Option<usize>,
+    /// Data block target bytes override; `None` keeps the writer default.
+    data_block_target_bytes: Option<u64>,
+}
+
+fn is_blob_dtype(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_)
+    )
+}
+
+/// Resolve the effective layout of every column that deviates from the
+/// defaults: vector columns get small row blocks, binary/blob columns skip
+/// compression, and explicit policies override both.
+fn resolve_column_overrides(
+    schema: &SchemaRef,
+    vector_columns: &[String],
+    policies: &HashMap<String, ColumnPolicy>,
+) -> HashMap<String, ColumnOverride> {
+    let mut overrides = HashMap::new();
+    for field in schema.fields() {
+        let name = field.name();
+        let is_vector = vector_columns.iter().any(|column| column == name);
+        let policy = policies.get(name);
+        let default_compress = if is_vector {
+            true
+        } else {
+            !is_blob_dtype(field.data_type())
+        };
+        let compress = policy
+            .and_then(|policy| policy.compress)
+            .unwrap_or(default_compress);
+        let row_block_size =
+            policy
+                .and_then(|policy| policy.row_block_size)
+                .or(if is_vector {
+                    Some(VECTOR_ROW_BLOCK_SIZE)
+                } else {
+                    None
+                });
+        let data_block_target_bytes =
+            policy.and_then(|policy| policy.data_block_target_bytes);
+        let default_override = ColumnOverride {
+            compress: true,
+            row_block_size: None,
+            data_block_target_bytes: None,
+        };
+        let effective = ColumnOverride {
+            compress,
+            row_block_size,
+            data_block_target_bytes,
+        };
+        if effective != default_override {
+            overrides.insert(name.clone(), effective);
+        }
+    }
+    overrides
+}
+
+/// A compressor that returns the chunk unchanged, disabling compression for
+/// one column while keeping the rest of the layout pipeline.
+fn no_compression_compressor() -> impl CompressorPlugin {
+    |chunk: &ArrayRef, _ctx: &mut ExecutionCtx| -> VortexResult<ArrayRef> {
+        Ok(chunk.clone())
+    }
+}
+
 pub struct VortexSink {
     config: FileSinkConfig,
     schema: SchemaRef,
     session: VortexSession,
     is_compact: bool,
-    /// Vector index columns that get small row blocks.
-    vector_columns: Vec<String>,
+    /// Effective per-column write layout, keyed by column name.
+    column_overrides: HashMap<String, ColumnOverride>,
     /// The Mutex is only used to allow inserting to HashMap from behind borrowed reference in DataSink::write_all.
     written: Arc<parking_lot::Mutex<HashMap<Path, FileFooter>>>,
 
@@ -93,7 +177,10 @@ impl VortexSink {
         schema: SchemaRef,
         is_compact: bool,
         vector_columns: Vec<String>,
+        column_policies: &HashMap<String, ColumnPolicy>,
     ) -> Self {
+        let column_overrides =
+            resolve_column_overrides(&schema, &vector_columns, column_policies);
         let metrics = ExecutionPlanMetricsSet::new();
         let rows_written = MetricBuilder::new(&metrics)
             .with_category(MetricCategory::Rows)
@@ -106,7 +193,7 @@ impl VortexSink {
             schema,
             session,
             is_compact,
-            vector_columns,
+            column_overrides,
             written: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             metrics,
             rows_written,
@@ -115,8 +202,7 @@ impl VortexSink {
     }
 
     /// Build the write strategy: the default strategy, optionally with the
-    /// compact compressor, plus a small-row-block override for every vector
-    /// index column.
+    /// compact compressor, plus per-column overrides for vector/blob columns.
     fn write_strategy(&self) -> Arc<dyn vortex::layout::LayoutStrategy> {
         // The custom strategy replaces the default one, which would normally
         // restrict BtrBlocks schemes to the encodings permitted by the
@@ -137,16 +223,23 @@ impl VortexSink {
         };
 
         let mut builder = make_builder();
-        if !self.vector_columns.is_empty() {
-            let vector_strategy: Arc<dyn vortex::layout::LayoutStrategy> = make_builder()
-                .with_row_block_size(VECTOR_ROW_BLOCK_SIZE)
-                .build();
-            for column in &self.vector_columns {
-                builder = builder.with_field_writer(
-                    vortex::dtype::FieldPath::from_name(column.as_str()),
-                    Arc::clone(&vector_strategy),
-                );
+        for (column, policy) in &self.column_overrides {
+            let mut column_builder = make_builder();
+            if !policy.compress {
+                column_builder =
+                    column_builder.with_compressor(no_compression_compressor());
             }
+            if let Some(row_block_size) = policy.row_block_size {
+                column_builder = column_builder.with_row_block_size(row_block_size);
+            }
+            if let Some(data_block_target_bytes) = policy.data_block_target_bytes {
+                column_builder = column_builder
+                    .with_data_block_target_bytes(Some(data_block_target_bytes));
+            }
+            builder = builder.with_field_writer(
+                vortex::dtype::FieldPath::from_name(column.as_str()),
+                column_builder.build(),
+            );
         }
         builder.build()
     }
@@ -317,5 +410,128 @@ impl FileSink for VortexSink {
             .map_err(|e| DataFusionError::ExecutionJoin(Box::new(e)))??;
 
         Ok(row_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_schema::Field;
+    use arrow_schema::Schema;
+
+    use super::*;
+
+    fn test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    8,
+                ),
+                false,
+            ),
+            Field::new("frame", DataType::Binary, false),
+            Field::new("clip", DataType::LargeBinary, false),
+        ]))
+    }
+
+    #[test]
+    fn vector_and_blob_columns_get_default_overrides() {
+        let overrides = resolve_column_overrides(
+            &test_schema(),
+            &["embedding".to_string()],
+            &HashMap::new(),
+        );
+
+        assert!(!overrides.contains_key("id"));
+        assert_eq!(
+            overrides.get("embedding"),
+            Some(&ColumnOverride {
+                compress: true,
+                row_block_size: Some(VECTOR_ROW_BLOCK_SIZE),
+                data_block_target_bytes: None,
+            })
+        );
+        assert_eq!(
+            overrides.get("frame"),
+            Some(&ColumnOverride {
+                compress: false,
+                row_block_size: None,
+                data_block_target_bytes: None,
+            })
+        );
+        assert_eq!(
+            overrides.get("clip"),
+            Some(&ColumnOverride {
+                compress: false,
+                row_block_size: None,
+                data_block_target_bytes: None,
+            })
+        );
+    }
+
+    #[test]
+    fn explicit_policies_override_defaults() {
+        let policies = HashMap::from([
+            (
+                "frame".to_string(),
+                ColumnPolicy {
+                    compress: Some(true),
+                    row_block_size: None,
+                    data_block_target_bytes: None,
+                },
+            ),
+            (
+                "embedding".to_string(),
+                ColumnPolicy {
+                    compress: None,
+                    row_block_size: Some(2048),
+                    data_block_target_bytes: Some(4096),
+                },
+            ),
+            (
+                "id".to_string(),
+                ColumnPolicy {
+                    compress: None,
+                    row_block_size: Some(64),
+                    data_block_target_bytes: None,
+                },
+            ),
+        ]);
+
+        let overrides = resolve_column_overrides(
+            &test_schema(),
+            &["embedding".to_string()],
+            &policies,
+        );
+
+        // Re-enabling compression equals the global default, so no field
+        // override is emitted for `frame`.
+        assert!(!overrides.contains_key("frame"));
+        assert_eq!(
+            overrides.get("embedding"),
+            Some(&ColumnOverride {
+                compress: true,
+                row_block_size: Some(2048),
+                data_block_target_bytes: Some(4096),
+            })
+        );
+        assert_eq!(
+            overrides.get("id"),
+            Some(&ColumnOverride {
+                compress: true,
+                row_block_size: Some(64),
+                data_block_target_bytes: None,
+            })
+        );
+        assert_eq!(
+            overrides.get("clip"),
+            Some(&ColumnOverride {
+                compress: false,
+                row_block_size: None,
+                data_block_target_bytes: None,
+            })
+        );
     }
 }

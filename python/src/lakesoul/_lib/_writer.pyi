@@ -25,6 +25,7 @@ class _NativeWriter:
         format: str = "vortex-compact",
         primary_keys: list[str] = ...,
         partition_by: list[str] = ...,
+        vector_columns: list[str] = ...,
         hash_bucket_num: int = 1,
         batch_size: int = 8192,
         thread_num: int = 1,

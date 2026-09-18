@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright 2026 LakeSoul contributors
 
-from pathlib import Path
 import pickle
+from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import unquote, urlparse
 
@@ -136,10 +136,9 @@ def test_writer_aborts_on_context_error(tmp_path: Path) -> None:
     batch = _batch()
     writer = Writer(IOConfig(path=tmp_path / "aborted", schema=batch.schema))
 
-    with pytest.raises(ValueError, match="stop"):
-        with writer:
-            writer.write(batch)
-            raise ValueError("stop")
+    with pytest.raises(ValueError, match="stop"), writer:
+        writer.write(batch)
+        raise ValueError("stop")
 
     assert writer.closed
     assert writer.result is None
@@ -190,6 +189,31 @@ def test_writer_vortex_output(tmp_path: Path) -> None:
     assert output_path.exists()
 
 
+def test_writer_accepts_vector_columns(tmp_path: Path) -> None:
+    batch = pa.record_batch(
+        {
+            "id": pa.array([1, 2], type=pa.int64()),
+            "embedding": pa.array(
+                [[1.0, 2.0], [3.0, 4.0]], type=pa.list_(pa.float32(), 2)
+            ),
+        }
+    )
+    writer = Writer(
+        IOConfig(
+            path=tmp_path / "vector",
+            schema=batch.schema,
+            format="vortex",
+            vector_columns=["embedding"],
+        )
+    )
+
+    writer.write(batch)
+    result = writer.finish()
+
+    assert result.row_count == 2
+    assert len(result.files) == 1
+
+
 def test_writer_defaults_to_vortex_compact_output(tmp_path: Path) -> None:
     batch = _batch()
     writer = Writer(IOConfig(path=tmp_path / "default", schema=batch.schema))
@@ -205,6 +229,24 @@ def test_writer_defaults_to_vortex_compact_output(tmp_path: Path) -> None:
     assert result.files[0].other_info["physical_format"] == "vortex-compact"
 
 
+def test_writer_binary_columns_skip_compression(tmp_path: Path) -> None:
+    batch = pa.record_batch(
+        {
+            "id": pa.array([1, 2], type=pa.int64()),
+            "frame": pa.array([b"\x00\x01", b"\x02\x03"], type=pa.binary()),
+        }
+    )
+    writer = Writer(
+        IOConfig(path=tmp_path / "blob", schema=batch.schema, format="vortex-compact")
+    )
+
+    writer.write(batch)
+    result = writer.finish()
+
+    assert result.row_count == 2
+    assert len(result.files) == 1
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -214,6 +256,8 @@ def test_writer_defaults_to_vortex_compact_output(tmp_path: Path) -> None:
         ({"hash_bucket_num": 0}, "hash_bucket_num"),
         ({"format": "csv"}, "format"),
         ({"partition_by": ["missing"]}, "column not in schema"),
+        ({"vector_columns": ["missing"]}, "column not in schema"),
+        ({"vector_columns": ["id", "id"]}, "duplicate"),
     ],
 )
 def test_writer_config_validation(

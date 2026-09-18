@@ -75,16 +75,38 @@ def test_dataset_parameters():
         _ = lds.scanner(columns=[1])
     with pytest.raises(NotImplementedError) as _:
         _ = lds.scanner(filter="")
-    with pytest.raises(NotImplementedError) as _:
-        _ = lds.scanner(batch_readahead=1)
-    with pytest.raises(NotImplementedError) as _:
-        _ = lds.scanner(fragment_readahead=1)
+    with pytest.raises(ValueError, match="batch_readahead"):
+        _ = lds.scanner(batch_readahead=0)
+    with pytest.raises(ValueError, match="fragment_readahead"):
+        _ = lds.scanner(fragment_readahead=-1)
     with pytest.raises(NotImplementedError) as _:
         _ = lds.scanner(fragment_scan_options="")
     with pytest.raises(NotImplementedError) as _:
         _ = lds.scanner(cache_metadata=True)
     with pytest.raises(NotImplementedError) as _:
         _ = lds.scanner(memory_pool=False)
+
+
+def test_scanner_maps_readahead_to_native_prefetch() -> None:
+    from lakesoul.arrow import Dataset, LakeSoulScanConfig
+
+    dataset = Dataset(
+        LakeSoulScanConfig(
+            table_name="target",
+            namespace="analytics",
+            schema=pa.schema([pa.field("id", pa.int64())]),
+            partition_schema=None,
+            scan_partitions=(),
+            partitions={},
+            object_store_options={},
+        )
+    )
+
+    scanner = dataset.scanner(batch_readahead=3, fragment_readahead=2)
+
+    assert scanner._reader_options["prefetch_size"] == "3"
+    with pytest.raises(ValueError, match="batch_readahead"):
+        dataset.scanner(batch_readahead=True)
 
 
 def test_dataset_to_table():
