@@ -18,7 +18,8 @@ use lakesoul_io::{
     index::commit::ResolvedIndex,
     reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
 };
-use lakesoul_metadata::index_catalog::VectorCatalog;
+use lakesoul_metadata::index_catalog::{IndexCatalog, VectorCatalog};
+use lakesoul_text::TextSplitEntry;
 use lakesoul_vector::SegmentEntry;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
@@ -34,18 +35,27 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Process-wide index catalog (PostgreSQL); `None` when the metadata
-/// database is not reachable, in which case vector search falls back to the
+/// Process-wide index catalogs (PostgreSQL); `None` when the metadata
+/// database is not reachable, in which case index search falls back to the
 /// reader's normal "no index" behavior.
-static CATALOG: tokio::sync::OnceCell<Option<VectorCatalog>> = tokio::sync::OnceCell::const_new();
+#[derive(Clone)]
+struct IndexCatalogs {
+    vector: VectorCatalog,
+    text: IndexCatalog<TextSplitEntry>,
+}
 
-async fn vector_catalog() -> Option<VectorCatalog> {
+static CATALOG: tokio::sync::OnceCell<Option<IndexCatalogs>> = tokio::sync::OnceCell::const_new();
+
+async fn index_catalogs() -> Option<IndexCatalogs> {
     CATALOG
         .get_or_init(|| async {
             match lakesoul_metadata::MetaDataClient::from_env().await {
-                Ok(client) => Some(client.vector_index_catalog()),
+                Ok(client) => Some(IndexCatalogs {
+                    vector: client.vector_index_catalog(),
+                    text: client.index_catalog(IndexKind::Text),
+                }),
                 Err(error) => {
-                    log::warn!("vector index catalog unavailable: {error}");
+                    log::warn!("index catalog unavailable: {error}");
                     None
                 }
             }
@@ -61,24 +71,60 @@ async fn resolve_vector_shards(
     file_urls: &[String],
     options: &Option<Vec<(String, String)>>,
 ) -> (Vec<ResolvedIndex>, Vec<Arc<IndexLease>>) {
-    let Some(catalog) = vector_catalog().await else {
+    let Some(catalogs) = index_catalogs().await else {
         return (Vec::new(), Vec::new());
     };
-    crate::index::resolve_index_shards(IndexKind::Vector, &catalog, file_urls, options, |view| {
-        let segments: Vec<SegmentEntry> = view
-            .segments
-            .iter()
-            .map(|segment| SegmentEntry {
-                cluster_id: segment.cluster_id,
-                segment_version: segment.segment_version,
-                segment_filename: segment.filename.clone(),
-                num_vectors: segment.num_vectors,
-                file_size: segment.file_size,
-            })
-            .collect();
-        serde_json::to_value(&segments).ok()
-    })
+    crate::index::resolve_index_shards(
+        IndexKind::Vector,
+        &catalogs.vector,
+        file_urls,
+        options,
+        |view| {
+            let segments: Vec<SegmentEntry> = view
+                .segments
+                .iter()
+                .map(|segment| SegmentEntry {
+                    cluster_id: segment.cluster_id,
+                    segment_version: segment.segment_version,
+                    segment_filename: segment.filename.clone(),
+                    num_vectors: segment.num_vectors,
+                    file_size: segment.file_size,
+                })
+                .collect();
+            serde_json::to_value(&segments).ok()
+        },
+    )
     .await
+}
+
+/// Resolve and lease the text index commits of the shards behind `file_urls`.
+async fn resolve_text_shards(
+    file_urls: &[String],
+    options: &Option<Vec<(String, String)>>,
+) -> (Vec<ResolvedIndex>, Vec<Arc<IndexLease>>) {
+    let Some(catalogs) = index_catalogs().await else {
+        return (Vec::new(), Vec::new());
+    };
+    crate::index::resolve_index_shards(
+        IndexKind::Text,
+        &catalogs.text,
+        file_urls,
+        options,
+        |view| serde_json::to_value(&view.segments).ok(),
+    )
+    .await
+}
+
+/// Resolve the shards of every requested index kind.
+async fn resolve_all_shards(
+    file_urls: &[String],
+    options: &Option<Vec<(String, String)>>,
+) -> (Vec<ResolvedIndex>, Vec<Arc<IndexLease>>) {
+    let (mut shards, mut leases) = resolve_vector_shards(file_urls, options).await;
+    let (text_shards, text_leases) = resolve_text_shards(file_urls, options).await;
+    shards.extend(text_shards);
+    leases.extend(text_leases);
+    (shards, leases)
 }
 
 #[pyfunction]
@@ -115,7 +161,7 @@ fn _sync_reader(
         .worker_threads(thread_num)
         .build()?;
 
-    let (shards, leases) = runtime.block_on(resolve_vector_shards(&file_urls, &options));
+    let (shards, leases) = runtime.block_on(resolve_all_shards(&file_urls, &options));
     let config = builder
         .with_resolved_index_shards(shards)
         .with_index_leases(leases)
@@ -177,7 +223,7 @@ fn _one_reader(
                 filter.clone(),
                 options.clone(),
             );
-            let (shards, leases) = runtime.block_on(resolve_vector_shards(&files, &options));
+            let (shards, leases) = runtime.block_on(resolve_all_shards(&files, &options));
             let config = builder
                 .with_resolved_index_shards(shards)
                 .with_index_leases(leases)

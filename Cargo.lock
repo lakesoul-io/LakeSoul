@@ -5552,6 +5552,7 @@ dependencies = [
  "lakesoul-metadata",
  "lakesoul-metadata-c",
  "lakesoul-metadata-proto",
+ "lakesoul-text",
  "lakesoul-vector",
  "log",
  "object_store",

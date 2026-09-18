@@ -11,6 +11,7 @@ use rootcause::Report;
 mod index;
 mod metadata;
 mod reader;
+mod text;
 mod utils;
 mod vector;
 mod writer;
@@ -36,6 +37,7 @@ fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     writer::init(py, m)?;
     utils::init(py, m)?;
     vector::init(py, m)?;
+    text::init(py, m)?;
     Ok(())
 }
 
