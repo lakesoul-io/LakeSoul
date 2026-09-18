@@ -189,6 +189,36 @@ impl LakeSoulReader {
             .await?;
 
         let io_config = self.io_session.io_config_mut();
+
+        // Text search is only exact after a post-merge verification pass:
+        // the verify stream re-checks candidates against the current text,
+        // so the text column must be read even when the caller did not
+        // project it (the stream drops it from the output again).
+        let verify_request = crate::text::verify::text_verify_request(io_config);
+        let original_schema = io_config.target_schema.0.clone();
+        if let Some(request) = &verify_request
+            && original_schema.field_with_name(&request.column).is_err()
+        {
+            let field = table_schema
+                .table_schema()
+                .field_with_name(&request.column)
+                .map_err(|error| {
+                    rootcause::report!(
+                        "text search column '{}' not found: {}",
+                        request.column,
+                        error
+                    )
+                })?
+                .clone();
+            let mut fields: Vec<arrow_schema::Field> = original_schema
+                .fields()
+                .iter()
+                .map(|field| field.as_ref().clone())
+                .collect();
+            fields.push(field);
+            io_config.target_schema.0 = Arc::new(arrow_schema::Schema::new(fields));
+        }
+
         // Check if filters are or-conjunction of bucket columns.
         //
         // Pruning hashes individual scalar values with a single-column hash, so
@@ -279,6 +309,28 @@ impl LakeSoulReader {
             let prefetch_size = self.io_session.io_config().prefetch_size();
             maybe_prefetch(stream, prefetch_size)
         };
+        let stream: SendableRecordBatchStream = match verify_request {
+            Some(request) => {
+                let pk_column = self
+                    .io_session
+                    .io_config()
+                    .primary_keys
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "id".to_string());
+                let verify_stream = crate::text::verify::TextVerifyStream::try_new(
+                    stream,
+                    request,
+                    pk_column,
+                    original_schema.clone(),
+                )?;
+                Box::pin(RecordBatchStreamAdapter::new(
+                    original_schema,
+                    verify_stream,
+                ))
+            }
+            None => stream,
+        };
         let schema = stream.schema();
         debug!("reader schema: {}", schema);
         self.schema = Some(schema);
@@ -352,14 +404,13 @@ impl LakeSoulReader {
                     .await?
                 }
                 IndexKind::Text => {
-                    // The text index kind is not wired into the reader yet;
-                    // behave like an empty result set instead of scanning.
-                    tracing::warn!(
-                        "text index search requested on column '{}' but the text \
-                         index kind is not available",
-                        request.column
-                    );
-                    Vec::new()
+                    crate::text::search::search_request(
+                        self.io_session.io_config(),
+                        &store,
+                        &request,
+                        table_path,
+                    )
+                    .await?
                 }
             };
             tracing::info!(

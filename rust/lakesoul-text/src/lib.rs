@@ -26,7 +26,12 @@ pub use error::{Result, TextError};
 pub use schema::{PK_FIELD, TextSchema};
 pub use search::{TextHit, merge_hits, search_index, search_splits};
 pub use split::{
-    ENV_SPLIT_CACHE_DIR, SPLIT_FORMAT_VERSION, SplitCache, TextSplitEntry, write_split,
+    DEFAULT_WRITER_MEMORY_BUDGET, ENV_SPLIT_CACHE_DIR, SPLIT_FORMAT_VERSION, SplitCache,
+    TextSplitEntry, write_split,
 };
 pub use tokenizer::{SUPPORTED_TOKENIZERS, is_supported, register_tokenizers};
 pub use verify::{matching_ids, matching_scores};
+
+/// Re-exported so index integrations can name an opened split's index type
+/// without depending on Tantivy directly.
+pub use tantivy;

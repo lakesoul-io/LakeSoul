@@ -74,6 +74,7 @@ pub mod physical_plan;
 pub mod pk_locator;
 pub mod reader;
 pub mod session;
+pub mod text;
 pub mod utils;
 pub mod vector;
 pub mod writer;

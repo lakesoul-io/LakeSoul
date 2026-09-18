@@ -4,7 +4,7 @@
 
 //! Text index configuration.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TextError};
 
@@ -23,15 +23,22 @@ use crate::error::{Result, TextError};
 ///   queries work; disabling shrinks the index but drops phrase support.
 /// - `stored` (default false): also store the original text in the index
 ///   (needed for snippets, not for search).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The serialized form is stored in the index commit header, so search and
+/// exact verification recover the tokenizer used when the split was built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextIndexConfig {
     /// Text column name (the Arrow schema field).
+    #[serde(rename = "column")]
     pub column_name: String,
     /// Tokenizer registered on the index.
+    #[serde(default = "default_tokenizer")]
     pub tokenizer: String,
     /// Whether to index term positions (phrase queries).
+    #[serde(default = "default_with_positions")]
     pub with_positions: bool,
     /// Whether to store the original text in the index.
+    #[serde(default = "default_stored")]
     pub stored: bool,
 }
 
@@ -61,29 +68,6 @@ fn default_stored() -> bool {
     false
 }
 
-/// Intermediate type deserializing one `text_index_columns` JSON entry.
-#[derive(Debug, Deserialize)]
-struct JsonEntry {
-    column: String,
-    #[serde(default = "default_tokenizer")]
-    tokenizer: String,
-    #[serde(default = "default_with_positions")]
-    with_positions: bool,
-    #[serde(default = "default_stored")]
-    stored: bool,
-}
-
-impl From<JsonEntry> for TextIndexConfig {
-    fn from(entry: JsonEntry) -> Self {
-        Self {
-            column_name: entry.column,
-            tokenizer: entry.tokenizer,
-            with_positions: entry.with_positions,
-            stored: entry.stored,
-        }
-    }
-}
-
 impl TextIndexConfig {
     /// Parse a `text_index_columns` property value.
     ///
@@ -106,14 +90,8 @@ impl TextIndexConfig {
             other => other,
         };
         let configs: Vec<TextIndexConfig> = match json {
-            serde_json::Value::Array(_) => {
-                let entries: Vec<JsonEntry> = serde_json::from_value(json)?;
-                entries.into_iter().map(Into::into).collect()
-            }
-            serde_json::Value::Object(_) => {
-                let entry: JsonEntry = serde_json::from_value(json)?;
-                vec![entry.into()]
-            }
+            serde_json::Value::Array(_) => serde_json::from_value(json)?,
+            serde_json::Value::Object(_) => vec![serde_json::from_value(json)?],
             other => {
                 return Err(TextError::Invalid(format!(
                     "text_index_columns must be a JSON object or array, got {other}"
@@ -184,5 +162,19 @@ mod tests {
     fn rejects_empty_column() {
         let error = TextIndexConfig::parse_json(r#"[{"column":""}]"#).unwrap_err();
         assert!(error.to_string().contains("column"), "{error}");
+    }
+
+    #[test]
+    fn serializes_to_the_property_shape() {
+        let config = TextIndexConfig {
+            column_name: "body".to_string(),
+            tokenizer: "jieba".to_string(),
+            with_positions: true,
+            stored: false,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""column":"body""#), "{json}");
+        let parsed: TextIndexConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, config);
     }
 }

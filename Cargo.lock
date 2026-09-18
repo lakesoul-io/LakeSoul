@@ -5390,6 +5390,7 @@ dependencies = [
  "jemalloc_pprof",
  "lakesoul-common",
  "lakesoul-metadata-proto",
+ "lakesoul-text",
  "lakesoul-vector",
  "lazy_static",
  "linked-hash-map",
