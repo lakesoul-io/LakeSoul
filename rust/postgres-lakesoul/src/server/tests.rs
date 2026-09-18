@@ -292,6 +292,70 @@ async fn startup_handler_installs_session() {
 }
 
 #[tokio::test]
+async fn startup_rejects_unsupported_default_isolation() {
+    if !pg_available() {
+        return;
+    }
+    let factory = test_factory().await;
+    let handler = LakeSoulStartupHandler::new(
+        Arc::clone(&factory),
+        Arc::new(pgwire::api::ConnectionManager::new()),
+    );
+    let sync = || PgWireFrontendMessage::Sync(PgSync::new());
+
+    // A startup GUC that promises a stronger isolation level is refused
+    // before any session is created, so the client never believes the
+    // connection honors it.
+    let mut client = MockClient::new();
+    client.metadata_mut().insert(
+        "default_transaction_isolation".to_string(),
+        "serializable".to_string(),
+    );
+    let error = NoopStartupHandler::post_startup(&handler, &mut client, sync())
+        .await
+        .expect_err("conflicting startup GUC must fail the connection");
+    let info = match error {
+        pgwire::error::PgWireError::UserError(info) => info,
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert_eq!(info.severity, "FATAL");
+    assert_eq!(info.code, "0A000");
+
+    // The same request hidden inside libpq's `options` string must not
+    // slip past the startup check either.
+    let mut client = MockClient::new();
+    client.metadata_mut().insert(
+        "options".to_string(),
+        "-c statement_timeout=5 -c default_transaction_isolation=2".to_string(),
+    );
+    let error = NoopStartupHandler::post_startup(&handler, &mut client, sync())
+        .await
+        .expect_err("conflicting libpq option must fail the connection");
+    let info = match error {
+        pgwire::error::PgWireError::UserError(info) => info,
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert_eq!(info.severity, "FATAL");
+    assert_eq!(info.code, "0A000");
+
+    // The server's own default stays connectable.
+    let mut client = MockClient::new();
+    client.metadata_mut().insert(
+        "default_transaction_isolation".to_string(),
+        "read committed".to_string(),
+    );
+    client
+        .metadata_mut()
+        .insert(METADATA_USER.to_string(), "lakesoul_user".to_string());
+    client
+        .metadata_mut()
+        .insert(METADATA_DATABASE.to_string(), "default".to_string());
+    NoopStartupHandler::post_startup(&handler, &mut client, sync())
+        .await
+        .expect("read committed default must be accepted");
+}
+
+#[tokio::test]
 async fn session_scopes_namespaces_as_databases() {
     if !pg_available() {
         return;
@@ -341,4 +405,55 @@ async fn session_scopes_namespaces_as_databases() {
     for marker in others {
         assert!(marker.schema_names().is_empty());
     }
+}
+
+/// psql's `\d` sends the relation oid as a quoted literal
+/// (`pg_relation_is_publishable('16495')`), which the upstream oid-only
+/// signature cannot coerce.
+#[tokio::test]
+async fn publishable_shim_accepts_quoted_oid() {
+    if !pg_available() {
+        return;
+    }
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    for sql in [
+        "SELECT pg_catalog.pg_relation_is_publishable('16495')",
+        "SELECT pg_catalog.pg_relation_is_publishable(16495)",
+    ] {
+        let responses = <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(
+            &router,
+            &mut client,
+            sql,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{sql}: {err}"));
+        assert!(!responses.is_empty(), "{sql}");
+    }
+}
+
+#[tokio::test]
+async fn connections_share_the_factory_catalog_snapshot() {
+    if !pg_available() {
+        return;
+    }
+    let factory = test_factory().await;
+    let session = factory
+        .create_session(
+            SessionIdentity {
+                user: "user_a".to_string(),
+                database: "default".to_string(),
+            },
+            &SessionSettings::default(),
+        )
+        .await
+        .expect("create_session");
+
+    assert!(
+        Arc::ptr_eq(session.catalog_snapshot(), factory.catalog_snapshot()),
+        "connections must share the factory metadata view"
+    );
 }

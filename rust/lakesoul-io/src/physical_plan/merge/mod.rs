@@ -104,24 +104,27 @@ impl MergeParquetExec {
     fn merged_schema_with_input_nullability(
         merged_schema: SchemaRef,
         inputs: &[Arc<dyn ExecutionPlan>],
+        partition_columns: &[String],
     ) -> SchemaRef {
         SchemaRef::new(Schema::new(
             merged_schema
                 .fields()
                 .iter()
                 .map(|field| {
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable()
-                            | inputs.iter().any(|plan| {
-                                // If an input is missing a requested field, the default-column
-                                // projection will synthesize nulls for that input.
-                                plan.schema().column_with_name(field.name()).is_none_or(
-                                    |(_, plan_field)| plan_field.is_nullable(),
-                                )
-                            }),
-                    )
+                    let is_partition_column = partition_columns.contains(field.name());
+                    // A missing non-partition field is synthesized by the default-column
+                    // projection and may therefore be null. Partition columns are constants
+                    // injected by this plan, so their absence from a parquet input does not
+                    // affect output nullability.
+                    let nullable_in_any_input = inputs.iter().any(|plan| {
+                        plan.schema()
+                            .column_with_name(field.name())
+                            .is_none_or(|(_, input_field)| input_field.is_nullable())
+                    });
+                    let nullable_due_to_input =
+                        !is_partition_column && nullable_in_any_input;
+                    let output_nullable = field.is_nullable() || nullable_due_to_input;
+                    Field::new(field.name(), field.data_type().clone(), output_nullable)
                 })
                 .collect::<Vec<_>>(),
         ))
@@ -145,7 +148,7 @@ impl MergeParquetExec {
         // Compute Nullability
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
         let merged_schema =
-            Self::merged_schema_with_input_nullability(merged_schema, &inputs);
+            Self::merged_schema_with_input_nullability(merged_schema, &inputs, &[]);
 
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
@@ -180,7 +183,13 @@ impl MergeParquetExec {
             "MergeParquetExec::new_with_inputs: {:?}, {:?}, {:?}",
             schema, io_config, default_column_value
         );
-        let schema = Self::merged_schema_with_input_nullability(schema, &inputs);
+        let partition_columns: Vec<String> =
+            default_column_value.keys().cloned().collect();
+        let schema = Self::merged_schema_with_input_nullability(
+            schema,
+            &inputs,
+            &partition_columns,
+        );
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
@@ -199,6 +208,46 @@ impl MergeParquetExec {
                 Boundedness::Bounded,
             )),
         })
+    }
+    /// Rebuild a [`MergeParquetExec`] from its encoded parts.
+    ///
+    /// Unlike [`Self::new_with_inputs`], the provided `merged_schema` is used
+    /// as-is: input-driven nullability refinement must be identical to what the
+    /// original (coordinator-side) instance computed, so the schema of every
+    /// per-task variant stays consistent for plan serialization.
+    pub fn from_parts(
+        merged_schema: SchemaRef,
+        primary_keys: Arc<Vec<String>>,
+        default_column_value: Arc<HashMap<String, String>>,
+        merge_operators: Arc<HashMap<String, String>>,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        io_config: LakeSoulIOConfig,
+    ) -> Self {
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&merged_schema)),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            merged_schema,
+            primary_keys,
+            default_column_value,
+            merge_operators,
+            inputs,
+            io_config,
+            properties,
+        }
+    }
+
+    /// The IO configuration backing this merge (files, options, merge flags).
+    pub fn io_config(&self) -> &LakeSoulIOConfig {
+        &self.io_config
+    }
+
+    /// The schema of the merge on read operation.
+    pub fn merged_schema(&self) -> SchemaRef {
+        Arc::clone(&self.merged_schema)
     }
 
     pub fn primary_keys(&self) -> Arc<Vec<String>> {

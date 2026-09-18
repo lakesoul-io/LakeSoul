@@ -58,6 +58,8 @@ datafusion-execution = { version = "55" }
 datafusion-datasource = { version = "55" }
 datafusion-datasource-parquet = { version = "55" }
 datafusion-substrait = { version = "55" }
+datafusion-distributed = { version = "4.0.0" }
+datafusion-proto = { version = "55" }
 # arrow
 arrow = { version = "59", features = ["prettyprint"] }
 arrow-schema = { version = "59", features = ["serde"] }

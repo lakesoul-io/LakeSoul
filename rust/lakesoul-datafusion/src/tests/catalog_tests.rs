@@ -175,6 +175,8 @@ fn test_catalog_api() {
         for (np, tables) in data.iter() {
             let schema =
                 LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
+            // Listing methods answer from the catalog snapshot.
+            schema.refresh().await.unwrap();
             let names = schema.table_names();
             debug!("{names:?}");
             assert_eq!(names.len(), tables.len());
@@ -235,6 +237,8 @@ fn test_catalog_sql() {
                 df.collect().await.unwrap()
             };
             sc.register_catalog("test_catalog_sql", catalog.clone());
+            // `show tables` reads the catalog's namespaces from its snapshot.
+            catalog.snapshot().refresh().await.unwrap();
             let after = {
                 let sql = "show tables";
                 let df = sc.sql(sql).await.unwrap();
@@ -268,9 +272,15 @@ fn test_catalog_sql() {
                 lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
             }
         }
+        // Tables above are written directly through the metadata client, bypassing
+        // the registered catalog's write-through refresh. Refresh that exact
+        // snapshot before SHOW COLUMNS reads information_schema from it.
+        catalog.snapshot().refresh().await.unwrap();
         for (np, tables) in data.iter() {
             let schema =
                 LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
+            // Listing methods answer from the catalog snapshot.
+            schema.refresh().await.unwrap();
             let names = schema.table_names();
             debug!("{names:?}");
             assert_eq!(names.len(), tables.len());

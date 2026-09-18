@@ -6,7 +6,7 @@ use std::{collections::HashMap, env};
 
 use clap::{Parser, builder::TypedValueParser};
 
-#[derive(Parser, Debug, Default)]
+#[derive(Parser, Debug, Default, Clone)]
 pub struct CoreArgs {
     /// LakeSoul 数据仓库前缀路径
     #[arg(long)]

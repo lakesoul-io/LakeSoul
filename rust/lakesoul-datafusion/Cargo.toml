@@ -20,7 +20,9 @@ lakesoul-vector = { path = "../lakesoul-vector" }
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-common = { workspace = true }
+datafusion-proto = { workspace = true }
 datafusion-datasource = { workspace = true }
+datafusion-distributed = { workspace = true }
 # arrow
 arrow = { workspace = true }
 arrow-cast = { workspace = true }
@@ -36,8 +38,11 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 # runtime
 tokio = { workspace = true }
-# web
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
+# kubernetes worker discovery
+reqwest = { workspace = true, features = ["json"] }
+parking_lot = { workspace = true }
 # cli
 clap = { workspace = true }
 # rand
