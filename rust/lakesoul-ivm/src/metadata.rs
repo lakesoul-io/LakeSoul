@@ -31,7 +31,7 @@ use crate::error::Result;
 const IVM_SCHEMA_DDL: &str = "
 do $$ begin
     create schema if not exists ivm;
-exception when duplicate_schema then null;
+exception when duplicate_schema or unique_violation then null;
 end $$;
 
 do $$ begin
@@ -44,17 +44,17 @@ do $$ begin
         generation          bigint not null default 0,
         created_at          bigint not null
     );
-exception when duplicate_table then null;
+exception when duplicate_table or unique_violation then null;
 end $$;
 
 do $$ begin
     alter table ivm.views add column if not exists last_epoch bigint not null default 0;
-exception when duplicate_column then null;
+exception when duplicate_column or unique_violation then null;
 end $$;
 
 do $$ begin
     alter table ivm.views add column if not exists generation bigint not null default 0;
-exception when duplicate_column then null;
+exception when duplicate_column or unique_violation then null;
 end $$;
 
 do $$ begin
@@ -66,7 +66,7 @@ do $$ begin
         last_timestamp  bigint not null,
         primary key (view_id, source_table_id, partition_desc)
     );
-exception when duplicate_table then null;
+exception when duplicate_table or unique_violation then null;
 end $$;
 
 do $$ begin
@@ -83,13 +83,13 @@ do $$ begin
         committed_at       bigint,
         primary key (view_id, generation, epoch)
     );
-exception when duplicate_table then null;
+exception when duplicate_table or unique_violation then null;
 end $$;
 
 do $$ begin
     create unique index if not exists ivm_epochs_window_key
         on ivm.epochs (view_id, generation, window_key);
-exception when duplicate_table then null;
+exception when duplicate_table or unique_violation then null;
 end $$;
 ";
 
