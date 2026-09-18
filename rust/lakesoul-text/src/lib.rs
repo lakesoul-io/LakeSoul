@@ -19,6 +19,7 @@ pub mod schema;
 pub mod search;
 pub mod split;
 pub mod tokenizer;
+pub mod verify;
 
 pub use config::TextIndexConfig;
 pub use error::{Result, TextError};
@@ -28,3 +29,4 @@ pub use split::{
     ENV_SPLIT_CACHE_DIR, SPLIT_FORMAT_VERSION, SplitCache, TextSplitEntry, write_split,
 };
 pub use tokenizer::{SUPPORTED_TOKENIZERS, is_supported, register_tokenizers};
+pub use verify::{matching_ids, matching_scores};
