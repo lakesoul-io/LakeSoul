@@ -43,6 +43,7 @@ opt-level = 2
 inherits = "test"
 # Use a slightly better optimization level for ci-tests
 opt-level = 1
+debug = "line-tables-only"
 
 [workspace.dependencies]
 # datafusion

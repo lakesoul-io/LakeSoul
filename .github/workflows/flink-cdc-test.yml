@@ -30,21 +30,17 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings"
 
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@v4
       - name: Set up JDK 11
         uses: actions/setup-java@v5
@@ -78,15 +74,33 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
-      - name: Install cross
+          shared-key: "native-glibc217"
+          save-if: false
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         with:
-          tool: cross@0.2.5
+          tool: cargo-zigbuild@0.18.3
       - name: Pull images
         run: |
           docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
       - name: Build native libraries
-        run: cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+        run: |
+          unset HADOOP_HOME HDFS_LIB_DIR
+          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
+      - name: Restore Maven build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/build-cache
+          key: maven-build-cache-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}-${{ github.run_id }}
+          restore-keys: |
+            maven-build-cache-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}-
+            maven-build-cache-${{ runner.os }}-
       - name: Build with Maven
         run: |
           mkdir -p rust/target/release
@@ -97,6 +111,12 @@ jobs:
           tar xf gluten-maven-deps-1.6.0-spark35.tar.gz -C ~/.m2/repository
           rm -f gluten-maven-deps-1.6.0-spark35.tar.gz
           MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
+      - name: Save Maven build cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.m2/build-cache
+          key: maven-build-cache-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}-${{ github.run_id }}
       - name: Get jar names
         run: |
           {
@@ -119,7 +139,14 @@ jobs:
           export LAKESOUL_IO_USE_V2_MERGE=true
           docker compose pull -q
           docker compose --profile s3 up -d
-          sleep 30s
+          for i in $(seq 1 30); do
+            if docker exec lakesoul-docker-compose-env-jobmanager-1 flink list >/dev/null 2>&1 &&
+               docker exec lakesoul-docker-compose-env-mysql-1 mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; then
+              echo "cluster ready after $((i * 2))s"
+              break
+            fi
+            sleep 2
+          done
       - name: Start compaction task
         run: |
           cd ./script/benchmark/work-dir
