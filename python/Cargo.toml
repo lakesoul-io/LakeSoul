@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 [features]
 dist-ffi = ["dep:lakesoul-io-c", "dep:lakesoul-metadata-c"]
 hdfs = ["lakesoul-io-c/hdfs"]
+ci-unify = ["dep:lakesoul-datafusion"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = [
@@ -28,6 +29,7 @@ log = { workspace = true }
 lakesoul-build-info = { path = "../rust/lakesoul-build-info" }
 lakesoul-io = { path = "../rust/lakesoul-io" }
 lakesoul-io-c = { path = "../rust/lakesoul-io-c", optional = true }
+lakesoul-datafusion = { path = "../rust/lakesoul-datafusion", optional = true }
 lakesoul-common = { path = "../rust/lakesoul-common" }
 lakesoul-metadata = { path = "../rust/lakesoul-metadata" }
 lakesoul-metadata-c = { path = "../rust/lakesoul-metadata-c", optional = true }

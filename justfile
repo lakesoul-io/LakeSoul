@@ -76,3 +76,6 @@ dist:
         "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/deps/liblakesoul_io_c.so" \
         "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/deps/liblakesoul_metadata_c.so" \
         "$ROOT/dist/"
+
+hook cmd="commit":
+    lefthook run pre-{{cmd}}

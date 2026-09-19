@@ -216,6 +216,10 @@ pub enum DaoType {
     InsertDataCommitInfo = DAO_TYPE_INSERT_ONE_OFFSET + 5,
     /// The coded type for the Data Access Object for insert discard compressed file info.
     InsertDiscardCompressedFileInfo = DAO_TYPE_INSERT_ONE_OFFSET + 6,
+    /// Atomically inserts all metadata rows for a table.
+    InsertTableAtomic = DAO_TYPE_INSERT_ONE_OFFSET + 7,
+    /// Atomically inserts all metadata rows unless the table name is already claimed.
+    InsertTableIfNotExistsAtomic = DAO_TYPE_INSERT_ONE_OFFSET + 8,
 
     // ==== Coded Transaction Insert List ====
     /// The coded type for the Data Access Object for transaction insert partition info.
@@ -485,6 +489,41 @@ async fn get_prepared_statement<'a>(
                 table_namespace,
                 domain)
             values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT)",
+        DaoType::InsertTableAtomic =>
+            "with inserted_name as (
+                insert into table_name_id(table_id, table_name, table_namespace, domain)
+                values($1::TEXT, $2::TEXT, $9::TEXT, $10::TEXT)
+                returning table_id
+            ), inserted_path as (
+                insert into table_path_id(table_id, table_path, table_namespace, domain)
+                select $1::TEXT, $3::TEXT, $9::TEXT, $10::TEXT from inserted_name
+                returning table_id
+            )
+            insert into table_info(
+                table_id, table_name, table_path, table_schema,
+                table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash,
+                properties, partitions, table_namespace, domain)
+            select $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT,
+                   $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT
+            from inserted_path",
+        DaoType::InsertTableIfNotExistsAtomic =>
+            "with inserted_name as (
+                insert into table_name_id(table_id, table_name, table_namespace, domain)
+                values($1::TEXT, $2::TEXT, $9::TEXT, $10::TEXT)
+                on conflict (table_name, table_namespace) do nothing
+                returning table_id
+            ), inserted_path as (
+                insert into table_path_id(table_id, table_path, table_namespace, domain)
+                select $1::TEXT, $3::TEXT, $9::TEXT, $10::TEXT from inserted_name
+                returning table_id
+            )
+            insert into table_info(
+                table_id, table_name, table_path, table_schema,
+                table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash,
+                properties, partitions, table_namespace, domain)
+            select $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT,
+                   $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT
+            from inserted_path",
         DaoType::InsertPartitionInfo =>
             "insert into partition_info(
                 table_id,
@@ -1186,7 +1225,11 @@ pub async fn execute_insert(
                 )
                 .await
         }
-        DaoType::InsertTableInfo if wrapper.table_info.len() == 1 => {
+        DaoType::InsertTableInfo
+        | DaoType::InsertTableAtomic
+        | DaoType::InsertTableIfNotExistsAtomic
+            if wrapper.table_info.len() == 1 =>
+        {
             let table_info = wrapper.table_info.first().unwrap();
             let properties: serde_json::Value =
                 serde_json::from_str(&table_info.properties)?;

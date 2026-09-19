@@ -44,6 +44,7 @@ opt-level = 2
 inherits = "test"
 # Use a slightly better optimization level for ci-tests
 opt-level = 1
+debug = "line-tables-only"
 
 [workspace.dependencies]
 # datafusion
@@ -59,6 +60,8 @@ datafusion-execution = { version = "55" }
 datafusion-datasource = { version = "55" }
 datafusion-datasource-parquet = { version = "55" }
 datafusion-substrait = { version = "55" }
+datafusion-distributed = { version = "4.0.0" }
+datafusion-proto = { version = "55" }
 # arrow
 arrow = { version = "59", features = ["prettyprint"] }
 arrow-schema = { version = "59", features = ["serde"] }

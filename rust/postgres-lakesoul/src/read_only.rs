@@ -25,14 +25,27 @@
 //! A simple-protocol batch runs its statements before the first rejected
 //! one; those can only be reads or session-local control statements, so no
 //! persistent state changes before the error.
+//!
+//! Transaction *isolation* is checked by [`ReadCommittedOnlyGuard`], which
+//! runs before the upstream transaction hook: the session has no
+//! multi-statement snapshot, so only `READ COMMITTED` (or no explicit level)
+//! is accepted — in transaction syntax (`BEGIN ISOLATION LEVEL ...`,
+//! `SET TRANSACTION ...`) and via the `default_transaction_isolation` GUC,
+//! which the upstream `SET` hook would otherwise acknowledge without
+//! applying. The same check runs at connection startup
+//! ([`rejected_startup_isolation`]), where a conflicting request is a
+//! `FATAL` error.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
-use datafusion::sql::sqlparser::ast::Statement;
+use datafusion::sql::sqlparser::ast::{
+    Expr, ObjectName, Set, Statement, TransactionIsolationLevel, TransactionMode,
+};
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::hooks::cursor::CursorStatementHook;
@@ -49,14 +62,201 @@ const FEATURE_NOT_SUPPORTED: &str = "0A000";
 /// Statement hooks executed by every connection-local service.
 ///
 /// The read-only guard runs last so the upstream hooks keep first claim on
-/// cursor, `SET`/`SHOW` and transaction statements.
+/// cursor, `SET`/`SHOW` and transaction statements; the isolation guard runs
+/// first because it must see `BEGIN`/`SET TRANSACTION` before the transaction
+/// hook answers them.
 pub(crate) fn statement_hooks() -> Vec<Arc<dyn QueryHook>> {
     vec![
+        Arc::new(ReadCommittedOnlyGuard), // new
         Arc::new(CursorStatementHook),
         Arc::new(SetShowHook),
         Arc::new(TransactionStatementHook),
         Arc::new(ReadOnlyStatementGuard), // new
     ]
+}
+
+/// Rejects transaction isolation levels the server cannot honor.
+///
+/// A read-only LakeSoul session has no multi-statement snapshot: every
+/// statement re-reads the latest LakeSoul metadata, which is `READ COMMITTED`
+/// behaviour. Accepting `REPEATABLE READ` or `SERIALIZABLE` would silently
+/// deliver weaker guarantees than the client asked for, so those are refused
+/// with SQLSTATE `0A000`.
+struct ReadCommittedOnlyGuard;
+
+impl ReadCommittedOnlyGuard {
+    /// The unsupported isolation level requested by `statement`, if any.
+    fn unsupported_isolation(statement: &Statement) -> Option<String> {
+        match statement {
+            Statement::StartTransaction { modes, .. }
+            // `SET TRANSACTION ISOLATION LEVEL ...` (and `SET SESSION
+            // CHARACTERISTICS AS TRANSACTION ...`) parse as
+            // `Set(SetTransaction { modes, .. })` in this sqlparser release.
+            | Statement::Set(Set::SetTransaction { modes, .. }) => unsupported_mode(modes),
+            // `SET default_transaction_isolation = ...` parses as an
+            // ordinary assignment. The upstream `SET` hook acknowledges such
+            // assignments without applying them, so they must be validated
+            // here, before that hook claims the statement.
+            Statement::Set(Set::SingleAssignment { variable, values, .. }) => {
+                isolation_assignment(variable, values.iter())
+            }
+            Statement::Set(Set::MultipleAssignments { assignments }) => assignments
+                .iter()
+                .find_map(|assignment| {
+                    isolation_assignment(
+                        &assignment.name,
+                        core::iter::once(&assignment.value),
+                    )
+                }),
+            _ => None,
+        }
+    }
+}
+
+fn unsupported_mode(modes: &[TransactionMode]) -> Option<String> {
+    modes.iter().find_map(|mode| match mode {
+        TransactionMode::IsolationLevel(level)
+            if *level != TransactionIsolationLevel::ReadCommitted =>
+        {
+            Some(level.to_string())
+        }
+        _ => None,
+    })
+}
+
+/// Validates one GUC assignment. Returns the rejected isolation level when
+/// `variable` is `default_transaction_isolation` and the assigned value
+/// promises a level stronger than `READ COMMITTED`.
+fn isolation_assignment<'a>(
+    variable: &ObjectName,
+    mut values: impl Iterator<Item = &'a Expr>,
+) -> Option<String> {
+    let name = variable.0.last()?.as_ident()?.value.to_lowercase();
+    if name != "default_transaction_isolation" {
+        return None;
+    }
+    values.find_map(|value| {
+        let requested = match value {
+            Expr::Value(literal) => literal.clone().into_string(),
+            Expr::Identifier(ident) => Some(ident.value.clone()),
+            _ => None,
+        }?;
+        rejected_default_isolation(&requested).map(str::to_string)
+    })
+}
+
+/// Maps a textual default-isolation value to its PostgreSQL display name
+/// when the value promises a level this server cannot honor.
+/// `READ UNCOMMITTED` and the numeric aliases behave as `READ COMMITTED` in
+/// PostgreSQL, and `DEFAULT` is this server's own default; all three are
+/// accepted. Values that are not isolation levels at all stay with the
+/// upstream `SET` handling (warn + acknowledged).
+fn rejected_default_isolation(value: &str) -> Option<&'static str> {
+    match value.trim().to_lowercase().as_str() {
+        "read committed" | "read uncommitted" | "0" | "1" | "default" => None,
+        "repeatable read" | "2" => Some("REPEATABLE READ"),
+        "serializable" | "3" => Some("SERIALIZABLE"),
+        _ => None,
+    }
+}
+
+fn isolation_error(level: &str) -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        FEATURE_NOT_SUPPORTED.to_string(),
+        format!(
+            "isolation level {level} is not supported in a read-only LakeSoul \
+             session: only READ COMMITTED is available"
+        ),
+    )))
+}
+
+/// Startup counterpart of the isolation guard: refuses connections whose
+/// startup parameters request a default isolation level stronger than
+/// `READ COMMITTED`. Clients pass it either as a plain startup GUC or
+/// inside the libpq `options` string (`-c name=value ...`); both are
+/// validated, because a session that starts under a promised-but-unhonored
+/// isolation level cannot be repaired later by statement hooks.
+pub(crate) fn rejected_startup_isolation(
+    metadata: &HashMap<String, String>,
+) -> Option<PgWireError> {
+    let requested = metadata
+        .get("default_transaction_isolation")
+        .cloned()
+        .or_else(|| {
+            metadata.get("options").and_then(|options| {
+                libpq_option("default_transaction_isolation", options)
+            })
+        })?;
+    let level = rejected_default_isolation(&requested)?;
+    Some(PgWireError::UserError(Box::new(ErrorInfo::new(
+        "FATAL".to_string(),
+        FEATURE_NOT_SUPPORTED.to_string(),
+        format!(
+            "startup parameter default_transaction_isolation = {requested} is not \
+             supported in a read-only LakeSoul session: isolation level {level} \
+             is not available, only READ COMMITTED"
+        ),
+    ))))
+}
+
+/// Extracts the value of `name` from libpq's `-c name=value` pairs in an
+/// `options` startup string. Backslash escaping inside libpq options is not
+/// supported; the GUC values relevant here (isolation level keywords or
+/// their numeric aliases) contain no whitespace.
+fn libpq_option(name: &str, options: &str) -> Option<String> {
+    let mut tokens = options.split_whitespace();
+    while let Some(token) = tokens.next() {
+        let Some(rest) = token.strip_prefix("-c") else {
+            continue;
+        };
+        let pair = if rest.is_empty() {
+            tokens.next()
+        } else {
+            Some(rest)
+        };
+        let Some(pair) = pair else {
+            break;
+        };
+        if let Some((candidate, value)) = pair.split_once('=')
+            && candidate.eq_ignore_ascii_case(name)
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+#[async_trait]
+impl QueryHook for ReadCommittedOnlyGuard {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        Self::unsupported_isolation(statement).map(|level| Err(isolation_error(&level)))
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        Self::unsupported_isolation(statement).map(|level| Err(isolation_error(&level)))
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        Self::unsupported_isolation(statement).map(|level| Err(isolation_error(&level)))
+    }
 }
 
 /// Rejects every statement the read-only server does not support.
@@ -104,8 +304,9 @@ impl ReadOnlyStatementGuard {
     }
 }
 
-fn reject_message(statement: &Statement) -> String {
-    let verb = match statement {
+/// Verb used in rejection messages.
+fn verb(statement: &Statement) -> &'static str {
+    match statement {
         Statement::Insert { .. } => "INSERT",
         Statement::Update { .. } => "UPDATE",
         Statement::Delete { .. } => "DELETE",
@@ -130,8 +331,24 @@ fn reject_message(statement: &Statement) -> String {
         Statement::CreateIndex { .. } => "CREATE INDEX",
         Statement::AlterTable { .. } => "ALTER TABLE",
         _ => "this statement",
-    };
-    format!("cannot execute {verb} in a read-only LakeSoul session")
+    }
+}
+
+fn reject_message(statement: &Statement) -> String {
+    match statement {
+        // Unwrapped so `EXPLAIN INSERT` reports the statement it wraps instead
+        // of "this statement".
+        Statement::Explain {
+            statement: inner, ..
+        } => format!(
+            "cannot execute EXPLAIN {} in a read-only LakeSoul session",
+            verb(inner)
+        ),
+        other => format!(
+            "cannot execute {} in a read-only LakeSoul session",
+            verb(other)
+        ),
+    }
 }
 
 fn reject_error(statement: &Statement) -> PgWireError {
@@ -251,6 +468,10 @@ mod tests {
         "PREPARE p AS SELECT 1",
         "EXPLAIN INSERT INTO t VALUES (1)",
         "SAVEPOINT sp",
+        "BEGIN ISOLATION LEVEL REPEATABLE READ",
+        "START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
     ];
 
     const ALLOWED: &[&str] = &[
@@ -265,6 +486,9 @@ mod tests {
         "SHOW server_version",
         "BEGIN",
         "BEGIN TRANSACTION READ ONLY",
+        "BEGIN ISOLATION LEVEL READ COMMITTED",
+        "START TRANSACTION READ ONLY",
+        "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
         "COMMIT",
         "ROLLBACK",
         "DECLARE c CURSOR FOR SELECT 1",
@@ -325,6 +549,88 @@ mod tests {
         .await
         .expect("SELECT statements should run");
         assert_eq!(responses.len(), 2);
+        assert!(matches!(responses[0], Response::Query(_)));
+    }
+
+    #[tokio::test]
+    async fn unsupported_isolation_level_is_named_in_the_error() {
+        let service = service();
+        let error = parse(&service, "BEGIN ISOLATION LEVEL SERIALIZABLE")
+            .await
+            .expect_err("SERIALIZABLE must be rejected");
+        assert_eq!(sql_state(&error), Some("0A000"));
+        let message = match error {
+            PgWireError::UserError(info) => info.message,
+            other => panic!("unexpected error: {other:?}"),
+        };
+        assert!(message.contains("SERIALIZABLE"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn default_isolation_assignment_is_guarded() {
+        // `SET default_transaction_isolation = ...` parses as
+        // `Set::SingleAssignment`, which `unsupported_isolation` must also
+        // validate: the upstream `SET` hook reports success without applying
+        // the setting, so a later plain `BEGIN` would silently run with
+        // weaker isolation semantics than the client asked for.
+        let service = service();
+        for sql in [
+            "SET default_transaction_isolation = 'serializable'",
+            "SET default_transaction_isolation = 'repeatable read'",
+            "SET default_transaction_isolation TO 'repeatable read'",
+            "SET SESSION default_transaction_isolation TO 'serializable'",
+            "SET LOCAL default_transaction_isolation = 'serializable'",
+        ] {
+            let error = parse(&service, sql).await.expect_err(sql);
+            assert_eq!(sql_state(&error), Some("0A000"), "sql: {sql}");
+        }
+        // The read-committed default stays assignable.
+        for sql in [
+            "SET default_transaction_isolation = 'read committed'",
+            "SET SESSION default_transaction_isolation TO 'read committed'",
+        ] {
+            parse(&service, sql)
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn simple_protocol_rejects_default_isolation_assignment() {
+        let service = service();
+        let mut client = MockClient::new();
+        let error = <DfSessionService as SimpleQueryHandler>::do_query(
+            &service,
+            &mut client,
+            "SET default_transaction_isolation = 'serializable'",
+        )
+        .await
+        .expect_err("serializable default must be rejected, not acknowledged");
+        assert_eq!(sql_state(&error), Some("0A000"));
+    }
+
+    #[tokio::test]
+    async fn rejected_default_isolation_assignment_keeps_session_usable() {
+        // A rejected `SET` is a plain statement error, not an aborted
+        // transaction: the session stays usable for reads afterwards.
+        let service = service();
+        let mut client = MockClient::new();
+        let error = <DfSessionService as SimpleQueryHandler>::do_query(
+            &service,
+            &mut client,
+            "SET default_transaction_isolation = 'serializable'",
+        )
+        .await
+        .expect_err("serializable default must be rejected");
+        assert_eq!(sql_state(&error), Some("0A000"));
+
+        let responses = <DfSessionService as SimpleQueryHandler>::do_query(
+            &service,
+            &mut client,
+            "SELECT 1",
+        )
+        .await
+        .expect("session must stay usable after a rejected SET");
         assert!(matches!(responses[0], Response::Query(_)));
     }
 

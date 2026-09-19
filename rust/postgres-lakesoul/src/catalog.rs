@@ -24,7 +24,9 @@ use std::sync::Arc;
 
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider};
 use datafusion::error::{DataFusionError, Result};
-use lakesoul_datafusion::catalog::{LakeSoulNamespace, LakeSoulProviderOptions};
+use lakesoul_datafusion::catalog::{
+    CatalogSnapshot, LakeSoulNamespace, LakeSoulProviderOptions,
+};
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
 
@@ -207,13 +209,22 @@ impl CatalogProviderList for PgDatabaseCatalogList {
 }
 
 /// Builds the real catalog for the current PG database.
+///
+/// `snapshot` is the session factory's metadata view: every connection shares
+/// it, so one process runs one background refresher rather than one per
+/// connection.
 pub fn pg_lakesoul_catalog(
     client: MetaDataClientRef,
     provider_options: LakeSoulProviderOptions,
     namespace: &str,
+    snapshot: Arc<CatalogSnapshot>,
 ) -> Arc<PgLakeSoulCatalog> {
-    let public_schema =
-        Arc::new(LakeSoulNamespace::new(client, provider_options, namespace));
+    let public_schema = Arc::new(LakeSoulNamespace::with_snapshot(
+        client,
+        provider_options,
+        namespace,
+        snapshot,
+    ));
     Arc::new(PgLakeSoulCatalog::new(public_schema))
 }
 
@@ -224,7 +235,9 @@ mod tests {
 
     use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider};
     use datafusion::error::{DataFusionError, Result};
-    use lakesoul_datafusion::catalog::LakeSoulProviderOptions;
+    use lakesoul_datafusion::catalog::{
+        DEFAULT_CATALOG_REFRESH_INTERVAL, LakeSoulProviderOptions,
+    };
     use lakesoul_metadata::MetaDataClient;
 
     use super::*;
@@ -297,14 +310,44 @@ mod tests {
             .enable_all()
             .build()
             .expect("test runtime");
-        let client = runtime
-            .block_on(async { MetaDataClient::from_env().await })
-            .expect("metadata client");
+        let client = Arc::new(
+            runtime
+                .block_on(async { MetaDataClient::from_env().await })
+                .expect("metadata client"),
+        );
+        let snapshot =
+            CatalogSnapshot::new(Arc::clone(&client), DEFAULT_CATALOG_REFRESH_INTERVAL);
         pg_lakesoul_catalog(
-            Arc::new(client),
+            client,
             LakeSoulProviderOptions::default(),
             namespace,
+            snapshot,
         )
+    }
+
+    #[test]
+    fn catalog_lists_from_the_given_snapshot() {
+        if !meta_available() {
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let client = Arc::new(
+            runtime
+                .block_on(async { MetaDataClient::from_env().await })
+                .expect("metadata client"),
+        );
+        let snapshot =
+            CatalogSnapshot::new(Arc::clone(&client), DEFAULT_CATALOG_REFRESH_INTERVAL);
+        let catalog = pg_lakesoul_catalog(
+            client,
+            LakeSoulProviderOptions::default(),
+            "default",
+            Arc::clone(&snapshot),
+        );
+        assert!(Arc::ptr_eq(catalog.public_schema.snapshot(), &snapshot));
     }
 
     #[test]

@@ -31,6 +31,40 @@ console-s3 level=log_level:
       --s3-access-key "rustfsadmin" \
       --s3-secret-key "rustfsadmin"
 
+# Start these two workers in separate terminals before running console-distributed-s3.
+worker-s3-1 level=log_level:
+    RUST_LOG={{level}} cargo run --release --bin lakesoul-worker -- \
+      --bind "127.0.0.1" \
+      --port 50051 \
+      --worker-threads 16 \
+      --warehouse-prefix "s3://lakesoul-bucket/tpch" \
+      --endpoint "http://localhost:9000" \
+      --s3-bucket "lakesoul-test-bucket" \
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin"
+
+worker-s3-2 level=log_level:
+    RUST_LOG={{level}} cargo run --release --bin lakesoul-worker -- \
+      --bind "127.0.0.1" \
+      --port 50052 \
+      --worker-threads 16 \
+      --warehouse-prefix "s3://lakesoul-bucket/tpch" \
+      --endpoint "http://localhost:9000" \
+      --s3-bucket "lakesoul-test-bucket" \
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin"
+
+console-distributed-s3 level=log_level:
+    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16 \
+      --warehouse-prefix "s3://lakesoul-bucket/tpch" \
+      --endpoint "http://localhost:9000" \
+      --s3-bucket "lakesoul-test-bucket" \
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin" \
+      --worker "http://127.0.0.1:50051" \
+      --worker "http://127.0.0.1:50052" \
+      --target-partitions 2
+
 console level=log_level:
     RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16
 

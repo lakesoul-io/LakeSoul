@@ -53,6 +53,10 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   RUSTFLAGS: "-Awarnings"
   LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
@@ -81,16 +85,6 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@v4
       - name: Set up JDK 11
         uses: actions/setup-java@v5
@@ -123,6 +117,8 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
+          shared-key: "native-host"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PostgreSQL metadata
@@ -232,16 +228,6 @@ jobs:
                 sleep 2
               done
             '
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@v4
       - name: Set up JDK 11
         uses: actions/setup-java@v5
@@ -274,6 +260,8 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
+          shared-key: "native-host"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PostgreSQL metadata
