@@ -33,20 +33,16 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-rust-linux-x86_64:
     runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings"
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@v4
       - name: Set up JDK 11
         uses: actions/setup-java@v5
@@ -57,17 +53,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
-      - name: Install cross
+          shared-key: "native-glibc217"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         with:
-          tool: cross@0.2.5
+          tool: cargo-zigbuild@0.18.3
       - name: Build native libraries
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
         run: |
-          cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
+          unset HADOOP_HOME HDFS_LIB_DIR
+          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
+      - name: Verify glibc compatibility
+        run: |
+          for lib in rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so; do
+            max="$(LANG=C readelf -W --version-info --dyn-syms "$lib" | grep -o 'GLIBC_[0-9.]*' | sort -t_ -k2V | uniq | tail -1)"
+            echo "$lib -> $max"
+            if [ "$(printf '%s\n' "$max" "GLIBC_2.17" | sort -V | tail -1)" != "GLIBC_2.17" ]; then
+              echo "ERROR: $lib requires $max"
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
@@ -370,6 +390,146 @@ jobs:
           retention-days: 5
           if-no-files-found: error
 
+  flink-test-sink-fail:
+    runs-on: ubuntu-24.04
+    needs: [build-rust-linux-x86_64]
+
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v5
+        with:
+          java-version: "11"
+          distribution: "temurin"
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-16
+      - name: Init PG
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+          path: ./rust/target/release/
+      - uses: actions/download-artifact@v4
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./rust/target/release/
+      - name: Build with Maven
+        run: |
+          export RUST_LOG=info
+          export LAKESOUL_IO_USE_V2_MERGE=true
+          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl :lakesoul-flink-1.20_2.12 -am -Pcross-build --file pom.xml -Dtest='LakeSoulSinkFailTest' -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Generate Report Site
+        if: always()
+        run: |
+          mvn surefire-report:report-only -pl :lakesoul-flink-1.20_2.12 -am
+      - name: Upload Test Report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-test-report-artifact-flink-sink-fail
+          path: lakesoul-flink/target/reports
+          retention-days: 5
+          if-no-files-found: error
+
+  flink-test-source-fail:
+    runs-on: ubuntu-24.04
+    needs: [build-rust-linux-x86_64]
+
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v5
+        with:
+          java-version: "11"
+          distribution: "temurin"
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-16
+      - name: Init PG
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+          path: ./rust/target/release/
+      - uses: actions/download-artifact@v4
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./rust/target/release/
+      - name: Build with Maven
+        run: |
+          export RUST_LOG=info
+          export LAKESOUL_IO_USE_V2_MERGE=true
+          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl :lakesoul-flink-1.20_2.12 -am -Pcross-build --file pom.xml -Dtest='LakeSoulSourceFailTest,FlinkTimeTest' -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Generate Report Site
+        if: always()
+        run: |
+          mvn surefire-report:report-only -pl :lakesoul-flink-1.20_2.12 -am
+      - name: Upload Test Report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-test-report-artifact-flink-source-fail
+          path: lakesoul-flink/target/reports
+          retention-days: 5
+          if-no-files-found: error
+
   flink-test-1:
     runs-on: ubuntu-24.04
     needs: [build-rust-linux-x86_64]
@@ -425,7 +585,7 @@ jobs:
         run: |
           export RUST_LOG=info
           export LAKESOUL_IO_USE_V2_MERGE=true
-          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl :lakesoul-flink-1.20_2.12 -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
+          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl :lakesoul-flink-1.20_2.12 -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest,!LakeSoulSinkFailTest,!LakeSoulSourceFailTest,!FlinkTimeTest' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |

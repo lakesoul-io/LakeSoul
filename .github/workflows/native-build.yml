@@ -26,20 +26,16 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-linux-x86_64:
     runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings"
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up JDK 11
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -59,12 +55,22 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
-      - name: Install cross
-        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2
+          shared-key: "native-glibc217"
+          save-if: false
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
         with:
-          tool: cross@0.2.5
+          version: 0.14.1
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.18.3
       - name: Build native libraries
-        run: cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+        run: |
+          unset HADOOP_HOME HDFS_LIB_DIR
+          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu

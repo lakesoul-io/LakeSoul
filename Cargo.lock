@@ -5322,6 +5322,7 @@ dependencies = [
  "futures",
  "lakesoul-build-info",
  "lakesoul-common",
+ "lakesoul-datafusion",
  "lakesoul-io",
  "lakesoul-io-c",
  "lakesoul-metadata",

@@ -22,11 +22,15 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   rust_ci:
     runs-on: ubuntu-24.04
     env:
-      RUSTFLAGS: "-Awarnings"
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     services:
       # Label used to access the service container
       postgres:
@@ -93,16 +97,6 @@ jobs:
 
               echo "RustFS Configuration Complete!"
             '
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -113,10 +107,17 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
+          shared-key: "rust-test-fast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
           apt: postgresql-client-16
+      - name: Install lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 1
@@ -129,14 +130,14 @@ jobs:
         run: |
           export RUST_LOG=info
           export RUST_BACKTRACE=full
-          cargo test --profile test-fast --lib --bins --tests --jobs 2
+          cargo test --profile test-fast --lib --bins --tests --jobs 4
       - name: Test v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_LOG: info
           RUST_BACKTRACE: full
         run: |
-          cargo test --profile test-fast --lib --bins --tests --jobs 2
+          cargo test --profile test-fast --lib --bins --tests --jobs 4
 
   clippy_check:
     runs-on: ubuntu-24.04
@@ -157,6 +158,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          key: "ubuntu-24.04-clippy"
+          shared-key: "rust-clippy"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run Clippy
         run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
