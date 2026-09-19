@@ -5256,6 +5256,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-ivm"
+version = "4.0.0"
+dependencies = [
+ "arrow",
+ "arrow-array 59.3.0",
+ "arrow-schema 59.3.0",
+ "datafusion",
+ "lakesoul-common",
+ "lakesoul-io",
+ "lakesoul-metadata",
+ "lakesoul-metadata-proto",
+ "rootcause",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-log",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "lakesoul-metadata"
 version = "4.0.0"
 dependencies = [

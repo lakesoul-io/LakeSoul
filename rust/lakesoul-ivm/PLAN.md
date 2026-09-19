@@ -254,6 +254,11 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 后续（P2）：新建 `ivm.cursors` 水位检查点，清理前校验 `min(cursor) - grace`；
   可参考 `vector_index_lease` 模式（`rust/lakesoul-metadata/src/vector_index.rs:65,149`）。
 
+**实施记录（已完成）**：约束写入 crate 级文档
+（`rust/lakesoul-ivm/src/lib.rs` 的 `# Retention` 一节）：IVM 消费的表必须保持默认
+保留策略，不配置 `partition.ttl` / `compaction.ttl` / `dataExpiredTime`，也不启用
+`cleanOldCompaction`；cursor-aware GC 留待后续。
+
 ## 7. P2 预研项（明确暂缓）
 
 - `pk_locator` 泛化（任意列/字符串/parquet/非唯一键）：v1 join 用"桶裁剪 +
@@ -274,6 +279,87 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | F1 | P1-1 OCC + 并发测试 | 三组并发场景无丢更新 |
 | F2 | P0-3 bucket=key 前缀（writer/reader/属性校验） | 状态表读写与 EXCEPT ALL 通过 |
 | F3 | IVM 冒烟：单表 SUM/COUNT 增量刷新 + join 状态表读写 | MV 与全量查询双向 EXCEPT ALL 为空 |
+
+**F3 实施记录（已完成冒烟切片）**
+
+- 新 crate `rust/lakesoul-ivm`：
+  - `metadata`：PG schema `ivm`（`views` / `cursors`）及 CRUD；DDL 用
+    `do $$ ... exception when duplicate_schema/duplicate_table` 保证并发初始化安全。
+  - `table`：内部表创建（`lakesoul.ivm.internal=true`、bucket 前缀属性、parquet）+
+    `append_batch`（keyed 表走 partitioning writer + stable sort，一次提交
+    delete/insert）+ `read_files`/`read_current`（MOR）。
+  - `runtime`：`SumCountView` 声明式视图（`SUM`/`COUNT` over append-only 源表）。
+    `refresh_sum_count` 按分区 cursor 消费 changelog（P0-2），用 DataFusion 聚合 delta，
+    与 MV 当前状态合并后写 `delete(old) + insert(new)`，提交成功后再推进 cursor。
+- 测试 `tests/aggregate_refresh.rs`：
+  1. 两轮增量刷新后 MV 状态 == 源表全量 `GROUP BY`（含第二轮同 key 更新）；
+     cursor 版本/时间戳正确、无新提交时 refresh 为 no-op；
+  2. PK=(k,row_id)、bucket=(k) 状态表跨批次写入后 MOR 读回全部行（F3 的
+     "join 状态表读写"部分）。
+- 已知缺口（下一步）：MV 提交与 cursor 更新之间无原子性，crash 可能重放窗口；
+  epoch 幂等尚未实现（后续记录与 `EPOCH.md` 已给出方案）；SQL 视图前端未开始。
+
+**Crash 重放保护实施记录（已完成）**
+
+- epoch 改为窗口确定性哈希（`window_epoch`：FNV-1a over view_id + 排序后的
+  `(source_table_id, partition_desc, to_version)`），同一窗口重试得到同一 epoch，
+  不依赖时钟且与窗口一一对应。
+- sum/count：状态读取同时取每组的 `__ivm_epoch`；构建写入批次时，若某组状态
+  epoch 已等于当前窗口 epoch，说明该窗口已应用，跳过该组（幂等），避免
+  crash 后重放导致重复计数。
+- join：输出行携带 `__ivm_epoch`；append 前扫描输出已有 epoch
+  （`applied_output_epochs`），命中则跳过本次 append，只推进 cursor。
+- 测试：模拟"数据已提交、cursor 未推进"（把 cursor 回拨后重跑）——
+  sum/count 状态与 MV 版本号不变、返回 epoch 相同；join 输出不重复、epoch 相同。
+- 仍未完成：按 `EPOCH.md` 的设计落地"元数据优先"的 epoch 协议——
+  `ivm.epochs`（单调 epoch + `window_key` 去重 + `mv_versions_before` 比较）替代
+  join 的全量 epoch 扫描；`ivm.states`、SQL 视图前端仍未开始。
+
+**Epoch 协议实施记录（已完成 `EPOCH.md` 步骤 1–3）**
+
+- `ivm.views` 增加 `last_epoch` / `generation`；新增 `ivm.epochs`
+  （`view_id, generation, epoch` 主键，`window_key` 唯一索引，
+  `to_versions` / `mv_versions_before` / `mv_versions` / `status`）。
+- `IvmMetadata`：`begin_epoch`（已 committed → 跳过；pending → 恢复；否则用
+  `views.last_epoch` 分配单调 epoch 并插入 pending）、`mark_epoch_committed`、
+  `get_epoch`、`list_committed_epochs`、`max_committed_to_versions`，
+  以及测试/恢复辅助 `set_epoch_pending`。
+- runtime：`window_key` 规范串取代哈希 epoch；刷新前一次 `ivm.epochs` 点查 +
+  一次分区版本比较即可判定"是否已应用"，正常重放与 pending 恢复都不再读数据；
+  窗口下界必须等于该源已提交的最大 `to_version`，否则报错要求重建（cursor 回退
+  超过上一窗口时不再静默重复）。
+- 删除 join 的 `applied_output_epochs` 全量扫描；`__ivm_epoch` 列保留为审计/兜底。
+- 测试：`tests/epoch_protocol.rs`（pending 已写跳过、pending 未写应用、
+  回退越界报错）与 join 的 pending 跳过用例。
+- 未完成：`ivm.states`、SQL 视图前端；consumer 水位 GC 见 `EPOCH.md` §9。
+
+**Rebuild 与消费者读取实施记录（已完成 `EPOCH.md` 步骤 4–5）**
+
+- `IvmMetadata`：`set_view_status` / `view_status` / `bump_generation` /
+  `delete_cursors` / `latest_committed_epoch`。
+- `IvmTable`：`truncate`（空 snapshot 的 CompactionCommit 清分区，避免 Delete 后
+  无法再 Merge/Append）、`read_at_versions`（按 epoch 记录的 MV 版本读快照）。
+- `IvmRuntime`：`rebuild_sum_count` / `rebuild_join`（rebuilding → generation+1 →
+  删 cursor → truncate → 读源全量状态重算 → `rebuild:<generation>` epoch 提交 →
+  cursor 重置到最新 → active）；`view_state_at_epoch` / `latest_epoch` 供消费者
+  按 epoch 定位一致快照。
+- 测试 `tests/rebuild.rs`：重建后状态==全量聚合、cursor/generation/window_key 正确、
+  重建后仅消费新提交；join 重建输出==全量 join；`view_state_at_epoch` 能分别读出
+  两个 epoch 的历史快照；回退报错后 rebuild 恢复。
+- 未完成：consumer 水位 GC（`ivm.consumers`）、SQL 视图前端。
+
+**Join 增量刷新实施记录（已完成冒烟切片）**
+
+- `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算
+  `ΔL ⋈ R_before + L_before ⋈ ΔR + ΔL ⋈ ΔR`（inclusion-exclusion），
+  `before` 用 P0-1 的 as-of 读（`IvmTable::read_as_of`）按各自 cursor 时间戳重建。
+- 输出表 append-only（`join_key, left_value, right_value, __ivm_epoch`）；
+  只要两侧只增，每个 join pair 恰好产生一次，累计输出恒等于 `L_now ⋈ R_now`。
+- 测试 `tests/join_refresh.rs`：两轮双边窗口（第二轮三项都有贡献）后逐行等于
+  全量 join；无新提交时 no-op；每侧 cursor 正确推进。
+- 已知缺口：仅支持 inner join + Int64 key/value + 未分区 + append-only 源；
+  非 append-only 源需要带 retraction 的 join delta（inclusion-exclusion 配合
+  状态表），留待下一阶段。
 
 ## 9. 风险与开放问题
 
