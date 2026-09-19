@@ -6,11 +6,17 @@ on:
   push:
     paths:
       - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-ci.yml"
     branches:
       - "main"
   pull_request:
     paths:
       - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-ci.yml"
     branches:
       - "main"
       - "release/**"
