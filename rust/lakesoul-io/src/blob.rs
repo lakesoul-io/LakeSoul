@@ -15,7 +15,14 @@
 //! clean up its blobs. Readers materialize the raw bytes transparently.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use arrow_array::Array;
+use arrow_array::ArrayRef;
+use arrow_array::BinaryArray;
+use arrow_array::LargeBinaryArray;
+use arrow_array::cast::AsArray;
+use arrow_schema::DataType;
 use rootcause::report;
 
 use crate::Result;
@@ -199,6 +206,61 @@ pub fn encode_value(
     })
 }
 
+/// Encode one binary array into tagged bytes, appending external values to
+/// `pack`. Nulls are preserved; non-binary columns are rejected.
+pub fn encode_column(
+    array: &dyn Array,
+    policy: &BlobPolicy,
+    pack: &mut PackBuffer,
+    pack_path: &str,
+) -> Result<ArrayRef> {
+    fn encode(
+        value: &[u8],
+        policy: &BlobPolicy,
+        pack: &mut PackBuffer,
+        pack_path: &str,
+    ) -> Result<Vec<u8>> {
+        match encode_value(value, policy, pack)? {
+            EncodedValue::Inline => Ok(tagged_inline(value)),
+            EncodedValue::External {
+                offset,
+                length,
+                crc,
+            } => Ok(tagged_external(pack_path, offset, length, crc)),
+        }
+    }
+
+    match array.data_type() {
+        DataType::Binary => {
+            let values = array.as_binary::<i32>();
+            let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                if values.is_null(index) {
+                    out.push(None);
+                    continue;
+                }
+                out.push(Some(encode(values.value(index), policy, pack, pack_path)?));
+            }
+            Ok(Arc::new(BinaryArray::from_iter(out)))
+        }
+        DataType::LargeBinary => {
+            let values = array.as_binary::<i64>();
+            let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                if values.is_null(index) {
+                    out.push(None);
+                    continue;
+                }
+                out.push(Some(encode(values.value(index), policy, pack, pack_path)?));
+            }
+            Ok(Arc::new(LargeBinaryArray::from_iter(out)))
+        }
+        other => Err(report!(
+            "blob column must be Binary or LargeBinary, got {other}"
+        )),
+    }
+}
+
 /// Tagged bytes for an inline value.
 pub fn tagged_inline(value: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(value.len() + 1);
@@ -376,6 +438,59 @@ mod tests {
         assert!(parse_tagged(b"").is_err());
         assert!(parse_tagged(&[BLOB_TAG_EXTERNAL, 1, 2, 3]).is_err());
         assert!(parse_tagged(&[0x7F]).is_err());
+    }
+
+    #[test]
+    fn encodes_columns_with_threshold_and_nulls() {
+        use arrow_array::Array;
+
+        let array =
+            BinaryArray::from(vec![Some(&b"tiny"[..]), None, Some(&b"0123456789"[..])]);
+        let policy = BlobPolicy {
+            inline_threshold: 4,
+            ..BlobPolicy::default()
+        };
+        let mut pack = PackBuffer::default();
+        let encoded = encode_column(
+            &array,
+            &policy,
+            &mut pack,
+            "file:///tmp/d.vortex.frame.blob",
+        )
+        .unwrap();
+        assert_eq!(encoded.data_type(), &DataType::Binary);
+        assert_eq!(encoded.len(), 3);
+        assert!(encoded.is_valid(0));
+        assert!(encoded.is_null(1));
+        assert_eq!(pack.data(), b"0123456789");
+        assert_eq!(
+            parse_tagged(encoded.as_binary::<i32>().value(0)).unwrap(),
+            TaggedValue::Inline(b"tiny")
+        );
+        match parse_tagged(encoded.as_binary::<i32>().value(2)).unwrap() {
+            TaggedValue::External {
+                length,
+                offset,
+                pack_path,
+                crc,
+            } => {
+                assert_eq!(length, 10);
+                assert_eq!(offset, 0);
+                assert_eq!(pack_path, "file:///tmp/d.vortex.frame.blob");
+                verify_external(pack.data(), length, crc).unwrap();
+            }
+            other => panic!("expected external, got {other:?}"),
+        }
+
+        assert!(
+            encode_column(
+                &arrow_array::Int64Array::from(vec![1]),
+                &policy,
+                &mut pack,
+                "x"
+            )
+            .is_err()
+        );
     }
 
     #[test]
