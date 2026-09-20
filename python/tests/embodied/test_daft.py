@@ -15,7 +15,7 @@ from embodied.test_lerobot import STATE_DIM, _table_name, _write_dataset
 from lakesoul import LakeSoulCatalog
 from lakesoul.embodied import EmbodiedDataset, GopVideo, import_lerobot
 from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
-from lakesoul.embodied.daft import import_lerobot_gop, read_samples
+from lakesoul.embodied.daft import import_lerobot_gop, read_gop_frames, read_samples
 
 
 def test_import_lerobot_daft_frames(tmp_path: Path) -> None:
@@ -214,3 +214,57 @@ def test_read_samples_matches_embodied_dataset(tmp_path: Path) -> None:
 def test_read_samples_rejects_clamp() -> None:
     with pytest.raises(ValueError, match="boundary='skip'"):
         read_samples(object(), window=WINDOW, boundary="clamp")  # type: ignore[arg-type]
+
+
+def test_read_gop_frames_decodes_distributed(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_gop_frames")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_lerobot(
+            root,
+            table=table_name,
+            path=table_path,
+            physical_format="parquet",
+            video_layout="gop",
+        )
+        gops = catalog.table(f"{table_name}_gops")
+        frames = catalog.table(f"{table_name}_frames")
+
+        decoded = read_gop_frames(gops.scan(), frames.scan()).collect().to_pylist()
+        assert len(decoded) == 15
+        episode_one = [row for row in decoded if row["episode_id"] == "ep000001"]
+        assert [round(row["timestamp"], 2) for row in episode_one] == [
+            0.5,
+            0.6,
+            0.7,
+            0.8,
+        ]
+        from PIL import Image
+
+        values = [
+            int(Image.open(io.BytesIO(row["image"])).getpixel((0, 0))[0])
+            for row in episode_one
+        ]
+        assert values == pytest.approx([50, 60, 70, 80], abs=6.0)
+        assert all(row["width"] == 8 and row["height"] == 8 for row in decoded)
+
+        raw = (
+            read_gop_frames(
+                gops.scan(),
+                frames.scan(),
+                cameras=["cam"],
+                image_format=None,
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert len(raw) == 15
+        assert len(raw[0]["image"]) == 8 * 8 * 3
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)

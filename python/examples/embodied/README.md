@@ -126,6 +126,18 @@ samples = read_samples(
 samples.show()
 ```
 
+GOP video frames decode in the same pipeline:
+
+```python
+from lakesoul.embodied.daft import read_gop_frames
+
+frames = read_gop_frames(
+    catalog.table("robot_episodes_gops").scan(),
+    catalog.table("robot_episodes_frames").scan(),
+    cameras=["cam_high"],
+)
+```
+
 ## Train
 
 ```sh

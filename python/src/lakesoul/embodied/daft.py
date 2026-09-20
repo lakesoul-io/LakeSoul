@@ -550,4 +550,121 @@ def read_samples(
     )
 
 
-__all__ = ["import_lerobot", "import_lerobot_gop", "read_samples"]
+def read_gop_frames(
+    gops: LakeSoulScan,
+    frames: LakeSoulScan,
+    *,
+    cameras: Sequence[str] | None = None,
+    image_format: str | None = "JPEG",
+    image_quality: int = 90,
+    episode_column: str = EPISODE_COLUMN,
+) -> Any:
+    """Decode GOP video into a lazy DataFrame with one row per frame.
+
+    ``gops`` / ``frames`` are scans of the side tables written by the GOP
+    importers. Each GOP is decoded once on a Daft worker (``decode_gop``), the
+    frames are exploded and joined back to the frame index, so the result has
+    ``episode_id``, ``camera``, ``frame_index``, ``timestamp``, ``width``,
+    ``height`` and ``image`` (encoded bytes, or raw RGB when
+    ``image_format=None``).
+    """
+    import daft
+    from daft import col, func, functions
+
+    from lakesoul.daft import read_lakesoul
+
+    gops_frame = read_lakesoul(gops).select(
+        episode_column, "camera", "gop_index", "codec", "data"
+    )
+    frames_frame = read_lakesoul(frames).select(
+        episode_column,
+        "camera",
+        "gop_index",
+        "gop_position",
+        "frame_index",
+        "timestamp",
+    )
+    if cameras is not None:
+        wanted = [str(camera) for camera in cameras]
+        gops_frame = gops_frame.where(col("camera").is_in(wanted))
+        frames_frame = frames_frame.where(col("camera").is_in(wanted))
+
+    payload = daft.DataType.list(
+        daft.DataType.struct(
+            {
+                "position": daft.DataType.int64(),
+                "width": daft.DataType.int64(),
+                "height": daft.DataType.int64(),
+                "image": daft.DataType.binary(),
+            }
+        )
+    )
+
+    def decode(data: bytes, codec: str) -> list[dict[str, Any]]:
+        import numpy as np
+        from PIL import Image
+
+        from .video import decode_gop, encode_image
+
+        decoded = []
+        for position, array in enumerate(decode_gop(bytes(data), codec=str(codec))):
+            height, width = int(array.shape[0]), int(array.shape[1])
+            if image_format is None:
+                image = np.ascontiguousarray(array).tobytes()
+            else:
+                image = encode_image(
+                    Image.fromarray(array),
+                    image_format=image_format,
+                    quality=image_quality,
+                )
+            decoded.append(
+                {
+                    "position": position,
+                    "width": width,
+                    "height": height,
+                    "image": image,
+                }
+            )
+        return decoded
+
+    decode_udf = func(return_dtype=payload)(decode)
+    decoded = (
+        gops_frame.with_column("decoded", decode_udf(col("data"), col("codec")))
+        .select(
+            episode_column,
+            "camera",
+            "gop_index",
+            functions.explode(col("decoded")).alias("frame"),
+        )
+        .select(
+            episode_column,
+            "camera",
+            "gop_index",
+            col("frame")["position"].alias("gop_position"),
+            col("frame")["image"].alias("image"),
+            col("frame")["width"].alias("width"),
+            col("frame")["height"].alias("height"),
+        )
+    )
+    joined = frames_frame.join(
+        decoded,
+        on=[episode_column, "camera", "gop_index", "gop_position"],
+        how="inner",
+    )
+    return joined.select(
+        episode_column,
+        "camera",
+        "frame_index",
+        "timestamp",
+        "width",
+        "height",
+        "image",
+    ).sort([episode_column, "camera", "frame_index"])
+
+
+__all__ = [
+    "import_lerobot",
+    "import_lerobot_gop",
+    "read_gop_frames",
+    "read_samples",
+]

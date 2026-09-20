@@ -184,11 +184,18 @@ Ray runner 只要求接口兼容（gated 测试）。
   （stride=1/2 均比对通过）；`clamp` 明确报错待补；
 - 限制：尚未包含 GOP 图像解码与样本级 rank 分片（Daft 自身调度负责并行）。
 
-### M4-1c / M4-2b（待做）
+### M4-2b 分布式 GOP 帧解码（已完成）
+
+- `lakesoul.embodied.daft.read_gop_frames(gops_scan, frames_scan, cameras=..., image_format=...)`：
+  每个 GOP 在 worker 内 `decode_gop` 一次，explode 后与 frames 索引 join，
+  输出 `episode_id/camera/frame_index/timestamp/width/height/image`；
+  `image_format="JPEG"/"PNG"` 输出编码字节，`None` 输出原始 RGB；
+- 测试：逐帧像素与单机 `GopVideo` 对齐、秒级时间戳、原始 RGB 尺寸校验。
+
+### M4-1c / M4-3（待做）
 
 - MCAP 分布式：`daft.read_mcap` 抽 JSON topic；protobuf/GOP 走每文件 actor
   复用 `_read_messages` / `_camera_stream` 语义；
-- GOP 帧解码 UDF：frames join gops + `decode_gop`，输出逐帧图像列；
 - M4-3：native runner 单测 + `LAKESOUL_DAFT_RAY_TEST=1` Ray 测试
   （顺便修 `tests/vector/test_daft_ray_distribution.py` 的过期 import）。
 
