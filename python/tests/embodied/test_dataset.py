@@ -301,6 +301,134 @@ def test_fixed_size_list_columns_become_2d(monkeypatch) -> None:
     assert sample["action"].shape == (2,)
 
 
+class _FakeEpisodeVideo:
+    def __init__(self, video: _FakeVideo, episode_id: str) -> None:
+        self._video = video
+        self._episode_id = episode_id
+
+    def frames(self, start_frame: int, end_frame: int):
+        self._video.calls.append((self._episode_id, start_frame, end_frame))
+        return self._video.payload(start_frame, end_frame)
+
+
+class _FakeVideo:
+    episode_column = "episode_id"
+
+    def __init__(self, payload) -> None:
+        self.calls: list[tuple[str, int, int]] = []
+        self.episodes: list[str] = []
+        self.payload = payload
+
+    def for_episode(self, episode_id: str) -> _FakeEpisodeVideo:
+        self.episodes.append(episode_id)
+        return _FakeEpisodeVideo(self, episode_id)
+
+
+def _camera_frame(value: float) -> np.ndarray:
+    return np.full((4, 4, 3), value, dtype=np.uint8)
+
+
+def test_video_frames_are_attached_to_samples(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    video = _FakeVideo(
+        lambda start, end: {
+            "cam": np.stack([_camera_frame(index) for index in range(start, end)])
+        }
+    )
+    _install_reader(monkeypatch, {"file-a": _table(4)})
+    dataset = EmbodiedDataset(
+        _FakeScan([unit]),
+        window={"state": (0, 1)},
+        video=video,
+    )
+
+    samples = list(dataset.iter_epoch(0))
+
+    assert sorted(int(sample["state"][0]) for sample in samples) == [0, 1, 2, 3]
+    assert all(sample["cam"].shape == (1, 4, 4, 3) for sample in samples)
+    assert sorted(call[1:] for call in video.calls) == [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 4),
+    ]
+    assert video.episodes == ["a"]
+
+
+def test_video_window_can_follow_another_column(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    video = _FakeVideo(
+        lambda start, end: {"cam": np.zeros((end - start, 2, 2, 3), np.uint8)}
+    )
+    _install_reader(monkeypatch, {"file-a": _table(6)})
+    dataset = EmbodiedDataset(
+        _FakeScan([unit]),
+        window={"state": (0, 1), "action": (-2, 0)},
+        video=video,
+        video_window="action",
+        boundary="clamp",
+    )
+
+    samples = list(dataset.iter_epoch(0))
+
+    assert sorted(call[1:] for call in video.calls) == [
+        (0, 1),
+        (0, 2),
+        (1, 3),
+        (2, 4),
+        (3, 5),
+    ]
+    shapes = {int(sample["state"][0]): sample["cam"].shape for sample in samples}
+    assert shapes == {
+        1: (1, 2, 2, 3),
+        2: (2, 2, 2, 3),
+        3: (2, 2, 2, 3),
+        4: (2, 2, 2, 3),
+        5: (2, 2, 2, 3),
+    }
+
+
+def test_video_validation(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    _install_reader(monkeypatch, {"file-a": _table(4)})
+    scan = _FakeScan([unit])
+
+    with pytest.raises(ValueError, match="video_window"):
+        EmbodiedDataset(
+            scan,
+            window={"state": (0, 1)},
+            video_window="missing",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="end > start"):
+        EmbodiedDataset(
+            scan,
+            window={"state": (0, 1)},
+            video_window=(1, 1),  # type: ignore[arg-type]
+        )
+
+
+def test_video_camera_collision(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    video = _FakeVideo(
+        lambda start, end: {"state": np.zeros((end - start, 1, 1, 3), np.uint8)}
+    )
+    _install_reader(monkeypatch, {"file-a": _table(4)})
+    dataset = EmbodiedDataset(_FakeScan([unit]), window={"state": (0, 1)}, video=video)
+
+    with pytest.raises(ValueError, match="collides"):
+        list(dataset.iter_epoch(0))
+
+
+def test_video_requires_episode_partition(monkeypatch) -> None:
+    unit = LakeSoulScanPlanPartition(files=["file-a"], primary_keys=[])
+    video = _FakeVideo(lambda start, end: {})
+    _install_reader(monkeypatch, {"file-a": _table(4)})
+    dataset = EmbodiedDataset(_FakeScan([unit]), window={"state": (0, 1)}, video=video)
+
+    with pytest.raises(ValueError, match="partitioned"):
+        list(dataset.iter_epoch(0))
+
+
 def test_window_validation() -> None:
     with pytest.raises(ValueError, match="greater than start"):
         Window(0, 0)

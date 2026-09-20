@@ -38,6 +38,29 @@ print(summary)
 
 Video decoding needs the `embodied` extra: `pip install "lakesoul[embodied]"`.
 
+Pass `video_layout="gop"` to keep the source H.264 packets instead of decoded
+per-frame JPEGs; the importer then creates `<table>_gops` (raw Annex-B GOPs)
+and `<table>_frames` (frame to GOP/offset index). `EmbodiedDataset` can consume
+them directly:
+
+```python
+from lakesoul.embodied import EmbodiedDataset, GopVideo
+
+video = GopVideo(
+    catalog.table("robot_episodes_gops"),
+    catalog.table("robot_episodes_frames"),
+)
+dataset = EmbodiedDataset(
+    catalog.table("robot_episodes").scan(),
+    window={"observation_state": (-4, 0), "action": (0, 4)},
+    video=video,               # decoded frames follow video_window
+    video_window="observation_state",
+)
+```
+
+Frames can also be decoded manually with
+`lakesoul.embodied.video.decode_gop_range`.
+
 ## Import an MCAP recording
 
 ```python

@@ -10,11 +10,13 @@ from uuid import uuid4
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 
 from lakesoul import LakeSoulCatalog
-from lakesoul.embodied import EmbodiedDataset, import_lerobot
+from lakesoul.embodied import EmbodiedDataset, GopVideo, import_lerobot
+from lakesoul.embodied.video import decode_gop_range
 
 FPS = 10
 EPISODES = ((0, 5, 0), (1, 4, 0), (2, 6, 1))
@@ -151,12 +153,16 @@ def _write_dataset(root: Path, *, with_video: bool = False) -> dict:
 
 def _write_video(path: Path, frames: int = 15) -> None:
     av = pytest.importorskip("av")
+    codec = "libx264" if "libx264" in av.codecs_available else "mpeg4"
     path.parent.mkdir(parents=True, exist_ok=True)
     container = av.open(str(path), mode="w", format="mp4")
-    stream = container.add_stream("mpeg4", rate=FPS)
+    stream = container.add_stream(codec, rate=FPS)
     stream.width = 8
     stream.height = 8
     stream.pix_fmt = "yuv420p"
+    if codec == "libx264":
+        # Force short GOPs so the fixture has several keyframes.
+        stream.options = {"x264-params": "keyint=4:min-keyint=4:scenecut=0"}
     for index in range(frames):
         pixels = np.full((8, 8, 3), index * 10, dtype=np.uint8)
         frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
@@ -262,6 +268,80 @@ def test_import_lerobot_video_frames(tmp_path: Path) -> None:
         decoded = Image.open(io.BytesIO(images[0]))
         assert decoded.size == (8, 8)
     finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_lerobot_gop_layout(tmp_path: Path) -> None:
+    av = pytest.importorskip("av")
+    if "libx264" not in av.codecs_available:
+        pytest.skip("libx264 is required for the GOP fixture")
+
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("gop")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_lerobot(
+            root,
+            table=table_name,
+            path=table_path,
+            physical_format="parquet",
+            video_layout="gop",
+        )
+        assert summary.tables == (
+            table_name,
+            f"{table_name}_gops",
+            f"{table_name}_frames",
+        )
+        assert summary.rows == 15
+        assert summary.video_frames == 15
+
+        ticks = catalog.table(table_name).scan().to_arrow_table()
+        assert "cam" not in ticks.column_names
+
+        gops = catalog.table(f"{table_name}_gops").scan().to_arrow_table()
+        frames = catalog.table(f"{table_name}_frames").scan().to_arrow_table()
+        assert frames.num_rows == 15
+        assert set(gops.column("camera").to_pylist()) == {"cam"}
+
+        selection = pc.equal(frames.column("episode_id"), "ep000001")
+        decoded = decode_gop_range(
+            gops.filter(pc.equal(gops.column("episode_id"), "ep000001")),
+            frames.filter(selection),
+            0,
+            4,
+        )
+        assert len(decoded) == 4
+        assert [float(frame[0, 0, 0]) for frame in decoded] == pytest.approx(
+            [50.0, 60.0, 70.0, 80.0], abs=6.0
+        )
+        episode_timestamps = frames.filter(selection).column("timestamp").to_pylist()
+        assert episode_timestamps == pytest.approx([0.5, 0.6, 0.7, 0.8], abs=1e-6)
+
+        ticks_table = catalog.table(table_name)
+        video = GopVideo(
+            catalog.table(f"{table_name}_gops"),
+            catalog.table(f"{table_name}_frames"),
+        )
+        dataset = EmbodiedDataset(
+            ticks_table.scan(),
+            window={"observation_state": (-2, 0), "action": (0, 2)},
+            stride=1,
+            episodes=["ep000001"],
+            video=video,
+        )
+        samples = list(dataset.iter_epoch(0))
+        assert len(samples) == 1
+        assert samples[0]["observation_state"].shape == (2, STATE_DIM)
+        assert samples[0]["cam"].shape == (2, 8, 8, 3)
+        assert [float(frame[0, 0, 0]) for frame in samples[0]["cam"]] == pytest.approx(
+            [50.0, 60.0], abs=6.0
+        )
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
 
 

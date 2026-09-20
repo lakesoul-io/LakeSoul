@@ -6,11 +6,13 @@ from .dataset import BOUNDARY_CLAMP, BOUNDARY_SKIP, EmbodiedDataset, Window
 from .importer import ImportSummary
 from .lerobot import import_lerobot
 from .mcap import import_mcap
+from .video import GopVideo
 
 __all__ = [
     "BOUNDARY_CLAMP",
     "BOUNDARY_SKIP",
     "EmbodiedDataset",
+    "GopVideo",
     "ImportSummary",
     "Window",
     "import_lerobot",

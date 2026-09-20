@@ -2,7 +2,7 @@
 
 - 版本：v1.2（用户功能驱动版，M1 重排）
 - 日期：2026-09-18
-- 状态：M1 完成；M2 进行中（M2-4 `import_lerobot` v3 与 `import_mcap` v1 已完成；blob 外置待设计评审）
+- 状态：M1 完成；M2 进行中（M2-4 lerobot/mcap 导入器 + GOP 布局已完成；blob 外置待设计评审）
 - 修订点（相对 v1.1）：
   - 从"低层 RowSelection / 全局行号"改为从**用户训练闭环**倒推功能；
   - 确认：episode 内"顺序消费 + 窗口随机起点"，不做全局行随机访问；
@@ -116,6 +116,20 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   其他 topic 按最近邻 `tolerance` 秒对齐；类型从 JSON 值推断
   （标量 / FixedSizeList / string / bool）；
 - 未知编码明确报错并列出可用 topic；测试：合成 MCAP（zstd chunk，JSON + protobuf）6 个用例；
+
+### M2-4c GOP 视频布局（已完成导入侧）
+
+- `import_lerobot(video_layout="gop")`：按关键帧把 mp4 demux 成自包含 Annex-B GOP，
+  产出 `<table>`（ticks）+ `<table>_gops`（原始 packet、帧元数据）+ `<table>_frames`
+  （frame_index → gop/position/offset/timestamp 索引），不逐帧解码/重编码，存储接近源体积；
+- `lakesoul.embodied.video`：`demux_gops`（含 h264/hevc/vvc → Annex-B）、`decode_gop`、
+  `decode_gop_range`（按 episode/camera 区间解码）、`encode_frames`（frames 模式共用）；
+- 测试：合成 h264（keyint=4）→ 表结构 + 解码像素与源帧对齐；
+- `EmbodiedDataset(video=GopVideo(gops, frames), video_window=...)`：窗口行区间 → 帧区间解码，
+  每个 unit 按 (episode, camera, gop) 缓存已解码帧；`video_window` 支持列名或 (start, end)，
+  默认跟随第一个窗口列；检测相机列与窗口列重名并报错；
+- 数据集侧测试：fake video 单测（窗口/边界/重名/分区校验、pickle）+ PG 端到端
+  （GOP 导入 → 直接进窗口样本）。
 - GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
 ### M2-1 ~ M2-3 Blob 外置（待设计评审）

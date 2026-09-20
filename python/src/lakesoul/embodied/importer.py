@@ -19,6 +19,7 @@ class ImportSummary:
     rows: int
     video_frames: int
     columns: tuple[str, ...]
+    tables: tuple[str, ...] = ()
 
 
 def sanitize(name: str) -> str:
