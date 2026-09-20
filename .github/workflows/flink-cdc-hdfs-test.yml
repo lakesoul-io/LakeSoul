@@ -84,9 +84,15 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@0.18.3
-      - name: Pull images
+      - name: Prefetch images
         run: |
-          docker pull -q spark:3.5.8
+          (
+            docker pull -q spark:3.5.8 &
+            (cd docker/lakesoul-docker-compose-env && docker compose pull -q) &
+            wait
+            touch /tmp/images-ready
+          ) > /tmp/image-pull.log 2>&1 &
+          echo "image prefetch started in background"
       - name: Build Rust libraries
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
@@ -141,7 +147,8 @@ jobs:
           sed -i 's/if NEW.version >= 10 then/if NEW.version >= 1 then/' script/meta_init.sql
           cd ./docker/lakesoul-docker-compose-env
           export LAKESOUL_IO_USE_V2_MERGE=true
-          docker compose pull -q
+          for i in $(seq 1 150); do [ -f /tmp/images-ready ] && break; sleep 2; done
+          tail -5 /tmp/image-pull.log 2>/dev/null || true
           docker compose up -d
           for i in $(seq 1 30); do
             if docker exec lakesoul-docker-compose-env-jobmanager-1 flink list >/dev/null 2>&1 &&
@@ -158,20 +165,32 @@ jobs:
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t -u flink lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc "/opt/flink/work-dir/$FLINK_JAR_NAME" --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink_db_name default --sink.parallelism 4 --use.cdc true --warehouse_path hdfs://172.17.0.1:9000/lakesoul-test-bucket/data/ --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/chk --flink.savepoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
-          sleep 30s
+          for i in $(seq 1 60); do
+            if docker exec lakesoul-test-pg psql -U lakesoul_test -d lakesoul_test -tAc "select 1 from table_info where table_name='s_test_cdc_default_init' limit 1" 2>/dev/null | grep -q 1; then
+              echo "cdc source table ready after $((i * 3))s"
+              break
+            fi
+            sleep 3
+          done
       - name: Start flink source to sink task-2
         run: |
           docker exec -t -u flink lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C "file:///opt/flink/work-dir/$FLINK_JAR_NAME" "/opt/flink/work-dir/$FLINK_TEST_JAR_NAME" --source.database.name default --source.table.name s_test_cdc_default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-sink/data --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-sink/chk
-          sleep 30s
+          for i in $(seq 1 30); do
+            if docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink list -r 2>/dev/null | grep -q "LakeSoulSourceToSink"; then
+              echo "source-to-sink job running after $((i * 2))s"
+              break
+            fi
+            sleep 2
+          done
       - name: Start flink DataGenSource without primary key task-3
         run: |
           docker exec -t -u flink lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C "file:///opt/flink/work-dir/$FLINK_JAR_NAME" "/opt/flink/work-dir/$FLINK_TEST_JAR_NAME" --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink/ --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
       - name: Download task dependency jar
         run: |
           cd ./script/benchmark/work-dir
-          if [ ! -e mysql-connector-j-8.0.33.jar ]; then wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar; fi
-          if [ ! -e flink-connector-jdbc-3.2.0-1.19.jar ]; then wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.2.0-1.19/flink-connector-jdbc-3.2.0-1.19.jar; fi
-          if [ ! -e assertj-core-3.23.1.jar ]; then wget -q https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
+          if [ ! -e mysql-connector-j-8.0.33.jar ]; then cp "$HOME/mysql-connector-j-8.0.33.jar" .; fi
+          if [ ! -e flink-connector-jdbc-3.2.0-1.19.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.2.0-1.19/flink-connector-jdbc-3.2.0-1.19.jar; fi
+          if [ ! -e assertj-core-3.23.1.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
       - name: Create table and insert data
         run: |
           cd ./script/benchmark
