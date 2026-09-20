@@ -22,6 +22,22 @@ python python/examples/embodied/generate_data.py \
     --table embodied_demo --episodes 8 --ticks 512 --overwrite
 ```
 
+## Import a LeRobot v3 dataset
+
+```python
+from lakesoul.embodied import import_lerobot
+
+summary = import_lerobot(
+    "/path/to/lerobot_dataset",          # v3.0 directory with meta/info.json
+    table="robot_episodes",
+    path="file:///tmp/lakesoul-embodied/robot_episodes",
+    cameras=["cam_high", "cam_wrist"],   # optional, defaults to all cameras
+)
+print(summary)
+```
+
+Video decoding needs the `embodied` extra: `pip install "lakesoul[embodied]"`.
+
 ## Train
 
 ```sh
