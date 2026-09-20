@@ -61,6 +61,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.14.1
+          use-cache: false
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         with:

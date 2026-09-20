@@ -136,7 +136,6 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
-          cache-workspace-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build native libraries
         run: |
