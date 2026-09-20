@@ -36,6 +36,7 @@ lakesoul-metadata-c = { path = "../rust/lakesoul-metadata-c", optional = true }
 lakesoul-metadata-proto = { path = "../rust/lakesoul-metadata-proto" }
 uuid = { workspace = true }
 lakesoul-vector = { path = "../rust/lakesoul-vector" }
+lakesoul-text = { path = "../rust/lakesoul-text" }
 object_store = { workspace = true }
 tokio.workspace = true
 arrow-pyarrow.workspace = true
@@ -47,6 +48,7 @@ futures.workspace = true
 prost.workspace = true
 rootcause.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 datafusion.workspace = true
 
 [lints]

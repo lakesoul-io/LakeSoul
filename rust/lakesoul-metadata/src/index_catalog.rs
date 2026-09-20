@@ -35,7 +35,6 @@ use std::time::Duration;
 use lakesoul_common::IndexKind;
 use postgres_types::Json;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -90,20 +89,12 @@ create index if not exists index_lease_expiry_index
     on index_lease (shard_id, expires_at);
 "#;
 
-/// One segment referenced by an index commit.
+/// One artifact referenced by an index commit.
 ///
-/// Implementations are serialized into `index_commit.segments`; the catalog
-/// only relies on the file name (dedup and GC retention) and a stable sort
-/// key (base files before deltas, deterministic commit content).
-pub trait CatalogSegment:
-    Serialize + DeserializeOwned + Clone + Send + Sync + 'static
-{
-    /// File name of the segment, relative to the shard prefix.
-    fn filename(&self) -> &str;
-
-    /// Deterministic ordering key of the segment inside a commit.
-    fn sort_key(&self) -> (u64, u64);
-}
+/// Defined in `lakesoul-common` so index kind crates can implement it
+/// without depending on the metadata layer; re-exported here because the
+/// catalog API is generic over it.
+pub use lakesoul_common::CatalogSegment;
 
 /// One IVF segment file referenced by a vector index commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]

@@ -328,6 +328,11 @@ impl LakeSoulTable {
                     &self.table_info().properties,
                 )
                 .unwrap_or_default(),
+            text_index_configs:
+                crate::text_index::parse_text_index_from_table_properties(
+                    &self.table_info().properties,
+                )
+                .unwrap_or_default(),
             format_registry,
         }))
     }
@@ -373,6 +378,21 @@ impl LakeSoulTable {
     /// shards.
     pub async fn rebuild_vector_index(&self) -> Result<usize> {
         crate::vector_index::rebuild_vector_index(
+            &self.client,
+            self.table_name(),
+            self.table_namespace(),
+            &self.primary_keys,
+            HashMap::new(),
+        )
+        .await
+    }
+
+    /// Rebuild every text index shard of this table from scratch (all active
+    /// data files re-read into fresh splits), ignoring the configured
+    /// `rebuild_mode`/`max_delta_ratio`.  Returns the number of rebuilt
+    /// shards.
+    pub async fn rebuild_text_index(&self) -> Result<usize> {
+        crate::text_index::rebuild_text_index(
             &self.client,
             self.table_name(),
             self.table_namespace(),

@@ -13,7 +13,9 @@ Every index kind (vector, text, ...) shares the same orchestration:
 4. each shard is built by the kind's native builder,
 5. the same drivers serve explicit builds (``build_partition_index`` /
    ``build_table_index``) and the post-write auto-build
-   (``incremental_build_index``).
+   (``incremental_build_index``),
+6. after a build, ``compact_index`` rebuilds the shards whose delta
+   history outweighs their compacted base back into a single split.
 
 Kind-specific modules (``lakesoul.vector_index``, ``lakesoul.text_index``)
 stay thin: they only map configs onto their native builder.
@@ -66,6 +68,12 @@ class IndexKindSpec:
         [Mapping[str, str], list[str], str, Mapping[str, Any], bool],
         str,
     ]
+    #: Whether a shard should be compacted: ``(store_config, file_paths,
+    #: config) -> bool``.  Only kinds with drift semantics provide it; a
+    #: ``None`` means the kind has no automatic compaction.
+    should_compact: (
+        Callable[[Mapping[str, str], list[str], Mapping[str, Any]], bool] | None
+    ) = None
     #: Parameters every entry of the property must provide (besides
     #: ``column``), checked before any metadata is created.
     required_params: tuple[str, ...] = ()
@@ -140,15 +148,11 @@ def group_files_by_shard(
         return []
 
     latest = max(partition_infos, key=lambda p: p.version)
+    # The native query applies the snapshot's add/delete file operations, so
+    # files removed by table compaction are not handed to index rebuilds.
     bucket_files: dict[int, list[str]] = collections.defaultdict(list)
-    data_commits = client.list_data_commit_info(
-        latest.table_id, latest.partition_desc, latest.snapshot
-    )
-    for commit in data_commits:
-        for file_op in commit.file_ops:
-            if file_op.file_op == 0:  # FileOp.add
-                bid = extract_bucket_id(file_op.path)
-                bucket_files[bid].append(file_op.path)
+    for path in client.get_data_files_of_single_partition(latest):
+        bucket_files[extract_bucket_id(path)].append(path)
 
     return [
         ShardInfo(
@@ -484,7 +488,86 @@ def incremental_build_index(
     if failed > 0:
         total = sum(len(shards) for _ in configs)
         raise RuntimeError(f"{kind} index build failed for {failed}/{total} shard(s)")
+    compact_index(
+        kind,
+        table=table,
+        partitions=[file_info.partition for file_info in file_infos],
+        column=column,
+    )
     return succeeded
+
+
+def compact_index(
+    kind: str,
+    *,
+    table: Any,
+    partitions: Sequence[str],
+    column: str | None = None,
+) -> int:
+    """Compact the drifted shards of ``kind`` touched by a write.
+
+    A shard accumulates one split per delta build; superseded and deleted
+    documents stay in the older splits until it is rebuilt from its full
+    active file list.  For every ``(partition, bucket)`` shard of the given
+    partitions whose delta history outweighs its compacted base (the kind's
+    ``should_compact`` hook), the shard is rebuilt into a single split.
+
+    Best-effort: a failed compaction is reported but does not fail the
+    already-committed data write, since the stale splits stay valid (the
+    reader verifies candidates exactly).  Returns the number of compacted
+    shards.
+    """
+    spec = index_kind_spec(kind)
+    if spec.should_compact is None:
+        return 0
+    configs = table_index_configs(table, kind)
+    if column is not None:
+        configs = [c for c in configs if c.get("column") == column]
+    if not configs or not partitions:
+        return 0
+    client = NativeMetadataClient.from_env()
+    table_info = client.get_table_info_by_name(table.name, table.namespace)
+    _, pk_cols = client.get_partition_and_pk_cols(table_info)
+    if not pk_cols:
+        return 0
+    pk_column = pk_cols[0]
+    store_config = default_object_store_config(catalog=table.catalog, table=table)
+
+    compacted = 0
+    for partition_desc in sorted(set(partitions)):
+        for shard in group_files_by_shard(
+            client, table_info.table_id, partition_desc, pk_cols
+        ):
+            if not shard.file_paths:
+                continue
+            for config in configs:
+                try:
+                    if not spec.should_compact(store_config, shard.file_paths, config):
+                        continue
+                    result = build_shard(
+                        kind,
+                        store_config,
+                        shard.file_paths,
+                        pk_column,
+                        config,
+                        rebuild=True,
+                    )
+                except Exception as error:  # noqa: BLE001 - best effort
+                    print(
+                        f"ERROR compacting {kind} index for column "
+                        f"'{config.get('column')}' shard (partition="
+                        f"'{partition_desc}', bucket={shard.bucket_id}): {error}"
+                    )
+                    continue
+                if result == "ok":
+                    compacted += 1
+                else:
+                    print(
+                        f"ERROR compacting {kind} index for column "
+                        f"'{config.get('column')}' shard (partition="
+                        f"'{partition_desc}', bucket={shard.bucket_id}): {result}"
+                    )
+    return compacted
 
 
 def rename_summary_key(result: dict[str, Any], key: str) -> dict[str, Any]:
@@ -542,6 +625,7 @@ __all__ = [
     "build_partition_index",
     "build_shard",
     "build_table_index",
+    "compact_index",
     "config_for_column",
     "configured_index_kinds",
     "default_object_store_config",

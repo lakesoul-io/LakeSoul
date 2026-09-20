@@ -18,7 +18,7 @@ use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::SessionContext;
 use datafusion_common::{
-    DFSchema, DataFusionError, Result, Statistics, ToDFSchema,
+    Column, DFSchema, DataFusionError, Result, ScalarValue, Statistics, ToDFSchema,
     config::{ConfigNonZeroUsize, TableOptions},
     project_schema,
 };
@@ -40,8 +40,8 @@ use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion_expr::registry::ExtensionTypeRegistryRef;
 use datafusion_expr::utils::conjunction;
 use datafusion_expr::{
-    AggregateUDF, Expr, HigherOrderUDF, LogicalPlan, ScalarUDF,
-    TableProviderFilterPushDown, WindowUDF,
+    AggregateUDF, Expr, HigherOrderUDF, LogicalPlan, Operator, ScalarUDF,
+    TableProviderFilterPushDown, WindowUDF, binary_expr,
 };
 use datafusion_physical_expr::PhysicalExpr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -763,6 +763,13 @@ impl LakeSoulIOSession {
     ///   unreliable for file-level pruning in merge-on-read scenarios because
     ///   a single file may contain both base and incremental data with
     ///   different column statistics.
+    ///
+    /// The second rule is what makes index pushdown safe: an index search may
+    /// inject a `pk IN (...)` candidate filter (see `crate::index::candidate`),
+    /// but never a non-key predicate. A pushed non-key predicate could drop a
+    /// newer version before the merge while an older matching version
+    /// survives, returning stale data; `tests/mor_filter_pushdown_test.rs`
+    /// pins this.
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
@@ -863,18 +870,22 @@ impl LakeSoulIOSession {
         // 2. All filters contribute to scan projection (columns needed for
         // filtering must be present in the scan output), and all filters must be
         // re-applied by DataFusion as FilterExec since our pushdown is Inexact.
-        let scan_projection_predicate = conjunction(
-            inexact_filters
-                .iter()
-                .chain(unsupported_filters.iter())
-                .cloned(),
-        );
-        let remaining_predicate = conjunction(
-            inexact_filters
-                .iter()
-                .chain(unsupported_filters.iter())
-                .cloned(),
-        );
+        //
+        // When a CDC change column is configured, merge-on-read tombstones
+        // (`cdc_column == 'delete'`) must be dropped **after** the merge:
+        // they are the newest version of a deleted key, so they have to take
+        // part in the merge, but they must not reach the caller.  The
+        // predicate is never pushed into the file scans (a delete tombstone
+        // is not a row-level filter input).
+        let cdc_predicate = cdc_delete_predicate(self.io_config.cdc_column());
+        let all_predicates: Vec<Expr> = inexact_filters
+            .iter()
+            .chain(unsupported_filters.iter())
+            .chain(cdc_predicate.iter())
+            .cloned()
+            .collect();
+        let scan_projection_predicate = conjunction(all_predicates.iter().cloned());
+        let remaining_predicate = conjunction(all_predicates.iter().cloned());
 
         // 3. Compute projection indices (target columns + all filter columns).
         // File sources need pushed filter columns in their scan projection, while
@@ -1204,6 +1215,21 @@ impl From<&LakeSoulIOSession> for TaskContext {
             Arc::clone(value.runtime_env()),
         )
     }
+}
+
+/// `cdc_column != 'delete'`, applied after the merge-on-read merge so that
+/// CDC delete tombstones are dropped without leaving the merge.
+///
+/// Returns `None` when the table has no CDC change column.
+fn cdc_delete_predicate(cdc_column: String) -> Option<Expr> {
+    if cdc_column.is_empty() {
+        return None;
+    }
+    Some(binary_expr(
+        Expr::Column(Column::new_unqualified(cdc_column)),
+        Operator::NotEq,
+        Expr::Literal(ScalarValue::Utf8(Some("delete".to_string())), None),
+    ))
 }
 
 #[cfg(test)]

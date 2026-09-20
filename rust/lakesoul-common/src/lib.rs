@@ -2,4 +2,4 @@ pub mod ffi;
 pub mod index;
 pub mod ser;
 
-pub use index::IndexKind;
+pub use index::{CatalogSegment, IndexKind};

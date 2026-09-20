@@ -9,6 +9,7 @@
 //! column, the `_<kind>_index` object-store directory, the `{prefix}_*`
 //! reader options, and the table property key declaring index configs.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// A secondary index kind attached to table columns.
@@ -63,6 +64,22 @@ impl std::fmt::Display for IndexKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// One artifact referenced by an index commit.
+///
+/// The metadata catalog is generic over this payload: the vector index
+/// stores IVF segment entries, the text index stores split entries.  The
+/// catalog only relies on the file name (dedup and GC retention) and a
+/// stable sort key (deterministic commit content).
+pub trait CatalogSegment:
+    Serialize + DeserializeOwned + Clone + Send + Sync + 'static
+{
+    /// File name of the artifact, relative to the shard prefix.
+    fn filename(&self) -> &str;
+
+    /// Deterministic ordering key of the artifact inside a commit.
+    fn sort_key(&self) -> (u64, u64);
 }
 
 #[cfg(test)]

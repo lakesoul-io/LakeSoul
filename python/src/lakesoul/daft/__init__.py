@@ -18,6 +18,7 @@ __all__ = [
     "LakeSoulDataSink",
     "LakeSoulDataTable",
     "read_lakesoul",
+    "text_search",
     "vector_search",
     "write_lakesoul",
 ]
@@ -130,6 +131,10 @@ def __getattr__(name: str) -> Any:
         from lakesoul.daft.search import vector_search
 
         return vector_search
+    if name == "text_search":
+        from lakesoul.daft.search import text_search
+
+        return text_search
     raise AttributeError(name)
 
 

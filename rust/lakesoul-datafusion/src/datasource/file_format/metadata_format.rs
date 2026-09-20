@@ -652,17 +652,41 @@ impl LakeSoulHashSinkExec {
 
         let table_ref = TableReference::from(table_name.as_str());
         let namespace = table_ref.schema().unwrap_or("default").to_string();
-        let configs = if let Some(fresh_info) = client
+        let (configs, text_configs) = if let Some(fresh_info) = client
             .get_table_info_by_table_name(table_ref.table(), &namespace)
             .await?
         {
-            crate::vector_index::parse_vector_index_from_table_properties(
-                &fresh_info.properties,
+            (
+                crate::vector_index::parse_vector_index_from_table_properties(
+                    &fresh_info.properties,
+                )
+                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+                crate::text_index::parse_text_index_from_table_properties(
+                    &fresh_info.properties,
+                )
+                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
             )
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
+
+        // Inputs for the text auto-build; the vector block below consumes
+        // the originals.
+        let text_committed_files = committed_files.clone();
+        let text_primary_keys = primary_keys.clone();
+        let text_object_store_options = object_store_options.clone();
+        let text_all_active_files: Option<Vec<String>> = if text_configs
+            .iter()
+            .any(|c| c.management.rebuild_mode.eq_ignore_ascii_case("auto"))
+        {
+            client
+                .get_data_files_by_table_name(table_ref.table(), &namespace)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
         if !configs.is_empty() && !primary_keys.is_empty() {
             // For auto-rebuild we must be able to read every active data
             // file of the shard (a rebuild re-trains on the full dataset,
@@ -703,6 +727,35 @@ impl LakeSoulHashSinkExec {
                 "auto-built {built} vector index shard(s) for {}",
                 &table_name
             );
+        }
+
+        // Auto-build / incrementally update the text index from the newly
+        // committed files, driven by the table's `text_index_columns`
+        // property.
+        if !text_configs.is_empty() && !text_primary_keys.is_empty() {
+            let catalog = client.index_catalog::<lakesoul_text::TextSplitEntry>(
+                lakesoul_common::IndexKind::Text,
+            );
+            let built = tokio::task::spawn_blocking(move || {
+                lakesoul_io::session::GLOBAL_RUNTIME.block_on(
+                    crate::text_index::auto_build_text_index(
+                        &text_configs,
+                        &text_primary_keys,
+                        &text_object_store_options,
+                        &text_committed_files,
+                        text_all_active_files.as_deref(),
+                        &catalog,
+                    ),
+                )
+            })
+            .await
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "text index auto build task failed: {error}"
+                ))
+            })?
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            debug!("auto-built {built} text index shard(s) for {}", &table_name);
         }
         Ok(count)
     }
