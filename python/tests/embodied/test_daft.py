@@ -12,8 +12,9 @@ pytest.importorskip("daft")
 
 from embodied.test_lerobot import STATE_DIM, _table_name, _write_dataset
 from lakesoul import LakeSoulCatalog
-from lakesoul.embodied import EmbodiedDataset
+from lakesoul.embodied import EmbodiedDataset, GopVideo
 from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
+from lakesoul.embodied.daft import import_lerobot_gop
 
 
 def test_import_lerobot_daft_frames(tmp_path: Path) -> None:
@@ -103,3 +104,62 @@ def test_import_lerobot_daft_unknown_camera(tmp_path: Path) -> None:
             cameras=["missing"],
             catalog=object(),  # type: ignore[arg-type]
         )
+
+
+def test_import_lerobot_daft_gop(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_gop")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_lerobot_gop(
+            root,
+            table=table_name,
+            path=table_path,
+            episodes=[0, 1],
+            cameras=["cam"],
+            physical_format="parquet",
+        )
+        assert summary.tables == (
+            table_name,
+            f"{table_name}_gops",
+            f"{table_name}_frames",
+        )
+        assert summary.rows == 9
+        assert summary.video_frames == 9
+
+        ticks = catalog.table(table_name).scan().to_arrow_table()
+        assert ticks.num_rows == 9
+        assert "cam" not in ticks.column_names
+        assert (
+            catalog.table(f"{table_name}_frames").scan().to_arrow_table().num_rows == 9
+        )
+
+        video = GopVideo(
+            catalog.table(f"{table_name}_gops"),
+            catalog.table(f"{table_name}_frames"),
+        )
+        decoded = video.for_episode("ep000001").frames(0, 4)
+        assert decoded["cam"].shape == (4, 8, 8, 3)
+        assert [float(frame[0, 0, 0]) for frame in decoded["cam"]] == pytest.approx(
+            [50.0, 60.0, 70.0, 80.0], abs=6.0
+        )
+
+        dataset = EmbodiedDataset(
+            catalog.table(table_name).scan(),
+            window={"observation_state": (-2, 0)},
+            video=video,
+            boundary="clamp",
+        )
+        samples = list(dataset.iter_epoch(0))
+        assert samples
+        assert all(
+            sample["cam"].shape[0] == sample["observation_state"].shape[0]
+            for sample in samples
+        )
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)

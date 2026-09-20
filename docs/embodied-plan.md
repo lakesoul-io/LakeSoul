@@ -162,12 +162,22 @@ Ray runner 只要求接口兼容（gated 测试）。
 - 与单机导入复用同一套 schema/feature 解析，表结构一致；
 - 测试：native runner 上合成 v3 数据集（含 mp4）3 个用例（行数/分区/JPEG 帧/窗口/覆盖保护）。
 
-### M4-1b（待做）
+### M4-1b LeRobot GOP（Daft，已完成）
 
-- LeRobot GOP 布局：按 video shard 用 `@daft.cls` actor 并行 `demux_gops`
-  （纯输入/纯输出）→ `write_daft` 写 `_gops` / `_frames`；
-- MCAP：`daft.read_mcap` 抽 JSON topic；protobuf/GOP 走每文件 actor 复用
-  `_read_messages` / `_camera_stream` 语义；
+- `lakesoul.embodied.daft.import_lerobot_gop`：ticks 表仍由
+  `daft.datasets.lerobot` 生成；`_gops` / `_frames` 由一个 `@daft.cls` actor
+  按 (episode, camera) 生成——actor 在 worker 内按 video 文件缓存 `demux_gops`
+  结果，用 `select_episode_frames` 切出 episode 区间并重新编号 GOP，返回
+  `list<struct>` 后 `explode` 展开，再经 `write_daft` 写入；
+- 复用 `GOPS_SCHEMA` / `FRAMES_SCHEMA` 与纯 helper，语义与单机 gop 布局一致；
+- 修复 `lakesoul/daft/sink.py` 的类型兼容：允许 list↔large_list（Daft 的
+  `List` 在 Arrow 中是 `large_list`），否则任何 list 列都无法通过 Daft 写入；
+- 测试：native runner 上 GOP 三表 + `GopVideo` 解码 + 数据集窗口。
+
+### M4-1c（待做）
+
+- MCAP 分布式：`daft.read_mcap` 抽 JSON topic；protobuf/GOP 走每文件 actor
+  复用 `_read_messages` / `_camera_stream` 语义；
 - M4-2 分布式数据集：`read_lakesoul` + Daft `map_batches` 窗口展开 + GOP
   join/`decode_gop` UDF；
 - M4-3：native runner 单测 + `LAKESOUL_DAFT_RAY_TEST=1` Ray 测试

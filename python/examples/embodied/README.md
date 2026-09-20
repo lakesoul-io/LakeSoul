@@ -107,6 +107,10 @@ Daft sink writes files in parallel with a single driver commit. On the default
 native runner the pipeline is correct but single-process; a Ray (or other
 distributed) runner parallelizes it without code changes.
 
+Use `lakesoul.embodied.daft.import_lerobot_gop` for the GOP layout: ticks come
+from the Daft LeRobot reader and `<table>_gops` / `<table>_frames` are built by
+a Daft class UDF that demuxes each video shard once per worker.
+
 ## Train
 
 ```sh
