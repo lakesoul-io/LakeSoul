@@ -9,9 +9,9 @@
 //! tables for materialized views and state, and a refresh engine that consumes
 //! the source changelog by partition version.
 //!
-//! The first supported view shapes are `SUM`/`COUNT` over an append-only
-//! source ([`runtime::SumCountView`]) and an inner equi-join of two
-//! append-only sources ([`runtime::JoinView`]). Refreshes are incremental and
+//! The first supported view shapes are `SUM`/`COUNT` over an append-only or
+//! primary-key (upsert) source ([`runtime::SumCountView`]) and an inner
+//! equi-join of two append-only sources ([`runtime::JoinView`]). Refreshes are incremental and
 //! replay safe: every window is recorded in `ivm.epochs` (see `EPOCH.md`), so
 //! a retry skips data that is already written. A view whose source history
 //! cannot be consumed incrementally (updates/deletes in the window, or an
