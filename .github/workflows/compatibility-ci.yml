@@ -124,13 +124,14 @@ jobs:
       - name: Init PostgreSQL metadata
         run: ./script/meta_init_for_local_test.sh -j 1
       - name: Build native libraries
-        run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c
+        run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python
       - name: Build Spark and Flink test artifacts
         run: mvn -q -B package -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12 -am -Pcross-build -DskipTests --file pom.xml
       - name: Build Python package
         working-directory: python
         run: |
-          uv sync --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
+          cp ../rust/target/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
+          uv sync --no-install-project --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
       - name: Run compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -267,13 +268,14 @@ jobs:
       - name: Init PostgreSQL metadata
         run: ./script/meta_init_for_local_test.sh -j 1
       - name: Build native libraries
-        run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c
+        run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python
       - name: Build Spark and Flink test artifacts
         run: mvn -q -B package -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12 -am -Pcross-build -DskipTests --file pom.xml
       - name: Build Python package
         working-directory: python
         run: |
-          uv sync --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
+          cp ../rust/target/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
+          uv sync --no-install-project --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
       - name: Run RustFS compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
