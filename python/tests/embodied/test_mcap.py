@@ -145,18 +145,182 @@ def test_import_mcap_tolerance_too_small(tmp_path: Path) -> None:
         )
 
 
-def test_import_mcap_rejects_non_json_messages(tmp_path: Path) -> None:
+def test_import_mcap_rejects_unknown_encoding(tmp_path: Path) -> None:
     source = tmp_path / "ep01.mcap"
-    _write_mcap(source, tick_encoding="protobuf")
+    _write_mcap(source, tick_encoding="cdr")
 
-    with pytest.raises(ValueError, match="only JSON"):
+    with pytest.raises(ValueError, match="only JSON and protobuf"):
         import_mcap(
             source,
-            table=_table_name("protobuf"),
+            table=_table_name("cdr"),
             path=(tmp_path / "lake").as_uri(),
             columns={"reward": "control_tick:reward"},
             catalog=object(),  # type: ignore[arg-type]
         )
+
+
+def _tick_file_descriptor():
+    from google.protobuf import descriptor_pb2
+
+    descriptor = descriptor_pb2.FileDescriptorProto(
+        name="demo/tick.proto", package="demo", syntax="proto3"
+    )
+    descriptor.dependency.append("google/protobuf/timestamp.proto")
+    mode = descriptor.enum_type.add()
+    mode.name = "Mode"
+    unknown = mode.value.add()
+    unknown.name = "MODE_UNKNOWN"
+    unknown.number = 0
+    running = mode.value.add()
+    running.name = "MODE_RUN"
+    running.number = 1
+
+    message = descriptor.message_type.add()
+    message.name = "Tick"
+
+    def add_field(name, number, field_type, label, type_name=None):
+        field = message.field.add()
+        field.name = name
+        field.number = number
+        field.type = field_type
+        field.label = label
+        if type_name is not None:
+            field.type_name = type_name
+
+    add_field("state", 1, descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE, 3)
+    add_field("action", 2, descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE, 3)
+    add_field("reward", 3, descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE, 1)
+    add_field("label", 4, descriptor_pb2.FieldDescriptorProto.TYPE_STRING, 1)
+    add_field(
+        "mode",
+        5,
+        descriptor_pb2.FieldDescriptorProto.TYPE_ENUM,
+        1,
+        ".demo.Mode",
+    )
+    add_field("data", 6, descriptor_pb2.FieldDescriptorProto.TYPE_BYTES, 1)
+    add_field(
+        "stamp",
+        7,
+        descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE,
+        1,
+        ".google.protobuf.Timestamp",
+    )
+    return descriptor
+
+
+def _tick_message_class(descriptor):
+    from google.protobuf import (
+        descriptor_pb2,
+        descriptor_pool,
+        message_factory,
+        timestamp_pb2,  # noqa: F401
+    )
+
+    pool = descriptor_pool.DescriptorPool()
+    timestamp = descriptor_pool.Default().FindFileByName(
+        "google/protobuf/timestamp.proto"
+    )
+    pool.Add(descriptor_pb2.FileDescriptorProto.FromString(timestamp.serialized_pb))
+    pool.Add(descriptor)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("demo.Tick"))
+
+
+def _write_protobuf_mcap(path: Path, *, ticks: int = TICKS) -> None:
+    writer_module = pytest.importorskip("mcap.writer")
+
+    from google.protobuf import descriptor_pb2
+
+    descriptor = _tick_file_descriptor()
+    tick_class = _tick_message_class(descriptor)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as stream:
+        writer = writer_module.Writer(stream)
+        writer.start()
+        file_set = descriptor_pb2.FileDescriptorSet()
+        file_set.file.add().CopyFrom(descriptor)
+        schema_id = writer.register_schema(
+            name="demo.Tick",
+            encoding="protobuf",
+            data=file_set.SerializeToString(),
+        )
+        tick_channel = writer.register_channel(
+            topic="control_tick",
+            message_encoding="protobuf",
+            schema_id=schema_id,
+        )
+        camera_channel = writer.register_channel(
+            topic="camera_high",
+            message_encoding="protobuf",
+            schema_id=schema_id,
+        )
+        for index in range(ticks):
+            timestamp = int(index * 1e9 / FPS)
+            tick = tick_class(
+                state=[float(index), float(index + 1), float(index + 2)],
+                action=[0.1 * index, 0.2 * index],
+                reward=0.5 + index,
+                label=f"tick-{index}",
+                mode=1,
+            )
+            tick.stamp.seconds = index
+            writer.add_message(
+                tick_channel,
+                log_time=timestamp,
+                publish_time=timestamp,
+                data=tick.SerializeToString(),
+            )
+            writer.add_message(
+                camera_channel,
+                log_time=timestamp + 200_000,
+                publish_time=timestamp + 200_000,
+                data=tick_class(data=FAKE_JPEG, label="cam").SerializeToString(),
+            )
+        writer.finish()
+
+
+def test_import_mcap_protobuf_tabular_and_camera(tmp_path: Path) -> None:
+    source = tmp_path / "ep02.mcap"
+    _write_protobuf_mcap(source)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("protobuf")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_mcap(
+            source,
+            table=table_name,
+            path=table_path,
+            columns={
+                "observation_state": "control_tick:state",
+                "action": "control_tick:action",
+                "reward": "control_tick:reward",
+                "label": "control_tick:label",
+                "mode": "control_tick:mode",
+                "stamp": "control_tick:stamp",
+            },
+            cameras={"cam_high": "camera_high"},
+            row_topic="control_tick",
+            physical_format="parquet",
+        )
+        assert summary.rows == TICKS
+        assert summary.video_frames == TICKS
+
+        scanned = catalog.table(table_name).scan().to_arrow_table()
+        assert scanned.column("observation_state").to_pylist()[1] == [1.0, 2.0, 3.0]
+        assert scanned.column("reward").to_pylist() == pytest.approx(
+            [0.5 + index for index in range(TICKS)]
+        )
+        assert scanned.column("label").to_pylist() == [
+            f"tick-{index}" for index in range(TICKS)
+        ]
+        assert scanned.column("mode").to_pylist() == ["MODE_RUN"] * TICKS
+        assert scanned.column("stamp").to_pylist() == pytest.approx(
+            [float(index) for index in range(TICKS)]
+        )
+        assert scanned.column("cam_high").to_pylist() == [FAKE_JPEG] * TICKS
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
 
 
 def test_import_mcap_unknown_topic(tmp_path: Path) -> None:

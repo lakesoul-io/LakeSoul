@@ -109,12 +109,13 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 
 ### M2-4b `import_mcap` v1（JSON 录制）
 
-- 支持 `message_encoding == "json"` 的 MCAP（Foxglove/ROS JSON 录制）；
+- 支持 JSON 与 protobuf 消息：protobuf 用 MCAP 内嵌 FileDescriptorSet 动态解码
+  （覆盖 `foxglove.CompressedVideo` 等），bytes 保持 bytes、WKT `Timestamp` 转 float 秒；
 - `columns={"observation_state": "topic[:field.path]"}` 映射 tabular 列，
   `cameras={"cam_high": "topic"}` 映射 base64 图像/视频帧；`row_topic` 定义行锚点，
   其他 topic 按最近邻 `tolerance` 秒对齐；类型从 JSON 值推断
   （标量 / FixedSizeList / string / bool）；
-- protobuf 编码明确报错并列出可用 topic；测试：合成 MCAP（zstd chunk）5 个用例；
+- 未知编码明确报错并列出可用 topic；测试：合成 MCAP（zstd chunk，JSON + protobuf）6 个用例；
 - GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
 ### M2-1 ~ M2-3 Blob 外置（待设计评审）

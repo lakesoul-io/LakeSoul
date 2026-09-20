@@ -4,17 +4,16 @@
 
 """Import MCAP recordings into a LakeSoul table.
 
-Scope: MCAP files whose messages are JSON encoded (``message_encoding ==
-"json"``), which covers Foxglove/ROS JSON recordings and hand-written test
-logs. Protobuf-encoded messages are not decoded yet and are rejected with the
-list of available topics.
+Scope: MCAP files whose messages are JSON (``message_encoding == "json"``) or
+protobuf encoded. Protobuf messages are decoded through the FileDescriptorSet
+embedded in the file's schemas, which covers Foxglove schemas such as
+``foxglove.CompressedVideo``.
 
 Rows are anchored on one topic (``row_topic``, defaulting to the topic of the
 first configured column); every other topic is attached to the nearest anchor
-within ``tolerance`` seconds. Tabular values are taken from JSON numbers,
-arrays, booleans or strings; camera values must be base64 strings (for example
-Foxglove's ``CompressedVideo``/``CompressedImage`` ``data`` field) and are
-stored as per-frame bytes.
+within ``tolerance`` seconds. Tabular values are taken from numbers, arrays,
+booleans or strings; camera values come from base64 strings (JSON) or bytes
+fields (protobuf) and are stored as per-frame bytes.
 
 Example:
     import_mcap(
@@ -38,6 +37,16 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa
+from google.protobuf import (
+    descriptor_pb2,
+    descriptor_pool,
+    duration_pb2,
+    empty_pb2,
+    message_factory,
+    timestamp_pb2,
+    wrappers_pb2,
+)
+from google.protobuf.message import DecodeError
 
 from lakesoul.catalog import LakeSoulCatalog
 
@@ -78,8 +87,9 @@ def import_mcap(
         namespace: optional catalog namespace.
         columns: tabular outputs, mapping column name to ``"topic"`` or
             ``"topic:field.path"``.
-        cameras: image outputs, mapping column name to a topic whose JSON
-            payload contains a base64 image/video frame.
+        cameras: image outputs, mapping column name to a topic whose payload
+            contains an image/video frame (base64 string for JSON, bytes field
+            for protobuf).
         row_topic: topic that defines the frames; defaults to the topic of the
             first ``columns`` entry.
         episode_id: partition value; defaults to the file stem.
@@ -226,24 +236,102 @@ def _read_messages(
 
     messages: dict[str, list[_Message]] = {}
     available: dict[str, str] = {}
+    decoder = _ProtobufDecoder()
     with root.open("rb") as stream:
         reader = make_reader(stream)
-        for _, channel, message in reader.iter_messages():
+        for schema, channel, message in reader.iter_messages():
             available[channel.topic] = channel.message_encoding
             if channel.topic not in wanted_topics:
                 continue
-            if channel.message_encoding != "json":
-                raise ValueError(
-                    f"topic {channel.topic!r} uses encoding "
-                    f"{channel.message_encoding!r}; only JSON messages are supported"
-                )
-            payload = json.loads(message.data.decode("utf-8"))
+            payload = _decode_payload(
+                decoder, schema, channel.message_encoding, channel.topic, message.data
+            )
             messages.setdefault(channel.topic, []).append(
                 _Message(timestamp=message.log_time / 1e9, payload=payload)
             )
     for topic_messages in messages.values():
         topic_messages.sort(key=lambda message: message.timestamp)
     return messages, available
+
+
+def _decode_payload(
+    decoder: _ProtobufDecoder,
+    schema: Any,
+    encoding: str,
+    topic: str,
+    data: bytes,
+) -> Any:
+    if encoding == "json":
+        return json.loads(data.decode("utf-8"))
+    if encoding == "protobuf":
+        if schema is None:
+            raise ValueError(f"protobuf topic {topic!r} has no embedded schema")
+        return decoder.decode(schema, data)
+    raise ValueError(
+        f"topic {topic!r} uses encoding {encoding!r}; only JSON and protobuf "
+        "messages are supported"
+    )
+
+
+# Importing these modules registers the file descriptors in
+# ``descriptor_pool.Default()``; the decoder copies them into its own pool.
+_WELL_KNOWN_MODULES = (duration_pb2, empty_pb2, timestamp_pb2, wrappers_pb2)
+_WELL_KNOWN_FILES = tuple(
+    f"google/protobuf/{name}.proto"
+    for name in ("timestamp", "duration", "empty", "wrappers")
+)
+
+
+class _ProtobufDecoder:
+    """Decode protobuf messages using the schemas embedded in an MCAP file."""
+
+    def __init__(self) -> None:
+        self._pool = descriptor_pool.DescriptorPool()
+        self._classes: dict[tuple[int, str], type] = {}
+        self._registered: set[str] = set()
+        self._add_well_known()
+
+    def _add_well_known(self) -> None:
+        default = descriptor_pool.Default()
+        for name in _WELL_KNOWN_FILES:
+            try:
+                file_descriptor = default.FindFileByName(name)
+            except KeyError:
+                continue
+            self._pool.Add(
+                descriptor_pb2.FileDescriptorProto.FromString(
+                    file_descriptor.serialized_pb
+                )
+            )
+            self._registered.add(name)
+
+    def decode(self, schema: Any, data: bytes) -> Any:
+        message_class = self._message_class(schema)
+        return _proto_to_python(message_class.FromString(data))
+
+    def _message_class(self, schema: Any) -> type:
+        key = (id(schema), schema.name)
+        cached = self._classes.get(key)
+        if cached is not None:
+            return cached
+        try:
+            file_protos = descriptor_pb2.FileDescriptorSet.FromString(schema.data).file
+        except (DecodeError, ValueError):
+            file_protos = [descriptor_pb2.FileDescriptorProto.FromString(schema.data)]
+        for file_proto in file_protos:
+            if file_proto.name in self._registered:
+                continue
+            try:
+                self._pool.Add(file_proto)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"cannot load protobuf schema {schema.name!r}: {error}"
+                ) from error
+            self._registered.add(file_proto.name)
+        descriptor = self._pool.FindMessageTypeByName(schema.name)
+        message_class = message_factory.GetMessageClass(descriptor)
+        self._classes[key] = message_class
+        return message_class
 
 
 def _nearest(
@@ -298,17 +386,58 @@ def _image_bytes(column: str, payload: Any) -> bytes:
                 break
         else:
             raise ValueError(
-                f"camera {column!r} payload has no base64 field "
+                f"camera {column!r} payload has no bytes field "
                 f"(looked for {_IMAGE_KEYS})"
             )
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
     if not isinstance(value, str):
         raise TypeError(
-            f"camera {column!r} payload must be a base64 string, got {type(value)}"
+            f"camera {column!r} payload must be bytes or a base64 string, "
+            f"got {type(value)}"
         )
     try:
         return base64.b64decode(value)
     except ValueError as error:
         raise ValueError(f"camera {column!r} payload is not valid base64") from error
+
+
+def _proto_to_python(message: Any) -> Any:
+    """Convert a protobuf message into Python values.
+
+    ``google.protobuf.Timestamp`` becomes seconds (float), bytes stay bytes,
+    enums become names, repeated fields become lists and map fields become
+    dicts. Unlike ``MessageToDict`` this keeps 64-bit integers as ints and
+    bytes as bytes.
+    """
+    if message.DESCRIPTOR.full_name == "google.protobuf.Timestamp":
+        return message.seconds + message.nanos / 1e9
+    result: dict[str, Any] = {}
+    for field, value in message.ListFields():
+        if field.label == field.LABEL_REPEATED:
+            if (
+                field.type == field.TYPE_MESSAGE
+                and field.message_type.GetOptions().map_entry
+            ):
+                value_field = field.message_type.fields_by_name["value"]
+                result[field.name] = {
+                    key: _proto_value(value_field, item) for key, item in value.items()
+                }
+            else:
+                result[field.name] = [_proto_value(field, item) for item in value]
+        else:
+            result[field.name] = _proto_value(field, value)
+    return result
+
+
+def _proto_value(field: Any, value: Any) -> Any:
+    if field.type == field.TYPE_MESSAGE:
+        return _proto_to_python(value)
+    if field.type == field.TYPE_BYTES:
+        return bytes(value)
+    if field.type == field.TYPE_ENUM:
+        return field.enum_type.values_by_number[value].name
+    return value
 
 
 def _infer_array(column: str, values: list[Any]) -> tuple[pa.DataType, pa.Array]:

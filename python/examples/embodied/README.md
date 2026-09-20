@@ -56,8 +56,10 @@ summary = import_mcap(
 )
 ```
 
-Only JSON-encoded messages are decoded; protobuf topics are rejected with the
-list of available topics.
+JSON and protobuf messages are supported; protobuf payloads are decoded
+through the FileDescriptorSet embedded in the MCAP file (for example
+``foxglove.CompressedVideo``). Other encodings are rejected with the list of
+available topics.
 
 ## Train
 
