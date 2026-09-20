@@ -100,14 +100,6 @@ jobs:
         run: |
           unset HADOOP_HOME HDFS_LIB_DIR
           cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
-      - name: Restore Maven build cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.m2/build-cache
-          key: maven-build-cache-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}-${{ github.run_id }}
-          restore-keys: |
-            maven-build-cache-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}-
-            maven-build-cache-${{ runner.os }}-
       - name: Build with Maven
         run: |
           mkdir -p rust/target/release
@@ -118,12 +110,6 @@ jobs:
           tar xf gluten-maven-deps-1.6.0-spark35.tar.gz -C ~/.m2/repository
           rm -f gluten-maven-deps-1.6.0-spark35.tar.gz
           MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
-      - name: Save Maven build cache
-        if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.m2/build-cache
-          key: maven-build-cache-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}-${{ github.run_id }}
       - name: Get jar names
         run: |
           {
