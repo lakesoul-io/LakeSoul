@@ -2,7 +2,7 @@
 
 - 版本：v1.2（用户功能驱动版，M1 重排）
 - 日期：2026-09-18
-- 状态：M1 完成（M1-1 ~ M1-5 已实现并跑通 benchmark）；M2 待开始
+- 状态：M1 完成；M2 进行中（M2-4 `import_lerobot` v3 基础版已完成；blob 外置待设计评审）
 - 修订点（相对 v1.1）：
   - 从"低层 RowSelection / 全局行号"改为从**用户训练闭环**倒推功能；
   - 确认：episode 内"顺序消费 + 窗口随机起点"，不做全局行随机访问；
@@ -93,12 +93,28 @@
 
 ## 4. M2：Blob 外置透明化 + 导入器 + 自定义 Layout + 行级随机读
 
+实施顺序调整：先做 **M2-4 导入器（Python 侧、用户可见、不依赖 blob 设计）**；
+blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义，先设计评审再接实现。
+
+### M2-4 `import_lerobot` v3（已完成状态/动作 + 逐帧视频字节）
+
+- `lakesoul.embodied.import_lerobot(source, table=..., path=...)`：读取本地 v3.0
+  目录（`meta/info.json` + `meta/episodes/**/*.parquet`），按 `data_path`/`video_path`
+  模板定位 shard；每 episode 一个分区、行内 `frame_index`/`timestamp` 有序；
+- tabular 特征（含 `FixedSizeList`）按 LeRobot 名称去点（`observation.state` →
+  `observation_state`）；视频用 PyAV 解码、Pillow 编码为逐帧 JPEG/PNG 字节；
+- 支持 `episodes` / `cameras` / `include_video` / `overwrite`；v2.1 数据集明确报错；
+- 依赖 `lakesoul[embodied]`（`av`、`pillow`）；GOP blob + frames 索引待 M2-1~3 落地后切换；
+- 测试：合成 v3 数据集（含小 mp4）5 个用例（本机与 CI 均带 PG）。
+
+### M2-1 ~ M2-3 Blob 外置（待设计评审）
+
 - Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
 - 行级 range 下推 + `take`（只服务单样本/调试），与 blob range 共用寻址；
-- `import_mcap` / `import_lerobot`（v3）：GOP blob + frames 索引 + 行对齐控制 tick；
-- 视频解码 helper（`av`/`torchcodec`）；
+- `import_mcap`：与 `import_lerobot` 共用对齐/写入骨架；
+- 视频解码 helper（`av`/`torchcodec`）已随 M2-4 提供基础版；
 - 混合 benchmark：存储放大、GOP 随机读 P50、重写放大。
 
 ## 5. M3：时间语义与可复现
