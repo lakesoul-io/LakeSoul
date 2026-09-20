@@ -30,7 +30,9 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from lakesoul.catalog import LakeSoulCatalog, TableNotFoundError
+from lakesoul.catalog import LakeSoulCatalog
+
+from .importer import ImportSummary, prepare_table, sanitize
 
 EPISODE_COLUMN = "episode_id"
 NON_FEATURE_COLUMNS = (
@@ -48,16 +50,6 @@ _REQUIRED_EPISODE_COLUMNS = (
     "data/chunk_index",
     "data/file_index",
 )
-
-
-@dataclass(frozen=True)
-class ImportSummary:
-    table: str
-    path: str
-    episodes: int
-    rows: int
-    video_frames: int
-    columns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -142,7 +134,7 @@ def import_lerobot(
         _require_video_dependencies(video_features)
 
     resolved_namespace = namespace or catalog.namespace
-    _prepare_table(catalog, table, resolved_namespace, overwrite)
+    prepare_table(catalog, table, resolved_namespace, overwrite)
 
     table_handle = catalog.create_table(
         table,
@@ -201,7 +193,7 @@ def _parse_features(info: Mapping[str, Any]) -> list[_Feature]:
     for key, spec in info.get("features", {}).items():
         dtype = str(spec.get("dtype", ""))
         shape = tuple(int(size) for size in spec.get("shape") or ())
-        column = _sanitize(key) if dtype != "video" else _video_column(key)
+        column = sanitize(key) if dtype != "video" else _video_column(key)
         existing = used.get(column)
         if existing is not None:
             raise ValueError(
@@ -212,16 +204,8 @@ def _parse_features(info: Mapping[str, Any]) -> list[_Feature]:
     return features
 
 
-def _sanitize(name: str) -> str:
-    sanitized = "".join(
-        character if character.isalnum() or character == "_" else "_"
-        for character in name
-    )
-    return sanitized.strip("_") or "column"
-
-
 def _video_column(key: str) -> str:
-    return _sanitize(key.rsplit(".", 1)[-1])
+    return sanitize(key.rsplit(".", 1)[-1])
 
 
 def _select_cameras(
@@ -231,7 +215,7 @@ def _select_cameras(
     by_column = {feature.column: feature for feature in video_features}
     selected = []
     for camera in cameras:
-        feature = by_key.get(camera) or by_column.get(_sanitize(camera))
+        feature = by_key.get(camera) or by_column.get(sanitize(camera))
         if feature is None:
             available = sorted(by_key)
             raise ValueError(f"unknown camera {camera!r}; available: {available}")
@@ -364,21 +348,6 @@ def _require_video_dependencies(video_features: Sequence[_Feature]) -> None:
             "install them with `pip install lakesoul[embodied]` or pass "
             "include_video=False"
         ) from error
-
-
-def _prepare_table(
-    catalog: LakeSoulCatalog,
-    table: str,
-    namespace: str,
-    overwrite: bool,
-) -> None:
-    try:
-        catalog.table(table, namespace=namespace)
-    except TableNotFoundError:
-        return
-    if not overwrite:
-        raise ValueError(f"table {table!r} already exists; pass overwrite=True")
-    catalog.drop_table(table, namespace=namespace, if_exists=True)
 
 
 def _build_episode_table(

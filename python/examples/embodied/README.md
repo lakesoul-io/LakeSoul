@@ -28,15 +28,36 @@ python python/examples/embodied/generate_data.py \
 from lakesoul.embodied import import_lerobot
 
 summary = import_lerobot(
-    "/path/to/lerobot_dataset",          # v3.0 directory with meta/info.json
+    "/path/to/lerobot_dataset",  # v3.0 directory with meta/info.json
     table="robot_episodes",
     path="file:///tmp/lakesoul-embodied/robot_episodes",
-    cameras=["cam_high", "cam_wrist"],   # optional, defaults to all cameras
+    cameras=["cam_high", "cam_wrist"],  # optional, defaults to all cameras
 )
 print(summary)
 ```
 
 Video decoding needs the `embodied` extra: `pip install "lakesoul[embodied]"`.
+
+## Import an MCAP recording
+
+```python
+from lakesoul.embodied import import_mcap
+
+summary = import_mcap(
+    "ep01.mcap",
+    table="robot_episodes",
+    path="file:///tmp/lakesoul-embodied/robot_episodes",
+    columns={  # column -> topic[:field.path]
+        "observation_state": "state",
+        "action": "commands:position",
+    },
+    cameras={"cam_high": "camera_high"},  # base64 frame payloads
+    row_topic="control_tick",
+)
+```
+
+Only JSON-encoded messages are decoded; protobuf topics are rejected with the
+list of available topics.
 
 ## Train
 

@@ -40,7 +40,7 @@ ray = ["ray>=2.55,<2.56"]
 daft = ["daft>=0.7.15"]
 pyspark = ["pyspark==3.5.8"]
 duckdb = ["duckdb>=1.4.0"]
-embodied = ["av>=12", "pillow>=10"]
+embodied = ["av>=12", "pillow>=10", "mcap>=1.0"]
 all = [
   "torch>=1.11,<2.5",
   "pandas>=1.4",
@@ -51,6 +51,7 @@ all = [
   "duckdb>=1.4.0",
   "av>=12",
   "pillow>=10",
+  "mcap>=1.0",
 ]
 
 [tool.uv.sources]
@@ -74,6 +75,7 @@ all = [
   "duckdb",
   "av>=12",
   "pillow>=10",
+  "mcap>=1.0",
 ]
 dev = ["pytest>=8", "maturin>=1,<2", { include-group = "all" }]
 
