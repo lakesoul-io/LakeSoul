@@ -20,7 +20,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Beyond Table Formats — A Complete Lakehouse Solution
 
-While Apache Iceberg provides a de-factor open table format, LakeSoul aims to deliver a batteries-included, production-ready lakehouse platform. Beyond the table format itself, LakeSoul comes with built-in automated disaggregated multi-level compaction, fine-grained RBAC (including S3 proxy-based access control), high-performance OLAP queries, vector retrieval, and native multimodal data processing powered by Ray and Daft. Instead of assembling and maintaining separate catalogs, compaction services, and auth layers, you get a production-ready lakehouse out of the box.
+While Apache Iceberg provides a de-factor open table format, LakeSoul aims to deliver a batteries-included, production-ready lakehouse platform. Beyond the table format itself, LakeSoul comes with built-in automated disaggregated multi-level compaction, fine-grained RBAC (including S3 proxy-based access control), high-performance OLAP queries, vector retrieval, full-text retrieval, and native multimodal data processing powered by Ray and Daft. Instead of assembling and maintaining separate catalogs, compaction services, and auth layers, you get a production-ready lakehouse out of the box.
 
 # Rust-Native Core, Consistent Everywhere
 LakeSoul's metadata management and file format IO are implemented entirely in Rust — a single, high-performance core — with idiomatic bindings for Java, Python, and C++. Whether you're querying via Spark, streaming via Flink, or training models via PyTorch, Ray, or Daft, every engine and every language shares the same ACID guarantees, the same upsert semantics, and the same read performance. There are no per-language/per-engine re-implementations of the table format, no subtle behavioral divergences between bindings, and no fragmented compatibility matrix to navigate.
@@ -95,7 +95,8 @@ Please find usage documentations in doc site:
 * Multimodality
   - [x] [Vortex](https://github.com/vortex-data/vortex) file format
   - [x] [Daft](https://github.com/Eventual-Inc/Daft) integration
-  - [ ] Vector ANN search on lakehouse (on object store), with upserts
+  - [x] Vector ANN search on lakehouse (on object store), with upserts
+  - [x] Full-text search (Tantivy BM25) on lakehouse, with upserts
 * Performance
   - [x] 2x faster merge-on-read with window-sliding merge (for both full and paritial merge).
   - [x] 50% memory usage reduction with spill-sort in primary key table writer
@@ -104,7 +105,8 @@ Please find usage documentations in doc site:
   - [x] [Velox](https://github.com/facebookincubator/velox) integration
   - [x] Up to 100x faster partition pruning and partition snapshot query with meta data index and query optimizations
   - [x] Optionally route read-only meta data queries to PG standby instances
-  - [ ] Secondary index
+  - [x] Secondary index framework with vector and full-text (Tantivy) index kinds
+  - [ ] Secondary index support in Spark/Flink
   - [ ] Metadata cache
 * Maintenance
   - [x] (auto) Leveled compaction strategy
