@@ -22,12 +22,42 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 
+EPISODE_COLUMN = "episode_id"
 _ANNEXB_FILTERS = {
     "h264": "h264_mp4toannexb",
     "hevc": "hevc_mp4toannexb",
     "vvc": "vvc_mp4toannexb",
 }
 _RAW_FORMATS = {"h264": "h264", "hevc": "hevc"}
+_START_CODE_3 = b"\x00\x00\x01"
+_START_CODE_4 = b"\x00\x00\x00\x01"
+
+GOPS_SCHEMA = pa.schema(
+    [
+        pa.field(EPISODE_COLUMN, pa.string(), nullable=False),
+        pa.field("camera", pa.string(), nullable=False),
+        pa.field("gop_index", pa.int64(), nullable=False),
+        pa.field("timestamp", pa.float64(), nullable=False),
+        pa.field("codec", pa.string(), nullable=False),
+        pa.field("num_frames", pa.int64(), nullable=False),
+        pa.field("frame_timestamps", pa.list_(pa.float64())),
+        pa.field("frame_offsets", pa.list_(pa.int64())),
+        pa.field("frame_lengths", pa.list_(pa.int64())),
+        pa.field("data", pa.binary(), nullable=False),
+    ]
+)
+FRAMES_SCHEMA = pa.schema(
+    [
+        pa.field(EPISODE_COLUMN, pa.string(), nullable=False),
+        pa.field("camera", pa.string(), nullable=False),
+        pa.field("frame_index", pa.int64(), nullable=False),
+        pa.field("gop_index", pa.int64(), nullable=False),
+        pa.field("gop_position", pa.int64(), nullable=False),
+        pa.field("timestamp", pa.float64(), nullable=False),
+        pa.field("byte_offset", pa.int64(), nullable=False),
+        pa.field("byte_length", pa.int64(), nullable=False),
+    ]
+)
 
 
 @dataclass(frozen=True)
@@ -248,17 +278,183 @@ def decode_gop_range(
 
 
 __all__ = [
+    "EPISODE_COLUMN",
+    "FRAMES_SCHEMA",
+    "GOPS_SCHEMA",
     "EpisodeGopVideo",
+    "FrameLocation",
     "FrameRef",
     "GopRecord",
     "GopVideo",
+    "build_gops_from_annexb",
     "decode_gop",
     "decode_gop_range",
     "demux_gops",
     "encode_frames",
     "encode_image",
+    "is_keyframe",
+    "looks_like_annexb",
+    "normalize_codec",
     "select_episode_frames",
+    "table_from_columns",
+    "to_annexb",
 ]
+
+
+@dataclass(frozen=True)
+class FrameLocation:
+    """Where one input frame ended up in the GOP tables."""
+
+    gop_index: int
+    position: int
+    timestamp: float
+    offset: int
+    length: int
+
+
+def table_from_columns(schema: pa.Schema, columns: dict[str, list[Any]]) -> pa.Table:
+    arrays = [
+        pa.array(columns[name], type=schema.field(name).type) for name in schema.names
+    ]
+    return pa.Table.from_arrays(arrays, schema=schema)
+
+
+def looks_like_annexb(data: bytes) -> bool:
+    return data.startswith((_START_CODE_3, _START_CODE_4))
+
+
+def normalize_codec(codec: str) -> str:
+    """Map container/format spellings onto ``h264``/``hevc``."""
+    normalized = codec.lower().replace(".", "").replace("-", "")
+    if normalized in {"h264", "avc", "avc1", "x264"}:
+        return "h264"
+    if normalized in {"hevc", "h265", "hvc1", "hev1"}:
+        return "hevc"
+    return normalized
+
+
+def to_annexb(data: bytes, *, codec: str) -> bytes:
+    """Return ``data`` as Annex-B, converting AVCC length-prefixed NALs."""
+    if looks_like_annexb(data):
+        return data
+    units = _avcc_units(data)
+    if not units:
+        raise ValueError(
+            f"camera payload is neither Annex-B nor AVCC ({codec}); cannot build GOPs"
+        )
+    return b"".join(_START_CODE_4 + unit for unit in units)
+
+
+def _avcc_units(data: bytes) -> list[bytes]:
+    units: list[bytes] = []
+    offset = 0
+    while offset + 4 <= len(data):
+        length = int.from_bytes(data[offset : offset + 4], "big")
+        offset += 4
+        if length <= 0 or offset + length > len(data):
+            return []
+        units.append(data[offset : offset + length])
+        offset += length
+    return units if offset == len(data) and units else []
+
+
+def _split_annexb(data: bytes) -> list[bytes]:
+    units: list[bytes] = []
+    current = bytearray()
+    index = 0
+    size = len(data)
+    while index < size:
+        if data[index : index + 3] == _START_CODE_3:
+            if current:
+                units.append(bytes(current))
+                current = bytearray()
+            index += 3
+            continue
+        if data[index : index + 4] == _START_CODE_4:
+            if current:
+                units.append(bytes(current))
+                current = bytearray()
+            index += 4
+            continue
+        current.append(data[index])
+        index += 1
+    if current:
+        units.append(bytes(current))
+    return units
+
+
+def is_keyframe(data: bytes, *, codec: str) -> bool:
+    """True when an Annex-B access unit contains an IDR/IRAP NAL."""
+    annexb = to_annexb(data, codec=codec)
+    for unit in _split_annexb(annexb):
+        if not unit:
+            continue
+        if codec == "h264":
+            if unit[0] & 0x1F == 5:
+                return True
+        elif codec == "hevc":
+            if 16 <= (unit[0] >> 1) & 0x3F <= 23:
+                return True
+        else:
+            raise ValueError(f"keyframe detection does not support codec {codec!r}")
+    return False
+
+
+def build_gops_from_annexb(
+    frames: list[tuple[float, bytes]],
+    *,
+    codec: str,
+) -> tuple[list[GopRecord], list[FrameLocation | None]]:
+    """Group per-frame Annex-B access units into self-contained GOPs.
+
+    Frames before the first keyframe cannot be decoded standalone and are
+    skipped (their location is ``None``). Byte payloads stay in input
+    (decode) order while the per-frame index is sorted by timestamp, so
+    decoded frames come out in presentation order.
+    """
+    gops: list[GopRecord] = []
+    locations: list[FrameLocation | None] = [None] * len(frames)
+    data = b""
+    pending: list[tuple[float, int, int]] = []
+    pending_inputs: list[int] = []
+
+    def close_gop() -> None:
+        if not data:
+            return
+        gop = _build_gop(len(gops), data, pending, codec)
+        for (timestamp, offset, length), input_index in zip(
+            pending, pending_inputs, strict=True
+        ):
+            reference = next(
+                frame
+                for frame in gop.frames
+                if frame.offset == offset and frame.length == length
+            )
+            locations[input_index] = FrameLocation(
+                gop_index=gop.index,
+                position=reference.position,
+                timestamp=timestamp,
+                offset=offset,
+                length=length,
+            )
+        gops.append(gop)
+
+    for input_index, (timestamp, payload) in enumerate(frames):
+        annexb = to_annexb(payload, codec=codec)
+        if is_keyframe(annexb, codec=codec):
+            close_gop()
+            data = b""
+            pending = []
+            pending_inputs = []
+        elif not data:
+            continue
+        pending.append((timestamp, len(data), len(annexb)))
+        pending_inputs.append(input_index)
+        data += annexb
+    close_gop()
+    if not gops:
+        raise ValueError("no keyframe found in the camera stream")
+    return gops, locations
 
 
 class GopVideo:

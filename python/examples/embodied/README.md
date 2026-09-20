@@ -84,6 +84,29 @@ through the FileDescriptorSet embedded in the MCAP file (for example
 ``foxglove.CompressedVideo``). Other encodings are rejected with the list of
 available topics.
 
+Pass `video_layout="gop"` to group H.264/HEVC camera access units into
+Annex-B GOPs (`<table>_gops` / `<table>_frames`, consumable by `GopVideo`).
+Recorders should set per-channel message `sequence` numbers so decode order
+is preserved; JPEG/PNG cameras should keep the default `frames` layout.
+
+## Distributed import with Daft
+
+```python
+from lakesoul.embodied.daft import import_lerobot
+
+summary = import_lerobot(
+    "/path/to/lerobot_dataset",
+    table="robot_episodes",
+    path="file:///tmp/lakesoul-embodied/robot_episodes",
+    cameras=["cam_high"],
+)
+```
+
+`daft.datasets.lerobot` scans and decodes on the Daft runner and the LakeSoul
+Daft sink writes files in parallel with a single driver commit. On the default
+native runner the pipeline is correct but single-process; a Ray (or other
+distributed) runner parallelizes it without code changes.
+
 ## Train
 
 ```sh

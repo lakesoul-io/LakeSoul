@@ -114,7 +114,7 @@ def _write_dataset(root: Path, *, with_video: bool = False) -> dict:
             ],
             type=pa.float32(),
         )
-        _write_video(root / "videos/chunk-000" / CAMERA / "file-000.mp4")
+        _write_video(root / "videos" / CAMERA / "chunk-000" / "file-000.mp4")
     episodes_path = root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
     episodes_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(episode_columns), episodes_path)
@@ -142,7 +142,7 @@ def _write_dataset(root: Path, *, with_video: bool = False) -> dict:
         "total_tasks": 2,
         "chunks_size": 1000,
         "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
-        "video_path": "videos/chunk-{chunk_index:03d}/{video_key}/file-{file_index:03d}.mp4",
+        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
         "features": features,
     }
     info_path = root / "meta" / "info.json"

@@ -50,7 +50,17 @@ from google.protobuf.message import DecodeError
 
 from lakesoul.catalog import LakeSoulCatalog
 
-from .importer import ImportSummary, prepare_table, resolve_names
+from .importer import ImportSummary, prepare_table, resolve_names, sibling_path
+from .video import (
+    FRAMES_SCHEMA,
+    GOPS_SCHEMA,
+    FrameLocation,
+    GopRecord,
+    build_gops_from_annexb,
+    looks_like_annexb,
+    normalize_codec,
+    table_from_columns,
+)
 
 EPISODE_COLUMN = "episode_id"
 _IMAGE_KEYS = ("data", "image", "frame", "bytes")
@@ -60,6 +70,8 @@ _IMAGE_KEYS = ("data", "image", "frame", "bytes")
 class _Message:
     timestamp: float
     payload: Any
+    arrival: int = 0
+    sequence: int = 0
 
 
 def import_mcap(
@@ -74,6 +86,7 @@ def import_mcap(
     row_topic: str | None = None,
     episode_id: str | None = None,
     tolerance: float = 0.02,
+    video_layout: str = "frames",
     physical_format: str = "vortex",
     overwrite: bool = False,
 ) -> ImportSummary:
@@ -94,6 +107,10 @@ def import_mcap(
             first ``columns`` entry.
         episode_id: partition value; defaults to the file stem.
         tolerance: maximum seconds between a frame and a matched message.
+        video_layout: ``"frames"`` stores each matched frame payload as bytes;
+            ``"gop"`` groups Annex-B H.264/HEVC access units into
+            ``<table>_gops`` / ``<table>_frames`` tables that
+            ``lakesoul.embodied.GopVideo`` can decode.
         physical_format: LakeSoul physical format for the written files.
         overwrite: drop and recreate the table when it already exists.
     """
@@ -177,21 +194,30 @@ def import_mcap(
         fields.append(pa.field(column, data_type))
         arrays[column] = array
 
+    if video_layout not in {"frames", "gop"}:
+        raise ValueError("video_layout must be 'frames' or 'gop'")
+    gop_layout = video_layout == "gop" and bool(parsed_cameras)
+
     video_frames = 0
-    for column, (topic, _) in parsed_cameras.items():
-        matched = _nearest(messages[topic], anchor_times, tolerance)
-        images = [
-            None if message is None else _image_bytes(column, message.payload)
-            for message in matched
-        ]
-        if all(image is None for image in images):
-            raise ValueError(
-                f"camera {column!r} has no message within {tolerance}s of "
-                f"topic {row_topic!r}; increase tolerance"
-            )
-        video_frames += sum(image is not None for image in images)
-        fields.append(pa.field(column, pa.binary()))
-        arrays[column] = pa.array(images, type=pa.binary())
+    camera_streams: list[_CameraStream] = []
+    if gop_layout:
+        for column, (topic, _) in parsed_cameras.items():
+            camera_streams.append(_camera_stream(column, messages[topic]))
+    else:
+        for column, (topic, _) in parsed_cameras.items():
+            matched = _nearest(messages[topic], anchor_times, tolerance)
+            images = [
+                None if message is None else _image_payload(column, message.payload)[0]
+                for message in matched
+            ]
+            if all(image is None for image in images):
+                raise ValueError(
+                    f"camera {column!r} has no message within {tolerance}s of "
+                    f"topic {row_topic!r}; increase tolerance"
+                )
+            video_frames += sum(image is not None for image in images)
+            fields.append(pa.field(column, pa.binary()))
+            arrays[column] = pa.array(images, type=pa.binary())
 
     schema = pa.schema(fields)
     episode_table = pa.Table.from_arrays(
@@ -199,7 +225,12 @@ def import_mcap(
     )
 
     resolved_namespace = namespace or catalog.namespace
+    gops_table = f"{table}_gops"
+    frames_table = f"{table}_frames"
     prepare_table(catalog, table, resolved_namespace, overwrite)
+    if gop_layout:
+        prepare_table(catalog, gops_table, resolved_namespace, overwrite)
+        prepare_table(catalog, frames_table, resolved_namespace, overwrite)
     table_handle = catalog.create_table(
         table,
         path=path,
@@ -208,6 +239,32 @@ def import_mcap(
         partition_by=(EPISODE_COLUMN,),
     )
     table_handle.write_arrow(episode_table, format=physical_format)
+    tables = (table_handle.name,)
+    if gop_layout:
+        gops_handle = catalog.create_table(
+            gops_table,
+            path=sibling_path(path, "_gops"),
+            schema=GOPS_SCHEMA,
+            namespace=resolved_namespace,
+            partition_by=(EPISODE_COLUMN,),
+        )
+        frames_handle = catalog.create_table(
+            frames_table,
+            path=sibling_path(path, "_frames"),
+            schema=FRAMES_SCHEMA,
+            namespace=resolved_namespace,
+            partition_by=(EPISODE_COLUMN,),
+        )
+        video_frames = _write_gop_tables(
+            gops_handle,
+            frames_handle,
+            resolved_episode,
+            camera_streams,
+            anchor_times,
+            tolerance,
+            physical_format,
+        )
+        tables = (table_handle.name, gops_handle.name, frames_handle.name)
     return ImportSummary(
         table=table_handle.name,
         path=table_handle.path,
@@ -215,6 +272,7 @@ def import_mcap(
         rows=len(anchor_times),
         video_frames=video_frames,
         columns=tuple(schema.names),
+        tables=tables,
     )
 
 
@@ -237,6 +295,7 @@ def _read_messages(
     messages: dict[str, list[_Message]] = {}
     available: dict[str, str] = {}
     decoder = _ProtobufDecoder()
+    arrival = 0
     with root.open("rb") as stream:
         reader = make_reader(stream)
         for schema, channel, message in reader.iter_messages():
@@ -247,8 +306,14 @@ def _read_messages(
                 decoder, schema, channel.message_encoding, channel.topic, message.data
             )
             messages.setdefault(channel.topic, []).append(
-                _Message(timestamp=message.log_time / 1e9, payload=payload)
+                _Message(
+                    timestamp=message.log_time / 1e9,
+                    payload=payload,
+                    arrival=arrival,
+                    sequence=message.sequence,
+                )
             )
+            arrival += 1
     for topic_messages in messages.values():
         topic_messages.sort(key=lambda message: message.timestamp)
     return messages, available
@@ -337,23 +402,27 @@ class _ProtobufDecoder:
 def _nearest(
     messages: list[_Message], timestamps: list[float], tolerance: float
 ) -> list[_Message | None]:
-    matched: list[_Message | None] = []
+    indices = _nearest_index(
+        [message.timestamp for message in messages], timestamps, tolerance
+    )
+    return [None if index is None else messages[index] for index in indices]
+
+
+def _nearest_index(
+    candidates: list[float], timestamps: list[float], tolerance: float
+) -> list[int | None]:
+    matched: list[int | None] = []
     start = 0
     for timestamp in timestamps:
-        while (
-            start < len(messages) and messages[start].timestamp < timestamp - tolerance
-        ):
+        while start < len(candidates) and candidates[start] < timestamp - tolerance:
             start += 1
-        best: _Message | None = None
+        best: int | None = None
         index = start
-        while (
-            index < len(messages) and messages[index].timestamp <= timestamp + tolerance
-        ):
-            candidate = messages[index]
-            if best is None or abs(candidate.timestamp - timestamp) < abs(
-                best.timestamp - timestamp
+        while index < len(candidates) and candidates[index] <= timestamp + tolerance:
+            if best is None or abs(candidates[index] - timestamp) < abs(
+                candidates[best] - timestamp
             ):
-                best = candidate
+                best = index
             index += 1
         matched.append(best)
     return matched
@@ -377,9 +446,18 @@ def _extract(payload: Any, field: str | None) -> Any:
     return value
 
 
-def _image_bytes(column: str, payload: Any) -> bytes:
+def _image_payload(column: str, payload: Any) -> tuple[bytes, str | None]:
+    """Return ``(bytes, format)`` for a camera payload.
+
+    ``format`` is the payload-declared video/image format when present
+    (``foxglove.CompressedVideo`` carries one), otherwise ``None``.
+    """
     value = payload
+    image_format: str | None = None
     if isinstance(value, dict):
+        raw_format = value.get("format")
+        if isinstance(raw_format, str):
+            image_format = raw_format
         for key in _IMAGE_KEYS:
             if key in value:
                 value = value[key]
@@ -390,16 +468,126 @@ def _image_bytes(column: str, payload: Any) -> bytes:
                 f"(looked for {_IMAGE_KEYS})"
             )
     if isinstance(value, (bytes, bytearray)):
-        return bytes(value)
+        return bytes(value), image_format
     if not isinstance(value, str):
         raise TypeError(
             f"camera {column!r} payload must be bytes or a base64 string, "
             f"got {type(value)}"
         )
     try:
-        return base64.b64decode(value)
+        return base64.b64decode(value), image_format
     except ValueError as error:
         raise ValueError(f"camera {column!r} payload is not valid base64") from error
+
+
+@dataclass
+class _CameraStream:
+    column: str
+    codec: str
+    gops: list[GopRecord]
+    locations: list[FrameLocation | None]
+    sorted_indices: list[int]
+    sorted_timestamps: list[float]
+
+
+def _camera_stream(column: str, messages: list[_Message]) -> _CameraStream:
+    # H.264 access units must stay in decode order. Recorders number messages
+    # per channel (``sequence``); when the file has none, fall back to log-time
+    # order, which is only safe for streams without B-frame reordering.
+    sequences = {message.sequence for message in messages}
+    if len(sequences) > 1:
+        ordered = sorted(messages, key=lambda item: (item.sequence, item.arrival))
+    else:
+        ordered = sorted(messages, key=lambda item: (item.timestamp, item.arrival))
+    entries: list[tuple[float, bytes]] = []
+    codec: str | None = None
+    for message in ordered:
+        data, image_format = _image_payload(column, message.payload)
+        if image_format is not None:
+            resolved = normalize_codec(image_format)
+            if codec is None:
+                codec = resolved
+            elif codec != resolved:
+                raise ValueError(
+                    f"camera {column!r} mixes formats {codec!r} and {resolved!r}"
+                )
+        entries.append((message.timestamp, data))
+    if not entries:
+        raise ValueError(f"camera {column!r} has no messages")
+    if codec is None:
+        codec = "h264" if looks_like_annexb(entries[0][1]) else "unknown"
+    if codec not in {"h264", "hevc"}:
+        raise ValueError(
+            f"camera {column!r} uses {codec!r}; video_layout='gop' supports "
+            "h264/hevc, use video_layout='frames' for JPEG/PNG or other formats"
+        )
+    gops, locations = build_gops_from_annexb(entries, codec=codec)
+    order = sorted(range(len(entries)), key=lambda index: entries[index][0])
+    return _CameraStream(
+        column=column,
+        codec=codec,
+        gops=gops,
+        locations=locations,
+        sorted_indices=order,
+        sorted_timestamps=[entries[index][0] for index in order],
+    )
+
+
+def _write_gop_tables(
+    gops_handle: Any,
+    frames_handle: Any,
+    episode_id: str,
+    streams: list[_CameraStream],
+    anchor_times: list[float],
+    tolerance: float,
+    physical_format: str,
+) -> int:
+    gop_columns: dict[str, list[Any]] = {name: [] for name in GOPS_SCHEMA.names}
+    frame_columns: dict[str, list[Any]] = {name: [] for name in FRAMES_SCHEMA.names}
+    for stream in streams:
+        matched = _nearest_index(stream.sorted_timestamps, anchor_times, tolerance)
+        for gop in stream.gops:
+            gop_columns[EPISODE_COLUMN].append(episode_id)
+            gop_columns["camera"].append(stream.column)
+            gop_columns["gop_index"].append(gop.index)
+            gop_columns["timestamp"].append(gop.timestamp)
+            gop_columns["codec"].append(stream.codec)
+            gop_columns["num_frames"].append(len(gop.frames))
+            gop_columns["frame_timestamps"].append(
+                [frame.timestamp for frame in gop.frames]
+            )
+            gop_columns["frame_offsets"].append([frame.offset for frame in gop.frames])
+            gop_columns["frame_lengths"].append([frame.length for frame in gop.frames])
+            gop_columns["data"].append(gop.data)
+        for anchor_index, index in enumerate(matched):
+            if index is None:
+                raise ValueError(
+                    f"camera {stream.column!r} has no message within {tolerance}s "
+                    f"of anchor {anchor_index}; increase tolerance"
+                )
+            entry_index = stream.sorted_indices[index]
+            location = stream.locations[entry_index]
+            if location is None:
+                raise ValueError(
+                    f"camera {stream.column!r} frame at "
+                    f"{stream.sorted_timestamps[index]} precedes the first "
+                    "keyframe; trim the recording or use video_layout='frames'"
+                )
+            frame_columns[EPISODE_COLUMN].append(episode_id)
+            frame_columns["camera"].append(stream.column)
+            frame_columns["frame_index"].append(anchor_index)
+            frame_columns["gop_index"].append(location.gop_index)
+            frame_columns["gop_position"].append(location.position)
+            frame_columns["timestamp"].append(location.timestamp)
+            frame_columns["byte_offset"].append(location.offset)
+            frame_columns["byte_length"].append(location.length)
+    gops_handle.write_arrow(
+        table_from_columns(GOPS_SCHEMA, gop_columns), format=physical_format
+    )
+    frames_handle.write_arrow(
+        table_from_columns(FRAMES_SCHEMA, frame_columns), format=physical_format
+    )
+    return len(frame_columns["frame_index"])
 
 
 def _proto_to_python(message: Any) -> Any:

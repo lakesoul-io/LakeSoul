@@ -33,8 +33,16 @@ import pyarrow.parquet as pq
 
 from lakesoul.catalog import LakeSoulCatalog
 
-from .importer import ImportSummary, prepare_table, sanitize
-from .video import GopRecord, demux_gops, encode_frames, select_episode_frames
+from .importer import ImportSummary, prepare_table, sanitize, sibling_path
+from .video import (
+    FRAMES_SCHEMA,
+    GOPS_SCHEMA,
+    GopRecord,
+    demux_gops,
+    encode_frames,
+    select_episode_frames,
+    table_from_columns,
+)
 
 EPISODE_COLUMN = "episode_id"
 NON_FEATURE_COLUMNS = (
@@ -54,32 +62,6 @@ _REQUIRED_EPISODE_COLUMNS = (
 )
 GOPS_TABLE_SUFFIX = "_gops"
 FRAMES_TABLE_SUFFIX = "_frames"
-_GOPS_SCHEMA = pa.schema(
-    [
-        pa.field(EPISODE_COLUMN, pa.string(), nullable=False),
-        pa.field("camera", pa.string(), nullable=False),
-        pa.field("gop_index", pa.int64(), nullable=False),
-        pa.field("timestamp", pa.float64(), nullable=False),
-        pa.field("codec", pa.string(), nullable=False),
-        pa.field("num_frames", pa.int64(), nullable=False),
-        pa.field("frame_timestamps", pa.list_(pa.float64())),
-        pa.field("frame_offsets", pa.list_(pa.int64())),
-        pa.field("frame_lengths", pa.list_(pa.int64())),
-        pa.field("data", pa.binary(), nullable=False),
-    ]
-)
-_FRAMES_SCHEMA = pa.schema(
-    [
-        pa.field(EPISODE_COLUMN, pa.string(), nullable=False),
-        pa.field("camera", pa.string(), nullable=False),
-        pa.field("frame_index", pa.int64(), nullable=False),
-        pa.field("gop_index", pa.int64(), nullable=False),
-        pa.field("gop_position", pa.int64(), nullable=False),
-        pa.field("timestamp", pa.float64(), nullable=False),
-        pa.field("byte_offset", pa.int64(), nullable=False),
-        pa.field("byte_length", pa.int64(), nullable=False),
-    ]
-)
 
 
 @dataclass(frozen=True)
@@ -190,15 +172,15 @@ def import_lerobot(
     if gop_layout:
         gops_handle = catalog.create_table(
             gops_table,
-            path=_sibling_path(path, GOPS_TABLE_SUFFIX),
-            schema=_GOPS_SCHEMA,
+            path=sibling_path(path, GOPS_TABLE_SUFFIX),
+            schema=GOPS_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
         )
         frames_handle = catalog.create_table(
             frames_table,
-            path=_sibling_path(path, FRAMES_TABLE_SUFFIX),
-            schema=_FRAMES_SCHEMA,
+            path=sibling_path(path, FRAMES_TABLE_SUFFIX),
+            schema=FRAMES_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
         )
@@ -535,10 +517,6 @@ def _decode_video_frames(
     )
 
 
-def _sibling_path(path: str | Path, suffix: str) -> str:
-    return f"{str(path).rstrip('/')}{suffix}"
-
-
 def _write_gop_episode(
     gops_handle: Any,
     frames_handle: Any,
@@ -551,8 +529,8 @@ def _write_gop_episode(
 ) -> int:
     fps = float(info["fps"])
     episode_id = f"ep{episode.index:06d}"
-    gop_columns: dict[str, list[Any]] = {name: [] for name in _GOPS_SCHEMA.names}
-    frame_columns: dict[str, list[Any]] = {name: [] for name in _FRAMES_SCHEMA.names}
+    gop_columns: dict[str, list[Any]] = {name: [] for name in GOPS_SCHEMA.names}
+    frame_columns: dict[str, list[Any]] = {name: [] for name in FRAMES_SCHEMA.names}
     for feature in video_features:
         video_path = episode.video_files[feature.key]
         if not video_path.exists():
@@ -595,19 +573,12 @@ def _write_gop_episode(
             frame_columns["byte_offset"].append(frame.offset)
             frame_columns["byte_length"].append(frame.length)
     gops_handle.write_arrow(
-        _table_from(_GOPS_SCHEMA, gop_columns), format=physical_format
+        table_from_columns(GOPS_SCHEMA, gop_columns), format=physical_format
     )
     frames_handle.write_arrow(
-        _table_from(_FRAMES_SCHEMA, frame_columns), format=physical_format
+        table_from_columns(FRAMES_SCHEMA, frame_columns), format=physical_format
     )
     return len(frame_columns["frame_index"])
-
-
-def _table_from(schema: pa.Schema, columns: dict[str, list[Any]]) -> pa.Table:
-    arrays = [
-        pa.array(columns[name], type=schema.field(name).type) for name in schema.names
-    ]
-    return pa.Table.from_arrays(arrays, schema=schema)
 
 
 __all__ = ["ImportSummary", "import_lerobot"]
