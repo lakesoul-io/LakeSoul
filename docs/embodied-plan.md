@@ -2,7 +2,7 @@
 
 - 版本：v1.2（用户功能驱动版，M1 重排）
 - 日期：2026-09-18
-- 状态：M1 完成；M2 进行中（M2-4 `import_lerobot` v3 基础版已完成；blob 外置待设计评审）
+- 状态：M1 完成；M2 进行中（M2-4 `import_lerobot` v3 与 `import_mcap` v1 已完成；blob 外置待设计评审）
 - 修订点（相对 v1.1）：
   - 从"低层 RowSelection / 全局行号"改为从**用户训练闭环**倒推功能；
   - 确认：episode 内"顺序消费 + 窗口随机起点"，不做全局行随机访问；
@@ -106,6 +106,16 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 - 支持 `episodes` / `cameras` / `include_video` / `overwrite`；v2.1 数据集明确报错；
 - 依赖 `lakesoul[embodied]`（`av`、`pillow`）；GOP blob + frames 索引待 M2-1~3 落地后切换；
 - 测试：合成 v3 数据集（含小 mp4）5 个用例（本机与 CI 均带 PG）。
+
+### M2-4b `import_mcap` v1（JSON 录制）
+
+- 支持 `message_encoding == "json"` 的 MCAP（Foxglove/ROS JSON 录制）；
+- `columns={"observation_state": "topic[:field.path]"}` 映射 tabular 列，
+  `cameras={"cam_high": "topic"}` 映射 base64 图像/视频帧；`row_topic` 定义行锚点，
+  其他 topic 按最近邻 `tolerance` 秒对齐；类型从 JSON 值推断
+  （标量 / FixedSizeList / string / bool）；
+- protobuf 编码明确报错并列出可用 topic；测试：合成 MCAP（zstd chunk）5 个用例；
+- GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
 ### M2-1 ~ M2-3 Blob 外置（待设计评审）
 

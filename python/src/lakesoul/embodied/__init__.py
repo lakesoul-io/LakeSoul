@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .dataset import BOUNDARY_CLAMP, BOUNDARY_SKIP, EmbodiedDataset, Window
-from .lerobot import ImportSummary, import_lerobot
+from .importer import ImportSummary
+from .lerobot import import_lerobot
+from .mcap import import_mcap
 
 __all__ = [
     "BOUNDARY_CLAMP",
@@ -12,4 +14,5 @@ __all__ = [
     "ImportSummary",
     "Window",
     "import_lerobot",
+    "import_mcap",
 ]
