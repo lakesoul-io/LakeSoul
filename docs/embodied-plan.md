@@ -136,9 +136,16 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   （LeRobot/MCAP GOP 导入 → 直接进窗口样本）。
 - GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
-### M2-1 ~ M2-3 Blob 外置（待设计评审）
+### M2-1 ~ M2-3 Blob 外置（实施中）
 
-- Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
+- 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/threshold/pack_target`）→ IOConfig options；
+  tagged binary 行内表示；pack 跟随数据文件（`<data_file>.<column>.blob`，删数据文件即清理）；
+  仅 Python/native 路径；阈值 16KiB inline / 2MiB external / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
+- 已完成：Rust codec（`rust/lakesoul-io/src/blob.rs`）——策略解析、tagged 编码/解析、
+  PackBuffer、CRC32 校验锚点、5 个单测；
+- 待做：writer 接线（batch 编码 + finish 落 pack）、reader 物化（object store range 读 +
+  缓存）、Python 透传（`write_arrow`/scan 自动带上表属性）与 e2e 测试；
+- 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
 - 行级 range 下推 + `take`（只服务单样本/调试），与 blob range 共用寻址；
