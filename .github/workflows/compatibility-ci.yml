@@ -106,13 +106,6 @@ jobs:
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Restore uv cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/setup-uv-cache
-          key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
-          restore-keys: |
-            uv-cache-${{ runner.os }}-
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
@@ -150,12 +143,6 @@ jobs:
         run: |
           cp ../rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
           uv sync --no-install-project --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
-      - name: Save uv cache
-        if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/setup-uv-cache
-          key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
       - name: Run compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -273,13 +260,6 @@ jobs:
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Restore uv cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/setup-uv-cache
-          key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
-          restore-keys: |
-            uv-cache-${{ runner.os }}-
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
@@ -317,12 +297,6 @@ jobs:
         run: |
           cp ../rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
           uv sync --no-install-project --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
-      - name: Save uv cache
-        if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/setup-uv-cache
-          key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
       - name: Run RustFS compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
