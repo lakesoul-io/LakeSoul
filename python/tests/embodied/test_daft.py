@@ -6,15 +6,16 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("daft")
 
 from embodied.test_lerobot import STATE_DIM, _table_name, _write_dataset
 from lakesoul import LakeSoulCatalog
-from lakesoul.embodied import EmbodiedDataset, GopVideo
+from lakesoul.embodied import EmbodiedDataset, GopVideo, import_lerobot
 from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
-from lakesoul.embodied.daft import import_lerobot_gop
+from lakesoul.embodied.daft import import_lerobot_gop, read_samples
 
 
 def test_import_lerobot_daft_frames(tmp_path: Path) -> None:
@@ -163,3 +164,53 @@ def test_import_lerobot_daft_gop(tmp_path: Path) -> None:
         catalog.drop_table(f"{table_name}_frames", if_exists=True)
         catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
+
+
+WINDOW = {"observation_state": (-2, 0), "action": (0, 2)}
+
+
+def _sample_key(sample) -> tuple:
+    values = [np.asarray(sample[name]).round(4).flatten().tolist() for name in WINDOW]
+    return tuple(item for row in values for item in row)
+
+
+def test_read_samples_matches_embodied_dataset(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_samples")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_lerobot(
+            root, table=table_name, path=table_path, physical_format="parquet"
+        )
+        table = catalog.table(table_name)
+
+        daft_rows = read_samples(table.scan(), window=WINDOW, stride=1).collect()
+        daft_keys = sorted(_sample_key(sample) for sample in daft_rows.to_pylist())
+
+        dataset = EmbodiedDataset(table.scan(), window=WINDOW, stride=1)
+        baseline_keys = sorted(_sample_key(sample) for sample in dataset.iter_epoch(0))
+
+        assert len(daft_keys) == len(baseline_keys)
+        assert daft_keys == baseline_keys
+        assert {"episode_id", "anchor", *WINDOW} == set(daft_rows.column_names)
+
+        strided = read_samples(table.scan(), window=WINDOW, stride=2).collect()
+        strided_keys = sorted(_sample_key(sample) for sample in strided.to_pylist())
+        baseline_strided = sorted(
+            _sample_key(sample)
+            for sample in EmbodiedDataset(
+                table.scan(), window=WINDOW, stride=2
+            ).iter_epoch(0)
+        )
+        assert len(strided_keys) == len(baseline_strided)
+        assert strided_keys == baseline_strided
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_read_samples_rejects_clamp() -> None:
+    with pytest.raises(ValueError, match="boundary='skip'"):
+        read_samples(object(), window=WINDOW, boundary="clamp")  # type: ignore[arg-type]

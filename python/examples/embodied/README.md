@@ -111,6 +111,21 @@ Use `lakesoul.embodied.daft.import_lerobot_gop` for the GOP layout: ticks come
 from the Daft LeRobot reader and `<table>_gops` / `<table>_frames` are built by
 a Daft class UDF that demuxes each video shard once per worker.
 
+Window samples can be produced as a lazy Daft DataFrame with the same semantics
+as `EmbodiedDataset`:
+
+```python
+from lakesoul.embodied.daft import read_samples
+
+samples = read_samples(
+    catalog.table("robot_episodes").scan(),
+    window={"observation_state": (-4, 0), "action": (0, 4)},
+    stride=1,
+    seed=0,
+)
+samples.show()
+```
+
 ## Train
 
 ```sh

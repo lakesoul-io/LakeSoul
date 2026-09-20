@@ -15,12 +15,13 @@ correct but single-process; Ray (or another distributed runner) makes the scan,
 decode and writes parallel without code changes.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from lakesoul.catalog import LakeSoulCatalog
+from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan
 
+from .dataset import BOUNDARY_SKIP, Window
 from .importer import ImportSummary, prepare_table, sibling_path
 from .lerobot import (
     NON_FEATURE_COLUMNS,
@@ -445,4 +446,108 @@ class _GopBuilder:
         return {"gops": gop_rows, "frames": frame_rows}
 
 
-__all__ = ["import_lerobot", "import_lerobot_gop"]
+def read_samples(
+    scan: LakeSoulScan,
+    *,
+    window: Mapping[str, Window | tuple[int, int]],
+    stride: int = 1,
+    order_by: str = "frame_index",
+    episode_column: str = EPISODE_COLUMN,
+    seed: int = 0,
+    epoch: int = 0,
+    boundary: str = BOUNDARY_SKIP,
+) -> Any:
+    """Distributed anchor-window samples as a lazy Daft DataFrame.
+
+    ``window`` maps a column to its row range relative to the anchor, exactly
+    like :class:`lakesoul.embodied.EmbodiedDataset` (rows, not seconds). The
+    pipeline sorts each episode by ``order_by``, aggregates it on one worker,
+    packs the windows in a Daft UDF and explodes the samples, so both the
+    ordering and the memory footprint stay per episode.
+
+    Returns a DataFrame with ``episode_id``, ``anchor`` (the anchor's
+    ``order_by`` value) and one list column per window key. Only
+    ``boundary="skip"`` is supported; anchors whose window leaves the episode
+    are dropped.
+    """
+    import daft
+    from daft import col, func, functions
+
+    from lakesoul.daft import read_lakesoul
+
+    if boundary != BOUNDARY_SKIP:
+        raise ValueError("read_samples only supports boundary='skip'")
+    if stride < 1:
+        raise ValueError(f"stride must be positive, got {stride}")
+    if not window:
+        raise ValueError("window must define at least one column")
+
+    windows: dict[str, Window] = {}
+    for name, spec in window.items():
+        resolved = (
+            spec if isinstance(spec, Window) else Window(int(spec[0]), int(spec[1]))
+        )
+        windows[name] = resolved
+
+    dataframe = read_lakesoul(scan)
+    schema = dataframe.schema()
+    names = list(windows)
+    for name in names:
+        if name not in schema.column_names():
+            raise ValueError(f"window column {name!r} is not in the scan schema")
+    if order_by not in schema.column_names():
+        raise ValueError(f"order_by column {order_by!r} is not in the scan schema")
+
+    sample_type = daft.DataType.struct(
+        {
+            "anchor": schema[order_by].dtype,
+            **{name: daft.DataType.list(schema[name].dtype) for name in names},
+        }
+    )
+    payload_type = daft.DataType.list(sample_type)
+
+    def sampler(order_values: list, *window_values: list) -> list[dict[str, Any]]:
+        import numpy as np
+
+        count = len(order_values)
+        anchors = np.arange(0, count, stride, dtype=np.int64)
+        lower = min(item.start for item in windows.values())
+        upper = max(item.end for item in windows.values())
+        if lower < 0 or upper > 0:
+            keep = (anchors + lower >= 0) & (anchors + upper <= count)
+            anchors = anchors[keep]
+        if anchors.size > 1:
+            anchors = np.random.default_rng([seed, epoch]).permutation(anchors)
+        samples = []
+        for anchor in anchors.tolist():
+            sample: dict[str, Any] = {"anchor": order_values[anchor]}
+            for name, values in zip(names, window_values):
+                item = windows[name]
+                sample[name] = values[anchor + item.start : anchor + item.end]
+            samples.append(sample)
+        return samples
+
+    aggregated = (
+        dataframe.sort([episode_column, order_by])
+        .groupby(episode_column)
+        .agg(
+            functions.list_agg(col(order_by)).alias(order_by),
+            *[functions.list_agg(col(name)).alias(name) for name in names],
+        )
+    )
+    sampler_udf = func(return_dtype=payload_type)(sampler)
+    exploded = aggregated.with_column(
+        "samples",
+        sampler_udf(col(order_by), *[col(name) for name in names]),
+    ).select(
+        episode_column,
+        functions.explode(col("samples")).alias("sample"),
+    )
+    return exploded.select(
+        episode_column,
+        col("sample")["anchor"].alias("anchor"),
+        *[col("sample")[name].alias(name) for name in names],
+    )
+
+
+__all__ = ["import_lerobot", "import_lerobot_gop", "read_samples"]

@@ -174,12 +174,21 @@ Ray runner 只要求接口兼容（gated 测试）。
   `List` 在 Arrow 中是 `large_list`），否则任何 list 列都无法通过 Daft 写入；
 - 测试：native runner 上 GOP 三表 + `GopVideo` 解码 + 数据集窗口。
 
-### M4-1c（待做）
+### M4-2a 分布式窗口采样（已完成）
+
+- `lakesoul.embodied.daft.read_samples(scan, window=..., stride=..., order_by="frame_index", seed, epoch)`：
+  逐 episode 排序 + `groupby` 聚合到单 worker，用 `daft.func` UDF 打包窗口
+  （anchor 置换用 `seed/epoch`，与单机同规则）后 `explode`，返回
+  `episode_id / anchor / 每个窗口列（list）` 的 lazy DataFrame；
+- 与 `EmbodiedDataset` 语义一致（行偏移窗口、`boundary="skip"`），测试逐样本对齐
+  （stride=1/2 均比对通过）；`clamp` 明确报错待补；
+- 限制：尚未包含 GOP 图像解码与样本级 rank 分片（Daft 自身调度负责并行）。
+
+### M4-1c / M4-2b（待做）
 
 - MCAP 分布式：`daft.read_mcap` 抽 JSON topic；protobuf/GOP 走每文件 actor
   复用 `_read_messages` / `_camera_stream` 语义；
-- M4-2 分布式数据集：`read_lakesoul` + Daft `map_batches` 窗口展开 + GOP
-  join/`decode_gop` UDF；
+- GOP 帧解码 UDF：frames join gops + `decode_gop`，输出逐帧图像列；
 - M4-3：native runner 单测 + `LAKESOUL_DAFT_RAY_TEST=1` Ray 测试
   （顺便修 `tests/vector/test_daft_ray_distribution.py` 的过期 import）。
 
