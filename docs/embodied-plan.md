@@ -146,6 +146,24 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 - 视频解码 helper（`av`/`torchcodec`）已随 M2-4 提供基础版；
 - 混合 benchmark：存储放大、GOP 随机读 P50、重写放大。
 
+### M2-5a 视频布局存储/读取量化（已完成）
+
+- `benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
+  生成渐变图案的 LeRobot v3 源（mp4 + parquet），分别以 frames（逐帧 JPEG）、gop、
+  daft-frames（native runner）导入，报告导入吞吐、磁盘体积、窗口采样吞吐与
+  GOP 解码 P50/P99；
+- 示例结果（8 episodes × 120 ticks，128×128，keyint=16，vortex）：
+  - 存储：源 mp4 0.16 MB；frames 3.55 MB（21.6x mp4）；gop 0.42 MB（2.54x mp4），
+    **gop 比 frames 小 8.5x**（源为低熵渐变，真实视频差距视码率而定）；
+  - 导入：frames 0.92s / 1.0k rows/s；gop 0.20s / 4.9k rows/s；
+    daft-frames native runner 2.62s（单进程，仅体现引擎开销）；
+  - 读取：frames 8.1k samples/s、15.3 KB/sample；gop 216 samples/s（sample P50
+    0.057 ms，命中已解码 GOP 缓存；P99 25.6 ms 为 unit 内首个 GOP 解码），
+    1.8 KB/sample，整 GOP 解码 P50 14 ms；
+- 结论：GOP 布局把存储压到接近源体积（8.5x 收益），代价是采样时需解码
+  （缓存命中时很快）；blob 外置主要收益在把 frames 的逐帧字节或 GOP 数据移出行，
+  阈值仍按 16KiB inline / 2MiB external 设计，pack 跟随数据文件。
+
 ## 5. M4：Daft 分布式（进行中）
 
 原则（已确认）：混合方案——表格/逐帧用 Daft 原生 `daft.datasets.lerobot`，GOP 与
