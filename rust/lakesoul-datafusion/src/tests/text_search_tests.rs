@@ -216,6 +216,91 @@ async fn sql_text_search_is_exact_over_upserts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_index_compacts_drifted_shards() {
+    use lakesoul_common::IndexKind;
+    use lakesoul_io::index::prefix::shard_index_prefix;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "text_search_compaction";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // One shard for the whole table, so split counts are unambiguous.
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(text_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_text_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &text_configs(),
+    )
+    .await
+    .unwrap();
+
+    let table = LakeSoulTable::for_name(table_name).await.unwrap();
+    for text in ["apple pie", "cherry tart", "date cake"] {
+        table.execute_upsert(batch(&[(1, text)])).await.unwrap();
+    }
+    // Three deltas: the latest split is 1/3 of the shard's documents.
+    assert_eq!(split_count(table_name), 3, "expected three delta splits");
+
+    // The fourth write pushes stale/fresh over max_delta_ratio=1.0 and the
+    // shard is rebuilt from every active file; `delete_term` keeps only the
+    // newest version of the row.
+    table
+        .execute_upsert(batch(&[(1, "elderberry pie")]))
+        .await
+        .unwrap();
+
+    let files = client
+        .get_data_files_by_table_name(table_name, "default")
+        .await
+        .unwrap();
+    let prefix = shard_index_prefix(&files, IndexKind::Text, "body");
+    let catalog = client.index_catalog::<lakesoul_text::TextSplitEntry>(IndexKind::Text);
+    let view = catalog
+        .resolve(&prefix)
+        .await
+        .unwrap()
+        .expect("text index commit");
+    assert_eq!(
+        view.segments.len(),
+        1,
+        "drifted shard must compact into one split"
+    );
+    assert_eq!(
+        view.segments[0].num_docs, 1,
+        "only the newest row version may survive the rebuild"
+    );
+    assert!(
+        view.generation >= 2,
+        "compaction publishes a new generation"
+    );
+    // The three old splits stay on disk during the GC grace period.
+    assert_eq!(split_count(table_name), 4);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let base = format!("\"lakesoul\".default.{table_name}");
+    for stale in ["apple", "cherry", "date"] {
+        let sql =
+            format!("select id from {base} where text_match(body, '{stale}') limit 10");
+        assert!(
+            query_ids(&ctx, &sql).await.is_empty(),
+            "superseded text '{stale}' must not match after compaction"
+        );
+    }
+    let sql =
+        format!("select id from {base} where text_match(body, 'elderberry') limit 10");
+    assert_eq!(query_ids(&ctx, &sql).await, vec![1]);
+
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_match_works_without_an_index() {
     // A table without `text_index_columns`: the exact UDF still works, just
     // over a full scan.

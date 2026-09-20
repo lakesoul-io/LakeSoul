@@ -27,7 +27,7 @@ pub use schema::{PK_FIELD, TEXT_FIELD, TextSchema};
 pub use search::{TextHit, merge_hits, search_index, search_splits};
 pub use split::{
     DEFAULT_WRITER_MEMORY_BUDGET, ENV_SPLIT_CACHE_DIR, SPLIT_FORMAT_VERSION, SplitCache,
-    TextSplitEntry, write_split,
+    TextSplitEntry, drift_exceeds_threshold, write_split,
 };
 pub use tokenizer::{SUPPORTED_TOKENIZERS, is_supported, register_tokenizers};
 pub use verify::{matching_ids, matching_scores};

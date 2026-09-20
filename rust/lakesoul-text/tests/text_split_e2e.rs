@@ -113,3 +113,31 @@ async fn multiple_splits_merge_into_a_global_top_k() {
     assert!(ids.contains(&1), "english hit missing: {ids:?}");
     assert!(ids.contains(&10), "chinese hit missing: {ids:?}");
 }
+
+#[tokio::test]
+async fn duplicate_primary_keys_keep_the_last_document() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let prefix = "table/_text_index/body/-5/0";
+
+    // A rebuilt shard reads overlapping versions from several data files;
+    // only the last document of each primary key may survive.
+    let docs = vec![
+        (1, "apple pie".to_string()),
+        (2, "banana bread".to_string()),
+        (1, "cherry tart".to_string()),
+        (1, "date cake".to_string()),
+    ];
+    let entry = write_split(&store, prefix, &config(), &docs, BUDGET)
+        .await
+        .unwrap();
+    assert_eq!(entry.num_docs, 2, "superseded documents must be deleted");
+
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache = SplitCache::new(cache_dir.path());
+    let index = cache.open(&store, prefix, &entry).await.unwrap();
+
+    assert!(search_index(&index, "apple", 10).unwrap().is_empty());
+    assert!(search_index(&index, "cherry", 10).unwrap().is_empty());
+    assert_eq!(search_index(&index, "date", 10).unwrap()[0].id, 1);
+    assert_eq!(search_index(&index, "banana", 10).unwrap()[0].id, 2);
+}

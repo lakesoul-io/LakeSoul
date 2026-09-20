@@ -26,7 +26,7 @@ use object_store::ObjectStoreExt;
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 use tantivy::schema::TantivyDocument;
-use tantivy::{Index, IndexWriter};
+use tantivy::{Index, IndexWriter, Term};
 use tracing::{debug, info};
 
 use crate::TextError;
@@ -78,6 +78,26 @@ impl CatalogSegment for TextSplitEntry {
     }
 }
 
+/// Whether a shard's delta history outweighs its compacted base.
+///
+/// A rebuild publishes a single split (the generation's base); every delta
+/// build appends one split.  Superseded and deleted rows stay in the base
+/// and earlier delta splits until the next rebuild, so the accumulated delta
+/// documents are the (upper-bounded) stale part.  Comparing them to the base
+/// amortises the rebuild cost: writing about as many documents as the base
+/// holds triggers the next compaction.
+///
+/// `splits` must be in commit order (as stored by the catalog), so the first
+/// entry is the base of the current generation.
+pub fn drift_exceeds_threshold(splits: &[TextSplitEntry], max_delta_ratio: f32) -> bool {
+    let Some(base) = splits.first().map(|split| split.num_docs) else {
+        return false;
+    };
+    let total: u64 = splits.iter().map(|split| split.num_docs).sum();
+    let delta = total.saturating_sub(base);
+    base > 0 && delta as f32 / base as f32 > max_delta_ratio
+}
+
 /// One file inside a split bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BundleFile {
@@ -126,6 +146,12 @@ pub async fn write_split(
     // batches that fit the memory budget.
     let mut writer: IndexWriter = index.writer_with_num_threads(1, budget)?;
     for (id, text) in docs {
+        // Upsert semantics: the last document of a primary key wins.  A
+        // rebuilt shard reads every active data file, so an updated row
+        // appears once per version; without this the split would index all
+        // of them and only the exact verification pass would drop the stale
+        // copies.
+        writer.delete_term(Term::from_field_u64(text_schema.pk_field, *id));
         let mut document = TantivyDocument::new();
         document.add_u64(text_schema.pk_field, *id);
         document.add_text(text_schema.text_field, text.as_str());
@@ -140,6 +166,8 @@ pub async fn write_split(
         writer.commit()?;
     }
     writer.wait_merging_threads()?;
+    // Live documents only: `delete_term` tombstones the superseded copies.
+    let num_docs = index.reader()?.searcher().num_docs();
     drop(index);
 
     let files = collect_index_files(temp_dir.path())?;
@@ -148,7 +176,7 @@ pub async fn write_split(
             "text index split produced no files".to_string(),
         ));
     }
-    let bundle = build_bundle(&files, docs.len() as u64)?;
+    let bundle = build_bundle(&files, num_docs)?;
     let file_size = bundle.len() as u64;
     let object_path = ObjectPath::from(format!(
         "{}/{}",
@@ -167,7 +195,7 @@ pub async fn write_split(
     Ok(TextSplitEntry {
         split_id,
         filename,
-        num_docs: docs.len() as u64,
+        num_docs,
         file_size,
         format_version: SPLIT_FORMAT_VERSION,
     })

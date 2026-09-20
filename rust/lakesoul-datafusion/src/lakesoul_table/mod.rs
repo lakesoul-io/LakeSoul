@@ -387,6 +387,21 @@ impl LakeSoulTable {
         .await
     }
 
+    /// Rebuild every text index shard of this table from scratch (all active
+    /// data files re-read into fresh splits), ignoring the configured
+    /// `rebuild_mode`/`max_delta_ratio`.  Returns the number of rebuilt
+    /// shards.
+    pub async fn rebuild_text_index(&self) -> Result<usize> {
+        crate::text_index::rebuild_text_index(
+            &self.client,
+            self.table_name(),
+            self.table_namespace(),
+            &self.primary_keys,
+            HashMap::new(),
+        )
+        .await
+    }
+
     /// Garbage collect superseded vector index files of this table.
     ///
     /// Drops expired reader leases and generations superseded for longer

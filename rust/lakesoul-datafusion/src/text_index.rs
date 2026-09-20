@@ -174,8 +174,9 @@ fn is_text_split_file(name: &str) -> bool {
 /// Files are grouped by `(partition_desc, hash_bucket_id)`; each group is one
 /// index shard.  An existing commit receives a delta split built from the new
 /// files; a fresh shard (or a rebuilt one) reads all of its active files.
-/// Stale splits are tolerated by design: the reader verifies candidates
-/// against the current rows exactly, and compaction merges splits later.
+/// Stale splits are harmless for correctness (the reader verifies candidates
+/// against the current rows exactly) and are compacted away once the shard's
+/// delta history outweighs its compacted base (`max_delta_ratio`).
 pub async fn auto_build_text_index(
     configs: &[TextIndexTableConfig],
     primary_keys: &[String],
@@ -201,10 +202,15 @@ pub async fn auto_build_text_index(
     let mut built = 0usize;
     for config in configs {
         let management = &config.management;
-        // Files of each shard, for a fresh build / rebuild read.
-        let shard_all_files: HashMap<String, Vec<String>> = match all_active_files {
-            Some(all) => group_files_by_shard(all, IndexKind::Text, &config.column),
-            None => HashMap::new(),
+        let auto_rebuild = management.rebuild_mode.eq_ignore_ascii_case("auto");
+        // Files of each shard, for a full rebuild once its drift fires.
+        let shard_all_files: HashMap<String, Vec<String>> = if auto_rebuild {
+            match all_active_files {
+                Some(all) => group_files_by_shard(all, IndexKind::Text, &config.column),
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
         };
         let mut failures: Vec<String> = Vec::new();
         for shard in group_shard_files(partition_files) {
@@ -225,11 +231,24 @@ pub async fn auto_build_text_index(
                 }
             };
             let full_shard_files = shard_all_files.get(&prefix).cloned();
-            // Text splits never rebuild on drift: the exact verification
-            // pass makes stale entries harmless and compaction merges them.
+            // Compaction: once the accumulated delta history of a shard
+            // outweighs its compacted base, rebuild it from all active files
+            // into a single fresh split.
+            let should_rebuild = auto_rebuild
+                && full_shard_files
+                    .as_ref()
+                    .is_some_and(|files| !files.is_empty())
+                && drift_exceeds_threshold(catalog, &prefix, management.max_delta_ratio)
+                    .await
+                    .unwrap_or(false);
+            // The heal-from-scratch fallback below must read the whole shard,
+            // not just the new files of a delta build.
+            let rebuild_files = full_shard_files
+                .clone()
+                .unwrap_or_else(|| bucket_files.clone());
             let plan = plan_shard_build(
                 resolved.as_ref(),
-                false,
+                should_rebuild,
                 full_shard_files,
                 bucket_files,
             );
@@ -260,7 +279,7 @@ pub async fn auto_build_text_index(
                     match lakesoul_io::text::builder::TextShardIndexBuilder::new(
                         store.clone(),
                         config_for_build,
-                        plan.files,
+                        rebuild_files,
                         pk_column.clone(),
                         object_store_options.clone(),
                         None,
@@ -326,6 +345,110 @@ pub async fn auto_build_text_index(
         }
     }
     Ok(built)
+}
+
+/// Whether a shard's delta history outweighs its compacted base past the
+/// configured ratio (see [`lakesoul_text::drift_exceeds_threshold`]).
+async fn drift_exceeds_threshold(
+    catalog: &IndexCatalog<TextSplitEntry>,
+    prefix: &str,
+    max_delta_ratio: f32,
+) -> Result<bool> {
+    let Some(view) = catalog.resolve(prefix).await.map_err(|error| {
+        report!("failed to resolve text index at '{prefix}': {error}")
+    })?
+    else {
+        return Ok(false);
+    };
+    Ok(lakesoul_text::drift_exceeds_threshold(
+        &view.segments,
+        max_delta_ratio,
+    ))
+}
+
+/// Rebuild every text index shard of a table from scratch (all active data
+/// files re-read into fresh splits), regardless of the configured
+/// `rebuild_mode`/`max_delta_ratio`.
+///
+/// This is the manual compaction entry point: a shard that accumulated many
+/// delta splits collapses into one, dropping superseded and deleted
+/// documents.  Returns the number of rebuilt shards; fails loudly when any
+/// shard of a configured column fails.
+pub async fn rebuild_text_index(
+    client: &lakesoul_metadata::MetaDataClient,
+    table_name: &str,
+    namespace: &str,
+    primary_keys: &[String],
+    object_store_options: HashMap<String, String>,
+) -> Result<usize> {
+    let Some(table_info) = client
+        .get_table_info_by_table_name(table_name, namespace)
+        .await?
+    else {
+        bail!("table '{namespace}.{table_name}' not found");
+    };
+    let configs = parse_text_index_from_table_properties(&table_info.properties)?;
+    if configs.is_empty() {
+        return Ok(0);
+    }
+    let Some(pk_column) = primary_keys.first() else {
+        bail!("a text index requires a table with a primary key");
+    };
+    let all_active_files = client
+        .get_data_files_by_table_name(table_name, namespace)
+        .await?;
+    let Some(first_file) = all_active_files.first() else {
+        return Ok(0);
+    };
+    let store = store_for_files(first_file, &object_store_options)?;
+    let catalog = client.index_catalog::<TextSplitEntry>(IndexKind::Text);
+
+    let mut rebuilt = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for config in &configs {
+        let mut shards: Vec<(String, Vec<String>)> =
+            group_files_by_shard(&all_active_files, IndexKind::Text, &config.column)
+                .into_iter()
+                .collect();
+        shards.sort_by(|a, b| a.0.cmp(&b.0));
+        for (prefix, files) in shards {
+            let result = lakesoul_io::text::builder::TextShardIndexBuilder::new(
+                store.clone(),
+                config.to_text_index_config(),
+                files,
+                pk_column.clone(),
+                object_store_options.clone(),
+                None,
+            )
+            .build()
+            .await;
+            match result {
+                Ok(outcome) => {
+                    match commit_if_non_empty(
+                        &catalog,
+                        &prefix,
+                        &outcome.header,
+                        &outcome.new_splits,
+                        CommitMode::Rebuild,
+                    )
+                    .await
+                    {
+                        Ok(true) => rebuilt += 1,
+                        Ok(false) => {}
+                        Err(error) => failures.push(format!("{prefix}: {error}")),
+                    }
+                }
+                Err(error) => failures.push(format!("{prefix}: {error}")),
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(report!(
+            "text index rebuild failed for column(s): {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(rebuilt)
 }
 
 #[cfg(test)]
