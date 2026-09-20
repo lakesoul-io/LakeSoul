@@ -109,7 +109,7 @@ jobs:
       - name: Restore uv cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
           restore-keys: |
             uv-cache-${{ runner.os }}-
@@ -154,7 +154,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
       - name: Run compatibility matrix
         env:
@@ -276,7 +276,7 @@ jobs:
       - name: Restore uv cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
           restore-keys: |
             uv-cache-${{ runner.os }}-
@@ -321,7 +321,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-cache-${{ runner.os }}-${{ hashFiles('python/uv.lock') }}
       - name: Run RustFS compatibility matrix
         env:
