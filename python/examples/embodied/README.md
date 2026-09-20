@@ -38,6 +38,29 @@ print(summary)
 
 Video decoding needs the `embodied` extra: `pip install "lakesoul[embodied]"`.
 
+Pass `video_layout="gop"` to keep the source H.264 packets instead of decoded
+per-frame JPEGs; the importer then creates `<table>_gops` (raw Annex-B GOPs)
+and `<table>_frames` (frame to GOP/offset index). `EmbodiedDataset` can consume
+them directly:
+
+```python
+from lakesoul.embodied import EmbodiedDataset, GopVideo
+
+video = GopVideo(
+    catalog.table("robot_episodes_gops"),
+    catalog.table("robot_episodes_frames"),
+)
+dataset = EmbodiedDataset(
+    catalog.table("robot_episodes").scan(),
+    window={"observation_state": (-4, 0), "action": (0, 4)},
+    video=video,               # decoded frames follow video_window
+    video_window="observation_state",
+)
+```
+
+Frames can also be decoded manually with
+`lakesoul.embodied.video.decode_gop_range`.
+
 ## Import an MCAP recording
 
 ```python
@@ -56,8 +79,79 @@ summary = import_mcap(
 )
 ```
 
-Only JSON-encoded messages are decoded; protobuf topics are rejected with the
-list of available topics.
+JSON and protobuf messages are supported; protobuf payloads are decoded
+through the FileDescriptorSet embedded in the MCAP file (for example
+``foxglove.CompressedVideo``). Other encodings are rejected with the list of
+available topics.
+
+Pass `video_layout="gop"` to group H.264/HEVC camera access units into
+Annex-B GOPs (`<table>_gops` / `<table>_frames`, consumable by `GopVideo`).
+Recorders should set per-channel message `sequence` numbers so decode order
+is preserved; JPEG/PNG cameras should keep the default `frames` layout.
+
+## Distributed import with Daft
+
+```python
+from lakesoul.embodied.daft import import_lerobot
+
+summary = import_lerobot(
+    "/path/to/lerobot_dataset",
+    table="robot_episodes",
+    path="file:///tmp/lakesoul-embodied/robot_episodes",
+    cameras=["cam_high"],
+)
+```
+
+`daft.datasets.lerobot` scans and decodes on the Daft runner and the LakeSoul
+Daft sink writes files in parallel with a single driver commit. On the default
+native runner the pipeline is correct but single-process; a Ray (or other
+distributed) runner parallelizes it without code changes.
+
+Use `lakesoul.embodied.daft.import_lerobot_gop` for the GOP layout: ticks come
+from the Daft LeRobot reader and `<table>_gops` / `<table>_frames` are built by
+a Daft class UDF that demuxes each video shard once per worker.
+
+Window samples can be produced as a lazy Daft DataFrame with the same semantics
+as `EmbodiedDataset`:
+
+```python
+from lakesoul.embodied.daft import read_samples
+
+samples = read_samples(
+    catalog.table("robot_episodes").scan(),
+    window={"observation_state": (-4, 0), "action": (0, 4)},
+    stride=1,
+    seed=0,
+)
+samples.show()
+```
+
+MCAP files import the same way (frames layout, one file per task):
+
+```python
+from lakesoul.embodied.daft import import_mcap
+
+summary = import_mcap(
+    "/path/to/mcap_directory",
+    table="robot_episodes",
+    path="file:///tmp/lakesoul-embodied/robot_episodes",
+    columns={"observation_state": "state", "action": "commands:position"},
+    cameras={"cam_high": "camera_high"},
+    row_topic="control_tick",
+)
+```
+
+GOP video frames decode in the same pipeline:
+
+```python
+from lakesoul.embodied.daft import read_gop_frames
+
+frames = read_gop_frames(
+    catalog.table("robot_episodes_gops").scan(),
+    catalog.table("robot_episodes_frames").scan(),
+    cameras=["cam_high"],
+)
+```
 
 ## Train
 

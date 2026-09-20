@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from lakesoul.catalog import LakeSoulCatalog, TableNotFoundError
 
@@ -19,6 +20,7 @@ class ImportSummary:
     rows: int
     video_frames: int
     columns: tuple[str, ...]
+    tables: tuple[str, ...] = ()
 
 
 def sanitize(name: str) -> str:
@@ -54,9 +56,15 @@ def prepare_table(
     catalog.drop_table(table, namespace=namespace, if_exists=True)
 
 
+def sibling_path(path: str | Path, suffix: str) -> str:
+    """Return the storage path of a side table next to ``path``."""
+    return f"{str(path).rstrip('/')}{suffix}"
+
+
 __all__ = [
     "ImportSummary",
     "prepare_table",
     "resolve_names",
     "sanitize",
+    "sibling_path",
 ]
