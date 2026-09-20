@@ -8,9 +8,15 @@ class TextIndexConfig(TypedDict):
     tokenizer: str
     with_positions: bool
     stored: bool
+    rebuild_mode: str
+    max_delta_ratio: float
 
 def parse_text_index_configs(value: str) -> list[TextIndexConfig]: ...
 def text_supported_tokenizers() -> list[str]: ...
+def text_index_stats(
+    file_paths: list[str],
+    text_column: str,
+) -> tuple[int, int, int, int] | None: ...
 def build_shard_text_index(
     store_config: Mapping[str, str],
     file_paths: list[str],

@@ -5560,6 +5560,7 @@ dependencies = [
  "pyo3",
  "pyo3-log",
  "rootcause",
+ "serde",
  "serde_json",
  "tokio",
  "uuid",

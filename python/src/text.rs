@@ -23,9 +23,11 @@ use crate::vector::create_object_store;
 
 /// Parse a table's ``text_index_columns`` property into a list of config dicts.
 ///
-/// The Rust side is the single source of truth for parsing
-/// (``TextIndexConfig::parse_json``). Each returned dict has keys:
-/// ``column``, ``tokenizer``, ``with_positions``, ``stored``.
+/// The Rust ``TextIndexConfig`` parser is the single source of truth for the
+/// text parameters; the management knobs (``rebuild_mode``,
+/// ``max_delta_ratio``) are parsed alongside. Each returned dict has keys:
+/// ``column``, ``tokenizer``, ``with_positions``, ``stored``,
+/// ``rebuild_mode``, ``max_delta_ratio``.
 ///
 /// Args:
 ///     value: JSON (single object or array) from the ``text_index_columns``
@@ -43,17 +45,163 @@ fn parse_text_index_configs(py: Python<'_>, value: String) -> PyResult<Vec<Py<Py
             e
         ))
     })?;
+    let management = parse_management_entries(&value)?;
 
     let mut result = Vec::with_capacity(configs.len());
-    for c in configs {
+    for (index, c) in configs.into_iter().enumerate() {
+        let (rebuild_mode, max_delta_ratio) = management
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| (default_rebuild_mode(), default_max_delta_ratio()));
         let d = PyDict::new(py);
         d.set_item("column", c.column_name)?;
         d.set_item("tokenizer", c.tokenizer)?;
         d.set_item("with_positions", c.with_positions)?;
         d.set_item("stored", c.stored)?;
+        d.set_item("rebuild_mode", rebuild_mode)?;
+        d.set_item("max_delta_ratio", max_delta_ratio)?;
         result.push(d.into_any().unbind());
     }
     Ok(result)
+}
+
+fn default_rebuild_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_max_delta_ratio() -> f64 {
+    1.0
+}
+
+/// The management knobs of one entry, parsed leniently (unknown keys are
+/// ignored so the kind parameters stay the text parser's business).
+#[derive(serde::Deserialize)]
+struct TextManagementEntry {
+    #[serde(default = "default_rebuild_mode")]
+    rebuild_mode: String,
+    #[serde(default = "default_max_delta_ratio")]
+    max_delta_ratio: f64,
+}
+
+/// Parse the management knobs of every entry of the property value.
+fn parse_management_entries(value: &str) -> PyResult<Vec<(String, f64)>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let json: serde_json::Value = serde_json::from_str(trimmed).map_err(invalid_property)?;
+    let json = match json {
+        serde_json::Value::String(inner) => {
+            let inner = inner.trim();
+            if inner.is_empty() {
+                return Ok(Vec::new());
+            }
+            serde_json::from_str(inner).map_err(invalid_property)?
+        }
+        other => other,
+    };
+    let entries: Vec<TextManagementEntry> = match json {
+        serde_json::Value::Array(_) => serde_json::from_value(json).map_err(invalid_property)?,
+        serde_json::Value::Object(_) => {
+            vec![serde_json::from_value(json).map_err(invalid_property)?]
+        }
+        _ => return Ok(Vec::new()),
+    };
+    Ok(entries
+        .into_iter()
+        .map(|entry| (entry.rebuild_mode, entry.max_delta_ratio))
+        .collect())
+}
+
+fn invalid_property(error: serde_json::Error) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        "invalid text_index_columns property: {}",
+        error
+    ))
+}
+
+/// Current compaction statistics of the text index shard containing
+/// ``file_paths``.
+///
+/// Args:
+///     file_paths: any data files of the shard (the first one derives the
+///         index prefix).
+///     text_column: the indexed text column.
+///
+/// Returns:
+///     ``None`` when the shard has no index commit yet, otherwise a tuple
+///     ``(generation, splits, base_docs, total_docs)``.  ``base_docs`` is
+///     the document count of the compacted base split (the first one) and
+///     ``total_docs`` the sum over every split, so ``total_docs - base_docs``
+///     is the (upper-bounded) stale part.
+#[pyfunction]
+fn text_index_stats(
+    file_paths: Vec<String>,
+    text_column: String,
+) -> PyResult<Option<(u64, u64, u64, u64)>> {
+    let Some(first) = file_paths.first() else {
+        return Ok(None);
+    };
+    let prefix = lakesoul_io::index::prefix::shard_index_prefix(
+        std::slice::from_ref(first),
+        IndexKind::Text,
+        &text_column,
+    );
+    // Compaction checks run per shard on every write; keep the runtime and
+    // the catalog process-wide instead of paying for a pool per call.
+    static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
+    static CATALOG: tokio::sync::OnceCell<Option<IndexCatalog<TextSplitEntry>>> =
+        tokio::sync::OnceCell::const_new();
+    let runtime = match RUNTIME.get() {
+        Some(runtime) => runtime,
+        None => {
+            let runtime = Runtime::new().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "failed to create tokio runtime: {}",
+                    e
+                ))
+            })?;
+            let _ = RUNTIME.set(runtime);
+            RUNTIME.get().expect("runtime was just set")
+        }
+    };
+    runtime.block_on(async move {
+        let catalog = CATALOG
+            .get_or_init(|| async {
+                match lakesoul_metadata::MetaDataClient::from_env().await {
+                    Ok(client) => Some(client.index_catalog(IndexKind::Text)),
+                    Err(error) => {
+                        log::warn!("text index catalog unavailable: {error}");
+                        None
+                    }
+                }
+            })
+            .await
+            .clone();
+        let Some(catalog) = catalog else {
+            return Ok(None);
+        };
+        let view = catalog.resolve(&prefix).await.map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "failed to resolve text index at '{prefix}': {error}"
+            ))
+        })?;
+        let Some(view) = view else {
+            return Ok(None);
+        };
+        let base = view
+            .segments
+            .first()
+            .map(|split| split.num_docs)
+            .unwrap_or(0);
+        let total: u64 = view.segments.iter().map(|split| split.num_docs).sum();
+        Ok(Some((
+            view.generation,
+            view.segments.len() as u64,
+            base,
+            total,
+        )))
+    })
 }
 
 /// Tokenizer names accepted by the text index.
@@ -275,6 +423,7 @@ pub fn init(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     submodule.add_function(wrap_pyfunction!(rebuild_shard_text_index, &submodule)?)?;
     submodule.add_function(wrap_pyfunction!(parse_text_index_configs, &submodule)?)?;
     submodule.add_function(wrap_pyfunction!(text_supported_tokenizers, &submodule)?)?;
+    submodule.add_function(wrap_pyfunction!(text_index_stats, &submodule)?)?;
     m.add_submodule(&submodule)?;
     let full_name = format!("{}.text", m.name()?);
     crate::install_module(&full_name, &submodule)?;

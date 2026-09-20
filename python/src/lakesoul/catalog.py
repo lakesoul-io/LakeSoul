@@ -223,7 +223,9 @@ class LakeSoulCatalog:
         ``total_bits``/``metric``/``rotator_type``/``seed``/
         ``use_faster_config`` default if omitted.  Each text entry must have
         ``column``; ``tokenizer``/``with_positions``/``stored`` default if
-        omitted.  When a property is present, ``write_arrow`` automatically
+        omitted, and ``rebuild_mode``/``max_delta_ratio`` control the
+        automatic compaction of the text index (defaults ``"auto"``/``1.0``).
+        When a property is present, ``write_arrow`` automatically
         builds/updates the index.  An index requires an Int64/UInt64
         ``primary_keys`` column; vector columns must be Float32 with a
         matching dimension, text columns must be Utf8.  The configuration is
@@ -606,11 +608,11 @@ class LakeSoulTable:
     ) -> WriteResult:
         """Write a Daft DataFrame (distributed).
 
-        If the table declares ``vector_index_columns`` properties, the vector
+        If the table declares ``*_index_columns`` properties, the configured
         indexes are built/updated automatically after the write commits via a
         distributed ``@daft.cls`` actor-pool UDF over the new files, grouped
-        by (partition, hash bucket).  Pass ``auto_build_vector_index=False``
-        to skip.
+        by (partition, hash bucket); drifted shards are compacted afterwards.
+        Pass ``auto_build_vector_index=False`` to skip.
         """
         from lakesoul.daft import write_lakesoul
 

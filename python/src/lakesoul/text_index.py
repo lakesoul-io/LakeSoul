@@ -112,6 +112,18 @@ def _validate(
                 f"text index column '{column}' uses unsupported tokenizer "
                 f"'{tokenizer}'; supported: {', '.join(supported)}"
             )
+        rebuild_mode = str(cfg.get("rebuild_mode", "auto")).lower()
+        if rebuild_mode not in ("auto", "none"):
+            raise ValueError(
+                f"text index column '{column}' rebuild_mode must be 'auto' or "
+                f"'none', got {cfg.get('rebuild_mode')!r}"
+            )
+        ratio = cfg.get("max_delta_ratio", 1.0)
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or ratio <= 0:
+            raise ValueError(
+                f"text index column '{column}' max_delta_ratio must be > 0, "
+                f"got {cfg.get('max_delta_ratio')!r}"
+            )
         index = schema.get_field_index(column)
         if index < 0:
             raise ValueError(
@@ -136,12 +148,36 @@ def _parse(raw: str) -> list[dict[str, Any]]:
     return list(parse_text_index_configs(raw))
 
 
+def _should_compact(
+    store_config: Any,
+    file_paths: list[str],
+    config: Any,
+) -> bool:
+    """Whether a shard's delta history outweighs its compacted base.
+
+    Mirrors the native/datafusion rule: the first split of a generation is
+    the base published by the last rebuild, every later split is a delta.
+    """
+    if str(config.get("rebuild_mode", "auto")).lower() != "auto":
+        return False
+    from ._lib.text import text_index_stats
+
+    stats = text_index_stats(list(file_paths), config["column"])
+    if stats is None:
+        return False
+    _, _, base_docs, total_docs = stats
+    delta_docs = max(0, total_docs - base_docs)
+    ratio = float(config.get("max_delta_ratio", 1.0))
+    return base_docs > 0 and delta_docs / base_docs > ratio
+
+
 TEXT_KIND_SPEC = IndexKindSpec(
     name="text",
     property_key="text_index_columns",
     parse_configs=_parse,
     validate=_validate,
     build_shard=_build_shard,
+    should_compact=_should_compact,
 )
 _index.register_index_kind(TEXT_KIND_SPEC)
 

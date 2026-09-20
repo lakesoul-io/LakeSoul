@@ -48,6 +48,7 @@ futures.workspace = true
 prost.workspace = true
 rootcause.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 datafusion.workspace = true
 
 [lints]
