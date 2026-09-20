@@ -41,8 +41,10 @@ pub const IVM_COUNT_COLUMN: &str = "count_v";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ViewSpec {
-    /// `group_key`, `SUM(value_column)` and `COUNT(*)` over the append-only
-    /// changelog of the source table.
+    /// `group_key`, `SUM(value_column)` and `COUNT(*)` over the source
+    /// changelog. Append-only sources contribute every row; a source with a
+    /// primary key is treated as upsert and retracts the previous version of
+    /// each changed row (`rowKinds='delete'` rows retract only).
     SumCount {
         /// The view id.
         view_id: String,
@@ -80,7 +82,8 @@ pub enum ViewSpec {
 pub struct SumCountView {
     /// The view id.
     pub view_id: String,
-    /// The append-only source table.
+    /// The source table: append-only, or keyed (upsert) when it has primary
+    /// keys.
     pub source: IvmTable,
     /// The materialized view table.
     pub mv: IvmTable,
@@ -260,12 +263,15 @@ impl IvmRuntime {
     /// Refresh a `SUM`/`COUNT` view over the source changelog.
     ///
     /// Returns the epoch written, or `None` when the source had no new rows.
-    /// The source must be append-only; an update/delete in the consumed window
-    /// (or a missing baseline) is reported as an error so the caller can
-    /// rebuild the view.
+    /// Append-only sources are aggregated directly. A source with a primary key
+    /// is treated as an upsert stream: the new version of every changed row is
+    /// retracted against the row's state at the window start, so updates and
+    /// `rowKinds='delete'` rows are handled without a full source scan.
+    ///
+    /// An update/delete commit that the changelog cannot express incrementally
+    /// (a missing baseline) is reported as an error so the caller can rebuild.
     pub async fn refresh_sum_count(&self, view: &SumCountView) -> Result<Option<i64>> {
         self.register_view(view).await?;
-        ensure_append_only(&view.source, &view.view_id)?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -287,7 +293,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
 
         let delta_batches = view.source.read_files(window.added_files).await?;
-        let delta = aggregate_groups(view, delta_batches).await?;
+        let delta = if view.source.primary_keys.is_empty() {
+            aggregate_groups(view, delta_batches).await?
+        } else {
+            let old_batches = view
+                .source
+                .read_as_of(&self.client, window.before_timestamp)
+                .await?;
+            aggregate_upsert_delta(view, delta_batches, old_batches).await?
+        };
         if !delta.is_empty() {
             let state_batches = view.mv.read_current(&self.client).await?;
             let state = current_state(view, state_batches)?;
@@ -398,7 +412,6 @@ impl IvmRuntime {
     /// isolates the epochs of the previous incarnation.
     pub async fn rebuild_sum_count(&self, view: &SumCountView) -> Result<i64> {
         self.register_view(view).await?;
-        ensure_append_only(&view.source, &view.view_id)?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -920,6 +933,14 @@ fn join_term(
         .select(vec![col("join_key"), col("left_value"), col("right_value")])?)
 }
 
+/// `rowKinds` is case sensitive; `col()` would normalize the identifier to
+/// lower case, so the column is built from its exact name.
+fn row_kinds_expr() -> datafusion::logical_expr::Expr {
+    datafusion::logical_expr::Expr::Column(datafusion::common::Column::from_name(
+        IVM_ROW_KINDS_COLUMN,
+    ))
+}
+
 /// Aggregate sum/count batches into `group_key -> (sum, count)`.
 async fn aggregate_groups(
     view: &SumCountView,
@@ -931,6 +952,14 @@ async fn aggregate_groups(
 
     let context = SessionContext::new();
     let frame = context.read_batches(batches)?;
+    aggregate_dataframe(view, frame).await
+}
+
+/// Aggregate one [`DataFrame`] into `group_key -> (sum, count)`.
+async fn aggregate_dataframe(
+    view: &SumCountView,
+    frame: DataFrame,
+) -> Result<HashMap<i64, (i64, i64)>> {
     let value_expr = match &view.value_column {
         Some(column) => sum(col(column.as_str())),
         None => sum(lit(0_i64)),
@@ -953,6 +982,71 @@ async fn aggregate_groups(
         }
     }
     Ok(delta)
+}
+
+/// The delta of an upsert source:
+/// `aggregate(new rows) - aggregate(old rows whose key changed)`.
+///
+/// The changelog of a keyed source contains the new version of every changed
+/// row but no retraction of its previous version, so the previous version is
+/// read as of the window start and matched by primary key. Rows whose
+/// `rowKinds` says `delete` only contribute their retraction.
+async fn aggregate_upsert_delta(
+    view: &SumCountView,
+    delta: Vec<RecordBatch>,
+    old: Vec<RecordBatch>,
+) -> Result<HashMap<i64, (i64, i64)>> {
+    if delta.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let context = SessionContext::new();
+    let delta_frame = context.read_batches(delta)?;
+    let new_rows = if view
+        .source
+        .schema
+        .field_with_name(IVM_ROW_KINDS_COLUMN)
+        .is_ok()
+    {
+        delta_frame
+            .clone()
+            .filter(row_kinds_expr().not_eq(lit("delete")))?
+    } else {
+        delta_frame.clone()
+    };
+    let mut delta_groups = aggregate_dataframe(view, new_rows).await?;
+
+    if !old.is_empty() {
+        let old_frame = context.read_batches(old)?;
+        let pk_columns = view
+            .source
+            .primary_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let changed_keys = delta_frame
+            .select(
+                pk_columns
+                    .iter()
+                    .map(|column| col(*column))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        let changed_old = old_frame.join(
+            changed_keys,
+            JoinType::LeftSemi,
+            &pk_columns,
+            &pk_columns,
+            None,
+        )?;
+        for (group, (sum, count)) in aggregate_dataframe(view, changed_old).await? {
+            let entry = delta_groups.entry(group).or_insert((0, 0));
+            entry.0 -= sum;
+            entry.1 -= count;
+        }
+    }
+
+    Ok(delta_groups)
 }
 
 /// Read the current merge-on-read state as `group_key -> (sum, count, epoch)`.

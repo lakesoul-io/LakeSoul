@@ -348,6 +348,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   两个 epoch 的历史快照；回退报错后 rebuild 恢复。
 - 未完成：consumer 水位 GC（`ivm.consumers`）、SQL 视图前端。
 
+**Upsert 源支持实施记录（已完成）**
+
+- `refresh_sum_count` / `rebuild_sum_count` 不再要求源是 append-only；源带主键时按
+  upsert 语义维护：
+  - delta 用 `read_files`（按主键 MOR 合并）读取窗口内变更文件的**最终版本**（同
+    窗口多次更新只算最后一次）；
+  - 旧值用 P0-1 as-of 读窗口起点快照，按主键 semi-join 出"键发生变化的旧行"；
+  - `delta = aggregate(new rows) - aggregate(changed old rows)`；含
+    `rowKinds='delete'` 的 delta 行只参与旧值回收、不计入新值；
+  - 全量重建本就按主键合并读取，天然支持 keyed 源。
+- 注意事项：delta 的删除识别依赖源表存在字面量 `rowKinds` 列（大小写敏感，SQL
+  里用精确列名）；表属性 `lakesoul_cdc_change_column` 尚未接入；join 仍要求两侧
+  append-only 且未分区。
+- 测试 `tests/upsert_refresh.rs`：值更新、组迁移（group 变化）、同窗口同键多次
+  更新、`rowKinds='delete'`（含删除不存在的键）、keyed 源 rebuild，均与全量聚合
+  交叉验证。
+
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
 - `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算
