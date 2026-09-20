@@ -201,12 +201,14 @@ Ray runner 只要求接口兼容（gated 测试）。
 - 复用单机 schema/类型（fixed-size list 逐层映射到 Daft 类型），表结构与单机一致；
 - 限制：仅 frames 布局；MCAP 的 GOP 布局仍走单机导入（`video_layout="gop"`）。
 
-### M4-3 Ray / native runner
+### M4-3 Ray / native runner（已完成）
 
 - native runner 单测已覆盖（M4-1a/b/c、M4-2a/b）；
-- `tests/vector/test_daft_ray_distribution.py` 的过期 import 已修
-  （改用 `lakesoul.index.shard_build_rows` 与新的行结构），仍由
-  `LAKESOUL_DAFT_RAY_TEST=1` 控制；embodied 的 Ray runner 用例待补。
+- 新增 `tests/embodied/test_daft_ray.py`（`LAKESOUL_DAFT_RAY_TEST=1`）：Ray runner 下
+  跑 LeRobot frames 导入、`read_samples` 与单机逐样本对齐、GOP 导入 +
+  `read_gop_frames` 像素/时间戳校验，本地 8s 通过；
+- `tests/vector/test_daft_ray_distribution.py` 的过期 import 修复后本地验证：
+  12 shards 分布到 4 个 executor。
 
 ## 6. M3：时间语义与可复现
 
