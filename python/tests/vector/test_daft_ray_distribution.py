@@ -80,13 +80,13 @@ def test_daft_vector_build_repartition_distribution(tmp_path) -> None:
     set_runner_ray(noop_if_initialized=True)
 
     try:
-        from lakesoul.daft.index_build import _shard_rows
+        from lakesoul.index import shard_build_rows
 
         file_infos = _shard_file_infos(partitions=2, buckets=6)
         configs = [
             {"column": "vec", "dim": 8, "nlist": 2, "total_bits": 7, "metric": "L2"}
         ]
-        rows, n_shards = _shard_rows(configs, file_infos, "{}", "id")
+        rows, n_shards = shard_build_rows("vector", configs, file_infos, "{}", "id")
 
         # One row per (partition, bucket, column) = partition x bucket shards.
         assert n_shards == 2 * 6 * len(configs) == 12
@@ -115,14 +115,8 @@ def test_daft_vector_build_repartition_distribution(tmp_path) -> None:
                 col("file_paths"),
                 col("store_config_json"),
                 col("pk_column"),
-                col("column"),
-                col("dim"),
-                col("nlist"),
-                col("total_bits"),
-                col("metric"),
-                col("rotator_type"),
-                col("seed"),
-                col("use_faster_config"),
+                col("kind"),
+                col("config_json"),
             ),
         ).collect()
 

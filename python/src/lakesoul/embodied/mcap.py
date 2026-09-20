@@ -89,7 +89,8 @@ def import_mcap(
     video_layout: str = "frames",
     physical_format: str = "vortex",
     overwrite: bool = False,
-) -> ImportSummary:
+    _build_only: bool = False,
+) -> ImportSummary | pa.Table:
     """Import one MCAP file as one episode partition.
 
     Args:
@@ -113,6 +114,9 @@ def import_mcap(
             ``lakesoul.embodied.GopVideo`` can decode.
         physical_format: LakeSoul physical format for the written files.
         overwrite: drop and recreate the table when it already exists.
+
+    ``_build_only`` is used by the distributed importer: it returns the
+    frames-layout episode table without touching metadata.
     """
     catalog = catalog or LakeSoulCatalog.from_env()
     root = Path(source).expanduser().resolve()
@@ -223,6 +227,10 @@ def import_mcap(
     episode_table = pa.Table.from_arrays(
         [arrays[name] for name in schema.names], schema=schema
     )
+    if _build_only:
+        if gop_layout:
+            raise ValueError("_build_only only supports video_layout='frames'")
+        return episode_table
 
     resolved_namespace = namespace or catalog.namespace
     gops_table = f"{table}_gops"
@@ -682,4 +690,30 @@ def _infer_array(column: str, values: list[Any]) -> tuple[pa.DataType, pa.Array]
     raise ValueError(f"column {column!r} has unsupported value types: {kinds}")
 
 
-__all__ = ["import_mcap"]
+def build_frame_episode(
+    source: str | Path,
+    *,
+    columns: Mapping[str, str] | None = None,
+    cameras: Mapping[str, str] | None = None,
+    row_topic: str | None = None,
+    episode_id: str | None = None,
+    tolerance: float = 0.02,
+) -> pa.Table:
+    """Build one MCAP file's frames-layout episode table without table IO."""
+    table = import_mcap(
+        source,
+        table="",
+        path="",
+        columns=columns,
+        cameras=cameras,
+        row_topic=row_topic,
+        episode_id=episode_id,
+        tolerance=tolerance,
+        catalog=object(),  # type: ignore[arg-type]
+        _build_only=True,
+    )
+    assert isinstance(table, pa.Table)
+    return table
+
+
+__all__ = ["build_frame_episode", "import_mcap"]

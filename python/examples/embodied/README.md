@@ -126,6 +126,21 @@ samples = read_samples(
 samples.show()
 ```
 
+MCAP files import the same way (frames layout, one file per task):
+
+```python
+from lakesoul.embodied.daft import import_mcap
+
+summary = import_mcap(
+    "/path/to/mcap_directory",
+    table="robot_episodes",
+    path="file:///tmp/lakesoul-embodied/robot_episodes",
+    columns={"observation_state": "state", "action": "commands:position"},
+    cameras={"cam_high": "camera_high"},
+    row_topic="control_tick",
+)
+```
+
 GOP video frames decode in the same pipeline:
 
 ```python

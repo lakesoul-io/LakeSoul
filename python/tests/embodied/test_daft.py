@@ -16,6 +16,7 @@ from lakesoul import LakeSoulCatalog
 from lakesoul.embodied import EmbodiedDataset, GopVideo, import_lerobot
 from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
 from lakesoul.embodied.daft import import_lerobot_gop, read_gop_frames, read_samples
+from lakesoul.embodied.daft import import_mcap as import_mcap_daft
 
 
 def test_import_lerobot_daft_frames(tmp_path: Path) -> None:
@@ -267,4 +268,48 @@ def test_read_gop_frames_decodes_distributed(tmp_path: Path) -> None:
     finally:
         catalog.drop_table(f"{table_name}_frames", if_exists=True)
         catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_mcap_daft_frames(tmp_path: Path) -> None:
+    from embodied.test_mcap import FAKE_JPEG, TICKS, _write_mcap
+
+    sources = []
+    for index in range(2):
+        path = tmp_path / f"ep{index:02d}.mcap"
+        _write_mcap(path)
+        sources.append(path)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_mcap")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_mcap_daft(
+            sources,
+            table=table_name,
+            path=table_path,
+            columns={
+                "observation_state": "control_tick:state",
+                "reward": "control_tick:reward",
+            },
+            cameras={"cam_high": "camera_high"},
+            row_topic="control_tick",
+            physical_format="parquet",
+        )
+        assert summary.episodes == 2
+        assert summary.rows == 2 * TICKS
+        assert summary.video_frames == 2 * TICKS
+
+        scanned = catalog.table(table_name).scan().to_arrow_table()
+        assert scanned.num_rows == 2 * TICKS
+        assert set(scanned.column("episode_id").to_pylist()) == {"ep00", "ep01"}
+        assert scanned.column("cam_high").to_pylist() == [FAKE_JPEG] * (2 * TICKS)
+        episode_one = [
+            row
+            for row in scanned.to_pylist()
+            if row["episode_id"] == "ep01" and row["frame_index"] == 3
+        ]
+        assert episode_one[0]["observation_state"] == pytest.approx([3.0, 4.0, 5.0])
+        assert episode_one[0]["reward"] == pytest.approx(3.5)
+    finally:
         catalog.drop_table(table_name, if_exists=True)

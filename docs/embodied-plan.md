@@ -192,12 +192,21 @@ Ray runner 只要求接口兼容（gated 测试）。
   `image_format="JPEG"/"PNG"` 输出编码字节，`None` 输出原始 RGB；
 - 测试：逐帧像素与单机 `GopVideo` 对齐、秒级时间戳、原始 RGB 尺寸校验。
 
-### M4-1c / M4-3（待做）
+### M4-1c MCAP 分布式（已完成，frames 布局）
 
-- MCAP 分布式：`daft.read_mcap` 抽 JSON topic；protobuf/GOP 走每文件 actor
-  复用 `_read_messages` / `_camera_stream` 语义；
-- M4-3：native runner 单测 + `LAKESOUL_DAFT_RAY_TEST=1` Ray 测试
-  （顺便修 `tests/vector/test_daft_ray_distribution.py` 的过期 import）。
+- `lakesoul.embodied.daft.import_mcap(source, ...)`：`source` 可为文件、目录（`*.mcap`）
+  或文件列表；每个文件一个 task，由 `mcap.build_frame_episode`（新抽出的纯函数，
+  支持 JSON + protobuf、与单机同语义）构建行，`func(return_dtype=...)` 返回
+  `list<struct>`，explode 后一次 `write_daft` 提交；
+- 复用单机 schema/类型（fixed-size list 逐层映射到 Daft 类型），表结构与单机一致；
+- 限制：仅 frames 布局；MCAP 的 GOP 布局仍走单机导入（`video_layout="gop"`）。
+
+### M4-3 Ray / native runner
+
+- native runner 单测已覆盖（M4-1a/b/c、M4-2a/b）；
+- `tests/vector/test_daft_ray_distribution.py` 的过期 import 已修
+  （改用 `lakesoul.index.shard_build_rows` 与新的行结构），仍由
+  `LAKESOUL_DAFT_RAY_TEST=1` 控制；embodied 的 Ray runner 用例待补。
 
 ## 6. M3：时间语义与可复现
 

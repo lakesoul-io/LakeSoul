@@ -19,6 +19,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan
 
 from .dataset import BOUNDARY_SKIP, Window
@@ -662,9 +664,141 @@ def read_gop_frames(
     ).sort([episode_column, "camera", "frame_index"])
 
 
+def import_mcap(
+    source: str | Path | Sequence[str | Path],
+    *,
+    table: str,
+    path: str | Path,
+    columns: Mapping[str, str] | None = None,
+    cameras: Mapping[str, str] | None = None,
+    row_topic: str | None = None,
+    tolerance: float = 0.02,
+    catalog: LakeSoulCatalog | None = None,
+    namespace: str | None = None,
+    physical_format: str = "vortex",
+    overwrite: bool = False,
+) -> ImportSummary:
+    """Import MCAP files (frames layout) through Daft, one file per task.
+
+    ``source`` is an MCAP file, a directory of ``*.mcap`` files, or a list of
+    files. Each task builds one file's frame table with the same helpers as
+    :func:`lakesoul.embodied.import_mcap` (JSON and protobuf messages) and the
+    rows are written together with a single Daft sink commit. GOP layout for
+    MCAP stays in the single-machine importer.
+    """
+    import daft
+    from daft import col, func, functions
+
+    from .mcap import build_frame_episode
+
+    catalog = catalog or LakeSoulCatalog.from_env()
+    files = _resolve_mcap_sources(source)
+    if not files:
+        raise ValueError("no MCAP files found for import")
+
+    sample = build_frame_episode(
+        files[0],
+        columns=columns,
+        cameras=cameras,
+        row_topic=row_topic,
+        episode_id=files[0].stem,
+        tolerance=tolerance,
+    )
+    schema = sample.schema
+    payload = daft.DataType.list(
+        daft.DataType.struct(
+            {name: _arrow_to_daft(schema.field(name).type) for name in schema.names}
+        )
+    )
+
+    def build(file_path: str, episode_id: str) -> list[dict[str, Any]]:
+        return build_frame_episode(
+            file_path,
+            columns=columns,
+            cameras=cameras,
+            row_topic=row_topic,
+            episode_id=episode_id,
+            tolerance=tolerance,
+        ).to_pylist()
+
+    builder = func(return_dtype=payload)(build)
+    work = daft.from_pydict(
+        {
+            "source": [str(file) for file in files],
+            "episode_id": [file.stem for file in files],
+        }
+    )
+    dataframe = work.select(
+        functions.explode(builder(col("source"), col("episode_id"))).alias("row")
+    ).select(*[col("row")[name].alias(name) for name in schema.names])
+
+    resolved_namespace = namespace or catalog.namespace
+    prepare_table(catalog, table, resolved_namespace, overwrite)
+    table_handle = catalog.create_table(
+        table,
+        path=path,
+        schema=schema,
+        namespace=resolved_namespace,
+        partition_by=(EPISODE_COLUMN,),
+    )
+    result = table_handle.write_daft(dataframe, format=physical_format)
+    return ImportSummary(
+        table=table_handle.name,
+        path=table_handle.path,
+        episodes=len(files),
+        rows=result.row_count,
+        video_frames=result.row_count * len(cameras or {}),
+        columns=tuple(schema.names),
+        tables=(table_handle.name,),
+    )
+
+
+def _resolve_mcap_sources(source: str | Path | Sequence[str | Path]) -> list[Path]:
+    if isinstance(source, (str, Path)):
+        path = Path(source).expanduser().resolve()
+        if path.is_dir():
+            return sorted(item for item in path.glob("*.mcap") if item.is_file())
+        if not path.exists():
+            raise FileNotFoundError(f"MCAP file not found: {path}")
+        return [path]
+    files = [Path(item).expanduser().resolve() for item in source]
+    for file in files:
+        if not file.exists():
+            raise FileNotFoundError(f"MCAP file not found: {file}")
+    return files
+
+
+def _arrow_to_daft(dtype: pa.DataType) -> Any:
+    import daft
+
+    types = daft.DataType
+    if pa.types.is_int64(dtype):
+        return types.int64()
+    if pa.types.is_int32(dtype):
+        return types.int32()
+    if pa.types.is_float64(dtype):
+        return types.float64()
+    if pa.types.is_float32(dtype):
+        return types.float32()
+    if pa.types.is_boolean(dtype):
+        return types.bool()
+    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
+        return types.string()
+    if pa.types.is_binary(dtype) or pa.types.is_large_binary(dtype):
+        return types.binary()
+    if pa.types.is_fixed_size_list(dtype):
+        return types.fixed_size_list(
+            _arrow_to_daft(dtype.value_type), int(dtype.list_size)
+        )
+    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+        return types.list(_arrow_to_daft(dtype.value_type))
+    raise ValueError(f"unsupported Arrow type for Daft import: {dtype}")
+
+
 __all__ = [
     "import_lerobot",
     "import_lerobot_gop",
+    "import_mcap",
     "read_gop_frames",
     "read_samples",
 ]
