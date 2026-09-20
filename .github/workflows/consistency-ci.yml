@@ -103,7 +103,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
-          shared-key: "native-glibc217"
+          shared-key: "rust-consistency"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -114,17 +114,37 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@0.18.3
-      - name: Build native libraries
+      - name: Build native libraries and benchmark test binary
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           unset HADOOP_HOME HDFS_LIB_DIR
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
-      - name: Build with Maven
-        run: |
+          # One invocation builds the JNI libraries and the lakesoul-datafusion test
+          # binary, so the datafusion graph is compiled once instead of twice.
+          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17 \
+            --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-datafusion \
+            --features=lakesoul-datafusion/ci --lib --tests \
+            --message-format=json > /tmp/cargo-build.json
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          for line in open("/tmp/cargo-build.json"):
+              try:
+                  message = json.loads(line)
+              except Exception:
+                  continue
+              executable = message.get("executable")
+              if (
+                  message.get("reason") == "compiler-artifact"
+                  and executable
+                  and executable.rsplit("/", 1)[-1].startswith("lakesoul_datafusion-")
+              ):
+                  print(f"BENCHMARK_TEST_BIN={executable}")
+          PY
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+      - name: Build with Maven
+        run: |
           MAVEN_OPTS="-Xmx4000m" mvn -B install -f pom.xml -pl "!:lakesoul-presto-0.296" -Pcross-build -DskipTests
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -160,13 +180,10 @@ jobs:
           cd ..
           rm -rf tpch-dbgen
       - name: Verify that benchmark queries return expected results
-        env:
-          CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           TPCH_DATA="$(realpath lakesoul/test_files/tpch/data)"
           export TPCH_DATA
-          # use release build for plan verificaton because debug build causes stack overflow
-          cargo-zigbuild test --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-datafusion --features=ci -- load_tpch_data --nocapture
+          "$BENCHMARK_TEST_BIN" load_tpch_data --nocapture
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from table_info;"
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from data_commit_info;"
       - name: Hash-Consistency Verification task
