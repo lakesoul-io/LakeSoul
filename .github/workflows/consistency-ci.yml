@@ -6,11 +6,17 @@ on:
   push:
     paths:
       - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/consistency-ci.yml"
     branches:
       - "main"
   pull_request:
     paths:
       - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/consistency-ci.yml"
     branches:
       - "main"
       - "release/**"
@@ -154,11 +160,13 @@ jobs:
           cd ..
           rm -rf tpch-dbgen
       - name: Verify that benchmark queries return expected results
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           TPCH_DATA="$(realpath lakesoul/test_files/tpch/data)"
           export TPCH_DATA
           # use release build for plan verificaton because debug build causes stack overflow
-          cargo test --release load_tpch_data --package lakesoul-datafusion --features=ci -- --nocapture
+          cargo-zigbuild test --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-datafusion --features=ci -- load_tpch_data --nocapture
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from table_info;"
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from data_commit_info;"
       - name: Hash-Consistency Verification task
