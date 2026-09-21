@@ -26,13 +26,15 @@ Implemented:
   - keyword search (`match` on the content column) with BM25 `_score`, a
     global relevance order, exact verification against the current rows
     (stale candidates are dropped) and `size`/`from`;
+  - vector search (`script_score` with `cosineSimilarity` and an optional
+    `min_score`): candidates come from the IP vector index, exact cosine is
+    recomputed over the current rows (vectors are normalized on write) and
+    the score is clamped to `[0, 1]`;
   - `bool.filter`/`bool.must`/`bool.must_not` (terms/term), where a missing
     `is_enabled` counts as enabled;
   - `_source` includes/excludes (the v8 search excludes `embedding`) and the
     filter-only copy path with full `_source` including embeddings;
 - `X-Elastic-Product: Elasticsearch` on every response
-
-Vector search (`script_score`/cosine) lands in the next pull request.
 
 ## Configuration
 
@@ -57,6 +59,7 @@ warehouse_prefix = "s3://bucket/lakesoul"
 hash_bucket_num = 4
 tokenizer = "jieba"
 with_positions = true
+nprobe = 64                # IVF clusters probed per shard for vector search
 
 [[indexes]]
 name = "weknora"          # Elasticsearch index name

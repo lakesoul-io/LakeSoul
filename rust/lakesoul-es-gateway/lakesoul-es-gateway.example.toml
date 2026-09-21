@@ -17,6 +17,7 @@ provision_on_start = true
 hash_bucket_num = 4
 tokenizer = "jieba"
 with_positions = true
+nprobe = 64
 
 [[indexes]]
 name = "weknora"

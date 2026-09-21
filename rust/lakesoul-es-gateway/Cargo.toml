@@ -25,6 +25,8 @@ lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-text = { path = "../lakesoul-text" }
+lakesoul-vector = { path = "../lakesoul-vector" }
+object_store = { workspace = true }
 rootcause = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
