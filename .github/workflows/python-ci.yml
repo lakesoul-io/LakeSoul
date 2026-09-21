@@ -139,6 +139,7 @@ jobs:
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
           LAKESOUL_S3_TEST: "1"
+          LAKESOUL_DAFT_RAY_TEST: "1"
           PYTHONPATH: ${{ github.workspace }}/python/src
         run: |
           mvn package -pl :lakesoul-spark-3.5_2.12 -am -DskipTests -Pcross-build

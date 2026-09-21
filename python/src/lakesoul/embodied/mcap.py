@@ -229,8 +229,13 @@ def import_mcap(
     )
     if _build_only:
         if gop_layout:
-            raise ValueError("_build_only only supports video_layout='frames'")
-        return episode_table
+            gop_columns, frame_columns = _gop_rows(
+                resolved_episode, camera_streams, anchor_times, tolerance
+            )
+            return _BuiltEpisode(
+                ticks=episode_table, gops=gop_columns, frames=frame_columns
+            )
+        return _BuiltEpisode(ticks=episode_table)
 
     resolved_namespace = namespace or catalog.namespace
     gops_table = f"{table}_gops"
@@ -489,6 +494,15 @@ def _image_payload(column: str, payload: Any) -> tuple[bytes, str | None]:
 
 
 @dataclass
+class _BuiltEpisode:
+    """Frames-layout ticks plus optional GOP side rows, built without IO."""
+
+    ticks: pa.Table
+    gops: dict[str, list[Any]] | None = None
+    frames: dict[str, list[Any]] | None = None
+
+
+@dataclass
 class _CameraStream:
     column: str
     codec: str
@@ -541,15 +555,12 @@ def _camera_stream(column: str, messages: list[_Message]) -> _CameraStream:
     )
 
 
-def _write_gop_tables(
-    gops_handle: Any,
-    frames_handle: Any,
+def _gop_rows(
     episode_id: str,
     streams: list[_CameraStream],
     anchor_times: list[float],
     tolerance: float,
-    physical_format: str,
-) -> int:
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
     gop_columns: dict[str, list[Any]] = {name: [] for name in GOPS_SCHEMA.names}
     frame_columns: dict[str, list[Any]] = {name: [] for name in FRAMES_SCHEMA.names}
     for stream in streams:
@@ -589,6 +600,19 @@ def _write_gop_tables(
             frame_columns["timestamp"].append(location.timestamp)
             frame_columns["byte_offset"].append(location.offset)
             frame_columns["byte_length"].append(location.length)
+    return gop_columns, frame_columns
+
+
+def _write_gop_tables(
+    gops_handle: Any,
+    frames_handle: Any,
+    episode_id: str,
+    streams: list[_CameraStream],
+    anchor_times: list[float],
+    tolerance: float,
+    physical_format: str,
+) -> int:
+    gop_columns, frame_columns = _gop_rows(episode_id, streams, anchor_times, tolerance)
     gops_handle.write_arrow(
         table_from_columns(GOPS_SCHEMA, gop_columns), format=physical_format
     )
@@ -690,6 +714,33 @@ def _infer_array(column: str, values: list[Any]) -> tuple[pa.DataType, pa.Array]
     raise ValueError(f"column {column!r} has unsupported value types: {kinds}")
 
 
+def _built_episode(
+    source: str | Path,
+    *,
+    columns: Mapping[str, str] | None,
+    cameras: Mapping[str, str] | None,
+    row_topic: str | None,
+    episode_id: str | None,
+    tolerance: float,
+    video_layout: str,
+) -> _BuiltEpisode:
+    built = import_mcap(
+        source,
+        table="",
+        path="",
+        columns=columns,
+        cameras=cameras,
+        row_topic=row_topic,
+        episode_id=episode_id,
+        tolerance=tolerance,
+        video_layout=video_layout,
+        catalog=object(),  # type: ignore[arg-type]
+        _build_only=True,
+    )
+    assert isinstance(built, _BuiltEpisode)
+    return built
+
+
 def build_frame_episode(
     source: str | Path,
     *,
@@ -700,20 +751,46 @@ def build_frame_episode(
     tolerance: float = 0.02,
 ) -> pa.Table:
     """Build one MCAP file's frames-layout episode table without table IO."""
-    table = import_mcap(
+    return _built_episode(
         source,
-        table="",
-        path="",
         columns=columns,
         cameras=cameras,
         row_topic=row_topic,
         episode_id=episode_id,
         tolerance=tolerance,
-        catalog=object(),  # type: ignore[arg-type]
-        _build_only=True,
+        video_layout="frames",
+    ).ticks
+
+
+def build_gop_rows(
+    source: str | Path,
+    *,
+    columns: Mapping[str, str] | None = None,
+    cameras: Mapping[str, str] | None = None,
+    row_topic: str | None = None,
+    episode_id: str | None = None,
+    tolerance: float = 0.02,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build one MCAP file's GOP and frames rows without table IO."""
+    built = _built_episode(
+        source,
+        columns=columns,
+        cameras=cameras,
+        row_topic=row_topic,
+        episode_id=episode_id,
+        tolerance=tolerance,
+        video_layout="gop",
     )
-    assert isinstance(table, pa.Table)
-    return table
+    assert built.gops is not None and built.frames is not None
+    return _column_rows(built.gops), _column_rows(built.frames)
 
 
-__all__ = ["build_frame_episode", "import_mcap"]
+def _column_rows(columns: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    names = list(columns)
+    return [
+        dict(zip(names, values, strict=True))
+        for values in zip(*(columns[name] for name in names), strict=True)
+    ]
+
+
+__all__ = ["build_frame_episode", "build_gop_rows", "import_mcap"]
