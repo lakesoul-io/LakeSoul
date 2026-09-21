@@ -79,7 +79,7 @@ pub fn matching_scores(
 
     let searcher = index.reader()?.searcher();
     let parser = QueryParser::for_index(&index, vec![text_schema.text_field]);
-    let parsed = parser.parse_query(query)?;
+    let parsed = crate::search::parse_user_query(&parser, query);
     let top_docs =
         searcher.search(&parsed, &TopDocs::with_limit(rows.len()).order_by_score())?;
     for (score, address) in top_docs {

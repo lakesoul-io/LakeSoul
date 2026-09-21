@@ -84,6 +84,20 @@ async fn gateway_keyword_search_contract() {
     .await;
     assert_eq!(hit_chunk_ids(&body), vec!["c1"]);
 
+    // User text with stray syntax characters is parsed leniently instead of
+    // failing the request.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"apple )"}}]}},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["hits"]["total"]["value"], 2, "{body}");
+
     // must_not is_enabled:false excludes the disabled document, and a missing
     // is_enabled counts as enabled.
     let (_, _, body) = call(

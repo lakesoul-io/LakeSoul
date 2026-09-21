@@ -65,6 +65,13 @@ async fn build_upload_materialize_and_search_english() {
     // The materialized directory is reused on the next open.
     let reopened = cache.open(&store, prefix, &entry).await.unwrap();
     assert_eq!(search_index(&reopened, "fox", 1).unwrap()[0].id, 2);
+
+    // Stray syntax characters in user text are dropped leniently, and valid
+    // query syntax keeps working.
+    let hits = search_index(&reopened, "old man ) sea (", 3).unwrap();
+    assert_eq!(hits[0].id, 1);
+    let hits = search_index(&reopened, "\"old man\"", 3).unwrap();
+    assert_eq!(hits[0].id, 1);
 }
 
 #[tokio::test]

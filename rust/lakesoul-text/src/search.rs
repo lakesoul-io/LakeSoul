@@ -9,7 +9,8 @@ use std::collections::HashMap;
 
 use tantivy::Index;
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::query::{Query, QueryParser};
+use tracing::debug;
 
 use crate::TextError;
 use crate::error::Result;
@@ -22,6 +23,22 @@ pub struct TextHit {
     pub score: f32,
 }
 
+/// Parse a query with Tantivy syntax support (`AND`/`OR`/`NOT`, quoted
+/// phrases, parentheses), dropping clauses that are malformed.  Search
+/// text often arrives as raw user input with stray punctuation; a single
+/// unbalanced parenthesis must not fail the whole query.
+pub(crate) fn parse_user_query(parser: &QueryParser, query: &str) -> Box<dyn Query> {
+    let (parsed, errors) = parser.parse_query_lenient(query);
+    if !errors.is_empty() {
+        debug!(
+            query,
+            dropped = errors.len(),
+            "ignored malformed query clauses"
+        );
+    }
+    parsed
+}
+
 /// Search one split and return its top `top_k` hits by BM25 score.
 pub fn search_index(index: &Index, query: &str, top_k: usize) -> Result<Vec<TextHit>> {
     if top_k == 0 {
@@ -30,7 +47,7 @@ pub fn search_index(index: &Index, query: &str, top_k: usize) -> Result<Vec<Text
     let text_schema = TextSchema::resolve(&index.schema())?;
     let reader = index.reader()?.searcher();
     let parser = QueryParser::for_index(index, vec![text_schema.text_field]);
-    let parsed = parser.parse_query(query)?;
+    let parsed = parse_user_query(&parser, query);
     let top_docs =
         reader.search(&parsed, &TopDocs::with_limit(top_k).order_by_score())?;
 
