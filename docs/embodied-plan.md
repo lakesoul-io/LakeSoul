@@ -280,9 +280,10 @@ Ray runner 只要求接口兼容（gated 测试）。
 4. episode 长度不均时 rank 负载不均：导入按固定时长/行数切 chunk（硬约束的一部分）；
 5. **DataLoader fork 风险**：父进程用过 native reader（tokio 线程）后再 fork worker 可能崩溃；
    示例/benchmark 默认 `num_workers=0`，`EmbodiedDataset` 已支持 pickle，可在 spawn 模式下使用；
-6. **pyarrow filter 与 FixedSizeList 列不兼容**：`scan(filter=pc.field("timestamp") < x)` 在含
-   `FixedSizeList` 列的表上会在 substrait 转换时报 ArrowNotImplementedError（既有问题，与
-   embodied 无关），标量 schema 正常；建议后续把 filter 类型转换限定到表达式实际引用的列；
+6. ~~pyarrow filter 与 FixedSizeList 列不兼容~~ **已修复**：Substrait 转换在原生 schema
+   失败时回退到“安全 schema”（把 FixedSizeList/struct 占位为 binary，保持字段名与顺序），
+   时间/标量过滤在 LeRobot 表上验证通过；**残余限制**：直接过滤 list/struct 列本身仍
+   不受支持（占位类型与真实类型不匹配，运行期报错）；
 7. `lakesoul-datafusion` 在 workspace 中 disabled，SQL 侧透传列策略需先确认启用路径。
 
 ## 9. 实施顺序
