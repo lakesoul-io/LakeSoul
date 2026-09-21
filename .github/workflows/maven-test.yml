@@ -15,6 +15,12 @@ on:
       - "python/**"
       - "cpp/**"
       - "**.md"
+      - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-es-gateway/**"
+      - "rust/lakesoul-ivm/**"
+      - "rust/lakesoul-text/**"
+      - "rust/lakesoul-vector/**"
+      - "rust/postgres-lakesoul/**"
     branches:
       - "main"
   pull_request:
@@ -24,6 +30,12 @@ on:
       - "python/**"
       - "cpp/**"
       - "**.md"
+      - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-es-gateway/**"
+      - "rust/lakesoul-ivm/**"
+      - "rust/lakesoul-text/**"
+      - "rust/lakesoul-vector/**"
+      - "rust/postgres-lakesoul/**"
     branches:
       - "main"
       - "release/**"

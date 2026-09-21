@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import numpy as np
@@ -212,9 +213,38 @@ def test_read_samples_matches_embodied_dataset(tmp_path: Path) -> None:
         catalog.drop_table(table_name, if_exists=True)
 
 
-def test_read_samples_rejects_clamp() -> None:
-    with pytest.raises(ValueError, match="boundary='skip'"):
-        read_samples(object(), window=WINDOW, boundary="clamp")  # type: ignore[arg-type]
+def test_read_samples_clamp_keeps_edge_anchors(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_clamp")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_lerobot(
+            root, table=table_name, path=table_path, physical_format="parquet"
+        )
+        table = catalog.table(table_name)
+        samples = (
+            read_samples(table.scan(), window=WINDOW, stride=1, boundary="clamp")
+            .collect()
+            .to_pylist()
+        )
+        baseline = list(
+            EmbodiedDataset(
+                table.scan(), window=WINDOW, stride=1, boundary="clamp"
+            ).iter_epoch(0)
+        )
+        assert len(samples) == len(baseline)
+        keys = sorted(_sample_key(sample) for sample in samples)
+        assert keys == sorted(_sample_key(sample) for sample in baseline)
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_read_samples_rejects_unknown_boundary() -> None:
+    with pytest.raises(ValueError, match="boundary must be one of"):
+        read_samples(object(), window=WINDOW, boundary="pad")  # type: ignore[arg-type]
 
 
 def test_read_gop_frames_decodes_distributed(tmp_path: Path) -> None:
@@ -312,4 +342,106 @@ def test_import_mcap_daft_frames(tmp_path: Path) -> None:
         assert episode_one[0]["observation_state"] == pytest.approx([3.0, 4.0, 5.0])
         assert episode_one[0]["reward"] == pytest.approx(3.5)
     finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_read_gop_frames_externalized_blob(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_gop_blob")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_lerobot(
+            root,
+            table=table_name,
+            path=table_path,
+            cameras=["cam"],
+            video_layout="gop",
+            physical_format="parquet",
+            properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
+        )
+        decoded = (
+            read_gop_frames(
+                catalog.table(f"{table_name}_gops").scan(),
+                catalog.table(f"{table_name}_frames").scan(),
+                cameras=["cam"],
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert len(decoded) == 15
+        episode_one = [row for row in decoded if row["episode_id"] == "ep000001"]
+        from PIL import Image
+
+        values = [
+            int(Image.open(io.BytesIO(row["image"])).getpixel((0, 0))[0])
+            for row in episode_one
+        ]
+        assert [round(row["timestamp"], 2) for row in episode_one] == [
+            0.5,
+            0.6,
+            0.7,
+            0.8,
+        ]
+        assert values == pytest.approx([50, 60, 70, 80], abs=6.0)
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_mcap_daft_gop(tmp_path: Path) -> None:
+    pytest.importorskip("av")
+    from embodied.test_mcap import _h264_annexb_frames, _write_h264_mcap
+
+    frames = _h264_annexb_frames(tmp_path)
+    source = tmp_path / "ep_gop_daft.mcap"
+    _write_h264_mcap(source, frames)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_mcap_gop")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_mcap_daft(
+            source,
+            table=table_name,
+            path=table_path,
+            columns={"reward": "control_tick:reward"},
+            cameras={"cam_high": "camera_high"},
+            row_topic="control_tick",
+            video_layout="gop",
+            physical_format="parquet",
+        )
+        assert summary.tables == (
+            table_name,
+            f"{table_name}_gops",
+            f"{table_name}_frames",
+        )
+        assert summary.rows == len(frames)
+        assert summary.video_frames == len(frames)
+
+        ticks = catalog.table(table_name).scan().to_arrow_table()
+        assert "cam_high" not in ticks.column_names
+
+        decoded = (
+            read_gop_frames(
+                catalog.table(f"{table_name}_gops").scan(),
+                catalog.table(f"{table_name}_frames").scan(),
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert len(decoded) == len(frames)
+        from PIL import Image
+
+        values = [
+            int(Image.open(io.BytesIO(row["image"])).getpixel((0, 0))[0])
+            for row in decoded[:4]
+        ]
+        assert values == pytest.approx([0, 10, 20, 30], abs=6.0)
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
