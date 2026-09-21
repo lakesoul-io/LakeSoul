@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example lakesoul-es-gateway configuration.
+
+[server]
+listen = "0.0.0.0:9200"
+version = "8.19.6"
+
+[lakesoul]
+namespace = "default"
+warehouse_prefix = "file:///tmp/lakesoul-es-gateway"
+provision_on_start = true
+
+[defaults]
+hash_bucket_num = 4
+tokenizer = "jieba"
+with_positions = true
+
+[[indexes]]
+name = "weknora"
+table = "weknora_docs"
+dim = 1536
