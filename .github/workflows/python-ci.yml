@@ -139,7 +139,6 @@ jobs:
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
           LAKESOUL_S3_TEST: "1"
-          LAKESOUL_DAFT_RAY_TEST: "1"
           PYTHONPATH: ${{ github.workspace }}/python/src
         run: |
           mvn package -pl :lakesoul-spark-3.5_2.12 -am -DskipTests -Pcross-build
@@ -149,6 +148,14 @@ jobs:
           ../rust/target/release/lakesoul-console tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
           ../rust/target/release/lakesoul-console -f test.sql
           .venv/bin/python -m pytest ./tests/ -s
+      - name: pytest (Daft Ray runner)
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          LAKESOUL_DAFT_RAY_TEST: "1"
+          PYTHONPATH: ${{ github.workspace }}/python/src
+        run: |
+          cd python
+          .venv/bin/python -m pytest tests/embodied/test_daft_ray.py -s
   publish:
     runs-on: ubuntu-24.04
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/py-v')
