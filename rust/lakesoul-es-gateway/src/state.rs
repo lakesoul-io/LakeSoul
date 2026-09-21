@@ -49,6 +49,10 @@ impl IndexRuntime {
             .unwrap_or(defaults.with_positions)
     }
 
+    pub fn nprobe(&self, defaults: &IndexDefaults) -> usize {
+        self.config.nprobe.unwrap_or(defaults.nprobe)
+    }
+
     pub fn table_ref(&self) -> TableReference {
         TableReference::partial(self.namespace.clone(), self.table.clone())
     }

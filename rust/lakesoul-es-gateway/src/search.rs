@@ -31,12 +31,17 @@ use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::logical_expr::{Expr, Operator, binary_expr, col, lit};
 use lakesoul_common::IndexKind;
+use lakesoul_io::index::Candidate;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::prefix::shard_index_prefix;
 use lakesoul_io::text::reader::collect_text_values;
 use lakesoul_io::text::search::search_resolved_shard;
+use lakesoul_io::vector::search::search_resolved_shard as search_vector_shard;
+use lakesoul_metadata::index_catalog::{IndexCommitView, VectorSegmentEntry};
 use lakesoul_text::{TextIndexConfig, TextSplitEntry, matching_ids};
+use lakesoul_vector::SegmentEntry;
+use object_store::ObjectStore;
 use serde_json::{Map, Value, json};
 
 use crate::error::EsError;
@@ -60,6 +65,7 @@ struct SourceFilter {
 }
 
 /// Parsed `_search` body.
+#[derive(Debug, Clone)]
 struct SearchBody {
     query: Value,
     from: usize,
@@ -68,7 +74,7 @@ struct SearchBody {
 }
 
 impl SearchBody {
-    fn parse(body: &Bytes) -> Result<Self, EsError> {
+    fn parse(body: &[u8]) -> Result<Self, EsError> {
         let value: Value = if body.is_empty() {
             json!({})
         } else {
@@ -150,11 +156,20 @@ fn string_list(fields: &[Value]) -> Result<Vec<String>, EsError> {
         .collect()
 }
 
-/// The parsed query: an optional scoring `match` plus non-scoring equality
-/// constraints.
-#[derive(Debug, Default)]
+/// A parsed `script_score` vector query.
+#[derive(Debug, Clone)]
+struct VectorQuery {
+    field: String,
+    vector: Vec<f32>,
+    min_score: Option<f32>,
+}
+
+/// The parsed query: an optional scoring clause (`match` or `script_score`)
+/// plus non-scoring equality constraints.
+#[derive(Debug, Default, Clone)]
 struct ParsedQuery {
     match_query: Option<(String, String)>,
+    vector_query: Option<VectorQuery>,
     positive: Vec<(String, Vec<Value>)>,
     negative: Vec<(String, Vec<Value>)>,
 }
@@ -235,6 +250,42 @@ impl ParsedQuery {
         if map.contains_key("match_all") {
             return Ok(());
         }
+        if let Some(script_score) = map.get("script_score") {
+            if negated {
+                return Err(EsError::unsupported(
+                    "script_score is not supported inside bool.must_not",
+                ));
+            }
+            let script = script_score.get("script").ok_or_else(|| {
+                EsError::bad_request("script_score requires a 'script' object")
+            })?;
+            let source =
+                script
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        EsError::bad_request("script_score requires a 'source' string")
+                    })?;
+            let empty = Map::new();
+            let params = script
+                .get("params")
+                .and_then(Value::as_object)
+                .unwrap_or(&empty);
+            let (field, vector) = parse_cosine_script(source, params)?;
+            let min_score = script_score
+                .get("min_score")
+                .and_then(Value::as_f64)
+                .map(|score| score as f32);
+            if let Some(inner) = script_score.get("query") {
+                self.walk(inner, runtime, false)?;
+            }
+            self.vector_query = Some(VectorQuery {
+                field,
+                vector,
+                min_score,
+            });
+            return Ok(());
+        }
         if let Some(bool_query) = map.get("bool") {
             let bool_query = bool_query
                 .as_object()
@@ -292,6 +343,40 @@ fn normalize_field(field: &str, runtime: &IndexRuntime) -> Result<String, EsErro
     Ok(field.to_string())
 }
 
+/// Parse the fixed `cosineSimilarity` scoring script WeKnora sends, in both
+/// the v7 and v8 spellings (they differ only in whitespace).
+fn parse_cosine_script(
+    source: &str,
+    params: &Map<String, Value>,
+) -> Result<(String, Vec<f32>), EsError> {
+    let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+    let prefix = "Math.max(cosineSimilarity(params.query_vector,";
+    let suffix = "),0.0)";
+    let field = compact
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .map(|field| field.trim_matches(|c| c == '\'' || c == '"').to_string())
+        .filter(|field| !field.is_empty())
+        .ok_or_else(|| {
+            EsError::unsupported(format!("unsupported script_score: {source}"))
+        })?;
+    let values = params
+        .get("query_vector")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            EsError::bad_request("script_score params must contain a query_vector array")
+        })?;
+    let vector: Vec<f32> = values
+        .iter()
+        .map(|value| {
+            value.as_f64().map(|value| value as f32).ok_or_else(|| {
+                EsError::bad_request("query_vector must be an array of numbers")
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((field, vector))
+}
+
 /// Combine the non-scoring constraints into a DataFusion filter.
 ///
 /// `must_not` uses `IS DISTINCT FROM` so that rows with a missing value pass
@@ -341,21 +426,69 @@ fn and(combined: Option<Expr>, expr: Expr) -> Expr {
 }
 
 /// `POST /{index}/_search`.
+///
+/// The search runs on a blocking task (the io/DataFusion work is blocking):
+/// driving the future inside `block_on` also keeps the handler's `Send`
+/// requirement on the owned inputs instead of the future's borrows.
 pub async fn search(
     State(state): State<Arc<GatewayState>>,
     Path(index): Path<String>,
     body: Bytes,
 ) -> Result<Json<Value>, EsError> {
+    let value = tokio::task::spawn_blocking(move || {
+        lakesoul_io::session::GLOBAL_RUNTIME.block_on(search_impl(
+            state,
+            index,
+            body.to_vec(),
+        ))
+    })
+    .await
+    .map_err(crate::error::internal)??;
+    Ok(Json(value))
+}
+
+async fn search_impl(
+    state: Arc<GatewayState>,
+    index: String,
+    body: Vec<u8>,
+) -> Result<Value, EsError> {
     let started = Instant::now();
     let runtime = state.index(&index)?;
     let body = SearchBody::parse(&body)?;
     let parsed = ParsedQuery::parse(&body.query, runtime)?;
+    if parsed.vector_query.is_some() && parsed.match_query.is_some() {
+        return Err(EsError::bad_request(
+            "a query cannot combine match and script_score",
+        ));
+    }
 
-    let (mut hits, shards) = match &parsed.match_query {
-        Some((field, query)) => {
-            keyword_hits(&state, runtime, field, query, &parsed, &body).await?
-        }
-        None => filter_only_hits(&state, runtime, &parsed, &body).await?,
+    let (mut hits, shards) = if let Some(vector) = &parsed.vector_query {
+        vector_hits(
+            Arc::clone(&state),
+            runtime.clone(),
+            vector.clone(),
+            parsed.clone(),
+            body.clone(),
+        )
+        .await?
+    } else if let Some((field, query)) = &parsed.match_query {
+        keyword_hits(
+            Arc::clone(&state),
+            runtime.clone(),
+            field.clone(),
+            query.clone(),
+            parsed.clone(),
+            body.clone(),
+        )
+        .await?
+    } else {
+        filter_only_hits(
+            Arc::clone(&state),
+            runtime.clone(),
+            parsed.clone(),
+            body.clone(),
+        )
+        .await?
     };
 
     // Global relevance order, then pagination.
@@ -381,7 +514,7 @@ pub async fn search(
         })
         .collect();
 
-    Ok(Json(json!({
+    Ok(json!({
         "took": started.elapsed().as_millis() as u64,
         "timed_out": false,
         "_shards": {
@@ -395,17 +528,98 @@ pub async fn search(
             "max_score": max_score,
             "hits": page
         }
-    })))
+    }))
+}
+
+/// Vector search: `script_score` cosine candidates + exact rerank.
+async fn vector_hits(
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+    vector: VectorQuery,
+    parsed: ParsedQuery,
+    body: SearchBody,
+) -> Result<(Vec<Hit>, usize), EsError> {
+    let Some(dim) = runtime.dim else {
+        return Err(EsError::unsupported(
+            "the index is keyword-only: no embedding dimension is configured",
+        ));
+    };
+    if vector.field != runtime.config.embedding_column {
+        return Err(EsError::unsupported(format!(
+            "script_score on '{}' is not supported: only the indexed \
+             embedding column '{}' can be searched",
+            vector.field, runtime.config.embedding_column
+        )));
+    }
+    if vector.vector.len() != dim {
+        return Err(EsError::bad_request(format!(
+            "query_vector dimension {} does not match the index dimension {dim}",
+            vector.vector.len()
+        )));
+    }
+
+    let query = normalize_vector(&vector.vector);
+    let candidate_k = body.size.saturating_mul(10).max(100);
+    let (candidates, shards) = collect_vector_candidates(
+        Arc::clone(&state),
+        runtime.clone(),
+        query.clone(),
+        candidate_k,
+    )
+    .await?;
+    if candidates.is_empty() {
+        return Ok((Vec::new(), shards));
+    }
+
+    let ids: Vec<Expr> = candidates
+        .iter()
+        .map(|candidate| Expr::Literal(ScalarValue::UInt64(Some(candidate.id)), None))
+        .collect();
+    let candidate_filter = col(PK_COLUMN).in_list(ids, false);
+    let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
+    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
+
+    let mut hits = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column_by_name(PK_COLUMN)
+            .ok_or_else(|| EsError::internal("primary key column missing"))?
+            .as_primitive::<arrow_array::types::UInt64Type>();
+        let embedding_index = batch
+            .schema()
+            .index_of(&runtime.config.embedding_column)
+            .map_err(crate::error::internal)?;
+        let embeddings = batch.column(embedding_index);
+        for row in 0..batch.num_rows() {
+            let Some(stored) = embedding_at(embeddings, row, dim) else {
+                continue;
+            };
+            // The script clamps the similarity at zero; min_score compares
+            // against the clamped score, like Elasticsearch does.
+            let score = cosine(&query, &stored);
+            if let Some(min_score) = vector.min_score
+                && score < min_score
+            {
+                continue;
+            }
+            hits.push(Hit {
+                id: ids.value(row),
+                score,
+                source: source_for_row(batch, &runtime, row, &body.source)?,
+            });
+        }
+    }
+    Ok((hits, shards))
 }
 
 /// Keyword search: text-index candidates + exact verification.
 async fn keyword_hits(
-    state: &GatewayState,
-    runtime: &IndexRuntime,
-    field: &str,
-    query: &str,
-    parsed: &ParsedQuery,
-    body: &SearchBody,
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+    field: String,
+    query: String,
+    parsed: ParsedQuery,
+    body: SearchBody,
 ) -> Result<(Vec<Hit>, usize), EsError> {
     if field != runtime.config.content_column {
         return Err(EsError::unsupported(format!(
@@ -417,8 +631,14 @@ async fn keyword_hits(
     // Fetch extra candidates per shard so verification and the final size
     // keep margin against stale index entries.
     let candidate_k = body.size.saturating_mul(10).max(100);
-    let (candidates, config, shards) =
-        collect_candidates(state, runtime, field, query, candidate_k).await?;
+    let (candidates, config, shards) = collect_candidates(
+        Arc::clone(&state),
+        runtime.clone(),
+        field.clone(),
+        query.clone(),
+        candidate_k,
+    )
+    .await?;
     if candidates.is_empty() {
         return Ok((Vec::new(), shards));
     }
@@ -441,16 +661,16 @@ async fn keyword_hits(
         .map(|candidate| Expr::Literal(ScalarValue::UInt64(Some(candidate.id)), None))
         .collect();
     let candidate_filter = col(PK_COLUMN).in_list(ids, false);
-    let filter = and(Some(filter_expr(parsed, runtime)?), candidate_filter);
-    let batches = fetch_rows(state, runtime, filter).await?;
+    let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
+    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
 
     let mut hits = Vec::new();
     for batch in &batches {
-        let rows = collect_text_values(batch, PK_COLUMN, field)
+        let rows = collect_text_values(batch, PK_COLUMN, &field)
             .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
         let compact: Vec<(u64, Option<String>)> =
             rows.iter().flatten().cloned().collect();
-        let matched: HashSet<u64> = matching_ids(&config, &compact, query)
+        let matched: HashSet<u64> = matching_ids(&config, &compact, &query)
             .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
         for (row, value) in rows.iter().enumerate() {
             let Some((id, _)) = value else { continue };
@@ -463,7 +683,7 @@ async fn keyword_hits(
             hits.push(Hit {
                 id: *id,
                 score: *score,
-                source: source_for_row(batch, runtime, row, &body.source)?,
+                source: source_for_row(batch, &runtime, row, &body.source)?,
             });
         }
     }
@@ -472,13 +692,13 @@ async fn keyword_hits(
 
 /// Filter-only search (copy pagination): no scoring, no verification.
 async fn filter_only_hits(
-    state: &GatewayState,
-    runtime: &IndexRuntime,
-    parsed: &ParsedQuery,
-    body: &SearchBody,
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+    parsed: ParsedQuery,
+    body: SearchBody,
 ) -> Result<(Vec<Hit>, usize), EsError> {
-    let filter = filter_expr(parsed, runtime)?;
-    let batches = fetch_rows(state, runtime, filter).await?;
+    let filter = filter_expr(&parsed, &runtime)?;
+    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
     let mut hits = Vec::new();
     for batch in &batches {
         let ids = batch
@@ -489,28 +709,53 @@ async fn filter_only_hits(
             hits.push(Hit {
                 id: ids.value(row),
                 score: 0.0,
-                source: source_for_row(batch, runtime, row, &body.source)?,
+                source: source_for_row(batch, &runtime, row, &body.source)?,
             });
         }
     }
     Ok((hits, batches.len()))
 }
 
+/// The object store of a table path.
+async fn index_store(
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+) -> Result<Arc<dyn ObjectStore>, EsError> {
+    let table = state
+        .lake_soul_table(&runtime)
+        .await
+        .map_err(crate::error::internal)?;
+    let table_path = table.table_info().table_path.clone();
+    let table_url =
+        ListingTableUrl::parse(&table_path).map_err(crate::error::internal)?;
+    state
+        .session
+        .runtime_env()
+        .object_store(table_url.object_store())
+        .map_err(crate::error::internal)
+}
+
+/// Distinct index shard prefixes behind a table's active files.
+fn shard_prefixes(files: &[String], kind: IndexKind, column: &str) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    let mut seen = HashSet::new();
+    for file in files {
+        let prefix = shard_index_prefix(std::slice::from_ref(file), kind, column);
+        if seen.insert(prefix.clone()) {
+            prefixes.push(prefix);
+        }
+    }
+    prefixes
+}
+
 /// Search every shard's text index and merge the candidate scores.
 async fn collect_candidates(
-    state: &GatewayState,
-    runtime: &IndexRuntime,
-    column: &str,
-    query: &str,
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+    column: String,
+    query: String,
     top_k: usize,
-) -> Result<
-    (
-        Vec<lakesoul_io::index::Candidate>,
-        Option<TextIndexConfig>,
-        usize,
-    ),
-    EsError,
-> {
+) -> Result<(Vec<Candidate>, Option<TextIndexConfig>, usize), EsError> {
     let files = state
         .client
         .get_data_files_by_table_name(&runtime.table, &runtime.namespace)
@@ -519,25 +764,8 @@ async fn collect_candidates(
     if files.is_empty() {
         return Ok((Vec::new(), None, 0));
     }
-    let table = state
-        .lake_soul_table(runtime)
-        .await
-        .map_err(crate::error::internal)?;
-    let table_path = table.table_info().table_path.clone();
-    let table_url =
-        ListingTableUrl::parse(&table_path).map_err(crate::error::internal)?;
-    let store = state
-        .session
-        .runtime_env()
-        .object_store(table_url.object_store())
-        .map_err(crate::error::internal)?;
-
-    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
-    for file in &files {
-        let prefix =
-            shard_index_prefix(std::slice::from_ref(file), IndexKind::Text, column);
-        groups.entry(prefix).or_default().push(file.clone());
-    }
+    let store = index_store(Arc::clone(&state), runtime.clone()).await?;
+    let prefixes = shard_prefixes(&files, IndexKind::Text, &column);
 
     let catalog = state
         .client
@@ -545,8 +773,8 @@ async fn collect_candidates(
     let mut candidates = Vec::new();
     let mut config = None;
     let mut leases = Vec::new();
-    let shards = groups.len();
-    for (prefix, _group) in groups {
+    let shards = prefixes.len();
+    for prefix in prefixes {
         let Some(view) = catalog
             .resolve_cached(&prefix)
             .await
@@ -578,7 +806,7 @@ async fn collect_candidates(
             segments: serde_json::to_value(&view.segments)
                 .map_err(crate::error::internal)?,
         };
-        let hits = search_resolved_shard(&store, &resolved, query, top_k)
+        let hits = search_resolved_shard(&store, &resolved, &query, top_k)
             .await
             .map_err(crate::error::internal)?;
         candidates.extend(hits);
@@ -587,6 +815,68 @@ async fn collect_candidates(
     // them from here on.
     drop(leases);
 
+    let merged = merge_candidates(candidates, top_k);
+    Ok((merged, config, shards))
+}
+
+/// Search every shard's vector index and merge the candidate distances.
+async fn collect_vector_candidates(
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+    query: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<Candidate>, usize), EsError> {
+    let column = runtime.config.embedding_column.clone();
+    let files = state
+        .client
+        .get_data_files_by_table_name(&runtime.table, &runtime.namespace)
+        .await
+        .map_err(crate::error::internal)?;
+    if files.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let store = index_store(Arc::clone(&state), runtime.clone()).await?;
+    let prefixes = shard_prefixes(&files, IndexKind::Vector, &column);
+
+    let catalog = state.client.vector_index_catalog();
+    let mut candidates = Vec::new();
+    let mut leases = Vec::new();
+    let shards = prefixes.len();
+    let nprobe = runtime.nprobe(&state.config.defaults);
+    for prefix in prefixes {
+        let Some(view) = catalog
+            .resolve_cached(&prefix)
+            .await
+            .map_err(crate::error::internal)?
+        else {
+            tracing::warn!(index = %prefix, "vector index shard has no commit; skipping");
+            continue;
+        };
+        match catalog
+            .acquire_lease(&prefix, lease_ttl(), &lease_owner())
+            .await
+        {
+            Ok(Some(handle)) => leases.push(IndexLease::new(handle)),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(index = %prefix, "failed to lease vector index: {error}");
+            }
+        }
+        let resolved = vector_resolved(&prefix, &view)?;
+        let hits = search_vector_shard(&store, &resolved, &query, top_k, nprobe)
+            .await
+            .map_err(crate::error::internal)?;
+        candidates.extend(hits);
+    }
+    drop(leases);
+
+    // The provisioned gateway indexes use the IP metric, where a higher
+    // score is closer.
+    Ok((merge_candidates(candidates, top_k), shards))
+}
+
+/// Keep the best score per primary key, ordered by score descending.
+fn merge_candidates(candidates: Vec<Candidate>, top_k: usize) -> Vec<Candidate> {
     let mut best: HashMap<u64, f32> = HashMap::new();
     for candidate in candidates {
         if let Some(score) = candidate.score {
@@ -596,9 +886,9 @@ async fn collect_candidates(
             }
         }
     }
-    let mut merged: Vec<lakesoul_io::index::Candidate> = best
+    let mut merged: Vec<Candidate> = best
         .into_iter()
-        .map(|(id, score)| lakesoul_io::index::Candidate::scored(id, score))
+        .map(|(id, score)| Candidate::scored(id, score))
         .collect();
     merged.sort_by(|left, right| {
         right
@@ -608,12 +898,76 @@ async fn collect_candidates(
             .then_with(|| left.id.cmp(&right.id))
     });
     merged.truncate(top_k);
-    Ok((merged, config, shards))
+    merged
+}
+
+/// Convert a catalog vector commit into the io transport payload (the
+/// catalog names the artifact `filename`, the io segment expects
+/// `segment_filename`).
+fn vector_resolved(
+    prefix: &str,
+    view: &IndexCommitView<VectorSegmentEntry>,
+) -> Result<ResolvedIndex, EsError> {
+    let segments: Vec<SegmentEntry> = view
+        .segments
+        .iter()
+        .map(|segment| SegmentEntry {
+            cluster_id: segment.cluster_id,
+            segment_version: segment.segment_version,
+            segment_filename: segment.filename.clone(),
+            num_vectors: segment.num_vectors,
+            file_size: segment.file_size,
+        })
+        .collect();
+    Ok(ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: prefix.to_string(),
+        commit_id: view.commit_id,
+        generation: view.generation,
+        version: view.version,
+        header: view.header.clone(),
+        segments: serde_json::to_value(&segments).map_err(crate::error::internal)?,
+    })
+}
+
+/// L2-normalize a query vector (stored vectors are normalized on write, so
+/// the exact rerank's cosine is a plain dot product).
+fn normalize_vector(vector: &[f32]) -> Vec<f32> {
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm <= f32::EPSILON {
+        return vector.to_vec();
+    }
+    vector.iter().map(|value| value / norm).collect()
+}
+
+/// Cosine similarity clamped to `[0, 1]`, mirroring the client's script.
+fn cosine(query: &[f32], stored: &[f32]) -> f32 {
+    let dot: f32 = query
+        .iter()
+        .zip(stored)
+        .map(|(left, right)| left * right)
+        .sum();
+    let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let stored_norm = stored.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if query_norm <= f32::EPSILON || stored_norm <= f32::EPSILON {
+        return 0.0;
+    }
+    (dot / (query_norm * stored_norm)).clamp(0.0, 1.0)
+}
+
+fn embedding_at(array: &ArrayRef, row: usize, dim: usize) -> Option<Vec<f32>> {
+    let values = array.as_any().downcast_ref::<FixedSizeListArray>()?;
+    if values.is_null(row) {
+        return None;
+    }
+    let row_values = values.value(row);
+    let floats = row_values.as_any().downcast_ref::<Float32Array>()?;
+    (floats.len() == dim).then(|| floats.values().to_vec())
 }
 
 async fn fetch_rows(
-    state: &GatewayState,
-    runtime: &IndexRuntime,
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
     filter: Expr,
 ) -> Result<Vec<RecordBatch>, EsError> {
     let dataframe = state

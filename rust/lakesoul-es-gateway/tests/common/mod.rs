@@ -42,6 +42,7 @@ pub fn test_config(
             hash_bucket_num: Some(hash_bucket_num),
             tokenizer: None,
             with_positions: None,
+            nprobe: None,
             content_column: "content".to_string(),
             embedding_column: "embedding".to_string(),
         }],
