@@ -82,6 +82,10 @@ rand = { workspace = true }
 name = "vector_rebuild_bench"
 harness = false
 
+[[bench]]
+name = "text_index_bench"
+harness = false
+
 [features]
 ci = []
 adbc = ["dep:adbc_core", "dep:adbc_driver_manager"]

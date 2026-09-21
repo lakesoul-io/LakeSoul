@@ -390,6 +390,29 @@ impl LakeSoulTableProvider {
             .map_err(|report| report!("invalid vector_index_columns option: {report}"))?;
         }
 
+        // The `text_index_columns` option declares text indexes at creation
+        // time (JSON array, as in the Python SDK); it is validated against
+        // the schema and stored as a table property so writes auto-build the
+        // indexes.  Accept both the bare and the `format.`-prefixed key,
+        // like the vector option above.
+        let text_index_columns = cmd
+            .options
+            .get("format.text_index_columns")
+            .or_else(|| cmd.options.get("text_index_columns"))
+            .cloned();
+        if let Some(raw) = &text_index_columns {
+            let configs = crate::text_index::parse_text_index_columns(Some(raw))
+                .map_err(|report| {
+                    report!("invalid text_index_columns option: {report}")
+                })?;
+            crate::text_index::validate_text_index_configs(
+                &configs,
+                logical_schema.as_ref(),
+                &primary_keys,
+            )
+            .map_err(|report| report!("invalid text_index_columns option: {report}"))?;
+        }
+
         // Optional file format ("parquet", "vortex" or "vortex-compact"),
         // named `file_format` like the Spark/Flink connectors and stored as
         // a table property for the sink.
@@ -436,6 +459,7 @@ impl LakeSoulTableProvider {
                 cdc_change_column: cdc_column,
                 use_cdc,
                 vector_index_columns,
+                text_index_columns,
                 file_format,
                 ..Default::default()
             })

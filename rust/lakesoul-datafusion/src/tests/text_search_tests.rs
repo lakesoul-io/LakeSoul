@@ -395,6 +395,71 @@ async fn sql_text_search_orders_by_bm25() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_create_table_declares_text_index_via_option() {
+    // The `text_index_columns` OPTIONS entry of `CREATE EXTERNAL TABLE` must
+    // be validated at creation and stored as a table property (so writes
+    // auto-build the index), mirroring `vector_index_columns`.
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "text_search_sql_create_opt";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let text_option =
+        serde_json::json!([{"column": "body", "tokenizer": "jieba"}]).to_string();
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            body STRING
+         ) STORED AS LAKESOUL \
+         LOCATION '{location}' \
+         OPTIONS ('text_index_columns' '{text_option}', 'hashBucketNum' '4')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    let table_info = client
+        .get_table_info_by_table_name(table_name, "default")
+        .await
+        .unwrap()
+        .expect("table must exist");
+    let configs =
+        crate::text_index::parse_text_index_from_table_properties(&table_info.properties)
+            .unwrap();
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0].column, "body");
+
+    // An unusable declaration is rejected before any metadata is created.
+    let table_name2 = "text_search_sql_create_badopt";
+    let _ = client.drop_table(table_name2, "default").await;
+    clean_table_dir(table_name2);
+    let bad_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name2} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            body STRING
+         ) STORED AS LAKESOUL \
+         LOCATION 'default/{table_name2}' \
+         OPTIONS ('text_index_columns' 'not-json')"
+    );
+    let err = ctx.sql(&bad_sql).await.unwrap_err();
+    assert!(
+        err.to_string().contains("invalid text_index_columns"),
+        "expected an option validation error, got: {err}"
+    );
+
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let _ = client.drop_table(table_name2, "default").await;
+    clean_table_dir(table_name2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_match_works_without_an_index() {
     // A table without `text_index_columns`: the exact UDF still works, just
     // over a full scan.
