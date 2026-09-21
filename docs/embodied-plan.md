@@ -150,7 +150,11 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   - GOP 外置 e2e：分区表带 `blob_columns={"data": external}` 时每数据文件一个 pack，
     `GopVideo`/`EmbodiedDataset` 直接解码；
   - benchmark `--with-blob` 对比列；
-- 待办：pack GC/vacuum、SQL 引擎 glue、零拷贝 `BlobFile`（M2-2 后续）；
+- 已完成（零拷贝）：`blob_materialize=false` 读选项跳过 `BlobMaterializer`，扫描保留
+  tagged 值；`lakesoul.BlobRef.parse(value)` 解码 inline/引用两种形态，`read(offset, size)`
+  只做 pack range 读（整读校验 CRC32），`materialize_blob(value)` 为便捷物化；pack
+  寻址走 `pyarrow.fs.FileSystem.from_uri`（本地与对象存储通用）；
+- 待办：pack GC/vacuum、SQL 引擎 glue；
 - 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
@@ -276,7 +280,9 @@ Ray runner 只要求接口兼容（gated 测试）。
 
 1. 自定义 Vortex layout 上游 API 尚在演进（当前 0.86）：先用现成 knobs，layout 按扩展注册；
 2. Blob pack 的 GC 与快照引用语义需先定义：按快照 manifest 引用，vacuum 只清无引用 pack；
-3. 透明物化会拷贝字节：默认路径要支持零拷贝 `BlobFile`，否则大视频列内存放大；
+3. ~~透明物化会拷贝字节~~ **已缓解**：`blob_materialize=false` + `BlobRef.read(offset, size)`
+   提供零拷贝 range 读；默认路径仍物化（顺序训练读更省 GET），pack GC 前引用生命周期
+   跟随数据文件；
 4. episode 长度不均时 rank 负载不均：导入按固定时长/行数切 chunk（硬约束的一部分）；
 5. **DataLoader fork 风险**：父进程用过 native reader（tokio 线程）后再 fork worker 可能崩溃；
    示例/benchmark 默认 `num_workers=0`，`EmbodiedDataset` 已支持 pickle，可在 spawn 模式下使用；

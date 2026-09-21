@@ -122,7 +122,11 @@ struct BlobMaterializer {
 
 impl BlobMaterializer {
     fn try_new(io_session: &LakeSoulIOSession) -> crate::Result<Option<Self>> {
-        let policies = blob::parse_blob_policies(io_session.io_config().options())?;
+        let options = io_session.io_config().options();
+        if blob::blob_materialize_disabled(options) {
+            return Ok(None);
+        }
+        let policies = blob::parse_blob_policies(options)?;
         if policies.is_empty() {
             return Ok(None);
         }

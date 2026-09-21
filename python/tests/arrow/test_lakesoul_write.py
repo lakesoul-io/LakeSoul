@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
@@ -12,7 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from lakesoul import LakeSoulCatalog
+from lakesoul import BlobRef, LakeSoulCatalog
 from lakesoul.metadata.generated.entity_pb2 import AppendCommit
 
 
@@ -255,6 +256,75 @@ def test_blob_columns_property_roundtrip(tmp_path: Path) -> None:
         assert actual.column("frame").to_pylist() == [b"tiny", b"0123456789"]
     finally:
         catalog.drop_table(table_name, if_exists=True)
+
+
+def test_blob_scan_can_defer_reads(tmp_path: Path) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("blob_ref")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("frame", pa.binary()),
+            pa.field("tag", pa.binary()),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=schema,
+        properties={
+            "blob_columns": json.dumps(
+                {"frame": {"mode": "external"}, "tag": {"mode": "inline"}}
+            )
+        },
+    )
+
+    frames = [b"external-payload-0", b"external-payload-111"]
+    tags = [b"tiny", b"inline"]
+    try:
+        table.write_arrow(
+            pa.table(
+                {
+                    "id": pa.array([1, 2], type=pa.int64()),
+                    "frame": pa.array(frames, type=pa.binary()),
+                    "tag": pa.array(tags, type=pa.binary()),
+                },
+                schema=schema,
+            ),
+            format="parquet",
+        )
+
+        materialized = catalog.scan(table_name).to_arrow_table()
+        assert materialized.column("frame").to_pylist() == frames
+
+        deferred = (
+            catalog.scan(table_name)
+            .options(reader_options={"blob_materialize": "false"})
+            .to_arrow_table()
+        )
+        refs = [BlobRef.parse(value) for value in deferred.column("frame").to_pylist()]
+        assert all(not ref.is_inline for ref in refs)
+        for raw, ref in zip(frames, refs):
+            assert ref.size == len(raw)
+            assert ref.crc32 == zlib.crc32(raw) & 0xFFFFFFFF
+            assert ref.read() == raw
+            assert ref.read(2, 5) == raw[2:7]
+            assert ref.materialize() == raw
+
+        inline = [BlobRef.parse(value) for value in deferred.column("tag").to_pylist()]
+        assert all(ref.is_inline for ref in inline)
+        assert [ref.read() for ref in inline] == tags
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_blob_ref_rejects_malformed_values() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        BlobRef.parse(b"")
+    with pytest.raises(ValueError, match="unknown blob tag"):
+        BlobRef.parse(b"\x02x")
+    with pytest.raises(ValueError, match="truncated"):
+        BlobRef.parse(b"\x01short")
 
 
 def test_create_table_rejects_invalid_blob_columns(tmp_path: Path) -> None:
