@@ -228,8 +228,20 @@ def main() -> None:
     pool = load_jsonl(args.corpus)[
         args.limit : args.limit + args.rounds * args.per_round + 1024
     ]
-    queries = load_jsonl(args.queries, args.query_limit)
+    queries = load_jsonl(args.queries)
     qrels = load_qrels(args.qrels)
+    if qrels:
+        # Mirror the Rust harness: judged documents outside the loaded corpus
+        # cannot be retrieved, so evaluate the queries that have at least one
+        # judged document inside it.
+        corpus_ids = {row["id"] for row in corpus}
+        qrels = {
+            qid: {doc: grade for doc, grade in judged.items() if doc in corpus_ids}
+            for qid, judged in qrels.items()
+        }
+        qrels = {qid: judged for qid, judged in qrels.items() if judged}
+        queries = [query for query in queries if query["id"] in qrels]
+    queries = queries[: args.query_limit]
     judged = {doc for per_query in qrels.values() for doc in per_query}
 
     docs = [
