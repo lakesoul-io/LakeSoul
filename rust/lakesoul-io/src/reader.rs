@@ -184,7 +184,7 @@ impl LakeSoulReader {
                 .get_filter_exprs(table_schema.table_schema().as_ref())
                 .await?
         };
-        let filters = self
+        let (filters, text_candidate_scores) = self
             .inject_index_search_filters(filters, &table_schema)
             .await?;
 
@@ -195,9 +195,21 @@ impl LakeSoulReader {
         // so the text column must be read even when the caller did not
         // project it (the stream drops it from the output again).
         let verify_request = crate::text::verify::text_verify_request(io_config);
+        // The caller-visible schema: may already declare the reserved score
+        // field so a lazy engine can plan against it.
         let original_schema = io_config.target_schema.0.clone();
+        // Physical plan schema: the score field is computed by the
+        // verification stream, not read from the files.
+        let mut plan_schema = if verify_request
+            .as_ref()
+            .is_some_and(|request| request.with_scores)
+        {
+            crate::text::verify::without_text_score_field(&original_schema)
+        } else {
+            original_schema.clone()
+        };
         if let Some(request) = &verify_request
-            && original_schema.field_with_name(&request.column).is_err()
+            && plan_schema.field_with_name(&request.column).is_err()
         {
             let field = table_schema
                 .table_schema()
@@ -210,14 +222,15 @@ impl LakeSoulReader {
                     )
                 })?
                 .clone();
-            let mut fields: Vec<arrow_schema::Field> = original_schema
+            let mut fields: Vec<arrow_schema::Field> = plan_schema
                 .fields()
                 .iter()
                 .map(|field| field.as_ref().clone())
                 .collect();
             fields.push(field);
-            io_config.target_schema.0 = Arc::new(arrow_schema::Schema::new(fields));
+            plan_schema = Arc::new(arrow_schema::Schema::new(fields));
         }
+        io_config.target_schema.0 = plan_schema;
 
         // Check if filters are or-conjunction of bucket columns.
         //
@@ -318,16 +331,18 @@ impl LakeSoulReader {
                     .first()
                     .cloned()
                     .unwrap_or_else(|| "id".to_string());
+                let output_schema = crate::text::verify::text_verify_output_schema(
+                    &request,
+                    &original_schema,
+                );
                 let verify_stream = crate::text::verify::TextVerifyStream::try_new(
                     stream,
                     request,
                     pk_column,
-                    original_schema.clone(),
+                    Arc::clone(&output_schema),
+                    text_candidate_scores,
                 )?;
-                Box::pin(RecordBatchStreamAdapter::new(
-                    original_schema,
-                    verify_stream,
-                ))
+                Box::pin(RecordBatchStreamAdapter::new(output_schema, verify_stream))
             }
             None => stream,
         };
@@ -349,14 +364,17 @@ impl LakeSoulReader {
         &self,
         filters: Vec<datafusion_expr::Expr>,
         table_schema: &datafusion_datasource::TableSchema,
-    ) -> Result<Vec<datafusion_expr::Expr>> {
+    ) -> Result<(
+        Vec<datafusion_expr::Expr>,
+        std::collections::HashMap<u64, f32>,
+    )> {
         use lakesoul_common::IndexKind;
 
         use crate::index::options::parse_search_requests;
 
         let requests = parse_search_requests(self.io_session.io_config());
         if requests.is_empty() {
-            return Ok(filters);
+            return Ok((filters, std::collections::HashMap::new()));
         }
 
         let io_config = self.io_session.io_config();
@@ -392,6 +410,9 @@ impl LakeSoulReader {
         );
 
         let mut filters = filters;
+        // BM25 score of every text candidate, keyed by primary key; carried
+        // to the verification stream so verified rows can expose it.
+        let mut text_candidate_scores = std::collections::HashMap::new();
         for request in requests {
             let candidates = match request.kind {
                 IndexKind::Vector => {
@@ -419,6 +440,11 @@ impl LakeSoulReader {
                 request.column,
                 candidates.len()
             );
+            if request.kind == IndexKind::Text {
+                text_candidate_scores.extend(candidates.iter().filter_map(|candidate| {
+                    candidate.score.map(|score| (candidate.id, score))
+                }));
+            }
             filters = crate::index::candidate::inject_candidates(
                 filters,
                 &pk_column,
@@ -426,7 +452,7 @@ impl LakeSoulReader {
                 &candidates,
             );
         }
-        Ok(filters)
+        Ok((filters, text_candidate_scores))
     }
 
     /// Retrieves the next record batch from the reader.

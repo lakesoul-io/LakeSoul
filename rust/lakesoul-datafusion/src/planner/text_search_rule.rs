@@ -9,17 +9,23 @@
 //! ```text
 //! Limit(fetch=k)
 //! └── [Projection]*
-//!     └── Filter(P)          with a text_match(column, query) term in P
-//!         └── [Projection / Filter]*
-//!             └── TableScan
+//!     └── [Sort]             ORDER BY text_score(column, query) DESC
+//!         └── [Projection]*
+//!             └── Filter(P)  with a text_match(column, query) term in P
+//!                 └── [Projection / Filter]*
+//!                     └── TableScan
 //! ```
 //!
 //! and appends the internal search marker to `TableScan.filters`; the
-//! provider's `scan` turns that into a text-index candidate read.  The
-//! predicate itself is left untouched: the physical planner rewrites it to
-//! the analyzer-configured form (it can resolve the table provider, this
-//! rule cannot), so it is evaluated exactly above the scan and removes stale
-//! index candidates.
+//! provider's `scan` turns that into a text-index candidate read.
+//!
+//! * Without a relevance `Sort`, the predicate is left untouched: the
+//!   physical planner rewrites it to the analyzer-configured form and it is
+//!   evaluated exactly above the scan, removing stale index candidates.
+//! * With `ORDER BY text_score(column, query) DESC`, the rule removes the
+//!   `Sort` and marks the search as ordered; the scan then returns the
+//!   global top-`k` by BM25 score.  `text_score` cannot be projected into
+//!   the result yet (the score column is not part of the table schema).
 //!
 //! Without a finite `LIMIT` the rule does not rewrite (the index path
 //! returns only the top candidates); such queries fall back to an exact full
@@ -30,14 +36,27 @@ use std::sync::Arc;
 use datafusion::common::Result as DFResult;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::logical_expr::TableSource;
-use datafusion::logical_expr::{Expr, LogicalPlan, TableScan};
+use datafusion::logical_expr::{Expr, LogicalPlan, Sort, TableScan};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
-use crate::udf::text_search_marker::{find_user_text_match, is_marker_expr, marker_expr};
+use crate::udf::text_search_marker::{
+    TEXT_SCORE_FUNCTION, find_user_text_match, is_marker_expr, marker_expr,
+    parse_text_score_call,
+};
 
 /// Logical optimizer rule for the text-search pushdown (see module docs).
 #[derive(Debug, Default)]
 pub struct TextSearchPushdownRule;
+
+/// The pushdown parameters detected on the plan path.
+struct Detected {
+    column: String,
+    query: String,
+    top_k: usize,
+    /// `ORDER BY text_score(column, query) DESC` was present.
+    order_by: bool,
+    source: Arc<dyn TableSource>,
+}
 
 impl OptimizerRule for TextSearchPushdownRule {
     fn name(&self) -> &str {
@@ -53,22 +72,19 @@ impl OptimizerRule for TextSearchPushdownRule {
         plan: LogicalPlan,
         _config: &dyn OptimizerConfig,
     ) -> DFResult<Transformed<LogicalPlan>> {
-        let Some((column, query, top_k, scan_source)) = detect(&plan) else {
+        let Some(found) = detect(&plan) else {
             return Ok(Transformed::no(plan));
         };
-        let Some(with_marker) =
-            rewrite_scan(plan.clone(), &scan_source, &column, &query, top_k)
-        else {
+        let Some(with_marker) = rewrite_plan(plan.clone(), &found, true) else {
             return Ok(Transformed::no(plan));
         };
         Ok(Transformed::yes(with_marker))
     }
 }
 
-/// Match the plan shape: `Limit → ... → Filter(text_match) → ... → TableScan`.
-///
-/// Returns the search parameters and the target scan's source.
-fn detect(plan: &LogicalPlan) -> Option<(String, String, usize, Arc<dyn TableSource>)> {
+/// Match the plan shape described in the module docs and collect the search
+/// parameters.
+fn detect(plan: &LogicalPlan) -> Option<Detected> {
     let LogicalPlan::Limit(limit) = plan else {
         return None;
     };
@@ -78,37 +94,85 @@ fn detect(plan: &LogicalPlan) -> Option<(String, String, usize, Arc<dyn TableSou
     }
 
     let mut current = Arc::clone(&limit.input);
-    let (column, query) = loop {
-        match current.as_ref() {
-            LogicalPlan::Projection(projection) => {
-                current = Arc::clone(&projection.input);
-            }
-            LogicalPlan::Filter(filter) => {
-                if let Some(found) = find_user_text_match(&filter.predicate) {
-                    break found;
-                }
-                current = Arc::clone(&filter.input);
-            }
-            _ => return None,
-        }
-    };
-
+    let mut order_by = false;
+    let mut sort_key: Option<(String, String)> = None;
+    let mut filter_key: Option<(String, String)> = None;
     loop {
         match current.as_ref() {
             LogicalPlan::Projection(projection) => {
                 current = Arc::clone(&projection.input);
             }
+            LogicalPlan::Sort(sort) => {
+                // A relevance sort must be the only one and sit above the
+                // filter; any other sort is kept and merely passed through.
+                if sort_contains_text_score(sort) {
+                    if order_by || filter_key.is_some() {
+                        return None;
+                    }
+                    let key = text_score_sort_key(sort)?;
+                    sort_key = Some(key);
+                    order_by = true;
+                }
+                current = Arc::clone(&sort.input);
+            }
             LogicalPlan::Filter(filter) => {
+                if filter_key.is_none() {
+                    filter_key = find_user_text_match(&filter.predicate);
+                }
                 current = Arc::clone(&filter.input);
             }
             LogicalPlan::TableScan(scan) => {
                 if scan.filters.iter().any(is_marker_expr) {
                     return None;
                 }
-                return Some((column, query, top_k, Arc::clone(&scan.source)));
+                let (column, query) = filter_key?;
+                if let Some(sort_key) = &sort_key
+                    && *sort_key != (column.clone(), query.clone())
+                {
+                    return None;
+                }
+                return Some(Detected {
+                    column,
+                    query,
+                    top_k,
+                    order_by,
+                    source: Arc::clone(&scan.source),
+                });
             }
             _ => return None,
         }
+    }
+}
+
+/// The sort key of `ORDER BY text_score(column, query) DESC`, when the sort
+/// has exactly that one descending expression.
+fn text_score_sort_key(sort: &Sort) -> Option<(String, String)> {
+    if sort.expr.len() != 1 || sort.expr[0].asc {
+        return None;
+    }
+    parse_text_score_call(&sort.expr[0].expr)
+}
+
+/// Whether a sort expression tree references `text_score`.
+fn sort_contains_text_score(sort: &Sort) -> bool {
+    sort.expr
+        .iter()
+        .any(|sort_expr| expr_contains_text_score(&sort_expr.expr))
+}
+
+fn expr_contains_text_score(expr: &Expr) -> bool {
+    match expr {
+        Expr::ScalarFunction(call) => {
+            call.func.name() == TEXT_SCORE_FUNCTION
+                || call.args.iter().any(expr_contains_text_score)
+        }
+        Expr::BinaryExpr(binary) => {
+            expr_contains_text_score(&binary.left)
+                || expr_contains_text_score(&binary.right)
+        }
+        Expr::Cast(cast) => expr_contains_text_score(&cast.expr),
+        Expr::Alias(alias) => expr_contains_text_score(&alias.expr),
+        _ => false,
     }
 }
 
@@ -131,19 +195,26 @@ fn fetch_value(fetch: Option<&Expr>) -> Option<usize> {
     }
 }
 
-/// Rebuild the plan with the marker appended to the target scan.
-fn rewrite_scan(
+/// Rebuild the plan with the marker appended to the target scan and the
+/// relevance `Sort` (when present) removed.
+///
+/// `remove_sort` guards against removing more than the one matching sort on
+/// the path.
+fn rewrite_plan(
     plan: LogicalPlan,
-    source: &Arc<dyn TableSource>,
-    column: &str,
-    query: &str,
-    top_k: usize,
+    found: &Detected,
+    remove_sort: bool,
 ) -> Option<LogicalPlan> {
     if let LogicalPlan::TableScan(scan) = &plan
-        && Arc::ptr_eq(&scan.source, source)
+        && Arc::ptr_eq(&scan.source, &found.source)
     {
         let mut filters = scan.filters.clone();
-        filters.push(marker_expr(column, query, top_k));
+        filters.push(marker_expr(
+            &found.column,
+            &found.query,
+            found.top_k,
+            found.order_by,
+        ));
         return Some(LogicalPlan::TableScan(TableScan {
             table_name: scan.table_name.clone(),
             source: Arc::clone(&scan.source),
@@ -154,11 +225,18 @@ fn rewrite_scan(
             statistics_requests: scan.statistics_requests.clone(),
         }));
     }
+    if remove_sort
+        && found.order_by
+        && let LogicalPlan::Sort(sort) = &plan
+        && text_score_sort_key(sort) == Some((found.column.clone(), found.query.clone()))
+    {
+        return rewrite_plan((*sort.input).clone(), found, false);
+    }
     let mut changed = false;
     let rewritten = plan
         .map_children(|child| {
             let unchanged = child.clone();
-            match rewrite_scan(child, source, column, query, top_k) {
+            match rewrite_plan(child, found, remove_sort) {
                 Some(rewritten) => {
                     changed = true;
                     Ok(Transformed::yes(rewritten))

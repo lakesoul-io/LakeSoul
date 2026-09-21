@@ -135,6 +135,22 @@ async fn query_ids(ctx: &Arc<SessionContext>, sql: &str) -> Vec<u64> {
     ids
 }
 
+/// Collect the first column preserving the result order.
+async fn query_ids_in_order(ctx: &Arc<SessionContext>, sql: &str) -> Vec<u64> {
+    let df = ctx.sql(sql).await.unwrap();
+    let batches = df.collect().await.unwrap();
+    let mut ids = Vec::new();
+    for batch in &batches {
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        ids.extend(values.values().iter().copied());
+    }
+    ids
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_text_search_is_exact_over_upserts() {
     let client = Arc::new(MetaDataClient::from_env().await.unwrap());
@@ -295,6 +311,84 @@ async fn text_index_compacts_drifted_shards() {
     let sql =
         format!("select id from {base} where text_match(body, 'elderberry') limit 10");
     assert_eq!(query_ids(&ctx, &sql).await, vec![1]);
+
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_text_search_orders_by_bm25() {
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "text_search_sql_order";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // A single shard so all documents share one BM25 statistics set: ranking
+    // across shards is approximate by design (per-split statistics).
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(text_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_text_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &text_configs(),
+    )
+    .await
+    .unwrap();
+    LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch(&[
+            (1, "apple apple apple"),
+            (2, "apple apple banana"),
+            (3, "apple banana banana"),
+            (4, "banana banana banana"),
+        ]))
+        .await
+        .unwrap();
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let base = format!("\"lakesoul\".default.{table_name}");
+
+    // Equal-length documents, higher term frequency must rank first; the
+    // scan returns the global top-k across buckets.
+    let sql = format!(
+        "select id from {base} where text_match(body, 'apple') \
+         order by text_score(body, 'apple') desc limit 2"
+    );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(
+        explain.contains("LakeSoulTextSearchExec"),
+        "plan must use the text-index exec:\n{explain}"
+    );
+    assert!(
+        explain.contains("order_by=true"),
+        "plan must mark the relevance order:\n{explain}"
+    );
+    assert_eq!(query_ids_in_order(&ctx, &sql).await, vec![1, 2]);
+
+    let sql = format!(
+        "select id from {base} where text_match(body, 'apple') \
+         order by text_score(body, 'apple') desc limit 3"
+    );
+    assert_eq!(query_ids_in_order(&ctx, &sql).await, vec![1, 2, 3]);
+
+    // The updated row no longer contains the term: verification drops its
+    // stale candidate, and the remaining rows keep their relevance order.
+    LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch(&[(1, "banana banana banana")]))
+        .await
+        .unwrap();
+    let sql = format!(
+        "select id from {base} where text_match(body, 'apple') \
+         order by text_score(body, 'apple') desc limit 3"
+    );
+    assert_eq!(query_ids_in_order(&ctx, &sql).await, vec![2, 3]);
 
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);

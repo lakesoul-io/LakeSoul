@@ -57,3 +57,7 @@ pub static OPTION_KEY_TEXT_SEARCH_TOP_K: &str = "text_search_top_k";
 /// SQL pushdown disables it because the residual `text_match` predicate
 /// verifies above the scan.
 pub static OPTION_KEY_TEXT_SEARCH_VERIFY: &str = "text_search_verify";
+/// Text search: expose the BM25 score of each verified row in a
+/// `__lakesoul_text_score` column (default false).  Requesting scores also
+/// enables the verification pass, which drops stale candidates.
+pub static OPTION_KEY_TEXT_SEARCH_SCORES: &str = "text_search_scores";
