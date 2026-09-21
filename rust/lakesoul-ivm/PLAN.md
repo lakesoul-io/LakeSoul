@@ -399,6 +399,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 未完成：多列 / 非 Int64 group-key 与 value（当前要求 Int64）、
   `SELECT DISTINCT` 多列投影、Window、SEMI/ANTI、join upsert。
 
+**CDC change column 实施记录（已完成）**
+
+- `IvmTableOptions::with_cdc_column` + `IvmTable.cdc_column`：创建表时写入
+  `lakesoul_cdc_change_column` 属性并校验列存在；源表没有配置时回退到内部
+  `rowKinds` 列（兼容既有约定）。
+- 源侧删除过滤统一走 `change_column(source)` + `filter_deletes`：
+  sum/count 的 append-only 与重建路径、upsert 的新值/旧值两侧、min/max 与
+  distinct 的计数路径。
+- 顺带修复两个 tombstone 正确性缺陷：
+  1. `rebuild_sum_count` 对 keyed 源会把 MOR 存活的 `delete` 墓碑计入全量；
+  2. upsert 旧值回收会把墓碑当存在行再回收一次（删除后重新插入同一 key 时
+     多减一次）。
+- 测试 `tests/cdc_column.rs`：自定义列名 `op` 的更新/删除、删除后 rebuild、
+  删除后重新插入（两个回归点）、min/max 的 CDC 删除、属性持久化、
+  未在 schema 中的 cdc 列报错。
+- 未完成：`update_before`/`update_after` 语义目前依赖主键 MOR 合并折叠
+  （append-only CDC 源不支持）；多列 key、Window、SEMI/ANTI、join upsert。
+
+
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
 - `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算

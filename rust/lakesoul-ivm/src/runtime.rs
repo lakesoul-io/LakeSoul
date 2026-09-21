@@ -1502,12 +1502,35 @@ fn join_term(
         .select(vec![col("join_key"), col("left_value"), col("right_value")])?)
 }
 
-/// `rowKinds` is case sensitive; `col()` would normalize the identifier to
+/// Column names are case sensitive; `col()` would normalize the identifier to
 /// lower case, so the column is built from its exact name.
-fn row_kinds_expr() -> datafusion::logical_expr::Expr {
-    datafusion::logical_expr::Expr::Column(datafusion::common::Column::from_name(
-        IVM_ROW_KINDS_COLUMN,
-    ))
+fn column_expr(name: &str) -> datafusion::logical_expr::Expr {
+    datafusion::logical_expr::Expr::Column(datafusion::common::Column::from_name(name))
+}
+
+/// The CDC change column of a source, when the table declares one and it is
+/// part of the schema. `insert` / `delete` values are interpreted as changes;
+/// update markers collapse through the primary-key merge before we inspect
+/// them.
+fn change_column(source: &IvmTable) -> Option<&str> {
+    if let Some(column) = source.cdc_column.as_deref() {
+        return source.schema.field_with_name(column).ok().map(|_| column);
+    }
+    // Sources written through the internal writer carry `rowKinds` even when
+    // the table does not declare a CDC column.
+    source
+        .schema
+        .field_with_name(IVM_ROW_KINDS_COLUMN)
+        .ok()
+        .map(|_| IVM_ROW_KINDS_COLUMN)
+}
+
+/// Drop `delete` rows from a source frame when the source has a change column.
+fn filter_deletes(frame: DataFrame, change_column: Option<&str>) -> Result<DataFrame> {
+    match change_column {
+        Some(column) => Ok(frame.filter(column_expr(column).not_eq(lit("delete")))?),
+        None => Ok(frame),
+    }
 }
 
 /// Aggregate sum/count batches into `group_key -> (sum, count)`.
@@ -1521,6 +1544,7 @@ async fn aggregate_groups(
 
     let context = SessionContext::new();
     let frame = context.read_batches(batches)?;
+    let frame = filter_deletes(frame, change_column(&view.source))?;
     aggregate_dataframe(view, frame).await
 }
 
@@ -1571,22 +1595,14 @@ async fn aggregate_upsert_delta(
 
     let context = SessionContext::new();
     let delta_frame = context.read_batches(delta)?;
-    let new_rows = if view
-        .source
-        .schema
-        .field_with_name(IVM_ROW_KINDS_COLUMN)
-        .is_ok()
-    {
-        delta_frame
-            .clone()
-            .filter(row_kinds_expr().not_eq(lit("delete")))?
-    } else {
-        delta_frame.clone()
-    };
+    let new_rows = filter_deletes(delta_frame.clone(), change_column(&view.source))?;
     let mut delta_groups = aggregate_dataframe(view, new_rows).await?;
 
     if !old.is_empty() {
-        let old_frame = context.read_batches(old)?;
+        // Deleted keys survive merge-on-read as tombstones; they must not be
+        // retracted again.
+        let old_frame =
+            filter_deletes(context.read_batches(old)?, change_column(&view.source))?;
         let pk_columns = view
             .source
             .primary_keys
@@ -1853,16 +1869,7 @@ async fn count_rows_by_group_value(
 
     let context = SessionContext::new();
     let frame = context.read_batches(batches.to_vec())?;
-    let frame = if view
-        .source
-        .schema
-        .field_with_name(IVM_ROW_KINDS_COLUMN)
-        .is_ok()
-    {
-        frame.filter(row_kinds_expr().not_eq(lit("delete")))?
-    } else {
-        frame
-    };
+    let frame = filter_deletes(frame, change_column(view.source))?;
     let aggregated = frame.aggregate(
         vec![col(view.group_key), col(view.value_column)],
         vec![count(lit(1_i64)).alias("rows")],
