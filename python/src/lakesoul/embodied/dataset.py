@@ -26,6 +26,7 @@ from lakesoul.arrow import LakeSoulScanConfig, lakesoul_dataset
 from lakesoul.catalog import LakeSoulScan
 from lakesoul.metadata import LakeSoulScanPlanPartition
 
+from .align import SecondaryStream, aligned_columns, load_stream_unit
 from .video import GopVideo
 
 BOUNDARY_SKIP = "skip"
@@ -147,6 +148,7 @@ class EmbodiedDataset:
         boundary: str = BOUNDARY_SKIP,
         seed: int = 0,
         time_column: str | None = None,
+        streams: Sequence[SecondaryStream] = (),
         video: GopVideo | None = None,
         video_window: str | tuple[int, int] | None = None,
     ) -> None:
@@ -166,6 +168,7 @@ class EmbodiedDataset:
             else:
                 self._window[name] = _as_window(value)
         self._time_column = time_column or "timestamp"
+        self._streams = tuple(streams)
         self._stride = stride
         self._boundary = boundary
         self._seed = int(seed)
@@ -180,10 +183,12 @@ class EmbodiedDataset:
             raise ValueError(
                 f"window columns not found in table schema: {sorted(unknown)}"
             )
-        if self._time_window and self._time_column not in schema_names:
+        if (
+            self._time_window or self._streams
+        ) and self._time_column not in schema_names:
             raise ValueError(
-                f"seconds-based windows need the time column "
-                f"{self._time_column!r} in the table schema"
+                f"seconds-based windows and secondary streams need the time "
+                f"column {self._time_column!r} in the table schema"
             )
 
         self._validate_video_window()
@@ -224,6 +229,7 @@ class EmbodiedDataset:
                 self._video_window,
                 self._time_window,
                 self._time_column,
+                self._streams,
             ),
         )
 
@@ -296,6 +302,15 @@ class EmbodiedDataset:
                 )
             episode_video = self._video.for_episode(episode_id)
             video_start, video_end = self._video_offsets()
+        stream_tables = []
+        for stream in self._streams:
+            episode_id = _unit_partition_map(unit).get(stream.by)
+            if episode_id is None:
+                raise ValueError(
+                    f"secondary streams need the scanned table to be "
+                    f"partitioned by {stream.by!r}"
+                )
+            stream_tables.append(load_stream_unit(stream, episode_id))
         anchors = plan_anchor_order(
             rows=rows,
             stride=self._stride,
@@ -309,11 +324,11 @@ class EmbodiedDataset:
         columns = {name: table[name].combine_chunks() for name in needed}
         times = (
             table[self._time_column].combine_chunks().to_numpy(zero_copy_only=False)
-            if self._time_window
+            if self._time_window or self._streams
             else None
         )
         for anchor in anchors.tolist():
-            sample: dict[str, np.ndarray] = {}
+            ranges: dict[str, tuple[int, int]] = {}
             if times is not None:
                 for name, (start_seconds, end_seconds) in self._time_window.items():
                     anchor_time = float(times[anchor])
@@ -324,10 +339,10 @@ class EmbodiedDataset:
                         np.searchsorted(times, anchor_time + end_seconds, side="left")
                     )
                     if end <= start:
-                        sample = {}
+                        ranges = {}
                         break
-                    sample[name] = _to_numpy(columns[name], start, end)
-                if not sample:
+                    ranges[name] = (start, end)
+                if self._time_window and not ranges:
                     continue
             for name, window in self._window.items():
                 start = anchor + window.start
@@ -336,11 +351,35 @@ class EmbodiedDataset:
                     start = max(start, 0)
                     end = min(end, rows)
                 if end <= start:
-                    sample = {}
+                    ranges = {}
                     break
-                sample[name] = _to_numpy(columns[name], start, end)
-            if not sample:
+                ranges[name] = (start, end)
+            if not ranges:
                 continue
+            sample: dict[str, np.ndarray] = {
+                name: _to_numpy(columns[name], start, end)
+                for name, (start, end) in ranges.items()
+            }
+            if stream_tables:
+                stream_start, stream_end = next(iter(ranges.values()))
+                for stream, right in zip(self._streams, stream_tables):
+                    aligned = aligned_columns(
+                        stream,
+                        right,
+                        np.asarray(times[stream_start:stream_end], dtype=np.float64),
+                    )
+                    if aligned is None:
+                        sample = {}
+                        break
+                    for name, values in aligned.items():
+                        if name in sample:
+                            raise ValueError(
+                                f"secondary stream column {name!r} collides "
+                                "with a primary column"
+                            )
+                        sample[name] = values
+                if not sample:
+                    continue
             if episode_video is not None:
                 frame_start = max(anchor + video_start, 0)
                 frame_end = min(anchor + video_end, rows)
@@ -360,7 +399,7 @@ class EmbodiedDataset:
         config = dataclasses.replace(self._config, scan_partitions=(unit,))
         dataset = lakesoul_dataset(config)
         columns = list(self._window) + list(self._time_window)
-        if self._time_window:
+        if self._time_window or self._streams:
             columns.append(self._time_column)
         return dataset.to_table(columns=columns)
 
@@ -431,6 +470,7 @@ def _dataset_from_state(
     video_window: str | tuple[int, int] | None,
     time_window: dict[str, tuple[float, float]],
     time_column: str,
+    streams: tuple[SecondaryStream, ...],
 ) -> EmbodiedDataset:
     dataset = object.__new__(EmbodiedDataset)
     dataset._scan = None
@@ -445,6 +485,7 @@ def _dataset_from_state(
     dataset._video_window = video_window
     dataset._time_window = dict(time_window)
     dataset._time_column = time_column
+    dataset._streams = tuple(streams)
     return dataset
 
 

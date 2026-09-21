@@ -251,8 +251,10 @@ Ray runner 只要求接口兼容（gated 测试）。
 - `align()/join_asof()`（导入未预对齐时的读时对齐）；P1 进行中：
   - 已完成：`EmbodiedDataset(window={"col": (-1.0, 0.0)}, time_column="timestamp")`
     秒级窗口（按锚点时间 + searchsorted 切行，clip 语义；与行窗口等价性测试）；
-  - 待做：`streams=[SecondaryStream(...)]` 副表按 episode 缓存 + 最近邻/前向对齐，
-    以及显式 `align()` 物化 API；
+  - 已完成：`streams=[SecondaryStream(scan, on, by, columns, tolerance, direction,
+    missing, suffix)]`——按 episode 读副表一次、内存最近邻/前向/后向对齐、null/skip
+    缺失语义；以及显式 `align(left_scan, right_scan, into=...)` 物化 API（默认返回
+    `pa.Table`，`into=<LakeSoulTable>` 才写表）；
 - 样本视图/manifest（跨快照稳定的行地址，才需要持久化）；
 - Python 快照/版本参数（目前仅 Spark/Flink）；文档与示例收尾。
 
