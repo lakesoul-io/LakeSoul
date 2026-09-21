@@ -157,15 +157,17 @@ def text_search(
     *,
     top_k: int = 10,
     column: str | None = None,
+    with_score: bool = False,
     extra_columns: Sequence[str] = (),
 ) -> Any:
     """Search the full-text index and return a Daft DataFrame of matches.
 
     The search runs inside the native reader: each Daft task (one per scan
-    partition / hash bucket) searches that bucket's Tantivy index and keeps
-    its top-``top_k`` documents, then the native reader verifies every
-    candidate against the current rows exactly, so stale index entries
-    (updated or deleted rows) never appear in the result.
+    partition / hash bucket) searches that bucket's Tantivy index and keeps a
+    candidate set; the native reader verifies every candidate against the
+    current rows exactly, so stale index entries (updated or deleted rows)
+    never appear in the result.  The candidates are then ranked globally by
+    their BM25 score in Daft and truncated to ``top_k``.
 
     Args:
         source: A :class:`lakesoul.catalog.LakeSoulTable` or a configured
@@ -174,24 +176,31 @@ def text_search(
             except that the primary key and the searched text column are
             always read.
         query: The Tantivy query string.
-        top_k: Number of candidates kept per shard (bucket).
+        top_k: Number of rows to return globally (across buckets), best
+            relevance first.
         column: Text column to search.  Defaults to the single text column
             declared in the table's ``text_index_columns`` property.
+        with_score: Also return the BM25 score of each row in the reserved
+            ``__lakesoul_text_score`` column.
         extra_columns: Additional columns to return alongside the primary
             key and the text column.
 
     Returns:
-        A lazy ``daft.DataFrame`` with the matching rows.  Rows are the
-        exact matches among the per-shard top-``top_k`` candidates, so the
-        total is bounded by ``top_k * number_of_shards`` and is not a global
-        BM25 ranking; narrow or sort it in Daft when needed.
+        A lazy ``daft.DataFrame`` with the top-``top_k`` exact matches,
+        best-scoring first.  Cross-bucket ranking uses each bucket's BM25
+        statistics, so it is approximate (the same trade-off as a default
+        Elasticsearch search across shards).
 
     Raises:
         ValueError: If the table has no text index configuration, the
             searched column is not indexed, the query is empty, or multiple
             indexed columns require an explicit ``column``.
     """
-    from lakesoul.catalog import LakeSoulScan, LakeSoulTable
+    from lakesoul.catalog import (
+        TEXT_SEARCH_SCORE_COLUMN,
+        LakeSoulScan,
+        LakeSoulTable,
+    )
 
     if not isinstance(source, (LakeSoulTable, LakeSoulScan)):
         raise TypeError("source must be a LakeSoulTable or LakeSoulScan")
@@ -225,11 +234,17 @@ def text_search(
         raise ValueError("a text index requires a table with a primary key")
     pk_column = primary_keys[0]
 
-    columns = _dedup_columns((pk_column, column, *extra_columns))
+    # Fetch extra candidates per shard so stale entries dropped by the exact
+    # verification pass cannot leave the global top-k short.
+    candidates_per_shard = max(top_k * 3, 16)
+    columns = _dedup_columns(
+        (pk_column, column, *extra_columns, TEXT_SEARCH_SCORE_COLUMN)
+    )
     reader_options = {
         "text_search_query": query,
         "text_search_column": column,
-        "text_search_top_k": str(top_k),
+        "text_search_top_k": str(candidates_per_shard),
+        "text_search_scores": "true",
     }
 
     if isinstance(source, LakeSoulScan):
@@ -238,7 +253,11 @@ def text_search(
         scan = source.scan(columns=tuple(columns)).options(
             reader_options=reader_options
         )
-    return scan.to_daft()
+    dataframe = scan.to_daft()
+    dataframe = dataframe.sort(TEXT_SEARCH_SCORE_COLUMN, desc=True).limit(top_k)
+    if not with_score:
+        dataframe = dataframe.exclude(TEXT_SEARCH_SCORE_COLUMN)
+    return dataframe
 
 
 def _exact_distance(vec: Any, query: Any, metric: Any) -> float:
