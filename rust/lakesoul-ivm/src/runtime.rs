@@ -11,7 +11,7 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
@@ -36,6 +36,21 @@ use crate::table::{
 pub const IVM_SUM_COLUMN: &str = "sum_v";
 /// The `COUNT` column of a [`sum_count_mv_schema`] materialized view.
 pub const IVM_COUNT_COLUMN: &str = "count_v";
+/// The value column of a [`min_max_mv_schema`] materialized view and of the
+/// value-count state table.
+pub const IVM_VALUE_COLUMN: &str = "value";
+/// The value-count column of the MIN/MAX state table.
+pub const IVM_VALUE_COUNT_COLUMN: &str = "value_count";
+
+/// Whether a [`MinMaxView`] maintains the minimum or the maximum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MinMaxKind {
+    /// The minimum value per group.
+    Min,
+    /// The maximum value per group.
+    Max,
+}
 
 /// The persisted description of a view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +89,24 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source.
         right_value: String,
+    },
+    /// `group_key`, `MIN(value_column)` or `MAX(value_column)` over the source
+    /// changelog, backed by a value-count state table.
+    MinMax {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The value-count state table id.
+        state_table_id: String,
+        /// The group key column.
+        group_key: String,
+        /// The min/max column.
+        value_column: String,
+        /// Whether the minimum or the maximum is maintained.
+        min_max: MinMaxKind,
     },
 }
 
@@ -209,6 +242,93 @@ pub fn join_view_schema() -> SchemaRef {
     ]))
 }
 
+/// A `MIN`/`MAX` view over a source table.
+///
+/// The materialized view holds one row per group; the value distribution of
+/// every group is kept in a value-count state table (`(group, value) -> count`)
+/// so updates and deletes can retract the previous value and recompute the
+/// affected groups.
+#[derive(Debug, Clone)]
+pub struct MinMaxView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table.
+    pub mv: IvmTable,
+    /// The value-count state table, created from [`min_max_state_schema`] with
+    /// `(group_key, value)` as merge key.
+    pub state: IvmTable,
+    /// The group key column (must be `Int64`).
+    pub group_key: String,
+    /// The min/max value column (must be `Int64`).
+    pub value_column: String,
+    /// Whether the minimum or the maximum is maintained.
+    pub min_max: MinMaxKind,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl MinMaxView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        state: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+        min_max: MinMaxKind,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            state,
+            group_key: group_key.into(),
+            value_column: value_column.into(),
+            min_max,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::MinMax {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            state_table_id: self.state.table_id.clone(),
+            group_key: self.group_key.clone(),
+            value_column: self.value_column.clone(),
+            min_max: self.min_max,
+        }
+    }
+}
+
+/// The schema of a [`MinMaxView`] materialized view.
+pub fn min_max_mv_schema(group_key: &str) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(group_key, DataType::Int64, false),
+        Field::new(IVM_VALUE_COLUMN, DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]))
+}
+
+/// The schema of the [`MinMaxView`] value-count state table.
+///
+/// Create it with `(group_key, value)` as primary keys and the group key as its
+/// bucket prefix so a group can be probed by key.
+pub fn min_max_state_schema(group_key: &str) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(group_key, DataType::Int64, false),
+        Field::new(IVM_VALUE_COLUMN, DataType::Int64, false),
+        Field::new(IVM_VALUE_COUNT_COLUMN, DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]))
+}
+
 /// The IVM runtime: a metadata client plus the `ivm` schema access layer.
 pub struct IvmRuntime {
     client: MetaDataClient,
@@ -315,6 +435,14 @@ impl IvmRuntime {
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
+    }
+
+    /// Persist a min/max view spec (idempotent).
+    pub async fn register_min_max_view(&self, view: &MinMaxView) -> Result<()> {
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
     }
 
     /// Refresh an inner equi-join view over two append-only sources.
@@ -462,6 +590,125 @@ impl IvmRuntime {
         Ok(epoch)
     }
 
+    /// Refresh a `MIN`/`MAX` view through its value-count state table.
+    ///
+    /// The window delta is turned into `(group, value) -> count` changes (new
+    /// rows add, the previous version of an upserted row retracts), applied to
+    /// the state table, and the affected groups' extremes are recomputed and
+    /// written to the MV. State rows carry the window epoch, so a replay after
+    /// a crash between the state and the MV writes is a no-op for the state.
+    pub async fn refresh_min_max(&self, view: &MinMaxView) -> Result<Option<i64>> {
+        self.register_min_max_view(view).await?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let mut count_changes = count_rows_by_group_value(view, &delta_batches).await?;
+        if !view.source.primary_keys.is_empty() {
+            let old_batches = view
+                .source
+                .read_as_of(&self.client, window.before_timestamp)
+                .await?;
+            subtract_changed_old_counts(
+                view,
+                &delta_batches,
+                &old_batches,
+                &mut count_changes,
+            )
+            .await?;
+        }
+        count_changes.retain(|_, count| *count != 0);
+
+        let state_batches = view.state.read_current(&self.client).await?;
+        let mut state = read_min_max_state(view, state_batches)?;
+
+        let mut state_rows = StateDeltaRows::default();
+        for ((group, value), delta) in &count_changes {
+            let key = (*group, *value);
+            if state.get(&key).is_some_and(|entry| entry.epoch == epoch) {
+                // The state already carries this window (a crashed attempt
+                // wrote it before the MV was committed).
+                continue;
+            }
+            let old_count = state
+                .get(&key)
+                .filter(|entry| entry.row_kinds == "insert")
+                .map(|entry| entry.count)
+                .unwrap_or(0);
+            let new_count = old_count + delta;
+            if old_count > 0 {
+                state_rows.push_delete(key, old_count, epoch);
+            }
+            if new_count > 0 {
+                state_rows.push_insert(key, new_count, epoch);
+                state.insert(
+                    key,
+                    StateEntry {
+                        count: new_count,
+                        row_kinds: "insert".to_string(),
+                        epoch,
+                    },
+                );
+            } else {
+                state.remove(&key);
+            }
+        }
+        if !state_rows.is_empty() {
+            view.state
+                .append_batch(&self.client, state_rows.into_batch(&view.state)?)
+                .await?;
+        }
+
+        let values_by_group = values_by_group(&state);
+        let mv_batches = view.mv.read_current(&self.client).await?;
+        let current_mv = read_min_max_mv(view, mv_batches)?;
+        let mut mv_rows = MinMaxRows::default();
+        for group in count_changes
+            .keys()
+            .map(|(group, _)| *group)
+            .collect::<std::collections::HashSet<_>>()
+        {
+            let new_value = group_extreme(values_by_group.get(&group), view.min_max);
+            match current_mv.get(&group) {
+                Some(entry) if entry.epoch == epoch => continue,
+                Some(entry) => mv_rows.push_delete(group, entry.value, epoch),
+                None => {}
+            }
+            if let Some(value) = new_value {
+                mv_rows.push_insert(group, value, epoch);
+            }
+        }
+        if !mv_rows.is_empty() {
+            view.mv
+                .append_batch(&self.client, mv_rows.into_batch(&view.mv)?)
+                .await?;
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
     /// Rebuild an inner-join view from the full state of both sources.
     ///
     /// The output is truncated and refilled with the full join, published as
@@ -533,6 +780,98 @@ impl IvmRuntime {
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
         self.advance_cursors(&view.view_id, right_baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Rebuild a `MIN`/`MAX` view from the full source state.
+    ///
+    /// Both the value-count state table and the MV are truncated and refilled
+    /// from the current source state, published as `rebuild:<generation>`.
+    pub async fn rebuild_min_max(&self, view: &MinMaxView) -> Result<i64> {
+        self.register_min_max_view(view).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+        view.state.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let counts = count_rows_by_group_value(view, &baseline.batches).await?;
+
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let mut state = HashMap::new();
+        let mut state_rows = StateDeltaRows::default();
+        for ((group, value), count) in &counts {
+            if *count <= 0 {
+                continue;
+            }
+            state_rows.push_insert((*group, *value), *count, epoch);
+            state.insert(
+                (*group, *value),
+                StateEntry {
+                    count: *count,
+                    row_kinds: "insert".to_string(),
+                    epoch,
+                },
+            );
+        }
+        if !state_rows.is_empty() {
+            view.state
+                .append_batch(&self.client, state_rows.into_batch(&view.state)?)
+                .await?;
+        }
+
+        let values_by_group = values_by_group(&state);
+        let mut mv_rows = MinMaxRows::default();
+        let mut groups = values_by_group.keys().copied().collect::<Vec<_>>();
+        groups.sort_unstable();
+        for group in groups {
+            if let Some(value) = group_extreme(values_by_group.get(&group), view.min_max)
+            {
+                mv_rows.push_insert(group, value, epoch);
+            }
+        }
+        if !mv_rows.is_empty() {
+            view.mv
+                .append_batch(&self.client, mv_rows.into_batch(&view.mv)?)
+                .await?;
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
         self.metadata
             .set_view_status(&view.view_id, "active")
@@ -1180,6 +1519,290 @@ fn build_full_batch(
             Arc::new(Int64Array::from(epochs)),
         ],
     )?)
+}
+
+/// One surviving row of the MIN/MAX value-count state table.
+struct StateEntry {
+    count: i64,
+    row_kinds: String,
+    epoch: i64,
+}
+
+/// One surviving row of a MIN/MAX materialized view.
+struct MvEntry {
+    value: i64,
+    epoch: i64,
+}
+
+/// Read the value-count state of a MIN/MAX view.
+fn read_min_max_state(
+    view: &MinMaxView,
+    batches: Vec<RecordBatch>,
+) -> Result<HashMap<(i64, i64), StateEntry>> {
+    let mut state = HashMap::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let group_index = schema.index_of(&view.group_key)?;
+        let value_index = schema.index_of(IVM_VALUE_COLUMN)?;
+        let count_index = schema.index_of(IVM_VALUE_COUNT_COLUMN)?;
+        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
+        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
+
+        let groups = int64_column(&batch, group_index, &view.group_key)?;
+        let values = int64_column(&batch, value_index, IVM_VALUE_COLUMN)?;
+        let counts = int64_column(&batch, count_index, IVM_VALUE_COUNT_COLUMN)?;
+        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
+        let kinds = batch
+            .column(kind_index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
+
+        for row in 0..batch.num_rows() {
+            state.insert(
+                (groups.value(row), values.value(row)),
+                StateEntry {
+                    count: counts.value(row),
+                    row_kinds: kinds.value(row).to_string(),
+                    epoch: epochs.value(row),
+                },
+            );
+        }
+    }
+    Ok(state)
+}
+
+/// Read the current state of a MIN/MAX materialized view.
+fn read_min_max_mv(
+    view: &MinMaxView,
+    batches: Vec<RecordBatch>,
+) -> Result<HashMap<i64, MvEntry>> {
+    let mut mv = HashMap::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let group_index = schema.index_of(&view.group_key)?;
+        let value_index = schema.index_of(IVM_VALUE_COLUMN)?;
+        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
+        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
+
+        let groups = int64_column(&batch, group_index, &view.group_key)?;
+        let values = int64_column(&batch, value_index, IVM_VALUE_COLUMN)?;
+        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
+        let kinds = batch
+            .column(kind_index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
+
+        for row in 0..batch.num_rows() {
+            let group = groups.value(row);
+            if kinds.value(row) == "insert" {
+                mv.insert(
+                    group,
+                    MvEntry {
+                        value: values.value(row),
+                        epoch: epochs.value(row),
+                    },
+                );
+            } else {
+                mv.remove(&group);
+            }
+        }
+    }
+    Ok(mv)
+}
+
+/// `(group, value) -> count` over the non-delete rows of the batches.
+async fn count_rows_by_group_value(
+    view: &MinMaxView,
+    batches: &[RecordBatch],
+) -> Result<HashMap<(i64, i64), i64>> {
+    if batches.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let context = SessionContext::new();
+    let frame = context.read_batches(batches.to_vec())?;
+    let frame = if view
+        .source
+        .schema
+        .field_with_name(IVM_ROW_KINDS_COLUMN)
+        .is_ok()
+    {
+        frame.filter(row_kinds_expr().not_eq(lit("delete")))?
+    } else {
+        frame
+    };
+    let aggregated = frame.aggregate(
+        vec![
+            col(view.group_key.as_str()),
+            col(view.value_column.as_str()),
+        ],
+        vec![count(lit(1_i64)).alias("rows")],
+    )?;
+
+    let mut counts = HashMap::new();
+    for batch in aggregated.collect().await? {
+        let groups = int64_column(&batch, 0, &view.group_key)?;
+        let values = int64_column(&batch, 1, &view.value_column)?;
+        let rows = int64_column(&batch, 2, "rows")?;
+        for row in 0..batch.num_rows() {
+            counts.insert((groups.value(row), values.value(row)), rows.value(row));
+        }
+    }
+    Ok(counts)
+}
+
+/// Retract the previous version of every key in `delta` from `counts`.
+async fn subtract_changed_old_counts(
+    view: &MinMaxView,
+    delta: &[RecordBatch],
+    old: &[RecordBatch],
+    counts: &mut HashMap<(i64, i64), i64>,
+) -> Result<()> {
+    if old.is_empty() || delta.is_empty() {
+        return Ok(());
+    }
+
+    let context = SessionContext::new();
+    let delta_frame = context.read_batches(delta.to_vec())?;
+    let old_frame = context.read_batches(old.to_vec())?;
+    let pk_columns = view
+        .source
+        .primary_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let changed_keys = delta_frame
+        .select(
+            pk_columns
+                .iter()
+                .map(|column| col(*column))
+                .collect::<Vec<_>>(),
+        )?
+        .distinct()?;
+    let changed_old = old_frame.join(
+        changed_keys,
+        JoinType::LeftSemi,
+        &pk_columns,
+        &pk_columns,
+        None,
+    )?;
+    for (key, count) in
+        count_rows_by_group_value(view, &changed_old.collect().await?).await?
+    {
+        *counts.entry(key).or_insert(0) -= count;
+    }
+    Ok(())
+}
+
+/// The positive-count values of every group in the state table.
+fn values_by_group(
+    state: &HashMap<(i64, i64), StateEntry>,
+) -> HashMap<i64, BTreeMap<i64, i64>> {
+    let mut by_group = HashMap::new();
+    for ((group, value), entry) in state {
+        if entry.row_kinds == "insert" && entry.count > 0 {
+            by_group
+                .entry(*group)
+                .or_insert_with(BTreeMap::new)
+                .insert(*value, entry.count);
+        }
+    }
+    by_group
+}
+
+fn group_extreme(values: Option<&BTreeMap<i64, i64>>, kind: MinMaxKind) -> Option<i64> {
+    match kind {
+        MinMaxKind::Min => values.and_then(|values| values.keys().next().copied()),
+        MinMaxKind::Max => values.and_then(|values| values.keys().next_back().copied()),
+    }
+}
+
+/// Rows to write into the MIN/MAX value-count state table.
+#[derive(Default)]
+struct StateDeltaRows {
+    groups: Vec<i64>,
+    values: Vec<i64>,
+    counts: Vec<i64>,
+    kinds: Vec<&'static str>,
+    epochs: Vec<i64>,
+}
+
+impl StateDeltaRows {
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    fn push_delete(&mut self, (group, value): (i64, i64), count: i64, epoch: i64) {
+        self.groups.push(group);
+        self.values.push(value);
+        self.counts.push(count);
+        self.kinds.push("delete");
+        self.epochs.push(epoch);
+    }
+
+    fn push_insert(&mut self, (group, value): (i64, i64), count: i64, epoch: i64) {
+        self.groups.push(group);
+        self.values.push(value);
+        self.counts.push(count);
+        self.kinds.push("insert");
+        self.epochs.push(epoch);
+    }
+
+    fn into_batch(self, table: &IvmTable) -> Result<RecordBatch> {
+        Ok(RecordBatch::try_new(
+            table.schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(self.groups)),
+                Arc::new(Int64Array::from(self.values)),
+                Arc::new(Int64Array::from(self.counts)),
+                Arc::new(StringArray::from(self.kinds)),
+                Arc::new(Int64Array::from(self.epochs)),
+            ],
+        )?)
+    }
+}
+
+/// Rows to write into a MIN/MAX materialized view.
+#[derive(Default)]
+struct MinMaxRows {
+    groups: Vec<i64>,
+    values: Vec<i64>,
+    kinds: Vec<&'static str>,
+    epochs: Vec<i64>,
+}
+
+impl MinMaxRows {
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    fn push_delete(&mut self, group: i64, value: i64, epoch: i64) {
+        self.groups.push(group);
+        self.values.push(value);
+        self.kinds.push("delete");
+        self.epochs.push(epoch);
+    }
+
+    fn push_insert(&mut self, group: i64, value: i64, epoch: i64) {
+        self.groups.push(group);
+        self.values.push(value);
+        self.kinds.push("insert");
+        self.epochs.push(epoch);
+    }
+
+    fn into_batch(self, table: &IvmTable) -> Result<RecordBatch> {
+        Ok(RecordBatch::try_new(
+            table.schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(self.groups)),
+                Arc::new(Int64Array::from(self.values)),
+                Arc::new(StringArray::from(self.kinds)),
+                Arc::new(Int64Array::from(self.epochs)),
+            ],
+        )?)
+    }
 }
 
 fn int64_column<'a>(

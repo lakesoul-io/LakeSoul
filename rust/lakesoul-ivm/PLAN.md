@@ -365,6 +365,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   更新、`rowKinds='delete'`（含删除不存在的键）、keyed 源 rebuild，均与全量聚合
   交叉验证。
 
+**MIN/MAX 实施记录（已完成）**
+
+- 新增 `MinMaxView`：MV 表 `(group, value, rowKinds, __ivm_epoch)`（PK=group），
+  值分布状态表 `(group, value, value_count, rowKinds, __ivm_epoch)`
+  （PK=(group,value)，bucket=group）。
+- 刷新：窗口 delta → `(group,value)` 计数变化（append-only 直接 +1；keyed 源用
+  as-of 旧值 semi-join 回收）→ 应用状态表（逐行 delete(old)+insert(new)）→
+  受影响组从状态重算极值 → 写 MV（delete(old)+insert(new)）。
+- 幂等：状态行携带 `__ivm_epoch`，重放时同 epoch 的键跳过状态变更；MV 重写是
+  同主键同值的幂等写，因此 crash 在状态与 MV 之间也不会重复计数。
+- `rebuild_min_max`：清空 MV 与状态表，从源全量重建计数与极值，发布
+  `rebuild:<generation>`。
+- 测试 `tests/min_max_refresh.rs`：append-only 源的 MIN 与 MAX、keyed 源的
+  更新/删除/组清空、窗口重放不重复、rebuild 后仅消费新提交。
+- 未完成：`ivm.states` 状态表注册（当前由调用方创建并持有 handle）、
+  DISTINCT/COUNT(DISTINCT)、Window、SEMI/ANTI、join upsert。
+
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
 - `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算
