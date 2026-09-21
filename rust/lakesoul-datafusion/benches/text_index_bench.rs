@@ -9,6 +9,8 @@
 //! helpers and evaluates against an exact single-index BM25 baseline and the
 //! dataset's qrels.
 //!
+//! Results and methodology: website/docs/03-Usage Docs/19-text-index-benchmark.md.
+//!
 //! Scenarios:
 //!   * `build`   — fresh build scaling + first quality/latency measurement
 //!   * `search`  — reuse an existing work dir; sweep per-shard candidate counts
