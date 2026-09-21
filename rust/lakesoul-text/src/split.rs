@@ -25,6 +25,7 @@ use object_store::ObjectStore;
 use object_store::ObjectStoreExt;
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
+use tantivy::merge_policy::NoMergePolicy;
 use tantivy::schema::TantivyDocument;
 use tantivy::{Index, IndexWriter, Term};
 use tracing::{debug, info};
@@ -145,6 +146,10 @@ pub async fn write_split(
     // A single indexing thread produces a single segment per commit for
     // batches that fit the memory budget.
     let mut writer: IndexWriter = index.writer_with_num_threads(1, budget)?;
+    // Large batches flush several segments while indexing; merging is done
+    // explicitly below.  Background merges are disabled so they cannot
+    // retire segments between the id lookup and the forced merge.
+    writer.set_merge_policy(Box::new(NoMergePolicy));
     for (id, text) in docs {
         // Upsert semantics: the last document of a primary key wins.  A
         // rebuilt shard reads every active data file, so an updated row

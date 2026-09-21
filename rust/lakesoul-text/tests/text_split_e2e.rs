@@ -115,6 +115,42 @@ async fn multiple_splits_merge_into_a_global_top_k() {
 }
 
 #[tokio::test]
+async fn large_batches_are_merged_into_a_single_segment() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let prefix = "table/_text_index/body/-5/0";
+    let config = TextIndexConfig {
+        column_name: "body".to_string(),
+        tokenizer: "en_stem".to_string(),
+        with_positions: false,
+        stored: false,
+    };
+
+    // More text than the minimum memory budget forces the writer to flush
+    // several segments while indexing; the split must still be a single
+    // segment and keep every live document.
+    let filler = "lakesoul distributed lakehouse storage engine ".repeat(6);
+    let docs: Vec<(u64, String)> = (0..80_000)
+        .map(|id| (id, format!("document {id} {filler}")))
+        .collect();
+    let entry = write_split(&store, prefix, &config, &docs, 15_000_000)
+        .await
+        .unwrap();
+    assert_eq!(entry.num_docs, docs.len() as u64);
+
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache = SplitCache::new(cache_dir.path());
+    let index = cache.open(&store, prefix, &entry).await.unwrap();
+    assert_eq!(
+        index.searchable_segment_ids().unwrap().len(),
+        1,
+        "the split must be force-merged into one segment"
+    );
+
+    let hits = search_index(&index, "distributed lakehouse", 5).unwrap();
+    assert_eq!(hits.len(), 5);
+}
+
+#[tokio::test]
 async fn duplicate_primary_keys_keep_the_last_document() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let prefix = "table/_text_index/body/-5/0";

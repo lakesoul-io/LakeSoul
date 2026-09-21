@@ -81,7 +81,8 @@ run_one() {
         >"$RESULTS_DIR/logs/$name.log" 2>&1 || {
         echo "   FAILED: $name (tail of $RESULTS_DIR/logs/$name.log)"
         tail -5 "$RESULTS_DIR/logs/$name.log" | sed 's/^/   /'
-        return 1
+        FAILURES=$((FAILURES + 1))
+        return 0
     }
 }
 
@@ -408,6 +409,7 @@ fi
 echo "results: $RESULTS_DIR"
 echo "data:    $DATA_DIR"
 echo "threads: $THREADS  quick: $QUICK"
+FAILURES=0
 
 for scenario in "${SCENARIOS[@]}"; do
     case "$scenario" in
@@ -435,5 +437,11 @@ for scenario in "${SCENARIOS[@]}"; do
 done
 
 echo
-echo "done. plot with:"
+if [[ "$FAILURES" -gt 0 ]]; then
+    echo "done with $FAILURES failed scenario(s); see $RESULTS_DIR/logs"
+else
+    echo "done."
+fi
+echo "plot with:"
 echo "  uv run --with matplotlib python script/benchmark/text/plot.py --results $RESULTS_DIR"
+exit $((FAILURES > 0 ? 1 : 0))
