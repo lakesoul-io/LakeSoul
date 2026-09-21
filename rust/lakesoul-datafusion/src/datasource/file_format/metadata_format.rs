@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The [`datafusion::datasource::file_format::FileFormat`] implementation for the LakeSoul Parquet format with metadata.
+//! The [`datafusion::datasource::file_format::FileFormat`] implementation
+//! for LakeSoul tables: the metadata/listing callback DataFusion uses for
+//! LakeSoul tables, plus the LakeSoul write path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
@@ -13,38 +15,27 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::parsers::CompressionTypeVariant;
-use datafusion::common::{DFSchema, GetExt, Statistics, project_schema};
+use datafusion::common::Statistics;
+use datafusion::common::not_impl_err;
+use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
-use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
-use datafusion::datasource::listing::ListingOptions;
-use datafusion::datasource::physical_plan::{FileScanConfigBuilder, FileSource};
+use datafusion::datasource::physical_plan::FileSource;
 use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::{
     EquivalenceProperties, LexOrdering, LexRequirement, OrderingRequirements,
-    create_physical_expr,
 };
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlanProperties, Partitioning,
     PlanProperties, SendableRecordBatchStream,
 };
-use datafusion::prelude::{ident, lit};
 use datafusion::{
-    datasource::{
-        file_format::{FileFormat, parquet::ParquetFormat},
-        physical_plan::{FileScanConfig, FileSinkConfig},
-    },
+    datasource::physical_plan::{FileScanConfig, FileSinkConfig},
     error::Result as DFResult,
     physical_plan::ExecutionPlan,
 };
@@ -53,17 +44,15 @@ use datafusion_common::tree_node::TreeNodeRecursion;
 use futures::StreamExt;
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::file_format::{
-    compute_project_column_indices, flatten_file_scan_config,
+    LakeSoulFormatRegistry, PhysicalFormat, merge_schema_refs,
 };
 use lakesoul_io::helpers::{
     columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values,
-    partition_desc_from_file_scan_config,
 };
-use lakesoul_io::physical_plan::MergeParquetExec;
 use lakesoul_io::session::LakeSoulIOSession;
 use lakesoul_io::writer::async_writer::AsyncBatchWriter;
 use lakesoul_io::writer::create_writer;
-use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata_proto::entity::TableInfo;
 use object_store::{ObjectMeta, ObjectStore};
 use rand::distr::SampleString;
@@ -77,37 +66,71 @@ use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
 type PartitionedFile = HashMap<String, (Vec<String>, u64)>;
 
-/// The wrapper of the [`ParquetFormat`] with LakeSoul metadata. It is used to read and write data files while interacting with LakeSoul metadata.
-pub struct LakeSoulMetaDataParquetFormat {
-    /// The inner [`ParquetFormat`].
-    parquet_format: Arc<ParquetFormat>,
+/// The LakeSoul metadata [`FileFormat`]: it presents a LakeSoul table to
+/// DataFusion's listing machinery and owns the LakeSoul write path.
+///
+/// It is deliberately *not* a physical file reader. A LakeSoul table can hold
+/// files of several physical formats at the same time (historical Parquet
+/// files next to newer Vortex files), so everything that touches data files
+/// dispatches through [`LakeSoulFormatRegistry`] on the format of the file at
+/// hand: schema inference groups the objects by their own format, and scan
+/// planning (`LakeSoulTableProvider::scan`) and the sink do the same. The
+/// table's declared format only answers the table-level questions DataFusion
+/// asks without a file at hand (`get_ext`, `compression_type`).
+pub struct LakeSoulMetaDataFormat {
     /// The metadata client.
     client: MetaDataClientRef,
     /// The table info.
     table_info: Arc<TableInfo>,
     /// The io config.
     conf: LakeSoulIOConfig,
+    /// The readers/writers of the physical formats a data file may use.
+    format_registry: Arc<LakeSoulFormatRegistry>,
+    /// The format the table declares for its data files. It is the default for
+    /// table-level answers and for files whose path carries no known
+    /// extension; never assume it for a specific file.
+    physical_format: PhysicalFormat,
 }
 
-impl Debug for LakeSoulMetaDataParquetFormat {
+impl Debug for LakeSoulMetaDataFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LakeSoulMetaDataParquetFormat").finish()
+        f.debug_struct("LakeSoulMetaDataFormat")
+            .field("physical_format", &self.physical_format)
+            .finish()
     }
 }
 
-impl LakeSoulMetaDataParquetFormat {
-    pub async fn new(
+impl LakeSoulMetaDataFormat {
+    /// Builds the metadata format of one table.
+    ///
+    /// The table's declared format answers the table-level questions. The io
+    /// config is not consulted: one built from files alone would answer with
+    /// the extension of a single data file (or the enum default when it holds
+    /// no file at all), which is a per-file fact, not the table's
+    /// declaration.
+    ///
+    /// Fails when the stored table properties cannot be read or declare a
+    /// format this build cannot write: such a table must not be presented as
+    /// a Parquet one.
+    pub fn new(
         client: MetaDataClientRef,
-        parquet_format: Arc<ParquetFormat>,
         table_info: Arc<TableInfo>,
         conf: LakeSoulIOConfig,
+        format_registry: Arc<LakeSoulFormatRegistry>,
     ) -> Result<Self> {
-        debug!("LakeSoulMetaDataParquetFormat::new, conf: {:?}", conf);
+        let table = format!("{}.{}", table_info.table_namespace, table_info.table_name);
+        let physical_format = crate::catalog::table_file_format(&table_info.properties)
+            .map_err(|report| report.attach(table))?;
+        debug!(
+            "LakeSoulMetaDataFormat::new, physical_format: {}, conf: {:?}",
+            physical_format, conf
+        );
         Ok(Self {
-            parquet_format,
             client,
             table_info,
             conf,
+            format_registry,
+            physical_format,
         })
     }
 
@@ -119,70 +142,77 @@ impl LakeSoulMetaDataParquetFormat {
         self.table_info.clone()
     }
 
-    pub async fn default_listing_options() -> Result<ListingOptions> {
-        Ok(ListingOptions::new(Arc::new(
-            Self::new(
-                Arc::new(
-                    MetaDataClient::from_env()
-                        .await
-                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
-                ),
-                Arc::new(ParquetFormat::new().with_force_view_types(false)),
-                Arc::new(TableInfo::default()),
-                LakeSoulIOConfig::default(),
-            )
-            .await?,
-        )))
+    /// The reader/writer of the table's declared physical format.
+    fn table_format(&self) -> Arc<dyn FileFormat> {
+        self.format_registry.file_format(self.physical_format)
     }
 
-    fn needs_output_projection(
-        target_schema: &SchemaRef,
-        merged_schema: &SchemaRef,
-    ) -> bool {
-        if target_schema.fields().len() < merged_schema.fields().len() {
-            return true;
-        }
-
-        target_schema
-            .fields()
-            .iter()
-            .zip(merged_schema.fields().iter())
-            .any(|(target, merged)| target.name() != merged.name())
+    /// The physical format of one data file, taken from its path so a table
+    /// holding files of several formats dispatches per file.
+    fn format_for_path(&self, path: &str) -> PhysicalFormat {
+        PhysicalFormat::from_extension(path).unwrap_or_else(|_| {
+            debug!(
+                "file '{}' has no known physical format; assuming {}",
+                path, self.physical_format
+            );
+            self.physical_format
+        })
     }
 }
 
 #[async_trait]
-impl FileFormat for LakeSoulMetaDataParquetFormat {
+impl FileFormat for LakeSoulMetaDataFormat {
     fn get_ext(&self) -> String {
-        ParquetFormatFactory::new().get_ext()
+        self.physical_format.extension().to_string()
     }
 
+    /// The extension/compression pair DataFusion lists and writes with. Both
+    /// come from the table's own physical format, so a Vortex table never
+    /// answers with Parquet's compression behavior.
     fn get_ext_with_compression(
         &self,
         file_compression_type: &FileCompressionType,
     ) -> DFResult<String> {
-        let ext = self.get_ext();
-        match file_compression_type.get_variant() {
-            CompressionTypeVariant::UNCOMPRESSED => Ok(ext),
-            _ => Err(DataFusionError::Internal(
-                "Parquet FileFormat does not support compression.".into(),
-            )),
-        }
+        self.table_format()
+            .get_ext_with_compression(file_compression_type)
     }
 
     fn compression_type(&self) -> Option<FileCompressionType> {
-        self.parquet_format.compression_type()
+        self.table_format().compression_type()
     }
 
+    /// Infers the schema of the files this listing was built over.
+    ///
+    /// The objects are grouped by the physical format of each file, because a
+    /// LakeSoul table keeps files of several formats at once: every group is
+    /// inferred by the format that can read those files (Vortex reads its own
+    /// footer and widens mixed integer widths), and the per-group schemas are
+    /// merged with LakeSoul's schema-evolution rule.
     async fn infer_schema(
         &self,
         state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> DFResult<SchemaRef> {
-        self.parquet_format
-            .infer_schema(state, store, objects)
-            .await
+        let mut groups: Vec<(PhysicalFormat, Vec<ObjectMeta>)> = vec![];
+        for object in objects {
+            let physical_format = self.format_for_path(object.location.as_ref());
+            match groups
+                .iter_mut()
+                .find(|(group_format, _)| *group_format == physical_format)
+            {
+                Some((_, group)) => group.push(object.clone()),
+                None => groups.push((physical_format, vec![object.clone()])),
+            }
+        }
+
+        let mut schemas = Vec::with_capacity(groups.len());
+        for (physical_format, objects) in groups {
+            let format = self.format_registry.file_format(physical_format);
+            schemas.push(format.infer_schema(state, store, &objects).await?);
+        }
+        merge_schema_refs(schemas)
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))
     }
 
     async fn infer_stats(
@@ -192,203 +222,29 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         table_schema: SchemaRef,
         object: &ObjectMeta,
     ) -> DFResult<Statistics> {
-        self.parquet_format
+        self.format_registry
+            .file_format(self.format_for_path(object.location.as_ref()))
             .infer_stats(state, store, table_schema, object)
             .await
     }
 
-    /// Creates a physical scan plan for a LakeSoul table.
+    /// A LakeSoul read is planned by the table provider, not here.
     ///
-    /// The plan is built as follows:
-    /// 1. Derive the requested output and merge schemas from the projection,
-    ///    primary keys, and CDC column.
-    /// 2. Resolve LakeSoul metadata into per-file scan configurations.
-    /// 3. Build `DataSourceExec` inputs and group them by LakeSoul range partition.
-    /// 4. Build one `MergeParquetExec` per range partition. Distributed scans of
-    ///    append-only tables may coalesce compatible file inputs into one scan.
-    /// 5. Union partition plans, filter CDC delete records, and project the
-    ///    requested output schema.
+    /// `LakeSoulTableProvider::scan` resolves the committed files from the
+    /// metadata, groups them by physical format and by work unit, and builds
+    /// the merge/CDC plan. Planning a scan from a `ListingTable` would
+    /// duplicate that planner, and it could not serve a table whose files are
+    /// of several physical formats, so it is rejected explicitly instead of
+    /// silently returning unmerged rows.
     async fn create_physical_plan(
         &self,
-        state: &dyn Session,
-        conf: FileScanConfig,
+        _state: &dyn Session,
+        _conf: FileScanConfig,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        info!(
-            "LakeSoulMetaDataParquetFormat::create_physical_plan with conf= {:?}",
-            &conf,
-        );
-
-        let table_schema = Arc::clone(conf.file_source.table_schema().table_schema());
-
-        // lakesoul only use column indices
-        let projection_indices = conf.file_source.projection().as_ref().map(|p| {
-            p.ordered_column_indices()
-                .into_iter()
-                .filter(|&i| i < table_schema.fields().len())
-                .collect::<Vec<_>>()
-        });
-
-        let target_schema = project_schema(&table_schema, projection_indices.as_ref())?;
-
-        let merged_projection = compute_project_column_indices(
-            table_schema.clone(),
-            target_schema.clone(),
-            self.conf.primary_keys_slice(),
-            &self.conf.cdc_column(),
-        );
-
-        let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
-
-        // files to read
-        let flatten_conf = flatten_file_scan_config(
-            state,
-            self.parquet_format.clone(),
-            conf,
-            self.conf.primary_keys_slice(),
-            &self.conf.cdc_column(),
-            self.conf.partition_schema(),
-            target_schema.clone(),
+        not_impl_err!(
+            "LakeSoul scans are planned by LakeSoulTableProvider; \
+             scan the table through its provider"
         )
-        .await?;
-
-        // In distributed sessions, append-only tables group same-schema files
-        // into a single `FileScanConfig` leaf: the distributed planner
-        // rebalances file groups of one leaf across worker tasks, whereas one
-        // leaf per file can never fan out (every task would receive every
-        // file on variant 0). Merge-on-read tables keep the per-file scan
-        // structure: their k-way merge requires one sorted stream per file
-        // and is intentionally not distributed yet.
-        let is_non_primary_key_table = self.conf.primary_keys_slice().is_empty();
-        let is_distri_ext_enabled = state
-            .config_options()
-            .extensions
-            .get::<datafusion_distributed::DistributedConfig>()
-            .is_some();
-        let is_distributed_scan = is_distri_ext_enabled && is_non_primary_key_table;
-
-        let mut inputs_map: HashMap<
-            String,
-            (
-                Arc<HashMap<String, String>>,
-                (
-                    Vec<Arc<dyn ExecutionPlan>>,
-                    Vec<FileScanConfig>,
-                    Vec<String>,
-                ),
-            ),
-        > = HashMap::new();
-        let mut column_nullable = HashSet::<String>::new();
-
-        for config in flatten_conf {
-            let (partition_desc, partition_columnar_value) =
-                partition_desc_from_file_scan_config(&config).map_err(|report| {
-                    DataFusionError::External(report.into_boxed_error())
-                })?;
-            let partition_columnar_value = Arc::new(partition_columnar_value);
-
-            info!("Create parquet exec input with config= {:?}", config);
-            let file_path = config.file_groups[0].files()[0].path().to_string();
-            let datasource_exec = DataSourceExec::from_data_source(config.clone());
-            for field in datasource_exec.schema().fields().iter() {
-                if field.is_nullable() {
-                    column_nullable.insert(field.name().clone());
-                }
-            }
-
-            if let Some((_, entry)) = inputs_map.get_mut(&partition_desc) {
-                entry.0.push(datasource_exec);
-                entry.1.push(config);
-                entry.2.push(file_path);
-            } else {
-                inputs_map.insert(
-                    partition_desc.clone(),
-                    (
-                        partition_columnar_value.clone(),
-                        (vec![datasource_exec], vec![config], vec![file_path]),
-                    ),
-                );
-            }
-        }
-
-        // Per-file schemas widen nullability for schema evolution, but only
-        // for columns that physically live in the files. Partition columns
-        // are projected constants whose nullability must keep matching the
-        // logical table schema, otherwise DataFusion's physical planner
-        // rejects the scan below aggregates ("physical input schema ..."
-        // internal error).
-        let partition_columns = self
-            .conf
-            .range_partitions_slice()
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
-        let merged_schema = merged_schema_with_file_nullability(
-            merged_schema,
-            &partition_columns,
-            &column_nullable,
-        );
-
-        let mut partitioned_exec = Vec::new();
-        for (_, (partition_columnar_values, (inputs, configs, file_paths))) in inputs_map
-        {
-            let mut conf = self.conf.clone();
-            conf.set_files(file_paths);
-            let inputs = if is_distributed_scan && groupable_scan_configs(&configs) {
-                vec![grouped_scan_exec(configs)?]
-            } else {
-                inputs
-            };
-            let merge_exec = Arc::new(
-                MergeParquetExec::new_with_inputs(
-                    merged_schema.clone(),
-                    inputs,
-                    conf,
-                    partition_columnar_values.clone(),
-                )
-                .map_err(|e| {
-                    error!("{e}");
-                    e.into_boxed_error()
-                })?,
-            ) as Arc<dyn ExecutionPlan>;
-            partitioned_exec.push(merge_exec);
-        }
-        let exec = if partitioned_exec.len() > 1 {
-            UnionExec::try_new(partitioned_exec)?
-        } else {
-            partitioned_exec.first().unwrap().clone()
-        };
-
-        let cdc_column = self.conf.cdc_column();
-        let exec = if !cdc_column.is_empty() {
-            let dfschema = DFSchema::try_from(exec.schema().as_ref().clone())?;
-            let cdc_filter = ident(cdc_column).not_eq(lit("delete"));
-            let expr = create_physical_expr(
-                &cdc_filter,
-                &dfschema,
-                state.execution_props(),
-                &PhysicalPlanningContext::default(),
-            )?;
-
-            Arc::new(FilterExec::try_new(expr, exec)?)
-        } else {
-            exec
-        };
-
-        if Self::needs_output_projection(&target_schema, &merged_schema) {
-            let mut projection_expr = vec![];
-            for field in target_schema.fields() {
-                projection_expr.push((
-                    datafusion::physical_expr::expressions::col(
-                        field.name(),
-                        exec.schema().as_ref(),
-                    )?,
-                    field.name().clone(),
-                ));
-            }
-            Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))
-        } else {
-            Ok(exec)
-        }
     }
 
     /// Create a physical plan for the write LakeSoul table.
@@ -405,7 +261,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         if conf.insert_op == InsertOp::Overwrite {
             return Err(DataFusionError::NotImplemented(
-                "Overwrites are not implemented yet for Parquet".to_string(),
+                "Overwrites are not implemented yet for LakeSoul tables".to_string(),
             ));
         }
 
@@ -423,11 +279,11 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     }
 
     fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
-        self.parquet_format.file_source(table_schema)
+        self.table_format().file_source(table_schema)
     }
 }
 
-/// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
+/// Execution plan for writing record batches to a LakeSoul table
 pub struct LakeSoulHashSinkExec {
     /// Input plan that produces the record batches to be written.
     input: Arc<dyn ExecutionPlan>,
@@ -998,152 +854,56 @@ fn make_sink_schema() -> SchemaRef {
     ]))
 }
 
-/// Derives the scan schema's nullability from the logical schema and per-file
-/// schemas. Range partition columns are injected as constants by LakeSoul, so
-/// their nullability is defined only by the logical schema.
-fn merged_schema_with_file_nullability(
-    merged_schema: SchemaRef,
-    partition_columns: &HashSet<String>,
-    column_nullable: &HashSet<String>,
-) -> SchemaRef {
-    SchemaRef::new(Schema::new(
-        merged_schema
-            .fields()
-            .iter()
-            .map(|field| {
-                let is_partition_column = partition_columns.contains(field.name());
-                let nullable_in_any_file = column_nullable.contains(field.name());
-                let nullable_due_to_file = !is_partition_column && nullable_in_any_file;
-                let output_nullable = field.is_nullable() || nullable_due_to_file;
-
-                Field::new(field.name(), field.data_type().clone(), output_nullable)
-            })
-            .collect::<Vec<_>>(),
-    ))
-}
-
-/// Whether the per-file scan configs can be merged into one
-/// `DataSourceExec(FileScanConfig)` leaf with multiple file groups.
-///
-/// Files of one group must agree on the file schema (schema evolution can
-/// leave older files without newer columns; those keep the per-file scan
-/// structure) and on the partition-column set.
-fn groupable_scan_configs(configs: &[FileScanConfig]) -> bool {
-    let Some(first) = configs.first() else {
-        return false;
-    };
-    let schema_of = |config: &FileScanConfig| {
-        let table = config.file_source.table_schema();
-        (
-            table.file_schema().clone(),
-            table.table_partition_cols().clone(),
-        )
-    };
-    let (first_schema, first_partition_cols) = schema_of(first);
-    configs.iter().skip(1).all(|config| {
-        let (schema, partition_cols) = schema_of(config);
-        schema == first_schema && partition_cols == first_partition_cols
-    })
-}
-
-/// Builds one `DataSourceExec` scanning all `configs`' file groups with the
-/// first config as the template (identical schemas were verified by
-/// [`groupable_scan_configs`]).
-fn grouped_scan_exec(configs: Vec<FileScanConfig>) -> DFResult<Arc<dyn ExecutionPlan>> {
-    let mut file_groups = Vec::new();
-    let mut base = None;
-    for config in configs {
-        file_groups.extend(config.file_groups.clone());
-        base.get_or_insert(config);
-    }
-    let Some(base) = base else {
-        return Err(DataFusionError::Internal(
-            "grouped_scan_exec called without scan configs".to_string(),
-        ));
-    };
-    let table_schema = base.file_source.table_schema().table_schema().clone();
-    // Config-level statistics describe a single file only once grouped; leave
-    // them unknown instead of under-reporting the table.
-    let config = FileScanConfigBuilder::from(base)
-        .with_file_groups(file_groups)
-        .with_statistics(Statistics::new_unknown(&table_schema))
-        .build();
-    Ok(DataSourceExec::from_data_source(config))
-}
-
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use datafusion::physical_expr::expressions::col;
-    use datafusion::physical_plan::empty::EmptyExec;
+    use lakesoul_metadata::MetaDataClient;
 
-    #[test]
-    fn same_width_different_order_still_needs_projection() {
-        let target_schema = Arc::new(Schema::new(vec![
-            Field::new("c1", DataType::Int32, true),
-            Field::new("c2", DataType::Int32, true),
-        ]));
-        let merged_schema = Arc::new(Schema::new(vec![
-            Field::new("c2", DataType::Int32, true),
-            Field::new("c1", DataType::Int32, true),
-        ]));
-
-        assert!(LakeSoulMetaDataParquetFormat::needs_output_projection(
-            &target_schema,
-            &merged_schema,
-        ));
+    fn table_info(properties: &str) -> Arc<TableInfo> {
+        Arc::new(TableInfo {
+            table_namespace: "default".to_string(),
+            table_name: "format_metadata".to_string(),
+            properties: properties.to_string(),
+            ..Default::default()
+        })
     }
 
-    #[test]
-    fn nullable_range_partition_column_preserves_logical_schema() {
-        // Range partition values are injected by LakeSoul rather than read
-        // from parquet. The physical input therefore has no `part` column.
-        let logical_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("part", DataType::Utf8, true),
-        ]));
-        let partition_columns = HashSet::from(["part".to_string()]);
-        let scan_schema = merged_schema_with_file_nullability(
-            logical_schema,
-            &partition_columns,
-            &HashSet::new(),
+    /// Unusable stored format metadata must fail the construction instead of
+    /// being presented to DataFusion as a Parquet table. An absent
+    /// `file_format` property is not an error: it means the connector default.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn construction_rejects_unusable_table_format_metadata() {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let registry = Arc::new(
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap(),
         );
 
-        assert!(
-            scan_schema.field_with_name("part").unwrap().is_nullable(),
-            "a nullable range partition column must retain its logical nullability"
-        );
-
-        let file_schema =
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let input = Arc::new(EmptyExec::new(file_schema)) as Arc<dyn ExecutionPlan>;
-        let merge_exec = Arc::new(
-            MergeParquetExec::new_with_inputs(
-                scan_schema,
-                vec![input],
+        for properties in [
+            // a format this build has no reader/writer for
+            r#"{"file_format": "orc"}"#,
+            // properties that are not the table property JSON at all
+            "{not json",
+        ] {
+            let error = LakeSoulMetaDataFormat::new(
+                client.clone(),
+                table_info(properties),
                 LakeSoulIOConfig::default(),
-                Arc::new(HashMap::from([("part".to_string(), "p0".to_string())])),
+                registry.clone(),
             )
-            .unwrap(),
-        ) as Arc<dyn ExecutionPlan>;
+            .expect_err("unusable format metadata must not build a format");
+            assert!(
+                error.to_string().contains("format_metadata"),
+                "the error must name the table, got: {error}"
+            );
+        }
 
-        // A downstream projection must observe the same nullable partition
-        // field rather than a schema narrowed from nullable to non-nullable.
-        let projection = ProjectionExec::try_new(
-            vec![(
-                col("part", merge_exec.schema().as_ref()).unwrap(),
-                "part".into(),
-            )],
-            merge_exec,
+        let format = LakeSoulMetaDataFormat::new(
+            client,
+            table_info("{}"),
+            LakeSoulIOConfig::default(),
+            registry,
         )
-        .unwrap();
-        assert!(
-            projection
-                .schema()
-                .field_with_name("part")
-                .unwrap()
-                .is_nullable()
-        );
+        .expect("a table without a file_format property follows the default format");
+        assert_eq!(format.get_ext(), "vortex");
     }
 }

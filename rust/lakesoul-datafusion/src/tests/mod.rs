@@ -20,6 +20,8 @@ use lakesoul_io::config::{
     LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN,
     OPTION_KEY_STABLE_SORT,
 };
+#[cfg(test)]
+use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::MetaDataClient;
 #[cfg(test)]
 use lakesoul_metadata::MetaDataClientRef;
@@ -48,6 +50,8 @@ mod benchmarks;
 mod catalog_tests;
 #[cfg(test)]
 mod distributed_tests;
+#[cfg(test)]
+mod mor_filter_tests;
 #[cfg(test)]
 mod session_factory_tests;
 #[cfg(test)]
@@ -107,7 +111,31 @@ pub(crate) async fn create_table(
     table_name: &str,
     config: LakeSoulIOConfig,
 ) -> Result<()> {
-    create_table_inner(client, table_name, config, None, None, None).await
+    create_table_inner(client, table_name, config, None, None, None, None).await
+}
+
+/// Create a LakeSoul table pinned to a physical format through the
+/// `file_format` table property (the Spark/Flink-compatible option).
+///
+/// Unpinned tables follow [`PhysicalFormat::default`], so a test that means to
+/// exercise one physical format has to say so.
+#[allow(dead_code)] // used for test
+pub(crate) async fn create_table_with_file_format(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+    file_format: PhysicalFormat,
+) -> Result<()> {
+    create_table_inner(
+        client,
+        table_name,
+        config,
+        None,
+        None,
+        None,
+        Some(file_format),
+    )
+    .await
 }
 
 /// Create a LakeSoul table that declares vector indexes through the
@@ -130,7 +158,16 @@ pub(crate) async fn create_table_with_vector_index(
     )?;
     let vector_index_columns = (!vector_index_configs.is_empty())
         .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
-    create_table_inner(client, table_name, config, vector_index_columns, None, None).await
+    create_table_inner(
+        client,
+        table_name,
+        config,
+        vector_index_columns,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Create a LakeSoul table that declares text indexes through the
@@ -178,6 +215,7 @@ pub(crate) async fn create_table_with_text_index_mode(
         None,
         text_index_columns,
         index_maintenance.map(str::to_string),
+        None,
     )
     .await
 }
@@ -189,8 +227,9 @@ async fn create_table_inner(
     vector_index_columns: Option<String>,
     text_index_columns: Option<String>,
     index_maintenance: Option<String>,
+    file_format: Option<PhysicalFormat>,
 ) -> Result<()> {
-    debug!("create_table: {:?}", &table_name);
+    debug!("create_table: {}", table_name);
     let target_schema = config.target_schema();
     let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
         schema_to_metadata_parts(target_schema.as_ref());
@@ -221,6 +260,7 @@ async fn create_table_inner(
                 vector_index_columns,
                 text_index_columns,
                 index_maintenance,
+                file_format: file_format.map(|format| format.name().to_string()),
                 ..Default::default()
             })?,
             partitions: format!(
@@ -270,6 +310,7 @@ pub(crate) fn cdc_batch(ids: &[i32], scores: &[i32], ops: &[&str]) -> RecordBatc
 pub(crate) async fn create_cdc_table(
     client: MetaDataClientRef,
     table_name: &str,
+    file_format: PhysicalFormat,
 ) -> Result<()> {
     let primary_keys = vec!["id".to_string()];
     let io_config = LakeSoulIOConfigBuilder::new()
@@ -302,6 +343,7 @@ pub(crate) async fn create_cdc_table(
                 hash_bucket_num: Some(String::from("4")),
                 cdc_change_column: Some(String::from("op")),
                 use_cdc: Some(String::from("true")),
+                file_format: Some(file_format.name().to_string()),
                 ..Default::default()
             })?,
             partitions: format_table_info_partitions(&[], &primary_keys),

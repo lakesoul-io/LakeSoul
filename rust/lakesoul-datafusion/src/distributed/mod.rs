@@ -53,12 +53,18 @@ pub use worker::{
 pub struct DistributedOptions {
     /// How worker URLs are discovered.
     pub discovery: WorkerDiscovery,
-    /// Development-mode fallback: when no ready worker is available, execute
-    /// the query single-node on the coordinator instead of failing.
+    /// Development-mode fallback: when the distributed planner fails to plan
+    /// a query, or plans one whose worker stages cannot be serialized (a scan
+    /// leaf without a wire form, e.g. vortex), plan it with the plain LakeSoul
+    /// planner and execute it single-node on the coordinator instead of
+    /// failing.
     ///
-    /// Production deployments must leave this `false`: an empty worker
-    /// snapshot then fails every distributed query fast, never silently
-    /// degrading to coordinator-only execution.
+    /// Production deployments must leave this `false`: such a failure then
+    /// fails the query instead of silently degrading to coordinator-only
+    /// execution. Only planning failures are covered — a query the distributed
+    /// planner can plan by itself (including every query while no worker is
+    /// ready, which such a planner plans single-node, and any plan it decides
+    /// to keep on the coordinator) is executed as planned in either mode.
     pub fallback_to_local: bool,
     /// `target_partitions` applied to distributed sessions.
     ///

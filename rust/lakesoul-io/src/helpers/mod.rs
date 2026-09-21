@@ -641,9 +641,8 @@ pub async fn listing_source_table_from_lakesoul_io_config(
         target_schema,
         lakesoul_io_config.range_partitions_slice(),
     )?;
-    let listing_options = ListingOptions::new(file_format)
-        .with_file_extension(".parquet")
-        .with_table_partition_cols(table_partition_cols);
+    let listing_options =
+        ListingOptions::new(file_format).with_table_partition_cols(table_partition_cols);
     let config = ListingTableConfig::new_with_multi_paths(table_paths)
         .with_listing_options(listing_options)
         .with_schema(resolved_schema);
@@ -662,9 +661,8 @@ pub fn listing_sink_table_from_lakesoul_io_config(
         target_schema.clone(),
         lakesoul_io_config.range_partitions_slice(),
     )?;
-    let listing_options = ListingOptions::new(file_format)
-        .with_file_extension(".parquet")
-        .with_table_partition_cols(table_partition_cols);
+    let listing_options =
+        ListingOptions::new(file_format).with_table_partition_cols(table_partition_cols);
     let prefix = ListingTableUrl::parse(lakesoul_io_config.prefix.clone())?;
     let config = ListingTableConfig::new(prefix)
         .with_listing_options(listing_options)

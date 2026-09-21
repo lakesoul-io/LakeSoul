@@ -274,7 +274,6 @@ impl LakeSoulSessionFactory {
             builder = builder.with_query_planner(Arc::new(
                 LakeSoulDistributedQueryPlanner::new(
                     distributed_planner,
-                    Arc::clone(resolver),
                     dist.fallback_to_local,
                 ),
             ));
