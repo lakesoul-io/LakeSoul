@@ -459,5 +459,11 @@ def test_imported_rows_keep_time_order(tmp_path: Path) -> None:
             assert frame_indices == sorted(frame_indices), episode_id
             assert timestamps == sorted(timestamps), episode_id
             assert frame_indices == list(range(len(rows))), episode_id
+
+        filtered = (
+            table.scan(filter=pc.field("timestamp") < 0.3).to_arrow_table().to_pylist()
+        )
+        assert len(filtered) == 9  # three timestamps below 0.3 in each episode
+        assert all(row["timestamp"] < 0.3 for row in filtered)
     finally:
         catalog.drop_table(table_name, if_exists=True)
