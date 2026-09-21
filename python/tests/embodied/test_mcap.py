@@ -509,3 +509,37 @@ def test_import_mcap_overwrite_guard(tmp_path: Path) -> None:
         import_mcap(source, overwrite=True, **kwargs)
     finally:
         catalog.drop_table(table_name, if_exists=True)
+
+
+def test_imported_rows_keep_time_order_and_filter(tmp_path: Path) -> None:
+    source = tmp_path / "ep01.mcap"
+    _write_mcap(source)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("time_order")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_mcap(
+            source,
+            table=table_name,
+            path=table_path,
+            columns={"reward": "control_tick:reward"},
+            row_topic="control_tick",
+            physical_format="parquet",
+        )
+        table = catalog.table(table_name)
+        rows = table.scan().to_arrow_table().to_pylist()
+        assert [row["frame_index"] for row in rows] == list(range(len(rows)))
+        assert [row["timestamp"] for row in rows] == sorted(
+            row["timestamp"] for row in rows
+        )
+
+        import pyarrow.compute as pc
+
+        filtered = (
+            table.scan(filter=pc.field("timestamp") < 0.3).to_arrow_table().to_pylist()
+        )
+        assert len(filtered) == 3
+        assert all(row["timestamp"] < 0.3 for row in filtered)
+    finally:
+        catalog.drop_table(table_name, if_exists=True)

@@ -248,6 +248,12 @@ Ray runner 只要求接口兼容（gated 测试）。
 ## 6. M3：时间语义与可复现
 
 - 时间聚簇写入/compaction → 时间窗=行范围快路径；
+  - **验证结论（已完成）**：native/Python 路径没有 compaction（仅 Spark 侧
+    `lakesoul/spark/tables.py`，不在本线范围）；导入后每 episode 的行序与
+    timestamp 单调性已有测试保证，标量 schema 上 `timestamp < t` 过滤正确；
+    带 `FixedSizeList` 列的表上 pyarrow filter 会因 substrait 不支持该类型报错
+    （既有问题，已记入风险），因此时间过滤验证走标量 schema；
+  - 若未来 native 线引入 compaction，需重新验证行序保持；
 - `align()/join_asof()`（导入未预对齐时的读时对齐）；P1 进行中：
   - 已完成：`EmbodiedDataset(window={"col": (-1.0, 0.0)}, time_column="timestamp")`
     秒级窗口（按锚点时间 + searchsorted 切行，clip 语义；与行窗口等价性测试）；
@@ -273,7 +279,10 @@ Ray runner 只要求接口兼容（gated 测试）。
 4. episode 长度不均时 rank 负载不均：导入按固定时长/行数切 chunk（硬约束的一部分）；
 5. **DataLoader fork 风险**：父进程用过 native reader（tokio 线程）后再 fork worker 可能崩溃；
    示例/benchmark 默认 `num_workers=0`，`EmbodiedDataset` 已支持 pickle，可在 spawn 模式下使用；
-6. `lakesoul-datafusion` 在 workspace 中 disabled，SQL 侧透传列策略需先确认启用路径。
+6. **pyarrow filter 与 FixedSizeList 列不兼容**：`scan(filter=pc.field("timestamp") < x)` 在含
+   `FixedSizeList` 列的表上会在 substrait 转换时报 ArrowNotImplementedError（既有问题，与
+   embodied 无关），标量 schema 正常；建议后续把 filter 类型转换限定到表达式实际引用的列；
+7. `lakesoul-datafusion` 在 workspace 中 disabled，SQL 侧透传列策略需先确认启用路径。
 
 ## 9. 实施顺序
 
