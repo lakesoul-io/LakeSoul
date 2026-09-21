@@ -98,6 +98,29 @@ async fn gateway_keyword_search_contract() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["hits"]["total"]["value"], 2, "{body}");
 
+    // A whitespace-free Chinese sentence is analyzed into terms (match
+    // semantics), not parsed as an exact phrase.
+    let bulk = [
+        r#"{"create":{}}"#,
+        r#"{"content":"重新获取取件码。首先来到丰巢快递柜前,点击屏幕上的取快递。","source_id":"s5","chunk_id":"c5","knowledge_base_id":"kb9","is_enabled":true}"#,
+        "",
+    ]
+    .join("\n");
+    let (status, _, _) =
+        call(&app, "POST", &format!("/{index}/_bulk"), Some(&bulk)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"蜂巢取快递验证码摁错怎么办"}}]}},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(hit_chunk_ids(&body), vec!["c5"], "{body}");
+
     // must_not is_enabled:false excludes the disabled document, and a missing
     // is_enabled counts as enabled.
     let (_, _, body) = call(

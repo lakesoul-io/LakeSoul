@@ -184,3 +184,40 @@ async fn duplicate_primary_keys_keep_the_last_document() {
     assert_eq!(search_index(&index, "date", 10).unwrap()[0].id, 1);
     assert_eq!(search_index(&index, "banana", 10).unwrap()[0].id, 2);
 }
+
+#[tokio::test]
+async fn chinese_sentence_query_is_matched_by_terms() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let prefix = "table/_text_index/body/-5/0";
+    // The judged document shares words with the query but not the whole
+    // phrase, which is how real Chinese queries behave.  QueryParser turns
+    // a whitespace-free token sequence into a phrase, so the query must be
+    // analyzed into OR-combined terms instead.
+    let target = "重新获取取件码。首先来到丰巢快递柜前,点击屏幕上的取快递;\
+                  然后选择取件码取件;输入快递使用的手机号码,点击获取验证码。";
+    let mut docs = vec![(1u64, target.to_string())];
+    for id in 2..50u64 {
+        docs.push((id, format!("文档编号{id}关于机器学习与向量检索的说明")));
+    }
+    let entry = write_split(&store, prefix, &config(), &docs, BUDGET)
+        .await
+        .unwrap();
+
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache = SplitCache::new(cache_dir.path());
+    let index = cache.open(&store, prefix, &entry).await.unwrap();
+
+    let hits = search_index(&index, "蜂巢取快递验证码摁错怎么办", 10).unwrap();
+    assert_eq!(hits.first().map(|hit| hit.id), Some(1));
+
+    // Explicit syntax still works: a quoted phrase keeps phrase semantics.
+    let hits = search_index(&index, "\"重新获取取件码\"", 10).unwrap();
+    assert_eq!(hits.first().map(|hit| hit.id), Some(1));
+    let hits = search_index(&index, "\"机器学习 向量检索\"", 10).unwrap();
+    assert!(
+        hits.is_empty(),
+        "a phrase must not match across the intervening word: {hits:?}"
+    );
+    let hits = search_index(&index, "机器学习 AND 向量检索", 10).unwrap();
+    assert_eq!(hits.first().map(|hit| hit.id), Some(2));
+}

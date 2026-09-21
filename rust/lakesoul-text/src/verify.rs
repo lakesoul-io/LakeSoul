@@ -20,7 +20,6 @@
 use std::collections::{HashMap, HashSet};
 
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
 use tantivy::schema::TantivyDocument;
 use tantivy::{Index, IndexWriter};
 
@@ -78,8 +77,7 @@ pub fn matching_scores(
     writer.commit()?;
 
     let searcher = index.reader()?.searcher();
-    let parser = QueryParser::for_index(&index, vec![text_schema.text_field]);
-    let parsed = crate::search::parse_user_query(&parser, query);
+    let parsed = crate::search::parse_user_query(&index, text_schema.text_field, query);
     let top_docs =
         searcher.search(&parsed, &TopDocs::with_limit(rows.len()).order_by_score())?;
     for (score, address) in top_docs {

@@ -227,12 +227,12 @@ LIMIT 10;
 
 `text_match` works on tables without a text index too, again as an exact full-scan predicate. When several `text_match` terms are combined with `AND`, only the first one is pushed down as an index search; all of them are still evaluated exactly.
 
-The query string is parsed as a Tantivy query: whitespace-separated terms are OR-combined, quoted phrases (`"quick fox"`) require `with_positions=true`, and boolean operators (`AND`, `OR`, `NOT`, parentheses) are supported. Chinese text is segmented with jieba.
+Plain query text is analyzed into terms that are OR-combined (each term contributes to the BM25 score), so a Chinese sentence matches documents that share its words instead of being parsed as an exact phrase. Explicit Tantivy syntax is also supported: quoted phrases (`"quick fox"`) require `with_positions=true`, and boolean operators (`AND`, `OR`, `NOT`, parentheses) refine the query.
 
 ## Query syntax and analyzers
 
-- Query strings are parsed with Tantivy's query parser on the indexed text field.
-- Whitespace-separated terms are OR-combined; `AND`/`OR`/`NOT` and parentheses refine the query.
+- Plain text (no quotes, parentheses or boolean operators) is analyzed into terms with the index analyzer and OR-combined, so Chinese sentences match by words rather than as one phrase.
+- Query strings with explicit syntax are parsed with Tantivy's query parser on the indexed text field; `AND`/`OR`/`NOT` and parentheses refine the query.
 - Quoted phrases match consecutive positions; they need `with_positions=true` (the default). With positions disabled, phrase syntax cannot match.
 - The analyzer is fixed at index time by `tokenizer`. The `jieba` analyzer segments Chinese words and lowercases the tokens; `default`/`en_stem` are Tantivy's word-boundary analyzers. There is no query-time analyzer override — searching a jieba index with the query string is always consistent with how the text was indexed.
 
