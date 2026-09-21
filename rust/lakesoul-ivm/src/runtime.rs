@@ -11,11 +11,11 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, Int64Array, StringArray};
+use arrow_array::{Array, ArrayRef, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::prelude::{DataFrame, JoinType, SessionContext, col, lit};
@@ -41,6 +41,8 @@ pub const IVM_COUNT_COLUMN: &str = "count_v";
 pub const IVM_VALUE_COLUMN: &str = "value";
 /// The value-count column of the MIN/MAX state table.
 pub const IVM_VALUE_COUNT_COLUMN: &str = "value_count";
+/// The row-number column of a [`WindowView`] materialized view.
+pub const IVM_ROW_NUMBER_COLUMN: &str = "row_number";
 
 /// Whether a [`MinMaxView`] maintains the minimum or the maximum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +62,15 @@ pub enum DistinctAggKind {
     Count,
     /// `SUM(DISTINCT value_column)` per group.
     Sum,
+}
+
+/// The window function a [`WindowView`] maintains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowFunction {
+    /// `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)`. The source primary
+    /// keys are appended to the ordering so ties are broken deterministically.
+    RowNumber,
 }
 
 /// The persisted description of a view.
@@ -136,6 +147,22 @@ pub enum ViewSpec {
         value_column: String,
         /// Whether the distinct count or the distinct sum is maintained.
         agg: DistinctAggKind,
+    },
+    /// `ROW_NUMBER()` over a source, maintained by recomputing the affected
+    /// partitions.
+    Window {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The `PARTITION BY` columns.
+        partition_keys: Vec<String>,
+        /// The `ORDER BY` columns.
+        order_keys: Vec<String>,
+        /// The window function.
+        function: WindowFunction,
     },
 }
 
@@ -447,6 +474,66 @@ impl DistinctAggView {
     }
 }
 
+/// A `ROW_NUMBER()` view over a source table.
+///
+/// The materialized view stores one row per source row — keyed by the
+/// partition keys and the source primary keys — with its row number. A refresh
+/// recomputes the affected partitions from the current source state, so an
+/// order-value change, a delete or a partition move shifts the ranks of the
+/// whole partition.
+#[derive(Debug, Clone)]
+pub struct WindowView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert); it must have a primary
+    /// key.
+    pub source: IvmTable,
+    /// The materialized view table, created from [`window_mv_schema`] with the
+    /// partition keys plus the source primary keys as merge key and the
+    /// partition keys as bucket prefix.
+    pub mv: IvmTable,
+    /// The `PARTITION BY` columns.
+    pub partition_keys: Vec<String>,
+    /// The `ORDER BY` columns.
+    pub order_keys: Vec<String>,
+    /// The window function.
+    pub function: WindowFunction,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl WindowView {
+    /// A `ROW_NUMBER()` view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        partition_keys: Vec<String>,
+        order_keys: Vec<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            partition_keys,
+            order_keys,
+            function: WindowFunction::RowNumber,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::Window {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            partition_keys: self.partition_keys.clone(),
+            order_keys: self.order_keys.clone(),
+            function: self.function,
+        }
+    }
+}
+
 /// The schema of a value-count materialized view (MIN/MAX,
 /// COUNT(DISTINCT), SUM(DISTINCT)): one row per group with the aggregated
 /// value.
@@ -469,6 +556,19 @@ pub fn min_max_mv_schema(group_key: &str) -> SchemaRef {
 /// [`value_count_mv_schema`].
 pub fn distinct_agg_mv_schema(group_key: &str) -> SchemaRef {
     value_count_mv_schema(group_key)
+}
+
+/// The schema of a [`WindowView`] materialized view: the partition keys, the
+/// source primary keys, the row number, the row kind and the epoch.
+pub fn window_mv_schema(partition_keys: &[String], row_keys: &[String]) -> SchemaRef {
+    let mut fields = Vec::new();
+    for column in partition_keys.iter().chain(row_keys.iter()) {
+        fields.push(Field::new(column, DataType::Int64, false));
+    }
+    fields.push(Field::new(IVM_ROW_NUMBER_COLUMN, DataType::Int64, false));
+    fields.push(Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false));
+    fields.push(Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false));
+    Arc::new(Schema::new(fields))
 }
 
 /// The schema of a value-count state table: `(group, value) -> count`.
@@ -609,6 +709,14 @@ impl IvmRuntime {
 
     /// Persist a distinct aggregate view spec (idempotent).
     pub async fn register_distinct_agg_view(&self, view: &DistinctAggView) -> Result<()> {
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a window view spec (idempotent).
+    pub async fn register_window_view(&self, view: &WindowView) -> Result<()> {
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -792,6 +900,86 @@ impl IvmRuntime {
             agg: ValueAgg::from(view.agg),
         })
         .await
+    }
+
+    /// Refresh a `ROW_NUMBER()` view by recomputing its affected partitions.
+    ///
+    /// A row number depends on every row of its partition, so the delta only
+    /// selects which partitions to recompute: their current source state is
+    /// ranked again and the MV rows that changed (including rows that
+    /// disappeared or moved to another partition) are rewritten. The per-row
+    /// epoch keeps a replay from applying a window twice.
+    pub async fn refresh_window(&self, view: &WindowView) -> Result<Option<i64>> {
+        self.register_window_view(view).await?;
+        validate_window_view(view)?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let delta_rows = key_set(&delta_batches, &view.source.primary_keys)?;
+        let mut affected = key_set(&delta_batches, &view.partition_keys)?;
+
+        let mv_batches = view.mv.read_current(&self.client).await?;
+        let current_mv = read_window_state(view, mv_batches)?;
+        // A changed row may have left its previous partition, which then needs
+        // a recomputation too.
+        for row_key in &delta_rows {
+            if let Some(entry) = current_mv.get(row_key) {
+                affected.insert(entry.partition.clone());
+            }
+        }
+
+        let source_batches = view.source.read_current(&self.client).await?;
+        let computed = compute_row_numbers(view, source_batches, Some(&affected)).await?;
+
+        let mut mv_rows = WindowRows::default();
+        for (row_key, (partition, number)) in &computed {
+            match current_mv.get(row_key) {
+                Some(entry) if entry.epoch == epoch => continue,
+                Some(entry) => {
+                    mv_rows.push_delete(&entry.partition, row_key, entry.number, epoch)
+                }
+                None => {}
+            }
+            mv_rows.push_insert(partition, row_key, *number, epoch);
+        }
+        for (row_key, entry) in &current_mv {
+            if entry.epoch == epoch {
+                continue;
+            }
+            if affected.contains(&entry.partition) && !computed.contains_key(row_key) {
+                mv_rows.push_delete(&entry.partition, row_key, entry.number, epoch);
+            }
+        }
+        if !mv_rows.is_empty() {
+            view.mv
+                .append_batch(&self.client, mv_rows.into_batch(view)?)
+                .await?;
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
     }
 
     /// Refresh a value-count view.
@@ -1021,6 +1209,67 @@ impl IvmRuntime {
             agg: ValueAgg::from(view.agg),
         })
         .await
+    }
+
+    /// Rebuild a `ROW_NUMBER()` view from the full source state.
+    pub async fn rebuild_window(&self, view: &WindowView) -> Result<i64> {
+        self.register_window_view(view).await?;
+        validate_window_view(view)?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let computed = compute_row_numbers(view, baseline.batches, None).await?;
+
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let mut rows = WindowRows::default();
+        for (row_key, (partition, number)) in &computed {
+            rows.push_insert(partition, row_key, *number, epoch);
+        }
+        if !rows.is_empty() {
+            view.mv
+                .append_batch(&self.client, rows.into_batch(view)?)
+                .await?;
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
     }
 
     /// Rebuild a value-count view.
@@ -2029,6 +2278,289 @@ impl ValueRows {
                 Arc::new(Int64Array::from(self.epochs)),
             ],
         )?)
+    }
+}
+
+/// Validate that a window view can be maintained.
+fn validate_window_view(view: &WindowView) -> Result<()> {
+    if view.source.primary_keys.is_empty() {
+        return Err(report!(
+            "window view {} needs a source with a primary key",
+            view.view_id
+        ));
+    }
+    if view.partition_keys.is_empty() || view.order_keys.is_empty() {
+        return Err(report!(
+            "window view {} needs partition and order keys",
+            view.view_id
+        ));
+    }
+    for column in view
+        .partition_keys
+        .iter()
+        .chain(view.source.primary_keys.iter())
+    {
+        let field = view.source.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "window view {}: column {column} is not in the source",
+                view.view_id
+            )
+        })?;
+        if *field.data_type() != DataType::Int64 {
+            return Err(report!(
+                "window view {}: partition/key column {column} must be Int64",
+                view.view_id
+            ));
+        }
+    }
+    for column in &view.order_keys {
+        view.source.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "window view {}: order column {column} is not in the source",
+                view.view_id
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// The distinct `columns`-tuples of the batches.
+fn key_set(batches: &[RecordBatch], columns: &[String]) -> Result<HashSet<Vec<i64>>> {
+    let mut keys = HashSet::new();
+    for batch in batches {
+        let mut arrays = Vec::with_capacity(columns.len());
+        for column in columns {
+            let index = batch.schema().index_of(column)?;
+            arrays.push(int64_column(batch, index, column)?);
+        }
+        for row in 0..batch.num_rows() {
+            keys.insert(arrays.iter().map(|array| array.value(row)).collect());
+        }
+    }
+    Ok(keys)
+}
+
+/// One surviving row of a window materialized view.
+struct WindowEntry {
+    partition: Vec<i64>,
+    number: i64,
+    epoch: i64,
+}
+
+/// Read the current state of a window materialized view.
+fn read_window_state(
+    view: &WindowView,
+    batches: Vec<RecordBatch>,
+) -> Result<HashMap<Vec<i64>, WindowEntry>> {
+    let mut state = HashMap::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let number_index = schema.index_of(IVM_ROW_NUMBER_COLUMN)?;
+        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
+        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
+
+        let mut partition_arrays = Vec::with_capacity(view.partition_keys.len());
+        for column in &view.partition_keys {
+            partition_arrays.push(int64_column(
+                &batch,
+                schema.index_of(column)?,
+                column,
+            )?);
+        }
+        let mut row_arrays = Vec::with_capacity(view.source.primary_keys.len());
+        for column in &view.source.primary_keys {
+            row_arrays.push(int64_column(&batch, schema.index_of(column)?, column)?);
+        }
+        let numbers = int64_column(&batch, number_index, IVM_ROW_NUMBER_COLUMN)?;
+        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
+        let kinds = batch
+            .column(kind_index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
+
+        for row in 0..batch.num_rows() {
+            let row_key = row_arrays
+                .iter()
+                .map(|array| array.value(row))
+                .collect::<Vec<_>>();
+            if kinds.value(row) == "insert" {
+                state.insert(
+                    row_key,
+                    WindowEntry {
+                        partition: partition_arrays
+                            .iter()
+                            .map(|array| array.value(row))
+                            .collect(),
+                        number: numbers.value(row),
+                        epoch: epochs.value(row),
+                    },
+                );
+            } else {
+                state.remove(&row_key);
+            }
+        }
+    }
+    Ok(state)
+}
+
+/// Rank the source rows with `ROW_NUMBER()`.
+///
+/// `filter_partitions` keeps only the partitions that have to be recomputed;
+/// `None` ranks every partition (a rebuild).
+async fn compute_row_numbers(
+    view: &WindowView,
+    batches: Vec<RecordBatch>,
+    filter_partitions: Option<&HashSet<Vec<i64>>>,
+) -> Result<HashMap<Vec<i64>, (Vec<i64>, i64)>> {
+    if batches.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let context = SessionContext::new();
+    let table: Arc<dyn datafusion::catalog::TableProvider> =
+        Arc::new(datafusion::datasource::memory::MemTable::try_new(
+            view.source.schema.clone(),
+            vec![batches],
+        )?);
+    context.register_table("src", table)?;
+
+    let quoted = |columns: &[String]| {
+        columns
+            .iter()
+            .map(|column| format!("\"{column}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let order_columns = view
+        .order_keys
+        .iter()
+        .chain(view.source.primary_keys.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let filter = match change_column(&view.source) {
+        Some(column) => format!(" where \"{column}\" != 'delete'"),
+        None => String::new(),
+    };
+    let frame = context
+        .sql(&format!(
+            "select {}, {}, cast(row_number() over (partition by {} order by {}) as bigint) as \"{IVM_ROW_NUMBER_COLUMN}\" from src{}",
+            quoted(&view.source.primary_keys),
+            quoted(&view.partition_keys),
+            quoted(&view.partition_keys),
+            quoted(&order_columns),
+            filter,
+        ))
+        .await?;
+
+    let row_key_count = view.source.primary_keys.len();
+    let mut computed = HashMap::new();
+    for batch in frame.collect().await? {
+        let mut row_arrays = Vec::with_capacity(row_key_count);
+        for (index, column) in view.source.primary_keys.iter().enumerate() {
+            row_arrays.push(int64_column(&batch, index, column)?);
+        }
+        let mut partition_arrays = Vec::with_capacity(view.partition_keys.len());
+        for (index, column) in view.partition_keys.iter().enumerate() {
+            partition_arrays.push(int64_column(&batch, row_key_count + index, column)?);
+        }
+        let numbers = int64_column(
+            &batch,
+            row_key_count + view.partition_keys.len(),
+            IVM_ROW_NUMBER_COLUMN,
+        )?;
+        for row in 0..batch.num_rows() {
+            let partition = partition_arrays
+                .iter()
+                .map(|array| array.value(row))
+                .collect::<Vec<_>>();
+            if filter_partitions.is_some_and(|filter| !filter.contains(&partition)) {
+                continue;
+            }
+            let row_key = row_arrays
+                .iter()
+                .map(|array| array.value(row))
+                .collect::<Vec<_>>();
+            computed.insert(row_key, (partition, numbers.value(row)));
+        }
+    }
+    Ok(computed)
+}
+
+/// Rows to write into a window materialized view.
+#[derive(Default)]
+struct WindowRows {
+    partitions: Vec<Vec<i64>>,
+    row_keys: Vec<Vec<i64>>,
+    numbers: Vec<i64>,
+    kinds: Vec<&'static str>,
+    epochs: Vec<i64>,
+}
+
+impl WindowRows {
+    fn is_empty(&self) -> bool {
+        self.row_keys.is_empty()
+    }
+
+    fn push_delete(
+        &mut self,
+        partition: &[i64],
+        row_key: &[i64],
+        number: i64,
+        epoch: i64,
+    ) {
+        self.push(partition, row_key, number, "delete", epoch);
+    }
+
+    fn push_insert(
+        &mut self,
+        partition: &[i64],
+        row_key: &[i64],
+        number: i64,
+        epoch: i64,
+    ) {
+        self.push(partition, row_key, number, "insert", epoch);
+    }
+
+    fn push(
+        &mut self,
+        partition: &[i64],
+        row_key: &[i64],
+        number: i64,
+        kind: &'static str,
+        epoch: i64,
+    ) {
+        self.partitions.push(partition.to_vec());
+        self.row_keys.push(row_key.to_vec());
+        self.numbers.push(number);
+        self.kinds.push(kind);
+        self.epochs.push(epoch);
+    }
+
+    fn into_batch(self, view: &WindowView) -> Result<RecordBatch> {
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(
+            view.partition_keys.len() + view.source.primary_keys.len() + 3,
+        );
+        for index in 0..view.partition_keys.len() {
+            arrays.push(Arc::new(Int64Array::from(
+                self.partitions
+                    .iter()
+                    .map(|partition| partition[index])
+                    .collect::<Vec<_>>(),
+            )));
+        }
+        for index in 0..view.source.primary_keys.len() {
+            arrays.push(Arc::new(Int64Array::from(
+                self.row_keys
+                    .iter()
+                    .map(|row_key| row_key[index])
+                    .collect::<Vec<_>>(),
+            )));
+        }
+        arrays.push(Arc::new(Int64Array::from(self.numbers)));
+        arrays.push(Arc::new(StringArray::from(self.kinds)));
+        arrays.push(Arc::new(Int64Array::from(self.epochs)));
+        Ok(RecordBatch::try_new(view.mv.schema.clone(), arrays)?)
     }
 }
 

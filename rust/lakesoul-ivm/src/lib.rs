@@ -13,8 +13,9 @@
 //! primary-key (upsert) source ([`runtime::SumCountView`]), `MIN`/`MAX` over
 //! the same source kinds backed by a value-count state table
 //! ([`runtime::MinMaxView`]), `COUNT(DISTINCT)`/`SUM(DISTINCT)` sharing that
-//! state table ([`runtime::DistinctAggView`]), and an inner equi-join of two
-//! append-only sources ([`runtime::JoinView`]). Refreshes are incremental and
+//! state table ([`runtime::DistinctAggView`]), `ROW_NUMBER()` maintained by
+//! recomputing the affected partitions ([`runtime::WindowView`]), and an inner
+//! equi-join of two append-only sources ([`runtime::JoinView`]). Refreshes are incremental and
 //! replay safe: every window is recorded in `ivm.epochs` (see `EPOCH.md`), so
 //! a retry skips data that is already written. A view whose source history
 //! cannot be consumed incrementally (updates/deletes in the window, or an
@@ -57,11 +58,12 @@ pub use metadata::{
     SourceVersionRange,
 };
 pub use runtime::{
-    DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView, MinMaxKind, MinMaxView, SumCountView,
-    ViewSpec, distinct_agg_mv_schema, join_view_schema, min_max_mv_schema,
-    min_max_state_schema, sum_count_mv_schema, value_count_mv_schema,
-    value_count_state_schema, window_key,
+    DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_ROW_NUMBER_COLUMN,
+    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView,
+    MinMaxKind, MinMaxView, SumCountView, ViewSpec, WindowFunction, WindowView,
+    distinct_agg_mv_schema, join_view_schema, min_max_mv_schema, min_max_state_schema,
+    sum_count_mv_schema, value_count_mv_schema, value_count_state_schema, window_key,
+    window_mv_schema,
 };
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
