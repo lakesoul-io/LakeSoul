@@ -23,7 +23,7 @@ import pyarrow as pa
 
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan
 
-from .dataset import BOUNDARY_SKIP, Window
+from .dataset import BOUNDARY_CLAMP, BOUNDARY_SKIP, Window
 from .importer import ImportSummary, prepare_table, sibling_path
 from .lerobot import (
     NON_FEATURE_COLUMNS,
@@ -468,17 +468,18 @@ def read_samples(
     ordering and the memory footprint stay per episode.
 
     Returns a DataFrame with ``episode_id``, ``anchor`` (the anchor's
-    ``order_by`` value) and one list column per window key. Only
-    ``boundary="skip"`` is supported; anchors whose window leaves the episode
-    are dropped.
+    ``order_by`` value) and one list column per window key. With
+    ``boundary="skip"`` anchors whose window leaves the episode are dropped;
+    with ``boundary="clamp"`` windows are clipped to the episode and only
+    anchors with a non-empty window survive.
     """
     import daft
     from daft import col, func, functions
 
     from lakesoul.daft import read_lakesoul
 
-    if boundary != BOUNDARY_SKIP:
-        raise ValueError("read_samples only supports boundary='skip'")
+    if boundary not in (BOUNDARY_SKIP, BOUNDARY_CLAMP):
+        raise ValueError(f"boundary must be one of {(BOUNDARY_SKIP, BOUNDARY_CLAMP)}")
     if stride < 1:
         raise ValueError(f"stride must be positive, got {stride}")
     if not window:
@@ -515,7 +516,7 @@ def read_samples(
         anchors = np.arange(0, count, stride, dtype=np.int64)
         lower = min(item.start for item in windows.values())
         upper = max(item.end for item in windows.values())
-        if lower < 0 or upper > 0:
+        if boundary == BOUNDARY_SKIP and (lower < 0 or upper > 0):
             keep = (anchors + lower >= 0) & (anchors + upper <= count)
             anchors = anchors[keep]
         if anchors.size > 1:
@@ -525,8 +526,17 @@ def read_samples(
             sample: dict[str, Any] = {"anchor": order_values[anchor]}
             for name, values in zip(names, window_values):
                 item = windows[name]
-                sample[name] = values[anchor + item.start : anchor + item.end]
-            samples.append(sample)
+                start = anchor + item.start
+                end = anchor + item.end
+                if boundary == BOUNDARY_CLAMP:
+                    start = max(start, 0)
+                    end = min(end, count)
+                if end <= start:
+                    sample = {}
+                    break
+                sample[name] = values[start:end]
+            if sample:
+                samples.append(sample)
         return samples
 
     aggregated = (
@@ -673,6 +683,7 @@ def import_mcap(
     cameras: Mapping[str, str] | None = None,
     row_topic: str | None = None,
     tolerance: float = 0.02,
+    video_layout: str = "frames",
     catalog: LakeSoulCatalog | None = None,
     namespace: str | None = None,
     physical_format: str = "vortex",
@@ -681,20 +692,49 @@ def import_mcap(
     """Import MCAP files (frames layout) through Daft, one file per task.
 
     ``source`` is an MCAP file, a directory of ``*.mcap`` files, or a list of
-    files. Each task builds one file's frame table with the same helpers as
+    files. Each task builds one file's rows with the same helpers as
     :func:`lakesoul.embodied.import_mcap` (JSON and protobuf messages) and the
-    rows are written together with a single Daft sink commit. GOP layout for
-    MCAP stays in the single-machine importer.
+    rows are written together with a single Daft sink commit. With
+    ``video_layout="gop"`` the camera access units are grouped into
+    ``<table>_gops`` / ``<table>_frames`` like the single-machine importer.
     """
     import daft
     from daft import col, func, functions
 
     from .mcap import build_frame_episode
 
+    if video_layout not in {"frames", "gop"}:
+        raise ValueError("video_layout must be 'frames' or 'gop'")
     catalog = catalog or LakeSoulCatalog.from_env()
     files = _resolve_mcap_sources(source)
     if not files:
         raise ValueError("no MCAP files found for import")
+
+    work = daft.from_pydict(
+        {
+            "source": [str(file) for file in files],
+            "episode_id": [file.stem for file in files],
+        }
+    )
+    if video_layout == "gop":
+        return _import_mcap_gop(
+            daft,
+            func,
+            col,
+            functions,
+            work,
+            files,
+            table=table,
+            path=path,
+            columns=columns,
+            cameras=cameras,
+            row_topic=row_topic,
+            tolerance=tolerance,
+            catalog=catalog,
+            namespace=namespace or catalog.namespace,
+            physical_format=physical_format,
+            overwrite=overwrite,
+        )
 
     sample = build_frame_episode(
         files[0],
@@ -722,12 +762,6 @@ def import_mcap(
         ).to_pylist()
 
     builder = func(return_dtype=payload)(build)
-    work = daft.from_pydict(
-        {
-            "source": [str(file) for file in files],
-            "episode_id": [file.stem for file in files],
-        }
-    )
     dataframe = work.select(
         functions.explode(builder(col("source"), col("episode_id"))).alias("row")
     ).select(*[col("row")[name].alias(name) for name in schema.names])
@@ -750,6 +784,141 @@ def import_mcap(
         video_frames=result.row_count * len(cameras or {}),
         columns=tuple(schema.names),
         tables=(table_handle.name,),
+    )
+
+
+def _import_mcap_gop(
+    daft: Any,
+    func: Any,
+    col: Any,
+    functions: Any,
+    work: Any,
+    files: list[Path],
+    *,
+    table: str,
+    path: str | Path,
+    columns: Mapping[str, str] | None,
+    cameras: Mapping[str, str] | None,
+    row_topic: str | None,
+    tolerance: float,
+    catalog: LakeSoulCatalog,
+    namespace: str,
+    physical_format: str,
+    overwrite: bool,
+) -> ImportSummary:
+    from .mcap import build_frame_episode, build_gop_rows
+
+    if not cameras:
+        raise ValueError("video_layout='gop' requires at least one camera")
+
+    tick_sample = build_frame_episode(
+        files[0],
+        columns=columns,
+        cameras={},
+        row_topic=row_topic,
+        episode_id=files[0].stem,
+        tolerance=tolerance,
+    )
+    tick_schema = tick_sample.schema
+    gop_struct = {
+        name: _arrow_to_daft(GOPS_SCHEMA.field(name).type) for name in GOPS_SCHEMA.names
+    }
+    frame_struct = {
+        name: _arrow_to_daft(FRAMES_SCHEMA.field(name).type)
+        for name in FRAMES_SCHEMA.names
+    }
+    payload = daft.DataType.struct(
+        {
+            "ticks": daft.DataType.list(
+                daft.DataType.struct(
+                    {
+                        name: _arrow_to_daft(tick_schema.field(name).type)
+                        for name in tick_schema.names
+                    }
+                )
+            ),
+            "gops": daft.DataType.list(daft.DataType.struct(gop_struct)),
+            "frames": daft.DataType.list(daft.DataType.struct(frame_struct)),
+        }
+    )
+
+    def build(file_path: str, episode_id: str) -> dict[str, Any]:
+        ticks = build_frame_episode(
+            file_path,
+            columns=columns,
+            cameras={},
+            row_topic=row_topic,
+            episode_id=episode_id,
+            tolerance=tolerance,
+        )
+        gops, frames = build_gop_rows(
+            file_path,
+            columns=columns,
+            cameras=cameras,
+            row_topic=row_topic,
+            episode_id=episode_id,
+            tolerance=tolerance,
+        )
+        return {
+            "ticks": ticks.to_pylist(),
+            "gops": gops,
+            "frames": frames,
+        }
+
+    builder = func(return_dtype=payload)(build)
+    built = work.with_column("payload", builder(col("source"), col("episode_id")))
+    tick_frame = built.select(
+        functions.explode(col("payload")["ticks"]).alias("row")
+    ).select(*[col("row")[name].alias(name) for name in tick_schema.names])
+    gops_frame = (
+        built.select(functions.explode(col("payload")["gops"]).alias("row"))
+        .select(*[col("row")[name].alias(name) for name in GOPS_SCHEMA.names])
+        .sort([EPISODE_COLUMN, "camera", "gop_index"])
+    )
+    frames_frame = (
+        built.select(functions.explode(col("payload")["frames"]).alias("row"))
+        .select(*[col("row")[name].alias(name) for name in FRAMES_SCHEMA.names])
+        .sort([EPISODE_COLUMN, "camera", "frame_index"])
+    )
+
+    gops_table = f"{table}{GOPS_TABLE_SUFFIX}"
+    frames_table = f"{table}{FRAMES_TABLE_SUFFIX}"
+    prepare_table(catalog, table, namespace, overwrite)
+    prepare_table(catalog, gops_table, namespace, overwrite)
+    prepare_table(catalog, frames_table, namespace, overwrite)
+
+    tick_handle = catalog.create_table(
+        table,
+        path=path,
+        schema=tick_schema,
+        namespace=namespace,
+        partition_by=(EPISODE_COLUMN,),
+    )
+    ticks_result = tick_handle.write_daft(tick_frame, format=physical_format)
+    gops_handle = catalog.create_table(
+        gops_table,
+        path=sibling_path(path, GOPS_TABLE_SUFFIX),
+        schema=GOPS_SCHEMA,
+        namespace=namespace,
+        partition_by=(EPISODE_COLUMN,),
+    )
+    gops_handle.write_daft(gops_frame, format=physical_format)
+    frames_handle = catalog.create_table(
+        frames_table,
+        path=sibling_path(path, FRAMES_TABLE_SUFFIX),
+        schema=FRAMES_SCHEMA,
+        namespace=namespace,
+        partition_by=(EPISODE_COLUMN,),
+    )
+    frames_result = frames_handle.write_daft(frames_frame, format=physical_format)
+    return ImportSummary(
+        table=tick_handle.name,
+        path=tick_handle.path,
+        episodes=len(files),
+        rows=ticks_result.row_count,
+        video_frames=frames_result.row_count,
+        columns=tuple(tick_schema.names),
+        tables=(tick_handle.name, gops_handle.name, frames_handle.name),
     )
 
 

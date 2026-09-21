@@ -432,3 +432,32 @@ def test_import_lerobot_gop_blob_external(tmp_path: Path) -> None:
         catalog.drop_table(f"{table_name}_frames", if_exists=True)
         catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
+
+
+def test_imported_rows_keep_time_order(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("time_order")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_lerobot(
+            root, table=table_name, path=table_path, physical_format="parquet"
+        )
+        table = catalog.table(table_name)
+        scanned = table.scan().to_arrow_table().to_pylist()
+
+        per_episode: dict[str, list[tuple[int, float]]] = {}
+        for row in scanned:
+            per_episode.setdefault(row["episode_id"], []).append(
+                (row["frame_index"], row["timestamp"])
+            )
+        for episode_id, rows in per_episode.items():
+            frame_indices = [row[0] for row in rows]
+            timestamps = [row[1] for row in rows]
+            assert frame_indices == sorted(frame_indices), episode_id
+            assert timestamps == sorted(timestamps), episode_id
+            assert frame_indices == list(range(len(rows))), episode_id
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
