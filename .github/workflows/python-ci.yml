@@ -5,6 +5,9 @@ on:
       - "javadoc/**"
       - "website/**"
       - "**.md"
+      - "rust/lakesoul-es-gateway/**"
+      - "rust/lakesoul-ivm/**"
+      - "rust/postgres-lakesoul/**"
     branches:
       - "main"
       - "release/**"
@@ -15,6 +18,9 @@ on:
       - "javadoc/**"
       - "website/**"
       - "**.md"
+      - "rust/lakesoul-es-gateway/**"
+      - "rust/lakesoul-ivm/**"
+      - "rust/postgres-lakesoul/**"
     branches:
       - "main"
       - "release/**"
