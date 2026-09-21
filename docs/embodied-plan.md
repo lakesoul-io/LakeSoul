@@ -236,7 +236,8 @@ Ray runner 只要求接口兼容（gated 测试）。
 
 **P3 尾巴（已完成）**：MCAP 的 `video_layout="gop"` 分布式导入（每文件 actor 复用
 `mcap.build_gop_rows`）；`read_samples` 支持 `boundary="clamp"`；外置 blob 的
-`read_gop_frames` 测试；python-ci 开启 `LAKESOUL_DAFT_RAY_TEST=1`。
+`read_gop_frames` 测试；python-ci 增加独立步骤只跑 embodied Ray 用例
+（vector 分布测试在 CI 上会被调度到单 executor，仅保留本地/手动运行）。
 
 - native runner 单测已覆盖（M4-1a/b/c、M4-2a/b）；
 - 新增 `tests/embodied/test_daft_ray.py`（`LAKESOUL_DAFT_RAY_TEST=1`）：Ray runner 下
