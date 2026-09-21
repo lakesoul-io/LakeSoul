@@ -250,13 +250,17 @@ impl LakeSoulTable {
     }
 
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
+        let object_store_options = {
+            let state = context.state();
+            LakeSoulProviderOptions::from_session(&state).object_store_options
+        };
         let mut config_builder = create_io_config_builder(
             self.client(),
             Some(self.table_name()),
             true,
             self.table_namespace(),
             HashMap::new(),
-            HashMap::new(),
+            object_store_options,
         )
         .await?;
         config_builder = config_builder.with_prefix(self.table_info.table_path.clone());
@@ -282,7 +286,7 @@ impl LakeSoulTable {
             false,
             self.table_namespace(),
             HashMap::new(),
-            HashMap::new(),
+            provider_options.object_store_options.clone(),
         )
         .await?
         .with_prefix(self.table_info.table_path.clone());

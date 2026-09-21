@@ -5237,6 +5237,7 @@ dependencies = [
 name = "lakesoul-console"
 version = "4.0.0"
 dependencies = [
+ "base64 0.22.1",
  "clap",
  "datafusion",
  "futures",

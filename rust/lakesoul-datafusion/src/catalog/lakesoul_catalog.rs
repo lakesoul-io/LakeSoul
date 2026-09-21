@@ -4,6 +4,7 @@
 
 //! The [`datafusion::catalog::CatalogProvider`] implementation for the LakeSoul.
 
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,19 +20,32 @@ use crate::catalog::snapshot::{
     CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, wait_on_runtime,
 };
 use crate::error::df_external_err;
+use crate::session::ObjectStoreConfig;
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct LakeSoulProviderOptions {
     pub parquet_force_view_types: bool,
     pub pushdown_filters: bool,
+    /// Object-store options (`fs.s3a.*`, `fs.defaultFS`, …) captured from the
+    /// session. Stores resolved through the session runtime already carry
+    /// them, but readers that build their own io session — the vector search
+    /// scan — and post-commit hooks build stores from the table's io config,
+    /// which must not lose the credentials.
+    pub object_store_options: HashMap<String, String>,
 }
 
 impl LakeSoulProviderOptions {
     pub fn from_session(session: &dyn Session) -> Self {
         let parquet = &session.config_options().execution.parquet;
+        let object_store_options = session
+            .config()
+            .get_extension::<ObjectStoreConfig>()
+            .map(|config| config.object_store_options().clone())
+            .unwrap_or_default();
         Self {
             parquet_force_view_types: parquet.schema_force_view_types,
             pushdown_filters: parquet.pushdown_filters,
+            object_store_options,
         }
     }
 }
@@ -134,7 +148,7 @@ impl CatalogProvider for LakeSoulCatalog {
         }
         Some(Arc::new(LakeSoulNamespace::with_snapshot(
             self.metadata_client.clone(),
-            self.provider_options,
+            self.provider_options.clone(),
             name,
             Arc::clone(&self.snapshot),
         )) as Arc<dyn SchemaProvider>)
@@ -190,7 +204,7 @@ impl CatalogProvider for LakeSoulCatalog {
         Ok(existed.then(|| {
             Arc::new(LakeSoulNamespace::with_snapshot(
                 self.metadata_client.clone(),
-                self.provider_options,
+                self.provider_options.clone(),
                 name,
                 Arc::clone(&self.snapshot),
             )) as Arc<dyn SchemaProvider>
@@ -396,7 +410,7 @@ mod tests {
         // below touches the view.
         let catalog = LakeSoulCatalog::with_refresh_interval(
             client.clone(),
-            options,
+            options.clone(),
             Duration::from_secs(3600),
         );
         catalog.snapshot().load().await.unwrap();

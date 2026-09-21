@@ -456,10 +456,16 @@ impl LakeSoulTableProvider {
             },
             domain: "public".to_string(),
         });
+        // The object-store options captured on the session (`fs.s3a.*`, …)
+        // must reach the table's io config: stores built outside the session
+        // runtime — the vector search scan's native reader and the vector
+        // index auto-build after a commit — construct them from this map.
+        let object_store_options =
+            LakeSoulProviderOptions::from_session(session_state).object_store_options;
         let io_config = create_io_config_builder_from_table_info(
             table_info.clone(),
             cmd.options.clone(),
-            HashMap::new(),
+            object_store_options,
         )?
         .build();
         let format_registry = Arc::new(LakeSoulFormatRegistry::new(

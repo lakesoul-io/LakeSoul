@@ -11,13 +11,18 @@
 //! the `postgres-lakesoul` crate.
 
 use datafusion::catalog::{CatalogProvider, TableProviderFactory};
+use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_distributed::{DistributedExt, SessionStateBuilderExt, WorkerResolver};
+use datafusion_distributed::{
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt,
+    SessionStateBuilderExt, WorkerResolver,
+};
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::object_store::{register_hdfs_object_store, register_s3_object_store};
+use lakesoul_io::physical_plan::MergeParquetExec;
 use object_store::local::LocalFileSystem;
 use rootcause::{bail, report};
 use std::sync::Arc;
@@ -77,6 +82,25 @@ pub enum WarehouseConfig {
 
 type CatalogDecorator =
     dyn Fn(Arc<LakeSoulCatalog>) -> Arc<dyn CatalogProvider> + Send + Sync;
+
+/// Pins every `MergeParquetExec` to a single distributed task.
+///
+/// A merge-on-read work unit must see the complete file set of its partition.
+/// Without this cap the distributed planner derives the merge subtree's task
+/// count from its file scans (`Desired(N)` for large file sets or a small
+/// `bytes_per_partition`), the children-isolator union allocates several tasks
+/// to one merge, and the leaf scale-up slices every version file into byte
+/// ranges — so the same primary key's versions merge in different tasks and
+/// the scan emits stale or duplicate rows. `Maximum(1)` wins over the scans'
+/// `Desired(N)` during task-count reconciliation, for both the union and the
+/// no-union (single range partition) plan shape; parallelism across merges of
+/// different partitions is preserved.
+fn merge_parquet_exec_single_task(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    ev.plan.downcast_ref::<MergeParquetExec>()?;
+    Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
+}
 
 /// Factory for independent LakeSoul [`SessionContext`]s.
 ///
@@ -183,6 +207,15 @@ impl LakeSoulSessionFactory {
         };
         session_config.options_mut().execution.target_partitions = target_partitions;
 
+        // Object-store options (`fs.s3a.*`, `fs.defaultFS`, …) must be
+        // reachable beyond the warehouse store registered on the session
+        // runtime: readers that build their own io session — the vector
+        // search scan — and the vector index auto-build after a commit
+        // construct their stores from the table's io config, which would
+        // otherwise carry no credentials at all.
+        let session_config =
+            session_config.with_extension(Arc::new(self.object_store_config.clone()));
+
         let runtime = Arc::new(RuntimeEnv::default());
         register_warehouse_object_store(
             &self.warehouse,
@@ -214,7 +247,18 @@ impl LakeSoulSessionFactory {
             builder = builder
                 .with_distributed_worker_resolver(Arc::clone(resolver))
                 .with_distributed_user_codec(LakeSoulCodec)
-                .with_distributed_metrics_collection(true)?;
+                .with_distributed_metrics_collection(true)?
+                .with_distributed_desired_task_count_handler(
+                    merge_parquet_exec_single_task,
+                );
+            // Merge-work-unit atomicity: a merge-on-read work unit (one
+            // partition's complete file set) is one `MergeParquetExec`, i.e. one
+            // child of the scan's union. The children-isolator union runs each
+            // child whole inside a single task, so a merge never sees only a
+            // subset of its versions — which would duplicate primary keys or
+            // lose the version that should win. Enabled explicitly rather than
+            // relying on the library default.
+            builder = builder.with_distributed_children_isolator_unions(true)?;
             if let Some(bytes_per_partition) = dist.bytes_per_partition {
                 builder = builder.with_distributed_file_scan_config_bytes_per_partition(
                     bytes_per_partition,

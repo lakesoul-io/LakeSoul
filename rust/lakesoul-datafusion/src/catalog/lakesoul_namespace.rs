@@ -150,7 +150,7 @@ impl SchemaProvider for LakeSoulNamespace {
 
         Ok(Some(
             table
-                .as_sink_provider(self.provider_options)
+                .as_sink_provider(self.provider_options.clone())
                 .await
                 .map_err(|e| DataFusionError::External(e.into_boxed_error()))?,
         ))

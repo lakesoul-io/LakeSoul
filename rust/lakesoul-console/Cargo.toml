@@ -18,6 +18,7 @@ tokio = { workspace = true }
 # cli
 clap = { workspace = true }
 rustyline = "16.0.0"
+base64 = { version = "0.22", features = ["std"] }
 # async
 futures = { workspace = true }
 # rand

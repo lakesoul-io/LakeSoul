@@ -143,10 +143,13 @@ fn test_catalog_api() {
         let provider_options = LakeSoulProviderOptions::from_session(&sc.state());
         let data = random_tables(random_namespace("api", 4), schema.clone());
 
-        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), provider_options));
+        let catalog = Arc::new(LakeSoulCatalog::new(
+            client.clone(),
+            provider_options.clone(),
+        ));
         let dummy_schema_provider = Arc::new(LakeSoulNamespace::new(
             client.clone(),
-            provider_options,
+            provider_options.clone(),
             "dummy",
         ));
         // id, path, name must be unique
@@ -173,8 +176,11 @@ fn test_catalog_api() {
                 .is_none()
         );
         for (np, tables) in data.iter() {
-            let schema =
-                LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
+            let schema = LakeSoulNamespace::new(
+                client.clone(),
+                provider_options.clone(),
+                &np.namespace,
+            );
             // Listing methods answer from the catalog snapshot.
             schema.refresh().await.unwrap();
             let names = schema.table_names();
@@ -229,7 +235,10 @@ fn test_catalog_sql() {
             "+----------+------+-------+",
         ];
 
-        let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), provider_options));
+        let catalog = Arc::new(LakeSoulCatalog::new(
+            client.clone(),
+            provider_options.clone(),
+        ));
         {
             let before = {
                 let sql = "show tables";
@@ -277,8 +286,11 @@ fn test_catalog_sql() {
         // snapshot before SHOW COLUMNS reads information_schema from it.
         catalog.snapshot().refresh().await.unwrap();
         for (np, tables) in data.iter() {
-            let schema =
-                LakeSoulNamespace::new(client.clone(), provider_options, &np.namespace);
+            let schema = LakeSoulNamespace::new(
+                client.clone(),
+                provider_options.clone(),
+                &np.namespace,
+            );
             // Listing methods answer from the catalog snapshot.
             schema.refresh().await.unwrap();
             let names = schema.table_names();

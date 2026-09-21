@@ -4,30 +4,24 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
+use arrow::array::{ArrayRef, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::assert_batches_eq;
 use datafusion::logical_expr::{col, lit};
 use datafusion::physical_plan::collect;
-use lakesoul_io::config::{
-    LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
-};
+use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter,
 };
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
-use lakesoul_metadata_proto::entity::TableInfo;
 
 use crate::Result;
-use crate::catalog::{
-    LakeSoulTableProperty, create_io_config_builder, format_table_info_partitions,
-};
+use crate::catalog::create_io_config_builder;
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
-use crate::ser::arrow_java::schema_to_metadata_parts;
-use crate::tests::create_table;
+use crate::tests::{cdc_batch, create_cdc_table, create_table};
 
 fn test_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -42,26 +36,6 @@ fn batch(ids: &[i32], scores: &[i32]) -> RecordBatch {
         vec![
             Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
             Arc::new(Int32Array::from(scores.to_vec())) as ArrayRef,
-        ],
-    )
-    .unwrap()
-}
-
-fn cdc_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("score", DataType::Int32, false),
-        Field::new("op", DataType::Utf8, true),
-    ]))
-}
-
-fn cdc_batch(ids: &[i32], scores: &[i32], ops: &[&str]) -> RecordBatch {
-    RecordBatch::try_new(
-        cdc_schema(),
-        vec![
-            Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
-            Arc::new(Int32Array::from(scores.to_vec())) as ArrayRef,
-            Arc::new(StringArray::from(ops.to_vec())) as ArrayRef,
         ],
     )
     .unwrap()
@@ -129,46 +103,6 @@ async fn create_primary_key_table_with_batches(
     for (physical_format, batch) in batches {
         write_batch_to_table(client.clone(), &table, physical_format, batch).await?;
     }
-
-    Ok(())
-}
-
-async fn create_cdc_table(client: MetaDataClientRef, table_name: &str) -> Result<()> {
-    let primary_keys = vec!["id".to_string()];
-    let io_config = LakeSoulIOConfigBuilder::new()
-        .with_schema(cdc_schema())
-        .with_primary_keys(primary_keys.clone())
-        .with_option(OPTION_KEY_CDC_COLUMN, "op")
-        .with_option(OPTION_KEY_STABLE_SORT, "true")
-        .build();
-
-    let target_schema = io_config.target_schema();
-    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
-        schema_to_metadata_parts(target_schema.as_ref());
-
-    client
-        .create_table(TableInfo {
-            table_id: format!("table_{}", uuid::Uuid::new_v4()),
-            table_name: table_name.to_string(),
-            table_path: format!(
-                "file://{}/default/{}",
-                std::env::current_dir()?.to_string_lossy(),
-                table_name
-            ),
-            table_schema,
-            table_schema_arrow_ipc,
-            table_schema_arrow_ipc_json_hash,
-            table_namespace: "default".to_string(),
-            properties: serde_json::to_string(&LakeSoulTableProperty {
-                hash_bucket_num: Some(String::from("4")),
-                cdc_change_column: Some(String::from("op")),
-                use_cdc: Some(String::from("true")),
-                ..Default::default()
-            })?,
-            partitions: format_table_info_partitions(&[], &primary_keys),
-            domain: "public".to_string(),
-        })
-        .await?;
 
     Ok(())
 }

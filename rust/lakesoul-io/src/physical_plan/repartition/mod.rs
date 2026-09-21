@@ -455,8 +455,17 @@ impl RepartitionByRangeAndHashExec {
         // the partitioning writer appends them to the range/bucket files in
         // encounter order without sorting again. The files are only sorted
         // (which merge-on-read relies on to deduplicate adjacent keys) if the
-        // input is ordered by `range_partitions + primary_keys`.
-        //
+        // input is ordered by `range_partitions + primary_keys` *globally*,
+        // which requires a single input partition: output_ordering() only
+        // declares a per-partition order.
+        if input.output_partitioning().partition_count() > 1 {
+            bail!(
+                "RepartitionByRangeAndHashExec requires a single input partition \
+                to keep the bucket files ordered (got {} input partitions); coalesce \
+                the sorted partitions (e.g. SortPreservingMergeExec) before repartitioning",
+                input.output_partitioning().partition_count(),
+            );
+        }
         // Require that sequence to be a prefix of the input ordering: `SortExec`
         // keeps the input's pre-existing ordering after the sort prefix, so the
         // ordering it exposes can be longer than `range + hash`. An absent or
@@ -482,7 +491,8 @@ impl RepartitionByRangeAndHashExec {
             )
         {
             bail!(
-                "Input ordering {:?} is not compatible with RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
+                "Input ordering {:?} is not compatible with \
+                RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
                 input_ordering,
                 range_partitioning_expr,
                 hash_partitioning,
@@ -1124,6 +1134,78 @@ mod tests {
         assert!(
             exec.is_err(),
             "an ordering shorter than range+hash must be rejected"
+        );
+    }
+
+    /// A multi-partition input that is only sorted *per partition* has an
+    /// `output_ordering` (a per-partition property) that already passes the
+    /// ordering-prefix check, but with `preserve_order = false` the multiple
+    /// producers write to the same output channel in arrival order, so a
+    /// bucket would no longer receive its rows in globally sorted order.
+    /// Construction must reject such inputs; `output_ordering()` of this plan
+    /// only leaks the input ordering for a single input partition.
+    #[test]
+    fn try_new_rejects_multi_partition_ordered_input() {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(ids))],
+            )
+            .unwrap()
+        };
+        // Two input partitions, each one locally sorted by `id`, but their
+        // interleaving across partitions is not globally sorted.
+        let memory = LazyMemoryExec::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(RwLock::new(
+                    InMemGenerator::try_new(vec![batch(vec![1, 3, 5, 7])]).unwrap(),
+                )),
+                Arc::new(RwLock::new(
+                    InMemGenerator::try_new(vec![batch(vec![2, 4, 6, 8])]).unwrap(),
+                )),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            memory.properties().output_partitioning().partition_count(),
+            2,
+            "test input must have two partitions"
+        );
+
+        // The SortExec sorts every partition locally and declares the `id`
+        // ordering, even though it only holds per partition. With
+        // `preserve_partitioning`, the two sorted input partitions stay
+        // separate, which is the shape the range+hash repartition would
+        // actually be fed by a multi-partition plan.
+        let sort_input = Arc::new(
+            SortExec::new(
+                LexOrdering::new(vec![PhysicalSortExpr::new(
+                    col("id", &schema).unwrap(),
+                    SortOptions::default(),
+                )])
+                .unwrap(),
+                Arc::new(memory),
+            )
+            .with_preserve_partitioning(true),
+        );
+        assert!(
+            sort_input.properties().output_ordering().is_some(),
+            "test input must expose an ordering"
+        );
+        // The ordering-prefix check alone would accept this input; the
+        // partition-count check is what rejects it.
+        let exec = RepartitionByRangeAndHashExec::try_new(
+            sort_input as Arc<dyn ExecutionPlan>,
+            vec![],
+            Partitioning::Hash(vec![col("id", &schema).unwrap()], 1),
+            ExecutionPlanMetricsSet::new(),
+        );
+        assert!(
+            exec.is_err(),
+            "a multi-partition input must be rejected, got {exec:?}"
         );
     }
 
