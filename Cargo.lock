@@ -5332,6 +5332,7 @@ dependencies = [
  "lakesoul-io",
  "lakesoul-metadata",
  "lakesoul-metadata-proto",
+ "lakesoul-text",
  "rootcause",
  "serde",
  "serde_json",

@@ -22,9 +22,17 @@ Implemented:
 - `POST /{index}/_delete_by_query` (terms/term/bool filters → CDC tombstones)
 - `POST /{index}/_update_by_query` (the four fixed WeKnora scripts: enable /
   disable / set tag / move knowledge base)
+- `POST/GET /{index}/_search`:
+  - keyword search (`match` on the content column) with BM25 `_score`, a
+    global relevance order, exact verification against the current rows
+    (stale candidates are dropped) and `size`/`from`;
+  - `bool.filter`/`bool.must`/`bool.must_not` (terms/term), where a missing
+    `is_enabled` counts as enabled;
+  - `_source` includes/excludes (the v8 search excludes `embedding`) and the
+    filter-only copy path with full `_source` including embeddings;
 - `X-Elastic-Product: Elasticsearch` on every response
 
-Search (`_search`, keyword and vector) lands in the next pull request.
+Vector search (`script_score`/cosine) lands in the next pull request.
 
 ## Configuration
 
