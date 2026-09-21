@@ -136,15 +136,46 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   （LeRobot/MCAP GOP 导入 → 直接进窗口样本）。
 - GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
-### M2-1 ~ M2-3 Blob 外置（待设计评审）
+### M2-1 ~ M2-3 Blob 外置（实施中）
 
-- Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
+- 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/threshold/pack_target`）→ IOConfig options；
+  tagged binary 行内表示；pack 跟随数据文件（`<data_file>.<column>.blob`，删数据文件即清理）；
+  仅 Python/native 路径；阈值 16KiB inline / 2MiB external / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
+- 已完成（端到端）：
+  - Rust codec（`blob.rs`）与 writer 接线（`write_record_batch` 编码、`flush` 落
+    `<data_file>.<column>.blob`）；
+  - reader 物化（`BlobMaterializer`：object store range 读 + CRC/length 校验 + moka 缓存）；
+  - Python 透传（`create_table` 校验 `blob_columns`；`write_arrow`/Ray/Daft 注入写选项；
+    scan 注入 reader 选项）；
+  - GOP 外置 e2e：分区表带 `blob_columns={"data": external}` 时每数据文件一个 pack，
+    `GopVideo`/`EmbodiedDataset` 直接解码；
+  - benchmark `--with-blob` 对比列；
+- 待办：pack GC/vacuum、SQL 引擎 glue、零拷贝 `BlobFile`（M2-2 后续）；
+- 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
 - 行级 range 下推 + `take`（只服务单样本/调试），与 blob range 共用寻址；
 - `import_mcap`：与 `import_lerobot` 共用对齐/写入骨架；
 - 视频解码 helper（`av`/`torchcodec`）已随 M2-4 提供基础版；
 - 混合 benchmark：存储放大、GOP 随机读 P50、重写放大。
+
+### M2-5a 视频布局存储/读取量化（已完成）
+
+- `benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
+  生成渐变图案的 LeRobot v3 源（mp4 + parquet），分别以 frames（逐帧 JPEG）、gop、
+  daft-frames（native runner）导入，报告导入吞吐、磁盘体积、窗口采样吞吐与
+  GOP 解码 P50/P99；
+- 示例结果（8 episodes × 120 ticks，128×128，keyint=16，vortex）：
+  - 存储：源 mp4 0.16 MB；frames 3.55 MB（21.6x mp4）；gop 0.42 MB（2.54x mp4），
+    **gop 比 frames 小 8.5x**（源为低熵渐变，真实视频差距视码率而定）；
+  - 导入：frames 0.92s / 1.0k rows/s；gop 0.20s / 4.9k rows/s；
+    daft-frames native runner 2.62s（单进程，仅体现引擎开销）；
+  - 读取：frames 8.1k samples/s、15.3 KB/sample；gop 216 samples/s（sample P50
+    0.057 ms，命中已解码 GOP 缓存；P99 25.6 ms 为 unit 内首个 GOP 解码），
+    1.8 KB/sample，整 GOP 解码 P50 14 ms；
+- 结论：GOP 布局把存储压到接近源体积（8.5x 收益），代价是采样时需解码
+  （缓存命中时很快）；blob 外置主要收益在把 frames 的逐帧字节或 GOP 数据移出行，
+  阈值仍按 16KiB inline / 2MiB external 设计，pack 跟随数据文件。
 
 ## 5. M4：Daft 分布式（进行中）
 
