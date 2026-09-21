@@ -254,3 +254,11 @@ Plain query text is analyzed into terms that are OR-combined (each term contribu
 - Phrase queries require `with_positions=true` (the default); with positions disabled only term/boolean queries are available.
 - `write_ray` does not build or update secondary indexes; use `build_text_index()`.
 - The index is currently reachable from the Python SDK/Daft and from the DataFusion SQL engine; Spark/Flink integration is not exposed yet.
+
+## See also
+
+- [Text index benchmark](../19-text-index-benchmark.md) for build, search and
+  incremental-update measurements on MS MARCO and T2Retrieval, and the
+  analyzer/shard/candidate guidance derived from them.
+- [ES-compatible gateway](../18-es-compatible-gateway.md) to serve the same
+  text search over WeKnora's Elasticsearch HTTP contract.

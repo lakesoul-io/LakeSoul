@@ -254,3 +254,8 @@ LIMIT 10;
 - 短语查询需要 `with_positions=true`（默认）；关闭位置后仅支持词项/布尔查询。
 - `write_ray` 不会构建或更新二级索引；请使用 `build_text_index()`。
 - 目前索引可从 Python SDK/Daft 与 DataFusion SQL 引擎访问；Spark/Flink 集成尚未暴露。
+
+## 参见
+
+- [文本索引 benchmark](../19-text-index-benchmark.md)：MS MARCO 与 T2Retrieval 上的构建、检索与增量维护实测，以及由此得到的分词器/shard/候选数建议。
+- [ES 兼容网关](../18-es-compatible-gateway.md)：以 WeKnora 的 Elasticsearch HTTP 契约对外提供同一套文本检索。
