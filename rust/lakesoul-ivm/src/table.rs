@@ -54,6 +54,9 @@ pub struct IvmTable {
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
     pub hash_bucket_num: String,
+    /// The CDC change column of the table (`insert` / `delete` values), when
+    /// the table carries one.
+    pub cdc_column: Option<String>,
 }
 
 /// Options for [`create_ivm_table`].
@@ -73,6 +76,9 @@ pub struct IvmTableOptions {
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
     pub hash_bucket_num: String,
+    /// The CDC change column of the table, persisted as the
+    /// `lakesoul_cdc_change_column` table property.
+    pub cdc_column: Option<String>,
 }
 
 impl IvmTableOptions {
@@ -90,6 +96,7 @@ impl IvmTableOptions {
             primary_keys: Vec::new(),
             bucket_columns: Vec::new(),
             hash_bucket_num: "4".to_string(),
+            cdc_column: None,
         }
     }
 
@@ -110,6 +117,12 @@ impl IvmTableOptions {
         self.namespace = namespace.into();
         self
     }
+
+    /// Set the CDC change column.
+    pub fn with_cdc_column(mut self, cdc_column: impl Into<String>) -> Self {
+        self.cdc_column = Some(cdc_column.into());
+        self
+    }
 }
 
 /// Create an internal LakeSoul table.
@@ -125,6 +138,15 @@ pub async fn create_ivm_table(
     if !options.bucket_columns.is_empty() {
         properties["lakesoul.ivm.bucket_columns"] =
             serde_json::Value::String(options.bucket_columns.join(","));
+    }
+    if let Some(cdc_column) = &options.cdc_column {
+        if options.schema.field_with_name(cdc_column).is_err() {
+            return Err(rootcause::report!(
+                "cdc column {cdc_column:?} is not part of the table schema"
+            ));
+        }
+        properties["lakesoul_cdc_change_column"] =
+            serde_json::Value::String(cdc_column.clone());
     }
 
     let table_id = format!("table_{}", uuid::Uuid::new_v4().simple());
@@ -152,6 +174,7 @@ pub async fn create_ivm_table(
         primary_keys: options.primary_keys,
         bucket_columns: options.bucket_columns,
         hash_bucket_num: options.hash_bucket_num,
+        cdc_column: options.cdc_column,
     })
 }
 

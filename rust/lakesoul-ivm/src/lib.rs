@@ -22,6 +22,12 @@
 //! [`runtime::IvmRuntime::rebuild_sum_count`] /
 //! [`runtime::IvmRuntime::rebuild_join`].
 //!
+//! A keyed source may declare a CDC change column through
+//! [`table::IvmTableOptions::with_cdc_column`] (persisted as the LakeSoul
+//! `lakesoul_cdc_change_column` property): `delete` values retract a row, and
+//! the surviving tombstones are excluded from rebuilds and from the retraction
+//! lookup. Sources without one fall back to the internal `rowKinds` column.
+//!
 //! # Retention
 //!
 //! A refresh can only consume a source commit window while its history is
