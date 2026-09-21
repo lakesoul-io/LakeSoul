@@ -86,9 +86,17 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@0.18.3
-      - name: Pull images
+      - name: Prefetch images
         run: |
-          docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
+          (
+            docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 &
+            docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296 &
+            docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix &
+            (cd docker/lakesoul-docker-compose-env && docker compose --profile s3 pull -q) &
+            wait
+            touch /tmp/images-ready
+          ) > /tmp/image-pull.log 2>&1 &
+          echo "image prefetch started in background"
       - name: Build Rust libraries
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
@@ -133,7 +141,7 @@ jobs:
           sed -i 's/if NEW.version - rs_version >= 10 then/if NEW.version - rs_version >= 1 then/' script/meta_init.sql
           sed -i 's/if NEW.version >= 10 then/if NEW.version >= 1 then/' script/meta_init.sql
           cd ./docker/lakesoul-docker-compose-env
-          docker compose pull -q
+          for i in $(seq 1 180); do [ -f /tmp/images-ready ] && break; sleep 2; done
           export LAKESOUL_IO_USE_V2_MERGE=true
           docker compose --profile s3 up -d
           for i in $(seq 1 30); do
@@ -210,16 +218,28 @@ jobs:
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc "/opt/flink/work-dir/$FLINK_JAR_NAME" --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink_db_name default --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
-          sleep 30s
+          for i in $(seq 1 60); do
+            if docker exec lakesoul-test-pg psql -U lakesoul_test -d lakesoul_test -tAc "select 1 from table_info where table_name='s_test_cdc_default_init' limit 1" 2>/dev/null | grep -q 1; then
+              echo "cdc source table ready after $((i * 3))s"
+              break
+            fi
+            sleep 3
+          done
       - name: Start flink source to sink task-2
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C "file:///opt/flink/work-dir/$FLINK_JAR_NAME" "/opt/flink/work-dir/$FLINK_TEST_JAR_NAME" --source.database.name default --source.table.name s_test_cdc_default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink-sink/data --flink.checkpoint s3://lakesoul-test-bucket/flink-sink/chk
-          sleep 30s
+          for i in $(seq 1 30); do
+            if docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink list -r 2>/dev/null | grep -q "LakeSoulSourceToSink"; then
+              echo "source-to-sink job running after $((i * 2))s"
+              break
+            fi
+            sleep 2
+          done
       - name: Download mysql driver jar
         run: |
           cd ./script/benchmark/work-dir
-          if [ ! -e mysql-connector-j-8.0.33.jar ]; then wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar; fi
-          if [ ! -e presto-jdbc-0.292.jar ]; then wget -q https://repo1.maven.org/maven2/com/facebook/presto/presto-jdbc/0.292/presto-jdbc-0.292.jar; fi
+          if [ ! -e mysql-connector-j-8.0.33.jar ]; then cp "$HOME/mysql-connector-j-8.0.33.jar" .; fi
+          if [ ! -e presto-jdbc-0.292.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://repo1.maven.org/maven2/com/facebook/presto/presto-jdbc/0.292/presto-jdbc-0.292.jar; fi
       - name: Create table and insert data
         run: |
           cd ./script/benchmark

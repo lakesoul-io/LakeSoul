@@ -2,7 +2,7 @@
 
 - 版本：v1.2（用户功能驱动版，M1 重排）
 - 日期：2026-09-18
-- 状态：M1 完成；M2 进行中（M2-4 `import_lerobot` v3 与 `import_mcap` v1 已完成；blob 外置待设计评审）
+- 状态：M1 完成；M2 进行中（M2-4 导入器 + GOP 布局/读取已完成；blob 外置待设计评审）；M4-1a Daft 分布式导入（LeRobot frames）已完成
 - 修订点（相对 v1.1）：
   - 从"低层 RowSelection / 全局行号"改为从**用户训练闭环**倒推功能；
   - 确认：episode 内"顺序消费 + 窗口随机起点"，不做全局行随机访问；
@@ -109,17 +109,49 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 
 ### M2-4b `import_mcap` v1（JSON 录制）
 
-- 支持 `message_encoding == "json"` 的 MCAP（Foxglove/ROS JSON 录制）；
+- 支持 JSON 与 protobuf 消息：protobuf 用 MCAP 内嵌 FileDescriptorSet 动态解码
+  （覆盖 `foxglove.CompressedVideo` 等），bytes 保持 bytes、WKT `Timestamp` 转 float 秒；
 - `columns={"observation_state": "topic[:field.path]"}` 映射 tabular 列，
   `cameras={"cam_high": "topic"}` 映射 base64 图像/视频帧；`row_topic` 定义行锚点，
   其他 topic 按最近邻 `tolerance` 秒对齐；类型从 JSON 值推断
   （标量 / FixedSizeList / string / bool）；
-- protobuf 编码明确报错并列出可用 topic；测试：合成 MCAP（zstd chunk）5 个用例；
+- 未知编码明确报错并列出可用 topic；测试：合成 MCAP（zstd chunk，JSON + protobuf）6 个用例；
+
+### M2-4c GOP 视频布局（已完成）
+
+- `import_lerobot(video_layout="gop")`：按关键帧把 mp4 demux 成自包含 Annex-B GOP，
+  产出 `<table>`（ticks）+ `<table>_gops`（原始 packet、帧元数据）+ `<table>_frames`
+  （frame_index → gop/position/offset/timestamp 索引），不逐帧解码/重编码，存储接近源体积；
+- `lakesoul.embodied.video`：`demux_gops`（含 h264/hevc/vvc → Annex-B）、`decode_gop`、
+  `decode_gop_range`（按 episode/camera 区间解码）、`encode_frames`（frames 模式共用）；
+- 测试：合成 h264（keyint=4）→ 表结构 + 解码像素与源帧对齐；
+- `EmbodiedDataset(video=GopVideo(gops, frames), video_window=...)`：窗口行区间 → 帧区间解码，
+  每个 unit 按 (episode, camera, gop) 缓存已解码帧；`video_window` 支持列名或 (start, end)，
+  默认跟随第一个窗口列；检测相机列与窗口列重名并报错；
+- `import_mcap(video_layout="gop")`：按 access unit 的 NAL 关键帧分组 Annex-B GOP，
+  使用 channel `sequence` 保证 decode order（无 sequence 时按 log_time 回退，B 帧流需录制端写 sequence），
+  产出与 LeRobot 同构的 `<table>_gops` / `<table>_frames`，`GopVideo` 直接消费；
+  JPEG/PNG 相机提示改用 `video_layout="frames"`；
+- 数据集侧测试：fake video 单测（窗口/边界/重名/分区校验、pickle）+ PG 端到端
+  （LeRobot/MCAP GOP 导入 → 直接进窗口样本）。
 - GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
-### M2-1 ~ M2-3 Blob 外置（待设计评审）
+### M2-1 ~ M2-3 Blob 外置（实施中）
 
-- Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
+- 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/threshold/pack_target`）→ IOConfig options；
+  tagged binary 行内表示；pack 跟随数据文件（`<data_file>.<column>.blob`，删数据文件即清理）；
+  仅 Python/native 路径；阈值 16KiB inline / 2MiB external / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
+- 已完成（端到端）：
+  - Rust codec（`blob.rs`）与 writer 接线（`write_record_batch` 编码、`flush` 落
+    `<data_file>.<column>.blob`）；
+  - reader 物化（`BlobMaterializer`：object store range 读 + CRC/length 校验 + moka 缓存）；
+  - Python 透传（`create_table` 校验 `blob_columns`；`write_arrow`/Ray/Daft 注入写选项；
+    scan 注入 reader 选项）；
+  - GOP 外置 e2e：分区表带 `blob_columns={"data": external}` 时每数据文件一个 pack，
+    `GopVideo`/`EmbodiedDataset` 直接解码；
+  - benchmark `--with-blob` 对比列；
+- 待办：pack GC/vacuum、SQL 引擎 glue、零拷贝 `BlobFile`（M2-2 后续）；
+- 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
 - 行级 range 下推 + `take`（只服务单样本/调试），与 blob range 共用寻址；
@@ -127,21 +159,103 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 - 视频解码 helper（`av`/`torchcodec`）已随 M2-4 提供基础版；
 - 混合 benchmark：存储放大、GOP 随机读 P50、重写放大。
 
-## 5. M3：时间语义与可复现
+### M2-5a 视频布局存储/读取量化（已完成）
+
+- `benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
+  生成渐变图案的 LeRobot v3 源（mp4 + parquet），分别以 frames（逐帧 JPEG）、gop、
+  daft-frames（native runner）导入，报告导入吞吐、磁盘体积、窗口采样吞吐与
+  GOP 解码 P50/P99；
+- 示例结果（8 episodes × 120 ticks，128×128，keyint=16，vortex）：
+  - 存储：源 mp4 0.16 MB；frames 3.55 MB（21.6x mp4）；gop 0.42 MB（2.54x mp4），
+    **gop 比 frames 小 8.5x**（源为低熵渐变，真实视频差距视码率而定）；
+  - 导入：frames 0.92s / 1.0k rows/s；gop 0.20s / 4.9k rows/s；
+    daft-frames native runner 2.62s（单进程，仅体现引擎开销）；
+  - 读取：frames 8.1k samples/s、15.3 KB/sample；gop 216 samples/s（sample P50
+    0.057 ms，命中已解码 GOP 缓存；P99 25.6 ms 为 unit 内首个 GOP 解码），
+    1.8 KB/sample，整 GOP 解码 P50 14 ms；
+- 结论：GOP 布局把存储压到接近源体积（8.5x 收益），代价是采样时需解码
+  （缓存命中时很快）；blob 外置主要收益在把 frames 的逐帧字节或 GOP 数据移出行，
+  阈值仍按 16KiB inline / 2MiB external 设计，pack 跟随数据文件。
+
+## 5. M4：Daft 分布式（进行中）
+
+原则（已确认）：混合方案——表格/逐帧用 Daft 原生 `daft.datasets.lerobot`，GOP 与
+MCAP protobuf 用本仓 `@daft.cls` actor；先在 Daft native runner 上保证正确，
+Ray runner 只要求接口兼容（gated 测试）。
+
+### M4-1a `import_lerobot`（Daft，frames 布局，已完成）
+
+- `lakesoul.embodied.daft.import_lerobot`：`daft.datasets.lerobot.read` 扫描/解码视频，
+  列名去点、image 列用 `encode_image` 转 bytes、`episode_id` 补零为 `ep000000`，
+  然后一次 `write_daft`（worker 写文件、driver 单次提交）；
+- `episodes` / `cameras` / `include_video` / `sort_rows`（默认按
+  `episode_id + frame_index` 排序，保证窗口行偏移与 `frame_index` 一致）/ `overwrite`；
+- 与单机导入复用同一套 schema/feature 解析，表结构一致；
+- 测试：native runner 上合成 v3 数据集（含 mp4）3 个用例（行数/分区/JPEG 帧/窗口/覆盖保护）。
+
+### M4-1b LeRobot GOP（Daft，已完成）
+
+- `lakesoul.embodied.daft.import_lerobot_gop`：ticks 表仍由
+  `daft.datasets.lerobot` 生成；`_gops` / `_frames` 由一个 `@daft.cls` actor
+  按 (episode, camera) 生成——actor 在 worker 内按 video 文件缓存 `demux_gops`
+  结果，用 `select_episode_frames` 切出 episode 区间并重新编号 GOP，返回
+  `list<struct>` 后 `explode` 展开，再经 `write_daft` 写入；
+- 复用 `GOPS_SCHEMA` / `FRAMES_SCHEMA` 与纯 helper，语义与单机 gop 布局一致；
+- 修复 `lakesoul/daft/sink.py` 的类型兼容：允许 list↔large_list（Daft 的
+  `List` 在 Arrow 中是 `large_list`），否则任何 list 列都无法通过 Daft 写入；
+- 测试：native runner 上 GOP 三表 + `GopVideo` 解码 + 数据集窗口。
+
+### M4-2a 分布式窗口采样（已完成）
+
+- `lakesoul.embodied.daft.read_samples(scan, window=..., stride=..., order_by="frame_index", seed, epoch)`：
+  逐 episode 排序 + `groupby` 聚合到单 worker，用 `daft.func` UDF 打包窗口
+  （anchor 置换用 `seed/epoch`，与单机同规则）后 `explode`，返回
+  `episode_id / anchor / 每个窗口列（list）` 的 lazy DataFrame；
+- 与 `EmbodiedDataset` 语义一致（行偏移窗口、`boundary="skip"`），测试逐样本对齐
+  （stride=1/2 均比对通过）；`clamp` 明确报错待补；
+- 限制：尚未包含 GOP 图像解码与样本级 rank 分片（Daft 自身调度负责并行）。
+
+### M4-2b 分布式 GOP 帧解码（已完成）
+
+- `lakesoul.embodied.daft.read_gop_frames(gops_scan, frames_scan, cameras=..., image_format=...)`：
+  每个 GOP 在 worker 内 `decode_gop` 一次，explode 后与 frames 索引 join，
+  输出 `episode_id/camera/frame_index/timestamp/width/height/image`；
+  `image_format="JPEG"/"PNG"` 输出编码字节，`None` 输出原始 RGB；
+- 测试：逐帧像素与单机 `GopVideo` 对齐、秒级时间戳、原始 RGB 尺寸校验。
+
+### M4-1c MCAP 分布式（已完成，frames 布局）
+
+- `lakesoul.embodied.daft.import_mcap(source, ...)`：`source` 可为文件、目录（`*.mcap`）
+  或文件列表；每个文件一个 task，由 `mcap.build_frame_episode`（新抽出的纯函数，
+  支持 JSON + protobuf、与单机同语义）构建行，`func(return_dtype=...)` 返回
+  `list<struct>`，explode 后一次 `write_daft` 提交；
+- 复用单机 schema/类型（fixed-size list 逐层映射到 Daft 类型），表结构与单机一致；
+- 限制：仅 frames 布局；MCAP 的 GOP 布局仍走单机导入（`video_layout="gop"`）。
+
+### M4-3 Ray / native runner（已完成）
+
+- native runner 单测已覆盖（M4-1a/b/c、M4-2a/b）；
+- 新增 `tests/embodied/test_daft_ray.py`（`LAKESOUL_DAFT_RAY_TEST=1`）：Ray runner 下
+  跑 LeRobot frames 导入、`read_samples` 与单机逐样本对齐、GOP 导入 +
+  `read_gop_frames` 像素/时间戳校验，本地 8s 通过；
+- `tests/vector/test_daft_ray_distribution.py` 的过期 import 修复后本地验证：
+  12 shards 分布到 4 个 executor。
+
+## 6. M3：时间语义与可复现
 
 - 时间聚簇写入/compaction → 时间窗=行范围快路径；
 - `align()/join_asof()`（导入未预对齐时的读时对齐）；
 - 样本视图/manifest（跨快照稳定的行地址，才需要持久化）；
 - Python 快照/版本参数（目前仅 Spark/Flink）；文档与示例收尾。
 
-## 6. 验收指标
+## 7. 验收指标
 
 - **存储**：视频列相对逐帧 JPEG 的体积比；相对 MCAP topic-group 的读取放大；
 - **访问**：单样本取数字节、range GET 次数、GOP 随机读 P50/P99（M2 起）；
 - **训练**：loader 吞吐、GPU 利用率、shuffle 的随机性与可复现性、worker/rank 均衡；
 - **运维**：改标注列的重写放大、GC 正确性、快照回滚后 blob 一致性（M2 起）。
 
-## 7. 风险与约定
+## 8. 风险与约定
 
 1. 自定义 Vortex layout 上游 API 尚在演进（当前 0.86）：先用现成 knobs，layout 按扩展注册；
 2. Blob pack 的 GC 与快照引用语义需先定义：按快照 manifest 引用，vacuum 只清无引用 pack；
@@ -151,6 +265,6 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
    示例/benchmark 默认 `num_workers=0`，`EmbodiedDataset` 已支持 pickle，可在 spawn 模式下使用；
 6. `lakesoul-datafusion` 在 workspace 中 disabled，SQL 侧透传列策略需先确认启用路径。
 
-## 8. 实施顺序
+## 9. 实施顺序
 
-M1-1 → M1-2 → M1-3 → M1-4 → M1-5，每步带测试；M2、M3 依次跟进。
+M1-1 → M1-2 → M1-3 → M1-4 → M1-5，每步带测试；随后 M2（导入器/GOP/blob）、M4（Daft 分布式）、M3 依次跟进。

@@ -115,6 +115,9 @@ pub struct LakeSoulTableProvider {
     /// Vector index configurations declared by the table's
     /// `vector_index_columns` property (empty when the table has none).
     pub(crate) vector_index_configs: Vec<crate::vector_index::VectorIndexTableConfig>,
+    /// Text index configurations declared by the table's
+    /// `text_index_columns` property (empty when the table has none).
+    pub(crate) text_index_configs: Vec<crate::text_index::TextIndexTableConfig>,
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
 }
 impl LakeSoulTableProvider {
@@ -284,6 +287,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        let text_index_configs =
+            crate::text_index::parse_text_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         Ok(Self {
             listing_options,
             listing_table_paths,
@@ -297,6 +305,7 @@ impl LakeSoulTableProvider {
             pushdown_filters: provider_options.pushdown_filters,
             io_config: lakesoul_io_config,
             vector_index_configs,
+            text_index_configs,
             format_registry,
         })
     }
@@ -472,6 +481,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        let text_index_configs =
+            crate::text_index::parse_text_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         Ok(Self {
             listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
                 .await?,
@@ -490,6 +504,7 @@ impl LakeSoulTableProvider {
                 .pushdown_filters, // TODO after more format
             io_config,
             vector_index_configs,
+            text_index_configs,
             format_registry,
         })
     }
@@ -735,8 +750,93 @@ impl LakeSoulTableProvider {
             self.table_paths()[0].object_store(),
             self.primary_keys.clone(),
             self.io_config.object_store_options().clone(),
+            self.io_config.cdc_column(),
             request,
             self.client.vector_index_catalog(),
+        )?;
+        Ok(Some(Arc::new(exec)))
+    }
+
+    /// Build the text-index candidate scan for a marker request.
+    ///
+    /// Returns `Ok(None)` when the request cannot be served — no primary
+    /// key, no `text_index_columns` entry for the column, a non-text column,
+    /// or an empty scan — in which case the caller runs the regular full
+    /// scan and the exact `text_match` predicate filters it.
+    async fn try_build_text_search_exec(
+        &self,
+        session_state: &SessionState,
+        request: crate::udf::text_search_marker::TextSearchRequest,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
+        if self.primary_keys.is_empty() {
+            return Ok(None);
+        }
+        let Some(declared) = self
+            .text_index_configs
+            .iter()
+            .find(|c| c.column == request.column)
+        else {
+            return Ok(None);
+        };
+        let Ok(field) = self.file_schema.field_with_name(&request.column) else {
+            return Ok(None);
+        };
+        if !matches!(
+            field.data_type(),
+            arrow::datatypes::DataType::Utf8
+                | arrow::datatypes::DataType::LargeUtf8
+                | arrow::datatypes::DataType::Utf8View
+        ) {
+            return Ok(None);
+        }
+        let (partitioned_file_lists, _) = self
+            .list_files_for_scan(session_state, filters, limit)
+            .await
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        if partitioned_file_lists.is_empty() {
+            return Ok(None);
+        }
+
+        let mut groups = Vec::with_capacity(partitioned_file_lists.len());
+        let mut partition_values = Vec::with_capacity(partitioned_file_lists.len());
+        for files in &partitioned_file_lists {
+            let mut by_bucket: std::collections::BTreeMap<u32, Vec<PartitionedFile>> =
+                std::collections::BTreeMap::new();
+            for file in files {
+                let bucket = lakesoul_io::helpers::extract_hash_bucket_id(
+                    file.object_meta.location.as_ref(),
+                )
+                .unwrap_or(0);
+                by_bucket.entry(bucket).or_default().push(file.clone());
+            }
+            for bucket_files in by_bucket.into_values() {
+                let values = bucket_files
+                    .first()
+                    .map(|f| f.partition_values.clone())
+                    .unwrap_or_default();
+                groups.push(bucket_files);
+                partition_values.push(values);
+            }
+        }
+
+        let catalog = self.client.index_catalog::<lakesoul_text::TextSplitEntry>(
+            lakesoul_common::IndexKind::Text,
+        );
+        let exec = crate::datasource::file_format::LakeSoulTextSearchExec::try_new(
+            self.scan_schema.clone(),
+            self.file_schema.clone(),
+            self.table_partition_cols().to_vec(),
+            groups,
+            partition_values,
+            self.table_paths()[0].object_store(),
+            self.primary_keys.clone(),
+            self.io_config.object_store_options().clone(),
+            self.io_config.cdc_column(),
+            declared.to_text_index_config(),
+            request,
+            catalog,
         )?;
         Ok(Some(Arc::new(exec)))
     }
@@ -927,6 +1027,24 @@ impl TableProvider for LakeSoulTableProvider {
         if let Some(request) = vector_search
             && let Some(exec) = self
                 .try_build_vector_search_exec(session_state, request, &filters, limit)
+                .await?
+        {
+            return Ok(exec);
+        }
+
+        // Text search pushdown: the marker switches the scan to the text
+        // index candidates; the rewritten `text_match` predicate above the
+        // scan verifies them exactly.
+        let text_search =
+            crate::udf::text_search_marker::parse_text_search_request(&filters);
+        let filters: Vec<Expr> = filters
+            .iter()
+            .filter(|f| !crate::udf::text_search_marker::is_marker_expr(f))
+            .cloned()
+            .collect();
+        if let Some(request) = text_search
+            && let Some(exec) = self
+                .try_build_text_search_exec(session_state, request, &filters, limit)
                 .await?
         {
             return Ok(exec);

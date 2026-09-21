@@ -13,6 +13,8 @@ and integrations with common data and machine-learning frameworks.
 - Write PyArrow data locally or use Ray Data and Daft for distributed writes.
 - Write Parquet, Vortex, and Vortex Compact files and commit them to LakeSoul
   metadata.
+- Build and search secondary indexes — vector similarity (IVF+RaBitQ) and
+  full-text (Tantivy BM25) — with automatic maintenance on write.
 
 Python 3.10 or later is required.
 
@@ -137,3 +139,22 @@ result = writer.result
 The writer accepts `pyarrow.RecordBatch`, `pyarrow.Table`, and
 `pyarrow.RecordBatchReader`. `Writer.finish()` returns `WriteResult`;
 `Writer.abort()` discards pending work and closes the writer.
+
+## Secondary indexes
+
+Declare vector columns with `vector_index=` and text columns with `text_index=`
+when creating a table; `write_arrow` and `write_daft` then build, update and
+compact the indexes automatically.
+
+| API | Purpose |
+| --- | --- |
+| `LakeSoulCatalog.create_table(..., vector_index=[...])` | Declare indexed vector columns (IVF+RaBitQ). |
+| `LakeSoulCatalog.create_table(..., text_index=[...])` | Declare indexed text columns (Tantivy). |
+| `LakeSoulTable.build_vector_index(...)` | Build/update the vector index from the committed files. |
+| `LakeSoulTable.rebuild_vector_index(...)` | Re-train the vector index from all active files. |
+| `LakeSoulTable.build_text_index(..., rebuild=False)` | Build/update the text index; `rebuild=True` compacts a shard into one fresh split. |
+| `lakesoul.daft.vector_search(table, query, top_k=...)` | Global top-`k` vector search through Daft (exact re-ranking). |
+| `lakesoul.daft.text_search(table, query, top_k=...)` | Exact full-text search through Daft, best BM25 match first. |
+
+See the documentation site for the [vector search](https://lakesoul-io.github.io/docs/Usage%20Docs/lakesoul-python/vector-search)
+and text search guides.

@@ -36,15 +36,23 @@
 
 use std::sync::Arc;
 
-use arrow_array::{RecordBatch, RecordBatchReader};
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_array::cast::AsArray;
+use arrow_array::{
+    Array, ArrayRef, BinaryArray, LargeBinaryArray, RecordBatch, RecordBatchReader,
+};
+use arrow_schema::{ArrowError, DataType, SchemaRef};
+use datafusion_common::DataFusionError;
+use datafusion_datasource::ListingTableUrl;
 use datafusion_execution::SendableRecordBatchStream;
 use datafusion_physical_plan::{execute_stream, stream::RecordBatchStreamAdapter};
 use datafusion_session::Session;
-use futures::StreamExt;
-use rootcause::{bail, compat::boxed_error::IntoBoxedError};
+use futures::{StreamExt, TryStreamExt};
+use object_store::ObjectStoreExt;
+use rootcause::{bail, compat::boxed_error::IntoBoxedError, report};
 use tokio::{runtime::Runtime, sync::Mutex, task::JoinHandle};
 use tokio_stream::wrappers::ReceiverStream;
+
+use crate::blob::{self, TaggedValue};
 
 use crate::session::GLOBAL_RUNTIME;
 use crate::{
@@ -102,6 +110,133 @@ pub struct LakeSoulReader {
     io_session: LakeSoulIOSession,
     stream: Option<SendableRecordBatchStream>,
     pub(crate) schema: Option<SchemaRef>,
+}
+
+/// Materializes tagged blob columns by reading their pack files.
+#[derive(Clone)]
+struct BlobMaterializer {
+    columns: Vec<String>,
+    runtime_env: Arc<datafusion_execution::runtime_env::RuntimeEnv>,
+    cache: moka::future::Cache<String, Arc<Vec<u8>>>,
+}
+
+impl BlobMaterializer {
+    fn try_new(io_session: &LakeSoulIOSession) -> crate::Result<Option<Self>> {
+        let policies = blob::parse_blob_policies(io_session.io_config().options())?;
+        if policies.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            columns: policies.into_keys().collect(),
+            runtime_env: io_session.task_ctx().runtime_env(),
+            cache: moka::future::Cache::builder().max_capacity(2048).build(),
+        }))
+    }
+
+    fn materialize_stream(
+        &self,
+        stream: SendableRecordBatchStream,
+    ) -> SendableRecordBatchStream {
+        let schema = stream.schema();
+        let decoder = self.clone();
+        let mapped = stream.and_then(move |batch| {
+            let decoder = decoder.clone();
+            async move {
+                decoder.decode_batch(batch).await.map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "blob materialization failed: {error}"
+                    ))
+                })
+            }
+        });
+        Box::pin(RecordBatchStreamAdapter::new(schema, mapped))
+    }
+
+    async fn decode_batch(&self, batch: RecordBatch) -> crate::Result<RecordBatch> {
+        let mut columns: Option<Vec<ArrayRef>> = None;
+        for name in &self.columns {
+            let Ok(index) = batch.schema().index_of(name) else {
+                continue;
+            };
+            let decoded = self.decode_array(batch.column(index).as_ref()).await?;
+            if columns.is_none() {
+                columns = Some(batch.columns().to_vec());
+            }
+            if let Some(columns) = columns.as_mut() {
+                columns[index] = decoded;
+            }
+        }
+        match columns {
+            Some(columns) => {
+                RecordBatch::try_new(batch.schema(), columns).map_err(|error| {
+                    report!("failed to rebuild materialized batch: {error}")
+                })
+            }
+            None => Ok(batch),
+        }
+    }
+
+    async fn decode_array(&self, array: &dyn Array) -> crate::Result<ArrayRef> {
+        match array.data_type() {
+            DataType::Binary => {
+                let values = array.as_binary::<i32>();
+                let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(values.len());
+                for index in 0..values.len() {
+                    if values.is_null(index) {
+                        out.push(None);
+                        continue;
+                    }
+                    out.push(Some(self.decode_value(values.value(index)).await?));
+                }
+                Ok(Arc::new(BinaryArray::from_iter(out)))
+            }
+            DataType::LargeBinary => {
+                let values = array.as_binary::<i64>();
+                let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(values.len());
+                for index in 0..values.len() {
+                    if values.is_null(index) {
+                        out.push(None);
+                        continue;
+                    }
+                    out.push(Some(self.decode_value(values.value(index)).await?));
+                }
+                Ok(Arc::new(LargeBinaryArray::from_iter(out)))
+            }
+            other => Err(report!(
+                "blob column must be Binary or LargeBinary, got {other}"
+            )),
+        }
+    }
+
+    async fn decode_value(&self, value: &[u8]) -> crate::Result<Vec<u8>> {
+        match blob::parse_tagged(value)? {
+            TaggedValue::Inline(raw) => Ok(raw.to_vec()),
+            TaggedValue::External {
+                crc,
+                length,
+                offset,
+                pack_path,
+            } => {
+                let key = format!("{pack_path}:{offset}:{length}");
+                if let Some(bytes) = self.cache.get(&key).await {
+                    blob::verify_external(bytes.as_slice(), length, crc)?;
+                    return Ok(bytes.as_ref().clone());
+                }
+                let table_url = ListingTableUrl::parse(pack_path)?;
+                let store = self.runtime_env.object_store(table_url.object_store())?;
+                let bytes = store
+                    .get_range(table_url.prefix(), offset..offset + u64::from(length))
+                    .await
+                    .map_err(|error| {
+                        report!("failed to read blob pack {pack_path}: {error}")
+                    })?;
+                blob::verify_external(bytes.as_ref(), length, crc)?;
+                let bytes = Arc::new(bytes.to_vec());
+                self.cache.insert(key, Arc::clone(&bytes)).await;
+                Ok(bytes.as_ref().clone())
+            }
+        }
+    }
 }
 
 /// Pull up to `prefetch_size` batches ahead of the consumer so decoding of the
@@ -184,11 +319,54 @@ impl LakeSoulReader {
                 .get_filter_exprs(table_schema.table_schema().as_ref())
                 .await?
         };
-        let filters = self
+        let (filters, text_candidate_scores) = self
             .inject_index_search_filters(filters, &table_schema)
             .await?;
 
         let io_config = self.io_session.io_config_mut();
+
+        // Text search is only exact after a post-merge verification pass:
+        // the verify stream re-checks candidates against the current text,
+        // so the text column must be read even when the caller did not
+        // project it (the stream drops it from the output again).
+        let verify_request = crate::text::verify::text_verify_request(io_config);
+        // The caller-visible schema: may already declare the reserved score
+        // field so a lazy engine can plan against it.
+        let original_schema = io_config.target_schema.0.clone();
+        // Physical plan schema: the score field is computed by the
+        // verification stream, not read from the files.
+        let mut plan_schema = if verify_request
+            .as_ref()
+            .is_some_and(|request| request.with_scores)
+        {
+            crate::text::verify::without_text_score_field(&original_schema)
+        } else {
+            original_schema.clone()
+        };
+        if let Some(request) = &verify_request
+            && plan_schema.field_with_name(&request.column).is_err()
+        {
+            let field = table_schema
+                .table_schema()
+                .field_with_name(&request.column)
+                .map_err(|error| {
+                    rootcause::report!(
+                        "text search column '{}' not found: {}",
+                        request.column,
+                        error
+                    )
+                })?
+                .clone();
+            let mut fields: Vec<arrow_schema::Field> = plan_schema
+                .fields()
+                .iter()
+                .map(|field| field.as_ref().clone())
+                .collect();
+            fields.push(field);
+            plan_schema = Arc::new(arrow_schema::Schema::new(fields));
+        }
+        io_config.target_schema.0 = plan_schema;
+
         // Check if filters are or-conjunction of bucket columns.
         //
         // Pruning hashes individual scalar values with a single-column hash, so
@@ -276,8 +454,37 @@ impl LakeSoulReader {
                 );
             }
             let stream = execute_stream(plan, self.io_session.task_ctx())?;
+            let stream: SendableRecordBatchStream =
+                match BlobMaterializer::try_new(&self.io_session)? {
+                    Some(materializer) => materializer.materialize_stream(stream),
+                    None => stream,
+                };
             let prefetch_size = self.io_session.io_config().prefetch_size();
             maybe_prefetch(stream, prefetch_size)
+        };
+        let stream: SendableRecordBatchStream = match verify_request {
+            Some(request) => {
+                let pk_column = self
+                    .io_session
+                    .io_config()
+                    .primary_keys
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "id".to_string());
+                let output_schema = crate::text::verify::text_verify_output_schema(
+                    &request,
+                    &original_schema,
+                );
+                let verify_stream = crate::text::verify::TextVerifyStream::try_new(
+                    stream,
+                    request,
+                    pk_column,
+                    Arc::clone(&output_schema),
+                    text_candidate_scores,
+                )?;
+                Box::pin(RecordBatchStreamAdapter::new(output_schema, verify_stream))
+            }
+            None => stream,
         };
         let schema = stream.schema();
         debug!("reader schema: {}", schema);
@@ -297,14 +504,17 @@ impl LakeSoulReader {
         &self,
         filters: Vec<datafusion_expr::Expr>,
         table_schema: &datafusion_datasource::TableSchema,
-    ) -> Result<Vec<datafusion_expr::Expr>> {
+    ) -> Result<(
+        Vec<datafusion_expr::Expr>,
+        std::collections::HashMap<u64, f32>,
+    )> {
         use lakesoul_common::IndexKind;
 
         use crate::index::options::parse_search_requests;
 
         let requests = parse_search_requests(self.io_session.io_config());
         if requests.is_empty() {
-            return Ok(filters);
+            return Ok((filters, std::collections::HashMap::new()));
         }
 
         let io_config = self.io_session.io_config();
@@ -340,6 +550,9 @@ impl LakeSoulReader {
         );
 
         let mut filters = filters;
+        // BM25 score of every text candidate, keyed by primary key; carried
+        // to the verification stream so verified rows can expose it.
+        let mut text_candidate_scores = std::collections::HashMap::new();
         for request in requests {
             let candidates = match request.kind {
                 IndexKind::Vector => {
@@ -352,14 +565,13 @@ impl LakeSoulReader {
                     .await?
                 }
                 IndexKind::Text => {
-                    // The text index kind is not wired into the reader yet;
-                    // behave like an empty result set instead of scanning.
-                    tracing::warn!(
-                        "text index search requested on column '{}' but the text \
-                         index kind is not available",
-                        request.column
-                    );
-                    Vec::new()
+                    crate::text::search::search_request(
+                        self.io_session.io_config(),
+                        &store,
+                        &request,
+                        table_path,
+                    )
+                    .await?
                 }
             };
             tracing::info!(
@@ -368,6 +580,11 @@ impl LakeSoulReader {
                 request.column,
                 candidates.len()
             );
+            if request.kind == IndexKind::Text {
+                text_candidate_scores.extend(candidates.iter().filter_map(|candidate| {
+                    candidate.score.map(|score| (candidate.id, score))
+                }));
+            }
             filters = crate::index::candidate::inject_candidates(
                 filters,
                 &pk_column,
@@ -375,7 +592,7 @@ impl LakeSoulReader {
                 &candidates,
             );
         }
-        Ok(filters)
+        Ok((filters, text_candidate_scores))
     }
 
     /// Retrieves the next record batch from the reader.
@@ -912,5 +1129,104 @@ mod prefetch_tests {
         let first = stream.next().await.unwrap().unwrap();
         assert_eq!(first.num_rows(), 1);
         assert!(stream.next().await.is_none());
+    }
+}
+
+#[cfg(test)]
+mod blob_materializer_tests {
+    use std::sync::Arc;
+
+    use arrow_array::BinaryArray;
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion_execution::runtime_env::RuntimeEnvBuilder;
+
+    use super::*;
+    use crate::blob::{PackBuffer, tagged_external, tagged_inline};
+
+    fn materializer(columns: &[&str]) -> BlobMaterializer {
+        BlobMaterializer {
+            columns: columns.iter().map(|column| column.to_string()).collect(),
+            runtime_env: RuntimeEnvBuilder::new().build_arc().unwrap(),
+            cache: moka::future::Cache::builder().max_capacity(16).build(),
+        }
+    }
+
+    fn frame_batch(values: Vec<Option<Vec<u8>>>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "frame",
+            DataType::Binary,
+            true,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(BinaryArray::from_iter(values))])
+            .unwrap()
+    }
+
+    fn pack_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lakesoul-blob-{}-{}",
+            name,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn decodes_inline_external_and_nulls() {
+        let dir = pack_dir("ok");
+        let pack = dir.join("data.parquet.frame.blob");
+        let mut buffer = PackBuffer::default();
+        let (offset, length, crc) = buffer.append(b"external-payload").unwrap();
+        std::fs::write(&pack, buffer.data()).unwrap();
+        let pack_url = format!("file://{}", pack.display());
+
+        let decoded = materializer(&["frame"])
+            .decode_batch(frame_batch(vec![
+                Some(tagged_inline(b"raw")),
+                Some(tagged_external(&pack_url, offset, length, crc)),
+                None,
+            ]))
+            .await
+            .unwrap();
+        let values = decoded.column(0).as_binary::<i32>();
+        assert_eq!(values.value(0), b"raw");
+        assert_eq!(values.value(1), b"external-payload");
+        assert!(values.is_null(2));
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_or_corrupt_packs() {
+        let dir = pack_dir("bad");
+        let missing = dir.join("missing.parquet.frame.blob");
+        let missing_url = format!("file://{}", missing.display());
+        let external = tagged_external(&missing_url, 0, 3, 0);
+        assert!(
+            materializer(&["frame"])
+                .decode_batch(frame_batch(vec![Some(external)]))
+                .await
+                .is_err()
+        );
+
+        let pack = dir.join("corrupt.parquet.frame.blob");
+        let mut buffer = PackBuffer::default();
+        let (offset, length, crc) = buffer.append(b"expected").unwrap();
+        std::fs::write(&pack, b"tampered").unwrap();
+        let corrupt_url = format!("file://{}", pack.display());
+        let external = tagged_external(&corrupt_url, offset, length, crc);
+        assert!(
+            materializer(&["frame"])
+                .decode_batch(frame_batch(vec![Some(external)]))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn ignores_unconfigured_columns() {
+        let decoded = materializer(&["absent"])
+            .decode_batch(frame_batch(vec![Some(b"untouched".to_vec())]))
+            .await
+            .unwrap();
+        assert_eq!(decoded.column(0).as_binary::<i32>().value(0), b"untouched");
     }
 }

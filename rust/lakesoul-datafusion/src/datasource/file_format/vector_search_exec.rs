@@ -73,6 +73,9 @@ pub struct LakeSoulVectorSearchExec {
     primary_keys: Vec<String>,
     /// Object store configuration options (e.g. S3 credentials).
     object_store_options: HashMap<String, String>,
+    /// CDC change column; when set, delete tombstones are dropped after the
+    /// merge-on-read merge.
+    cdc_column: String,
     /// Vector search parameters.
     vector_search: VectorSearchRequest,
     /// Catalog used to resolve index commits and hold reader leases.
@@ -95,6 +98,7 @@ impl LakeSoulVectorSearchExec {
         object_store_url: ObjectStoreUrl,
         primary_keys: Vec<String>,
         object_store_options: HashMap<String, String>,
+        cdc_column: String,
         vector_search: VectorSearchRequest,
         catalog: VectorCatalog,
     ) -> DFResult<Self> {
@@ -107,6 +111,7 @@ impl LakeSoulVectorSearchExec {
             object_store_url,
             primary_keys,
             object_store_options,
+            cdc_column,
             vector_search,
             catalog,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -234,6 +239,14 @@ impl LakeSoulVectorSearchExec {
             // file.  DataFusion still re-applies the filter above for
             // correctness (our pushdown is best-effort/Inexact).
             .with_option(lakesoul_io::config::OPTION_KEY_FILE_FILTER_PUSHDOWN, "true");
+        if !self.cdc_column.is_empty() {
+            // CDC delete tombstones must be dropped after the merge, so the
+            // native reader applies `cdc_column != 'delete'`.
+            builder = builder.with_option(
+                lakesoul_io::config::OPTION_KEY_CDC_COLUMN,
+                self.cdc_column.clone(),
+            );
+        }
 
         if !self.partition_cols.is_empty() {
             let partition_schema = Arc::new(Schema::new(
@@ -475,7 +488,7 @@ impl DisplayAs for LakeSoulVectorSearchExec {
 }
 
 /// Lease time-to-live for index readers (seconds).
-fn lease_ttl() -> std::time::Duration {
+pub(crate) fn lease_ttl() -> std::time::Duration {
     let seconds = std::env::var("LAKESOUL_VECTOR_INDEX_LEASE_TTL_SECS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -484,7 +497,7 @@ fn lease_ttl() -> std::time::Duration {
 }
 
 /// Owner tag recorded on reader leases.
-fn lease_owner() -> String {
+pub(crate) fn lease_owner() -> String {
     format!(
         "{}:{}",
         std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
@@ -494,7 +507,10 @@ fn lease_owner() -> String {
 
 /// Reconstruct a full file URI for the native reader from the object store
 /// URL and the store-relative location.
-fn file_uri(object_store_url: &ObjectStoreUrl, location: &StorePath) -> String {
+pub(crate) fn file_uri(
+    object_store_url: &ObjectStoreUrl,
+    location: &StorePath,
+) -> String {
     let url = object_store_url.to_string();
     if url.starts_with("file:") {
         format!("file:///{}", location.as_ref())
@@ -505,7 +521,7 @@ fn file_uri(object_store_url: &ObjectStoreUrl, location: &StorePath) -> String {
 
 /// Derive the store prefix (parent directory) from a file URI, preserving
 /// the scheme and authority.
-fn derive_prefix(first_file: &str) -> String {
+pub(crate) fn derive_prefix(first_file: &str) -> String {
     let (scheme, rest) = match first_file.split_once("://") {
         Some((scheme, rest)) => (format!("{scheme}://"), rest),
         None => ("".to_string(), first_file),
@@ -522,7 +538,7 @@ fn derive_prefix(first_file: &str) -> String {
 }
 
 /// Render a partition value as the string form used by the native reader.
-fn scalar_to_string(value: &ScalarValue) -> String {
+pub(crate) fn scalar_to_string(value: &ScalarValue) -> String {
     match value {
         ScalarValue::Utf8(Some(s)) => s.clone(),
         ScalarValue::Utf8View(Some(s)) => s.to_string(),

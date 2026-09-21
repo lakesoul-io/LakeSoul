@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 <img src='https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
 # 超越表格式 —— 完整的湖仓解决方案
-Apache Iceberg 提供了事实上的开放表格式标准，而 LakeSoul 的目标是交付一个开箱即用、生产就绪的湖仓平台。在表格式之上，LakeSoul 内置了自动化存算分离多级 Compaction、细粒度 RBAC 权限管控（含 S3 Proxy 访问鉴权）、高性能 OLAP 查询、向量检索，以及基于 Ray 和 Daft 的原生多模态数据处理能力。不必再自行组装和维护独立的 Catalog、Compaction 服务和鉴权层 —— LakeSoul 提供了一个生产可用的湖仓解决方案。
+Apache Iceberg 提供了事实上的开放表格式标准，而 LakeSoul 的目标是交付一个开箱即用、生产就绪的湖仓平台。在表格式之上，LakeSoul 内置了自动化存算分离多级 Compaction、细粒度 RBAC 权限管控（含 S3 Proxy 访问鉴权）、高性能 OLAP 查询、向量检索、全文检索，以及基于 Ray 和 Daft 的原生多模态数据处理能力。不必再自行组装和维护独立的 Catalog、Compaction 服务和鉴权层 —— LakeSoul 提供了一个生产可用的湖仓解决方案。
 
 # Rust 原生内核，跨语言一致体验
 LakeSoul 的元数据管理和文件格式 IO 全部采用 Rust 实现——以单一高性能内核驱动，并封装为 Java、Python、C++ 的 idiomatic 接口。无论你用 Spark 查数据、用 Flink 跑流、还是用 PyTorch / Ray / Daft 训模型，每种引擎、每种语言共享同一套 ACID 保障、同一种 Upsert 语义、同一份读取性能。不存在按语言/引擎各自重新实现的表格式，不存在不同 Binding 之间细微的行为差异，也不存在需要费心追踪的碎片化兼容性矩阵。

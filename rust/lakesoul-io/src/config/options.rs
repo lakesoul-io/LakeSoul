@@ -35,6 +35,8 @@ pub static OPTION_KEY_REPARTITION_MEM_RATIO: &str = "repartition_mem_ratio";
 pub static OPTION_KEY_PHYSICAL_FORMAT: &str = "physical_format";
 /// Key for the number of batches the reader keeps in flight ahead of the consumer
 pub static OPTION_KEY_PREFETCH_SIZE: &str = "prefetch_size";
+/// Key for externalizing binary columns into side pack files (JSON object)
+pub static OPTION_KEY_BLOB_COLUMNS: &str = "blob_columns";
 /// Vector search: column name of the vector index to query
 pub static OPTION_KEY_VECTOR_SEARCH_COLUMN: &str = "vector_search_column";
 /// Vector search: comma-separated f32 values of the query vector
@@ -47,3 +49,17 @@ pub static OPTION_KEY_VECTOR_SEARCH_NPROBE: &str = "vector_search_nprobe";
 pub static OPTION_KEY_VECTOR_SEARCH_METRIC: &str = "vector_search_metric";
 /// Vector search: direct index prefix path (alternative to auto-detection from files)
 pub static OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX: &str = "vector_search_index_prefix";
+/// Text search: column name of the text index to query
+pub static OPTION_KEY_TEXT_SEARCH_COLUMN: &str = "text_search_column";
+/// Text search: query string parsed by the text index
+pub static OPTION_KEY_TEXT_SEARCH_QUERY: &str = "text_search_query";
+/// Text search: top-K candidates to retrieve
+pub static OPTION_KEY_TEXT_SEARCH_TOP_K: &str = "text_search_top_k";
+/// Text search: run the exact post-merge verification pass (default true);
+/// SQL pushdown disables it because the residual `text_match` predicate
+/// verifies above the scan.
+pub static OPTION_KEY_TEXT_SEARCH_VERIFY: &str = "text_search_verify";
+/// Text search: expose the BM25 score of each verified row in a
+/// `__lakesoul_text_score` column (default false).  Requesting scores also
+/// enables the verification pass, which drops stale candidates.
+pub static OPTION_KEY_TEXT_SEARCH_SCORES: &str = "text_search_scores";

@@ -31,6 +31,8 @@ mod insert_tests;
 #[cfg(test)]
 mod pk_locator_tests;
 #[cfg(test)]
+mod text_search_tests;
+#[cfg(test)]
 mod upsert_tests;
 #[cfg(test)]
 mod vector_search_tests;
@@ -105,7 +107,7 @@ pub(crate) async fn create_table(
     table_name: &str,
     config: LakeSoulIOConfig,
 ) -> Result<()> {
-    create_table_inner(client, table_name, config, None).await
+    create_table_inner(client, table_name, config, None, None).await
 }
 
 /// Create a LakeSoul table that declares vector indexes through the
@@ -128,7 +130,29 @@ pub(crate) async fn create_table_with_vector_index(
     )?;
     let vector_index_columns = (!vector_index_configs.is_empty())
         .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
-    create_table_inner(client, table_name, config, vector_index_columns).await
+    create_table_inner(client, table_name, config, vector_index_columns, None).await
+}
+
+/// Create a LakeSoul table that declares text indexes through the
+/// `text_index_columns` table property, so writes auto-build the indexes.
+///
+/// The configuration is validated against the table schema and primary
+/// keys *before* any metadata is created.
+#[allow(dead_code)] // used for test
+pub(crate) async fn create_table_with_text_index(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+    text_index_configs: &[crate::text_index::TextIndexTableConfig],
+) -> Result<()> {
+    crate::text_index::validate_text_index_configs(
+        text_index_configs,
+        config.target_schema().as_ref(),
+        config.primary_keys_slice(),
+    )?;
+    let text_index_columns = (!text_index_configs.is_empty())
+        .then(|| crate::text_index::text_index_columns_to_json(text_index_configs));
+    create_table_inner(client, table_name, config, None, text_index_columns).await
 }
 
 async fn create_table_inner(
@@ -136,6 +160,7 @@ async fn create_table_inner(
     table_name: &str,
     config: LakeSoulIOConfig,
     vector_index_columns: Option<String>,
+    text_index_columns: Option<String>,
 ) -> Result<()> {
     debug!("create_table: {:?}", &table_name);
     let target_schema = config.target_schema();
@@ -159,8 +184,14 @@ async fn create_table_inner(
             table_schema_arrow_ipc_json_hash,
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
-                hash_bucket_num: Some(String::from("4")),
+                hash_bucket_num: Some(
+                    config
+                        .get_hash_bucket_num()
+                        .map(|num| num.to_string())
+                        .unwrap_or_else(|_| String::from("4")),
+                ),
                 vector_index_columns,
+                text_index_columns,
                 ..Default::default()
             })?,
             partitions: format!(

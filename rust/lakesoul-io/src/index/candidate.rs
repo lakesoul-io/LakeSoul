@@ -10,6 +10,22 @@
 //! filters.  Results of several index kinds are ANDed today (each call
 //! appends its own `pk IN (...)`), which keeps the framework ready for
 //! hybrid search without committing to a fusion strategy yet.
+//!
+//! # Merge-on-read correctness
+//!
+//! An index search may only contribute a **primary-key** predicate here.
+//! Primary keys are row-invariant across versions, so pushing `pk IN (...)`
+//! into the per-file scans of a merge-on-read table can never hide a newer
+//! version: a newer file containing the key still matches the predicate and
+//! the merge picks it (deletes are file rewrites, so a deleted key simply
+//! matches no current row).
+//!
+//! A non-key or kind-specific predicate (e.g. a text-match residual) must
+//! **not** be injected into the scan: if a newer version failed it, the
+//! newer row would be dropped before the merge and the older version would
+//! be returned as stale.  `supports_filters_pushdown` classifies such
+//! predicates as `Unsupported` for tables with primary keys, so they run as
+//! a `FilterExec` above the merge.  See `tests/mor_filter_pushdown_test.rs`.
 
 use arrow_schema::DataType;
 use datafusion_common::{Column, ScalarValue};

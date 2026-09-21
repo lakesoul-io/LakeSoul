@@ -26,6 +26,8 @@ from lakesoul.arrow import LakeSoulScanConfig, lakesoul_dataset
 from lakesoul.catalog import LakeSoulScan
 from lakesoul.metadata import LakeSoulScanPlanPartition
 
+from .video import GopVideo
+
 BOUNDARY_SKIP = "skip"
 BOUNDARY_CLAMP = "clamp"
 _BOUNDARIES = (BOUNDARY_SKIP, BOUNDARY_CLAMP)
@@ -112,6 +114,11 @@ class EmbodiedDataset:
     options. ``window`` maps a column name to the row range that makes up that
     stream of a sample, relative to the anchor row. ``episodes`` narrows the
     scan to the given values of the episode partition column.
+
+    ``video`` optionally attaches decoded GOP frames (``GopVideo`` over the
+    ``<table>_gops`` / ``<table>_frames`` tables): each sample gets one array
+    per camera covering the ``video_window`` row range, which defaults to the
+    first window column.
     """
 
     def __init__(
@@ -124,6 +131,8 @@ class EmbodiedDataset:
         episode_column: str | None = None,
         boundary: str = BOUNDARY_SKIP,
         seed: int = 0,
+        video: GopVideo | None = None,
+        video_window: str | tuple[int, int] | None = None,
     ) -> None:
         if stride < 1:
             raise ValueError(f"stride must be positive, got {stride}")
@@ -140,6 +149,8 @@ class EmbodiedDataset:
         self._boundary = boundary
         self._seed = int(seed)
         self._epoch = 0
+        self._video = video
+        self._video_window = video_window
         self._config = scan.to_scan_config()
 
         schema_names = set(self._config.schema.names)
@@ -148,6 +159,8 @@ class EmbodiedDataset:
             raise ValueError(
                 f"window columns not found in table schema: {sorted(unknown)}"
             )
+
+        self._validate_video_window()
 
         self._units = self._resolve_units(scan, episodes, episode_column)
 
@@ -181,6 +194,8 @@ class EmbodiedDataset:
                 self._stride,
                 self._boundary,
                 self._seed,
+                self._video,
+                self._video_window,
             ),
         )
 
@@ -202,11 +217,47 @@ class EmbodiedDataset:
             unit = self._units[int(index)]
             yield from self._iter_unit(unit, epoch)
 
+    def _validate_video_window(self) -> None:
+        if isinstance(self._video_window, str):
+            if self._video_window not in self._window:
+                raise ValueError(
+                    f"video_window {self._video_window!r} is not one of the "
+                    f"window columns {sorted(self._window)}"
+                )
+        elif isinstance(self._video_window, tuple) and (
+            len(self._video_window) != 2
+            or self._video_window[1] <= self._video_window[0]
+        ):
+            raise ValueError(
+                f"video_window must be a (start, end) tuple with end > start, "
+                f"got {self._video_window}"
+            )
+
+    def _video_offsets(self) -> tuple[int, int]:
+        if isinstance(self._video_window, tuple):
+            return self._video_window
+        key = self._video_window
+        if key is None:
+            key = next(iter(self._window))
+        window = self._window[key]
+        return window.start, window.end
+
     def _iter_unit(
         self, unit: LakeSoulScanPlanPartition, epoch: int
     ) -> Iterator[dict[str, np.ndarray]]:
         table = self._read_unit(unit)
         rows = table.num_rows
+        episode_video = None
+        video_start = video_end = 0
+        if self._video is not None:
+            episode_id = _unit_partition_map(unit).get(self._video.episode_column)
+            if episode_id is None:
+                raise ValueError(
+                    f"video source requires the scanned table to be partitioned "
+                    f"by {self._video.episode_column!r}"
+                )
+            episode_video = self._video.for_episode(episode_id)
+            video_start, video_end = self._video_offsets()
         anchors = plan_anchor_order(
             rows=rows,
             stride=self._stride,
@@ -229,8 +280,22 @@ class EmbodiedDataset:
                     sample = {}
                     break
                 sample[name] = _to_numpy(columns[name], start, end)
-            if sample:
-                yield sample
+            if not sample:
+                continue
+            if episode_video is not None:
+                frame_start = max(anchor + video_start, 0)
+                frame_end = min(anchor + video_end, rows)
+                if frame_end > frame_start:
+                    for camera, frames in episode_video.frames(
+                        frame_start, frame_end
+                    ).items():
+                        if camera in sample:
+                            raise ValueError(
+                                f"video camera {camera!r} collides with a window "
+                                "column of the same name"
+                            )
+                        sample[camera] = frames
+            yield sample
 
     def _read_unit(self, unit: LakeSoulScanPlanPartition) -> pa.Table:
         config = dataclasses.replace(self._config, scan_partitions=(unit,))
@@ -300,6 +365,8 @@ def _dataset_from_state(
     stride: int,
     boundary: str,
     seed: int,
+    video: GopVideo | None,
+    video_window: str | tuple[int, int] | None,
 ) -> EmbodiedDataset:
     dataset = object.__new__(EmbodiedDataset)
     dataset._scan = None
@@ -310,6 +377,8 @@ def _dataset_from_state(
     dataset._epoch = 0
     dataset._config = config
     dataset._units = tuple(units)
+    dataset._video = video
+    dataset._video_window = video_window
     return dataset
 
 

@@ -11,6 +11,10 @@ shard), repartitioned by shard count, and a ``@daft.cls`` class-UDF actor
 pool invokes the generic :func:`lakesoul.index.build_shard` for each row.
 Daft places those rows across its executors, so index builds run in
 parallel across shards.
+
+Once the delta builds succeeded, drifted shards of the touched partitions
+are compacted from the driver process via :func:`lakesoul.index.compact_index`
+(only shards whose delta history outweighs their compacted base rebuild).
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from daft import col, cls
 
 from lakesoul.index import (
     build_shard,
+    compact_index,
     configured_index_kinds,
     default_object_store_config,
     find_index_kind_spec,
@@ -145,6 +150,12 @@ def build_index_daft(
             f"index build failed for {len(failures)}/{len(statuses)} "
             f"shard(s): {failures[:3]}{'...' if len(failures) > 3 else ''}"
         )
+
+    # Compaction runs in the driver process after the distributed delta
+    # builds: only drifted shards rebuild, so the extra work is bounded.
+    partitions = [file_info.partition for file_info in file_infos]
+    for kind in kinds:
+        compact_index(kind, table=table, partitions=partitions)
 
 
 class _BuildIndexShard:

@@ -373,7 +373,9 @@ fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
 }
 
 /// Create an ObjectStore from a Python configuration dict.
-fn create_object_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectStore>> {
+pub(crate) fn create_object_store(
+    config: &HashMap<String, String>,
+) -> PyResult<Arc<dyn ObjectStore>> {
     let store_type = config.get("type").map(|s| s.as_str()).unwrap_or("s3");
 
     match store_type {

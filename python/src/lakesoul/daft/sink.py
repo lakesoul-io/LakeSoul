@@ -16,7 +16,7 @@ from daft.recordbatch import MicroPartition
 from daft.schema import Schema
 
 from lakesoul.catalog import TableWriteConfig
-from lakesoul.io import IOConfig, Writer
+from lakesoul.io import IOConfig, Writer, merge_blob_option
 from lakesoul.io import WriteResult as LakeSoulWriteResult
 
 if TYPE_CHECKING:
@@ -176,7 +176,7 @@ class LakeSoulDataSink(DataSink[LakeSoulWriteResult]):
             max_file_size=self._max_file_size,
             max_row_group_size=self._max_row_group_size,
             object_store_options=self._object_store_options,
-            options=self._options,
+            options=merge_blob_option(self._options, self._table.blob_columns),
         )
 
 
@@ -221,6 +221,9 @@ def _is_compatible_daft_type(
     expected: pa.DataType,
 ) -> bool:
     """Allow only Arrow representation changes introduced by Daft."""
+    if actual == expected:
+        return True
+
     actual_is_string = pa.types.is_string(actual) or pa.types.is_large_string(actual)
     expected_is_string = pa.types.is_string(expected) or pa.types.is_large_string(
         expected
@@ -232,7 +235,21 @@ def _is_compatible_daft_type(
     expected_is_binary = pa.types.is_binary(expected) or pa.types.is_large_binary(
         expected
     )
-    return actual_is_binary and expected_is_binary
+    if actual_is_binary and expected_is_binary:
+        return True
+
+    actual_value = _list_value_type(actual)
+    expected_value = _list_value_type(expected)
+    if actual_value is not None and expected_value is not None:
+        return _is_compatible_daft_type(actual_value, expected_value)
+    return False
+
+
+def _list_value_type(dtype: pa.DataType) -> pa.DataType | None:
+    """Value type of regular/large lists; Daft emits large lists for ``list``."""
+    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+        return dtype.value_type
+    return None
 
 
 def _empty_write_result() -> LakeSoulWriteResult:

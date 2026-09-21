@@ -348,6 +348,57 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   两个 epoch 的历史快照；回退报错后 rebuild 恢复。
 - 未完成：consumer 水位 GC（`ivm.consumers`）、SQL 视图前端。
 
+**Upsert 源支持实施记录（已完成）**
+
+- `refresh_sum_count` / `rebuild_sum_count` 不再要求源是 append-only；源带主键时按
+  upsert 语义维护：
+  - delta 用 `read_files`（按主键 MOR 合并）读取窗口内变更文件的**最终版本**（同
+    窗口多次更新只算最后一次）；
+  - 旧值用 P0-1 as-of 读窗口起点快照，按主键 semi-join 出"键发生变化的旧行"；
+  - `delta = aggregate(new rows) - aggregate(changed old rows)`；含
+    `rowKinds='delete'` 的 delta 行只参与旧值回收、不计入新值；
+  - 全量重建本就按主键合并读取，天然支持 keyed 源。
+- 注意事项：delta 的删除识别依赖源表存在字面量 `rowKinds` 列（大小写敏感，SQL
+  里用精确列名）；表属性 `lakesoul_cdc_change_column` 尚未接入；join 仍要求两侧
+  append-only 且未分区。
+- 测试 `tests/upsert_refresh.rs`：值更新、组迁移（group 变化）、同窗口同键多次
+  更新、`rowKinds='delete'`（含删除不存在的键）、keyed 源 rebuild，均与全量聚合
+  交叉验证。
+
+**MIN/MAX 实施记录（已完成）**
+
+- 新增 `MinMaxView`：MV 表 `(group, value, rowKinds, __ivm_epoch)`（PK=group），
+  值分布状态表 `(group, value, value_count, rowKinds, __ivm_epoch)`
+  （PK=(group,value)，bucket=group）。
+- 刷新：窗口 delta → `(group,value)` 计数变化（append-only 直接 +1；keyed 源用
+  as-of 旧值 semi-join 回收）→ 应用状态表（逐行 delete(old)+insert(new)）→
+  受影响组从状态重算极值 → 写 MV（delete(old)+insert(new)）。
+- 幂等：状态行携带 `__ivm_epoch`，重放时同 epoch 的键跳过状态变更；MV 重写是
+  同主键同值的幂等写，因此 crash 在状态与 MV 之间也不会重复计数。
+- `rebuild_min_max`：清空 MV 与状态表，从源全量重建计数与极值，发布
+  `rebuild:<generation>`。
+- 测试 `tests/min_max_refresh.rs`：append-only 源的 MIN 与 MAX、keyed 源的
+  更新/删除/组清空、窗口重放不重复、rebuild 后仅消费新提交。
+- 未完成：`ivm.states` 状态表注册（当前由调用方创建并持有 handle）、
+  Window、SEMI/ANTI、join upsert。
+
+**DISTINCT 聚合实施记录（已完成）**
+
+- `MIN/MAX` 与 `COUNT(DISTINCT)`/`SUM(DISTINCT)` 共用值分布状态表：schema
+  统一命名为 `value_count_mv_schema` / `value_count_state_schema`
+  （旧名 `min_max_*_schema` 保留为别名）。
+- 新增 `DistinctAggView`（`ViewSpec::DistinctAgg`，`DistinctAggKind::{Count,Sum}`）：
+  刷新/重建复用同一套"值计数 → 受影响组重算"逻辑，仅 MV 取值不同
+  （distinct 个数 / distinct 值之和）。
+- 内部重构：`refresh_value_count` / `rebuild_value_count` 接受
+  `ValueCountView` 借用描述与 `ValueAgg`，`MinMaxView` 与 `DistinctAggView`
+  都是薄封装。
+- 测试 `tests/distinct_agg_refresh.rs`：同源上 COUNT(DISTINCT) 与
+  SUM(DISTINCT) 的更新/删除/组清空、窗口重放、rebuild，均与
+  `count/sum(distinct ...)` 全量查询交叉验证。
+- 未完成：多列 / 非 Int64 group-key 与 value（当前要求 Int64）、
+  `SELECT DISTINCT` 多列投影、Window、SEMI/ANTI、join upsert。
+
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
 - `JoinView`（inner equi-join，两侧均 append-only，未分区）：每个窗口计算

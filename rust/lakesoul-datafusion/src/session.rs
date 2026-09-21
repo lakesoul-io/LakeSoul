@@ -239,6 +239,9 @@ impl LakeSoulSessionFactory {
             .with_query_planner(Arc::clone(&self.planner))
             .with_optimizer_rule(Arc::new(
                 crate::planner::vector_search_rule::VectorSearchPushdownRule,
+            ))
+            .with_optimizer_rule(Arc::new(
+                crate::planner::text_search_rule::TextSearchPushdownRule,
             ));
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
             builder = builder
@@ -285,6 +288,9 @@ impl LakeSoulSessionFactory {
         let provider_options = LakeSoulProviderOptions::from_session(&state);
         let ctx = Arc::new(SessionContext::new_with_state(state));
         ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
+        ctx.register_udf((*crate::udf::text_search_marker::marker_udf()).clone());
+        ctx.register_udf((*crate::udf::text_search_marker::text_match_udf()).clone());
+        ctx.register_udf((*crate::udf::text_search_marker::text_score_udf()).clone());
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::with_snapshot(
             Arc::clone(&self.meta_client),

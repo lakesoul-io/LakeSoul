@@ -4,11 +4,13 @@
 
 """Import a local LeRobotDataset v3.0 directory into a LakeSoul table.
 
-The output layout follows the M1 hard constraints: one partition per episode,
-time-ordered frames, and per-frame image bytes in binary columns (decoded from
-the dataset's MP4 shards). Tabular features keep their LeRobot names with dots
-replaced by underscores, for example ``observation.state`` becomes
-``observation_state``.
+The output layout follows the M1 hard constraints: one partition per episode
+and time-ordered frames. Video is either decoded into per-frame JPEG/PNG bytes
+(``video_layout="frames"``, one table) or kept as raw Annex-B GOPs with a
+frame index (``video_layout="gop"``, ``<table>`` + ``<table>_gops`` +
+``<table>_frames``), which avoids decoding and re-encoding altogether.
+Tabular features keep their LeRobot names with dots replaced by underscores,
+for example ``observation.state`` becomes ``observation_state``.
 
 Only ``v3.0`` directories on local storage are supported; convert a ``v2.1``
 dataset with LeRobot's ``convert_dataset_v21_to_v30`` script first.
@@ -19,7 +21,6 @@ Video decoding requires the optional ``av`` and ``Pillow`` dependencies
 
 from __future__ import annotations
 
-import io
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -32,7 +33,16 @@ import pyarrow.parquet as pq
 
 from lakesoul.catalog import LakeSoulCatalog
 
-from .importer import ImportSummary, prepare_table, sanitize
+from .importer import ImportSummary, prepare_table, sanitize, sibling_path
+from .video import (
+    FRAMES_SCHEMA,
+    GOPS_SCHEMA,
+    GopRecord,
+    demux_gops,
+    encode_frames,
+    select_episode_frames,
+    table_from_columns,
+)
 
 EPISODE_COLUMN = "episode_id"
 NON_FEATURE_COLUMNS = (
@@ -50,6 +60,8 @@ _REQUIRED_EPISODE_COLUMNS = (
     "data/chunk_index",
     "data/file_index",
 )
+GOPS_TABLE_SUFFIX = "_gops"
+FRAMES_TABLE_SUFFIX = "_frames"
 
 
 @dataclass(frozen=True)
@@ -85,9 +97,11 @@ def import_lerobot(
     episodes: Sequence[int] | None = None,
     cameras: Sequence[str] | None = None,
     include_video: bool = True,
+    video_layout: str = "frames",
     image_format: str = "JPEG",
     image_quality: int = 90,
     physical_format: str = "vortex",
+    properties: Mapping[str, str] | None = None,
     overwrite: bool = False,
 ) -> ImportSummary:
     """Import a local LeRobot v3.0 dataset into a new LakeSoul table.
@@ -101,10 +115,17 @@ def import_lerobot(
         episodes: episode indices to import; defaults to all episodes.
         cameras: video feature keys (or their last dotted component) to decode;
             defaults to every video feature.
-        include_video: set ``False`` to skip video decoding entirely.
+        include_video: set ``False`` to skip video import entirely.
+        video_layout: ``"frames"`` decodes and re-encodes every frame,
+            ``"gop"`` stores raw Annex-B GOPs plus a frame index in the
+            ``<table>_gops`` / ``<table>_frames`` tables.
         image_format: ``JPEG`` or ``PNG`` for per-frame image bytes.
-        image_quality: JPEG quality.
+        image_quality: JPEG quality (``frames`` layout only).
         physical_format: LakeSoul physical format for the written files.
+        properties: extra table properties, e.g. ``blob_columns`` to externalize
+            binary columns (see :func:`lakesoul.io.merge_blob_option`). They are
+            applied to every created table with blob entries filtered to the
+            columns that table actually has.
         overwrite: drop and recreate the table when it already exists.
     """
     catalog = catalog or LakeSoulCatalog.from_env()
@@ -130,11 +151,20 @@ def import_lerobot(
     if not selected:
         raise ValueError("no episodes selected for import")
 
+    if video_layout not in {"frames", "gop"}:
+        raise ValueError("video_layout must be 'frames' or 'gop'")
+    gop_layout = video_layout == "gop" and bool(video_features)
     if include_video:
-        _require_video_dependencies(video_features)
+        _require_video_dependencies(video_features, needs_pillow=not gop_layout)
 
+    schema = _build_schema(data_features, () if gop_layout else video_features)
     resolved_namespace = namespace or catalog.namespace
+    gops_table = f"{table}{GOPS_TABLE_SUFFIX}"
+    frames_table = f"{table}{FRAMES_TABLE_SUFFIX}"
     prepare_table(catalog, table, resolved_namespace, overwrite)
+    if gop_layout:
+        prepare_table(catalog, gops_table, resolved_namespace, overwrite)
+        prepare_table(catalog, frames_table, resolved_namespace, overwrite)
 
     table_handle = catalog.create_table(
         table,
@@ -142,23 +172,58 @@ def import_lerobot(
         schema=schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=_filter_properties(properties, schema),
     )
+    gops_handle = frames_handle = None
+    if gop_layout:
+        gops_handle = catalog.create_table(
+            gops_table,
+            path=sibling_path(path, GOPS_TABLE_SUFFIX),
+            schema=GOPS_SCHEMA,
+            namespace=resolved_namespace,
+            partition_by=(EPISODE_COLUMN,),
+            properties=_filter_properties(properties, GOPS_SCHEMA),
+        )
+        frames_handle = catalog.create_table(
+            frames_table,
+            path=sibling_path(path, FRAMES_TABLE_SUFFIX),
+            schema=FRAMES_SCHEMA,
+            namespace=resolved_namespace,
+            partition_by=(EPISODE_COLUMN,),
+            properties=_filter_properties(properties, FRAMES_SCHEMA),
+        )
+
     table_path = table_handle.path
     rows = 0
     video_frames = 0
+    gop_cache: dict[Path, list[GopRecord]] = {}
     for episode in selected:
         episode_table, decoded = _build_episode_table(
             episode,
             info,
             data_features,
-            video_features,
+            () if gop_layout else video_features,
             schema=schema,
             image_format=image_format,
             image_quality=image_quality,
         )
         table_handle.write_arrow(episode_table, format=physical_format)
         rows += episode_table.num_rows
-        video_frames += decoded
+        if gop_layout:
+            video_frames += _write_gop_episode(
+                gops_handle,
+                frames_handle,
+                episode,
+                info,
+                video_features,
+                cache=gop_cache,
+                physical_format=physical_format,
+            )
+        else:
+            video_frames += decoded
+    tables = (table_handle.name,)
+    if gop_layout:
+        tables = (table_handle.name, gops_handle.name, frames_handle.name)
     return ImportSummary(
         table=table_handle.name,
         path=table_path,
@@ -166,7 +231,30 @@ def import_lerobot(
         rows=rows,
         video_frames=video_frames,
         columns=tuple(schema.names),
+        tables=tables,
     )
+
+
+def _filter_properties(
+    properties: Mapping[str, str] | None, schema: pa.Schema
+) -> dict[str, str] | None:
+    """Keep ``blob_columns`` entries whose column exists in ``schema``."""
+    if not properties:
+        return dict(properties) if properties is not None else None
+    filtered = dict(properties)
+    raw = filtered.get("blob_columns")
+    if raw:
+        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        parsed = {
+            column: policy
+            for column, policy in parsed.items()
+            if column in schema.names
+        }
+        if parsed:
+            filtered["blob_columns"] = json.dumps(parsed)
+        else:
+            filtered.pop("blob_columns")
+    return filtered
 
 
 def _load_info(root: Path) -> dict[str, Any]:
@@ -336,17 +424,22 @@ def _select_episodes(
     return selected
 
 
-def _require_video_dependencies(video_features: Sequence[_Feature]) -> None:
+def _require_video_dependencies(
+    video_features: Sequence[_Feature], *, needs_pillow: bool
+) -> None:
     if not video_features:
         return
     try:
         import av  # noqa: F401
-        import PIL  # noqa: F401
+
+        if needs_pillow:
+            import PIL  # noqa: F401
     except ImportError as error:
         raise ImportError(
-            "video import requires the optional 'av' and 'Pillow' dependencies; "
-            "install them with `pip install lakesoul[embodied]` or pass "
-            "include_video=False"
+            "video import requires the optional 'av'"
+            + (" and 'Pillow'" if needs_pillow else "")
+            + " dependencies; install them with `pip install lakesoul[embodied]` "
+            "or pass include_video=False"
         ) from error
 
 
@@ -439,53 +532,83 @@ def _decode_video_frames(
     image_format: str,
     image_quality: int,
 ) -> list[bytes]:
-    import av
-
     fps = float(info["fps"])
     video_path = episode.video_files[feature.key]
     if not video_path.exists():
         raise FileNotFoundError(f"video shard not found: {video_path}")
     offset = episode.video_from_timestamp[feature.key]
     timestamps = [offset + index / fps for index in range(episode.length)]
-    tolerance = 0.5 / fps
+    return encode_frames(
+        video_path,
+        timestamps,
+        tolerance=0.5 / fps,
+        image_format=image_format,
+        quality=image_quality,
+    )
 
-    container = av.open(str(video_path))
-    try:
-        stream = container.streams.video[0]
-        stream.thread_type = "AUTO"
-        container.seek(int(max(0.0, timestamps[0] - tolerance) * av.time_base))
-        frames: list[bytes | None] = [None] * len(timestamps)
-        pending = 0
-        for frame in container.decode(stream):
-            time_seconds = float(frame.pts * stream.time_base)
-            while (
-                pending < len(timestamps)
-                and time_seconds >= timestamps[pending] - tolerance
-            ):
-                frames[pending] = _encode_image(
-                    frame.to_image(), image_format=image_format, quality=image_quality
-                )
-                pending += 1
-            if pending >= len(timestamps):
-                break
-    finally:
-        container.close()
 
-    missing = [index for index, frame in enumerate(frames) if frame is None]
-    if missing:
-        raise ValueError(
-            f"could not decode {len(missing)} frames for episode "
-            f"{episode.index} from {video_path}"
+def _write_gop_episode(
+    gops_handle: Any,
+    frames_handle: Any,
+    episode: _Episode,
+    info: Mapping[str, Any],
+    video_features: Sequence[_Feature],
+    *,
+    cache: dict[Path, list[GopRecord]],
+    physical_format: str,
+) -> int:
+    fps = float(info["fps"])
+    episode_id = f"ep{episode.index:06d}"
+    gop_columns: dict[str, list[Any]] = {name: [] for name in GOPS_SCHEMA.names}
+    frame_columns: dict[str, list[Any]] = {name: [] for name in FRAMES_SCHEMA.names}
+    for feature in video_features:
+        video_path = episode.video_files[feature.key]
+        if not video_path.exists():
+            raise FileNotFoundError(f"video shard not found: {video_path}")
+        gops = cache.get(video_path)
+        if gops is None:
+            gops = demux_gops(video_path)
+            cache[video_path] = gops
+        selected = select_episode_frames(
+            gops,
+            from_timestamp=episode.video_from_timestamp[feature.key],
+            length=episode.length,
+            fps=fps,
         )
-    return [frame for frame in frames if frame is not None]
-
-
-def _encode_image(image: Any, *, image_format: str, quality: int) -> bytes:
-    buffer = io.BytesIO()
-    normalized = image_format.upper()
-    options = {"quality": quality} if normalized == "JPEG" else {}
-    image.save(buffer, format=normalized, **options)
-    return buffer.getvalue()
+        order: list[GopRecord] = []
+        for gop, _ in selected:
+            if all(existing is not gop for existing in order):
+                order.append(gop)
+        renumbered = {id(gop): index for index, gop in enumerate(order)}
+        for gop in order:
+            gop_columns[EPISODE_COLUMN].append(episode_id)
+            gop_columns["camera"].append(feature.column)
+            gop_columns["gop_index"].append(renumbered[id(gop)])
+            gop_columns["timestamp"].append(gop.timestamp)
+            gop_columns["codec"].append(gop.codec)
+            gop_columns["num_frames"].append(len(gop.frames))
+            gop_columns["frame_timestamps"].append(
+                [frame.timestamp for frame in gop.frames]
+            )
+            gop_columns["frame_offsets"].append([frame.offset for frame in gop.frames])
+            gop_columns["frame_lengths"].append([frame.length for frame in gop.frames])
+            gop_columns["data"].append(gop.data)
+        for frame_index, (gop, frame) in enumerate(selected):
+            frame_columns[EPISODE_COLUMN].append(episode_id)
+            frame_columns["camera"].append(feature.column)
+            frame_columns["frame_index"].append(frame_index)
+            frame_columns["gop_index"].append(renumbered[id(gop)])
+            frame_columns["gop_position"].append(frame.position)
+            frame_columns["timestamp"].append(frame.timestamp)
+            frame_columns["byte_offset"].append(frame.offset)
+            frame_columns["byte_length"].append(frame.length)
+    gops_handle.write_arrow(
+        table_from_columns(GOPS_SCHEMA, gop_columns), format=physical_format
+    )
+    frames_handle.write_arrow(
+        table_from_columns(FRAMES_SCHEMA, frame_columns), format=physical_format
+    )
+    return len(frame_columns["frame_index"])
 
 
 __all__ = ["ImportSummary", "import_lerobot"]

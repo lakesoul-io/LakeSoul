@@ -90,6 +90,15 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub vector_index_columns: Option<String>,
+    /// Text index configurations (JSON array of
+    /// [`TextIndexTableConfig`](crate::text_index::TextIndexTableConfig)
+    /// entries), matching the Python SDK's `text_index_columns` property.
+    #[serde(
+        rename = "text_index_columns",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub text_index_columns: Option<String>,
     /// File format used for writes: `"parquet"`, `"vortex"` or
     /// `"vortex-compact"` (same `file_format` option as the Spark/Flink
     /// connectors).  Defaults to parquet when unset.
