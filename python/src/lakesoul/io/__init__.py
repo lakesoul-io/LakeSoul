@@ -15,7 +15,21 @@ import pyarrow as pa
 
 from lakesoul._lib._writer import _NativeFileInfo, _NativeWriter
 
-__all__ = ["FileInfo", "IOConfig", "WriteResult", "Writer"]
+__all__ = ["FileInfo", "IOConfig", "WriteResult", "Writer", "merge_blob_option"]
+
+
+def merge_blob_option(
+    options: Mapping[str, str],
+    blob_columns: str | None,
+) -> dict[str, str]:
+    """Copy ``options`` and add the table's ``blob_columns`` property.
+
+    Users can override the property by setting the option explicitly.
+    """
+    merged = dict(options)
+    if blob_columns and "blob_columns" not in merged:
+        merged["blob_columns"] = blob_columns
+    return merged
 
 
 @dataclass(slots=True)

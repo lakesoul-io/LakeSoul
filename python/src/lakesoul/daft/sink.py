@@ -16,7 +16,7 @@ from daft.recordbatch import MicroPartition
 from daft.schema import Schema
 
 from lakesoul.catalog import TableWriteConfig
-from lakesoul.io import IOConfig, Writer
+from lakesoul.io import IOConfig, Writer, merge_blob_option
 from lakesoul.io import WriteResult as LakeSoulWriteResult
 
 if TYPE_CHECKING:
@@ -176,7 +176,7 @@ class LakeSoulDataSink(DataSink[LakeSoulWriteResult]):
             max_file_size=self._max_file_size,
             max_row_group_size=self._max_row_group_size,
             object_store_options=self._object_store_options,
-            options=self._options,
+            options=merge_blob_option(self._options, self._table.blob_columns),
         )
 
 
