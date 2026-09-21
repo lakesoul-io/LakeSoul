@@ -96,13 +96,15 @@ the filter-only copy path (which does not consume scores).
 
 - The reader gains an option (`text_search_scores=true`) that adds a hidden
   `__lakesoul_text_score: Float32` column to the scan output.
-- The score is taken from the exact verification pass
-  (`verify::matching_scores`), so it reflects the **current** row's BM25 score
-  and rows dropped as stale never carry a score. This keeps one source of truth
-  for both "does it match" and "how well".
+- The score is the **index candidate's BM25 score**: the reader carries each
+  text candidate's score (from the split that produced it) alongside the
+  primary-key filter, and the verification pass attaches it to the rows that
+  survive.  Rows dropped as stale never carry a score, and score and ranking
+  come from the same retrieval step (the analog of an ES shard score).
 - The column is internal: it is only present when requested, and SQL/Daft drop
   it unless the caller asks for it (same pattern as the hidden text column used
-  by verification).
+  by verification).  A caller may declare it in its schema; the reader strips
+  it before planning and the verification stream fills it in place.
 
 ### Global merge
 
@@ -188,22 +190,30 @@ vector path only.
 
 ## Open questions
 
-1. Should a `text_match` filter imply BM25 ordering, or require an explicit
-   `ORDER BY text_score(...)`? (Explicit keeps SQL semantics predictable; the
-   ES gateway does not go through SQL.)
-2. Default `over_fetch` factor and whether to retry on under-filled results.
+1. ~~Should a `text_match` filter imply BM25 ordering?~~ Resolved: ordering
+   stays explicit (`ORDER BY text_score(...)` in SQL, the Daft pipeline in
+   Python); the ES gateway will place its own ordering.
+2. ~~Default `over_fetch` factor and retry.~~ Implemented as
+   `max(top_k * 3, 16)` per shard in the Daft path and `LIMIT × 10` (min 100)
+   in the SQL path, with no retry yet; a retry when verification under-fills
+   the result remains open.
 3. Tie-breaking: primary key ascending is deterministic; some clients may
    expect ES's internal doc-order tie-break, which is not observable.
 4. Whether the gateway needs a consistent-statistics mode
    (`dfs_query_then_fetch`-like) for multi-shard keyword queries.
-5. Score exposure in the SQL result schema: hidden column vs. `text_score()`
-   projection; naming of the internal field.
+5. Score projection in SQL (`SELECT text_score(...)`): the logical schema
+   cannot carry the internal score column through a projection yet; the ES
+   gateway reads scores from the lower-level scan API instead.
 
 ## Staging
 
-1. **Scored candidates and global top-k** (this design): reader score option,
-   `text_score` UDF + planner rule, Daft/Python global ranking, over-fetch,
-   tests (cross-bucket ordering, stale/over-fetch interaction).
+1. **Scored candidates and global top-k** — *implemented*: reader score
+   option (`text_search_scores`), `text_score` UDF + planner rule
+   (`ORDER BY text_score(...) DESC` is executed by the index scan, which
+   removes the logical `Sort`), Daft/Python global top-k with `with_score`,
+   per-shard over-fetch, and tests (single-shard exact order, cross-bucket
+   set/limit, stale candidates dropped, score exposure).
+   Known gap: `text_score` cannot be projected in SQL yet.
 2. **ES-compatible gateway service**: the nine endpoints, the DSL subset,
    response shapes, product header, mapping handling, NRT visibility; keyword
    search on top of stage 1, vector search on the existing ANN index
