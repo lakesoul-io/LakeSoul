@@ -380,7 +380,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/min_max_refresh.rs`：append-only 源的 MIN 与 MAX、keyed 源的
   更新/删除/组清空、窗口重放不重复、rebuild 后仅消费新提交。
 - 未完成：`ivm.states` 状态表注册（当前由调用方创建并持有 handle）、
-  DISTINCT/COUNT(DISTINCT)、Window、SEMI/ANTI、join upsert。
+  Window、SEMI/ANTI、join upsert。
+
+**DISTINCT 聚合实施记录（已完成）**
+
+- `MIN/MAX` 与 `COUNT(DISTINCT)`/`SUM(DISTINCT)` 共用值分布状态表：schema
+  统一命名为 `value_count_mv_schema` / `value_count_state_schema`
+  （旧名 `min_max_*_schema` 保留为别名）。
+- 新增 `DistinctAggView`（`ViewSpec::DistinctAgg`，`DistinctAggKind::{Count,Sum}`）：
+  刷新/重建复用同一套"值计数 → 受影响组重算"逻辑，仅 MV 取值不同
+  （distinct 个数 / distinct 值之和）。
+- 内部重构：`refresh_value_count` / `rebuild_value_count` 接受
+  `ValueCountView` 借用描述与 `ValueAgg`，`MinMaxView` 与 `DistinctAggView`
+  都是薄封装。
+- 测试 `tests/distinct_agg_refresh.rs`：同源上 COUNT(DISTINCT) 与
+  SUM(DISTINCT) 的更新/删除/组清空、窗口重放、rebuild，均与
+  `count/sum(distinct ...)` 全量查询交叉验证。
+- 未完成：多列 / 非 Int64 group-key 与 value（当前要求 Int64）、
+  `SELECT DISTINCT` 多列投影、Window、SEMI/ANTI、join upsert。
 
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
