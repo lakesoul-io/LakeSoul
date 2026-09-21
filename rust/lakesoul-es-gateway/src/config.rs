@@ -29,6 +29,10 @@ fn default_hash_bucket_num() -> usize {
     4
 }
 
+fn default_nprobe() -> usize {
+    64
+}
+
 fn default_tokenizer() -> String {
     "jieba".to_string()
 }
@@ -99,6 +103,9 @@ pub struct IndexDefaults {
     pub tokenizer: String,
     #[serde(default = "default_true")]
     pub with_positions: bool,
+    /// IVF clusters probed per shard for vector search.
+    #[serde(default = "default_nprobe")]
+    pub nprobe: usize,
 }
 
 impl Default for IndexDefaults {
@@ -107,6 +114,7 @@ impl Default for IndexDefaults {
             hash_bucket_num: default_hash_bucket_num(),
             tokenizer: default_tokenizer(),
             with_positions: default_true(),
+            nprobe: default_nprobe(),
         }
     }
 }
@@ -125,6 +133,8 @@ pub struct IndexConfig {
     pub hash_bucket_num: Option<usize>,
     pub tokenizer: Option<String>,
     pub with_positions: Option<bool>,
+    /// IVF clusters probed per shard for vector search.
+    pub nprobe: Option<usize>,
     #[serde(default = "default_content_column")]
     pub content_column: String,
     #[serde(default = "default_embedding_column")]
