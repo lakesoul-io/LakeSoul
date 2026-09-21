@@ -449,3 +449,73 @@ def test_plan_anchor_order_is_deterministic() -> None:
     assert first.min() >= 2
     assert first.max() <= 99
     assert len(first) == len(np.unique(first))
+
+
+def _timed_table(rows: int) -> pa.Table:
+    values = np.arange(rows, dtype=np.int64)
+    return pa.table(
+        {
+            "state": pa.array(values, type=pa.int64()),
+            "timestamp": pa.array(values.astype(np.float64), type=pa.float64()),
+            "image": pa.array(
+                [f"img-{value}".encode() for value in values], pa.binary()
+            ),
+        }
+    )
+
+
+def test_seconds_window_matches_row_window(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    table = _timed_table(12)
+    _install_reader(monkeypatch, {"file-a": table})
+    scan = _FakeScan([unit], schema=table.schema)
+
+    seconds = EmbodiedDataset(
+        scan,
+        window={"state": (-2.0, 0.0)},
+        time_column="timestamp",
+        boundary="clamp",
+    )
+    rows = EmbodiedDataset(scan, window={"state": (-2, 0)}, boundary="clamp")
+
+    seconds_samples = list(seconds.iter_epoch(0))
+    row_samples = list(rows.iter_epoch(0))
+
+    assert [sample["state"].tolist() for sample in seconds_samples] == [
+        sample["state"].tolist() for sample in row_samples
+    ]
+    assert len(seconds_samples) == 11
+
+
+def test_seconds_window_validation(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    table = _timed_table(6)
+    _install_reader(monkeypatch, {"file-a": table})
+
+    with pytest.raises(ValueError, match="time column"):
+        EmbodiedDataset(
+            _FakeScan([unit], schema=pa.schema([pa.field("state", pa.int64())])),
+            window={"state": (-2.0, 0.0)},
+        )
+    with pytest.raises(ValueError, match="greater than start"):
+        EmbodiedDataset(
+            _FakeScan([unit], schema=table.schema),
+            window={"state": (2.0, 0.0)},
+            time_column="timestamp",
+        )
+
+
+def test_video_rejects_seconds_window(monkeypatch) -> None:
+    unit = _unit("a", "file-a")
+    table = _timed_table(6)
+    video = _FakeVideo(lambda start, end: {})
+    _install_reader(monkeypatch, {"file-a": table})
+
+    with pytest.raises(ValueError, match="row-based window"):
+        EmbodiedDataset(
+            _FakeScan([unit], schema=table.schema),
+            window={"state": (-2, 0), "image": (-0.5, 0.0)},
+            time_column="timestamp",
+            video=video,
+            video_window="image",
+        )

@@ -248,7 +248,11 @@ Ray runner 只要求接口兼容（gated 测试）。
 ## 6. M3：时间语义与可复现
 
 - 时间聚簇写入/compaction → 时间窗=行范围快路径；
-- `align()/join_asof()`（导入未预对齐时的读时对齐）；
+- `align()/join_asof()`（导入未预对齐时的读时对齐）；P1 进行中：
+  - 已完成：`EmbodiedDataset(window={"col": (-1.0, 0.0)}, time_column="timestamp")`
+    秒级窗口（按锚点时间 + searchsorted 切行，clip 语义；与行窗口等价性测试）；
+  - 待做：`streams=[SecondaryStream(...)]` 副表按 episode 缓存 + 最近邻/前向对齐，
+    以及显式 `align()` 物化 API；
 - 样本视图/manifest（跨快照稳定的行地址，才需要持久化）；
 - Python 快照/版本参数（目前仅 Spark/Flink）；文档与示例收尾。
 

@@ -60,6 +60,21 @@ def _as_window(value: Window | tuple[int, int]) -> Window:
     raise TypeError(f"window must be a Window or a (start, end) tuple, got {value!r}")
 
 
+def _is_seconds_window(value: Window | tuple[int, int] | tuple[float, float]) -> bool:
+    if isinstance(value, Window):
+        return False
+    if isinstance(value, tuple) and len(value) == 2:
+        return any(isinstance(bound, float) for bound in value)
+    raise TypeError(f"window must be a Window or a (start, end) tuple, got {value!r}")
+
+
+def _as_time_window(value: tuple[float, float]) -> tuple[float, float]:
+    start, end = float(value[0]), float(value[1])
+    if end <= start:
+        raise ValueError(f"window end must be greater than start, got [{start}, {end})")
+    return start, end
+
+
 def _unit_partition_map(unit: LakeSoulScanPlanPartition) -> dict[str, str]:
     return dict(unit.partition_info)
 
@@ -131,6 +146,7 @@ class EmbodiedDataset:
         episode_column: str | None = None,
         boundary: str = BOUNDARY_SKIP,
         seed: int = 0,
+        time_column: str | None = None,
         video: GopVideo | None = None,
         video_window: str | tuple[int, int] | None = None,
     ) -> None:
@@ -142,9 +158,14 @@ class EmbodiedDataset:
             raise ValueError("window must define at least one column")
 
         self._scan: LakeSoulScan | None = scan
-        self._window: dict[str, Window] = {
-            name: _as_window(value) for name, value in window.items()
-        }
+        self._window: dict[str, Window] = {}
+        self._time_window: dict[str, tuple[float, float]] = {}
+        for name, value in window.items():
+            if _is_seconds_window(value):
+                self._time_window[name] = _as_time_window(value)  # type: ignore[arg-type]
+            else:
+                self._window[name] = _as_window(value)
+        self._time_column = time_column or "timestamp"
         self._stride = stride
         self._boundary = boundary
         self._seed = int(seed)
@@ -154,10 +175,15 @@ class EmbodiedDataset:
         self._config = scan.to_scan_config()
 
         schema_names = set(self._config.schema.names)
-        unknown = set(self._window) - schema_names
+        unknown = (set(self._window) | set(self._time_window)) - schema_names
         if unknown:
             raise ValueError(
                 f"window columns not found in table schema: {sorted(unknown)}"
+            )
+        if self._time_window and self._time_column not in schema_names:
+            raise ValueError(
+                f"seconds-based windows need the time column "
+                f"{self._time_column!r} in the table schema"
             )
 
         self._validate_video_window()
@@ -196,6 +222,8 @@ class EmbodiedDataset:
                 self._seed,
                 self._video,
                 self._video_window,
+                self._time_window,
+                self._time_column,
             ),
         )
 
@@ -219,6 +247,11 @@ class EmbodiedDataset:
 
     def _validate_video_window(self) -> None:
         if isinstance(self._video_window, str):
+            if self._video_window in self._time_window:
+                raise ValueError(
+                    "video windows currently need a row-based window; pass "
+                    "video_window=(start, end) in rows or use a row window key"
+                )
             if self._video_window not in self._window:
                 raise ValueError(
                     f"video_window {self._video_window!r} is not one of the "
@@ -238,6 +271,11 @@ class EmbodiedDataset:
             return self._video_window
         key = self._video_window
         if key is None:
+            if not self._window:
+                raise ValueError(
+                    "video needs at least one row-based window column or an "
+                    "explicit video_window=(start, end)"
+                )
             key = next(iter(self._window))
         window = self._window[key]
         return window.start, window.end
@@ -267,9 +305,30 @@ class EmbodiedDataset:
             windows=self._window,
             boundary=self._boundary,
         )
-        columns = {name: table[name].combine_chunks() for name in self._window}
+        needed = set(self._window) | set(self._time_window)
+        columns = {name: table[name].combine_chunks() for name in needed}
+        times = (
+            table[self._time_column].combine_chunks().to_numpy(zero_copy_only=False)
+            if self._time_window
+            else None
+        )
         for anchor in anchors.tolist():
             sample: dict[str, np.ndarray] = {}
+            if times is not None:
+                for name, (start_seconds, end_seconds) in self._time_window.items():
+                    anchor_time = float(times[anchor])
+                    start = int(
+                        np.searchsorted(times, anchor_time + start_seconds, side="left")
+                    )
+                    end = int(
+                        np.searchsorted(times, anchor_time + end_seconds, side="left")
+                    )
+                    if end <= start:
+                        sample = {}
+                        break
+                    sample[name] = _to_numpy(columns[name], start, end)
+                if not sample:
+                    continue
             for name, window in self._window.items():
                 start = anchor + window.start
                 end = anchor + window.end
@@ -300,7 +359,10 @@ class EmbodiedDataset:
     def _read_unit(self, unit: LakeSoulScanPlanPartition) -> pa.Table:
         config = dataclasses.replace(self._config, scan_partitions=(unit,))
         dataset = lakesoul_dataset(config)
-        return dataset.to_table(columns=list(self._window))
+        columns = list(self._window) + list(self._time_window)
+        if self._time_window:
+            columns.append(self._time_column)
+        return dataset.to_table(columns=columns)
 
     def _resolve_units(
         self,
@@ -367,6 +429,8 @@ def _dataset_from_state(
     seed: int,
     video: GopVideo | None,
     video_window: str | tuple[int, int] | None,
+    time_window: dict[str, tuple[float, float]],
+    time_column: str,
 ) -> EmbodiedDataset:
     dataset = object.__new__(EmbodiedDataset)
     dataset._scan = None
@@ -379,6 +443,8 @@ def _dataset_from_state(
     dataset._units = tuple(units)
     dataset._video = video
     dataset._video_window = video_window
+    dataset._time_window = dict(time_window)
+    dataset._time_column = time_column
     return dataset
 
 
