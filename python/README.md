@@ -154,7 +154,7 @@ compact the indexes automatically.
 | `LakeSoulTable.rebuild_vector_index(...)` | Re-train the vector index from all active files. |
 | `LakeSoulTable.build_text_index(..., rebuild=False)` | Build/update the text index; `rebuild=True` compacts a shard into one fresh split. |
 | `lakesoul.daft.vector_search(table, query, top_k=...)` | Global top-`k` vector search through Daft (exact re-ranking). |
-| `lakesoul.daft.text_search(table, query, top_k=...)` | Exact full-text search through Daft. |
+| `lakesoul.daft.text_search(table, query, top_k=...)` | Exact full-text search through Daft, best BM25 match first. |
 
 See the documentation site for the [vector search](https://lakesoul-io.github.io/docs/Usage%20Docs/lakesoul-python/vector-search)
 and text search guides.

@@ -246,6 +246,7 @@ impl LakeSoulSessionFactory {
         ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_match_udf()).clone());
+        ctx.register_udf((*crate::udf::text_search_marker::text_score_udf()).clone());
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::with_snapshot(
             Arc::clone(&self.meta_client),

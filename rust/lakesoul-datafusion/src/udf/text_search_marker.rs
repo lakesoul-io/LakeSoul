@@ -37,6 +37,9 @@ pub const TEXT_SEARCH_MARKER: &str = "__lakesoul_text_search";
 /// Function name of the user-facing (and rewritten exact) text predicate.
 pub const TEXT_MATCH_FUNCTION: &str = "text_match";
 
+/// Function name of the relevance-ordering expression.
+pub const TEXT_SCORE_FUNCTION: &str = "text_score";
+
 /// Parsed marker arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSearchRequest {
@@ -46,10 +49,13 @@ pub struct TextSearchRequest {
     pub query: String,
     /// Number of candidates requested (the SQL `LIMIT` value).
     pub top_k: usize,
+    /// `ORDER BY text_score(column, query) DESC` was present: the scan must
+    /// return the global top-`top_k` ordered by BM25 score.
+    pub order_by: bool,
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
-pub fn marker_expr(column: &str, query: &str, top_k: usize) -> Expr {
+pub fn marker_expr(column: &str, query: &str, top_k: usize, order_by: bool) -> Expr {
     Expr::ScalarFunction(ScalarFunction::new_udf(
         marker_udf(),
         vec![
@@ -58,6 +64,7 @@ pub fn marker_expr(column: &str, query: &str, top_k: usize) -> Expr {
             )),
             Expr::Literal(ScalarValue::Utf8(Some(query.to_string())), None),
             Expr::Literal(ScalarValue::Int64(Some(top_k as i64)), None),
+            Expr::Literal(ScalarValue::Boolean(Some(order_by)), None),
         ],
     ))
 }
@@ -76,7 +83,7 @@ pub fn parse_text_search_request(filters: &[Expr]) -> Option<TextSearchRequest> 
             let Expr::ScalarFunction(call) = marker else {
                 return None;
             };
-            if call.args.len() != 3 {
+            if call.args.len() != 4 {
                 return None;
             }
             let column = match &call.args[0] {
@@ -91,10 +98,15 @@ pub fn parse_text_search_request(filters: &[Expr]) -> Option<TextSearchRequest> 
                 Expr::Literal(ScalarValue::Int64(Some(k)), _) => (*k).max(1) as usize,
                 _ => return None,
             };
+            let order_by = match &call.args[3] {
+                Expr::Literal(ScalarValue::Boolean(Some(order_by)), _) => *order_by,
+                _ => return None,
+            };
             Some(TextSearchRequest {
                 column,
                 query,
                 top_k,
+                order_by,
             })
         })
 }
@@ -379,6 +391,89 @@ pub fn text_match_udf() -> Arc<ScalarUDF> {
     Arc::new(ScalarUDF::new_from_impl(TextMatchUDF::default()))
 }
 
+/// Extract `(column, query)` from a `text_score(column, query)` call.
+pub fn parse_text_score_call(expr: &Expr) -> Option<(String, String)> {
+    let Expr::ScalarFunction(call) = expr else {
+        return None;
+    };
+    if call.func.name() != TEXT_SCORE_FUNCTION || call.args.len() != 2 {
+        return None;
+    }
+    let column = match &call.args[0] {
+        Expr::Column(col) => col.name.clone(),
+        _ => return None,
+    };
+    let query = match &call.args[1] {
+        Expr::Literal(ScalarValue::Utf8(Some(q)), _)
+        | Expr::Literal(ScalarValue::LargeUtf8(Some(q)), _)
+        | Expr::Literal(ScalarValue::Utf8View(Some(q)), _) => q.clone(),
+        _ => return None,
+    };
+    Some((column, query))
+}
+
+/// The relevance expression.  It is only meaningful when the pushdown rule
+/// removes the `Sort` node and the index scan provides the scores, so its
+/// physical implementation is never expected to run.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct TextScoreUDF {
+    signature: Signature,
+}
+
+impl Default for TextScoreUDF {
+    fn default() -> Self {
+        Self {
+            signature: Signature::user_defined(Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for TextScoreUDF {
+    fn name(&self) -> &str {
+        TEXT_SCORE_FUNCTION
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
+        if arg_types.len() != 2
+            || !matches!(
+                arg_types[0],
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+            )
+            || !matches!(arg_types[1], DataType::Utf8)
+        {
+            return Err(DataFusionError::Execution(format!(
+                "text_score expects (text, query), got {arg_types:?}"
+            )));
+        }
+        Ok(arg_types.to_vec())
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Float32)
+    }
+
+    fn invoke_with_args(
+        &self,
+        _args: datafusion::logical_expr::ScalarFunctionArgs,
+    ) -> DFResult<ColumnarValue> {
+        Err(DataFusionError::Execution(format!(
+            "{TEXT_SCORE_FUNCTION}() is only supported as `ORDER BY \
+             {TEXT_SCORE_FUNCTION}(column, query) DESC` together with a \
+             `{TEXT_MATCH_FUNCTION}(column, query)` filter and a LIMIT; \
+             read scores from the scan API instead (text_search_scores)"
+        )))
+    }
+}
+
+/// Return the `text_score` UDF.
+pub fn text_score_udf() -> Arc<ScalarUDF> {
+    Arc::new(ScalarUDF::new_from_impl(TextScoreUDF::default()))
+}
+
 fn literal_string(value: &ColumnarValue) -> Option<String> {
     match value {
         ColumnarValue::Scalar(ScalarValue::Utf8(Some(value)))
@@ -437,12 +532,32 @@ mod tests {
 
     #[test]
     fn marker_roundtrips_through_filters() {
-        let expr = marker_expr("body", "hello world", 7);
+        let expr = marker_expr("body", "hello world", 7, true);
         assert!(is_marker_expr(&expr));
         let request = parse_text_search_request(&[expr]).unwrap();
         assert_eq!(request.column, "body");
         assert_eq!(request.query, "hello world");
         assert_eq!(request.top_k, 7);
+        assert!(request.order_by);
+    }
+
+    #[test]
+    fn parses_text_score_calls() {
+        let score = Expr::ScalarFunction(ScalarFunction::new_udf(
+            text_score_udf(),
+            vec![
+                Expr::Column(datafusion::common::Column::new_unqualified("body")),
+                Expr::Literal(ScalarValue::Utf8(Some("hi".to_string())), None),
+            ],
+        ));
+        assert_eq!(
+            parse_text_score_call(&score),
+            Some(("body".to_string(), "hi".to_string()))
+        );
+        assert_eq!(
+            parse_text_score_call(&Expr::Literal(ScalarValue::Int64(Some(1)), None,)),
+            None
+        );
     }
 
     #[test]

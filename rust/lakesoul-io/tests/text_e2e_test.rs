@@ -8,13 +8,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch, StringArray, UInt64Array};
+use arrow_array::{ArrayRef, Float32Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lakesoul_common::IndexKind;
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::LakeSoulReader;
 use lakesoul_io::text::builder::TextShardIndexBuilder;
+use lakesoul_io::text::verify::TEXT_SCORE_FIELD;
 use lakesoul_io::writer::create_writer_with_io_config;
 use lakesoul_text::TextIndexConfig;
 use object_store::local::LocalFileSystem;
@@ -133,6 +134,121 @@ async fn read_ids(
     }
     ids.sort_unstable();
     ids
+}
+
+/// Read a text search with `text_search_scores=true` and return the output
+/// schema field names plus `(id, score)` rows.
+async fn read_scored(
+    prefix: &str,
+    files: Vec<String>,
+    target_schema: SchemaRef,
+    query: &str,
+    resolved: Vec<ResolvedIndex>,
+) -> (Vec<String>, Vec<(u64, f32)>) {
+    let config = LakeSoulIOConfig::builder()
+        .with_prefix(prefix.to_string())
+        .with_files(files)
+        .with_schema(target_schema)
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1")
+        .with_thread_num(1)
+        .with_batch_size(8)
+        .with_option("text_search_column", "body")
+        .with_option("text_search_query", query)
+        .with_option("text_search_top_k", "10")
+        .with_option("text_search_scores", "true")
+        .with_resolved_index_shards(resolved)
+        .build();
+    let mut reader = LakeSoulReader::new(config).unwrap();
+    reader.start().await.unwrap();
+    let mut names = Vec::new();
+    let mut rows = Vec::new();
+    while let Some(record) = reader.next_rb().await {
+        let record = record.unwrap();
+        if names.is_empty() {
+            names = record
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect();
+        }
+        let ids = record
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let scores = record
+            .column_by_name(TEXT_SCORE_FIELD)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        for row in 0..record.num_rows() {
+            rows.push((ids.value(row), scores.value(row)));
+        }
+    }
+    rows.sort_by_key(|(id, _)| *id);
+    (names, rows)
+}
+
+/// Scores are attached to verified rows: stale candidates are dropped and
+/// the remaining rows carry their positive BM25 score.  The caller schema
+/// may declare the reserved score field up front or let it be appended.
+#[tokio::test]
+async fn scores_are_exposed_and_stale_candidates_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().to_string_lossy().into_owned();
+
+    let inserted = write(
+        &prefix,
+        &batch(&[
+            (1, "apple apple apple"),
+            (2, "apple banana banana"),
+            (3, "cherry cherry cherry"),
+        ]),
+    )
+    .await;
+    let updated = write(&prefix, &batch(&[(2, "date tart")])).await;
+    let index_prefix = format!("{prefix}/_text_index/body/-5/0");
+
+    let first = build_split(&index_prefix, inserted.clone()).await;
+    let second = build_split(&index_prefix, updated.clone()).await;
+    let mut resolved = first.clone();
+    let mut segments = first.segments.as_array().cloned().unwrap_or_default();
+    segments.extend(second.segments.as_array().cloned().unwrap_or_default());
+    resolved.segments = serde_json::Value::Array(segments);
+    let all_files: Vec<String> = inserted.iter().chain(updated.iter()).cloned().collect();
+
+    // Caller declares only the primary key: the score column is appended.
+    let target = Arc::new(Schema::new(vec![Field::new("id", DataType::UInt64, false)]));
+    let (names, rows) = read_scored(
+        &prefix,
+        all_files.clone(),
+        target,
+        "apple",
+        vec![resolved.clone()],
+    )
+    .await;
+    assert_eq!(names, vec!["id", TEXT_SCORE_FIELD]);
+    assert_eq!(rows.len(), 1, "stale candidate leaked: {rows:?}");
+    assert_eq!(rows[0].0, 1);
+    assert!(rows[0].1 > 0.0, "score must be positive: {rows:?}");
+
+    // Caller declares the score column up front: it is filled in place and
+    // the projected text column is preserved.
+    let target = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new("body", DataType::Utf8, true),
+        Field::new(TEXT_SCORE_FIELD, DataType::Float32, true),
+    ]));
+    let (names, rows) =
+        read_scored(&prefix, all_files, target, "cherry", vec![resolved]).await;
+    assert_eq!(names, vec!["id", "body", TEXT_SCORE_FIELD]);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, 3);
+    assert!(rows[0].1 > 0.0);
 }
 
 /// The split of the inserted data is stale for the updated row: the index

@@ -177,7 +177,12 @@ async fn create_table_inner(
             table_schema_arrow_ipc_json_hash,
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
-                hash_bucket_num: Some(String::from("4")),
+                hash_bucket_num: Some(
+                    config
+                        .get_hash_bucket_num()
+                        .map(|num| num.to_string())
+                        .unwrap_or_else(|_| String::from("4")),
+                ),
                 vector_index_columns,
                 text_index_columns,
                 ..Default::default()

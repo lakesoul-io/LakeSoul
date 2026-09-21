@@ -167,9 +167,10 @@ Supported `reader_options`:
 | `text_search_query` | Query string (required) | - |
 | `text_search_column` | Text column to search | auto-detected when the table has one text column |
 | `text_search_top_k` | Candidate count per shard (bucket) | 10 |
+| `text_search_scores` | Expose the BM25 score of each verified row in the reserved `__lakesoul_text_score` column; requesting scores also enables the verification pass | `false` |
 | `text_search_verify` | Run the exact verification pass over the current rows | `true` |
 
-Each per-bucket reader searches its own index and keeps its top-`top_k` candidates; the native reader then verifies every candidate against the current row text after merge-on-read, so updated or deleted rows never leak into the result. The result is the set of exact matches among the candidates, bounded by `top_k × number_of_shards`, and is **not** a global BM25 ranking yet (see the limitations below).
+Each per-bucket reader searches its own index and keeps its top-`top_k` candidates; the native reader then verifies every candidate against the current row text after merge-on-read, so updated or deleted rows never leak into the result. The result is the set of exact matches among the candidates, bounded by `top_k × number_of_shards`; the scan itself does not order them. Set `text_search_scores=true` to also read each row's BM25 score (as computed by the bucket's index) in the reserved `__lakesoul_text_score` column — `lakesoul.daft.text_search` uses it to rank results globally.
 
 The text column is read from the table properties, so for a single text column you only need to provide the query. When the table has multiple text columns, set `text_search_column` explicitly.
 
@@ -183,16 +184,19 @@ from lakesoul.daft import text_search
 df = text_search(
     table,                  # LakeSoulTable or LakeSoulScan
     "quick fox",            # query string
-    top_k=10,               # candidates per shard
+    top_k=10,               # rows to return globally, best first
     # column="body",        # required only when multiple columns are indexed
+    # with_score=True,      # also return the BM25 score column
     extra_columns=["ts"],   # additional columns to return
 )
 
 result = df.collect().to_arrow()
-print(result.column("id").to_pylist())
+print(result.column("id").to_pylist())  # best-scoring first
 ```
 
-`text_search` accepts either a table or a configured scan. When a scan is passed, its partition pruning and runtime options are kept — for example, searching only one range partition. The primary key and the text column are always read; the returned rows are the exact matches among the per-shard candidates, so the total is bounded by `top_k × number_of_shards` and is not a global BM25 ranking. Narrow or sort it in Daft when needed.
+`text_search` accepts either a table or a configured scan. When a scan is passed, its partition pruning and runtime options are kept — for example, searching only one range partition. The primary key and the text column are always read. It returns the global top-`top_k` exact matches, best BM25 score first: each task searches its bucket's index for a candidate set (sized from `top_k` with over-fetch so verification cannot leave the result short), the native reader verifies the candidates against the current rows, and the candidates are ranked by score and truncated to `top_k`. The scores are dropped unless `with_score=True`.
+
+Ranking compares each bucket's BM25 statistics, so ordering across buckets is approximate — the same trade-off as a default Elasticsearch search across shards.
 
 `scan.to_daft()` with `reader_options` remains available for callers that want to run their own merge logic.
 
@@ -208,6 +212,18 @@ LIMIT 10;
 ```
 
 With a finite `LIMIT`, the planner pushes the search down to the text index (`EXPLAIN` shows `LakeSoulTextSearchExec`) and evaluates the `text_match` predicate exactly above the scan, which removes stale candidates. Without a `LIMIT`, there is no candidate pushdown: the query falls back to a full scan and evaluates `text_match` exactly over every row.
+
+`ORDER BY text_score(column, query) DESC` adds relevance ranking; the scan then returns the global top-`LIMIT` rows by BM25 score:
+
+```sql
+SELECT id, body
+FROM documents
+WHERE text_match(body, 'quick fox')
+ORDER BY text_score(body, 'quick fox') DESC
+LIMIT 10;
+```
+
+`text_score` is only supported in `ORDER BY` together with a `text_match` filter and a `LIMIT`; it cannot be projected into the `SELECT` list yet (use the scan API with `text_search_scores` to read scores). As with Daft, ranking across shards uses per-shard BM25 statistics and is approximate.
 
 `text_match` works on tables without a text index too, again as an exact full-scan predicate. When several `text_match` terms are combined with `AND`, only the first one is pushed down as an index search; all of them are still evaluated exactly.
 
@@ -226,12 +242,14 @@ The query string is parsed as a Tantivy query: whitespace-separated terms are OR
 - The shard identity is `(partition_desc, hash_bucket_id)`: files from different range partitions are never merged into one shard, so partitioned tables get a separate index per partition.
 - A split is one immutable Tantivy index bundled into a single object (`{split_id}.split`): the Tantivy files followed by a JSON footer with per-file offsets and CRCs. Readers materialize splits into a local cache and open them read-only.
 - A search collects the per-split BM25 top-k and merges them by primary key (keeping the best score); the reader injects the candidate ids as a `pk IN (...)` filter, and the verification pass re-checks each candidate's current text — after merge-on-read resolved row versions and dropped CDC delete tombstones — before the rows are returned.
+- The BM25 score of every candidate travels with it and is attached to the rows that pass verification, so `text_search_scores` and the Daft ranking compare the same scores that selected the candidates.
 - Index maintenance is best-effort after a committed write: it never blocks the data write, and a failed build or compaction leaves the previous index (and correctness) intact.
 - The index directory follows the data lifecycle: automatic GC removes generations that have been superseded for longer than `gc_grace_seconds`, keeping `gc_keep_generations` generations.
 
 ## Limitations
 
-- Search returns exact matches among the per-shard candidates rather than a global BM25 ranking; `text_search_top_k` is per shard. Global relevance ordering and its ES-compatible scoring contract are tracked as a follow-up design.
+- Relevance ranking compares per-shard BM25 statistics (splits are built and scored per `(partition, bucket)`), so cross-shard ordering is approximate — the same trade-off as a default Elasticsearch search across shards. Global statistics are future work.
+- `text_score` can order results but cannot be projected into the `SELECT` list yet; read scores through `text_search_scores` or Daft's `with_score=True`.
 - Multiple text columns require an explicit `text_search_column`/`column`.
 - Phrase queries require `with_positions=true` (the default); with positions disabled only term/boolean queries are available.
 - `write_ray` does not build or update secondary indexes; use `build_text_index()`.

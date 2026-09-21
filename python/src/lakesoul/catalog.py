@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from lakesoul._lib.vector import VectorIndexConfig
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
+#: Reserved output column carrying the per-row BM25 score when the scan
+#: requests ``text_search_scores=true``.
+TEXT_SEARCH_SCORE_COLUMN = "__lakesoul_text_score"
 PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
 _ASCII_LOWER_TRANS = str.maketrans(
     {chr(code): chr(code + 32) for code in range(ord("A"), ord("Z") + 1)}
@@ -1229,6 +1232,9 @@ class LakeSoulScan:
             namespace=self._table.namespace,
             retain_partition_columns=self._retain_partition_columns,
         )
+        reader_options = self._resolved_reader_options()
+        if reader_options.get("text_search_scores") == "true":
+            schema = _with_text_score_column(schema)
         return LakeSoulScanConfig(
             table_name=self._table.name,
             namespace=self._table.namespace,
@@ -1242,7 +1248,7 @@ class LakeSoulScan:
             thread_count=self._thread_count,
             rank=self._rank,
             world_size=self._world_size,
-            reader_options=self._resolved_reader_options(),
+            reader_options=reader_options,
         )
 
     def _replace(self, **updates: Any) -> LakeSoulScan:
@@ -1260,7 +1266,24 @@ class LakeSoulScan:
             "_reader_options": self._reader_options,
         }
         values.update(updates)
+        # A score-requesting scan must read the reserved score column; add it
+        # to an explicit projection so it survives schema projection.
+        options = values.get("_reader_options") or {}
+        columns = values.get("columns")
+        if (
+            options.get("text_search_scores") == "true"
+            and columns is not None
+            and TEXT_SEARCH_SCORE_COLUMN not in columns
+        ):
+            values["columns"] = (*columns, TEXT_SEARCH_SCORE_COLUMN)
         return LakeSoulScan(**values)
+
+
+def _with_text_score_column(schema: pa.Schema) -> pa.Schema:
+    """Append the reserved BM25 score column to a scan schema."""
+    if TEXT_SEARCH_SCORE_COLUMN in schema.names:
+        return schema
+    return schema.append(pa.field(TEXT_SEARCH_SCORE_COLUMN, pa.float32(), True))
 
 
 def _validate_string_mapping(name: str, value: Mapping[str, str]) -> dict[str, str]:

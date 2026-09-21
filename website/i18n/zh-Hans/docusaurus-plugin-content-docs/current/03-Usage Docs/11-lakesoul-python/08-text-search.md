@@ -167,9 +167,10 @@ print(matches.column("id").to_pylist())
 | `text_search_query` | 查询字符串（必填） | - |
 | `text_search_column` | 要检索的文本列 | 表中只有一个文本列时自动推断 |
 | `text_search_top_k` | 每个 shard（bucket）的候选数量 | 10 |
+| `text_search_scores` | 在保留列 `__lakesoul_text_score` 中返回每一行的 BM25 分数；请求分数会同时启用精确校验 | `false` |
 | `text_search_verify` | 对当前行执行精确校验 | `true` |
 
-每个 bucket 的 reader 在各自的索引上检索并保留 top-`top_k` 候选；随后原生 reader 会在 merge-on-read 之后对所有候选按当前行文本做精确校验，因此被更新或删除的行不会漏出。返回结果是候选中真实命中的行，数量上限为 `top_k × shard 数`，目前**不是**全局 BM25 排序（见下文限制）。
+每个 bucket 的 reader 在各自的索引上检索并保留 top-`top_k` 候选；随后原生 reader 会在 merge-on-read 之后对所有候选按当前行文本做精确校验，因此被更新或删除的行不会漏出。返回结果是候选中真实命中的行，数量上限为 `top_k × shard 数`；scan 本身不负责排序。设置 `text_search_scores=true` 可以在保留列 `__lakesoul_text_score` 中读出每行的 BM25 分数（由所属 bucket 的索引计算），`lakesoul.daft.text_search` 正是用它做全局排序。
 
 文本列取自表属性，因此只有一个文本列时只需提供查询字符串；表中有多个文本列时需显式设置 `text_search_column`。
 
@@ -183,16 +184,19 @@ from lakesoul.daft import text_search
 df = text_search(
     table,                  # LakeSoulTable 或 LakeSoulScan
     "quick fox",            # 查询字符串
-    top_k=10,               # 每个 shard 的候选数量
+    top_k=10,               # 全局返回行数，按分数从高到低
     # column="body",        # 仅在存在多个索引列时需要
+    # with_score=True,      # 同时返回 BM25 分数列
     extra_columns=["ts"],   # 额外返回的列
 )
 
 result = df.collect().to_arrow()
-print(result.column("id").to_pylist())
+print(result.column("id").to_pylist())  # 分数最高者在前
 ```
 
-`text_search` 接受表或已配置的 scan。传入 scan 时会保留其分区裁剪与运行时配置——例如只检索某个 range 分区。主键与文本列总会被读取；返回的行是各 shard 候选中真实命中的行，总量上限为 `top_k × shard 数`，不是全局 BM25 排序。如需收窄或排序，可在 Daft 中继续处理。
+`text_search` 接受表或已配置的 scan。传入 scan 时会保留其分区裁剪与运行时配置——例如只检索某个 range 分区。主键与文本列总会被读取。它返回全局 top-`top_k` 的真实命中行，按 BM25 分数从高到低：每个 Daft task 先在所属 bucket 的索引上取候选集（按 `top_k` 加 over-fetch，避免校验剔除后结果不足），原生 reader 对候选按当前行做精确校验，随后在 Daft 中按分数全局排序并截断到 `top_k`。未指定 `with_score=True` 时分数列会被移除。
+
+跨 bucket 排序使用的是各自 bucket 的 BM25 统计量，因此是近似排序——与 Elasticsearch 默认的跨 shard 检索是同一取舍。
 
 需要自行合并逻辑的调用方仍可使用带 `reader_options` 的 `scan.to_daft()`。
 
@@ -208,6 +212,18 @@ LIMIT 10;
 ```
 
 带有有限 `LIMIT` 时，planner 会把检索下推到文本索引（`EXPLAIN` 中可见 `LakeSoulTextSearchExec`），并在 scan 之上精确求值 `text_match` 谓词，从而剔除陈旧候选。没有 `LIMIT` 时不会做候选下推：查询回退为全表扫描，对每一行精确求值 `text_match`。
+
+`ORDER BY text_score(column, query) DESC` 会启用相关性排序；scan 随后按 BM25 分数返回全局 top-`LIMIT` 行：
+
+```sql
+SELECT id, body
+FROM documents
+WHERE text_match(body, 'quick fox')
+ORDER BY text_score(body, 'quick fox') DESC
+LIMIT 10;
+```
+
+`text_score` 仅支持与 `text_match` 过滤条件和 `LIMIT` 一起出现在 `ORDER BY` 中，暂不支持投影到 `SELECT` 列表（需要分数时请使用 scan API 的 `text_search_scores`）。与 Daft 一样，跨 shard 排序基于各自的 BM25 统计量，是近似排序。
 
 `text_match` 也可以用于没有文本索引的表，同样是全表扫描的精确谓词。多个 `text_match` 通过 `AND` 组合时，只有第一个会被下推为索引检索；其余仍会被精确求值。
 
@@ -226,12 +242,14 @@ LIMIT 10;
 - shard 标识为 `(partition_desc, hash_bucket_id)`：不同 range 分区的文件不会合并到同一个 shard，因此分区表每个分区各有一份索引。
 - 一个 split 就是一份不可变的 Tantivy 索引，打包为单个对象（`{split_id}.split`）：Tantivy 文件之后紧跟 JSON footer，记录每个文件的偏移与 CRC。Reader 会把 split 物化到本地缓存后以只读方式打开。
 - 检索先收集各 split 的 BM25 top-k 并按主键合并（保留最高分）；reader 将候选主键注入为 `pk IN (...)` 过滤条件；随后校验阶段会在 merge-on-read 解析行版本、丢弃 CDC 删除墓碑之后，对每个候选的当前文本重新校验，最后返回结果。
+- 每个候选的 BM25 分数会随候选一起传递，并附加到通过校验的行上，因此 `text_search_scores` 与 Daft 排序使用的正是筛选候选时的同一份分数。
 - 索引维护是提交后的尽力而为步骤：它不会阻塞数据写入，构建或压缩失败时旧索引仍然可用，正确性不受影响。
 - 索引目录随数据生命周期：自动 GC 会删除被取代超过 `gc_grace_seconds` 的 generation，并保留 `gc_keep_generations` 个 generation。
 
 ## 限制
 
-- 检索返回的是各 shard 候选中真实命中的行，而不是全局 BM25 排序；`text_search_top_k` 是每 shard 的候选数。全局相关性排序及其 ES 兼容打分契约将作为后续设计跟进。
+- 相关性排序基于各 shard 的 BM25 统计量（split 按 `(partition, bucket)` 构建并打分），因此跨 shard 排序是近似排序——与 Elasticsearch 默认的跨 shard 检索是同一取舍。全局统计量属于后续工作。
+- `text_score` 可用于排序，但暂不支持投影到 `SELECT` 列表；需要分数时请通过 `text_search_scores` 或 Daft 的 `with_score=True` 读取。
 - 存在多个文本列时必须显式指定 `text_search_column`/`column`。
 - 短语查询需要 `with_positions=true`（默认）；关闭位置后仅支持词项/布尔查询。
 - `write_ray` 不会构建或更新二级索引；请使用 `build_text_index()`。

@@ -68,7 +68,12 @@ def _rows_table(rows: list[tuple[int, str]]) -> pa.Table:
     )
 
 
-def _create_table(name: str, *, text_index: list[dict] | None = None):
+def _create_table(
+    name: str,
+    *,
+    text_index: list[dict] | None = None,
+    hash_bucket_num: int = 2,
+):
     cat = _catalog()
     table_path = f"/tmp/lakesoul_test/{name}"
     try:
@@ -81,7 +86,7 @@ def _create_table(name: str, *, text_index: list[dict] | None = None):
         path=f"file://{table_path}",
         schema=_schema(),
         primary_keys=["id"],
-        hash_bucket_num=2,
+        hash_bucket_num=hash_bucket_num,
         text_index=text_index if text_index is not None else [{"column": "body"}],
     )
     return table, table_path
@@ -155,6 +160,67 @@ def test_text_search_drops_stale_rows() -> None:
 
         updated = text_search(table, "内容主题", top_k=10).collect().to_arrow()
         assert updated.column("id").to_pylist() == [4]
+    finally:
+        table.drop()
+        shutil.rmtree(table_path, ignore_errors=True)
+
+
+def test_text_search_returns_global_topk_in_order() -> None:
+    """The result is the global top-k, best BM25 score first."""
+    from lakesoul.daft import text_search
+
+    # A single shard so all documents share one BM25 statistics set.
+    table, table_path = _create_table("text_daft_order", hash_bucket_num=1)
+    try:
+        _write(
+            table,
+            [
+                (1, "apple apple apple"),
+                (2, "apple apple banana"),
+                (3, "apple banana banana"),
+                (4, "banana banana banana"),
+            ],
+        )
+        assert text_search(table, "apple", top_k=2).collect().to_arrow().column(
+            "id"
+        ).to_pylist() == [1, 2]
+        assert text_search(table, "apple", top_k=3).collect().to_arrow().column(
+            "id"
+        ).to_pylist() == [1, 2, 3]
+        assert text_search(table, "apple", top_k=10).collect().to_arrow().column(
+            "id"
+        ).to_pylist() == [1, 2, 3]
+    finally:
+        table.drop()
+        shutil.rmtree(table_path, ignore_errors=True)
+
+
+def test_text_search_with_score_exposes_bm25() -> None:
+    from lakesoul.daft import text_search
+
+    table, table_path = _create_table("text_daft_score", hash_bucket_num=1)
+    try:
+        _write(
+            table,
+            [
+                (1, "apple apple apple"),
+                (2, "apple apple banana"),
+                (3, "apple banana banana"),
+            ],
+        )
+        scored = (
+            text_search(table, "apple", top_k=3, with_score=True).collect().to_arrow()
+        )
+        assert scored.column_names == ["id", "body", "__lakesoul_text_score"]
+        ids = scored.column("id").to_pylist()
+        scores = scored.column("__lakesoul_text_score").to_pylist()
+        assert ids == [1, 2, 3], ids
+        assert all(score > 0 for score in scores), scores
+        assert scores == sorted(scores, reverse=True), scores
+
+        # Scores are dropped unless explicitly requested.
+        plain = text_search(table, "apple", top_k=3).collect().to_arrow()
+        assert plain.column_names == ["id", "body"]
     finally:
         table.drop()
         shutil.rmtree(table_path, ignore_errors=True)

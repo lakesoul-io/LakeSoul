@@ -39,11 +39,13 @@ use lakesoul_common::IndexKind;
 use lakesoul_io::config::{
     LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN,
     OPTION_KEY_TEXT_SEARCH_COLUMN, OPTION_KEY_TEXT_SEARCH_QUERY,
-    OPTION_KEY_TEXT_SEARCH_TOP_K, OPTION_KEY_TEXT_SEARCH_VERIFY,
+    OPTION_KEY_TEXT_SEARCH_SCORES, OPTION_KEY_TEXT_SEARCH_TOP_K,
+    OPTION_KEY_TEXT_SEARCH_VERIFY,
 };
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
+use lakesoul_io::text::verify::TEXT_SCORE_FIELD;
 use lakesoul_metadata::index_catalog::IndexCatalog;
 use lakesoul_text::{TextIndexConfig, TextSplitEntry};
 
@@ -274,10 +276,16 @@ impl LakeSoulTextSearchExec {
                     .saturating_mul(10)
                     .max(100)
                     .to_string(),
-            )
+            );
+        if self.text_search.order_by {
+            // Relevance ordering needs the BM25 score of every verified
+            // row; requesting scores also enables the verification pass.
+            builder = builder.with_option(OPTION_KEY_TEXT_SEARCH_SCORES, "true");
+        } else {
             // The exact `text_match` predicate above the scan verifies, so
             // the reader's own pass is redundant here.
-            .with_option(OPTION_KEY_TEXT_SEARCH_VERIFY, "false");
+            builder = builder.with_option(OPTION_KEY_TEXT_SEARCH_VERIFY, "false");
+        }
         Ok(builder.build())
     }
 }
@@ -411,6 +419,11 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
                 Ok::<_, DataFusionError>(batches)
             })
         })?;
+        let batches = if self.text_search.order_by {
+            order_by_score(batches, self.text_search.top_k, &schema)?
+        } else {
+            batches
+        };
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream))
             as SendableRecordBatchStream)
@@ -422,11 +435,62 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
 }
 
 impl DisplayAs for LakeSoulTextSearchExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, _format: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "LakeSoulTextSearchExec(column={}, query={:?}, top_k={})",
-            self.text_search.column, self.text_search.query, self.text_search.top_k
+            "LakeSoulTextSearchExec(column={}, query={:?}, top_k={}, order_by={})",
+            self.text_search.column,
+            self.text_search.query,
+            self.text_search.top_k,
+            self.text_search.order_by
         )
     }
+}
+
+/// Merge the per-bucket batches into one batch ordered by BM25 score and
+/// truncated to the global `top_k`, then project to `output_schema` (which
+/// drops the internal score column).
+fn order_by_score(
+    batches: Vec<arrow::record_batch::RecordBatch>,
+    top_k: usize,
+    output_schema: &SchemaRef,
+) -> DFResult<Vec<arrow::record_batch::RecordBatch>> {
+    let batches: Vec<_> = batches
+        .into_iter()
+        .filter(|batch| batch.num_rows() > 0)
+        .collect();
+    if batches.is_empty() {
+        return Ok(Vec::new());
+    }
+    let score_index =
+        batches[0]
+            .schema()
+            .index_of(TEXT_SCORE_FIELD)
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "text search score column missing from the scan output: {error}"
+                ))
+            })?;
+    let combined = arrow::compute::concat_batches(&batches[0].schema(), &batches)?;
+    let indices = arrow::compute::lexsort_to_indices(
+        &[arrow::compute::SortColumn {
+            values: Arc::clone(combined.column(score_index)),
+            options: Some(arrow::compute::SortOptions {
+                descending: true,
+                nulls_first: false,
+            }),
+        }],
+        None,
+    )?;
+    let limit = top_k.min(indices.len());
+    let sorted = arrow::compute::take_record_batch(&combined, &indices.slice(0, limit))?;
+    let mut columns = Vec::with_capacity(output_schema.fields().len());
+    for field in output_schema.fields() {
+        let index = sorted.schema().index_of(field.name())?;
+        columns.push(Arc::clone(sorted.column(index)));
+    }
+    Ok(vec![arrow::record_batch::RecordBatch::try_new(
+        Arc::clone(output_schema),
+        columns,
+    )?])
 }
