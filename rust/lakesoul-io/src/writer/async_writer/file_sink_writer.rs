@@ -19,6 +19,7 @@ use object_store::{ObjectStoreExt, path::Path};
 use rootcause::{bail, report};
 use tokio::sync::mpsc::Sender;
 
+use crate::blob::{self, BlobPolicy, PackBuffer};
 use crate::{
     Result,
     constant::DEFAULT_PARTITION_DESC,
@@ -42,6 +43,12 @@ pub struct FileSinkWriter {
     task: Option<SpawnedTask<Result<u64>>>,
     buffered_size: u64,
     flush_results: Option<Vec<FlushOutput>>,
+    /// Blob columns of this leaf file, keyed by column name.
+    blob_columns: HashMap<String, BlobPolicy>,
+    /// Pack file URL per blob column (`<data_file>.<column>.blob`).
+    pack_paths: HashMap<String, String>,
+    /// Buffered external values per blob column, flushed on `flush`.
+    pack_buffers: HashMap<String, PackBuffer>,
 }
 
 impl FileSinkWriter {
@@ -69,6 +76,22 @@ impl FileSinkWriter {
             }
         });
 
+        let blob_columns = blob::parse_blob_policies(io_session.io_config().options())?;
+        let pack_paths = if blob_columns.is_empty() {
+            HashMap::new()
+        } else {
+            let file_url = (sink.config().table_paths.len() == 1)
+                .then(|| sink.config().original_url.clone())
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    report!("blob columns need a single-file writer to place pack files")
+                })?;
+            blob_columns
+                .keys()
+                .map(|column| (column.clone(), format!("{file_url}.{column}.blob")))
+                .collect()
+        };
+
         Ok(Self {
             physical_format,
             sink,
@@ -79,6 +102,9 @@ impl FileSinkWriter {
             task: Some(task),
             buffered_size: 0,
             flush_results: None,
+            blob_columns,
+            pack_paths,
+            pack_buffers: HashMap::new(),
         })
     }
 
@@ -228,6 +254,68 @@ impl FileSinkWriter {
         .await
     }
 
+    /// Replace every blob column with its tagged encoding, spilling values over
+    /// the policy threshold into the per-column pack buffer.
+    fn encode_blob_columns(&mut self, mut batch: RecordBatch) -> Result<RecordBatch> {
+        if self.blob_columns.is_empty() {
+            return Ok(batch);
+        }
+        let columns: Vec<(String, BlobPolicy)> = self
+            .blob_columns
+            .iter()
+            .map(|(column, policy)| (column.clone(), policy.clone()))
+            .collect();
+        for (column, policy) in columns {
+            let Ok(index) = batch.schema().index_of(&column) else {
+                continue;
+            };
+            let Some(pack_path) = self.pack_paths.get(&column).cloned() else {
+                continue;
+            };
+            let pack = self.pack_buffers.entry(column).or_default();
+            let array = batch.column(index).clone();
+            let encoded = blob::encode_column(array.as_ref(), &policy, pack, &pack_path)?;
+            let mut columns: Vec<arrow_array::ArrayRef> = batch.columns().to_vec();
+            columns[index] = encoded;
+            batch = RecordBatch::try_new(batch.schema(), columns)
+                .map_err(|error| report!("failed to rebuild blob batch: {error}"))?;
+        }
+        Ok(batch)
+    }
+
+    /// Upload the accumulated pack files next to the data file.
+    async fn write_blob_packs(&mut self) -> Result<()> {
+        if self.pack_buffers.is_empty() {
+            return Ok(());
+        }
+        let Some(data_path) = self
+            .sink
+            .config()
+            .table_paths
+            .first()
+            .map(|url| url.prefix().clone())
+        else {
+            return Ok(());
+        };
+        let object_store = self
+            .io_session
+            .task_ctx()
+            .runtime_env()
+            .object_store(&self.sink.config().object_store_url)?;
+        let buffers = std::mem::take(&mut self.pack_buffers);
+        for (column, buffer) in buffers {
+            if buffer.is_empty() {
+                continue;
+            }
+            let pack_path = Path::from(format!("{data_path}.{column}.blob"));
+            object_store
+                .put(&pack_path, buffer.into_data().into())
+                .await?;
+            debug!("wrote blob pack {}", pack_path);
+        }
+        Ok(())
+    }
+
     fn single_file_path(&self) -> Option<String> {
         (self.sink.config().table_paths.len() == 1)
             .then(|| self.sink.config().original_url.clone())
@@ -287,6 +375,7 @@ impl AsyncBatchWriter for FileSinkWriter {
         }
 
         let batch = uniform_record_batch(self.project_to_sink_schema(batch)?)?;
+        let batch = self.encode_blob_columns(batch)?;
         self.buffered_size += get_batch_memory_size(&batch)? as u64;
         let sender = self
             .sender
@@ -314,6 +403,7 @@ impl AsyncBatchWriter for FileSinkWriter {
             .ok_or(report!("already flushed or aborted"))?;
         drop(sender);
         self.wait_for_task().await?;
+        self.write_blob_packs().await?;
         let results = self.collect_flush_outputs().await?;
         self.flush_results = Some(results.clone());
         Ok(results)

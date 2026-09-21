@@ -35,6 +35,8 @@ pub static OPTION_KEY_REPARTITION_MEM_RATIO: &str = "repartition_mem_ratio";
 pub static OPTION_KEY_PHYSICAL_FORMAT: &str = "physical_format";
 /// Key for the number of batches the reader keeps in flight ahead of the consumer
 pub static OPTION_KEY_PREFETCH_SIZE: &str = "prefetch_size";
+/// Key for externalizing binary columns into side pack files (JSON object)
+pub static OPTION_KEY_BLOB_COLUMNS: &str = "blob_columns";
 /// Vector search: column name of the vector index to query
 pub static OPTION_KEY_VECTOR_SEARCH_COLUMN: &str = "vector_search_column";
 /// Vector search: comma-separated f32 values of the query vector

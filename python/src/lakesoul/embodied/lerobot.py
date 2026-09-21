@@ -101,6 +101,7 @@ def import_lerobot(
     image_format: str = "JPEG",
     image_quality: int = 90,
     physical_format: str = "vortex",
+    properties: Mapping[str, str] | None = None,
     overwrite: bool = False,
 ) -> ImportSummary:
     """Import a local LeRobot v3.0 dataset into a new LakeSoul table.
@@ -121,6 +122,10 @@ def import_lerobot(
         image_format: ``JPEG`` or ``PNG`` for per-frame image bytes.
         image_quality: JPEG quality (``frames`` layout only).
         physical_format: LakeSoul physical format for the written files.
+        properties: extra table properties, e.g. ``blob_columns`` to externalize
+            binary columns (see :func:`lakesoul.io.merge_blob_option`). They are
+            applied to every created table with blob entries filtered to the
+            columns that table actually has.
         overwrite: drop and recreate the table when it already exists.
     """
     catalog = catalog or LakeSoulCatalog.from_env()
@@ -167,6 +172,7 @@ def import_lerobot(
         schema=schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=_filter_properties(properties, schema),
     )
     gops_handle = frames_handle = None
     if gop_layout:
@@ -176,6 +182,7 @@ def import_lerobot(
             schema=GOPS_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
+            properties=_filter_properties(properties, GOPS_SCHEMA),
         )
         frames_handle = catalog.create_table(
             frames_table,
@@ -183,6 +190,7 @@ def import_lerobot(
             schema=FRAMES_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
+            properties=_filter_properties(properties, FRAMES_SCHEMA),
         )
 
     table_path = table_handle.path
@@ -225,6 +233,28 @@ def import_lerobot(
         columns=tuple(schema.names),
         tables=tables,
     )
+
+
+def _filter_properties(
+    properties: Mapping[str, str] | None, schema: pa.Schema
+) -> dict[str, str] | None:
+    """Keep ``blob_columns`` entries whose column exists in ``schema``."""
+    if not properties:
+        return dict(properties) if properties is not None else None
+    filtered = dict(properties)
+    raw = filtered.get("blob_columns")
+    if raw:
+        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        parsed = {
+            column: policy
+            for column, policy in parsed.items()
+            if column in schema.names
+        }
+        if parsed:
+            filtered["blob_columns"] = json.dumps(parsed)
+        else:
+            filtered.pop("blob_columns")
+    return filtered
 
 
 def _load_info(root: Path) -> dict[str, Any]:

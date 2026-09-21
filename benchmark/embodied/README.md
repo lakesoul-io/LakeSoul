@@ -24,3 +24,27 @@ python benchmark/embodied/run_benchmark.py \
 
 Useful flags: `--image-bytes`, `--repeat` (best-of-N), `--format`,
 `--num-workers`, `--keep` (keep the generated table for inspection).
+
+The video-layout benchmark accepts `--with-blob` to add a GOP import whose
+`data` column is externalized through the `blob_columns` property, so the
+reader materialization path is measured next to the inline layouts.
+
+
+## Video layout comparison (`run_video_layout_benchmark.py`)
+
+Generates a local LeRobot v3 source with gradient frames (so the MP4 compresses
+like real footage) and imports it three ways: per-frame JPEG bytes (`frames`),
+Annex-B GOPs (`gop`) and the Daft frames importer (native runner). It reports
+import throughput, on-disk size versus the source MP4 and raw RGB, window
+sampling throughput and GOP decode latency.
+
+```sh
+python benchmark/embodied/run_video_layout_benchmark.py \
+    --episodes 8 --ticks 120 --width 128 --height 128 --keyint 16 \
+    --output /tmp/m2_5a.json
+```
+
+Example run: source MP4 0.16 MB; `frames` 3.55 MB (21.6x MP4), `gop` 0.42 MB
+(2.54x MP4, 8.5x smaller than frames); frames sampling 8.1k samples/s vs GOP
+216 samples/s with a warm decode cache (P50 0.057 ms, cold GOP decode 14 ms).
+Requires the `embodied` extra (PyAV/Pillow).
