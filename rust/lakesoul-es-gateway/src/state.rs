@@ -69,11 +69,10 @@ impl GatewayState {
                 .await
                 .map_err(|error| anyhow::anyhow!("metadata client: {error}"))?,
         );
-        let session = lakesoul_datafusion::create_lakesoul_session_ctx(
-            client.clone(),
-            &core_args(&config),
-        )
-        .map_err(|error| anyhow::anyhow!("datafusion session: {error}"))?;
+        let args = core_args(&config);
+        let session =
+            lakesoul_datafusion::create_lakesoul_session_ctx(client.clone(), &args)
+                .map_err(|error| anyhow::anyhow!("datafusion session: {error}"))?;
 
         let mut indexes = HashMap::new();
         for index in &config.indexes {
@@ -95,6 +94,29 @@ impl GatewayState {
                 },
             );
         }
+
+        // Register every index path's object store on the session runtime so
+        // the text-index search can read splits for paths outside the
+        // warehouse prefix as well.
+        let mut store_config =
+            lakesoul_io::config::LakeSoulIOConfigBuilder::new_with_object_store_options(
+                args.s3_options(),
+            )
+            .build();
+        for runtime in indexes.values() {
+            lakesoul_io::object_store::register_object_store(
+                &runtime.path,
+                &mut store_config,
+                &session.runtime_env(),
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to register object store for '{}': {error}",
+                    runtime.path
+                )
+            })?;
+        }
+
         Ok(Self {
             config,
             client,

@@ -136,7 +136,7 @@ pub fn filters_to_expr(
     Ok(combined.unwrap_or_else(|| lit(true)))
 }
 
-fn scalar_value(
+pub(crate) fn scalar_value(
     data_type: &DataType,
     value: &Value,
     field: &str,

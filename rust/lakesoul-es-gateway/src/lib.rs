@@ -20,6 +20,7 @@ pub mod protocol;
 pub mod provision;
 pub mod query;
 pub mod schema;
+pub mod search;
 pub mod state;
 pub mod update;
 
@@ -64,6 +65,7 @@ pub fn build_router(state: Arc<GatewayState>) -> Router {
         .route("/{index}/_bulk", post(document::post_bulk))
         .route("/{index}/_delete_by_query", post(delete::delete_by_query))
         .route("/{index}/_update_by_query", post(update::update_by_query))
+        .route("/{index}/_search", get(search::search).post(search::search))
         .route("/{index}/_refresh", post(protocol::refresh))
         .layer(middleware::from_fn(protocol::product_header))
         .with_state(state)
