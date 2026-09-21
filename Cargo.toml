@@ -19,6 +19,7 @@ members = [
   "rust/lakesoul-vector",
   "rust/lakesoul-ivm",
   "rust/lakesoul-text",
+  "rust/lakesoul-es-gateway",
   "python",
   "rust/postgres-lakesoul",
 ]
@@ -103,6 +104,8 @@ tower = "0.4.13"
 tonic = "0.14"
 tonic-build = "0.14"
 http = "1"
+axum = "0.8"
+toml = "0.9"
 metrics = "0.24"
 # cache
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
