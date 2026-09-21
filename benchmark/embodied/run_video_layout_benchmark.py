@@ -88,6 +88,11 @@ def parse_args() -> argparse.Namespace:
         choices=("parquet", "vortex", "vortex-compact"),
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--with-blob",
+        action="store_true",
+        help="also import the GOP layout with its data column externalized",
+    )
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--output", default=None, help="write the JSON report here")
     return parser.parse_args()
@@ -295,6 +300,33 @@ def main() -> None:
             )
         )
 
+        blob_name = None
+        if args.with_blob:
+            blob_name = f"vl_gop_blob_{suffix}"
+            blob_path = (run_root / blob_name).as_uri()
+            start = time.perf_counter()
+            blob_summary = import_lerobot(
+                source_root,
+                table=blob_name,
+                path=blob_path,
+                cameras=["cam"],
+                video_layout="gop",
+                physical_format=args.format,
+                properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
+            )
+            blob_creation = time.perf_counter() - start
+            created.append(blob_name)
+            base_path = _local_path(catalog.table(blob_name).path)
+            imports.append(
+                ImportMetrics(
+                    layout="gop-blob",
+                    rows=blob_summary.rows,
+                    seconds=blob_creation,
+                    files=sum(1 for item in base_path.rglob("*") if item.is_file()),
+                    bytes_on_disk=_dir_bytes(_gop_dirs(base_path)),
+                )
+            )
+
         try:
             from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
 
@@ -339,7 +371,14 @@ def main() -> None:
         gop_read.bytes_per_sample = next(
             item.bytes_on_disk for item in imports if item.layout == "gop"
         ) // max(gop_read.samples, 1)
-        reads.extend([frames_read, gop_read])
+        reads.append(gop_read)
+        if blob_name is not None:
+            blob_read = _read_gop_layout(catalog, blob_name, args)
+            blob_read.layout = "gop-blob"
+            blob_read.bytes_per_sample = next(
+                item.bytes_on_disk for item in imports if item.layout == "gop-blob"
+            ) // max(blob_read.samples, 1)
+            reads.append(blob_read)
         print()
         print(
             "| layout | samples | samples/s | bytes/sample | sample p50 ms "

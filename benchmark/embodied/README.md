@@ -25,6 +25,10 @@ python benchmark/embodied/run_benchmark.py \
 Useful flags: `--image-bytes`, `--repeat` (best-of-N), `--format`,
 `--num-workers`, `--keep` (keep the generated table for inspection).
 
+The video-layout benchmark accepts `--with-blob` to add a GOP import whose
+`data` column is externalized through the `blob_columns` property, so the
+reader materialization path is measured next to the inline layouts.
+
 
 ## Video layout comparison (`run_video_layout_benchmark.py`)
 

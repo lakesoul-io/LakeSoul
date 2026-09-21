@@ -141,10 +141,16 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 - 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/threshold/pack_target`）→ IOConfig options；
   tagged binary 行内表示；pack 跟随数据文件（`<data_file>.<column>.blob`，删数据文件即清理）；
   仅 Python/native 路径；阈值 16KiB inline / 2MiB external / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
-- 已完成：Rust codec（`rust/lakesoul-io/src/blob.rs`）——策略解析、tagged 编码/解析、
-  PackBuffer、CRC32 校验锚点、5 个单测；
-- 待做：writer 接线（batch 编码 + finish 落 pack）、reader 物化（object store range 读 +
-  缓存）、Python 透传（`write_arrow`/scan 自动带上表属性）与 e2e 测试；
+- 已完成（端到端）：
+  - Rust codec（`blob.rs`）与 writer 接线（`write_record_batch` 编码、`flush` 落
+    `<data_file>.<column>.blob`）；
+  - reader 物化（`BlobMaterializer`：object store range 读 + CRC/length 校验 + moka 缓存）；
+  - Python 透传（`create_table` 校验 `blob_columns`；`write_arrow`/Ray/Daft 注入写选项；
+    scan 注入 reader 选项）；
+  - GOP 外置 e2e：分区表带 `blob_columns={"data": external}` 时每数据文件一个 pack，
+    `GopVideo`/`EmbodiedDataset` 直接解码；
+  - benchmark `--with-blob` 对比列；
+- 待办：pack GC/vacuum、SQL 引擎 glue、零拷贝 `BlobFile`（M2-2 后续）；
 - 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
