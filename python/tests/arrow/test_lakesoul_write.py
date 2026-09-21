@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
 
 from lakesoul import LakeSoulCatalog
 from lakesoul.metadata.generated.entity_pb2 import AppendCommit
@@ -213,3 +217,62 @@ def _data_commit_ops(catalog: LakeSoulCatalog, table) -> list[int]:
         for commit in catalog._client.get_table_single_partition_data_info(partition):
             ops.append(commit.commit_op)
     return ops
+
+
+def test_blob_columns_property_roundtrip(tmp_path: Path) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("blob")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("frame", pa.binary()),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=schema,
+        properties={"blob_columns": json.dumps({"frame": {"mode": "external"}})},
+    )
+
+    try:
+        data = pa.table(
+            {
+                "id": pa.array([1, 2], type=pa.int64()),
+                "frame": pa.array([b"tiny", b"0123456789"], type=pa.binary()),
+            },
+            schema=schema,
+        )
+        result = table.write_arrow(data, format="parquet")
+
+        assert table.blob_columns == ("frame",)
+        raw_path = Path(unquote(urlparse(result.files[0].path).path))
+        raw_values = pq.read_table(raw_path).column("frame").to_pylist()
+        assert [value[0] for value in raw_values] == [1, 1]
+        assert Path(f"{raw_path}.frame.blob").read_bytes() == b"tiny0123456789"
+
+        actual = catalog.scan(table_name).to_arrow_table()
+        assert actual.column("frame").to_pylist() == [b"tiny", b"0123456789"]
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_create_table_rejects_invalid_blob_columns(tmp_path: Path) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("blob_invalid")
+    schema = pa.schema([pa.field("id", pa.int64(), nullable=False)])
+
+    with pytest.raises(ValueError, match="not in the schema"):
+        catalog.create_table(
+            table_name,
+            path=(tmp_path / table_name).as_uri(),
+            schema=schema,
+            properties={"blob_columns": json.dumps({"missing": {}})},
+        )
+    with pytest.raises(ValueError, match="auto\\|inline\\|external"):
+        catalog.create_table(
+            table_name,
+            path=(tmp_path / table_name).as_uri(),
+            schema=schema,
+            properties={"blob_columns": json.dumps({"id": {"mode": "sometimes"}})},
+        )

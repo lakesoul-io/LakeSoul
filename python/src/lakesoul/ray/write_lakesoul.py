@@ -13,7 +13,7 @@ from ray.data import Dataset
 from ray.data.block import BlockAccessor
 from ray.data.datasource import Datasink
 
-from lakesoul.io import IOConfig, Writer
+from lakesoul.io import IOConfig, Writer, merge_blob_option
 from lakesoul.io import WriteResult as LakeSoulWriteResult
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ class LakeSoulDatasink(Datasink):
             max_file_size=self._max_file_size,
             max_row_group_size=self._max_row_group_size,
             object_store_options=self._object_store_options,
-            options=self._options,
+            options=merge_blob_option(self._options, self._table.blob_columns),
         )
 
     def __getstate__(self) -> dict[str, Any]:
@@ -132,7 +132,7 @@ class LakeSoulDatasink(Datasink):
             max_file_size=self._max_file_size,
             max_row_group_size=self._max_row_group_size,
             object_store_options=self._object_store_options,
-            options=self._options,
+            options=merge_blob_option(self._options, self._table.blob_columns),
         )
 
     def _normalize_table(self, table: pa.Table) -> pa.Table:

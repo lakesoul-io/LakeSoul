@@ -14,7 +14,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 
 from lakesoul._lib._utils import _schema_from_metadata_str
-from lakesoul.io import FileInfo, IOConfig, Writer, WriteResult
+from lakesoul.io import IOConfig, Writer, WriteResult, merge_blob_option
 from lakesoul.metadata import (
     NativeMetadataClient,
     PostgresMetadataConfig,
@@ -45,6 +45,7 @@ class TableWriteConfig:
     hash_bucket_num: int
     format: PhysicalFormat
     vector_columns: tuple[str, ...] = ()
+    blob_columns: str | None = None
 
 
 class LakeSoulCatalog:
@@ -252,6 +253,8 @@ class LakeSoulCatalog:
             _validate_hash_bucket_num(hash_bucket_num)
 
         props = dict(properties or {})
+        if "blob_columns" in props:
+            _validate_blob_columns_property(props["blob_columns"], normalized_schema)
         requested: dict[str, Any] = dict(index_configs or {})
         if vector_index is not None:
             requested["vector"] = vector_index
@@ -416,6 +419,21 @@ class LakeSoulTable:
         return value
 
     @property
+    def blob_columns(self) -> tuple[str, ...]:
+        """Columns externalized to side pack files via the ``blob_columns`` property."""
+        raw = self._blob_columns_option()
+        if raw is None:
+            return ()
+        parsed = json.loads(raw)
+        return tuple(str(column) for column in parsed)
+
+    def _blob_columns_option(self) -> str | None:
+        raw = dict(self.properties).get("blob_columns")
+        if raw is None:
+            return None
+        return raw if isinstance(raw, str) else json.dumps(raw)
+
+    @property
     def vector_index_columns(self) -> tuple[str, ...]:
         """Columns declared in the ``vector_index_columns`` table property.
 
@@ -487,6 +505,7 @@ class LakeSoulTable:
             hash_bucket_num=self.hash_bucket_num,
             format=format,
             vector_columns=self.vector_index_columns,
+            blob_columns=self._blob_columns_option(),
         )
 
     def write_arrow(
@@ -529,7 +548,7 @@ class LakeSoulTable:
             object_store_options=self._catalog._merge_object_store_options(
                 object_store_options
             ),
-            options=dict(options or {}),
+            options=merge_blob_option(dict(options or {}), write_config.blob_columns),
         )
         with Writer(writer_config) as writer:
             writer.write(data)
@@ -1151,6 +1170,11 @@ class LakeSoulScan:
         cdc_column = dict(self._table.properties).get("cdc_change_column")
         if cdc_column:
             reader_options.setdefault("cdc_column", str(cdc_column))
+        # Blob columns are materialized by the native reader; forward the
+        # table's property unless the caller overrides it.
+        blob_columns = self._table._blob_columns_option()
+        if blob_columns is not None:
+            reader_options.setdefault("blob_columns", blob_columns)
         if "vector_search_query" in reader_options:
             self._resolve_vector_search_options(reader_options)
         if "text_search_query" in reader_options:
@@ -1406,6 +1430,41 @@ def _validate_columns(name: str, columns: Sequence[str], schema: pa.Schema) -> N
     for column in values:
         if column not in schema_names:
             raise ValueError(f"{name} column not in schema: {column}")
+
+
+_BLOB_MODES = {"auto", "inline", "external"}
+
+
+def _validate_blob_columns_property(raw: Any, schema: pa.Schema) -> None:
+    """Validate the ``blob_columns`` table property against the schema."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("blob_columns property is not valid JSON") from error
+    else:
+        parsed = raw
+    if not isinstance(parsed, dict):
+        raise TypeError("blob_columns property must be a JSON object")
+    schema_names = set(schema.names)
+    for column, policy in parsed.items():
+        if column not in schema_names:
+            raise ValueError(
+                f"blob_columns references a column not in the schema: {column!r}"
+            )
+        if not isinstance(policy, dict):
+            raise TypeError(f"blob policy for {column!r} must be a JSON object")
+        mode = policy.get("mode", "auto")
+        if mode not in _BLOB_MODES:
+            raise ValueError(
+                f"blob mode for {column!r} must be auto|inline|external, got {mode!r}"
+            )
+        for key in ("inline_threshold", "pack_target_bytes"):
+            value = policy.get(key)
+            if value is not None and (not isinstance(value, int) or value < 0):
+                raise ValueError(
+                    f"blob {key} for {column!r} must be a non-negative integer"
+                )
 
 
 def _parse_table_properties(properties: str) -> dict[str, Any]:

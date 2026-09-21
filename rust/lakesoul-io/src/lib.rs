@@ -62,6 +62,7 @@ pub type Result<T, E = rootcause::Report> = std::result::Result<T, E>;
 #[cfg(feature = "hdfs")]
 mod hdfs;
 
+pub mod blob;
 pub mod cache;
 pub mod config;
 pub mod constant;

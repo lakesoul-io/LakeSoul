@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import numpy as np
@@ -382,4 +383,52 @@ def test_import_lerobot_overwrite_guard(tmp_path: Path) -> None:
             overwrite=True,
         )
     finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_lerobot_gop_blob_external(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("gop_blob")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_lerobot(
+            root,
+            table=table_name,
+            path=table_path,
+            cameras=["cam"],
+            video_layout="gop",
+            physical_format="parquet",
+            properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
+        )
+        assert summary.tables == (
+            table_name,
+            f"{table_name}_gops",
+            f"{table_name}_frames",
+        )
+
+        gops_table = catalog.table(f"{table_name}_gops")
+        gops_path = Path(unquote(urlparse(gops_table.path).path))
+        packs = sorted(gops_path.rglob("*.blob"))
+        assert packs, "expected per-file blob packs"
+        raw_rows = [
+            row
+            for file in gops_path.rglob("*.parquet")
+            for row in pq.read_table(file).to_pylist()
+        ]
+        assert raw_rows
+        assert all(row["data"][0] == 1 for row in raw_rows)
+
+        video = GopVideo(
+            catalog.table(f"{table_name}_gops"), catalog.table(f"{table_name}_frames")
+        )
+        decoded = video.for_episode("ep000001").frames(0, 4)
+        assert [float(frame[0, 0, 0]) for frame in decoded["cam"]] == pytest.approx(
+            [50.0, 60.0, 70.0, 80.0], abs=6.0
+        )
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
