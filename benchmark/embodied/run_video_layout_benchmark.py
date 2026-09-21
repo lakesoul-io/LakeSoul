@@ -16,12 +16,20 @@ RGB, window sample throughput and GOP decode latency. Run it from the repo root:
     export LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified'
     export LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test
     python benchmark/embodied/run_video_layout_benchmark.py --episodes 8 --ticks 120
+
+Point the tables at object storage to measure the same workloads on S3
+(RustFS locally); `--with-blob` additionally benchmarks lazy blob reads:
+
+    python benchmark/embodied/run_video_layout_benchmark.py --with-blob \
+        --storage-uri s3://lakesoul-test-bucket/video-bench \
+        --s3-endpoint http://127.0.0.1:9000
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import tempfile
@@ -33,7 +41,7 @@ from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lakesoul import LakeSoulCatalog
+from lakesoul import BlobRef, LakeSoulCatalog
 from lakesoul.embodied import EmbodiedDataset, GopVideo, import_lerobot
 from lakesoul.embodied.video import decode_gop
 
@@ -93,6 +101,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="also import the GOP layout with its data column externalized",
     )
+    parser.add_argument(
+        "--storage-uri",
+        default=None,
+        help="object-store base URI for the tables (default: local temp dir)",
+    )
+    parser.add_argument(
+        "--s3-endpoint",
+        default=None,
+        help="S3 endpoint (e.g. http://127.0.0.1:9000); fills fs.s3a.* options",
+    )
+    parser.add_argument(
+        "--s3-access-key",
+        default=os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
+    )
+    parser.add_argument(
+        "--s3-secret-key",
+        default=os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin"),
+    )
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--output", default=None, help="write the JSON report here")
     return parser.parse_args()
@@ -105,24 +131,70 @@ def _local_path(uri: str) -> Path:
     return Path(unquote(parsed.path))
 
 
-def _dir_bytes(paths: list[Path]) -> int:
+def _gop_uris(base: str) -> list[str]:
+    return [base, f"{base}_gops", f"{base}_frames"]
+
+
+class _StorageStats:
+    """File and byte counts for local directories or S3 prefixes."""
+
+    def __init__(self, s3_options: dict[str, str] | None = None) -> None:
+        self._s3_options = s3_options or {}
+        self._filesystem = None
+
+    def _s3_filesystem(self):
+        if self._filesystem is None:
+            from pyarrow.fs import S3FileSystem
+
+            endpoint = self._s3_options["fs.s3a.endpoint"]
+            self._filesystem = S3FileSystem(
+                access_key=self._s3_options["fs.s3a.access.key"],
+                secret_key=self._s3_options["fs.s3a.secret.key"],
+                endpoint_override=endpoint,
+                scheme="http" if endpoint.startswith("http://") else "https",
+            )
+        return self._filesystem
+
+    @property
+    def filesystem(self):
+        """The S3 filesystem when configured, otherwise ``None``."""
+        return self._s3_filesystem() if self._s3_options else None
+
+    def stats(self, uri: str | list[str]) -> tuple[int, int]:
+        """Return ``(files, bytes)`` for a URI or a list of URIs."""
+        if isinstance(uri, str):
+            uri = [uri]
+        if all(urlparse(item).scheme == "file" for item in uri):
+            paths = [Path(unquote(urlparse(item).path)) for item in uri]
+            return _local_stats(paths)
+        from pyarrow.fs import FileSelector, FileType
+
+        filesystem = self._s3_filesystem()
+        files = 0
+        total = 0
+        for item in uri:
+            parsed = urlparse(item)
+            prefix = f"{parsed.netloc}/{parsed.path.lstrip('/')}"
+            for info in filesystem.get_file_info(FileSelector(prefix, recursive=True)):
+                if info.type == FileType.File:
+                    files += 1
+                    total += info.size
+        return files, total
+
+
+def _local_stats(paths: list[Path]) -> tuple[int, int]:
+    files = 0
     total = 0
     for path in paths:
         if path.is_file():
+            files += 1
             total += path.stat().st_size
         elif path.exists():
-            total += sum(
-                item.stat().st_size for item in path.rglob("*") if item.is_file()
-            )
-    return total
-
-
-def _gop_dirs(base: Path) -> list[Path]:
-    return [
-        base,
-        base.parent / f"{base.name}_gops",
-        base.parent / f"{base.name}_frames",
-    ]
+            for item in path.rglob("*"):
+                if item.is_file():
+                    files += 1
+                    total += item.stat().st_size
+    return files, total
 
 
 def _consume(iterator) -> tuple[int, list[float]]:
@@ -224,10 +296,58 @@ def _print_import_table(source: SourceInfo, metrics: list[ImportMetrics]) -> Non
         )
 
 
+def _read_blob_refs(
+    catalog: LakeSoulCatalog,
+    table_name: str,
+    filesystem=None,
+    column: str = "data",
+) -> ReadMetrics:
+    """Read a blob column lazily: one range read per sample."""
+    scan = (
+        catalog.table(table_name)
+        .scan()
+        .options(reader_options={"blob_materialize": "false"})
+    )
+    values = scan.to_arrow_table().column(column).to_pylist()
+    total = 0
+    timings: list[float] = []
+    start = time.perf_counter()
+    for value in values:
+        now = time.perf_counter()
+        total += len(BlobRef.parse(value).read(filesystem=filesystem))
+        timings.append((time.perf_counter() - now) * 1000)
+    elapsed = time.perf_counter() - start
+    p50, p99 = _percentiles(timings)
+    return ReadMetrics(
+        layout="gop-blob-refs",
+        samples=len(values),
+        seconds=elapsed,
+        bytes_per_sample=total // max(len(values), 1),
+        sample_p50_ms=p50,
+        sample_p99_ms=p99,
+    )
+
+
 def main() -> None:
     args = parse_args()
-    catalog = LakeSoulCatalog.from_env()
+    object_store_options = None
+    if args.s3_endpoint:
+        object_store_options = {
+            "fs.s3a.access.key": args.s3_access_key,
+            "fs.s3a.secret.key": args.s3_secret_key,
+            "fs.s3a.endpoint": args.s3_endpoint,
+            "fs.s3a.path.style.access": "true",
+        }
+    catalog = LakeSoulCatalog.from_env(object_store_options=object_store_options)
+    storage = _StorageStats(object_store_options)
     run_root = Path(tempfile.mkdtemp(prefix="lakesoul-video-bench-"))
+    storage_root = args.storage_uri.rstrip("/") if args.storage_uri else None
+
+    def table_uri(name: str) -> str:
+        if storage_root:
+            return f"{storage_root}/{name}"
+        return (run_root / name).as_uri()
+
     source_root = run_root / "lerobot"
     source = write_source(
         source_root,
@@ -252,10 +372,11 @@ def main() -> None:
     reads: list[ReadMetrics] = []
     try:
         frames_name = f"vl_frames_{suffix}"
-        frames_path = (run_root / frames_name).as_uri()
+        frames_path = table_uri(frames_name)
         start = time.perf_counter()
         summary = import_lerobot(
             source_root,
+            catalog=catalog,
             table=frames_name,
             path=frames_path,
             cameras=["cam"],
@@ -265,22 +386,23 @@ def main() -> None:
         )
         creation = time.perf_counter() - start
         created.append(frames_name)
-        base_path = _local_path(catalog.table(frames_name).path)
+        files, bytes_on_disk = storage.stats(catalog.table(frames_name).path)
         imports.append(
             ImportMetrics(
                 layout="frames",
                 rows=summary.rows,
                 seconds=creation,
-                files=sum(1 for item in base_path.rglob("*") if item.is_file()),
-                bytes_on_disk=_dir_bytes([base_path]),
+                files=files,
+                bytes_on_disk=bytes_on_disk,
             )
         )
 
         gop_name = f"vl_gop_{suffix}"
-        gop_path = (run_root / gop_name).as_uri()
+        gop_path = table_uri(gop_name)
         start = time.perf_counter()
         gop_summary = import_lerobot(
             source_root,
+            catalog=catalog,
             table=gop_name,
             path=gop_path,
             cameras=["cam"],
@@ -289,24 +411,25 @@ def main() -> None:
         )
         gop_creation = time.perf_counter() - start
         created.append(gop_name)
-        base_path = _local_path(catalog.table(gop_name).path)
+        files, bytes_on_disk = storage.stats(_gop_uris(catalog.table(gop_name).path))
         imports.append(
             ImportMetrics(
                 layout="gop",
                 rows=gop_summary.rows,
                 seconds=gop_creation,
-                files=sum(1 for item in base_path.rglob("*") if item.is_file()),
-                bytes_on_disk=_dir_bytes(_gop_dirs(base_path)),
+                files=files,
+                bytes_on_disk=bytes_on_disk,
             )
         )
 
         blob_name = None
         if args.with_blob:
             blob_name = f"vl_gop_blob_{suffix}"
-            blob_path = (run_root / blob_name).as_uri()
+            blob_path = table_uri(blob_name)
             start = time.perf_counter()
             blob_summary = import_lerobot(
                 source_root,
+                catalog=catalog,
                 table=blob_name,
                 path=blob_path,
                 cameras=["cam"],
@@ -316,14 +439,16 @@ def main() -> None:
             )
             blob_creation = time.perf_counter() - start
             created.append(blob_name)
-            base_path = _local_path(catalog.table(blob_name).path)
+            files, bytes_on_disk = storage.stats(
+                _gop_uris(catalog.table(blob_name).path)
+            )
             imports.append(
                 ImportMetrics(
                     layout="gop-blob",
                     rows=blob_summary.rows,
                     seconds=blob_creation,
-                    files=sum(1 for item in base_path.rglob("*") if item.is_file()),
-                    bytes_on_disk=_dir_bytes(_gop_dirs(base_path)),
+                    files=files,
+                    bytes_on_disk=bytes_on_disk,
                 )
             )
 
@@ -331,10 +456,11 @@ def main() -> None:
             from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
 
             daft_name = f"vl_daft_{suffix}"
-            daft_path = (run_root / daft_name).as_uri()
+            daft_path = table_uri(daft_name)
             start = time.perf_counter()
             daft_summary = import_lerobot_daft(
                 source_root,
+                catalog=catalog,
                 table=daft_name,
                 path=daft_path,
                 cameras=["cam"],
@@ -343,14 +469,14 @@ def main() -> None:
             )
             daft_creation = time.perf_counter() - start
             created.append(daft_name)
-            base_path = _local_path(catalog.table(daft_name).path)
+            files, bytes_on_disk = storage.stats(catalog.table(daft_name).path)
             imports.append(
                 ImportMetrics(
                     layout="daft-frames",
                     rows=daft_summary.rows,
                     seconds=daft_creation,
-                    files=sum(1 for item in base_path.rglob("*") if item.is_file()),
-                    bytes_on_disk=_dir_bytes([base_path]),
+                    files=files,
+                    bytes_on_disk=bytes_on_disk,
                 )
             )
         except ImportError:
@@ -379,6 +505,9 @@ def main() -> None:
                 item.bytes_on_disk for item in imports if item.layout == "gop-blob"
             ) // max(blob_read.samples, 1)
             reads.append(blob_read)
+            reads.append(
+                _read_blob_refs(catalog, f"{blob_name}_gops", storage.filesystem)
+            )
         print()
         print(
             "| layout | samples | samples/s | bytes/sample | sample p50 ms "
@@ -407,6 +536,10 @@ def main() -> None:
         )
         if args.output:
             report = {
+                "storage": {
+                    "root": storage_root or str(run_root),
+                    "s3_endpoint": args.s3_endpoint,
+                },
                 "source": {
                     "episodes": source.episodes,
                     "ticks": source.ticks,
