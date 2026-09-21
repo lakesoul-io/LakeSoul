@@ -48,6 +48,7 @@ Afterwards, we can test the examples using the instructions below.
 
 | Project                              | Dataset                              | Base Model                                |
 |:-------------------------------------|:-------------------------------------|:------------------------------------------|
+| [Text Search](./text_search.py) | Synthetic documents (built in) | - |
 | [Titanic](./titanic/) | [Kaggle Titanic Dataset](https://www.kaggle.com/competitions/titanic) | `DNN` |
 | [IMDB Sentiment Analysis](./imdb/) | [Hugginface IMDB dataset](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text/train) | [distilbert-base-uncased](https://huggingface.co/distilbert-base-uncased) |
 | [Food Image Search](./food101/) | [Hugginface Food101 dataset](https://huggingface.co/datasets/food101/tree/refs%2Fconvert%2Fparquet) | [clip-ViT-B-32](https://huggingface.co/sentence-transformers/clip-ViT-B-32) |
