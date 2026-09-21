@@ -27,6 +27,7 @@ on:
       - "lakesoul-spark/**"
       - "lakesoul-flink/**"
       - "native-io/**"
+      - "script/**"
     branches:
       - "main"
       - "release/**"
