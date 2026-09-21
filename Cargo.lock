@@ -1257,10 +1257,13 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -1268,10 +1271,15 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1290,6 +1298,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -5306,6 +5315,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-es-gateway"
+version = "4.0.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-array 59.3.0",
+ "arrow-schema 59.3.0",
+ "axum",
+ "bytes",
+ "clap",
+ "datafusion",
+ "futures",
+ "lakesoul-common",
+ "lakesoul-datafusion",
+ "lakesoul-io",
+ "lakesoul-metadata",
+ "lakesoul-metadata-proto",
+ "rootcause",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "lakesoul-flight"
 version = "4.0.0"
 dependencies = [
@@ -9078,6 +9116,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
