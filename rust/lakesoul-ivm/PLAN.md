@@ -417,6 +417,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 未完成：`update_before`/`update_after` 语义目前依赖主键 MOR 合并折叠
   （append-only CDC 源不支持）；多列 key、Window、SEMI/ANTI、join upsert。
 
+**Window 实施记录（已完成 v1：ROW_NUMBER）**
+
+- 新增 `WindowView`（`ViewSpec::Window`、`WindowFunction::RowNumber`）：
+  MV 表 `(partition keys..., source PK..., row_number, rowKinds, __ivm_epoch)`，
+  PK = partition keys + source PK，bucket = partition keys（用到了 P0-3 的
+  bucket 前缀）；`window_mv_schema(partition_keys, row_keys)`。
+- 刷新（分区级重算）：delta → 受影响 partition 集合（delta 行的 partition +
+  变更行在 MV 里所在旧 partition，覆盖分区迁移）→ 读源当前状态、DataFusion
+  `row_number() over (partition by ... order by ..., <PK>)` 重算 → 对比 MV
+  逐行 delete/insert；源中已消失的行删除对应 MV 行；行携带 epoch 保证重放幂等。
+- `rebuild_window`：清空 MV，从源全量重排，发布 `rebuild:<generation>`。
+- 校验：源必须有主键、partition/order 列必须存在、partition/PK 列必须 Int64；
+  order 自动追加源主键保证并列时确定性。
+- 测试 `tests/window_refresh.rs`：插入中间行、order 值更新、删除、跨分区迁移、
+  窗口重放、rebuild，均与全量 `row_number()` 交叉验证；负例（无主键源、
+  不存在的 order 列）。
+- 未完成：仅 `ROW_NUMBER`（RANK/DENSE_RANK、聚合窗口函数未做）；分区重算是
+  O(受影响分区 + 全量源读)，后续可按 partition 裁剪源读取。
+
 
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
