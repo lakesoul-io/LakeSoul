@@ -756,7 +756,8 @@ async fn get_prepared_statement<'a>(
             where table_id = $1::TEXT and partition_desc = $2::TEXT",
         DaoType::DeletePreviousVersionPartition =>
             "delete from partition_info
-            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
+            where table_id = $1::TEXT and partition_desc = $2::TEXT
+              and timestamp <= $3::BIGINT and pinned = false",
 
         DaoType::DeleteDiscardCompressedFileInfoByFilePath =>
             "delete from discard_compressed_file_info

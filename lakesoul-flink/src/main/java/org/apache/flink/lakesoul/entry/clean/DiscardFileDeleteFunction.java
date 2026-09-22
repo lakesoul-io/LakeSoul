@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -149,14 +150,25 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
 
     private boolean deleteBatch(List<String> batch) {
         log.info("start delete batch {}", batch.size());
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps =
-                        conn.prepareStatement(
-                                "DELETE FROM discard_compressed_file_info WHERE file_path ="
-                                        + " ANY(?)")) {
-            ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
-            int rowsDeleted = ps.executeUpdate();
-            log.info("批量删除数据库记录 {} 条", rowsDeleted);
+        List<String> deletable = batch;
+        try (Connection conn = dataSource.getConnection()) {
+            List<String> pinned = pinnedPaths(conn, batch);
+            if (!pinned.isEmpty()) {
+                deletable = new ArrayList<>(batch);
+                deletable.removeAll(pinned);
+                log.info("skip {} pinned discard files", pinned.size());
+            }
+            if (deletable.isEmpty()) {
+                return true;
+            }
+            try (PreparedStatement ps =
+                    conn.prepareStatement(
+                            "DELETE FROM discard_compressed_file_info WHERE file_path ="
+                                    + " ANY(?)")) {
+                ps.setArray(1, conn.createArrayOf("text", deletable.toArray()));
+                int rowsDeleted = ps.executeUpdate();
+                log.info("批量删除数据库记录 {} 条", rowsDeleted);
+            }
         } catch (SQLException e) {
             log.error("批量删除数据库失败", e);
             return false;
@@ -164,7 +176,7 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
 
         CleanUtils cleanUtils = new CleanUtils();
         boolean allSucceeded = true;
-        for (String path : batch) {
+        for (String path : deletable) {
             try {
                 cleanUtils.deleteFile(path);
             } catch (Exception e) {
@@ -176,6 +188,25 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
             log.info("finish delete batch {}", batch.size());
         }
         return allSucceeded;
+    }
+
+    private List<String> pinnedPaths(Connection conn, List<String> batch)
+            throws SQLException {
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "SELECT p.path FROM unnest(?::text[]) AS p(path)"
+                                + " WHERE EXISTS (SELECT 1 FROM data_commit_info dci,"
+                                + " unnest(dci.file_ops) AS f WHERE dci.pinned = true"
+                                + " AND f.path = p.path)")) {
+            ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
+            List<String> paths = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    paths.add(rs.getString(1));
+                }
+            }
+            return paths;
+        }
     }
 
     @Override
