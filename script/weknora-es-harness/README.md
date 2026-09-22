@@ -67,8 +67,20 @@ go run ./script/weknora-es-harness \
 `--dim` must match the `dim` configured on the index; the synthetic embeddings
 use that dimension.
 
+`--client v7` replays the same sequence through `esapi`
+(`github.com/elastic/go-elasticsearch/v7`), which is what WeKnora's v7
+retriever driver uses.
+
 ## Current status
 
-- v8 driver: all steps pass against the gateway.
-- v7 driver: not replayed yet (WeKnora's v7 repository uses the non-typed
-  v7 client; it will be added once the v8 path is confirmed inside WeKnora).
+- v8 typed client: all steps pass.
+- v7 esapi client: all steps pass.
+- Full WeKnora v0.8.0 stack (docker compose, `RETRIEVE_DRIVER=elasticsearch_v8`,
+  DashScope `text-embedding-v4`): document upload, parse/chunk/embed,
+  hybrid (BM25 + vector RRF) retrieval, chunk enable/disable, reparse move
+  and delete all pass.  Two client-side issues were found and are documented
+  on the website page:
+  - v0.8.0 sends the unclamped `cosineSimilarity` script (the gateway now
+    accepts both spellings);
+  - v0.8.0's `CopyIndices` drops `is_enabled`, so `reuse_vectors` moves and
+    KB clones land disabled in **any** Elasticsearch (use `mode=reparse`).

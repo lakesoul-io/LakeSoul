@@ -35,10 +35,11 @@ import (
 )
 
 type config struct {
-	addr  string
-	index string
-	dim   int
-	docs  int
+	addr   string
+	index  string
+	dim    int
+	docs   int
+	client string
 }
 
 type harness struct {
@@ -55,7 +56,12 @@ func main() {
 	flag.StringVar(&cfg.index, "index", "WeKnora", "index name (ELASTICSEARCH_INDEX)")
 	flag.IntVar(&cfg.dim, "dim", 1024, "embedding dimension configured on the gateway")
 	flag.IntVar(&cfg.docs, "docs", 20, "documents written per knowledge base")
+	flag.StringVar(&cfg.client, "client", "v8", "client to replay: v8 (typed) or v7 (esapi)")
 	flag.Parse()
+
+	if cfg.client == "v7" {
+		os.Exit(runV7(cfg))
+	}
 
 	client, err := elasticsearch.NewTypedClient(elasticsearch.Config{
 		Addresses: []string{cfg.addr},
@@ -143,7 +149,8 @@ func (h *harness) runAll() {
 	kbA := h.run + "-kb-a"
 	kbB := h.run + "-kb-b"
 	sourceID := h.run + "-src"
-	docs := h.makeDocs(sourceID, kbA)
+	docs := makeDocuments(h.cfg, h.run)
+	_ = sourceID
 	chunkIDs := make([]string, 0, len(docs))
 
 	h.step("index document (chunk edit path)", func() error {
@@ -343,14 +350,14 @@ func (h *harness) runAll() {
 	})
 }
 
-// makeDocs builds documents in WeKnora's VectorEmbedding shape.  One document
-// carries a unique keyword ("zebra") for the keyword-retrieval assertion;
-// every embedding is a deterministic unit vector.
-func (h *harness) makeDocs(sourceID, kb string) []VectorEmbedding {
-	docs := make([]VectorEmbedding, 0, h.cfg.docs)
+// makeDocuments builds documents in WeKnora's VectorEmbedding shape.  One
+// document carries a unique keyword ("zebra") for the keyword-retrieval
+// assertion; every embedding is a deterministic unit vector.
+func makeDocuments(cfg config, run string) []VectorEmbedding {
+	docs := make([]VectorEmbedding, 0, cfg.docs)
 	rng := rand.New(rand.NewSource(42))
-	for i := 0; i < h.cfg.docs; i++ {
-		vector := make([]float32, h.cfg.dim)
+	for i := 0; i < cfg.docs; i++ {
+		vector := make([]float32, cfg.dim)
 		var norm float64
 		for j := range vector {
 			vector[j] = float32(rng.NormFloat64())
@@ -364,13 +371,14 @@ func (h *harness) makeDocs(sourceID, kb string) []VectorEmbedding {
 		if i == 5 {
 			content = "the unique zebra harness document for keyword retrieval"
 		}
+		sourceID := run + "-src"
 		docs = append(docs, VectorEmbedding{
 			Content:         content,
 			SourceID:        sourceID,
 			SourceType:      1,
-			ChunkID:         fmt.Sprintf("%s-chunk-%02d", h.run, i),
+			ChunkID:         fmt.Sprintf("%s-chunk-%02d", run, i),
 			KnowledgeID:     sourceID,
-			KnowledgeBaseID: kb,
+			KnowledgeBaseID: run + "-kb-a",
 			TagID:           "",
 			Embedding:       vector,
 			IsEnabled:       true,
