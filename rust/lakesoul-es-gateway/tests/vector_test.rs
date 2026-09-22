@@ -89,6 +89,17 @@ async fn gateway_vector_search_contract() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(chunk_id(&hit_list(&body)[0]), "c1");
 
+    // Older WeKnora images send the unclamped spelling.
+    let bare_body = r#"{"query":{"script_score":{"query":{"bool":{"filter":[]}},"script":{"source":"cosineSimilarity(params.query_vector, 'embedding')","params":{"query_vector":[1.0,0.0,0.0]}}}},"size":10,"_source":{"excludes":["embedding"]}}"#;
+    let (status, _, body) = call(&app, "POST", &search_path, Some(bare_body)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hits = hit_list(&body);
+    assert_eq!(chunk_id(&hits[0]), "c1");
+    for hit in hits {
+        let score = score(hit);
+        assert!((0.0..=1.0).contains(&score), "score out of range: {score}");
+    }
+
     // Dimension mismatch and unknown scripts are rejected.
     let bad_dim = r#"{"query":{"script_score":{"query":{"match_all":{}},"script":{"source":"Math.max(cosineSimilarity(params.query_vector, 'embedding'), 0.0)","params":{"query_vector":[1.0,0.0]}},"min_score":0.0}},"size":10}"#;
     let (status, _, body) = call(&app, "POST", &search_path, Some(bad_dim)).await;

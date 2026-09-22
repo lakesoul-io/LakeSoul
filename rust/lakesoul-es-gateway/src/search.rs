@@ -343,18 +343,23 @@ fn normalize_field(field: &str, runtime: &IndexRuntime) -> Result<String, EsErro
     Ok(field.to_string())
 }
 
-/// Parse the fixed `cosineSimilarity` scoring script WeKnora sends, in both
-/// the v7 and v8 spellings (they differ only in whitespace).
+/// Parse the fixed `cosineSimilarity` scoring script WeKnora sends: the
+/// clamped v7/v8 spelling and the bare spelling older gateway images send.
+/// They differ only in whitespace and in the `Math.max(..., 0.0)` wrapper;
+/// the gateway clamps its cosine to `[0, 1]` either way.
 fn parse_cosine_script(
     source: &str,
     params: &Map<String, Value>,
 ) -> Result<(String, Vec<f32>), EsError> {
     let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
-    let prefix = "Math.max(cosineSimilarity(params.query_vector,";
-    let suffix = "),0.0)";
     let field = compact
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.strip_suffix(suffix))
+        .strip_prefix("Math.max(cosineSimilarity(params.query_vector,")
+        .and_then(|rest| rest.strip_suffix("),0.0)"))
+        .or_else(|| {
+            compact
+                .strip_prefix("cosineSimilarity(params.query_vector,")
+                .and_then(|rest| rest.strip_suffix(")"))
+        })
         .map(|field| field.trim_matches(|c| c == '\'' || c == '"').to_string())
         .filter(|field| !field.is_empty())
         .ok_or_else(|| {
