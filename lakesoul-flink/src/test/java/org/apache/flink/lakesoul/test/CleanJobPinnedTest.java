@@ -8,7 +8,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
-import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -18,7 +17,6 @@ import java.util.UUID;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.lakesoul.entry.clean.NewCleanJob;
-import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -28,105 +26,55 @@ import org.junit.Test;
  */
 public class CleanJobPinnedTest extends AbstractTestBase {
 
-    private static final String CONTAINER = "lakesoul-clean-job-pg";
-    private static final String PG_PORT = "55432";
     private static final String JDBC_URL =
-            "jdbc:postgresql://127.0.0.1:" + PG_PORT + "/lakesoul_test";
+            System.getenv()
+                    .getOrDefault(
+                            "LAKESOUL_PG_URL",
+                            "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
 
-    private static String run(String... command) throws Exception {
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        String output = new String(process.getInputStream().readAllBytes());
-        int status = process.waitFor();
-        if (status != 0) {
-            throw new IllegalStateException(
-                    "command failed (" + status + "): " + String.join(" ", command) + "\n" + output);
-        }
-        return output;
+    private static String sourceHost() {
+        String withoutScheme = JDBC_URL.replace("jdbc:postgresql://", "");
+        String hostPort = withoutScheme.substring(0, withoutScheme.indexOf('/'));
+        return hostPort.substring(0, hostPort.indexOf(':'));
     }
 
-    private static String metaInitSql() {
-        for (String candidate :
-                new String[] {
-                    "../script/meta_init.sql",
-                    "script/meta_init.sql",
-                    "../../script/meta_init.sql"
-                }) {
-            File file = new File(candidate);
-            if (file.isFile()) {
-                return file.getAbsolutePath();
-            }
-        }
-        throw new IllegalStateException("meta_init.sql not found");
+    private static String sourcePort() {
+        String withoutScheme = JDBC_URL.replace("jdbc:postgresql://", "");
+        String hostPort = withoutScheme.substring(0, withoutScheme.indexOf('/'));
+        return hostPort.substring(hostPort.indexOf(':') + 1);
     }
 
     @BeforeClass
-    public static void startPostgres() throws Exception {
-        run("docker", "rm", "-f", CONTAINER);
-        run(
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                CONTAINER,
-                "-p",
-                PG_PORT + ":5432",
-                "-e",
-                "POSTGRES_USER=lakesoul_test",
-                "-e",
-                "POSTGRES_PASSWORD=lakesoul_test",
-                "-e",
-                "POSTGRES_DB=lakesoul_test",
-                "postgres:14",
-                "-c",
-                "wal_level=logical");
-        boolean ready = false;
-        for (int attempt = 0; attempt < 60 && !ready; attempt++) {
-            Thread.sleep(1000);
-            try {
-                run(
-                        "docker",
-                        "exec",
-                        CONTAINER,
-                        "psql",
-                        "-U",
-                        "lakesoul_test",
-                        "-d",
-                        "lakesoul_test",
-                        "-c",
-                        "select 1");
-                ready = true;
-            } catch (Exception ignored) {
-                // keep waiting
-            }
-        }
-        assertTrue("postgres did not become ready", ready);
-        Process psql =
-                new ProcessBuilder(
-                                "docker",
-                                "exec",
-                                "-i",
-                                CONTAINER,
-                                "psql",
-                                "-U",
-                                "lakesoul_test",
-                                "-d",
-                                "lakesoul_test",
-                                "-v",
-                                "ON_ERROR_STOP=1")
-                        .redirectErrorStream(true)
-                        .start();
-        Files.copy(Path.of(metaInitSql()), psql.getOutputStream());
-        psql.getOutputStream().close();
-        String output = new String(psql.getInputStream().readAllBytes());
-        assertTrue("schema init failed: " + output, psql.waitFor() == 0);
+    public static void configureMetadata() throws Exception {
+        // The PostgreSQL instance (with wal_level=logical and the LakeSoul schema) is provided by
+        // the test environment, e.g. a CI service container; the test never starts one itself.
+        String walLevel = query("show wal_level");
+        assertTrue(
+                "compaction-clean e2e needs wal_level=logical, got " + walLevel,
+                walLevel.trim().equals("logical"));
         System.setProperty("lakesoul.pg.url", JDBC_URL);
-        System.setProperty("lakesoul.pg.username", "lakesoul_test");
-        System.setProperty("lakesoul.pg.password", "lakesoul_test");
+        System.setProperty(
+                "lakesoul.pg.username",
+                System.getenv().getOrDefault("LAKESOUL_PG_USERNAME", "lakesoul_test"));
+        System.setProperty(
+                "lakesoul.pg.password",
+                System.getenv().getOrDefault("LAKESOUL_PG_PASSWORD", "lakesoul_test"));
     }
 
-    @AfterClass
-    public static void stopPostgres() throws Exception {
-        run("docker", "rm", "-f", CONTAINER);
+    private static String query(String sql) throws Exception {
+        Class.forName("org.postgresql.Driver");
+        try (Connection conn =
+                        java.sql.DriverManager.getConnection(
+                                JDBC_URL,
+                                System.getenv()
+                                        .getOrDefault("LAKESOUL_PG_USERNAME", "lakesoul_test"),
+                                System.getenv()
+                                        .getOrDefault("LAKESOUL_PG_PASSWORD", "lakesoul_test"));
+                Statement st = conn.createStatement();
+                ResultSet rs = st.executeQuery(sql)) {
+            rs.next();
+            return rs.getString(1);
+        }
     }
 
     @Test
@@ -170,11 +118,25 @@ public class CleanJobPinnedTest extends AbstractTestBase {
                 ParameterTool.fromMap(
                         new java.util.HashMap<String, String>() {
                             {
-                                put("source_db.host", "127.0.0.1");
-                                put("source_db.port", PG_PORT);
-                                put("source_db.dbName", "lakesoul_test");
-                                put("source_db.user", "lakesoul_test");
-                                put("source_db.password", "lakesoul_test");
+                                put("source_db.host", sourceHost());
+                                put("source_db.port", sourcePort());
+                                put(
+                                        "source_db.dbName",
+                                        System.getenv()
+                                                .getOrDefault(
+                                                        "LAKESOUL_PG_DB", "lakesoul_test"));
+                                put(
+                                        "source_db.user",
+                                        System.getenv()
+                                                .getOrDefault(
+                                                        "LAKESOUL_PG_USERNAME",
+                                                        "lakesoul_test"));
+                                put(
+                                        "source_db.password",
+                                        System.getenv()
+                                                .getOrDefault(
+                                                        "LAKESOUL_PG_PASSWORD",
+                                                        "lakesoul_test"));
                                 put("slotName", "clean_job_" + tableId);
                                 put("plugName", "pgoutput");
                                 put("schemaList", "public");
