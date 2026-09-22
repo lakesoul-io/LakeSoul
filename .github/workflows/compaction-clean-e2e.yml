@@ -39,35 +39,12 @@ concurrency:
 jobs:
   compaction-clean-e2e:
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-        command: -c wal_level=logical
-      rustfs:
-        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
-        ports:
-          - "9000:9000"
-          - "9001:9001"
-        env:
-          RUSTFS_ACCESS_KEY: rustfsadmin
-          RUSTFS_SECRET_KEY: rustfsadmin
-          RUSTFS_CONSOLE_ENABLE: true
     env:
-      LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test
+      RUSTFLAGS: "-Awarnings"
+      LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
       LAKESOUL_PG_USERNAME: lakesoul_test
       LAKESOUL_PG_PASSWORD: lakesoul_test
-      RUSTFLAGS: "-Awarnings"
+      LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 11
@@ -81,20 +58,47 @@ jobs:
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Download Flink / Hadoop dependencies
+        run: |
+          wget -q https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O "$HOME/hadoop-3.3.5.tar.gz"
+          tar xf "$HOME/hadoop-3.3.5.tar.gz" -C "$HOME"
+          echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> "$GITHUB_ENV"
+          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O "$HOME/flink-s3-fs-hadoop-1.20.1.jar"
+          wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
+          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O "$HOME/flink-parquet-1.20.1.jar"
+          wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
       - name: Build native libraries
         run: |
-          cargo build --release -p lakesoul-io-c -p lakesoul-metadata-c
-      - name: Initialize metadata schema
+          cargo -q build --release --package lakesoul-io-c --package lakesoul-metadata-c
+      - name: Build Maven modules
         run: |
-          PGPASSWORD=lakesoul_test psql -h 127.0.0.1 -U lakesoul_test -d lakesoul_test \
-            -v ON_ERROR_STOP=1 -f script/meta_init.sql
-      - name: Run compaction clean e2e test
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
+      - name: Install python package
         run: |
-          mvn -B -pl lakesoul-flink -am test \
-            -Dtest=CleanJobPinnedTest \
-            -Dsurefire.failIfNoSpecifiedTests=false \
-            -Dmaven.build.cache.enabled=false
+          cd python
+          uv sync --no-install-project --python 3.10 --group dev
+          uv sync --reinstall-package lakesoul --no-default-groups --inexact
+      - name: Copy jars to work-dir
+        run: |
+          FLINK_JAR_NAME="$(python script/get_jar_name.py lakesoul-flink)"
+          SPARK_JAR_NAME="$(python script/get_jar_name.py lakesoul-spark)"
+          cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
+          cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
+          echo "FLINK_JAR_NAME=$FLINK_JAR_NAME" >> "$GITHUB_ENV"
+          echo "SPARK_JAR_NAME=$SPARK_JAR_NAME" >> "$GITHUB_ENV"
+      - name: Run compaction clean e2e
+        run: |
+          PYTHONPATH="$PWD/python/src" PATH="$PWD/python/.venv/bin:$PATH" \
+            script/ci/compaction_clean_e2e.sh --down
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compaction-clean-logs
+          path: |
+            script/benchmark/work-dir/compaction.log
+          if-no-files-found: ignore
