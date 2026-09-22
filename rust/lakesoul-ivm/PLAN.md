@@ -26,14 +26,14 @@
 | MIN / MAX | 同上；value 任意可比较类型 | 值计数状态表 |
 | COUNT / SUM(DISTINCT) | 同上；value 任意可比较/可哈希类型 | 值计数状态表 |
 | ROW_NUMBER | keyed（需主键）+ 未分区；partition/order 列任意可排序类型、可多列 | 分区级重算 |
-| INNER JOIN | 两侧 append-only + 未分区；join key 可多列、任意相等比较类型，payload 任意 | inclusion-exclusion，append-only 输出 |
+| INNER JOIN | 两侧 append-only 或两侧 keyed + 未分区；join key 可多列、任意相等比较类型，payload 任意 | append-only 源用 inclusion-exclusion；keyed 源输出按左右行身份键控，受影响 pair delete+insert |
 | SEMI / ANTI | 左 keyed，右 append-only/keyed；join key 可多列、任意相等比较类型 | 受影响左行 delete+insert |
 | 投影/Filter/Union ALL、join upsert、非等值 join、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK、聚合窗口函数 | — | **未支持** |
 
 ### 路线图
 
-- **P1**：~~通用类型（多列、非 Int64）group key 与 value~~（已完成）→ JOIN 支持 keyed 源
-  （inclusion-exclusion + join 状态表）→ `ivm.states` 注册表 → Window 扩展
+- **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~
+  （已完成）→ `ivm.states` 注册表 → Window 扩展
   （RANK/DENSE_RANK/聚合窗口、源按分区裁剪）→ SEMI/ANTI 扩展（非等值、投影下推）
   → 投影/Filter/Union ALL 视图与 TOP-K
 - **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
@@ -552,6 +552,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 已知缺口：仅支持 inner join + Int64 key/value + 未分区 + append-only 源；
   非 append-only 源需要带 retraction 的 join delta（inclusion-exclusion 配合
   状态表），留待下一阶段。
+
+**Join keyed 源实施记录（已完成）**
+
+- 两侧都带主键时 `JoinView` 走 keyed 路径：输出 schema 由
+  `keyed_join_view_schema_for` 给出，除 join key 与 payload 外还含隐藏列
+  `__left_pk_<pk>` / `__right_pk_<pk>`（输出主键，`keyed_join_output_primary_keys`
+  生成）以及 `rowKinds`/`__ivm_epoch`。
+- 刷新：受影响 pair = ΔL/ΔR 的主键集合，输出行按 `(左 PK, 右 PK)` 定位；
+  `delete(old) + insert(current)` 只重写受影响 pair，其中 current 为
+  `L_affected ⋈ R_now ∪ L_now ⋈ R_affected`（union distinct 去重，覆盖两侧
+  同窗口变化的 pair）；写入按 pair + rowKinds 排序保证 delete 在前，同 epoch
+  的 pair 跳过，replay 幂等。
+- `rebuild_join` 对当前两侧状态做全量 inner join 重写输出（过滤 CDC tombstone）。
+- 混用 keyed/append-only 源、可空行身份、输出 schema/PK 不匹配都会在
+  `validate_join_view` 报错；join key 相等比较仍为 `=`，NULL 不匹配。
+- 测试 `tests/join_keyed.rs`：双侧 upsert/delete、join key 在 NULL/非 NULL 间
+  迁移、payload 更新、两侧同窗口对齐、多列 join key（Utf8 + Int64）、rebuild
+  以及与 SQL inner join 的逐行对照；另有混合源/可空主键校验测试。
 
 ## 9. 风险与开放问题
 

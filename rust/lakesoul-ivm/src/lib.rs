@@ -16,8 +16,8 @@
 //! state table ([`runtime::DistinctAggView`]), `ROW_NUMBER()` maintained by
 //! recomputing the affected partitions ([`runtime::WindowView`]),
 //! `SEMI`/`ANTI` joins recomputing the affected left rows
-//! ([`runtime::SemiAntiView`]), and an inner equi-join of two append-only
-//! sources ([`runtime::JoinView`]). Refreshes are incremental and
+//! ([`runtime::SemiAntiView`]), and an inner equi-join of two append-only or
+//! two keyed sources ([`runtime::JoinView`]). Refreshes are incremental and
 //! replay safe: every window is recorded in `ivm.epochs` (see `EPOCH.md`), so
 //! a retry skips data that is already written. A view whose source history
 //! cannot be consumed incrementally (updates/deletes in the window, or an
@@ -30,7 +30,11 @@
 //! be numeric, `count` results are `Int64`), join keys and semi/anti join keys
 //! may be several columns of any equality-comparable type with arbitrary
 //! payloads, and window partition/order keys may be strings or any other
-//! sortable type. Partition and group keys must be non-nullable.
+//! sortable type. Group keys and window partition keys may be NULL (NULL
+//! groups with NULL, following SQL), while row identities (source primary
+//! keys used by keyed views) must be non-nullable. An inner join over two
+//! keyed sources keeps a retractable output keyed by both row identities, so
+//! upserts, deletes and join-key changes on either side are reflected.
 //!
 //! A keyed source may declare a CDC change column through
 //! [`table::IvmTableOptions::with_cdc_column`] (persisted as the LakeSoul
@@ -71,11 +75,12 @@ pub use runtime::{
     IVM_ROW_NUMBER_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN,
     IvmRuntime, JoinView, MinMaxKind, MinMaxView, SemiAntiView, SumCountView,
     ValueResultKind, ViewSpec, WindowFunction, WindowView, distinct_agg_mv_schema,
-    distinct_agg_mv_schema_for, join_view_schema_for, min_max_mv_schema,
-    min_max_mv_schema_for, min_max_state_schema, semi_anti_mv_schema,
-    sum_count_mv_schema, sum_count_mv_schema_for, value_count_mv_schema,
-    value_count_mv_schema_for, value_count_state_schema, value_count_state_schema_for,
-    window_key, window_mv_schema, window_mv_schema_for,
+    distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_output_primary_keys,
+    keyed_join_view_schema_for, min_max_mv_schema, min_max_mv_schema_for,
+    min_max_state_schema, semi_anti_mv_schema, sum_count_mv_schema,
+    sum_count_mv_schema_for, value_count_mv_schema, value_count_mv_schema_for,
+    value_count_state_schema, value_count_state_schema_for, window_key, window_mv_schema,
+    window_mv_schema_for,
 };
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
