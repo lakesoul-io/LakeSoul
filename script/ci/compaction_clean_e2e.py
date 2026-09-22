@@ -30,7 +30,7 @@ S3_OPTIONS = {
 }
 WAREHOUSE = os.environ.get("LAKESOUL_E2E_WAREHOUSE", "s3://lakesoul-test-bucket/e2e")
 ROUNDS = int(os.environ.get("LAKESOUL_E2E_ROUNDS", "12"))
-WAIT_SECONDS = int(os.environ.get("LAKESOUL_E2E_WAIT", "240"))
+WAIT_SECONDS = int(os.environ.get("LAKESOUL_E2E_WAIT", "360"))
 
 
 def _catalog() -> LakeSoulCatalog:

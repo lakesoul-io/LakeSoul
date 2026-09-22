@@ -465,7 +465,7 @@ async fn get_prepared_statement<'a>(
             from discard_compressed_file_info
             where table_path = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
         DaoType::ListPartitionByTableIdAndFilterCondition =>
-            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain, m.pinned
             from (
                 select table_id,partition_desc,max(version) as max_version
                 from partition_info

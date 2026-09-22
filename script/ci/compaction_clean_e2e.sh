@@ -140,6 +140,7 @@ docker exec -t "$JOBMANAGER" flink run -d \
   --dataExpiredTime 0 --ontimer_interval 1
 
 log "start Spark compaction task"
+docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 >/dev/null
 (
   cd "$WORK_DIR"
   docker rm -f lakesoul-e2e-compaction >/dev/null 2>&1 || true
