@@ -175,6 +175,11 @@ class NativeMetadataClient:
             ret = wrapper
         return ret
 
+    def exec_update(self, update_type: int, params: Sequence[str]) -> int:
+        """Run a coded update DAO and return the affected row count."""
+        joined = PARAM_DELIM.join(str(item) for item in params)
+        return int(self._inner.exec_update(update_type, joined))
+
     def select_table_info_by_table_name(
         self,
         table_name: str,

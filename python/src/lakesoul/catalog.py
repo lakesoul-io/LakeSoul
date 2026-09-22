@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -373,6 +375,27 @@ class LakeSoulCatalog:
             handle.name,
             snapshot,
             namespace=handle.namespace,
+        )
+
+    def purge(
+        self,
+        table: str | LakeSoulTable,
+        *,
+        older_than: dt.timedelta | int = dt.timedelta(days=1),
+        dry_run: bool = True,
+    ) -> Any:
+        """Delete unpinned versions/files older than the grace period.
+
+        Versions kept alive by a snapshot or tag, and the latest version of
+        every partition, are never touched. Blob packs follow their data file.
+        """
+        from lakesoul.purge import purge_table
+
+        return purge_table(
+            self,
+            self._resolve_table(table),
+            older_than=older_than,
+            dry_run=dry_run,
         )
 
     def _resolve_table(self, table: str | LakeSoulTable) -> LakeSoulTable:

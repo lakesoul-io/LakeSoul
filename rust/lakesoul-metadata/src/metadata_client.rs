@@ -489,6 +489,27 @@ impl MetaDataClient {
         Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?)
     }
 
+    pub async fn execute_update_raw(
+        &self,
+        update_type: i32,
+        joined_string: String,
+    ) -> Result<i32> {
+        for times in 0..self.max_retry as i64 {
+            match execute_update(
+                self.client.lock().await.deref_mut(),
+                update_type,
+                joined_string.clone(),
+            )
+            .await
+            {
+                Ok(count) => return Ok(count),
+                Err(_) if times < self.max_retry as i64 - 1 => continue,
+                Err(e) => return Err(e),
+            };
+        }
+        Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
+    }
+
     async fn insert_namespace(&self, namespace: &Namespace) -> Result<i32> {
         self.execute_insert(
             DaoType::InsertNamespace as i32,
