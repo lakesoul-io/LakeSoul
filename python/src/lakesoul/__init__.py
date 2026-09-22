@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from .blob import BlobRef, materialize_blob
 from .catalog import (
     LakeSoulCatalog,
     LakeSoulScan,
@@ -22,6 +23,7 @@ from .exceptions import (
 
 __all__ = [
     "AlreadyExistsError",
+    "BlobRef",
     "InvalidMetadataError",
     "LakeSoulCatalog",
     "LakeSoulError",
@@ -34,4 +36,5 @@ __all__ = [
     "PostgresMetadataConfig",
     "TableNotFoundError",
     "TableWriteConfig",
+    "materialize_blob",
 ]

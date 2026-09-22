@@ -164,6 +164,22 @@ pub enum ViewSpec {
         /// The window function.
         function: WindowFunction,
     },
+    /// `SEMI`/`ANTI` join of a keyed left source against a right source,
+    /// maintained by recomputing the affected left rows.
+    SemiAnti {
+        /// The view id.
+        view_id: String,
+        /// The left source table id.
+        left_table_id: String,
+        /// The right source table id.
+        right_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The equi-join key, present in both sources.
+        join_keys: Vec<String>,
+        /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
+        anti: bool,
+    },
 }
 
 /// A `SUM`/`COUNT` view over a source table.
@@ -534,6 +550,65 @@ impl WindowView {
     }
 }
 
+/// A `SEMI`/`ANTI` join view.
+///
+/// The materialized view holds the left rows that have (SEMI) or do not have
+/// (ANTI) a match on `join_keys`, keyed by the left primary keys. A refresh
+/// recomputes only the affected left rows: the left rows in the delta, plus
+/// the left rows whose join keys changed on the right side. This supports
+/// keyed sources with updates and deletes on both sides.
+#[derive(Debug, Clone)]
+pub struct SemiAntiView {
+    /// The view id.
+    pub view_id: String,
+    /// The left source; it must have a primary key.
+    pub left: IvmTable,
+    /// The right source (append-only or keyed).
+    pub right: IvmTable,
+    /// The materialized view table, created from [`semi_anti_mv_schema`] with
+    /// the left primary keys as merge key.
+    pub mv: IvmTable,
+    /// The equi-join key, present in both sources.
+    pub join_keys: Vec<String>,
+    /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
+    pub anti: bool,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl SemiAntiView {
+    /// A `SEMI` join view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        left: IvmTable,
+        right: IvmTable,
+        mv: IvmTable,
+        join_keys: Vec<String>,
+        anti: bool,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            left,
+            right,
+            mv,
+            join_keys,
+            anti,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::SemiAnti {
+            view_id: self.view_id.clone(),
+            left_table_id: self.left.table_id.clone(),
+            right_table_id: self.right.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            join_keys: self.join_keys.clone(),
+            anti: self.anti,
+        }
+    }
+}
+
 /// The schema of a value-count materialized view (MIN/MAX,
 /// COUNT(DISTINCT), SUM(DISTINCT)): one row per group with the aggregated
 /// value.
@@ -568,6 +643,23 @@ pub fn window_mv_schema(partition_keys: &[String], row_keys: &[String]) -> Schem
     fields.push(Field::new(IVM_ROW_NUMBER_COLUMN, DataType::Int64, false));
     fields.push(Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false));
     fields.push(Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false));
+    Arc::new(Schema::new(fields))
+}
+
+/// The schema of a [`SemiAntiView`] materialized view: the left columns plus
+/// the row kind and the epoch.
+pub fn semi_anti_mv_schema(left_schema: &Schema) -> SchemaRef {
+    let mut fields = left_schema.fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
     Arc::new(Schema::new(fields))
 }
 
@@ -717,6 +809,14 @@ impl IvmRuntime {
 
     /// Persist a window view spec (idempotent).
     pub async fn register_window_view(&self, view: &WindowView) -> Result<()> {
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a semi/anti join view spec (idempotent).
+    pub async fn register_semi_anti_view(&self, view: &SemiAntiView) -> Result<()> {
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -979,6 +1079,186 @@ impl IvmRuntime {
             .mark_epoch_committed(&record, &mv_versions)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Refresh a `SEMI`/`ANTI` join by recomputing the affected left rows.
+    ///
+    /// The affected rows are the left rows in the delta plus the left rows
+    /// whose join keys changed on the right side. For those rows the join is
+    /// re-evaluated against both current states and the MV is rewritten
+    /// (`delete(affected) + insert(current)`), so updates, deletes and join
+    /// key changes on either side are handled. Rows already written by this
+    /// epoch are skipped, which makes a replay a no-op.
+    pub async fn refresh_semi_anti(&self, view: &SemiAntiView) -> Result<Option<i64>> {
+        self.register_semi_anti_view(view).await?;
+        validate_semi_anti_view(view)?;
+        self.ensure_unpartitioned(&view.left).await?;
+        self.ensure_unpartitioned(&view.right).await?;
+
+        let left_window = self
+            .collect_source_window(&view.view_id, &view.left)
+            .await?;
+        let right_window = self
+            .collect_source_window(&view.view_id, &view.right)
+            .await?;
+        if left_window.added_files.is_empty() && right_window.added_files.is_empty() {
+            return Ok(None);
+        }
+
+        let identity = left_window
+            .identity
+            .iter()
+            .chain(right_window.identity.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, left_window.cursors)
+                    .await?;
+                self.advance_cursors(&view.view_id, right_window.cursors)
+                    .await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let delta_left = view.left.read_files(left_window.added_files).await?;
+        let delta_right = view.right.read_files(right_window.added_files).await?;
+        let left_before = view
+            .left
+            .read_as_of(&self.client, left_window.before_timestamp)
+            .await?;
+        let left_now = view.left.read_current(&self.client).await?;
+        let right_now = view.right.read_current(&self.client).await?;
+        let mv_batches = view.mv.read_current(&self.client).await?;
+
+        let context = SessionContext::new();
+        let delta_left = dataframe(&context, delta_left, &view.left.schema)?;
+        let delta_right = dataframe(&context, delta_right, &view.right.schema)?;
+        let left_before = dataframe(&context, left_before, &view.left.schema)?;
+        let left_now = filter_deletes(
+            dataframe(&context, left_now, &view.left.schema)?,
+            change_column(&view.left),
+        )?;
+        let right_now = filter_deletes(
+            dataframe(&context, right_now, &view.right.schema)?,
+            change_column(&view.right),
+        )?;
+        let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
+
+        let join_keys = view
+            .join_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let left_key_names = view
+            .left
+            .primary_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let left_key_exprs = view
+            .left
+            .primary_keys
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>();
+
+        let affected_from_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
+        let affected_from_right = left_before
+            .clone()
+            .join(
+                delta_right,
+                JoinType::LeftSemi,
+                &join_keys,
+                &join_keys,
+                None,
+            )?
+            .select(left_key_exprs.clone())?
+            .distinct()?;
+        let affected = affected_from_left.union(affected_from_right)?.distinct()?;
+
+        let matched_now = left_now
+            .clone()
+            .join(right_now, JoinType::LeftSemi, &join_keys, &join_keys, None)?
+            .select(left_key_exprs.clone())?
+            .distinct()?;
+
+        let output_columns = view
+            .left
+            .schema
+            .fields()
+            .iter()
+            .map(|field| col(field.name().as_str()))
+            .collect::<Vec<_>>();
+        let join_type = if view.anti {
+            JoinType::LeftAnti
+        } else {
+            JoinType::LeftSemi
+        };
+        let insert_base = left_now
+            .join(
+                affected.clone(),
+                JoinType::LeftSemi,
+                &left_key_names,
+                &left_key_names,
+                None,
+            )?
+            .join(
+                matched_now,
+                join_type,
+                &left_key_names,
+                &left_key_names,
+                None,
+            )?;
+        let mv_epoch_keys = mv
+            .clone()
+            .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
+            .select(left_key_exprs.clone())?
+            .distinct()?;
+        let inserts = insert_base
+            .select(output_columns.clone())?
+            .join(
+                mv_epoch_keys,
+                JoinType::LeftAnti,
+                &left_key_names,
+                &left_key_names,
+                None,
+            )?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let deletes = mv
+            .join(
+                affected,
+                JoinType::LeftSemi,
+                &left_key_names,
+                &left_key_names,
+                None,
+            )?
+            .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+            .select(output_columns)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+
+        for batch in inserts.union(deletes)?.collect().await? {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, left_window.cursors)
+            .await?;
+        self.advance_cursors(&view.view_id, right_window.cursors)
+            .await?;
         Ok(Some(epoch))
     }
 
@@ -1265,6 +1545,106 @@ impl IvmRuntime {
             .mark_epoch_committed(&record, &mv_versions)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Rebuild a `SEMI`/`ANTI` join from the full state of both sources.
+    pub async fn rebuild_semi_anti(&self, view: &SemiAntiView) -> Result<i64> {
+        self.register_semi_anti_view(view).await?;
+        validate_semi_anti_view(view)?;
+        self.ensure_unpartitioned(&view.left).await?;
+        self.ensure_unpartitioned(&view.right).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let left_baseline = self.source_baseline(&view.left).await?;
+        let right_baseline = self.source_baseline(&view.right).await?;
+        let to_versions = left_baseline
+            .to_versions
+            .iter()
+            .chain(right_baseline.to_versions.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, left_baseline.cursors)
+                    .await?;
+                self.advance_cursors(&view.view_id, right_baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let context = SessionContext::new();
+        let left = filter_deletes(
+            dataframe(&context, left_baseline.batches, &view.left.schema)?,
+            change_column(&view.left),
+        )?;
+        let right = filter_deletes(
+            dataframe(&context, right_baseline.batches, &view.right.schema)?,
+            change_column(&view.right),
+        )?;
+        let join_keys = view
+            .join_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let join_type = if view.anti {
+            JoinType::LeftAnti
+        } else {
+            JoinType::LeftSemi
+        };
+        let output_columns = view
+            .left
+            .schema
+            .fields()
+            .iter()
+            .map(|field| col(field.name().as_str()))
+            .collect::<Vec<_>>();
+        let rows = left
+            .join(right, join_type, &join_keys, &join_keys, None)?
+            .select(output_columns)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        for batch in rows.collect().await? {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, left_baseline.cursors)
+            .await?;
+        self.advance_cursors(&view.view_id, right_baseline.cursors)
             .await?;
         self.metadata
             .set_view_status(&view.view_id, "active")
@@ -2562,6 +2942,49 @@ impl WindowRows {
         arrays.push(Arc::new(Int64Array::from(self.epochs)));
         Ok(RecordBatch::try_new(view.mv.schema.clone(), arrays)?)
     }
+}
+
+/// Build a [`DataFrame`] over the batches (possibly empty) with `schema`.
+fn dataframe(
+    context: &SessionContext,
+    batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+) -> Result<DataFrame> {
+    let table: Arc<dyn datafusion::catalog::TableProvider> = Arc::new(
+        datafusion::datasource::memory::MemTable::try_new(schema.clone(), vec![batches])?,
+    );
+    Ok(context.read_table(table)?)
+}
+
+/// Validate that a semi/anti view can be maintained.
+fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
+    if view.left.primary_keys.is_empty() {
+        return Err(report!(
+            "semi/anti view {} needs a left source with a primary key",
+            view.view_id
+        ));
+    }
+    if view.join_keys.is_empty() {
+        return Err(report!(
+            "semi/anti view {} needs at least one join key",
+            view.view_id
+        ));
+    }
+    for key in &view.join_keys {
+        view.left.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "semi/anti view {}: join key {key} is not in the left source",
+                view.view_id
+            )
+        })?;
+        view.right.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "semi/anti view {}: join key {key} is not in the right source",
+                view.view_id
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn int64_column<'a>(

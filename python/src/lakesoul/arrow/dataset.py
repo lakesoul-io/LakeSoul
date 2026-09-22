@@ -642,6 +642,37 @@ def schema_projection(origin: pa.Schema, projections: list[str]) -> pa.Schema:
     return pa.schema(fields)
 
 
+def _substrait_safe_schema(schema: pa.Schema) -> pa.Schema:
+    """Schema for pyarrow's Substrait conversion.
+
+    pyarrow cannot express some Arrow types (notably ``FixedSizeList``) in
+    Substrait, which made every filter fail on tables that contain them.
+    Fields the filter cannot reference still have to be present with their
+    names and order, so unsupported types are replaced by ``binary``.
+    """
+    fields = []
+    for schema_field in schema:
+        dtype = schema_field.type
+        if pa.types.is_fixed_size_list(dtype) or pa.types.is_struct(dtype):
+            dtype = pa.binary()
+        fields.append(
+            pa.field(
+                schema_field.name,
+                dtype,
+                nullable=schema_field.nullable,
+                metadata=schema_field.metadata,
+            )
+        )
+    return pa.schema(fields)
+
+
+def _to_substrait(expression: ds.Expression, schema: pa.Schema) -> bytes:
+    try:
+        return bytes(expression.to_substrait(schema))
+    except pa.ArrowNotImplementedError:
+        return bytes(expression.to_substrait(_substrait_safe_schema(schema)))
+
+
 def _apply_readahead_options(
     scanner: Scanner,
     batch_readahead: int | None,
@@ -743,7 +774,7 @@ class Scanner(ds.Scanner):
             target_schema = dataset.schema
 
         if filter is not None:
-            filter = bytes(filter.to_substrait(dataset.schema))  # copy
+            filter = _to_substrait(filter, dataset.schema)
 
         scanner = Scanner(
             batch_size,
@@ -783,7 +814,7 @@ class Scanner(ds.Scanner):
             thread_count = fragment.thread_count()
 
         if filter is not None:
-            filter = bytes(filter.to_substrait(fragment.physical_schema))  # copy
+            filter = _to_substrait(filter, fragment.physical_schema)
 
         schema = schema if schema is not None else fragment.physical_schema
 

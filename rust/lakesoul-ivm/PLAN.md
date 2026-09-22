@@ -436,6 +436,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 未完成：仅 `ROW_NUMBER`（RANK/DENSE_RANK、聚合窗口函数未做）；分区重算是
   O(受影响分区 + 全量源读)，后续可按 partition 裁剪源读取。
 
+**SEMI/ANTI 实施记录（已完成 v1）**
+
+- 新增 `SemiAntiView`（`ViewSpec::SemiAnti`、`anti: bool`）：MV = 左表全列 +
+  `rowKinds` + `__ivm_epoch`，PK = 左表主键；`semi_anti_mv_schema(left_schema)`。
+- 刷新（受影响左行重算）：affected = ΔL 的左键 ∪（L_before ⋈ ΔR 的左键）；
+  对 affected 键重写 MV：`delete(旧行) + insert(当前命中状态)`（SEMI 命中一
+  行、ANTI 未命中一行）；L/R 的删除墓碑在匹配前用 `filter_deletes` 过滤，
+  但 MV 旧行保留墓碑用于 delete；行携带 epoch 保证重放幂等。
+- 两侧都用 DataFusion：LeftSemi/LeftAnti join 计算 matched/affected，`union`
+  拼 inserts/deletes，全部集合运算在 DataFrame 层完成（输出列类型不受限）。
+- `rebuild_semi_anti`：清空 MV，从两侧全量状态重算，发布 `rebuild:<generation>`；
+  校验左表必须有主键、join key 两侧存在、两侧未分区。
+- 测试 `tests/semi_anti_refresh.rs`：SEMI 的匹配出现/消失、payload 更新、
+  左行删除、窗口重放、rebuild；ANTI 的匹配出现/消失，均与全量 EXISTS/NOT EXISTS
+  交叉验证。
+- 未完成：仅 inner equi join（多条件 join key 已支持，非等值条件未做）、
+  输出固定为左表全列（投影下推未做）；join upsert（inclusion-exclusion +
+  状态表）仍是后续。
+
+
 
 **Join 增量刷新实施记录（已完成冒烟切片）**
 

@@ -36,6 +36,8 @@ pub const BLOB_TAG_EXTERNAL: u8 = 0x01;
 pub const DEFAULT_INLINE_THRESHOLD: usize = 16 * 1024;
 /// Default pack target size (256 MiB); informational for now.
 pub const DEFAULT_PACK_TARGET_BYTES: u64 = 256 * 1024 * 1024;
+/// Option key that keeps tagged blob values in scanned batches.
+pub const OPTION_KEY_BLOB_MATERIALIZE: &str = "blob_materialize";
 
 /// How a blob column decides between inline and external storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +115,17 @@ pub fn parse_blob_policies(
         policies.insert(column.clone(), parse_policy(&column, &value)?);
     }
     Ok(policies)
+}
+
+/// Whether a scan should keep tagged blob values instead of materializing them.
+///
+/// Reads materialize by default; `blob_materialize=false` leaves the tagged
+/// representation in the batch so callers can range-read pack files lazily.
+pub fn blob_materialize_disabled(options: &HashMap<String, String>) -> bool {
+    matches!(
+        options.get(OPTION_KEY_BLOB_MATERIALIZE).map(String::as_str),
+        Some("false" | "0" | "no" | "off")
+    )
 }
 
 fn blob_disabled(value: Option<&str>) -> bool {
@@ -358,6 +371,17 @@ mod tests {
 
     fn options(raw: &str) -> HashMap<String, String> {
         HashMap::from([(OPTION_KEY_BLOB_COLUMNS.to_string(), raw.to_string())])
+    }
+
+    #[test]
+    fn parses_materialize_switch() {
+        assert!(!blob_materialize_disabled(&HashMap::new()));
+        let mut disabled = options("{}");
+        disabled.insert(OPTION_KEY_BLOB_MATERIALIZE.to_string(), "false".to_string());
+        assert!(blob_materialize_disabled(&disabled));
+        let mut enabled = options("{}");
+        enabled.insert(OPTION_KEY_BLOB_MATERIALIZE.to_string(), "true".to_string());
+        assert!(!blob_materialize_disabled(&enabled));
     }
 
     #[test]
