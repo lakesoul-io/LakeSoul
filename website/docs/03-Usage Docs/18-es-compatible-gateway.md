@@ -110,3 +110,98 @@ the index-copy path needs.
   implemented.
 - The `_search` query subset is `match`, `terms`, `term`,
   `bool.filter/must/must_not` and `script_score` with `cosineSimilarity`.
+
+## Running WeKnora against the gateway
+
+[WeKnora](https://github.com/Tencent/WeKnora) speaks to the gateway through its
+Elasticsearch v7/v8 vector-store drivers, so `RETRIEVE_DRIVER=elasticsearch_v8`
+(or `elasticsearch_v7`) works against LakeSoul without client changes.
+
+1. **Gateway** — declare the index with the embedding dimension of the model
+   WeKnora will use:
+
+   ```toml
+   [server]
+   listen = "0.0.0.0:9200"        # containers reach it through host.docker.internal
+   version = "8.19.6"
+
+   [lakesoul]
+   namespace = "default"
+   provision_on_start = true
+
+   [defaults]
+   hash_bucket_num = 4
+   tokenizer = "jieba"
+
+   [[indexes]]
+   name = "WeKnora"               # ELASTICSEARCH_INDEX
+   table = "weknora_docs"
+   path = "file:///data/weknora_docs"
+   dim = 1024                     # must equal the embedding model dimension
+   ```
+
+2. **WeKnora `.env`** — point the driver at the gateway and configure the
+   embedding model (any OpenAI-compatible endpoint, e.g. DashScope):
+
+   ```sh
+   RETRIEVE_DRIVER=elasticsearch_v8
+   ELASTICSEARCH_ADDR=http://host.docker.internal:9200
+   ELASTICSEARCH_INDEX=WeKnora
+
+   EMBEDDING_PROVIDER=openai
+   EMBEDDING_MODEL_NAME=text-embedding-v4
+   EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+   EMBEDDING_API_KEY=sk-...
+
+   # If the Docker daemon injects HTTP(S)_PROXY into containers, exclude the
+   # gateway: otherwise the driver's requests to host.docker.internal are sent
+   # to the proxy and fail with 502.
+   NO_PROXY=localhost,127.0.0.1,host.docker.internal,.aliyuncs.com
+   no_proxy=localhost,127.0.0.1,host.docker.internal,.aliyuncs.com
+   ```
+
+   `FRONTEND_PORT` may need a free port if 80 is taken on the host.
+
+3. **API flow** — create the embedding model with the same dimension as the
+   gateway `dim`, create a knowledge base with that model, upload documents,
+   then search:
+
+   ```sh
+   curl -X POST "$WEKNORA/api/v1/models" -H "Authorization: Bearer $TOKEN"      -d '{"name":"text-embedding-v4","type":"Embedding","source":"remote",
+          "parameters":{"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "api_key":"sk-...","provider":"aliyun",
+                        "embedding_parameters":{"dimension":1024}}}'
+   curl -X POST "$WEKNORA/api/v1/knowledge-bases" -H "Authorization: Bearer $TOKEN"      -d '{"name":"docs","embedding_model_id":"<model id>"}'
+   curl -X POST "$WEKNORA/api/v1/knowledge-search" -H "Authorization: Bearer $TOKEN"      -d '{"query":"全文检索","knowledge_base_id":"<kb id>"}'
+   ```
+
+   The search response fuses the keyword (BM25) and vector (script_score)
+   result lists; both run through the gateway over the same LakeSoul table.
+
+### Driver harness
+
+`script/weknora-es-harness/` replays the driver request sequence with the same
+Go clients, without deploying WeKnora:
+
+```sh
+go run ./script/weknora-es-harness --client v8 --addr http://127.0.0.1:9200     --index WeKnora --dim 1024
+go run ./script/weknora-es-harness --client v7 --addr http://127.0.0.1:9200     --index WeKnora --dim 1024
+```
+
+It covers the version handshake, mapping-based `.keyword` detection,
+single/bulk writes, keyword and vector search, the four fixed
+`update_by_query` scripts, index-copy paging and `delete_by_query`, asserting
+the response fields the driver dereferences (`_score`, `total == updated`, no
+conflicts or failures).
+
+### Known WeKnora v0.8.0 issues
+
+- **Unclamped `script_score`.**  v0.8.0 images send
+  `cosineSimilarity(params.query_vector, 'embedding')` without the
+  `Math.max(..., 0.0)` wrapper current `main` uses.  The gateway accepts both
+  spellings and clamps the score either way.
+- **`CopyIndices` loses `is_enabled`.**  The v0.8.0 copy path builds its
+  documents without `is_enabled`, so `reuse_vectors` knowledge moves and
+  knowledge-base clones land **disabled** and are filtered out of search — on
+  real Elasticsearch too.  Use `mode=reparse` for moves, and re-enable chunks
+  of a cloned knowledge base until the client is fixed upstream.

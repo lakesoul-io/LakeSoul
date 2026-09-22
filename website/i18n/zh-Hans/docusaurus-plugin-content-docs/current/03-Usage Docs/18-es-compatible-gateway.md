@@ -91,3 +91,78 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 - 建索引时忽略 `number_of_shards`/`number_of_replicas`；分桶数与 `nprobe` 来自网关配置。
 - 未实现鉴权、RBAC、高亮、聚合与 `sort`。
 - `_search` 支持的查询子集为 `match`、`terms`、`term`、`bool.filter/must/must_not` 以及带 `cosineSimilarity` 的 `script_score`。
+
+## 对接 WeKnora
+
+[WeKnora](https://github.com/Tencent/WeKnora) 通过其 Elasticsearch v7/v8 向量库驱动访问网关，因此 `RETRIEVE_DRIVER=elasticsearch_v8`（或 `elasticsearch_v7`）无需改动客户端即可对接 LakeSoul。
+
+1. **网关**——按 WeKnora 使用的 embedding 维度声明索引：
+
+   ```toml
+   [server]
+   listen = "0.0.0.0:9200"        # 容器经 host.docker.internal 访问
+   version = "8.19.6"
+
+   [lakesoul]
+   namespace = "default"
+   provision_on_start = true
+
+   [defaults]
+   hash_bucket_num = 4
+   tokenizer = "jieba"
+
+   [[indexes]]
+   name = "WeKnora"               # ELASTICSEARCH_INDEX
+   table = "weknora_docs"
+   path = "file:///data/weknora_docs"
+   dim = 1024                     # 必须与 embedding 模型维度一致
+   ```
+
+2. **WeKnora `.env`**——把驱动指向网关并配置 embedding 模型（任意 OpenAI 兼容端点，如百炼）：
+
+   ```sh
+   RETRIEVE_DRIVER=elasticsearch_v8
+   ELASTICSEARCH_ADDR=http://host.docker.internal:9200
+   ELASTICSEARCH_INDEX=WeKnora
+
+   EMBEDDING_PROVIDER=openai
+   EMBEDDING_MODEL_NAME=text-embedding-v4
+   EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+   EMBEDDING_API_KEY=sk-...
+
+   # 若 Docker daemon 会给容器注入 HTTP(S)_PROXY，必须把网关排除：
+   # 否则驱动发往 host.docker.internal 的请求会被代理拦截并返回 502。
+   NO_PROXY=localhost,127.0.0.1,host.docker.internal,.aliyuncs.com
+   no_proxy=localhost,127.0.0.1,host.docker.internal,.aliyuncs.com
+   ```
+
+   宿主 80 端口被占用时需给 `FRONTEND_PORT` 指定空闲端口。
+
+3. **API 流程**——创建与网关 `dim` 相同维度的 embedding 模型，用它创建知识库，上传文档后检索：
+
+   ```sh
+   curl -X POST "$WEKNORA/api/v1/models" -H "Authorization: Bearer $TOKEN"      -d '{"name":"text-embedding-v4","type":"Embedding","source":"remote",
+          "parameters":{"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "api_key":"sk-...","provider":"aliyun",
+                        "embedding_parameters":{"dimension":1024}}}'
+   curl -X POST "$WEKNORA/api/v1/knowledge-bases" -H "Authorization: Bearer $TOKEN"      -d '{"name":"docs","embedding_model_id":"<model id>"}'
+   curl -X POST "$WEKNORA/api/v1/knowledge-search" -H "Authorization: Bearer $TOKEN"      -d '{"query":"全文检索","knowledge_base_id":"<kb id>"}'
+   ```
+
+   检索响应融合关键词（BM25）与向量（script_score）两路结果，二者都经网关访问同一张 LakeSoul 表。
+
+### 驱动回放工具
+
+`script/weknora-es-harness/` 用相同的 Go 客户端回放驱动的请求序列，无需部署 WeKnora：
+
+```sh
+go run ./script/weknora-es-harness --client v8 --addr http://127.0.0.1:9200     --index WeKnora --dim 1024
+go run ./script/weknora-es-harness --client v7 --addr http://127.0.0.1:9200     --index WeKnora --dim 1024
+```
+
+覆盖版本握手、按 mapping 判定 `.keyword`、单条/批量写入、关键词与向量检索、四个固定 `update_by_query` 脚本、索引拷贝分页与 `delete_by_query`，并断言驱动会解引用的响应字段（`_score`、`total == updated`、无冲突与失败）。
+
+### WeKnora v0.8.0 已知问题
+
+- **未加限幅的 `script_score`**：v0.8.0 镜像发送的是 `cosineSimilarity(params.query_vector, 'embedding')`，没有当前 `main` 分支的 `Math.max(..., 0.0)` 包裹。网关两种写法都接受，并按 `[0,1]` 限幅。
+- **`CopyIndices` 丢失 `is_enabled`**：v0.8.0 的拷贝路径构造文档时未带 `is_enabled`，因此 `reuse_vectors` 迁移与知识库克隆的数据会以**禁用**状态落库并被检索过滤掉——在真实 Elasticsearch 上同样如此。迁移请使用 `mode=reparse`；克隆库的 chunk 需要在上游修复前手动重新启用。
