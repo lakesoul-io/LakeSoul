@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::metadata::{
     BeginEpoch, Cursor, EpochRecord, IvmMetadata, PartitionVersion, SourceVersionRange,
+    StateRole, StateTable,
 };
 use crate::table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
@@ -1171,14 +1172,36 @@ impl IvmRuntime {
 
     /// Persist a sum/count view spec (idempotent).
     pub async fn register_view(&self, view: &SumCountView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await
     }
 
+    /// The internal tables registered for a view (see `ivm.states`).
+    pub async fn list_states(&self, view_id: &str) -> Result<Vec<StateTable>> {
+        self.metadata.list_states(view_id).await
+    }
+
+    /// Bind the view's internal tables in `ivm.states` before persisting the
+    /// spec, so a conflicting state table fails without changing the view row.
+    async fn register_state_tables(
+        &self,
+        view_id: &str,
+        tables: &[(StateRole, &IvmTable)],
+    ) -> Result<()> {
+        for (role, table) in tables {
+            self.metadata.register_state(view_id, *role, table).await?;
+        }
+        Ok(())
+    }
+
     /// Persist a join view spec (idempotent).
     pub async fn register_join_view(&self, view: &JoinView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.output)])
+            .await?;
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -1258,6 +1281,11 @@ impl IvmRuntime {
 
     /// Persist a min/max view spec (idempotent).
     pub async fn register_min_max_view(&self, view: &MinMaxView) -> Result<()> {
+        self.register_state_tables(
+            &view.view_id,
+            &[(StateRole::Mv, &view.mv), (StateRole::State, &view.state)],
+        )
+        .await?;
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -1266,6 +1294,11 @@ impl IvmRuntime {
 
     /// Persist a distinct aggregate view spec (idempotent).
     pub async fn register_distinct_agg_view(&self, view: &DistinctAggView) -> Result<()> {
+        self.register_state_tables(
+            &view.view_id,
+            &[(StateRole::Mv, &view.mv), (StateRole::State, &view.state)],
+        )
+        .await?;
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -1274,6 +1307,8 @@ impl IvmRuntime {
 
     /// Persist a window view spec (idempotent).
     pub async fn register_window_view(&self, view: &WindowView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
@@ -1282,6 +1317,8 @@ impl IvmRuntime {
 
     /// Persist a semi/anti join view spec (idempotent).
     pub async fn register_semi_anti_view(&self, view: &SemiAntiView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
         let spec = serde_json::to_value(view.to_spec())?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)

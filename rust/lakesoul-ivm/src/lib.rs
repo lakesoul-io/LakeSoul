@@ -68,7 +68,7 @@ pub mod table;
 pub use error::Result;
 pub use metadata::{
     BeginEpoch, Cursor, EpochRecord, EpochStatus, IvmMetadata, PartitionVersion,
-    SourceVersionRange,
+    SourceVersionRange, StateRole, StateTable,
 };
 pub use runtime::{
     DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,

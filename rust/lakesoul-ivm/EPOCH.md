@@ -1,7 +1,7 @@
 # IVM Epoch 幂等设计
 
 > 状态：步骤 1–5 已实现（`ivm.epochs` 协议、generation/rebuild、消费者快照读取 API）；
-> 仅剩 consumer 水位 GC（§9）与 `ivm.states`。
+> 仅剩 consumer 水位 GC（§9）。
 > 相关代码：`rust/lakesoul-ivm/src/runtime.rs`、`rust/lakesoul-ivm/src/metadata.rs`、
 > `rust/lakesoul-ivm/src/table.rs`。
 
@@ -217,4 +217,4 @@ create unique index if not exists ivm_epochs_window_key
 4. ✅ generation 与重建流程（`views.status='rebuilding'`、generation 自增、
    `rebuild:<generation>` epoch、空 compaction snapshot 清表、cursor 重置）。
 5. ✅ 消费者读取 API：`latest_epoch` / `view_state_at_epoch`；
-   ⏳ consumer 水位 GC（§9）与 `ivm.states`。
+   ✅ `ivm.states` 状态表注册；⏳ consumer 水位 GC（§9）。
