@@ -199,8 +199,14 @@ vector path only.
    the result remains open.
 3. Tie-breaking: primary key ascending is deterministic; some clients may
    expect ES's internal doc-order tie-break, which is not observable.
-4. Whether the gateway needs a consistent-statistics mode
-   (`dfs_query_then_fetch`-like) for multi-shard keyword queries.
+4. ~~Whether the gateway needs a consistent-statistics mode
+   (`dfs_query_then_fetch`-like) for multi-shard keyword queries.~~
+   Implemented for the gateway: plain keyword queries are rescored with
+   corpus-wide BM25 statistics collected per shard
+   (`lakesoul_text::CorpusStats` / `bm25_scores`,
+   `lakesoul_io::text::search::shard_stats`), and the deferred-maintenance
+   tail contributes its rows to the statistics.  Verified by identical
+   nDCG@10/recall@100 for one and four hash buckets on the same corpus.
 5. Score projection in SQL (`SELECT text_score(...)`): the logical schema
    cannot carry the internal score column through a projection yet; the ES
    gateway reads scores from the lower-level scan API instead.
@@ -218,5 +224,8 @@ vector path only.
    response shapes, product header, mapping handling, NRT visibility; keyword
    search on top of stage 1, vector search on the existing ANN index
    (`script_score`/`cosineSimilarity`/`min_score` semantics).
-3. **Enhancements**: consistent cross-shard statistics, highlight/snippet
-   support via `stored=true`, and query-time analyzer overrides.
+3. **Enhancements**: consistent cross-shard statistics — *implemented for
+   the gateway* (global BM25 rescoring of plain queries plus the
+   verification-retry when the candidate budget under-fills `size`).  Open:
+   highlight/snippet support via `stored=true`, and query-time analyzer
+   overrides.

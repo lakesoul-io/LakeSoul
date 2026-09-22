@@ -70,7 +70,11 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 ## 检索语义
 
-关键词检索（对 content 列的 `match`）按 BM25 返回带数值 `_score` 的命中，并在当前行上做精确校验，因此被更新或删除的文档不会漏出。跨 hash bucket 的排序使用各自索引的统计量——与 Elasticsearch 默认的跨 shard 检索是同一取舍；RRF 融合由客户端完成。
+关键词检索（对 content 列的 `match`）按 BM25 返回带数值 `_score` 的命中，并在当前行上做精确校验，因此被更新或删除的文档不会漏出。
+
+普通（不含显式语法）关键词查询使用**全语料 BM25 统计量**打分：网关收集各 shard 的文档数、平均字段长度与查询词的文档频率，再按合并后的统计量对每个命中行计算统一分数——即分布式检索引擎的 `dfs_query_then_fetch` 语义。因此排序不再依赖 hash bucket 数量：在同一批 20K 文档上实测，1 bucket 与 4 bucket 的 nDCG@10 与 Recall@100 完全一致。带显式语法（短语、`AND`/`OR`）的查询仍使用 Tantivy 的按 shard 打分。
+
+当精确校验导致结果少于请求的 `size`（陈旧候选占满每 shard 预算）时，检索会以 4 倍候选预算重试，避免返回不足。RRF 融合由客户端完成。
 
 向量检索支持客户端发送的 `script_score` 形式：
 

@@ -39,11 +39,14 @@ use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::prefix::shard_index_prefix;
 use lakesoul_io::index::reader::read_shard_batches;
 use lakesoul_io::text::reader::collect_text_values;
-use lakesoul_io::text::search::search_resolved_shard;
+use lakesoul_io::text::search::{search_resolved_shard, shard_stats};
 use lakesoul_io::vector::reader::extract_vector_batch;
 use lakesoul_io::vector::search::search_resolved_shard as search_vector_shard;
 use lakesoul_metadata::index_catalog::{IndexCommitView, VectorSegmentEntry};
-use lakesoul_text::{TextIndexConfig, TextSplitEntry, matching_ids, matching_scores};
+use lakesoul_text::{
+    CorpusStats, TextIndexConfig, TextSplitEntry, bm25_scores, is_plain_query,
+    matching_ids, matching_scores, query_terms, stats_for_rows,
+};
 use lakesoul_vector::SegmentEntry;
 use object_store::ObjectStore;
 use serde_json::{Map, Value, json};
@@ -587,70 +590,81 @@ async fn vector_hits(
     }
 
     let query = normalize_vector(&vector.vector);
-    let candidate_k = body.size.saturating_mul(10).max(100);
-    let (candidates, shards) = collect_vector_candidates(
-        Arc::clone(&state),
-        runtime.clone(),
-        query.clone(),
-        candidate_k,
-    )
-    .await?;
-    if candidates.is_empty() {
-        return Ok((Vec::new(), shards));
-    }
-
-    let ids: Vec<Expr> = candidates
-        .iter()
-        .map(|candidate| Expr::Literal(ScalarValue::UInt64(Some(candidate.id)), None))
-        .collect();
-    let candidate_filter = col(PK_COLUMN).in_list(ids, false);
-    let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
-    let fetch_started = Instant::now();
-    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
-    let fetch_ms = fetch_started.elapsed().as_secs_f64() * 1000.0;
-
-    let rerank_started = Instant::now();
-    let mut hits = Vec::new();
-    for batch in &batches {
-        let ids = batch
-            .column_by_name(PK_COLUMN)
-            .ok_or_else(|| EsError::internal("primary key column missing"))?
-            .as_primitive::<arrow_array::types::UInt64Type>();
-        let embedding_index = batch
-            .schema()
-            .index_of(&runtime.config.embedding_column)
-            .map_err(crate::error::internal)?;
-        let embeddings = batch.column(embedding_index);
-        for row in 0..batch.num_rows() {
-            let Some(stored) = embedding_at(embeddings, row, dim) else {
-                continue;
-            };
-            // The script clamps the similarity at zero; min_score compares
-            // against the clamped score, like Elasticsearch does.
-            let score = cosine(&query, &stored);
-            if let Some(min_score) = vector.min_score
-                && score < min_score
-            {
-                continue;
-            }
-            hits.push(Hit {
-                id: ids.value(row),
-                score,
-                source: source_for_row(batch, &runtime, row, &body.source)?,
-            });
+    // A full candidate budget can be the binding constraint when stale
+    // candidates lose the exact rerank; widen it before under-filling.
+    let mut candidate_k = body.size.saturating_mul(10).max(100);
+    let mut retries = 0;
+    loop {
+        let (candidates, shards) = collect_vector_candidates(
+            Arc::clone(&state),
+            runtime.clone(),
+            query.clone(),
+            candidate_k,
+        )
+        .await?;
+        if candidates.is_empty() {
+            return Ok((Vec::new(), shards));
         }
+
+        let ids: Vec<Expr> = candidates
+            .iter()
+            .map(|candidate| Expr::Literal(ScalarValue::UInt64(Some(candidate.id)), None))
+            .collect();
+        let candidate_filter = col(PK_COLUMN).in_list(ids, false);
+        let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
+        let fetch_started = Instant::now();
+        let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
+        let fetch_ms = fetch_started.elapsed().as_secs_f64() * 1000.0;
+
+        let rerank_started = Instant::now();
+        let mut hits = Vec::new();
+        for batch in &batches {
+            let ids = batch
+                .column_by_name(PK_COLUMN)
+                .ok_or_else(|| EsError::internal("primary key column missing"))?
+                .as_primitive::<arrow_array::types::UInt64Type>();
+            let embedding_index = batch
+                .schema()
+                .index_of(&runtime.config.embedding_column)
+                .map_err(crate::error::internal)?;
+            let embeddings = batch.column(embedding_index);
+            for row in 0..batch.num_rows() {
+                let Some(stored) = embedding_at(embeddings, row, dim) else {
+                    continue;
+                };
+                // The script clamps the similarity at zero; min_score
+                // compares against the clamped score, like Elasticsearch.
+                let score = cosine(&query, &stored);
+                if let Some(min_score) = vector.min_score
+                    && score < min_score
+                {
+                    continue;
+                }
+                hits.push(Hit {
+                    id: ids.value(row),
+                    score,
+                    source: source_for_row(batch, &runtime, row, &body.source)?,
+                });
+            }
+        }
+        if timing_enabled() {
+            tracing::info!(
+                target: "lakesoul_es_gateway::timing",
+                "search.vector_rerank fetch_ms={:.1} rerank_ms={:.1} batches={} \
+                 hits={}",
+                fetch_ms,
+                rerank_started.elapsed().as_secs_f64() * 1000.0,
+                batches.len(),
+                hits.len()
+            );
+        }
+        let exhausted = candidates.len() >= candidate_k;
+        if hits.len() >= body.size || !exhausted || retries >= 2 {
+            return Ok((hits, shards));
+        }
+        retries += 1;
+        candidate_k = candidate_k.saturating_mul(4);
     }
-    if timing_enabled() {
-        tracing::info!(
-            target: "lakesoul_es_gateway::timing",
-            "search.vector_rerank fetch_ms={:.1} rerank_ms={:.1} batches={} hits={}",
-            fetch_ms,
-            rerank_started.elapsed().as_secs_f64() * 1000.0,
-            batches.len(),
-            hits.len()
-        );
-    }
-    Ok((hits, shards))
 }
 
 /// Keyword search: text-index candidates + exact verification.
@@ -670,87 +684,113 @@ async fn keyword_hits(
         )));
     }
     // Fetch extra candidates per shard so verification and the final size
-    // keep margin against stale index entries.
-    let candidate_k = body.size.saturating_mul(10).max(100);
-    let (candidates, config, shards) = collect_candidates(
-        Arc::clone(&state),
-        runtime.clone(),
-        field.clone(),
-        query.clone(),
-        candidate_k,
-    )
-    .await?;
-    if candidates.is_empty() {
-        return Ok((Vec::new(), shards));
-    }
-    let Some(config) = config else {
-        return Ok((Vec::new(), shards));
-    };
-    if config.column_name != field {
-        return Err(EsError::unsupported(format!(
-            "text index column '{}' does not match the searched field '{field}'",
-            config.column_name
-        )));
-    }
-
-    let scores: HashMap<u64, f32> = candidates
-        .iter()
-        .filter_map(|candidate| candidate.score.map(|score| (candidate.id, score)))
-        .collect();
-    let ids: Vec<Expr> = candidates
-        .iter()
-        .map(|candidate| Expr::Literal(ScalarValue::UInt64(Some(candidate.id)), None))
-        .collect();
-    let candidate_filter = col(PK_COLUMN).in_list(ids, false);
-    let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
-    let fetch_started = Instant::now();
-    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
-    let fetch_ms = fetch_started.elapsed().as_secs_f64() * 1000.0;
-
-    let verify_started = Instant::now();
-    // Verify all batches with one in-memory index instead of rebuilding it
-    // per batch.
-    let mut batch_rows = Vec::with_capacity(batches.len());
-    let mut all_rows: Vec<(u64, Option<String>)> = Vec::new();
-    for batch in &batches {
-        let rows = collect_text_values(batch, PK_COLUMN, &field)
-            .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
-        all_rows.extend(rows.iter().flatten().map(|(id, text)| (*id, text.clone())));
-        batch_rows.push(rows);
-    }
-    let matched: HashSet<u64> = matching_ids(&config, &all_rows, &query)
-        .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
-
-    let mut hits = Vec::new();
-    for (batch_index, batch) in batches.iter().enumerate() {
-        for (row, value) in batch_rows[batch_index].iter().enumerate() {
-            let Some((id, _)) = value else { continue };
-            let Some(score) = scores.get(id) else {
-                continue;
-            };
-            if !matched.contains(id) {
-                continue;
-            }
-            hits.push(Hit {
-                id: *id,
-                score: *score,
-                source: source_for_row(batch, &runtime, row, &body.source)?,
-            });
+    // keep margin against stale index entries.  Verification can under-fill
+    // the result when stale candidates consume the budget, so retry with a
+    // larger budget before returning fewer hits than asked for.
+    let mut candidate_k = body.size.saturating_mul(10).max(100);
+    let mut retries = 0;
+    loop {
+        let (candidates, config, shards, stats) = collect_candidates(
+            Arc::clone(&state),
+            runtime.clone(),
+            field.clone(),
+            query.clone(),
+            candidate_k,
+        )
+        .await?;
+        if candidates.is_empty() {
+            return Ok((Vec::new(), shards));
         }
+        let Some(config) = config else {
+            return Ok((Vec::new(), shards));
+        };
+        if config.column_name != field {
+            return Err(EsError::unsupported(format!(
+                "text index column '{}' does not match the searched field '{field}'",
+                config.column_name
+            )));
+        }
+
+        let mut scores: HashMap<u64, f32> = candidates
+            .iter()
+            .filter_map(|candidate| candidate.score.map(|score| (candidate.id, score)))
+            .collect();
+        let ids: Vec<Expr> = candidates
+            .iter()
+            .map(|candidate| Expr::Literal(ScalarValue::UInt64(Some(candidate.id)), None))
+            .collect();
+        let candidate_filter = col(PK_COLUMN).in_list(ids, false);
+        let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
+        let fetch_started = Instant::now();
+        let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
+        let fetch_ms = fetch_started.elapsed().as_secs_f64() * 1000.0;
+
+        let verify_started = Instant::now();
+        // Verify all batches with one in-memory index instead of rebuilding
+        // it per batch.
+        let mut batch_rows = Vec::with_capacity(batches.len());
+        let mut all_rows: Vec<(u64, Option<String>)> = Vec::new();
+        for batch in &batches {
+            let rows = collect_text_values(batch, PK_COLUMN, &field)
+                .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
+            all_rows.extend(rows.iter().flatten().map(|(id, text)| (*id, text.clone())));
+            batch_rows.push(rows);
+        }
+        let matched: HashSet<u64> = matching_ids(&config, &all_rows, &query)
+            .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
+
+        // One corpus-wide BM25 score per matching row, so the merged order
+        // no longer depends on which shard returned a candidate (the
+        // `dfs_query_then_fetch` semantics of a distributed search engine).
+        if let Some(stats) = &stats {
+            let global =
+                bm25_scores(&config, &all_rows, &query, stats).map_err(|error| {
+                    EsError::internal(format!("global text score: {error}"))
+                })?;
+            if !global.is_empty() {
+                scores = global;
+            }
+        }
+
+        let mut hits = Vec::new();
+        for (batch_index, batch) in batches.iter().enumerate() {
+            for (row, value) in batch_rows[batch_index].iter().enumerate() {
+                let Some((id, _)) = value else { continue };
+                let Some(score) = scores.get(id) else {
+                    continue;
+                };
+                if !matched.contains(id) {
+                    continue;
+                }
+                hits.push(Hit {
+                    id: *id,
+                    score: *score,
+                    source: source_for_row(batch, &runtime, row, &body.source)?,
+                });
+            }
+        }
+        if timing_enabled() {
+            tracing::info!(
+                target: "lakesoul_es_gateway::timing",
+                "search.keyword_verify fetch_ms={:.1} verify_ms={:.1} batches={} \
+                 candidates={} hits={} global={}",
+                fetch_ms,
+                verify_started.elapsed().as_secs_f64() * 1000.0,
+                batches.len(),
+                candidates.len(),
+                hits.len(),
+                stats.is_some()
+            );
+        }
+        // A full candidate budget means the shard top-k may be the binding
+        // constraint; widen it when verification dropped too many rows.
+        let exhausted = candidates.len() >= candidate_k;
+        if hits.len() >= body.size || !exhausted || retries >= 2 {
+            return Ok((hits, shards));
+        }
+        retries += 1;
+        candidate_k = candidate_k.saturating_mul(4);
     }
-    if timing_enabled() {
-        tracing::info!(
-            target: "lakesoul_es_gateway::timing",
-            "search.keyword_verify fetch_ms={:.1} verify_ms={:.1} batches={} \
-             candidates={} hits={}",
-            fetch_ms,
-            verify_started.elapsed().as_secs_f64() * 1000.0,
-            batches.len(),
-            candidates.len(),
-            hits.len()
-        );
-    }
-    Ok((hits, shards))
 }
 
 /// Filter-only search (copy pagination): no scoring, no verification.
@@ -828,7 +868,7 @@ async fn text_tail_candidates(
     files: &[String],
     config: &TextIndexConfig,
     query: &str,
-) -> Result<Vec<Candidate>, EsError> {
+) -> Result<(Vec<Candidate>, CorpusStats), EsError> {
     let projection = vec![config.column_name.clone()];
     let batches =
         read_shard_batches(files, PK_COLUMN, &projection, &HashMap::new(), None)
@@ -842,10 +882,17 @@ async fn text_tail_candidates(
     }
     let scores = matching_scores(config, &rows, query)
         .map_err(|error| EsError::internal(format!("text tail score: {error}")))?;
-    Ok(scores
-        .into_iter()
-        .map(|(id, score)| Candidate::scored(id, score))
-        .collect())
+    // The tail documents are not part of any index commit, so they must
+    // still count towards the corpus statistics.
+    let stats = stats_for_rows(config, &rows)
+        .map_err(|error| EsError::internal(format!("text tail stats: {error}")))?;
+    Ok((
+        scores
+            .into_iter()
+            .map(|(id, score)| Candidate::scored(id, score))
+            .collect(),
+        stats,
+    ))
 }
 
 /// Exact cosine candidates from the not-yet-indexed data files.
@@ -893,6 +940,7 @@ impl ShardTimings {
 struct TextShardOutcome {
     hits: Vec<Candidate>,
     config: TextIndexConfig,
+    stats: CorpusStats,
     lease: Option<IndexLease>,
     timings: ShardTimings,
 }
@@ -918,7 +966,15 @@ async fn collect_candidates(
     column: String,
     query: String,
     top_k: usize,
-) -> Result<(Vec<Candidate>, Option<TextIndexConfig>, usize), EsError> {
+) -> Result<
+    (
+        Vec<Candidate>,
+        Option<TextIndexConfig>,
+        usize,
+        Option<CorpusStats>,
+    ),
+    EsError,
+> {
     let started = Instant::now();
     let files = state
         .client
@@ -926,7 +982,7 @@ async fn collect_candidates(
         .await
         .map_err(crate::error::internal)?;
     if files.is_empty() {
-        return Ok((Vec::new(), None, 0));
+        return Ok((Vec::new(), None, 0, None));
     }
     let store = index_store(Arc::clone(&state), runtime.clone()).await?;
     let groups = shard_file_groups(&files, IndexKind::Text, &column);
@@ -941,6 +997,13 @@ async fn collect_candidates(
         with_positions: runtime.with_positions(&state.config.defaults),
         stored: false,
     };
+    // Plain queries can be scored against one corpus-wide ranking; the
+    // per-shard statistics are collected while the shards are searched.
+    let terms = if is_plain_query(&query) {
+        query_terms(&fallback_config, &query).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let shards = groups.len();
     let concurrency = shards.clamp(1, SHARD_CONCURRENCY);
     let outcomes: Vec<Result<TextShardOutcome, EsError>> = futures::stream::iter(groups)
@@ -949,6 +1012,7 @@ async fn collect_candidates(
             let catalog = &catalog;
             let query = query.as_str();
             let fallback_config = fallback_config.clone();
+            let terms = terms.clone();
             async move {
                 let resolve_started = Instant::now();
                 let view = catalog
@@ -966,6 +1030,7 @@ async fn collect_candidates(
                 let mut lease = None;
                 let mut hits = Vec::new();
                 let mut search_ms = 0.0;
+                let mut stats = CorpusStats::default();
                 if let Some(view) = &view {
                     if !lakesoul_io::index::cache::is_loaded(
                         &store,
@@ -1004,6 +1069,15 @@ async fn collect_candidates(
                         .await
                         .map_err(crate::error::internal)?;
                     search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
+                    if !terms.is_empty() {
+                        match shard_stats(&store, &resolved, &terms).await {
+                            Ok(shard) => stats.merge(shard),
+                            Err(error) => tracing::warn!(
+                                index = %prefix,
+                                "failed to collect text statistics: {error}"
+                            ),
+                        }
+                    }
                 }
                 let lease_ms = lease_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -1017,7 +1091,10 @@ async fn collect_candidates(
                 let tail_started = Instant::now();
                 let mut tail_hits = Vec::new();
                 if !pending.is_empty() {
-                    tail_hits = text_tail_candidates(&pending, &config, query).await?;
+                    let (tail, tail_stats) =
+                        text_tail_candidates(&pending, &config, query).await?;
+                    tail_hits = tail;
+                    stats.merge(tail_stats);
                 }
                 let tail_ms = tail_started.elapsed().as_secs_f64() * 1000.0;
                 hits.extend(tail_hits);
@@ -1025,6 +1102,7 @@ async fn collect_candidates(
                 Ok(TextShardOutcome {
                     hits,
                     config,
+                    stats,
                     lease,
                     timings: ShardTimings {
                         resolve_ms,
@@ -1041,6 +1119,7 @@ async fn collect_candidates(
 
     let mut candidates = Vec::new();
     let mut config = None;
+    let mut corpus_stats = CorpusStats::default();
     let mut leases = Vec::new();
     let mut timings = ShardTimings::default();
     for outcome in outcomes {
@@ -1048,6 +1127,7 @@ async fn collect_candidates(
         if config.is_none() {
             config = Some(outcome.config);
         }
+        corpus_stats.merge(outcome.stats);
         if let Some(lease) = outcome.lease {
             leases.push(lease);
         }
@@ -1073,7 +1153,8 @@ async fn collect_candidates(
     }
 
     let merged = merge_candidates(candidates, top_k);
-    Ok((merged, config, shards))
+    let stats = (!terms.is_empty()).then_some(corpus_stats);
+    Ok((merged, config, shards, stats))
 }
 
 /// Search every shard's vector index and merge the candidate distances.

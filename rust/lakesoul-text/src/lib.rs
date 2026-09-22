@@ -13,6 +13,7 @@
 //! {table dir}/_text_index/{column}/{partition_desc}/{bucket_id}/{split_id}.split
 //! ```
 
+pub mod bm25;
 pub mod config;
 pub mod error;
 pub mod schema;
@@ -21,6 +22,10 @@ pub mod split;
 pub mod tokenizer;
 pub mod verify;
 
+pub use bm25::{
+    CorpusStats, bm25_scores, collect_index_stats, is_plain_query, query_terms,
+    stats_for_rows, tokenize,
+};
 pub use config::TextIndexConfig;
 pub use error::{Result, TextError};
 pub use schema::{PK_FIELD, TEXT_FIELD, TextSchema};
