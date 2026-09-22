@@ -27,7 +27,7 @@ public class CleanUtils {
                         + partition_desc
                         + "' and version = '"
                         + version
-                        + "'";
+                        + "' and pinned = false";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             preparedStatement.executeUpdate();
             logger.info(sql);
@@ -139,7 +139,8 @@ public class CleanUtils {
                                         + "' \n"
                                         + "    AND dci.commit_id = '"
                                         + commitId
-                                        + "'";
+                                        + "' \n"
+                                        + "    AND dci.pinned = false";
                         try (PreparedStatement preparedStatement =
                                 connection.prepareStatement(sql)) {
                             // 执行删除操作
@@ -167,7 +168,8 @@ public class CleanUtils {
                                     + "' \n"
                                     + "AND partition_desc = '"
                                     + partitionDesc
-                                    + "'";
+                                    + "' \n"
+                                    + "AND pinned = false";
                     try (PreparedStatement preparedStatement =
                             connection.prepareStatement(deleteDataCommitInfoSql)) {
                         logger.info(deleteDataCommitInfoSql);
