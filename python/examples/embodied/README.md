@@ -166,6 +166,6 @@ prefetch) into a linear model.
 ## Compare with the full-scan baseline
 
 ```sh
-python benchmark/embodied/run_benchmark.py --episodes 8 --ticks 512 \
+python script/benchmark/embodied/run_benchmark.py --episodes 8 --ticks 512 \
     --output /tmp/m1_5.json
 ```

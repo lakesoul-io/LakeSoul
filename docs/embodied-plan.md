@@ -79,7 +79,7 @@
 
 - `python/examples/embodied/`：`synthetic.py`（每 episode 一分区、逐帧 image bytes）、
   `generate_data.py`（建表 + 导入）、`train.py`（窗口 + torch adapter + 线性模型训练循环）；
-- `benchmark/embodied/run_benchmark.py`：`baseline_full / embodied_full /
+- `script/benchmark/embodied/run_benchmark.py`：`baseline_full / embodied_full /
   baseline_subset / embodied_subset / baseline_shuffle / embodied_shuffle /
   torch_loader` 七组，报告吞吐、读取字节、每样本字节、P50/P99；
 - 本机跑通（8 episodes × 512 ticks，`vortex`，4KiB 随机图像）：
@@ -165,7 +165,7 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 
 ### M2-5a 视频布局存储/读取量化（已完成）
 
-- `benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
+- `script/benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
   生成渐变图案的 LeRobot v3 源（mp4 + parquet），分别以 frames（逐帧 JPEG）、gop、
   daft-frames（native runner）导入，报告导入吞吐、磁盘体积、窗口采样吞吐与
   GOP 解码 P50/P99；
@@ -180,6 +180,30 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 - 结论：GOP 布局把存储压到接近源体积（8.5x 收益），代价是采样时需解码
   （缓存命中时很快）；blob 外置主要收益在把 frames 的逐帧字节或 GOP 数据移出行，
   阈值仍按 16KiB inline / 2MiB external 设计，pack 跟随数据文件。
+
+### M2-5b 对象存储（RustFS）与零拷贝读取（已完成）
+
+- `run_video_layout_benchmark.py` 新增 `--storage-uri s3://bucket/prefix` +
+  `--s3-endpoint URL`（自动填 `fs.s3a.*` 选项并透传 catalog；导入、读取、体积统计全程
+  走对象存储，文件/字节数经 `pyarrow.fs.S3FileSystem` 统计）；
+- `BlobRef.read(filesystem=...)` 支持注入 filesystem（否则按 pack URI 解析），
+  benchmark 注入 S3 FS，避免依赖进程环境变量；RustFS e2e 测试覆盖（`LAKESOUL_S3_TEST=1`）；
+- 新增 `gop-blob-refs` 读取行：`blob_materialize=false` 扫描后逐样本 `BlobRef.read()`，
+  每样本 1 次 range GET；
+- 结果（8 episodes × 120 ticks，RustFS `127.0.0.1:9000`，与本地同数据）：
+
+  | 指标 | RustFS | 本地（对照） |
+  |---|---:|---:|
+  | gop 导入吞吐 | 1230 rows/s（0.78s） | 107–287 rows/s（本地盘抖动大） |
+  | frames 导入吞吐 | 170 rows/s（5.65s） | 172–287 rows/s |
+  | 存储：frames / gop | 3.55 MB / 0.42 MB（8.52x） | 同 |
+  | 窗口采样（gop / gop-blob） | 174 / 193 samples/s | 189 / 174 samples/s |
+  | 惰性逐 GOP 读取 | 845.6 samples/s，P50 1.149 ms，P99 1.585 ms | ~40k samples/s，P50 0.015–0.023 ms |
+  | 每样本读取字节（refs） | 2551 B，1 次 range GET | 同 |
+
+- 结论：对象存储上逐 GOP 惰性读取 ~1.1 ms/次（HTTP GET + 小对象读），比本地页缓存慢
+  约 50–70x，但只付访问到的 GOP 的代价（64/232 个 GOP）；默认物化路径在对象存储上
+  顺序读仍更快（193 samples/s），零拷贝适合按需/子集访问。
 
 ## 5. M4：Daft 分布式（进行中）
 

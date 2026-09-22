@@ -24,6 +24,7 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import pyarrow as pa
 
@@ -78,10 +79,18 @@ class BlobRef:
         """Payload length in bytes."""
         return len(self.inline) if self.inline is not None else self.length
 
-    def read(self, offset: int = 0, size: int | None = None) -> bytes:
+    def read(
+        self,
+        offset: int = 0,
+        size: int | None = None,
+        filesystem: pa.fs.FileSystem | None = None,
+    ) -> bytes:
         """Read a byte range of the value, fetching only what is needed.
 
-        A full read of an external value verifies its CRC32.
+        A full read of an external value verifies its CRC32. Pass
+        ``filesystem`` to reuse an already configured filesystem (for example
+        an S3 filesystem built from the table's object store options) instead
+        of resolving the pack URI from the environment.
         """
         if offset < 0:
             raise ValueError("offset must not be negative")
@@ -98,7 +107,7 @@ class BlobRef:
             raise ValueError(f"offset {offset} exceeds blob size {self.length}")
         if size is None or size > remaining:
             size = remaining
-        data = _read_range(self.pack, self.offset + offset, size)
+        data = _read_range(self.pack, self.offset + offset, size, filesystem)
         if offset == 0 and size == self.length:
             actual = zlib.crc32(data) & 0xFFFFFFFF
             if actual != self.crc32:
@@ -108,14 +117,17 @@ class BlobRef:
                 )
         return data
 
-    def materialize(self) -> bytes:
+    def materialize(self, filesystem: pa.fs.FileSystem | None = None) -> bytes:
         """Read the whole value (equivalent to ``read()``)."""
-        return self.read()
+        return self.read(filesystem=filesystem)
 
 
-def materialize_blob(value: bytes | bytearray | memoryview) -> bytes:
+def materialize_blob(
+    value: bytes | bytearray | memoryview,
+    filesystem: pa.fs.FileSystem | None = None,
+) -> bytes:
     """Materialize a tagged blob value, inline or external."""
-    return BlobRef.parse(value).read()
+    return BlobRef.parse(value).read(filesystem=filesystem)
 
 
 def _open_filesystem(uri: str) -> tuple[pa.fs.FileSystem, str]:
@@ -125,8 +137,17 @@ def _open_filesystem(uri: str) -> tuple[pa.fs.FileSystem, str]:
         return pa.fs.LocalFileSystem(), uri
 
 
-def _read_range(uri: str, offset: int, size: int) -> bytes:
-    filesystem, path = _open_filesystem(uri)
+def _read_range(
+    uri: str,
+    offset: int,
+    size: int,
+    filesystem: pa.fs.FileSystem | None = None,
+) -> bytes:
+    if filesystem is None:
+        filesystem, path = _open_filesystem(uri)
+    else:
+        parsed = urlparse(uri)
+        path = f"{parsed.netloc}/{parsed.path.lstrip('/')}"
     with filesystem.open_input_file(path) as stream:
         stream.seek(offset)
         data = stream.read(size)

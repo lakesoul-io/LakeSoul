@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import struct
 import zlib
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -316,6 +318,82 @@ def test_blob_scan_can_defer_reads(tmp_path: Path) -> None:
         assert [ref.read() for ref in inline] == tags
     finally:
         catalog.drop_table(table_name, if_exists=True)
+
+
+def test_blob_ref_reads_with_injected_filesystem(tmp_path: Path) -> None:
+    payload = b"payload-bytes-0123456789"
+    pack = tmp_path / "data.blob"
+    pack.write_bytes(b"junk" + payload)
+
+    def external(offset: int, length: int, crc32: int) -> bytes:
+        header = struct.pack("<IIQ", crc32, length, offset)
+        return b"\x01" + header + pack.as_uri().encode()
+
+    filesystem = pa.fs.LocalFileSystem()
+    ref = BlobRef.parse(external(4, len(payload), zlib.crc32(payload) & 0xFFFFFFFF))
+    assert ref.read(filesystem=filesystem) == payload
+    assert ref.read(2, 5, filesystem=filesystem) == payload[2:7]
+    assert ref.materialize(filesystem=filesystem) == payload
+
+    broken = BlobRef.parse(external(4, len(payload), 123))
+    with pytest.raises(ValueError, match="checksum"):
+        broken.read(filesystem=filesystem)
+
+
+def test_blob_refs_on_object_storage() -> None:
+    if os.environ.get("LAKESOUL_S3_TEST") != "1":
+        pytest.skip("set LAKESOUL_S3_TEST=1 to enable S3 tests")
+
+    from pyarrow.fs import S3FileSystem
+
+    options = {
+        "fs.s3a.access.key": "rustfsadmin",
+        "fs.s3a.secret.key": "rustfsadmin",
+        "fs.s3a.endpoint": "http://localhost:9000",
+        "fs.s3a.path.style.access": "true",
+    }
+    catalog = LakeSoulCatalog.from_env(object_store_options=options)
+    table_name = _table_name("blob_s3")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("frame", pa.binary()),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=f"s3://lakesoul-test-bucket/{table_name}",
+        schema=schema,
+        properties={"blob_columns": json.dumps({"frame": {"mode": "external"}})},
+    )
+    filesystem = S3FileSystem(
+        access_key=options["fs.s3a.access.key"],
+        secret_key=options["fs.s3a.secret.key"],
+        endpoint_override=options["fs.s3a.endpoint"],
+        scheme="http",
+    )
+    try:
+        payloads = [b"first-payload", b"second-payload-longer"]
+        table.write_arrow(
+            pa.table(
+                {
+                    "id": pa.array([1, 2], type=pa.int64()),
+                    "frame": pa.array(payloads, type=pa.binary()),
+                },
+                schema=schema,
+            ),
+            format="parquet",
+        )
+
+        scan = table.scan().options(reader_options={"blob_materialize": "false"})
+        values = scan.to_arrow_table().column("frame").to_pylist()
+        refs = [BlobRef.parse(value) for value in values]
+        assert all(not ref.is_inline for ref in refs)
+        assert [ref.read(filesystem=filesystem) for ref in refs] == payloads
+        assert refs[1].read(1, 6, filesystem=filesystem) == payloads[1][1:7]
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+        filesystem.delete_dir(f"lakesoul-test-bucket/{table_name}")
 
 
 def test_blob_ref_rejects_malformed_values() -> None:
