@@ -18,6 +18,7 @@ on:
       - "rust/lakesoul-text/**"
       - "rust/lakesoul-vector/**"
       - "rust/postgres-lakesoul/**"
+      - "script/benchmark/embodied/**"
     branches:
       - "main"
   pull_request:
@@ -33,6 +34,7 @@ on:
       - "rust/lakesoul-text/**"
       - "rust/lakesoul-vector/**"
       - "rust/postgres-lakesoul/**"
+      - "script/benchmark/embodied/**"
     branches:
       - "main"
       - "release/**"
