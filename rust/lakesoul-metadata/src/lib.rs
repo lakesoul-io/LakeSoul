@@ -81,6 +81,12 @@ enum ResultType {
     PartitionInfoWithOnlyCommitOp,
     /// The result type for the discard_compressed_file_info.
     DiscardCompressedFileInfo,
+    /// The result type for the table_snapshot.
+    SnapshotInfo,
+    /// The result type for the snapshot_commit.
+    SnapshotCommitInfo,
+    /// The result type for the table_snapshot_tag.
+    SnapshotTagInfo,
 }
 
 /// The Data File Operation type, which is corresponding to the user defined type `data_file_op` in PostgreSQL.
@@ -200,6 +206,22 @@ pub enum DaoType {
     ListPartitionByTableIdAndFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 16,
     /// The coded type for the Data Access Object for list the latest partition version of each partition by table id at or before a timestamp (inclusive).
     ListPartitionByTableIdAndTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 17,
+    /// The coded type for the Data Access Object for listing snapshots by table id.
+    ListSnapshotsByTableId = DAO_TYPE_QUERY_LIST_OFFSET + 18,
+    /// The coded type for the Data Access Object for listing snapshot commits.
+    ListSnapshotCommitsBySnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 19,
+    /// The coded type for the Data Access Object for listing tags by table id.
+    ListTagsByTableId = DAO_TYPE_QUERY_LIST_OFFSET + 20,
+    /// The coded type for the Data Access Object for selecting a tag.
+    SelectTagByTableIdAndTag = DAO_TYPE_QUERY_LIST_OFFSET + 21,
+    /// The coded type for the Data Access Object for creating a snapshot.
+    CreateSnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 22,
+    /// The coded type for the Data Access Object for dropping a snapshot.
+    DropSnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 23,
+    /// The coded type for the Data Access Object for dropping a tag.
+    DropTagByTableIdAndTag = DAO_TYPE_QUERY_LIST_OFFSET + 24,
+    /// The coded type for the Data Access Object for creating a tag.
+    CreateTag = DAO_TYPE_QUERY_LIST_OFFSET + 25,
 
     // ==== Coded Insert One ====
     /// The coded type for the Data Access Object for insert namespace.
@@ -296,6 +318,15 @@ pub enum DaoType {
 }
 
 fn get_query_type(dao_type: DaoType) -> QueryType {
+    if matches!(
+        dao_type,
+        DaoType::CreateSnapshot
+            | DaoType::DropSnapshot
+            | DaoType::DropTagByTableIdAndTag
+            | DaoType::CreateTag
+    ) {
+        return RW;
+    }
     let dao_type = dao_type as i32;
     if dao_type <= DAO_TYPE_INSERT_ONE_OFFSET
         || (DAO_TYPE_QUERY_SCALAR_OFFSET..DAO_TYPE_UPDATE_OFFSET).contains(&dao_type)
@@ -449,6 +480,109 @@ async fn get_prepared_statement<'a>(
              from partition_info
              where table_id = $1::TEXT and timestamp <= $2::BIGINT
              ORDER BY table_id DESC, partition_desc DESC, version DESC",
+
+        // Snapshots and tags
+        DaoType::ListSnapshotsByTableId =>
+            "select table_id, snapshot_id, created_at, description
+            from table_snapshot
+            where table_id = $1::TEXT
+            order by snapshot_id",
+        DaoType::ListSnapshotCommitsBySnapshot =>
+            "select table_id, snapshot_id, partition_desc, version, commit_id
+            from snapshot_commit
+            where table_id = $1::TEXT and snapshot_id = $2::BIGINT
+            order by partition_desc, commit_id",
+        DaoType::ListTagsByTableId =>
+            "select table_id, tag, snapshot_id, created_at, coalesce(expire_at, 0)
+            from table_snapshot_tag
+            where table_id = $1::TEXT
+            order by tag",
+        DaoType::SelectTagByTableIdAndTag =>
+            "select table_id, tag, snapshot_id, created_at, coalesce(expire_at, 0)
+            from table_snapshot_tag
+            where table_id = $1::TEXT and tag = $2::TEXT",
+        DaoType::CreateSnapshot =>
+            "with new_snapshot as (
+                insert into table_snapshot(table_id, created_at, description)
+                values ($1::TEXT, (extract(epoch from now()) * 1000)::BIGINT, $2::TEXT)
+                returning table_id, snapshot_id, created_at, description
+            ),
+            latest as (
+                select distinct on (partition_desc) partition_desc, version, snapshot
+                from partition_info
+                where table_id = $1::TEXT
+                order by partition_desc, version desc
+            ),
+            inserted as (
+                insert into snapshot_commit(table_id, snapshot_id, partition_desc, version, commit_id)
+                select distinct ns.table_id, ns.snapshot_id, l.partition_desc, l.version, c.commit_id
+                from new_snapshot ns, latest l, unnest(l.snapshot) as c(commit_id)
+                returning commit_id, partition_desc, version
+            ),
+            pin_commits as (
+                update data_commit_info dci set pinned = true
+                where dci.table_id = $1::TEXT
+                  and dci.commit_id in (select commit_id from inserted)
+                returning 1
+            ),
+            pin_versions as (
+                update partition_info pi set pinned = true
+                where pi.table_id = $1::TEXT
+                  and (pi.partition_desc, pi.version) in
+                      (select partition_desc, version from inserted)
+                returning 1
+            )
+            select table_id, snapshot_id, created_at, description from new_snapshot",
+        DaoType::DropSnapshot =>
+            "with removed as (
+                delete from table_snapshot
+                where table_id = $1::TEXT and snapshot_id = $2::BIGINT
+                returning table_id, snapshot_id, created_at, description
+            ),
+            removed_commits as (
+                delete from snapshot_commit
+                where table_id = $1::TEXT and snapshot_id = $2::BIGINT
+                returning commit_id, partition_desc, version
+            ),
+            unpin_commits as (
+                update data_commit_info dci set pinned = exists (
+                    select 1 from snapshot_commit sc
+                    where sc.table_id = $1::TEXT
+                      and sc.commit_id = dci.commit_id
+                      and sc.snapshot_id <> $2::BIGINT
+                )
+                where dci.table_id = $1::TEXT
+                returning 1
+            ),
+            unpin_versions as (
+                update partition_info pi set pinned = exists (
+                    select 1 from snapshot_commit sc
+                    where sc.table_id = $1::TEXT
+                      and sc.partition_desc = pi.partition_desc
+                      and sc.version = pi.version
+                      and sc.snapshot_id <> $2::BIGINT
+                )
+                where pi.table_id = $1::TEXT
+                returning 1
+            )
+            select table_id, snapshot_id, created_at, description from removed",
+        DaoType::CreateTag =>
+            "with inserted as (
+                insert into table_snapshot_tag(table_id, tag, snapshot_id, created_at)
+                values ($1::TEXT, $2::TEXT, $3::BIGINT,
+                        (extract(epoch from now()) * 1000)::BIGINT)
+                returning table_id, tag, snapshot_id, created_at,
+                          coalesce(expire_at, 0) as expire_at
+            )
+            select table_id, tag, snapshot_id, created_at, expire_at from inserted",
+        DaoType::DropTagByTableIdAndTag =>
+            "with removed as (
+                delete from table_snapshot_tag
+                where table_id = $1::TEXT and tag = $2::TEXT
+                returning table_id, tag, snapshot_id, created_at,
+                          coalesce(expire_at, 0) as expire_at
+            )
+            select table_id, tag, snapshot_id, created_at, expire_at from removed",
         // Select Table Domain by id
         DaoType::SelectTableDomainById =>
             "select table_name, table_id, table_namespace, domain
@@ -800,6 +934,51 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::ListSnapshotsByTableId | DaoType::ListTagsByTableId
+            if params.len() == 1 =>
+        {
+            let result = conn.query(&statement, &[&params[0]]).await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
+        DaoType::ListSnapshotCommitsBySnapshot | DaoType::DropSnapshot
+            if params.len() == 2 =>
+        {
+            let result = conn
+                .query(&statement, &[&params[0], &i64::from_str(&params[1])?])
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
+        DaoType::SelectTagByTableIdAndTag
+        | DaoType::CreateSnapshot
+        | DaoType::DropTagByTableIdAndTag
+            if params.len() == 2 =>
+        {
+            let result = conn
+                .query(&statement, &[&params[0], &params[1]])
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
+        DaoType::CreateTag if params.len() == 3 => {
+            let result = conn
+                .query(
+                    &statement,
+                    &[&params[0], &params[1], &i64::from_str(&params[2])?],
+                )
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::SelectTableNameIdByTableName
         | DaoType::SelectTableInfoByTableNameAndNameSpace
         | DaoType::SelectTableInfoByIdAndTablePath
@@ -989,6 +1168,17 @@ pub async fn execute_query(
         | DaoType::ListPartitionByTableIdAndTimestamp
         | DaoType::ListPartitionByTableIdAndFilterCondition => ResultType::PartitionInfo,
 
+        DaoType::ListSnapshotsByTableId
+        | DaoType::CreateSnapshot
+        | DaoType::DropSnapshot => ResultType::SnapshotInfo,
+
+        DaoType::ListSnapshotCommitsBySnapshot => ResultType::SnapshotCommitInfo,
+
+        DaoType::ListTagsByTableId
+        | DaoType::SelectTagByTableIdAndTag
+        | DaoType::CreateTag
+        | DaoType::DropTagByTableIdAndTag => ResultType::SnapshotTagInfo,
+
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
         | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList => {
             ResultType::DataCommitInfo
@@ -1097,6 +1287,58 @@ pub async fn execute_query(
                 .collect();
             entity::JniWrapper {
                 table_info,
+                ..Default::default()
+            }
+        }
+        ResultType::SnapshotInfo => {
+            let snapshot_info: Vec<entity::SnapshotInfo> = rows
+                .iter()
+                .map(|row| entity::SnapshotInfo {
+                    table_id: row.get(0),
+                    snapshot_id: row.get(1),
+                    created_at: row.get(2),
+                    description: row
+                        .get::<_, Option<String>>(3)
+                        .unwrap_or(String::from("")),
+                })
+                .collect();
+            entity::JniWrapper {
+                snapshot_info,
+                ..Default::default()
+            }
+        }
+        ResultType::SnapshotCommitInfo => {
+            let snapshot_commit_info: Vec<entity::SnapshotCommitInfo> = rows
+                .iter()
+                .map(|row| {
+                    let (high, low) = row.get::<_, uuid::Uuid>(4).as_u64_pair();
+                    entity::SnapshotCommitInfo {
+                        table_id: row.get(0),
+                        snapshot_id: row.get(1),
+                        partition_desc: row.get(2),
+                        version: row.get::<_, i32>(3),
+                        commit_id: Some(entity::Uuid { high, low }),
+                    }
+                })
+                .collect();
+            entity::JniWrapper {
+                snapshot_commit_info,
+                ..Default::default()
+            }
+        }
+        ResultType::SnapshotTagInfo => {
+            let snapshot_tag_info: Vec<entity::SnapshotTagInfo> = rows
+                .iter()
+                .map(|row| entity::SnapshotTagInfo {
+                    table_id: row.get(0),
+                    tag: row.get(1),
+                    snapshot_id: row.get(2),
+                    created_at: row.get(3),
+                    expire_at: row.get(4),
+                })
+                .collect();
+            entity::JniWrapper {
+                snapshot_tag_info,
                 ..Default::default()
             }
         }

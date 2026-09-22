@@ -52,6 +52,14 @@ class DaoType:
         DAO_TYPE_QUERY_LIST_OFFSET + 10
     )
     ListPartitionByTableIdAndTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 17
+    ListSnapshotsByTableId = DAO_TYPE_QUERY_LIST_OFFSET + 18
+    ListSnapshotCommitsBySnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 19
+    ListTagsByTableId = DAO_TYPE_QUERY_LIST_OFFSET + 20
+    SelectTagByTableIdAndTag = DAO_TYPE_QUERY_LIST_OFFSET + 21
+    CreateSnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 22
+    DropSnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 23
+    DropTagByTableIdAndTag = DAO_TYPE_QUERY_LIST_OFFSET + 24
+    CreateTag = DAO_TYPE_QUERY_LIST_OFFSET + 25
 
     # // ==== Insert One ====
     InsertNamespace = DAO_TYPE_INSERT_ONE_OFFSET

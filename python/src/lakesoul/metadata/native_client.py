@@ -16,7 +16,7 @@ import pyarrow
 
 from lakesoul._lib._metadata import _NativeMetadataClient
 from lakesoul._lib._utils import _schema_from_metadata_str
-from lakesoul.exceptions import TableNotFoundError
+from lakesoul.exceptions import MetadataError, TableNotFoundError
 
 from .const import PARAM_DELIM, DaoType
 from .generated.entity_pb2 import (
@@ -24,6 +24,9 @@ from .generated.entity_pb2 import (
     JniWrapper,
     Namespace,
     PartitionInfo,
+    SnapshotCommitInfo,
+    SnapshotInfo,
+    SnapshotTagInfo,
     TableInfo,
     TableNameId,
     Uuid,
@@ -265,6 +268,103 @@ class NativeMetadataClient:
     ) -> Sequence[PartitionInfo]:
         return self.get_partition_info_by_table_id(table_id)
 
+    def create_snapshot(
+        self,
+        table_name: str,
+        description: str = "",
+        namespace: str = "default",
+    ) -> SnapshotInfo:
+        """Freeze the current per-partition versions into a new snapshot."""
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(
+            DaoType.CreateSnapshot, [table_info.table_id, description]
+        )
+        if not wrapper or not wrapper.snapshot_info:
+            raise MetadataError("failed to create snapshot")
+        return wrapper.snapshot_info[0]
+
+    def list_snapshots(
+        self,
+        table_name: str,
+        namespace: str = "default",
+    ) -> Sequence[SnapshotInfo]:
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(DaoType.ListSnapshotsByTableId, [table_info.table_id])
+        return list(wrapper.snapshot_info) if wrapper else []
+
+    def list_snapshot_commits(
+        self,
+        table_id: str,
+        snapshot_id: int,
+    ) -> Sequence[SnapshotCommitInfo]:
+        wrapper = self._query(
+            DaoType.ListSnapshotCommitsBySnapshot,
+            [table_id, str(int(snapshot_id))],
+        )
+        return list(wrapper.snapshot_commit_info) if wrapper else []
+
+    def drop_snapshot(
+        self,
+        table_name: str,
+        snapshot_id: int,
+        namespace: str = "default",
+    ) -> bool:
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(
+            DaoType.DropSnapshot, [table_info.table_id, str(int(snapshot_id))]
+        )
+        return bool(wrapper and wrapper.snapshot_info)
+
+    def create_tag(
+        self,
+        table_name: str,
+        tag: str,
+        snapshot_id: int,
+        namespace: str = "default",
+    ) -> SnapshotTagInfo:
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(
+            DaoType.CreateTag, [table_info.table_id, tag, str(int(snapshot_id))]
+        )
+        if not wrapper or not wrapper.snapshot_tag_info:
+            raise MetadataError("failed to create tag")
+        return wrapper.snapshot_tag_info[0]
+
+    def list_tags(
+        self,
+        table_name: str,
+        namespace: str = "default",
+    ) -> Sequence[SnapshotTagInfo]:
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(DaoType.ListTagsByTableId, [table_info.table_id])
+        return list(wrapper.snapshot_tag_info) if wrapper else []
+
+    def get_tag(
+        self,
+        table_name: str,
+        tag: str,
+        namespace: str = "default",
+    ) -> SnapshotTagInfo | None:
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(
+            DaoType.SelectTagByTableIdAndTag, [table_info.table_id, tag]
+        )
+        if wrapper and wrapper.snapshot_tag_info:
+            return wrapper.snapshot_tag_info[0]
+        return None
+
+    def drop_tag(
+        self,
+        table_name: str,
+        tag: str,
+        namespace: str = "default",
+    ) -> bool:
+        table_info = self.get_table_info_by_name(table_name, namespace)
+        wrapper = self._query(
+            DaoType.DropTagByTableIdAndTag, [table_info.table_id, tag]
+        )
+        return bool(wrapper and wrapper.snapshot_tag_info)
+
     def get_all_partition_info_as_of(
         self,
         table_id: str,
@@ -387,12 +487,25 @@ class NativeMetadataClient:
         partitions: dict[str, str] | None = None,
         namespace: str = "default",
         as_of_ms: int | None = None,
+        snapshot_commits: Mapping[str, Sequence[Uuid]] | None = None,
     ) -> list[LakeSoulScanPlanPartition]:
         partitions = partitions or {}
         table_info = self.get_table_info_by_name(table_name, namespace)
 
         part_cols, pk_cols = self.get_partition_and_pk_cols(table_info)
-        if as_of_ms is not None:
+        if snapshot_commits is not None:
+            part_filter = [f"{key}={value}" for key, value in partitions.items()]
+            partition_infos = [
+                PartitionInfo(
+                    table_id=table_info.table_id,
+                    partition_desc=desc,
+                    version=0,
+                    snapshot=list(commits),
+                )
+                for desc, commits in snapshot_commits.items()
+                if all(item in desc for item in part_filter)
+            ]
+        elif as_of_ms is not None:
             partition_infos = self.get_all_partition_info_as_of(
                 table_info.table_id, as_of_ms
             )
