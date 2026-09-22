@@ -95,9 +95,9 @@ public class CleanJobPinnedTest extends AbstractTestBase {
             st.executeUpdate(
                     String.format(
                             "insert into table_info(table_id, table_namespace, table_name,"
-                                + " table_path, table_schema, properties, partitions, domain)"
-                                + " values"
-                                + " ('%s','default','%s','file://%s','[]','{}',';','public')",
+                                    + " table_path, table_schema, properties, partitions, domain)"
+                                    + " values"
+                                    + " ('%s','default','%s','file://%s','[]','{}',';','public')",
                             tableId, tableId, dir));
             st.executeUpdate(
                     String.format(
