@@ -64,7 +64,7 @@ jobs:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
           shared-key: "native-glibc217"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - name: Download Flink / Hadoop dependencies
@@ -78,19 +78,19 @@ jobs:
           wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+          use-cache: false
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@0.18.3
-      - name: Build native libraries
+      - name: Build native libraries and python extension
         run: |
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
+          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release/
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release/
-      - name: Build python extension
-        run: |
-          cargo -q build --release --package lakesoul-python
-          cp rust/target/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
       - name: Build Maven modules
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
