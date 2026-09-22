@@ -19,7 +19,7 @@ Local ``file://`` tables only, so bytes read can be measured from file sizes.
 Example:
     export LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified'
     export LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test
-    python benchmark/embodied/run_benchmark.py --episodes 8 --ticks 512
+    python script/benchmark/embodied/run_benchmark.py --episodes 8 --ticks 512
 """
 
 from __future__ import annotations

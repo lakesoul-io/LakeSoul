@@ -15,12 +15,12 @@ RGB, window sample throughput and GOP decode latency. Run it from the repo root:
 
     export LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified'
     export LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test
-    python benchmark/embodied/run_video_layout_benchmark.py --episodes 8 --ticks 120
+    python script/benchmark/embodied/run_video_layout_benchmark.py --episodes 8 --ticks 120
 
 Point the tables at object storage to measure the same workloads on S3
 (RustFS locally); `--with-blob` additionally benchmarks lazy blob reads:
 
-    python benchmark/embodied/run_video_layout_benchmark.py --with-blob \
+    python script/benchmark/embodied/run_video_layout_benchmark.py --with-blob \
         --storage-uri s3://lakesoul-test-bucket/video-bench \
         --s3-endpoint http://127.0.0.1:9000
 """

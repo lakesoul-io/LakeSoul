@@ -79,7 +79,7 @@
 
 - `python/examples/embodied/`：`synthetic.py`（每 episode 一分区、逐帧 image bytes）、
   `generate_data.py`（建表 + 导入）、`train.py`（窗口 + torch adapter + 线性模型训练循环）；
-- `benchmark/embodied/run_benchmark.py`：`baseline_full / embodied_full /
+- `script/benchmark/embodied/run_benchmark.py`：`baseline_full / embodied_full /
   baseline_subset / embodied_subset / baseline_shuffle / embodied_shuffle /
   torch_loader` 七组，报告吞吐、读取字节、每样本字节、P50/P99；
 - 本机跑通（8 episodes × 512 ticks，`vortex`，4KiB 随机图像）：
@@ -165,7 +165,7 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 
 ### M2-5a 视频布局存储/读取量化（已完成）
 
-- `benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
+- `script/benchmark/embodied/run_video_layout_benchmark.py` + `lerobot_source.py`：
   生成渐变图案的 LeRobot v3 源（mp4 + parquet），分别以 frames（逐帧 JPEG）、gop、
   daft-frames（native runner）导入，报告导入吞吐、磁盘体积、窗口采样吞吐与
   GOP 解码 P50/P99；

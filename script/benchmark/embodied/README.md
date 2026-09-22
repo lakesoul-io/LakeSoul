@@ -17,7 +17,7 @@ export LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtyp
 export LAKESOUL_PG_USERNAME=lakesoul_test
 export LAKESOUL_PG_PASSWORD=lakesoul_test
 
-python benchmark/embodied/run_benchmark.py \
+python script/benchmark/embodied/run_benchmark.py \
     --episodes 8 --ticks 512 --subset 2 --stride 4 \
     --torch-batches 50 --output /tmp/m1_5.json
 ```
@@ -39,7 +39,7 @@ import throughput, on-disk size versus the source MP4 and raw RGB, window
 sampling throughput and GOP decode latency.
 
 ```sh
-python benchmark/embodied/run_video_layout_benchmark.py \
+python script/benchmark/embodied/run_video_layout_benchmark.py \
     --episodes 8 --ticks 120 --width 128 --height 128 --keyint 16 \
     --output /tmp/m2_5a.json
 ```
