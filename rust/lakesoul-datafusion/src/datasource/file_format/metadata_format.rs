@@ -630,6 +630,7 @@ impl LakeSoulHashSinkExec {
         let partitioned_file_path_and_row_count =
             partitioned_file_path_and_row_count.lock().await;
 
+        let commit_started = std::time::Instant::now();
         for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
             commit_data(client.clone(), &table_name, partition_desc.clone(), files)
                 .await?;
@@ -639,6 +640,10 @@ impl LakeSoulHashSinkExec {
                 std::time::SystemTime::now()
             )
         }
+        debug!(
+            elapsed_ms = commit_started.elapsed().as_secs_f64() * 1000.0,
+            "committed metadata for {}", &table_name
+        );
 
         // Auto-build / incrementally update the vector index from the newly
         // committed files, driven by the table's `vector_index_columns`
@@ -670,32 +675,19 @@ impl LakeSoulHashSinkExec {
             (Vec::new(), Vec::new())
         };
 
-        // Inputs for the text auto-build; the vector block below consumes
-        // the originals.
-        let text_committed_files = committed_files.clone();
-        let text_primary_keys = primary_keys.clone();
-        let text_object_store_options = object_store_options.clone();
-        let text_all_active_files: Option<Vec<String>> = if text_configs
-            .iter()
-            .any(|c| c.management.rebuild_mode.eq_ignore_ascii_case("auto"))
-        {
-            client
-                .get_data_files_by_table_name(table_ref.table(), &namespace)
-                .await
-                .ok()
-        } else {
-            None
-        };
-
-        if !configs.is_empty() && !primary_keys.is_empty() {
-            // For auto-rebuild we must be able to read every active data
-            // file of the shard (a rebuild re-trains on the full dataset,
-            // not just the newly committed files).
-            let wants_rebuild = configs
+        // One active-files listing serves both auto-rebuild policies.
+        let wants_vector_rebuild = !configs.is_empty()
+            && !primary_keys.is_empty()
+            && configs
                 .iter()
                 .any(|c| c.management.rebuild_mode.eq_ignore_ascii_case("auto"));
-            // Table dropped concurrently — nothing left to index.
-            let all_active_files: Option<Vec<String>> = if wants_rebuild {
+        let wants_text_rebuild = !text_configs.is_empty()
+            && !primary_keys.is_empty()
+            && text_configs
+                .iter()
+                .any(|c| c.management.rebuild_mode.eq_ignore_ascii_case("auto"));
+        let active_files: Option<Vec<String>> =
+            if wants_vector_rebuild || wants_text_rebuild {
                 client
                     .get_data_files_by_table_name(table_ref.table(), &namespace)
                     .await
@@ -703,16 +695,40 @@ impl LakeSoulHashSinkExec {
             } else {
                 None
             };
-            let catalog = client.vector_index_catalog();
+
+        // Text and vector index maintenance are independent; build them
+        // concurrently instead of serializing two blocking builds.
+        let text_committed_files = committed_files.clone();
+        let text_primary_keys = primary_keys.clone();
+        let text_object_store_options = object_store_options.clone();
+        let vector_active_files = active_files.clone();
+        let vector_configs = configs;
+        let vector_primary_keys = primary_keys.clone();
+        let vector_object_store_options = object_store_options.clone();
+        let vector_catalog = client.vector_index_catalog();
+        let text_active_files = active_files;
+        let text_catalog = client.index_catalog::<lakesoul_text::TextSplitEntry>(
+            lakesoul_common::IndexKind::Text,
+        );
+        let vector_build = async {
+            if vector_configs.is_empty() || vector_primary_keys.is_empty() {
+                return Ok(0usize);
+            }
+            let active = if wants_vector_rebuild {
+                vector_active_files
+            } else {
+                None
+            };
+            let started = std::time::Instant::now();
             let built = tokio::task::spawn_blocking(move || {
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                     crate::vector_index::auto_build_vector_index(
-                        &configs,
-                        &primary_keys,
-                        &object_store_options,
+                        &vector_configs,
+                        &vector_primary_keys,
+                        &vector_object_store_options,
                         &committed_files,
-                        all_active_files.as_deref(),
-                        &catalog,
+                        active.as_deref(),
+                        &vector_catalog,
                     ),
                 )
             })
@@ -724,18 +740,21 @@ impl LakeSoulHashSinkExec {
             })?
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
             debug!(
-                "auto-built {built} vector index shard(s) for {}",
-                &table_name
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "auto-built {built} vector index shard(s) for {}", &table_name
             );
-        }
-
-        // Auto-build / incrementally update the text index from the newly
-        // committed files, driven by the table's `text_index_columns`
-        // property.
-        if !text_configs.is_empty() && !text_primary_keys.is_empty() {
-            let catalog = client.index_catalog::<lakesoul_text::TextSplitEntry>(
-                lakesoul_common::IndexKind::Text,
-            );
+            Ok::<usize, DataFusionError>(built)
+        };
+        let text_build = async {
+            if text_configs.is_empty() || text_primary_keys.is_empty() {
+                return Ok(0usize);
+            }
+            let active = if wants_text_rebuild {
+                text_active_files
+            } else {
+                None
+            };
+            let started = std::time::Instant::now();
             let built = tokio::task::spawn_blocking(move || {
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                     crate::text_index::auto_build_text_index(
@@ -743,8 +762,8 @@ impl LakeSoulHashSinkExec {
                         &text_primary_keys,
                         &text_object_store_options,
                         &text_committed_files,
-                        text_all_active_files.as_deref(),
-                        &catalog,
+                        active.as_deref(),
+                        &text_catalog,
                     ),
                 )
             })
@@ -755,8 +774,15 @@ impl LakeSoulHashSinkExec {
                 ))
             })?
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
-            debug!("auto-built {built} text index shard(s) for {}", &table_name);
-        }
+            debug!(
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "auto-built {built} text index shard(s) for {}", &table_name
+            );
+            Ok::<usize, DataFusionError>(built)
+        };
+        let (vector_built, text_built) = tokio::join!(vector_build, text_build);
+        vector_built?;
+        text_built?;
         Ok(count)
     }
 }

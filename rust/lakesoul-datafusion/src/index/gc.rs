@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use lakesoul_metadata::index_catalog::{
@@ -22,6 +23,34 @@ use crate::Result;
 
 /// Default grace period before superseded index files may be deleted.
 pub const DEFAULT_GC_GRACE_SECONDS: u64 = 3600;
+
+/// Environment variable overriding how often the write path runs its
+/// amortized shard GC (every N writes, non-zero grace only).
+pub const ENV_INDEX_GC_EVERY: &str = "LAKESOUL_INDEX_GC_EVERY";
+
+/// Default write-path GC interval (every 16th write per process).
+pub const DEFAULT_GC_EVERY_WRITES: u64 = 16;
+
+/// Whether a write-path shard GC should run now.
+///
+/// A write can only make its just-committed files superseded, and the grace
+/// period protects those; with a non-zero grace period every write would
+/// otherwise run a full shard-directory scan that cannot collect anything.
+/// Amortize it over writes instead.  With grace zero the caller explicitly
+/// asked for immediate cleanup, so it runs on every write.
+pub fn should_run_write_gc(grace_seconds: u64) -> bool {
+    if grace_seconds == 0 {
+        return true;
+    }
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let every = std::env::var(ENV_INDEX_GC_EVERY)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_GC_EVERY_WRITES);
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    write.is_multiple_of(every)
+}
 
 /// Knobs for an explicit garbage collection run.
 #[derive(Debug, Clone)]

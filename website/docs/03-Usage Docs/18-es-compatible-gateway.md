@@ -100,6 +100,34 @@ and `min_score` filters the clamped score. A filter-only query (no scoring
 clause) runs as a plain scan and returns the full `_source`, which is what
 the index-copy path needs.
 
+## Performance tuning
+
+Each hash bucket is an independent data file and index shard, so
+`hash_bucket_num` is the main trade-off between write parallelism and
+per-request overhead.  Measured with the same 20,000-document MS MARCO corpus
+and 500-document bulk batches:
+
+| Buckets | Bulk write | Search p50 | Search QPS | Recall@100 |
+|--------:|-----------:|-----------:|-----------:|-----------:|
+| 4 | ~1,200 docs/s | ~237 ms | ~5 | 85.7% |
+| 1 | ~2,900 docs/s | ~76 ms | ~15 | 85.7% |
+
+Start with **one bucket per partition** and raise it only when concurrent
+writers need more parallelism.  Other knobs:
+
+- **`nprobe`** (vector, default 64) — clusters probed per shard; lower it for
+  latency, raise it for recall.
+- **Write-path index GC** — with the default `gc_grace_seconds = 3600` a
+  fresh write cannot make any index file collectible, so GC is amortized:
+  it runs on every 16th write and can be tuned with
+  `LAKESOUL_INDEX_GC_EVERY` (set `1` for the old per-write behavior; a grace
+  of `0` always runs it per write).
+- **Per-phase timings** — start the gateway with
+  `LAKESOUL_ES_GATEWAY_TIMING=1` and
+  `RUST_LOG=lakesoul_es_gateway::timing=info` to log write
+  (`parse`, `upsert`) and search (`files`, `resolve`, `lease`,
+  `shard_search`, `fetch`, `verify`) phase timings per request.
+
 ## Limitations
 
 - Delete/update resolve their filters with a table scan; only primary keys

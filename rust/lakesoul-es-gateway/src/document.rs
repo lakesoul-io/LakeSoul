@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use crate::error::EsError;
 use crate::schema::{CDC_COLUMN, CDC_DELETE, CDC_INSERT};
 use crate::state::{GatewayState, IndexRuntime};
+use crate::timing::timing_enabled;
 
 /// One ES document of the WeKnora index model.
 #[derive(Debug, Default, Deserialize)]
@@ -118,6 +119,7 @@ pub async fn post_bulk(
 ) -> Result<Json<Value>, EsError> {
     let started = Instant::now();
     let runtime = state.index(&index)?;
+    let parse_started = Instant::now();
     let text = std::str::from_utf8(&body).map_err(|error| {
         EsError::bad_request(format!("bulk body is not UTF-8: {error}"))
     })?;
@@ -168,8 +170,20 @@ pub async fn post_bulk(
         }
     }
 
+    let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
+    let write_started = Instant::now();
     if !pending.is_empty() {
         write_documents(&state, runtime, pending).await?;
+    }
+    if timing_enabled() {
+        tracing::info!(
+            target: "lakesoul_es_gateway::timing",
+            "write total_ms={:.1} parse_ms={:.1} upsert_ms={:.1} docs={}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            parse_ms,
+            write_started.elapsed().as_secs_f64() * 1000.0,
+            items.len()
+        );
     }
     Ok(Json(json!({
         "took": started.elapsed().as_millis() as u64,

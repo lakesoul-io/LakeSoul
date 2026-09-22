@@ -23,7 +23,7 @@ use crate::index::config::{
     IndexTableConfig, index_columns_to_json, parse_index_columns,
     parse_index_from_table_properties,
 };
-use crate::index::gc::gc_shard_now;
+use crate::index::gc::{gc_shard_now, should_run_write_gc};
 use crate::index::store_for_files;
 use lakesoul_io::index::commit::ResolvedIndex;
 
@@ -221,6 +221,7 @@ pub async fn auto_build_text_index(
                 IndexKind::Text,
                 &config.column,
             );
+            let resolve_started = std::time::Instant::now();
             let resolved = match catalog.resolve(&prefix).await {
                 Ok(view) => view,
                 Err(error) => {
@@ -230,17 +231,23 @@ pub async fn auto_build_text_index(
                     continue;
                 }
             };
+            let resolve_ms = resolve_started.elapsed().as_secs_f64() * 1000.0;
             let full_shard_files = shard_all_files.get(&prefix).cloned();
             // Compaction: once the accumulated delta history of a shard
             // outweighs its compacted base, rebuild it from all active files
             // into a single fresh split.
+            // The drift ratio comes from the commit already resolved above,
+            // so the rebuild decision costs no extra catalog round trip.
             let should_rebuild = auto_rebuild
                 && full_shard_files
                     .as_ref()
                     .is_some_and(|files| !files.is_empty())
-                && drift_exceeds_threshold(catalog, &prefix, management.max_delta_ratio)
-                    .await
-                    .unwrap_or(false);
+                && resolved.as_ref().is_some_and(|view| {
+                    lakesoul_text::drift_exceeds_threshold(
+                        &view.segments,
+                        management.max_delta_ratio,
+                    )
+                });
             // The heal-from-scratch fallback below must read the whole shard,
             // not just the new files of a delta build.
             let rebuild_files = full_shard_files
@@ -265,6 +272,7 @@ pub async fn auto_build_text_index(
                 builder = builder.with_base(to_resolved_shard(&prefix, view)?);
             }
             let mut commit_mode = plan.mode;
+            let build_started = std::time::Instant::now();
             let outcome = match builder.build().await {
                 Ok(outcome) => outcome,
                 Err(error) if commit_mode == CommitMode::Delta => {
@@ -303,6 +311,8 @@ pub async fn auto_build_text_index(
                     continue;
                 }
             };
+            let build_ms = build_started.elapsed().as_secs_f64() * 1000.0;
+            let commit_started = std::time::Instant::now();
             match commit_if_non_empty(
                 catalog,
                 &prefix,
@@ -321,9 +331,12 @@ pub async fn auto_build_text_index(
                     continue;
                 }
             }
+            let commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
             built += 1;
-            if management.gc_enabled
-                && let Err(error) = gc_shard_now(
+            let mut gc_ms = 0.0;
+            if management.gc_enabled && should_run_write_gc(management.gc_grace_seconds) {
+                let gc_started = std::time::Instant::now();
+                if let Err(error) = gc_shard_now(
                     &store,
                     catalog,
                     &prefix,
@@ -332,9 +345,20 @@ pub async fn auto_build_text_index(
                     &is_text_split_file,
                 )
                 .await
-            {
-                warn!("text index gc failed for '{prefix}': {error}");
+                {
+                    warn!("text index gc failed for '{prefix}': {error}");
+                }
+                gc_ms = gc_started.elapsed().as_secs_f64() * 1000.0;
             }
+            debug!(
+                prefix = %prefix,
+                rebuilt = should_rebuild,
+                resolve_ms,
+                build_ms,
+                commit_ms,
+                gc_ms,
+                "text index shard updated"
+            );
         }
         if !failures.is_empty() {
             return Err(report!(
@@ -345,25 +369,6 @@ pub async fn auto_build_text_index(
         }
     }
     Ok(built)
-}
-
-/// Whether a shard's delta history outweighs its compacted base past the
-/// configured ratio (see [`lakesoul_text::drift_exceeds_threshold`]).
-async fn drift_exceeds_threshold(
-    catalog: &IndexCatalog<TextSplitEntry>,
-    prefix: &str,
-    max_delta_ratio: f32,
-) -> Result<bool> {
-    let Some(view) = catalog.resolve(prefix).await.map_err(|error| {
-        report!("failed to resolve text index at '{prefix}': {error}")
-    })?
-    else {
-        return Ok(false);
-    };
-    Ok(lakesoul_text::drift_exceeds_threshold(
-        &view.segments,
-        max_delta_ratio,
-    ))
 }
 
 /// Rebuild every text index shard of a table from scratch (all active data
