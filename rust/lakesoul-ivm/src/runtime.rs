@@ -393,6 +393,101 @@ pub fn join_view_schema_for(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The hidden column holding a left primary key in a keyed join output.
+fn left_pk_alias(key: &str) -> String {
+    format!("__left_pk_{key}")
+}
+
+/// The hidden column holding a right primary key in a keyed join output.
+fn right_pk_alias(key: &str) -> String {
+    format!("__right_pk_{key}")
+}
+
+/// The primary keys of a keyed [`JoinView`] output, in schema order.
+pub fn keyed_join_output_primary_keys(
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+) -> Vec<String> {
+    left_primary_keys
+        .iter()
+        .map(|key| left_pk_alias(key))
+        .chain(right_primary_keys.iter().map(|key| right_pk_alias(key)))
+        .collect()
+}
+
+/// The schema of a [`JoinView`] output over two keyed (upsert/delete) sources.
+///
+/// The output is keyed by the pair of row identities (`__left_pk_*`,
+/// `__right_pk_*`), so the view can retract and rewrite individual pairs as
+/// either side changes. The join keys are non-nullable because NULL join keys
+/// never match, and the payloads keep the nullability of their source columns.
+pub fn keyed_join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+    join_keys: &[String],
+    left_value: &str,
+    right_value: &str,
+) -> Result<SchemaRef> {
+    if left_primary_keys.is_empty() || right_primary_keys.is_empty() {
+        return Err(report!(
+            "a keyed join view needs primary keys on both sources"
+        ));
+    }
+    let mut fields = Vec::new();
+    for key in join_keys {
+        fields.push(Arc::new(Field::new(
+            key,
+            field_type(left_schema, key)?,
+            false,
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        "left_value",
+        field_type(left_schema, left_value)?,
+        left_schema
+            .field_with_name(left_value)
+            .map(|field| field.is_nullable())
+            .unwrap_or(true),
+    )));
+    fields.push(Arc::new(Field::new(
+        "right_value",
+        field_type(right_schema, right_value)?,
+        right_schema
+            .field_with_name(right_value)
+            .map(|field| field.is_nullable())
+            .unwrap_or(true),
+    )));
+    for key in left_primary_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            left_pk_alias(key),
+            field.data_type().clone(),
+            false,
+        )));
+    }
+    for key in right_primary_keys {
+        let field = right_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            right_pk_alias(key),
+            field.data_type().clone(),
+            false,
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// Accepts either a single `group_key` string or a `group_keys` array when
 /// deserializing persisted view specs.
 #[derive(Deserialize)]
@@ -1203,8 +1298,11 @@ impl IvmRuntime {
     pub async fn refresh_join(&self, view: &JoinView) -> Result<Option<i64>> {
         self.register_join_view(view).await?;
         validate_join_view(view)?;
-        ensure_append_only(&view.left, &view.view_id)?;
-        ensure_append_only(&view.right, &view.view_id)?;
+        let keyed = join_is_keyed(view);
+        if !keyed {
+            ensure_append_only(&view.left, &view.view_id)?;
+            ensure_append_only(&view.right, &view.view_id)?;
+        }
         self.ensure_unpartitioned(&view.left).await?;
         self.ensure_unpartitioned(&view.right).await?;
 
@@ -1240,57 +1338,232 @@ impl IvmRuntime {
         let epoch = record.epoch;
 
         let context = SessionContext::new();
-        let left_delta = view
-            .left
-            .read_files(left_window.added_files.clone())
-            .await?;
-        let right_delta = view
-            .right
-            .read_files(right_window.added_files.clone())
-            .await?;
-        let left_before = view
-            .left
-            .read_as_of(&self.client, left_window.before_timestamp)
-            .await?;
-        let right_before = view
-            .right
-            .read_as_of(&self.client, right_window.before_timestamp)
-            .await?;
+        if keyed {
+            let left_now = filter_deletes(
+                dataframe(
+                    &context,
+                    view.left.read_current(&self.client).await?,
+                    &view.left.schema,
+                )?,
+                change_column(&view.left),
+            )?;
+            let right_now = filter_deletes(
+                dataframe(
+                    &context,
+                    view.right.read_current(&self.client).await?,
+                    &view.right.schema,
+                )?,
+                change_column(&view.right),
+            )?;
+            let delta_left = dataframe(
+                &context,
+                view.left
+                    .read_files(left_window.added_files.clone())
+                    .await?,
+                &view.left.schema,
+            )?;
+            let delta_right = dataframe(
+                &context,
+                view.right
+                    .read_files(right_window.added_files.clone())
+                    .await?,
+                &view.right.schema,
+            )?;
+            let mv = dataframe(
+                &context,
+                view.output.read_current(&self.client).await?,
+                &view.output.schema,
+            )?;
 
-        let mut terms = Vec::new();
-        if !left_delta.is_empty() && !right_before.is_empty() {
-            terms.push(join_projection(
-                dataframe(&context, left_delta.clone(), &view.left.schema)?,
-                dataframe(&context, right_before.clone(), &view.right.schema)?,
-                view,
-            )?);
-        }
-        if !left_before.is_empty() && !right_delta.is_empty() {
-            terms.push(join_projection(
-                dataframe(&context, left_before.clone(), &view.left.schema)?,
-                dataframe(&context, right_delta.clone(), &view.right.schema)?,
-                view,
-            )?);
-        }
-        if !left_delta.is_empty() && !right_delta.is_empty() {
-            terms.push(join_projection(
-                dataframe(&context, left_delta.clone(), &view.left.schema)?,
-                dataframe(&context, right_delta.clone(), &view.right.schema)?,
-                view,
-            )?);
-        }
-        if let Some(first) = terms.pop() {
-            let mut combined = first;
-            for term in terms {
-                combined = combined.union(term)?;
-            }
-            for batch in combined
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+            let left_key_names = view
+                .left
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let right_key_names = view
+                .right
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let left_key_exprs = left_key_names
+                .iter()
+                .map(|key| col(*key))
+                .collect::<Vec<_>>();
+            let right_key_exprs = right_key_names
+                .iter()
+                .map(|key| col(*key))
+                .collect::<Vec<_>>();
+
+            // Pairs whose left or right row changed in this window.
+            let affected_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
+            let affected_right =
+                delta_right.select(right_key_exprs.clone())?.distinct()?;
+            let left_rows = left_now.clone().join(
+                affected_left.clone(),
+                JoinType::LeftSemi,
+                &left_key_names,
+                &left_key_names,
+                None,
+            )?;
+            let right_rows = right_now.clone().join(
+                affected_right.clone(),
+                JoinType::LeftSemi,
+                &right_key_names,
+                &right_key_names,
+                None,
+            )?;
+
+            // The current matches of the affected rows, deduplicated for
+            // pairs whose both sides changed.
+            let current = keyed_join_projection(left_rows, right_now, view)?
+                .union(keyed_join_projection(left_now, right_rows, view)?)?
+                .distinct()?;
+
+            let pair_keys = view
+                .left
+                .primary_keys
+                .iter()
+                .map(|key| left_pk_alias(key))
+                .chain(
+                    view.right
+                        .primary_keys
+                        .iter()
+                        .map(|key| right_pk_alias(key)),
+                )
+                .collect::<Vec<_>>();
+            let pair_refs = pair_keys.iter().map(String::as_str).collect::<Vec<_>>();
+            let pair_exprs = pair_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+
+            // Pair rows already written by this epoch make a replay a no-op.
+            let already = mv
+                .clone()
+                .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
+                .select(pair_exprs.clone())?
+                .distinct()?;
+            let inserts = current
+                .join(already, JoinType::LeftAnti, &pair_refs, &pair_refs, None)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+
+            // Retract the previous pairs of the affected rows; rows written by
+            // this epoch are kept so a replay is idempotent. The output keys
+            // pairs by the two row identities, so match the aliases.
+            let left_alias_names = view
+                .left
+                .primary_keys
+                .iter()
+                .map(|key| left_pk_alias(key))
+                .collect::<Vec<_>>();
+            let left_alias_refs = left_alias_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let right_alias_names = view
+                .right
+                .primary_keys
+                .iter()
+                .map(|key| right_pk_alias(key))
+                .collect::<Vec<_>>();
+            let right_alias_refs = right_alias_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let active = mv
+                .clone()
+                .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?;
+            let deletes = active
+                .clone()
+                .join(
+                    affected_left,
+                    JoinType::LeftSemi,
+                    &left_alias_refs,
+                    &left_key_names,
+                    None,
+                )?
+                .union(active.join(
+                    affected_right,
+                    JoinType::LeftSemi,
+                    &right_alias_refs,
+                    &right_key_names,
+                    None,
+                )?)?
+                .distinct()?
+                .select(keyed_join_output_columns(view))?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+
+            // Delete rows must arrive before the replacement insert of the
+            // same pair for merge-on-read.
+            let mut sort_exprs = pair_exprs;
+            sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+            for batch in inserts
+                .union(deletes)?
+                .sort_by(sort_exprs)?
                 .collect()
                 .await?
             {
                 if batch.num_rows() > 0 {
                     view.output.append_batch(&self.client, batch).await?;
+                }
+            }
+        } else {
+            let left_delta = view
+                .left
+                .read_files(left_window.added_files.clone())
+                .await?;
+            let right_delta = view
+                .right
+                .read_files(right_window.added_files.clone())
+                .await?;
+            let left_before = view
+                .left
+                .read_as_of(&self.client, left_window.before_timestamp)
+                .await?;
+            let right_before = view
+                .right
+                .read_as_of(&self.client, right_window.before_timestamp)
+                .await?;
+
+            let mut terms = Vec::new();
+            if !left_delta.is_empty() && !right_before.is_empty() {
+                terms.push(join_projection(
+                    dataframe(&context, left_delta.clone(), &view.left.schema)?,
+                    dataframe(&context, right_before.clone(), &view.right.schema)?,
+                    view,
+                )?);
+            }
+            if !left_before.is_empty() && !right_delta.is_empty() {
+                terms.push(join_projection(
+                    dataframe(&context, left_before.clone(), &view.left.schema)?,
+                    dataframe(&context, right_delta.clone(), &view.right.schema)?,
+                    view,
+                )?);
+            }
+            if !left_delta.is_empty() && !right_delta.is_empty() {
+                terms.push(join_projection(
+                    dataframe(&context, left_delta.clone(), &view.left.schema)?,
+                    dataframe(&context, right_delta.clone(), &view.right.schema)?,
+                    view,
+                )?);
+            }
+            if let Some(first) = terms.pop() {
+                let mut combined = first;
+                for term in terms {
+                    combined = combined.union(term)?;
+                }
+                for batch in combined
+                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                    .collect()
+                    .await?
+                {
+                    if batch.num_rows() > 0 {
+                        view.output.append_batch(&self.client, batch).await?;
+                    }
                 }
             }
         }
@@ -1800,8 +2073,11 @@ impl IvmRuntime {
     pub async fn rebuild_join(&self, view: &JoinView) -> Result<i64> {
         self.register_join_view(view).await?;
         validate_join_view(view)?;
-        ensure_append_only(&view.left, &view.view_id)?;
-        ensure_append_only(&view.right, &view.view_id)?;
+        let keyed = join_is_keyed(view);
+        if !keyed {
+            ensure_append_only(&view.left, &view.view_id)?;
+            ensure_append_only(&view.right, &view.view_id)?;
+        }
         self.ensure_unpartitioned(&view.left).await?;
         self.ensure_unpartitioned(&view.right).await?;
 
@@ -1849,16 +2125,27 @@ impl IvmRuntime {
 
         let context = SessionContext::new();
         if !left_baseline.batches.is_empty() && !right_baseline.batches.is_empty() {
-            let joined = join_projection(
-                dataframe(&context, left_baseline.batches, &view.left.schema)?,
-                dataframe(&context, right_baseline.batches, &view.right.schema)?,
-                view,
-            )?;
-            for batch in joined
+            let joined = if keyed {
+                let left = filter_deletes(
+                    dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                    change_column(&view.left),
+                )?;
+                let right = filter_deletes(
+                    dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                    change_column(&view.right),
+                )?;
+                keyed_join_projection(left, right, view)?
+                    .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+            } else {
+                join_projection(
+                    dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                    dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                    view,
+                )?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                .collect()
-                .await?
-            {
+            };
+            for batch in joined.collect().await? {
                 if batch.num_rows() > 0 {
                     view.output.append_batch(&self.client, batch).await?;
                 }
@@ -2499,7 +2786,80 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
     }
     field_type(&view.left.schema, &view.left_value)?;
     field_type(&view.right.schema, &view.right_value)?;
-    let _ = &view.output;
+
+    if join_is_keyed(view) {
+        if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
+            return Err(report!(
+                "join view {}: both sources must be keyed, or both append-only",
+                view.view_id
+            ));
+        }
+        // The row identities must be non-NULL and present in both schemas.
+        for (side, source) in [("left", &view.left), ("right", &view.right)] {
+            for key in &source.primary_keys {
+                let field = source.schema.field_with_name(key).map_err(|_| {
+                    report!(
+                        "join view {}: {side} key {key} is not in the source",
+                        view.view_id
+                    )
+                })?;
+                if field.is_nullable() {
+                    return Err(report!(
+                        "join view {}: {side} key {key} must be non-nullable",
+                        view.view_id
+                    ));
+                }
+            }
+        }
+        let expected = keyed_join_view_schema_for(
+            &view.left.schema,
+            &view.right.schema,
+            &view.left.primary_keys,
+            &view.right.primary_keys,
+            &view.join_keys,
+            &view.left_value,
+            &view.right_value,
+        )?;
+        for field in expected.fields() {
+            let actual =
+                view.output
+                    .schema
+                    .field_with_name(field.name())
+                    .map_err(|_| {
+                        report!(
+                            "join view {}: output table {} is missing column {}",
+                            view.view_id,
+                            view.output.table_name,
+                            field.name()
+                        )
+                    })?;
+            if actual.data_type() != field.data_type() {
+                return Err(report!(
+                    "join view {}: output column {} has type {} instead of {}",
+                    view.view_id,
+                    field.name(),
+                    actual.data_type(),
+                    field.data_type()
+                ));
+            }
+        }
+        let expected_keys = keyed_join_output_primary_keys(
+            &view.left.primary_keys,
+            &view.right.primary_keys,
+        );
+        if view.output.primary_keys != expected_keys {
+            return Err(report!(
+                "join view {}: output primary keys must be [{}]",
+                view.view_id,
+                expected_keys.join(", ")
+            ));
+        }
+    } else if !view.output.primary_keys.is_empty() {
+        return Err(report!(
+            "join view {}: an append-only join output must not have primary keys",
+            view.view_id
+        ));
+    }
     Ok(())
 }
 
@@ -2553,6 +2913,90 @@ fn join_projection(
     output.push(col("left_value"));
     output.push(col("right_value"));
     Ok(joined.select(output)?)
+}
+
+/// Project an inner equi-join of two keyed sources onto
+/// `(join keys, left value, right value, left pk*, right pk*)`.
+fn keyed_join_projection(
+    left: DataFrame,
+    right: DataFrame,
+    view: &JoinView,
+) -> Result<DataFrame> {
+    let mut left_columns = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    left_columns.push(col(view.left_value.as_str()).alias("left_value"));
+    for key in &view.left.primary_keys {
+        left_columns.push(col(key.as_str()).alias(left_pk_alias(key)));
+    }
+    let left = left.select(left_columns)?;
+
+    let mut right_columns = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()).alias(format!("__right_{key}")))
+        .collect::<Vec<_>>();
+    right_columns.push(col(view.right_value.as_str()).alias("right_value"));
+    for key in &view.right.primary_keys {
+        right_columns.push(col(key.as_str()).alias(right_pk_alias(key)));
+    }
+    let right = right.select(right_columns)?;
+
+    let key_names = view
+        .join_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let right_key_names = view
+        .join_keys
+        .iter()
+        .map(|key| format!("__right_{key}"))
+        .collect::<Vec<_>>();
+    let right_key_refs = right_key_names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let joined = left.join(right, JoinType::Inner, &key_names, &right_key_refs, None)?;
+
+    let mut output = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    output.push(col("left_value"));
+    output.push(col("right_value"));
+    for key in &view.left.primary_keys {
+        output.push(col(left_pk_alias(key)));
+    }
+    for key in &view.right.primary_keys {
+        output.push(col(right_pk_alias(key)));
+    }
+    Ok(joined.select(output)?)
+}
+
+/// The output columns of a keyed join in schema order.
+fn keyed_join_output_columns(view: &JoinView) -> Vec<datafusion::logical_expr::Expr> {
+    let mut output = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    output.push(col("left_value"));
+    output.push(col("right_value"));
+    for key in &view.left.primary_keys {
+        output.push(col(left_pk_alias(key).as_str()));
+    }
+    for key in &view.right.primary_keys {
+        output.push(col(right_pk_alias(key).as_str()));
+    }
+    output
+}
+
+/// Whether a join view takes the keyed (upsert) path.
+fn join_is_keyed(view: &JoinView) -> bool {
+    !view.left.primary_keys.is_empty() || !view.right.primary_keys.is_empty()
 }
 
 fn column_expr(name: &str) -> datafusion::logical_expr::Expr {
