@@ -195,8 +195,8 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql =
-                "delete from partition_info where table_id = ? and partition_desc = ? and pinned = false and timestamp"
-                        + " <= ?";
+                "delete from partition_info where table_id = ? and partition_desc = ? and pinned ="
+                    + " false and timestamp <= ?";
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);

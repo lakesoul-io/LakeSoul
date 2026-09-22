@@ -8,17 +8,19 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
+
+import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.lakesoul.entry.clean.NewCleanJob;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.UUID;
-import org.apache.flink.api.java.utils.ParameterTool;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.lakesoul.entry.clean.NewCleanJob;
-import org.junit.BeforeClass;
-import org.junit.Test;
 
 /**
  * Runs the real clean job on a mini cluster against a logical-replication PostgreSQL and checks
@@ -29,8 +31,7 @@ public class CleanJobPinnedTest extends AbstractTestBase {
     private static final String JDBC_URL =
             System.getenv()
                     .getOrDefault(
-                            "LAKESOUL_PG_URL",
-                            "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
+                            "LAKESOUL_PG_URL", "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
 
     private static String sourceHost() {
         String withoutScheme = JDBC_URL.replace("jdbc:postgresql://", "");
@@ -94,8 +95,9 @@ public class CleanJobPinnedTest extends AbstractTestBase {
             st.executeUpdate(
                     String.format(
                             "insert into table_info(table_id, table_namespace, table_name,"
-                                    + " table_path, table_schema, properties, partitions, domain)"
-                                    + " values ('%s','default','%s','file://%s','[]','{}',';','public')",
+                                + " table_path, table_schema, properties, partitions, domain)"
+                                + " values"
+                                + " ('%s','default','%s','file://%s','[]','{}',';','public')",
                             tableId, tableId, dir));
             st.executeUpdate(
                     String.format(
@@ -108,10 +110,16 @@ public class CleanJobPinnedTest extends AbstractTestBase {
             st.executeUpdate(
                     String.format(
                             "insert into discard_compressed_file_info(file_path, table_path,"
-                                    + " partition_desc, timestamp)"
-                                    + " values ('%s','file://%s','%s',%d), ('%s','file://%s','%s',%d)",
-                            pinnedFile, dir, partition, now - 60_000,
-                            plainFile, dir, partition, now - 60_000));
+                                + " partition_desc, timestamp) values ('%s','file://%s','%s',%d),"
+                                + " ('%s','file://%s','%s',%d)",
+                            pinnedFile,
+                            dir,
+                            partition,
+                            now - 60_000,
+                            plainFile,
+                            dir,
+                            partition,
+                            now - 60_000));
         }
 
         ParameterTool parameter =
@@ -123,20 +131,17 @@ public class CleanJobPinnedTest extends AbstractTestBase {
                                 put(
                                         "source_db.dbName",
                                         System.getenv()
-                                                .getOrDefault(
-                                                        "LAKESOUL_PG_DB", "lakesoul_test"));
+                                                .getOrDefault("LAKESOUL_PG_DB", "lakesoul_test"));
                                 put(
                                         "source_db.user",
                                         System.getenv()
                                                 .getOrDefault(
-                                                        "LAKESOUL_PG_USERNAME",
-                                                        "lakesoul_test"));
+                                                        "LAKESOUL_PG_USERNAME", "lakesoul_test"));
                                 put(
                                         "source_db.password",
                                         System.getenv()
                                                 .getOrDefault(
-                                                        "LAKESOUL_PG_PASSWORD",
-                                                        "lakesoul_test"));
+                                                        "LAKESOUL_PG_PASSWORD", "lakesoul_test"));
                                 put("slotName", "clean_job_" + tableId);
                                 put("plugName", "pgoutput");
                                 put("schemaList", "public");
@@ -190,8 +195,7 @@ public class CleanJobPinnedTest extends AbstractTestBase {
                         "delete from discard_compressed_file_info where table_path = 'file://"
                                 + dir
                                 + "'");
-                st.executeUpdate(
-                        "delete from data_commit_info where table_id = '" + tableId + "'");
+                st.executeUpdate("delete from data_commit_info where table_id = '" + tableId + "'");
                 st.executeUpdate("delete from table_info where table_id = '" + tableId + "'");
             }
         }

@@ -960,9 +960,7 @@ pub async fn execute_query(
         | DaoType::DropTagByTableIdAndTag
             if params.len() == 2 =>
         {
-            let result = conn
-                .query(&statement, &[&params[0], &params[1]])
-                .await;
+            let result = conn.query(&statement, &[&params[0], &params[1]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),

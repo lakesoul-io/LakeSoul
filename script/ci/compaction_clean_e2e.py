@@ -149,7 +149,11 @@ def scenario_tag(catalog: LakeSoulCatalog) -> None:
         missing = tagged_files - _list_files(base)
         assert not missing, f"tagged files were deleted: {missing}"
         assert sorted(
-            table.scan().options(tag="keep-me").to_arrow_table().column("id").to_pylist()
+            table.scan()
+            .options(tag="keep-me")
+            .to_arrow_table()
+            .column("id")
+            .to_pylist()
         ) == [0], "tagged snapshot must stay readable"
         print(f"[tag] ok: {name}")
     finally:
@@ -195,7 +199,9 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
         )
         values = table.scan().to_arrow_table().column("payload").to_pylist()
         assert any(value for value in values), "blob payloads must stay readable"
-        assert any(".blob" in path for path in _list_files(base)), "blob pack must exist"
+        assert any(".blob" in path for path in _list_files(base)), (
+            "blob pack must exist"
+        )
         print(f"[blob] ok: {name}")
     finally:
         catalog.drop_table(name, if_exists=True)

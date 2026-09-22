@@ -254,6 +254,5 @@ public class NewCleanJob {
                 .name("处理新版过期数据")
                 .process(new DiscardFileDeleteFunction(pgUrl, userName, passWord))
                 .name("批量异步删除数据");
-
     }
 }

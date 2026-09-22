@@ -190,8 +190,7 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
         return allSucceeded;
     }
 
-    private List<String> pinnedPaths(Connection conn, List<String> batch)
-            throws SQLException {
+    private List<String> pinnedPaths(Connection conn, List<String> batch) throws SQLException {
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "SELECT p.path FROM unnest(?::text[]) AS p(path)"

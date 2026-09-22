@@ -9,16 +9,18 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
 
 /**
  * PostgreSQL-backed checks that the clean-up statements honour the pin flags.
@@ -31,8 +33,7 @@ public class PinnedCleanupTest {
     private static final String URL =
             System.getenv()
                     .getOrDefault(
-                            "LAKESOUL_PG_URL",
-                            "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
+                            "LAKESOUL_PG_URL", "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
     private static final String PARTITION = "-5";
 
     private final String tableId =
@@ -63,20 +64,21 @@ public class PinnedCleanupTest {
             st.executeUpdate(
                     String.format(
                             "insert into table_info(table_id, table_namespace, table_name,"
-                                    + " table_path, table_schema, properties, partitions, domain)"
-                                    + " values ('%s','default','%s','file:///tmp/%s','[]','{}',';','public')",
+                                + " table_path, table_schema, properties, partitions, domain)"
+                                + " values"
+                                + " ('%s','default','%s','file:///tmp/%s','[]','{}',';','public')",
                             tableId, tableId, tableId));
             st.executeUpdate(
                     String.format(
                             "insert into partition_info(table_id, partition_desc, version,"
-                                    + " commit_op, snapshot, timestamp, domain, pinned)"
-                                    + " values ('%s','%s',0,'AppendCommit',ARRAY['%s'::uuid],%d,'public',true)",
+                                + " commit_op, snapshot, timestamp, domain, pinned) values"
+                                + " ('%s','%s',0,'AppendCommit',ARRAY['%s'::uuid],%d,'public',true)",
                             tableId, PARTITION, pinnedCommit, now));
             st.executeUpdate(
                     String.format(
                             "insert into partition_info(table_id, partition_desc, version,"
-                                    + " commit_op, snapshot, timestamp, domain, pinned)"
-                                    + " values ('%s','%s',1,'AppendCommit',ARRAY['%s'::uuid,'%s'::uuid],%d,'public',false)",
+                                + " commit_op, snapshot, timestamp, domain, pinned) values"
+                                + " ('%s','%s',1,'AppendCommit',ARRAY['%s'::uuid,'%s'::uuid],%d,'public',false)",
                             tableId, PARTITION, pinnedCommit, plainCommit, now + 1));
             st.executeUpdate(
                     String.format(
@@ -110,8 +112,7 @@ public class PinnedCleanupTest {
     @Test
     public void pinnedFilePathsAreReported() {
         DBManager dbManager = new DBManager();
-        List<String> pinned =
-                dbManager.getPinnedFilePaths(Arrays.asList(pinnedFile, plainFile));
+        List<String> pinned = dbManager.getPinnedFilePaths(Arrays.asList(pinnedFile, plainFile));
         assertTrue(pinned.contains(pinnedFile));
         assertFalse(pinned.contains(plainFile));
     }
@@ -131,7 +132,9 @@ public class PinnedCleanupTest {
             st.executeUpdate(
                     "update partition_info set pinned = false where table_id = '" + tableId + "'");
             st.executeUpdate(
-                    "update data_commit_info set pinned = false where table_id = '" + tableId + "'");
+                    "update data_commit_info set pinned = false where table_id = '"
+                            + tableId
+                            + "'");
         }
         DBManager dbManager = new DBManager();
         List<String> files = dbManager.deleteMetaPartitionInfo(tableId, PARTITION);
@@ -146,8 +149,11 @@ public class PinnedCleanupTest {
                 Statement st = conn.createStatement();
                 ResultSet rs =
                         st.executeQuery(
-                                "select count(*) from " + table + " where table_id = '"
-                                        + tableId + "'")) {
+                                "select count(*) from "
+                                        + table
+                                        + " where table_id = '"
+                                        + tableId
+                                        + "'")) {
             rs.next();
             return rs.getLong(1);
         }
