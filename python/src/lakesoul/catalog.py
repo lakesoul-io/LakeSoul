@@ -1007,6 +1007,8 @@ class LakeSoulScan:
         retain_partition_columns: bool,
         object_store_options: Mapping[str, str],
         _reader_options: Mapping[str, str] | None = None,
+        _timestamp: Any = None,
+        _time_zone: str | None = None,
     ) -> None:
         _validate_scan_runtime_options(
             batch_size=batch_size,
@@ -1025,6 +1027,8 @@ class LakeSoulScan:
         self._retain_partition_columns = retain_partition_columns
         self._object_store_options = dict(object_store_options)
         self._reader_options = dict(_reader_options or {})
+        self._timestamp = _timestamp
+        self._time_zone = _time_zone
 
     @property
     def table(self) -> LakeSoulTable:
@@ -1078,6 +1082,8 @@ class LakeSoulScan:
         retain_partition_columns: bool | None = None,
         object_store_options: Mapping[str, str] | None = None,
         reader_options: Mapping[str, str] | None = None,
+        timestamp: Any = None,
+        time_zone: str | None = None,
     ) -> LakeSoulScan:
         updates: dict[str, Any] = {}
         if batch_size is not None:
@@ -1092,6 +1098,10 @@ class LakeSoulScan:
             )
         if reader_options is not None:
             updates["_reader_options"] = dict(reader_options)
+        if timestamp is not None:
+            updates["_timestamp"] = timestamp
+        if time_zone is not None:
+            updates["_time_zone"] = time_zone
         return self._replace(**updates)
 
     def scan_plan(self) -> tuple[Any, ...]:
@@ -1100,8 +1110,18 @@ class LakeSoulScan:
                 self._table.name,
                 partitions=self._partitions,
                 namespace=self._table.namespace,
+                as_of_ms=self._as_of_ms(),
             )
         )
+
+    def _as_of_ms(self) -> int | None:
+        if self._timestamp is None:
+            if self._time_zone is not None:
+                raise ValueError("time_zone requires a timestamp")
+            return None
+        from lakesoul.time_utils import resolve_timestamp_ms
+
+        return resolve_timestamp_ms(self._timestamp, self._time_zone)
 
     def to_arrow_dataset(self) -> ds.Dataset:
         from lakesoul.arrow import lakesoul_dataset
@@ -1264,6 +1284,8 @@ class LakeSoulScan:
             "retain_partition_columns": self._retain_partition_columns,
             "object_store_options": self._object_store_options,
             "_reader_options": self._reader_options,
+            "_timestamp": self._timestamp,
+            "_time_zone": self._time_zone,
         }
         values.update(updates)
         # A score-requesting scan must read the reserved score column; add it

@@ -265,6 +265,20 @@ class NativeMetadataClient:
     ) -> Sequence[PartitionInfo]:
         return self.get_partition_info_by_table_id(table_id)
 
+    def get_all_partition_info_as_of(
+        self,
+        table_id: str,
+        as_of_ms: int,
+    ) -> Sequence[PartitionInfo]:
+        """Latest version of every partition at or before ``as_of_ms``."""
+        wrapper = self._query(
+            DaoType.ListPartitionByTableIdAndTimestamp,
+            [table_id, str(int(as_of_ms))],
+        )
+        if wrapper:
+            return wrapper.partition_info
+        return []
+
     def get_table_single_partition_data_info(
         self,
         partition_info: PartitionInfo,
@@ -372,12 +386,25 @@ class NativeMetadataClient:
         table_name: str,
         partitions: dict[str, str] | None = None,
         namespace: str = "default",
+        as_of_ms: int | None = None,
     ) -> list[LakeSoulScanPlanPartition]:
         partitions = partitions or {}
         table_info = self.get_table_info_by_name(table_name, namespace)
 
         part_cols, pk_cols = self.get_partition_and_pk_cols(table_info)
-        if self.should_filter_partitions_by_all(partitions.keys(), part_cols):
+        if as_of_ms is not None:
+            partition_infos = self.get_all_partition_info_as_of(
+                table_info.table_id, as_of_ms
+            )
+            part_filter = [
+                "{}={}".format(key, value) for key, value in partitions.items()
+            ]
+            partition_infos = [
+                partition
+                for partition in partition_infos
+                if all(item in partition.partition_desc for item in part_filter)
+            ]
+        elif self.should_filter_partitions_by_all(partitions.keys(), part_cols):
             partition_infos = self.filter_partitions_from_all(partitions, table_info)
         elif partitions and len(partitions) == len(part_cols):
             part_desc = []

@@ -51,6 +51,7 @@ class DaoType:
     ListDataCommitInfoByTableIdAndPartitionDescAndCommitList = (
         DAO_TYPE_QUERY_LIST_OFFSET + 10
     )
+    ListPartitionByTableIdAndTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 17
 
     # // ==== Insert One ====
     InsertNamespace = DAO_TYPE_INSERT_ONE_OFFSET
