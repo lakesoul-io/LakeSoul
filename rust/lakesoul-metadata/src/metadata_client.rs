@@ -1865,6 +1865,7 @@ fn data_commit_info_list_from_files(
                 table_id: table_info.table_id.clone(),
                 partition_desc,
                 commit_id: Some(entity::Uuid { high, low }),
+                pinned: false,
                 file_ops: files
                     .into_iter()
                     .map(|file| entity::DataFileOp {

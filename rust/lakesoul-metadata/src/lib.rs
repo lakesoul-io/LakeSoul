@@ -403,33 +403,33 @@ async fn get_prepared_statement<'a>(
 
         // Select PartitionInfo
         DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
-            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
         DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
-            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain, m.pinned from (
                 select table_id,partition_desc,version from partition_info
                 where table_id = $1::TEXT and partition_desc = $2::TEXT order by table_id, partition_desc, version desc limit 1) t
                 left join partition_info m on t.table_id = m.table_id
                 and t.partition_desc = m.partition_desc and t.version = m.version",
         DaoType::SelectOnePartitionVersionByTableIdAndDescAndTimestamp =>
-            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain, m.pinned from (
                 select table_id,partition_desc,version from partition_info
                 where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT
                 order by table_id, partition_desc, version desc limit 1) t
                 left join partition_info m on t.table_id = m.table_id
                 and t.partition_desc = m.partition_desc and t.version = m.version",
         DaoType::ListPartitionByTableIdAndDesc =>
-            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT ",
         DaoType::ListPartitionByTableId =>
-            "select DISTINCT ON (table_id, partition_desc) table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            "select DISTINCT ON (table_id, partition_desc) table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
              from partition_info
              where table_id = $1::TEXT
             ORDER BY table_id DESC, partition_desc DESC, version DESC",
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =>
-            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp >= $3::BIGINT and timestamp < $4::BIGINT",
         DaoType::ListCommitOpsBetweenVersions =>
@@ -437,14 +437,14 @@ async fn get_prepared_statement<'a>(
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version between $3::INT and $4::INT",
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange =>
-            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version >= $3::INT and version <= $4::INT
             order by version",
 
         // Select DataCommitInfo
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
-            "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain
+            "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain, pinned
             from data_commit_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
 
@@ -476,7 +476,7 @@ async fn get_prepared_statement<'a>(
             left join partition_info m
             on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max_version = m.version",
         DaoType::ListPartitionByTableIdAndTimestamp =>
-            "select DISTINCT ON (table_id, partition_desc) table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            "select DISTINCT ON (table_id, partition_desc) table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
              from partition_info
              where table_id = $1::TEXT and timestamp <= $2::BIGINT
              ORDER BY table_id DESC, partition_desc DESC, version DESC",
@@ -1112,7 +1112,7 @@ pub async fn execute_query(
             let uuid_list_str = uuid_list.join("");
 
             let statement = format!(
-                "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain
+                "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain, pinned
                 from data_commit_info
                 where table_id = $1::TEXT and partition_desc = $2::TEXT
                 and commit_id in ({})
@@ -1359,6 +1359,7 @@ pub async fn execute_query(
                             .get::<_, Option<String>>(6)
                             .unwrap_or(String::from("")),
                         domain: row.get(7),
+                        pinned: row.get(8),
                     })
                 })
                 .collect::<Result<Vec<entity::PartitionInfo>>>()?;
@@ -1406,6 +1407,7 @@ pub async fn execute_query(
                         timestamp: row.get(5),
                         committed: row.get(6),
                         domain: row.get(7),
+                        pinned: row.get(8),
                     })
                 })
                 .collect::<Result<Vec<entity::DataCommitInfo>>>()?;

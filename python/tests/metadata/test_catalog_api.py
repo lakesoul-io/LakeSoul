@@ -95,6 +95,8 @@ class DummyNativeClient:
         table_name: str,
         partitions: dict[str, str] | None = None,
         namespace: str = "default",
+        as_of_ms: int | None = None,
+        snapshot_commits: object | None = None,
     ) -> tuple[LakeSoulScanPlanPartition, ...]:
         self.last_scan_request = (table_name, partitions or {}, namespace)
         return self.scan_partitions

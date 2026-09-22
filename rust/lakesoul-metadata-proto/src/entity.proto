@@ -62,6 +62,8 @@ message PartitionInfo {
   //  Domain this entry belongs to.
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 9;
+  //  Whether a snapshot or tag keeps this version alive.
+  bool pinned = 6;
 }
 
 //  Namespace of tables
@@ -128,6 +130,8 @@ message DataCommitInfo {
   //   mark define if this DataCommit has already committed as PartitionInfo of table
   bool committed = 7;
   string domain = 8;
+  //  Whether a snapshot or tag keeps this commit alive.
+  bool pinned = 9;
 }
 
 //  Relationship between 'TableNamespace.TableName' and TableId
