@@ -8,8 +8,12 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use tantivy::Index;
+use tantivy::Term;
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, EmptyQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::schema::{Field, FieldType, IndexRecordOption};
+use tantivy::tokenizer::TokenStream;
+use tracing::debug;
 
 use crate::TextError;
 use crate::error::Result;
@@ -22,6 +26,88 @@ pub struct TextHit {
     pub score: f32,
 }
 
+/// Query-syntax characters that switch parsing to [`QueryParser`].
+fn has_query_syntax(query: &str) -> bool {
+    const SYNTAX: &[char] = &[
+        '"', '(', ')', '[', ']', '{', '}', '+', '-', '*', '~', ':', '^', '\\',
+    ];
+    if query.chars().any(|c| SYNTAX.contains(&c)) {
+        return true;
+    }
+    query
+        .split_whitespace()
+        .any(|word| matches!(word, "AND" | "OR" | "NOT"))
+}
+
+/// Build an OR query over the terms the field analyzer produces.
+///
+/// This is the `match` semantics of a search engine: the text is analyzed
+/// into terms and any term may match (BM25 sums the term scores).  It is
+/// required for Chinese, where [`QueryParser`] turns a whitespace-free
+/// sequence of tokens into an exact phrase query and loses nearly all
+/// recall.
+fn analyzed_query(index: &Index, field: Field, query: &str) -> Box<dyn Query> {
+    let schema = index.schema();
+    let entry = schema.get_field_entry(field);
+    let FieldType::Str(text_options) = entry.field_type() else {
+        return Box::new(EmptyQuery);
+    };
+    let Some(indexing) = text_options.get_indexing_options() else {
+        return Box::new(EmptyQuery);
+    };
+    let Some(mut analyzer) = index.tokenizers().get(indexing.tokenizer()) else {
+        return Box::new(EmptyQuery);
+    };
+    let mut stream = analyzer.token_stream(query);
+    let mut terms: Vec<Term> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while stream.advance() {
+        let token = stream.token();
+        if token.text.is_empty() || !seen.insert(token.text.clone()) {
+            continue;
+        }
+        terms.push(Term::from_field_text(field, &token.text));
+    }
+    let clauses: Vec<(Occur, Box<dyn Query>)> = terms
+        .into_iter()
+        .map(|term| {
+            let query: Box<dyn Query> =
+                Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs));
+            (Occur::Should, query)
+        })
+        .collect();
+    if clauses.is_empty() {
+        return Box::new(EmptyQuery);
+    }
+    Box::new(BooleanQuery::new(clauses))
+}
+
+/// Parse a search query.
+///
+/// Explicit query syntax (`AND`/`OR`/`NOT`, quoted phrases, parentheses,
+/// field prefixes) goes through Tantivy's parser; clauses that are malformed
+/// are dropped instead of failing the whole query.  Everything else is
+/// treated as natural-language text and analyzed into OR-combined terms.
+pub(crate) fn parse_user_query(
+    index: &Index,
+    text_field: Field,
+    query: &str,
+) -> Box<dyn Query> {
+    if !has_query_syntax(query) {
+        return analyzed_query(index, text_field, query);
+    }
+    let parser = QueryParser::for_index(index, vec![text_field]);
+    let (parsed, errors) = parser.parse_query_lenient(query);
+    if !errors.is_empty() {
+        debug!(
+            query,
+            dropped = errors.len(),
+            "ignored malformed query clauses"
+        );
+    }
+    parsed
+}
+
 /// Search one split and return its top `top_k` hits by BM25 score.
 pub fn search_index(index: &Index, query: &str, top_k: usize) -> Result<Vec<TextHit>> {
     if top_k == 0 {
@@ -29,8 +115,7 @@ pub fn search_index(index: &Index, query: &str, top_k: usize) -> Result<Vec<Text
     }
     let text_schema = TextSchema::resolve(&index.schema())?;
     let reader = index.reader()?.searcher();
-    let parser = QueryParser::for_index(index, vec![text_schema.text_field]);
-    let parsed = parser.parse_query(query)?;
+    let parsed = parse_user_query(index, text_schema.text_field, query);
     let top_docs =
         reader.search(&parsed, &TopDocs::with_limit(top_k).order_by_score())?;
 

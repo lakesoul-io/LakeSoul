@@ -227,12 +227,12 @@ LIMIT 10;
 
 `text_match` 也可以用于没有文本索引的表，同样是全表扫描的精确谓词。多个 `text_match` 通过 `AND` 组合时，只有第一个会被下推为索引检索；其余仍会被精确求值。
 
-查询字符串按 Tantivy 查询语法解析：空白分隔的词默认 OR 组合，带引号的短语（`"quick fox"`）需要 `with_positions=true`，并支持布尔运算符（`AND`、`OR`、`NOT`、括号）。中文使用 jieba 分词。
+普通查询文本会按索引分词器切分为词项并做 OR 组合（每个词项参与 BM25 打分），因此中文整句会按词匹配共享词项的文档，而不会被解析为一个精确短语。同时支持显式 Tantivy 语法：带引号的短语（`"quick fox"`）需要 `with_positions=true`，并可用布尔运算符（`AND`、`OR`、`NOT`、括号）收窄查询。
 
 ## 查询语法与分词器
 
-- 查询字符串在索引的文本字段上使用 Tantivy 查询解析器解析。
-- 空白分隔的词默认 OR 组合；`AND`/`OR`/`NOT` 与括号可进一步约束。
+- 不含引号、括号或布尔运算符的普通文本会用索引分词器切分为词项并做 OR 组合，因此中文整句按词匹配而非按短语匹配。
+- 含显式语法的查询字符串在索引的文本字段上使用 Tantivy 查询解析器解析；`AND`/`OR`/`NOT` 与括号可进一步约束。
 - 带引号的短语按连续位置匹配，需要 `with_positions=true`（默认）。关闭位置后短语语法无法命中。
 - 分词器由建表时的 `tokenizer` 决定：`jieba` 对中文分词并转小写，`default`/`en_stem` 为 Tantivy 的词边界分词器。查询期不支持切换分词器——查询串始终与文本入库时的切分方式一致。
 
@@ -254,3 +254,8 @@ LIMIT 10;
 - 短语查询需要 `with_positions=true`（默认）；关闭位置后仅支持词项/布尔查询。
 - `write_ray` 不会构建或更新二级索引；请使用 `build_text_index()`。
 - 目前索引可从 Python SDK/Daft 与 DataFusion SQL 引擎访问；Spark/Flink 集成尚未暴露。
+
+## 参见
+
+- [文本索引 benchmark](../19-text-index-benchmark.md)：MS MARCO 与 T2Retrieval 上的构建、检索与增量维护实测，以及由此得到的分词器/shard/候选数建议。
+- [ES 兼容网关](../18-es-compatible-gateway.md)：以 WeKnora 的 Elasticsearch HTTP 契约对外提供同一套文本检索。

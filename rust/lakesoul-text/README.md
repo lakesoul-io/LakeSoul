@@ -172,3 +172,10 @@ cargo -q test -p lakesoul-text
 covers the config parser, tokenizers, split bundle round-trips/CRC checks,
 BM25 search and merge ordering, duplicate-primary-key upserts, and the
 build → upload → materialize → search end-to-end path (including jieba).
+
+## Benchmark
+
+Build, search and incremental-update measurements on MS MARCO, T2Retrieval
+and SciFact live in
+[`script/benchmark/text/`](../../script/benchmark/text/) and are written up
+on the website: [Text Index Benchmark](../../website/docs/03-Usage%20Docs/19-text-index-benchmark.md).
