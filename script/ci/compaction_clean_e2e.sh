@@ -26,6 +26,14 @@ JOBMANAGER="lakesoul-docker-compose-env-jobmanager-1"
 PG_CONTAINER="lakesoul-test-pg"
 PG_SERVICE="lakesoul-meta-db"
 CLEAN_JOB_SLOT="clean_job_slot"
+PYTHON="${PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+  if [[ -x "$ROOT/python/.venv/bin/python" ]]; then
+    PYTHON="$ROOT/python/.venv/bin/python"
+  else
+    PYTHON="python3"
+  fi
+fi
 
 DOWN=0
 [[ "${1:-}" == "--down" ]] && DOWN=1
@@ -45,13 +53,67 @@ fi
 [[ -n "$spark_jar_name" && -f "$WORK_DIR/$spark_jar_name" ]] ||
   { echo "spark jar missing in $WORK_DIR (set SPARK_JAR_NAME)"; exit 1; }
 
+META_INIT_BACKUP="$(mktemp /tmp/lakesoul-meta-init-XXXXXX.sql)"
+cp "$ROOT/script/meta_init.sql" "$META_INIT_BACKUP"
+cleanup() {
+  docker rm -f lakesoul-e2e-compaction >/dev/null 2>&1 || true
+  cp "$META_INIT_BACKUP" "$ROOT/script/meta_init.sql"
+}
+trap cleanup EXIT
+
 log "deploy cluster"
 # compaction must trigger after one extra version so the test does not have to write ten rounds
 sed -i 's/if NEW.version - rs_version >= 10 then/if NEW.version - rs_version >= 1 then/' "$ROOT/script/meta_init.sql"
 sed -i 's/if NEW.version >= 10 then/if NEW.version >= 1 then/' "$ROOT/script/meta_init.sql"
-(cd "$COMPOSE_DIR" && docker compose --profile s3 up -d)
+PROXY_OVERRIDE="$(mktemp /tmp/lakesoul-e2e-compose-XXXXXX.yml)"
+cat > "$PROXY_OVERRIDE" <<'YAML'
+services:
+  jobmanager:
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: "rustfs,localhost,127.0.0.1"
+      no_proxy: "rustfs,localhost,127.0.0.1"
+  taskmanager:
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: "rustfs,localhost,127.0.0.1"
+      no_proxy: "rustfs,localhost,127.0.0.1"
+YAML
+(cd "$COMPOSE_DIR" && docker compose -f docker-compose.yml -f "$PROXY_OVERRIDE" --profile s3 up -d)
+
+log "ensure object store bucket"
+# the bundled rc client fails against rustfs 1.0.0-beta.3, create the bucket directly
+uv run --quiet --no-project --with boto3 python - "${LAKESOUL_E2E_BUCKET:-lakesoul-test-bucket}" <<'PYBUCKET' || true
+import sys
+import boto3
+
+bucket = sys.argv[1]
+client = boto3.client(
+    "s3",
+    endpoint_url="http://127.0.0.1:9000",
+    aws_access_key_id="rustfsadmin",
+    aws_secret_access_key="rustfsadmin",
+    region_name="us-east-1",
+)
+try:
+    client.create_bucket(Bucket=bucket)
+    print(f"created bucket {bucket}")
+except Exception as exc:
+    print(f"create bucket {bucket}: {exc}")
+print("buckets:", [item["Name"] for item in client.list_buckets()["Buckets"]])
+PYBUCKET
 
 log "enable logical replication"
+for _ in $(seq 1 60); do
+  docker exec "$PG_CONTAINER" psql -U lakesoul_test -d lakesoul_test -c "select 1" >/dev/null 2>&1 && break
+  sleep 2
+done
 docker exec "$PG_CONTAINER" psql -U lakesoul_test -d postgres -c "alter system set wal_level=logical" >/dev/null
 docker restart "$PG_CONTAINER" >/dev/null
 for _ in $(seq 1 60); do
@@ -75,12 +137,15 @@ docker exec -t "$JOBMANAGER" flink run -d \
   --source.parallelism 1 --slotName "$CLEAN_JOB_SLOT" --plugName pgoutput \
   --schemaList public --splitSize 1 \
   --url "jdbc:postgresql://$PG_SERVICE:5432/lakesoul_test" \
-  --dataExpiredTime 10000 --ontimer_interval 0
+  --dataExpiredTime 0 --ontimer_interval 1
 
 log "start Spark compaction task"
 (
   cd "$WORK_DIR"
-  nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t \
+  docker rm -f lakesoul-e2e-compaction >/dev/null 2>&1 || true
+  nohup docker run --name lakesoul-e2e-compaction --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t \
+    --env HTTP_PROXY= --env HTTPS_PROXY= --env http_proxy= --env https_proxy= \
+    --env NO_PROXY="rustfs,localhost,127.0.0.1" --env no_proxy="rustfs,localhost,127.0.0.1" \
     -v "${PWD}:/opt/spark/work-dir" \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
     --env LAKESOUL_IO_USE_V2_MERGE=true \
@@ -93,13 +158,14 @@ log "start Spark compaction task"
     --conf spark.hadoop.fs.s3a.endpoint=http://rustfs:9000 \
     --conf spark.hadoop.fs.s3a.access.key=rustfsadmin \
     --conf spark.hadoop.fs.s3a.secret.key=rustfsadmin \
+    --conf spark.hadoop.fs.s3a.proxy.host= --conf spark.hadoop.fs.s3a.proxy.port=-1 \
     --conf spark.sql.warehouse.dir=s3://lakesoul-test-bucket/ \
     --conf spark.dmetasoul.lakesoul.native.io.enable=true \
-    --conf spark.dmetasoul.lakesoul.compaction.level.file.number.limit=5 \
+    --conf spark.dmetasoul.lakesoul.compaction.level.file.number.limit=2 \
     --conf spark.dmetasoul.lakesoul.compaction.level.file.merge.num.limit=2 \
     --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask \
     --master local[4] "/opt/spark/work-dir/$spark_jar_name" \
-    --threadpool.size=10 --database="" --file_num_limit=5 --file_size_limit=10KB \
+    --threadpool.size 10 --database "" --file_num_limit 2 --file_size_limit 10KB --new_compact_percentage 100 \
     > compaction.log 2>&1 &
 )
 
@@ -108,7 +174,7 @@ LAKESOUL_PG_URL="${LAKESOUL_PG_URL:-jdbc:postgresql://127.0.0.1:5432/lakesoul_te
 LAKESOUL_PG_USERNAME="${LAKESOUL_PG_USERNAME:-lakesoul_test}" \
 LAKESOUL_PG_PASSWORD="${LAKESOUL_PG_PASSWORD:-lakesoul_test}" \
 RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-http://127.0.0.1:9000}" \
-python3 "$ROOT/script/ci/compaction_clean_e2e.py"
+"$PYTHON" "$ROOT/script/ci/compaction_clean_e2e.py"
 
 log "done"
 if [[ "$DOWN" == "1" ]]; then

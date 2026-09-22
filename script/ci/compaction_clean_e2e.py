@@ -4,7 +4,7 @@
 """Data rounds and assertions for the compaction + clean e2e script.
 
 Run against the docker-compose environment (PG + RustFS + Flink cluster) with
-the lake soul python package available. Each scenario writes several rounds so
+the lakesoul python package available. Each scenario writes several rounds so
 the background NewCompactionTask compacts them and the Flink clean job removes
 the retired files.
 """
@@ -14,11 +14,11 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import pyarrow as pa
+from pyarrow.fs import FileSelector, FileType, S3FileSystem
 
 from lakesoul import LakeSoulCatalog
 
@@ -29,12 +29,29 @@ S3_OPTIONS = {
     "fs.s3a.path.style.access": "true",
 }
 WAREHOUSE = os.environ.get("LAKESOUL_E2E_WAREHOUSE", "s3://lakesoul-test-bucket/e2e")
-ROUNDS = int(os.environ.get("LAKESOUL_E2E_ROUNDS", "4"))
-WAIT_SECONDS = int(os.environ.get("LAKESOUL_E2E_WAIT", "120"))
+ROUNDS = int(os.environ.get("LAKESOUL_E2E_ROUNDS", "12"))
+WAIT_SECONDS = int(os.environ.get("LAKESOUL_E2E_WAIT", "240"))
 
 
 def _catalog() -> LakeSoulCatalog:
     return LakeSoulCatalog.from_env(object_store_options=S3_OPTIONS)
+
+
+def _s3() -> S3FileSystem:
+    endpoint = S3_OPTIONS["fs.s3a.endpoint"]
+    return S3FileSystem(
+        access_key=S3_OPTIONS["fs.s3a.access.key"],
+        secret_key=S3_OPTIONS["fs.s3a.secret.key"],
+        endpoint_override=endpoint,
+        scheme="http" if endpoint.startswith("http://") else "https",
+    )
+
+
+def _list_files(uri: str) -> set[str]:
+    parsed = urlparse(uri)
+    path = f"{parsed.netloc}/{parsed.path.lstrip('/')}"
+    infos = _s3().get_file_info(FileSelector(path, recursive=True))
+    return {info.path for info in infos if info.type == FileType.File}
 
 
 def _table(catalog: LakeSoulCatalog, name: str, schema: pa.Schema, **kwargs):
@@ -72,23 +89,6 @@ def _wait_for(predicate, message: str, seconds: int = WAIT_SECONDS) -> None:
     raise AssertionError(f"timeout waiting for {message}")
 
 
-def _file_exists(uri: str) -> bool:
-    from pyarrow.fs import FileSystem, S3FileSystem
-
-    parsed = urlparse(uri)
-    if parsed.scheme in ("s3", "s3a"):
-        filesystem = S3FileSystem(
-            access_key=S3_OPTIONS["fs.s3a.access.key"],
-            secret_key=S3_OPTIONS["fs.s3a.secret.key"],
-            endpoint_override=S3_OPTIONS["fs.s3a.endpoint"],
-            scheme="http" if S3_OPTIONS["fs.s3a.endpoint"].startswith("http://") else "https",
-        )
-        path = f"{parsed.netloc}/{parsed.path.lstrip('/')}"
-    else:
-        filesystem, path = FileSystem.from_uri(uri)
-    return filesystem.get_file_info(path).type == filesystem.get_file_info(path).type.File
-
-
 def scenario_normal(catalog: LakeSoulCatalog) -> None:
     name = f"e2e_normal_{uuid4().hex[:8]}"
     schema = pa.schema(
@@ -100,20 +100,17 @@ def scenario_normal(catalog: LakeSoulCatalog) -> None:
     table = _table(catalog, name, schema)
     try:
         _write_rounds(table, schema, ROUNDS)
-        client = catalog._client
-        versions_before = len(
-            client.get_partition_info_by_table_id_and_desc(table.id, "-5")
+        base = f"{WAREHOUSE}/{name}"
+        before = _list_files(base)
+        assert before, "expected data files after writing rounds"
+
+        _wait_for(
+            lambda: bool(before - _list_files(base)),
+            "compaction and cleanup to delete old files",
         )
-        assert versions_before > 1, "expected several versions before cleanup"
-
-        def compacted_and_cleaned() -> bool:
-            versions = client.get_partition_info_by_table_id_and_desc(table.id, "-5")
-            return len(versions) < versions_before
-
-        _wait_for(compacted_and_cleaned, "compaction and cleanup of old versions")
-        assert sorted(
-            table.scan().to_arrow_table().column("id").to_pylist()
-        ) == list(range(ROUNDS)), "latest data must stay readable"
+        assert sorted(table.scan().to_arrow_table().column("id").to_pylist()) == list(
+            range(ROUNDS)
+        ), "latest data must stay readable"
         print(f"[normal] ok: {name}")
     finally:
         catalog.drop_table(name, if_exists=True)
@@ -139,29 +136,21 @@ def scenario_tag(catalog: LakeSoulCatalog) -> None:
             ),
             format="parquet",
         )
-        snapshot_id = catalog.create_tag(name, "keep-me")
+        base = f"{WAREHOUSE}/{name}"
+        tagged_files = _list_files(base)
+        catalog.create_tag(name, "keep-me")
         _write_rounds(table, schema, ROUNDS)
+        appended_files = _list_files(base) - tagged_files
 
-        client = catalog._client
-        commits = client.list_snapshot_commits(table.id, snapshot_id)
-        pinned_files = client._inner.get_data_files_of_single_partition(
-            table.id,
-            commits[0].partition_desc,
-            [(c.commit_id.high, c.commit_id.low) for c in commits],
+        _wait_for(
+            lambda: bool(appended_files - _list_files(base)),
+            "compaction and cleanup with a tag",
         )
-        assert pinned_files, "tagged snapshot must reference files"
-
-        # After compaction + cleanup the tagged files must still exist.
-        def still_readable() -> bool:
-            try:
-                table.scan().options(tag="keep-me").to_arrow_table()
-                return True
-            except Exception:
-                return False
-
-        _wait_for(still_readable, "tagged snapshot to remain readable")
-        for path in pinned_files:
-            assert _file_exists(path), f"tagged file was deleted: {path}"
+        missing = tagged_files - _list_files(base)
+        assert not missing, f"tagged files were deleted: {missing}"
+        assert sorted(
+            table.scan().options(tag="keep-me").to_arrow_table().column("id").to_pylist()
+        ) == [0], "tagged snapshot must stay readable"
         print(f"[tag] ok: {name}")
     finally:
         catalog.drop_table(name, if_exists=True)
@@ -183,7 +172,7 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
     )
     try:
         for round_index in range(ROUNDS):
-            payload = (f"payload-{round_index}-".encode() * 1024)
+            payload = f"payload-{round_index}-".encode() * 4096
             table.write_arrow(
                 pa.table(
                     {
@@ -196,20 +185,17 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
             )
             time.sleep(0.5)
 
-        client = catalog._client
-        versions_before = len(
-            client.get_partition_info_by_table_id_and_desc(table.id, "-5")
+        base = f"{WAREHOUSE}/{name}"
+        before = _list_files(base)
+        assert before, "expected data files after writing rounds"
+
+        _wait_for(
+            lambda: bool(before - _list_files(base)),
+            "blob table compaction and cleanup",
         )
-
-        def compacted() -> bool:
-            return (
-                len(client.get_partition_info_by_table_id_and_desc(table.id, "-5"))
-                < versions_before
-            )
-
-        _wait_for(compacted, "blob table compaction")
         values = table.scan().to_arrow_table().column("payload").to_pylist()
         assert any(value for value in values), "blob payloads must stay readable"
+        assert any(".blob" in path for path in _list_files(base)), "blob pack must exist"
         print(f"[blob] ok: {name}")
     finally:
         catalog.drop_table(name, if_exists=True)
