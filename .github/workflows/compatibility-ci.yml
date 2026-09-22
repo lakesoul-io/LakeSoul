@@ -27,7 +27,9 @@ on:
       - "lakesoul-spark/**"
       - "lakesoul-flink/**"
       - "native-io/**"
-      - "script/**"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init.sql"
+      - "script/meta_init_for_local_test.sh"
     branches:
       - "main"
       - "release/**"
