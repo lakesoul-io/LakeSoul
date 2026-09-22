@@ -13,7 +13,9 @@ use std::sync::Arc;
 use arrow_array::{Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::{JoinType, SessionContext, col};
-use lakesoul_ivm::{IvmRuntime, IvmTable, IvmTableOptions, JoinView, join_view_schema};
+use lakesoul_ivm::{
+    IvmRuntime, IvmTable, IvmTableOptions, JoinView, join_view_schema_for,
+};
 use tempfile::tempdir;
 
 fn source_schema() -> SchemaRef {
@@ -156,7 +158,14 @@ async fn join_refresh_matches_full_join_with_two_sided_windows() {
         .create_table(IvmTableOptions::new(
             output_name.clone(),
             table_path(&dir, "join"),
-            join_view_schema(),
+            join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &["k".to_string()],
+                "v",
+                "v",
+            )
+            .unwrap(),
         ))
         .await
         .unwrap();
@@ -263,7 +272,14 @@ async fn join_refresh_is_idempotent_when_cursors_are_replayed() {
         .create_table(IvmTableOptions::new(
             output_name.clone(),
             table_path(&dir, "join"),
-            join_view_schema(),
+            join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &["k".to_string()],
+                "v",
+                "v",
+            )
+            .unwrap(),
         ))
         .await
         .unwrap();
@@ -360,7 +376,14 @@ async fn join_pending_window_is_skipped_when_output_was_written() {
         .create_table(IvmTableOptions::new(
             output_name.clone(),
             table_path(&dir, "join"),
-            join_view_schema(),
+            join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &["k".to_string()],
+                "v",
+                "v",
+            )
+            .unwrap(),
         ))
         .await
         .unwrap();

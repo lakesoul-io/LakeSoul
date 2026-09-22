@@ -12,7 +12,7 @@ use arrow_array::{Array, Int64Array};
 use arrow_schema::SchemaRef;
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_ivm::{
-    IvmRuntime, IvmTable, IvmTableOptions, JoinView, SumCountView, join_view_schema,
+    IvmRuntime, IvmTable, IvmTableOptions, JoinView, SumCountView, join_view_schema_for,
     sum_count_mv_schema,
 };
 use tempfile::tempdir;
@@ -218,7 +218,14 @@ async fn rebuild_join_recomputes_output() {
         .create_table(IvmTableOptions::new(
             output_name.clone(),
             table_path(&dir, "join"),
-            join_view_schema(),
+            join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &["k".to_string()],
+                "v",
+                "v",
+            )
+            .unwrap(),
         ))
         .await
         .unwrap();

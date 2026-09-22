@@ -1,8 +1,47 @@
 # LakeSoul IVM 基础能力补齐计划
 
-> 状态：生效中。本文件是基础能力补齐阶段的实施计划；IVM 上层设计见附录 A。
-> 基线：`lakesoul-ivm` worktree，`ca83ed1d`（含 #883/#884/#885）。
-> DataFusion 54→55 升级由其他同事负责，本计划不包含、不依赖该升级。
+> 状态：基础能力与 IVM 运行时均已合入 upstream/main；本文件保留实施记录并维护
+> 进度总览与后续路线。设计细节见 `EPOCH.md` 与各节实施记录。
+
+## 进度总览
+
+### 已合入的 PR
+
+| PR | 内容 |
+|---|---|
+| #888 | 元数据基础：as-of 读、version-based changelog、bucket 列 = PK 前缀、Rust commit OCC |
+| #890 | IVM 运行时：`ivm` schema、SUM/COUNT（append-only）、epoch 幂等协议、rebuild、epoch 快照读取 |
+| #896 | SUM/COUNT 支持主键（upsert）源：delta 最终版本 + as-of 旧值回收 |
+| #903 | MIN/MAX：值计数状态表 |
+| #905 | COUNT(DISTINCT)/SUM(DISTINCT)：复用值计数状态 |
+| #908 | CDC change column 配置化 + tombstone 正确性修复 |
+| #914 | ROW_NUMBER：受影响分区重算 |
+| #917 | SEMI/ANTI：受影响左行重算 |
+
+### 算子 × 源支持矩阵
+
+| 算子 | 源要求 | 状态方式 |
+|---|---|---|
+| SUM / COUNT | append-only 或 keyed；多列、任意类型 key，SUM 需数值 | MV 即状态，delete+insert |
+| MIN / MAX | 同上；value 任意可比较类型 | 值计数状态表 |
+| COUNT / SUM(DISTINCT) | 同上；value 任意可比较/可哈希类型 | 值计数状态表 |
+| ROW_NUMBER | keyed（需主键）+ 未分区；partition/order 列任意可排序类型、可多列 | 分区级重算 |
+| INNER JOIN | 两侧 append-only + 未分区；join key 可多列、任意相等比较类型，payload 任意 | inclusion-exclusion，append-only 输出 |
+| SEMI / ANTI | 左 keyed，右 append-only/keyed；join key 可多列、任意相等比较类型 | 受影响左行 delete+insert |
+| 投影/Filter/Union ALL、join upsert、非等值 join、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK、聚合窗口函数 | — | **未支持** |
+
+### 路线图
+
+- **P1**：~~通用类型（多列、非 Int64）group key 与 value~~（已完成）→ JOIN 支持 keyed 源
+  （inclusion-exclusion + join 状态表）→ `ivm.states` 注册表 → Window 扩展
+  （RANK/DENSE_RANK/聚合窗口、源按分区裁剪）→ SEMI/ANTI 扩展（非等值、投影下推）
+  → 投影/Filter/Union ALL 视图与 TOP-K
+- **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
+  `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
+  changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
+  `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
+- **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
+  dirty 自动重建）→ PG `CREATE/REFRESH MATERIALIZED VIEW` 表面（postgres-lakesoul）
 
 ## 0. 背景与边界
 
@@ -456,6 +495,50 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   状态表）仍是后续。
 
 
+
+**通用类型 group key / value 实施记录（已完成）**
+
+- 聚合视图（SUM/COUNT、MIN/MAX、COUNT/SUM(DISTINCT)）支持多列、任意类型的
+  group key，value 类型也放开（SUM 需数值；MIN/MAX/DISTINCT 任意可比较/可哈希）。
+- 刷新流程改为 SQL 管道：delta 聚合、as-of 旧值回收、与状态/MV 的全外连接与
+  coalesce 全部下推到 DataFusion，避免了 Rust 侧的按类型累加与行组装；
+  `(group, value)` 与 `group` 的 map 只保留在 SQL 中。
+- 幂等：状态/MV 行仍带 `__ivm_epoch`，SQL 中按 epoch 过滤已应用的键；同一 key 的
+  delete/insert 通过 `order by keys, rowKinds` 保证删除在前。
+- 新增通用 schema 构造函数：`sum_count_mv_schema_for`、
+  `value_count_state_schema_for`、`value_count_mv_schema_for`、
+  `min_max_mv_schema_for`、`distinct_agg_mv_schema_for`；旧的 Int64 单列 schema
+  保留为兼容包装。
+- JOIN 同样改为 DataFrame/类型通用：join key 支持多列、任意相等比较类型，payload
+  任意；输出列名为 join key 原名 + `left_value`/`right_value`，schema 由
+  `join_view_schema_for` 推导（旧 `join_view_schema` 已移除）。
+- WINDOW 去掉 Int64 限制：partition key 任意非空类型（可多列），order key 任意可排序
+  类型；row_number 由 SQL 计算并 cast bigint，MV schema 由 `window_mv_schema_for`
+  推导；delete/insert 用 `order by pks, rowKinds` 保证顺序。
+- 测试：`tests/generic_keys.rs`（多列 Utf8 key SUM(Int32)/COUNT、字符串 MIN/
+  COUNT(DISTINCT)）与 `tests/generic_join_window.rs`（两列 Utf8 join key + 字符串/
+  Int32 payload、字符串 partition/order 的 ROW_NUMBER），均与 SQL 交叉验证；
+  SEMI/ANTI 增加 delete-before-insert 排序。
+- 未完成：非数值 SUM、非等值 join 条件。
+
+**NULL 语义实施记录（已完成）**
+
+- 探针 `tests/null_probe.rs` 验证内部表允许 NULL 合并键（写入、跨提交 upsert、
+  同批 delete+insert、MOR 读回均正确），group/partition key 因此直接放开可空。
+- NULL 作为合法分组值：聚合/window 的 delta↔状态、`already`/`affected`/`active`
+  键匹配全部改用 `IS NOT DISTINCT FROM`（NULL 等于 NULL）；JOIN、SEMI/ANTI 保持
+  `=`，NULL key 不匹配，与 SQL 一致。注意 DataFusion 中 `IS NOT DISTINCT FROM`
+  的右操作数会吞掉后续 `AND`，每个等值需整体加括号。
+- 值语义：`count(distinct value)` / `sum(distinct value)` 忽略 NULL；MIN/MAX
+  忽略 NULL，全 NULL 组结果为 NULL；SUM 全 NULL 组结果为 NULL。
+- SUM/COUNT MV 增加隐藏列 `__ivm_nonnull_count`（非 NULL 值计数），`sum_v` 仅在
+  计数 > 0 时非空，从而区分“和为 0”与“全 NULL”；MV/状态 schema 的 sum/value 列
+  改为可空，键列通过 `key_fields` 保留源列可空性（不再强制非空）。
+- 行身份仍要求非空：window 的源主键、SEMI/ANTI 的左主键仍校验；group/partition
+  key 不再校验。
+- 测试 `tests/null_semantics.rs`：NULL 组的 SUM/COUNT（全 NULL 组、增删改、
+  rebuild）、NULL 值的 MIN/COUNT(DISTINCT)/SUM(DISTINCT)、NULL join key 的
+  JOIN/SEMI/ANTI、NULL 分区的 ROW_NUMBER，均与 SQL 交叉验证。
 
 **Join 增量刷新实施记录（已完成冒烟切片）**
 
