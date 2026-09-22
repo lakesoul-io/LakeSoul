@@ -25,6 +25,13 @@
 //! [`runtime::IvmRuntime::rebuild_sum_count`] /
 //! [`runtime::IvmRuntime::rebuild_join`].
 //!
+//! All view kinds are type generic: aggregate group keys and `MIN`/`MAX`/
+//! DISTINCT values may be any number of columns of any type (`SUM` values must
+//! be numeric, `count` results are `Int64`), join keys and semi/anti join keys
+//! may be several columns of any equality-comparable type with arbitrary
+//! payloads, and window partition/order keys may be strings or any other
+//! sortable type. Partition and group keys must be non-nullable.
+//!
 //! A keyed source may declare a CDC change column through
 //! [`table::IvmTableOptions::with_cdc_column`] (persisted as the LakeSoul
 //! `lakesoul_cdc_change_column` property): `delete` values retract a row, and
@@ -60,12 +67,15 @@ pub use metadata::{
     SourceVersionRange,
 };
 pub use runtime::{
-    DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_ROW_NUMBER_COLUMN,
-    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView,
-    MinMaxKind, MinMaxView, SemiAntiView, SumCountView, ViewSpec, WindowFunction,
-    WindowView, distinct_agg_mv_schema, join_view_schema, min_max_mv_schema,
-    min_max_state_schema, semi_anti_mv_schema, sum_count_mv_schema,
-    value_count_mv_schema, value_count_state_schema, window_key, window_mv_schema,
+    DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,
+    IVM_ROW_NUMBER_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN,
+    IvmRuntime, JoinView, MinMaxKind, MinMaxView, SemiAntiView, SumCountView,
+    ValueResultKind, ViewSpec, WindowFunction, WindowView, distinct_agg_mv_schema,
+    distinct_agg_mv_schema_for, join_view_schema_for, min_max_mv_schema,
+    min_max_mv_schema_for, min_max_state_schema, semi_anti_mv_schema,
+    sum_count_mv_schema, sum_count_mv_schema_for, value_count_mv_schema,
+    value_count_mv_schema_for, value_count_state_schema, value_count_state_schema_for,
+    window_key, window_mv_schema, window_mv_schema_for,
 };
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,

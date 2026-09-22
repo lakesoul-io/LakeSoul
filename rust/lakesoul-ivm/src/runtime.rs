@@ -11,13 +11,12 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, ArrayRef, Int64Array, StringArray};
+
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::prelude::{DataFrame, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
@@ -36,6 +35,9 @@ use crate::table::{
 pub const IVM_SUM_COLUMN: &str = "sum_v";
 /// The `COUNT` column of a [`sum_count_mv_schema`] materialized view.
 pub const IVM_COUNT_COLUMN: &str = "count_v";
+/// The count of non-NULL values in a [`sum_count_mv_schema`] state row. It is
+/// what lets an all-NULL group sum to NULL instead of 0, matching SQL `SUM`.
+pub const IVM_NONNULL_COUNT_COLUMN: &str = "__ivm_nonnull_count";
 /// The value column of a [`min_max_mv_schema`] materialized view and of the
 /// value-count state table.
 pub const IVM_VALUE_COLUMN: &str = "value";
@@ -88,8 +90,9 @@ pub enum ViewSpec {
         source_table_id: String,
         /// The materialized view table id.
         mv_table_id: String,
-        /// The group key column.
-        group_key: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
         /// The summed column; `None` means `SUM(0)`, i.e. count only.
         value_column: Option<String>,
     },
@@ -104,8 +107,9 @@ pub enum ViewSpec {
         right_table_id: String,
         /// The append-only output table id.
         output_table_id: String,
-        /// The equi-join key, present in both sources.
-        join_key: String,
+        /// The equi-join keys, present in both sources.
+        #[serde(default, alias = "join_key", deserialize_with = "de_group_keys")]
+        join_keys: Vec<String>,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source.
@@ -122,8 +126,9 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The value-count state table id.
         state_table_id: String,
-        /// The group key column.
-        group_key: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
         /// The min/max column.
         value_column: String,
         /// Whether the minimum or the maximum is maintained.
@@ -141,8 +146,9 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The value-count state table id.
         state_table_id: String,
-        /// The group key column.
-        group_key: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
         /// The distinct value column.
         value_column: String,
         /// Whether the distinct count or the distinct sum is maintained.
@@ -192,9 +198,9 @@ pub struct SumCountView {
     pub source: IvmTable,
     /// The materialized view table.
     pub mv: IvmTable,
-    /// The group key column (must be `Int64`).
-    pub group_key: String,
-    /// The summed column (must be `Int64`); `None` counts rows only.
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The summed column; `None` counts rows only.
     pub value_column: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
@@ -213,7 +219,25 @@ impl SumCountView {
             view_id: view_id.into(),
             source,
             mv,
-            group_key: group_key.into(),
+            group_keys: vec![group_key.into()],
+            value_column,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: Option<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
             value_column,
             refresh_interval_ms: 0,
         }
@@ -224,7 +248,7 @@ impl SumCountView {
             view_id: self.view_id.clone(),
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
-            group_key: self.group_key.clone(),
+            group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
         }
     }
@@ -236,6 +260,7 @@ pub fn sum_count_mv_schema(group_key: &str) -> SchemaRef {
         Field::new(group_key, DataType::Int64, false),
         Field::new(IVM_SUM_COLUMN, DataType::Int64, false),
         Field::new(IVM_COUNT_COLUMN, DataType::Int64, false),
+        Field::new(IVM_NONNULL_COUNT_COLUMN, DataType::Int64, false),
         Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
         Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
     ]))
@@ -258,11 +283,12 @@ pub struct JoinView {
     pub right: IvmTable,
     /// The append-only output table.
     pub output: IvmTable,
-    /// The equi-join key, present in both sources (must be `Int64`).
-    pub join_key: String,
-    /// The `Int64` payload column of the left source.
+    /// The equi-join keys, present in both sources (any equality-comparable
+    /// types).
+    pub join_keys: Vec<String>,
+    /// The payload column of the left source (any type).
     pub left_value: String,
-    /// The `Int64` payload column of the right source.
+    /// The payload column of the right source (any type).
     pub right_value: String,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
@@ -279,12 +305,33 @@ impl JoinView {
         left_value: impl Into<String>,
         right_value: impl Into<String>,
     ) -> Self {
+        Self::new_with_join_keys(
+            view_id,
+            left,
+            right,
+            output,
+            vec![join_key.into()],
+            left_value,
+            right_value,
+        )
+    }
+
+    /// A new join view over several equi-join keys.
+    pub fn new_with_join_keys(
+        view_id: impl Into<String>,
+        left: IvmTable,
+        right: IvmTable,
+        output: IvmTable,
+        join_keys: Vec<String>,
+        left_value: impl Into<String>,
+        right_value: impl Into<String>,
+    ) -> Self {
         Self {
             view_id: view_id.into(),
             left,
             right,
             output,
-            join_key: join_key.into(),
+            join_keys,
             left_value: left_value.into(),
             right_value: right_value.into(),
             refresh_interval_ms: 0,
@@ -297,25 +344,77 @@ impl JoinView {
             left_table_id: self.left.table_id.clone(),
             right_table_id: self.right.table_id.clone(),
             output_table_id: self.output.table_id.clone(),
-            join_key: self.join_key.clone(),
+            join_keys: self.join_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
         }
     }
 }
 
-/// The schema of a [`JoinView`] output.
-pub fn join_view_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("join_key", DataType::Int64, false),
-        Field::new("left_value", DataType::Int64, false),
-        Field::new("right_value", DataType::Int64, false),
-        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
-    ]))
+/// The schema of a [`JoinView`] output, deriving the join key and payload
+/// types from the source schemas.
+pub fn join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    join_keys: &[String],
+    left_value: &str,
+    right_value: &str,
+) -> Result<SchemaRef> {
+    let mut fields = Vec::new();
+    for key in join_keys {
+        fields.push(Arc::new(Field::new(
+            key,
+            field_type(left_schema, key)?,
+            false,
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        "left_value",
+        field_type(left_schema, left_value)?,
+        left_schema
+            .field_with_name(left_value)
+            .map(|field| field.is_nullable())
+            .unwrap_or(true),
+    )));
+    fields.push(Arc::new(Field::new(
+        "right_value",
+        field_type(right_schema, right_value)?,
+        right_schema
+            .field_with_name(right_value)
+            .map(|field| field.is_nullable())
+            .unwrap_or(true),
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    let _ = right_schema;
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// Accepts either a single `group_key` string or a `group_keys` array when
+/// deserializing persisted view specs.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupKeysRepr {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn de_group_keys<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<GroupKeysRepr>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(GroupKeysRepr::One(key)) => vec![key],
+        Some(GroupKeysRepr::Many(keys)) => keys,
+    })
 }
 
 /// The aggregation a value-count view derives from a group's value counts.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueAgg {
     Min,
     Max,
@@ -324,13 +423,23 @@ enum ValueAgg {
 }
 
 impl ValueAgg {
-    fn apply(self, group_values: Option<&BTreeMap<i64, i64>>) -> Option<i64> {
-        let values = group_values.filter(|values| !values.is_empty());
+    fn result_type(self, value_type: &DataType) -> Result<DataType> {
         match self {
-            ValueAgg::Min => values.and_then(|values| values.keys().next().copied()),
-            ValueAgg::Max => values.and_then(|values| values.keys().next_back().copied()),
-            ValueAgg::DistinctCount => values.map(|values| values.len() as i64),
-            ValueAgg::DistinctSum => values.map(|values| values.keys().sum()),
+            ValueAgg::Min | ValueAgg::Max => Ok(value_type.clone()),
+            ValueAgg::DistinctCount => Ok(DataType::Int64),
+            ValueAgg::DistinctSum => sum_result_type(value_type),
+        }
+    }
+
+    fn sql(self, value_column: &str) -> String {
+        let column = quote_ident(value_column);
+        match self {
+            ValueAgg::Min => format!("min({column})"),
+            ValueAgg::Max => format!("max({column})"),
+            // SQL distinct aggregates ignore NULL values; `count(distinct ...)`
+            // also yields 0 for a group that only holds NULLs.
+            ValueAgg::DistinctCount => format!("count(distinct {column})"),
+            ValueAgg::DistinctSum => format!("sum(distinct {column})"),
         }
     }
 }
@@ -360,7 +469,7 @@ struct ValueCountView<'a> {
     source: &'a IvmTable,
     mv: &'a IvmTable,
     state: &'a IvmTable,
-    group_key: &'a str,
+    group_keys: &'a [String],
     value_column: &'a str,
     agg: ValueAgg,
 }
@@ -382,9 +491,9 @@ pub struct MinMaxView {
     /// The value-count state table, created from [`min_max_state_schema`] with
     /// `(group_key, value)` as merge key.
     pub state: IvmTable,
-    /// The group key column (must be `Int64`).
-    pub group_key: String,
-    /// The min/max value column (must be `Int64`).
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The min/max value column.
     pub value_column: String,
     /// Whether the minimum or the maximum is maintained.
     pub min_max: MinMaxKind,
@@ -408,7 +517,29 @@ impl MinMaxView {
             source,
             mv,
             state,
-            group_key: group_key.into(),
+            group_keys: vec![group_key.into()],
+            value_column: value_column.into(),
+            min_max,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        state: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        min_max: MinMaxKind,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            state,
+            group_keys,
             value_column: value_column.into(),
             min_max,
             refresh_interval_ms: 0,
@@ -421,7 +552,7 @@ impl MinMaxView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             state_table_id: self.state.table_id.clone(),
-            group_key: self.group_key.clone(),
+            group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
             min_max: self.min_max,
         }
@@ -444,9 +575,9 @@ pub struct DistinctAggView {
     /// The value-count state table, created from
     /// [`value_count_state_schema`] with `(group_key, value)` as merge key.
     pub state: IvmTable,
-    /// The group key column (must be `Int64`).
-    pub group_key: String,
-    /// The distinct value column (must be `Int64`).
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The distinct value column.
     pub value_column: String,
     /// Whether the distinct count or the distinct sum is maintained.
     pub agg: DistinctAggKind,
@@ -470,7 +601,29 @@ impl DistinctAggView {
             source,
             mv,
             state,
-            group_key: group_key.into(),
+            group_keys: vec![group_key.into()],
+            value_column: value_column.into(),
+            agg,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        state: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        agg: DistinctAggKind,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            state,
+            group_keys,
             value_column: value_column.into(),
             agg,
             refresh_interval_ms: 0,
@@ -483,7 +636,7 @@ impl DistinctAggView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             state_table_id: self.state.table_id.clone(),
-            group_key: self.group_key.clone(),
+            group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
             agg: self.agg,
         }
@@ -646,6 +799,37 @@ pub fn window_mv_schema(partition_keys: &[String], row_keys: &[String]) -> Schem
     Arc::new(Schema::new(fields))
 }
 
+/// The schema of a [`WindowView`] materialized view, deriving the partition
+/// and row key types from the source schema.
+pub fn window_mv_schema_for(
+    source_schema: &Schema,
+    partition_keys: &[String],
+    row_keys: &[String],
+) -> Result<SchemaRef> {
+    let keys = partition_keys
+        .iter()
+        .chain(row_keys.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut fields = key_fields(source_schema, &keys)?;
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_NUMBER_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// The schema of a [`SemiAntiView`] materialized view: the left columns plus
 /// the row kind and the epoch.
 pub fn semi_anti_mv_schema(left_schema: &Schema) -> SchemaRef {
@@ -681,6 +865,178 @@ pub fn value_count_state_schema(group_key: &str) -> SchemaRef {
 /// [`value_count_state_schema`].
 pub fn min_max_state_schema(group_key: &str) -> SchemaRef {
     value_count_state_schema(group_key)
+}
+
+/// The result type of a distinct aggregate's materialized value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueResultKind {
+    /// `MIN(value)`: the value type.
+    Min,
+    /// `MAX(value)`: the value type.
+    Max,
+    /// `COUNT(DISTINCT value)`: `Int64`.
+    DistinctCount,
+    /// `SUM(DISTINCT value)`: the sum result type.
+    DistinctSum,
+}
+
+impl From<MinMaxKind> for ValueResultKind {
+    fn from(kind: MinMaxKind) -> Self {
+        match kind {
+            MinMaxKind::Min => ValueResultKind::Min,
+            MinMaxKind::Max => ValueResultKind::Max,
+        }
+    }
+}
+
+impl From<DistinctAggKind> for ValueResultKind {
+    fn from(kind: DistinctAggKind) -> Self {
+        match kind {
+            DistinctAggKind::Count => ValueResultKind::DistinctCount,
+            DistinctAggKind::Sum => ValueResultKind::DistinctSum,
+        }
+    }
+}
+
+/// The non-nullable group key fields taken from the source schema.
+fn key_fields(source_schema: &Schema, group_keys: &[String]) -> Result<Vec<Arc<Field>>> {
+    group_keys
+        .iter()
+        .map(|key| {
+            let field = source_schema.field_with_name(key)?;
+            // NULL is a regular group value, so keep the source nullability.
+            Ok(Arc::new(field.clone()))
+        })
+        .collect()
+}
+
+/// The schema of a `SUM`/`COUNT` materialized view, deriving the key and sum
+/// types from the source schema.
+pub fn sum_count_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: Option<&str>,
+) -> Result<SchemaRef> {
+    let mut fields = key_fields(source_schema, group_keys)?;
+    let sum_type = match value_column {
+        Some(column) => sum_result_type(&field_type(source_schema, column)?)?,
+        None => DataType::Int64,
+    };
+    // An all-NULL group sums to NULL.
+    fields.push(Arc::new(Field::new(IVM_SUM_COLUMN, sum_type, true)));
+    fields.push(Arc::new(Field::new(
+        IVM_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_NONNULL_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a value-count state table, deriving the key and value types
+/// from the source schema.
+pub fn value_count_state_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
+    let value_field = source_schema.field_with_name(value_column)?;
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(
+        IVM_VALUE_COLUMN,
+        value_field.data_type().clone(),
+        value_field.is_nullable(),
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_VALUE_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a value-count materialized view for a distinct aggregate.
+pub fn value_count_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+    result: ValueResultKind,
+) -> Result<SchemaRef> {
+    // MIN/MAX over an all-NULL group is NULL; DISTINCT SUM is NULL when the
+    // group has no distinct value.
+    let (value_type, value_nullable) = match result {
+        ValueResultKind::Min | ValueResultKind::Max => {
+            (field_type(source_schema, value_column)?, true)
+        }
+        ValueResultKind::DistinctCount => (DataType::Int64, false),
+        ValueResultKind::DistinctSum => (
+            sum_result_type(&field_type(source_schema, value_column)?)?,
+            true,
+        ),
+    };
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(
+        IVM_VALUE_COLUMN,
+        value_type,
+        value_nullable,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`MinMaxView`] materialized view, deriving the types from
+/// the source schema.
+pub fn min_max_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+    kind: MinMaxKind,
+) -> Result<SchemaRef> {
+    value_count_mv_schema_for(source_schema, group_keys, value_column, kind.into())
+}
+
+/// The schema of a [`DistinctAggView`] materialized view, deriving the types
+/// from the source schema.
+pub fn distinct_agg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+    kind: DistinctAggKind,
+) -> Result<SchemaRef> {
+    value_count_mv_schema_for(source_schema, group_keys, value_column, kind.into())
 }
 
 /// The IVM runtime: a metadata client plus the `ivm` schema access layer.
@@ -736,16 +1092,17 @@ impl IvmRuntime {
 
     /// Refresh a `SUM`/`COUNT` view over the source changelog.
     ///
-    /// Returns the epoch written, or `None` when the source had no new rows.
-    /// Append-only sources are aggregated directly. A source with a primary key
-    /// is treated as an upsert stream: the new version of every changed row is
-    /// retracted against the row's state at the window start, so updates and
-    /// `rowKinds='delete'` rows are handled without a full source scan.
-    ///
-    /// An update/delete commit that the changelog cannot express incrementally
-    /// (a missing baseline) is reported as an error so the caller can rebuild.
+    /// The delta is aggregated in SQL (so any numeric value type works), the
+    /// previous versions of changed keys are retracted through the as-of read
+    /// and the result is merged with the current MV state: rows whose key was
+    /// already written by this epoch are skipped, which makes a replay a
+    /// no-op.
     pub async fn refresh_sum_count(&self, view: &SumCountView) -> Result<Option<i64>> {
         self.register_view(view).await?;
+        validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+        if let Some(value_column) = &view.value_column {
+            sum_result_type(&field_type(&view.source.schema, value_column)?)?;
+        }
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -753,7 +1110,6 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
-
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -766,21 +1122,35 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let delta_batches = view.source.read_files(window.added_files).await?;
-        let delta = if view.source.primary_keys.is_empty() {
-            aggregate_groups(view, delta_batches).await?
-        } else {
-            let old_batches = view
-                .source
-                .read_as_of(&self.client, window.before_timestamp)
-                .await?;
-            aggregate_upsert_delta(view, delta_batches, old_batches).await?
-        };
-        if !delta.is_empty() {
-            let state_batches = view.mv.read_current(&self.client).await?;
-            let state = current_state(view, state_batches)?;
-            let batch = build_mv_batch(view, &delta, &state, epoch)?;
-            view.mv.append_batch(&self.client, batch).await?;
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "delta",
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        let keyed = !view.source.primary_keys.is_empty();
+        if keyed {
+            register_table(
+                &context,
+                "old",
+                view.source
+                    .read_as_of(&self.client, window.before_timestamp)
+                    .await?,
+                &view.source.schema,
+            )?;
+        }
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        let sql = sum_count_refresh_sql(view, keyed, epoch);
+        for batch in context.sql(&sql).await?.collect().await? {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -828,9 +1198,11 @@ impl IvmRuntime {
     /// Returns the epoch written, or `None` when neither source had new rows.
     /// Each refresh appends `ΔL ⋈ R_before + L_before ⋈ ΔR + ΔL ⋈ ΔR`, so the
     /// accumulated output equals `L_now ⋈ R_now`; `R_before`/`L_before` are
-    /// read as of each side's cursor with the as-of API (P0-1).
+    /// read as of each side's cursor with the as-of API (P0-1). Join keys and
+    /// payload columns may be of any equality-comparable type.
     pub async fn refresh_join(&self, view: &JoinView) -> Result<Option<i64>> {
         self.register_join_view(view).await?;
+        validate_join_view(view)?;
         ensure_append_only(&view.left, &view.view_id)?;
         ensure_append_only(&view.right, &view.view_id)?;
         self.ensure_unpartitioned(&view.left).await?;
@@ -867,6 +1239,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
+        let context = SessionContext::new();
         let left_delta = view
             .left
             .read_files(left_window.added_files.clone())
@@ -884,17 +1257,42 @@ impl IvmRuntime {
             .read_as_of(&self.client, right_window.before_timestamp)
             .await?;
 
-        if let Some(batch) = compute_join_delta(
-            view,
-            &left_delta,
-            &right_delta,
-            &left_before,
-            &right_before,
-            epoch,
-        )
-        .await?
-        {
-            view.output.append_batch(&self.client, batch).await?;
+        let mut terms = Vec::new();
+        if !left_delta.is_empty() && !right_before.is_empty() {
+            terms.push(join_projection(
+                dataframe(&context, left_delta.clone(), &view.left.schema)?,
+                dataframe(&context, right_before.clone(), &view.right.schema)?,
+                view,
+            )?);
+        }
+        if !left_before.is_empty() && !right_delta.is_empty() {
+            terms.push(join_projection(
+                dataframe(&context, left_before.clone(), &view.left.schema)?,
+                dataframe(&context, right_delta.clone(), &view.right.schema)?,
+                view,
+            )?);
+        }
+        if !left_delta.is_empty() && !right_delta.is_empty() {
+            terms.push(join_projection(
+                dataframe(&context, left_delta.clone(), &view.left.schema)?,
+                dataframe(&context, right_delta.clone(), &view.right.schema)?,
+                view,
+            )?);
+        }
+        if let Some(first) = terms.pop() {
+            let mut combined = first;
+            for term in terms {
+                combined = combined.union(term)?;
+            }
+            for batch in combined
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    view.output.append_batch(&self.client, batch).await?;
+                }
+            }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
@@ -909,15 +1307,12 @@ impl IvmRuntime {
     }
 
     /// Rebuild a `SUM`/`COUNT` view from the full source state.
-    ///
-    /// Used when a refresh reports `requires_rebuild` (an update/delete inside
-    /// the window or a missing baseline) or when a cursor rewind is not aligned
-    /// with the last window. The MV is truncated, recomputed from the current
-    /// source state and published as the epoch `rebuild:<generation>`; cursors
-    /// are re-baselined to the latest source version. The generation bump
-    /// isolates the epochs of the previous incarnation.
     pub async fn rebuild_sum_count(&self, view: &SumCountView) -> Result<i64> {
         self.register_view(view).await?;
+        validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+        if let Some(value_column) = &view.value_column {
+            sum_result_type(&field_type(&view.source.schema, value_column)?)?;
+        }
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -927,8 +1322,6 @@ impl IvmRuntime {
         view.mv.truncate(&self.client).await?;
 
         let baseline = self.source_baseline(&view.source).await?;
-        let full = aggregate_groups(view, baseline.batches).await?;
-
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let record = match self
@@ -953,8 +1346,18 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let batch = build_full_batch(view, &full, epoch)?;
-        view.mv.append_batch(&self.client, batch).await?;
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        for batch in context
+            .sql(&sum_count_rebuild_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -976,7 +1379,7 @@ impl IvmRuntime {
             source: &view.source,
             mv: &view.mv,
             state: &view.state,
-            group_key: &view.group_key,
+            group_keys: &view.group_keys,
             value_column: &view.value_column,
             agg: ValueAgg::from(view.min_max),
         })
@@ -995,7 +1398,7 @@ impl IvmRuntime {
             source: &view.source,
             mv: &view.mv,
             state: &view.state,
-            group_key: &view.group_key,
+            group_keys: &view.group_keys,
             value_column: &view.value_column,
             agg: ValueAgg::from(view.agg),
         })
@@ -1008,7 +1411,8 @@ impl IvmRuntime {
     /// selects which partitions to recompute: their current source state is
     /// ranked again and the MV rows that changed (including rows that
     /// disappeared or moved to another partition) are rewritten. The per-row
-    /// epoch keeps a replay from applying a window twice.
+    /// epoch keeps a replay from applying a window twice; any column types are
+    /// supported because the ranking runs in SQL.
     pub async fn refresh_window(&self, view: &WindowView) -> Result<Option<i64>> {
         self.register_window_view(view).await?;
         validate_window_view(view)?;
@@ -1019,7 +1423,6 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
-
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -1032,46 +1435,34 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let delta_batches = view.source.read_files(window.added_files).await?;
-        let delta_rows = key_set(&delta_batches, &view.source.primary_keys)?;
-        let mut affected = key_set(&delta_batches, &view.partition_keys)?;
-
-        let mv_batches = view.mv.read_current(&self.client).await?;
-        let current_mv = read_window_state(view, mv_batches)?;
-        // A changed row may have left its previous partition, which then needs
-        // a recomputation too.
-        for row_key in &delta_rows {
-            if let Some(entry) = current_mv.get(row_key) {
-                affected.insert(entry.partition.clone());
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "delta",
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "src",
+            view.source.read_current(&self.client).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        for batch in context
+            .sql(&window_refresh_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
             }
-        }
-
-        let source_batches = view.source.read_current(&self.client).await?;
-        let computed = compute_row_numbers(view, source_batches, Some(&affected)).await?;
-
-        let mut mv_rows = WindowRows::default();
-        for (row_key, (partition, number)) in &computed {
-            match current_mv.get(row_key) {
-                Some(entry) if entry.epoch == epoch => continue,
-                Some(entry) => {
-                    mv_rows.push_delete(&entry.partition, row_key, entry.number, epoch)
-                }
-                None => {}
-            }
-            mv_rows.push_insert(partition, row_key, *number, epoch);
-        }
-        for (row_key, entry) in &current_mv {
-            if entry.epoch == epoch {
-                continue;
-            }
-            if affected.contains(&entry.partition) && !computed.contains_key(row_key) {
-                mv_rows.push_delete(&entry.partition, row_key, entry.number, epoch);
-            }
-        }
-        if !mv_rows.is_empty() {
-            view.mv
-                .append_batch(&self.client, mv_rows.into_batch(view)?)
-                .await?;
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1082,6 +1473,13 @@ impl IvmRuntime {
         Ok(Some(epoch))
     }
 
+    /// Refresh a value-count view.
+    ///
+    /// The window delta is turned into `(group, value) -> count` changes in
+    /// SQL (new rows add, the previous version of an upserted row retracts),
+    /// applied to the state table, and the affected groups are recomputed and
+    /// written to the MV. State rows carry the window epoch, so a replay after
+    /// a crash between the state and the MV writes is a no-op for the state.
     /// Refresh a `SEMI`/`ANTI` join by recomputing the affected left rows.
     ///
     /// The affected rows are the left rows in the delta plus the left rows
@@ -1245,7 +1643,21 @@ impl IvmRuntime {
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
-        for batch in inserts.union(deletes)?.collect().await? {
+        // Delete rows must arrive before the replacement insert of the same
+        // key for merge-on-read.
+        let mut sort_exprs = view
+            .left
+            .primary_keys
+            .iter()
+            .map(|key| column_expr(key))
+            .collect::<Vec<_>>();
+        sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        for batch in inserts
+            .union(deletes)?
+            .sort_by(sort_exprs)?
+            .collect()
+            .await?
+        {
             if batch.num_rows() > 0 {
                 view.mv.append_batch(&self.client, batch).await?;
             }
@@ -1262,24 +1674,20 @@ impl IvmRuntime {
         Ok(Some(epoch))
     }
 
-    /// Refresh a value-count view.
-    ///
-    /// The window delta is turned into `(group, value) -> count` changes (new
-    /// rows add, the previous version of an upserted row retracts), applied to
-    /// the state table, and the affected groups are recomputed and written to
-    /// the MV. State rows carry the window epoch, so a replay after a crash
-    /// between the state and the MV writes is a no-op for the state.
     async fn refresh_value_count(
         &self,
         view: &ValueCountView<'_>,
     ) -> Result<Option<i64>> {
+        validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        let value_type = field_type(&view.source.schema, view.value_column)?;
+        view.agg.result_type(&value_type)?;
+
         let window = self
             .collect_source_window(view.view_id, view.source)
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
         }
-
         let record = match self
             .begin_window(view.view_id, &window.identity, view.mv)
             .await?
@@ -1292,86 +1700,89 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let delta_batches = view.source.read_files(window.added_files).await?;
-        let mut count_changes = count_rows_by_group_value(view, &delta_batches).await?;
-        if !view.source.primary_keys.is_empty() {
-            let old_batches = view
-                .source
-                .read_as_of(&self.client, window.before_timestamp)
-                .await?;
-            subtract_changed_old_counts(
-                view,
-                &delta_batches,
-                &old_batches,
-                &mut count_changes,
-            )
-            .await?;
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "delta",
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        let keyed = !view.source.primary_keys.is_empty();
+        if keyed {
+            register_table(
+                &context,
+                "old",
+                view.source
+                    .read_as_of(&self.client, window.before_timestamp)
+                    .await?,
+                &view.source.schema,
+            )?;
         }
-        count_changes.retain(|_, count| *count != 0);
+        register_table(
+            &context,
+            "state",
+            view.state.read_current(&self.client).await?,
+            &view.state.schema,
+        )?;
 
-        let state_batches = view.state.read_current(&self.client).await?;
-        let mut state = read_value_count_state(view, state_batches)?;
-
-        let mut state_rows = StateDeltaRows::default();
-        for ((group, value), delta) in &count_changes {
-            let key = (*group, *value);
-            if state.get(&key).is_some_and(|entry| entry.epoch == epoch) {
-                // The state already carries this window (a crashed attempt
-                // wrote it before the MV was committed).
-                continue;
-            }
-            let old_count = state
-                .get(&key)
-                .filter(|entry| entry.row_kinds == "insert")
-                .map(|entry| entry.count)
-                .unwrap_or(0);
-            let new_count = old_count + delta;
-            if old_count > 0 {
-                state_rows.push_delete(key, old_count, epoch);
-            }
-            if new_count > 0 {
-                state_rows.push_insert(key, new_count, epoch);
-                state.insert(
-                    key,
-                    StateEntry {
-                        count: new_count,
-                        row_kinds: "insert".to_string(),
-                        epoch,
-                    },
-                );
-            } else {
-                state.remove(&key);
-            }
-        }
-        if !state_rows.is_empty() {
-            view.state
-                .append_batch(&self.client, state_rows.into_batch(view.state)?)
-                .await?;
-        }
-
-        let values_by_group = values_by_group(&state);
-        let mv_batches = view.mv.read_current(&self.client).await?;
-        let current_mv = read_value_count_mv(view, mv_batches)?;
-        let mut mv_rows = ValueRows::default();
-        for group in count_changes
-            .keys()
-            .map(|(group, _)| *group)
-            .collect::<std::collections::HashSet<_>>()
+        let cte = value_count_refresh_cte(view, keyed, epoch);
+        for batch in context
+            .sql(&format!(
+                "{cte} select * from state_del union all select * from state_ins \
+                 order by {}, \"rowKinds\"",
+                quoted_list(
+                    &view
+                        .group_keys
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(IVM_VALUE_COLUMN.to_string()))
+                        .collect::<Vec<_>>(),
+                )
+            ))
+            .await?
+            .collect()
+            .await?
         {
-            let new_value = view.agg.apply(values_by_group.get(&group));
-            match current_mv.get(&group) {
-                Some(entry) if entry.epoch == epoch => continue,
-                Some(entry) => mv_rows.push_delete(group, entry.value, epoch),
-                None => {}
-            }
-            if let Some(value) = new_value {
-                mv_rows.push_insert(group, value, epoch);
+            if batch.num_rows() > 0 {
+                view.state.append_batch(&self.client, batch).await?;
             }
         }
-        if !mv_rows.is_empty() {
-            view.mv
-                .append_batch(&self.client, mv_rows.into_batch(view.mv)?)
-                .await?;
+
+        let affected = context
+            .sql(&format!(
+                "{cte} select distinct {} from counts",
+                quoted_list(view.group_keys)
+            ))
+            .await?
+            .collect()
+            .await?;
+        register_table(
+            &context,
+            "affected",
+            affected,
+            &key_schema(&view.source.schema, view.group_keys)?,
+        )?;
+        register_table(
+            &context,
+            "state_now",
+            view.state.read_current(&self.client).await?,
+            &view.state.schema,
+        )?;
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        for batch in context
+            .sql(&value_count_mv_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
         }
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
@@ -1388,6 +1799,7 @@ impl IvmRuntime {
     /// the epoch `rebuild:<generation>`.
     pub async fn rebuild_join(&self, view: &JoinView) -> Result<i64> {
         self.register_join_view(view).await?;
+        validate_join_view(view)?;
         ensure_append_only(&view.left, &view.view_id)?;
         ensure_append_only(&view.right, &view.view_id)?;
         self.ensure_unpartitioned(&view.left).await?;
@@ -1436,14 +1848,21 @@ impl IvmRuntime {
         let epoch = record.epoch;
 
         let context = SessionContext::new();
-        let joined = join_term(
-            &context,
-            &left_baseline.batches,
-            &right_baseline.batches,
-            view,
-        )?;
-        if let Some(batch) = build_join_batch(&joined.collect().await?, epoch)? {
-            view.output.append_batch(&self.client, batch).await?;
+        if !left_baseline.batches.is_empty() && !right_baseline.batches.is_empty() {
+            let joined = join_projection(
+                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                view,
+            )?;
+            for batch in joined
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    view.output.append_batch(&self.client, batch).await?;
+                }
+            }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
@@ -1468,7 +1887,7 @@ impl IvmRuntime {
             source: &view.source,
             mv: &view.mv,
             state: &view.state,
-            group_key: &view.group_key,
+            group_keys: &view.group_keys,
             value_column: &view.value_column,
             agg: ValueAgg::from(view.min_max),
         })
@@ -1484,7 +1903,7 @@ impl IvmRuntime {
             source: &view.source,
             mv: &view.mv,
             state: &view.state,
-            group_key: &view.group_key,
+            group_keys: &view.group_keys,
             value_column: &view.value_column,
             agg: ValueAgg::from(view.agg),
         })
@@ -1504,8 +1923,6 @@ impl IvmRuntime {
         view.mv.truncate(&self.client).await?;
 
         let baseline = self.source_baseline(&view.source).await?;
-        let computed = compute_row_numbers(view, baseline.batches, None).await?;
-
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let record = match self
@@ -1530,14 +1947,17 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let mut rows = WindowRows::default();
-        for (row_key, (partition, number)) in &computed {
-            rows.push_insert(partition, row_key, *number, epoch);
-        }
-        if !rows.is_empty() {
-            view.mv
-                .append_batch(&self.client, rows.into_batch(view)?)
-                .await?;
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        for batch in context
+            .sql(&window_rebuild_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1657,6 +2077,10 @@ impl IvmRuntime {
     /// Both the value-count state table and the MV are truncated and refilled
     /// from the current source state, published as `rebuild:<generation>`.
     async fn rebuild_value_count(&self, view: &ValueCountView<'_>) -> Result<i64> {
+        validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        let value_type = field_type(&view.source.schema, view.value_column)?;
+        view.agg.result_type(&value_type)?;
+
         self.metadata
             .set_view_status(view.view_id, "rebuilding")
             .await?;
@@ -1666,8 +2090,6 @@ impl IvmRuntime {
         view.state.truncate(&self.client).await?;
 
         let baseline = self.source_baseline(view.source).await?;
-        let counts = count_rows_by_group_value(view, &baseline.batches).await?;
-
         let mv_versions_before = output_partition_versions(&self.client, view.mv).await?;
         let record = match self
             .metadata
@@ -1690,41 +2112,44 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let mut state = HashMap::new();
-        let mut state_rows = StateDeltaRows::default();
-        for ((group, value), count) in &counts {
-            if *count <= 0 {
-                continue;
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let state_sql = format!(
+            "select {}, {} as {}, count(1) as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+             from src where {} group by {}, {}",
+            quoted_list(view.group_keys),
+            quote_ident(view.value_column),
+            quote_ident(IVM_VALUE_COLUMN),
+            quote_ident(IVM_VALUE_COUNT_COLUMN),
+            source_delete_filter("src", change_column(view.source)),
+            quoted_list(view.group_keys),
+            quote_ident(view.value_column),
+        );
+        for batch in context.sql(&state_sql).await?.collect().await? {
+            if batch.num_rows() > 0 {
+                view.state.append_batch(&self.client, batch).await?;
             }
-            state_rows.push_insert((*group, *value), *count, epoch);
-            state.insert(
-                (*group, *value),
-                StateEntry {
-                    count: *count,
-                    row_kinds: "insert".to_string(),
-                    epoch,
-                },
-            );
-        }
-        if !state_rows.is_empty() {
-            view.state
-                .append_batch(&self.client, state_rows.into_batch(view.state)?)
-                .await?;
         }
 
-        let values_by_group = values_by_group(&state);
-        let mut mv_rows = ValueRows::default();
-        let mut groups = values_by_group.keys().copied().collect::<Vec<_>>();
-        groups.sort_unstable();
-        for group in groups {
-            if let Some(value) = view.agg.apply(values_by_group.get(&group)) {
-                mv_rows.push_insert(group, value, epoch);
+        register_table(
+            &context,
+            "state_now",
+            view.state.read_current(&self.client).await?,
+            &view.state.schema,
+        )?;
+        let mv_sql = format!(
+            "select {}, {} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+             from state_now where \"rowKinds\" = 'insert' and {} > 0 group by {}",
+            quoted_list(view.group_keys),
+            view.agg.sql(IVM_VALUE_COLUMN),
+            quote_ident(IVM_VALUE_COLUMN),
+            quote_ident(IVM_VALUE_COUNT_COLUMN),
+            quoted_list(view.group_keys),
+        );
+        for batch in context.sql(&mv_sql).await?.collect().await? {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
             }
-        }
-        if !mv_rows.is_empty() {
-            view.mv
-                .append_batch(&self.client, mv_rows.into_batch(view.mv)?)
-                .await?;
         }
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
@@ -2044,95 +2469,92 @@ fn ensure_append_only(source: &IvmTable, view_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Build the inclusion-exclusion delta of an inner join.
-#[allow(clippy::too_many_arguments)]
-async fn compute_join_delta(
-    view: &JoinView,
-    left_delta: &[RecordBatch],
-    right_delta: &[RecordBatch],
-    left_before: &[RecordBatch],
-    right_before: &[RecordBatch],
-    epoch: i64,
-) -> Result<Option<RecordBatch>> {
-    let context = SessionContext::new();
-    let mut terms: Vec<DataFrame> = Vec::new();
-    if !left_delta.is_empty() && !right_before.is_empty() {
-        terms.push(join_term(&context, left_delta, right_before, view)?);
+/// Validate that a join view can be maintained.
+fn validate_join_view(view: &JoinView) -> Result<()> {
+    if view.join_keys.is_empty() {
+        return Err(report!(
+            "join view {} needs at least one join key",
+            view.view_id
+        ));
     }
-    if !left_before.is_empty() && !right_delta.is_empty() {
-        terms.push(join_term(&context, left_before, right_delta, view)?);
-    }
-    if !left_delta.is_empty() && !right_delta.is_empty() {
-        terms.push(join_term(&context, left_delta, right_delta, view)?);
-    }
-    if terms.is_empty() {
-        return Ok(None);
-    }
-
-    let mut collected = Vec::new();
-    for term in terms {
-        collected.extend(term.collect().await?);
-    }
-
-    build_join_batch(&collected, epoch)
-}
-
-/// Turn joined `(join_key, left_value, right_value)` batches into the
-/// append-only output batch stamped with `epoch`.
-fn build_join_batch(batches: &[RecordBatch], epoch: i64) -> Result<Option<RecordBatch>> {
-    let mut keys = Vec::new();
-    let mut left_values = Vec::new();
-    let mut right_values = Vec::new();
-    for batch in batches {
-        let batch_keys = int64_column(batch, 0, "join_key")?;
-        let batch_left = int64_column(batch, 1, "left_value")?;
-        let batch_right = int64_column(batch, 2, "right_value")?;
-        for row in 0..batch.num_rows() {
-            keys.push(batch_keys.value(row));
-            left_values.push(batch_left.value(row));
-            right_values.push(batch_right.value(row));
+    for key in &view.join_keys {
+        let left = view.left.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "join view {}: join key {key} is not in the left source",
+                view.view_id
+            )
+        })?;
+        let right = view.right.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "join view {}: join key {key} is not in the right source",
+                view.view_id
+            )
+        })?;
+        if left.data_type() != right.data_type() {
+            return Err(report!(
+                "join view {}: join key {key} has different types on the two sources",
+                view.view_id
+            ));
         }
     }
-    if keys.is_empty() {
-        return Ok(None);
-    }
-
-    let row_count = keys.len();
-    Ok(Some(RecordBatch::try_new(
-        join_view_schema(),
-        vec![
-            Arc::new(Int64Array::from(keys)),
-            Arc::new(Int64Array::from(left_values)),
-            Arc::new(Int64Array::from(right_values)),
-            Arc::new(Int64Array::from_iter_values(std::iter::repeat_n(
-                epoch, row_count,
-            ))),
-        ],
-    )?))
+    field_type(&view.left.schema, &view.left_value)?;
+    field_type(&view.right.schema, &view.right_value)?;
+    let _ = &view.output;
+    Ok(())
 }
 
-/// Join two batch sets on the view key, projecting to the output columns.
-fn join_term(
-    context: &SessionContext,
-    left: &[RecordBatch],
-    right: &[RecordBatch],
+/// Project an inner equi-join onto `(join keys, left value, right value)`.
+///
+/// The right side's key columns are aliased before the join because DataFusion
+/// rejects duplicate qualified fields for the same name.
+fn join_projection(
+    left: DataFrame,
+    right: DataFrame,
     view: &JoinView,
 ) -> Result<DataFrame> {
-    let left = context.read_batches(left.to_vec())?.select(vec![
-        col(view.join_key.as_str()).alias("join_key"),
-        col(view.left_value.as_str()).alias("left_value"),
-    ])?;
-    let right = context.read_batches(right.to_vec())?.select(vec![
-        col(view.join_key.as_str()).alias("right_key"),
-        col(view.right_value.as_str()).alias("right_value"),
-    ])?;
-    Ok(left
-        .join(right, JoinType::Inner, &["join_key"], &["right_key"], None)?
-        .select(vec![col("join_key"), col("left_value"), col("right_value")])?)
+    let left_keys = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    let right_keys = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()).alias(format!("__right_{key}")))
+        .collect::<Vec<_>>();
+    let mut left_columns = left_keys.clone();
+    left_columns.push(col(view.left_value.as_str()).alias("left_value"));
+    let left = left.select(left_columns)?;
+    let mut right_columns = right_keys;
+    right_columns.push(col(view.right_value.as_str()).alias("right_value"));
+    let right = right.select(right_columns)?;
+
+    let key_names = view
+        .join_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let right_key_names = view
+        .join_keys
+        .iter()
+        .map(|key| format!("__right_{key}"))
+        .collect::<Vec<_>>();
+    let right_key_refs = right_key_names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let joined = left.join(right, JoinType::Inner, &key_names, &right_key_refs, None)?;
+
+    let mut output = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    output.push(col("left_value"));
+    output.push(col("right_value"));
+    Ok(joined.select(output)?)
 }
 
-/// Column names are case sensitive; `col()` would normalize the identifier to
-/// lower case, so the column is built from its exact name.
 fn column_expr(name: &str) -> datafusion::logical_expr::Expr {
     datafusion::logical_expr::Expr::Column(datafusion::common::Column::from_name(name))
 }
@@ -2163,502 +2585,329 @@ fn filter_deletes(frame: DataFrame, change_column: Option<&str>) -> Result<DataF
 }
 
 /// Aggregate sum/count batches into `group_key -> (sum, count)`.
-async fn aggregate_groups(
-    view: &SumCountView,
-    batches: Vec<arrow::record_batch::RecordBatch>,
-) -> Result<HashMap<i64, (i64, i64)>> {
-    if batches.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let context = SessionContext::new();
-    let frame = context.read_batches(batches)?;
-    let frame = filter_deletes(frame, change_column(&view.source))?;
-    aggregate_dataframe(view, frame).await
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-/// Aggregate one [`DataFrame`] into `group_key -> (sum, count)`.
-async fn aggregate_dataframe(
-    view: &SumCountView,
-    frame: DataFrame,
-) -> Result<HashMap<i64, (i64, i64)>> {
-    let value_expr = match &view.value_column {
-        Some(column) => sum(col(column.as_str())),
-        None => sum(lit(0_i64)),
-    };
-    let aggregated = frame.aggregate(
-        vec![col(view.group_key.as_str())],
-        vec![
-            value_expr.alias("delta_sum"),
-            count(lit(1_i64)).alias("delta_count"),
-        ],
-    )?;
-
-    let mut delta = HashMap::new();
-    for batch in aggregated.collect().await? {
-        let keys = int64_column(&batch, 0, &view.group_key)?;
-        let sums = int64_column(&batch, 1, "delta_sum")?;
-        let counts = int64_column(&batch, 2, "delta_count")?;
-        for row in 0..batch.num_rows() {
-            delta.insert(keys.value(row), (sums.value(row), counts.value(row)));
-        }
-    }
-    Ok(delta)
-}
-
-/// The delta of an upsert source:
-/// `aggregate(new rows) - aggregate(old rows whose key changed)`.
-///
-/// The changelog of a keyed source contains the new version of every changed
-/// row but no retraction of its previous version, so the previous version is
-/// read as of the window start and matched by primary key. Rows whose
-/// `rowKinds` says `delete` only contribute their retraction.
-async fn aggregate_upsert_delta(
-    view: &SumCountView,
-    delta: Vec<RecordBatch>,
-    old: Vec<RecordBatch>,
-) -> Result<HashMap<i64, (i64, i64)>> {
-    if delta.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let context = SessionContext::new();
-    let delta_frame = context.read_batches(delta)?;
-    let new_rows = filter_deletes(delta_frame.clone(), change_column(&view.source))?;
-    let mut delta_groups = aggregate_dataframe(view, new_rows).await?;
-
-    if !old.is_empty() {
-        // Deleted keys survive merge-on-read as tombstones; they must not be
-        // retracted again.
-        let old_frame =
-            filter_deletes(context.read_batches(old)?, change_column(&view.source))?;
-        let pk_columns = view
-            .source
-            .primary_keys
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let changed_keys = delta_frame
-            .select(
-                pk_columns
-                    .iter()
-                    .map(|column| col(*column))
-                    .collect::<Vec<_>>(),
-            )?
-            .distinct()?;
-        let changed_old = old_frame.join(
-            changed_keys,
-            JoinType::LeftSemi,
-            &pk_columns,
-            &pk_columns,
-            None,
-        )?;
-        for (group, (sum, count)) in aggregate_dataframe(view, changed_old).await? {
-            let entry = delta_groups.entry(group).or_insert((0, 0));
-            entry.0 -= sum;
-            entry.1 -= count;
-        }
-    }
-
-    Ok(delta_groups)
-}
-
-/// Read the current merge-on-read state as `group_key -> (sum, count, epoch)`.
-fn current_state(
-    view: &SumCountView,
-    batches: Vec<arrow::record_batch::RecordBatch>,
-) -> Result<HashMap<i64, (i64, i64, i64)>> {
-    let mut state = HashMap::new();
-    for batch in batches {
-        let schema = batch.schema();
-        let key_index = schema.index_of(&view.group_key)?;
-        let sum_index = schema.index_of(IVM_SUM_COLUMN)?;
-        let count_index = schema.index_of(IVM_COUNT_COLUMN)?;
-        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
-        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
-
-        let keys = int64_column(&batch, key_index, &view.group_key)?;
-        let sums = int64_column(&batch, sum_index, IVM_SUM_COLUMN)?;
-        let counts = int64_column(&batch, count_index, IVM_COUNT_COLUMN)?;
-        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
-        let kinds = batch
-            .column(kind_index)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
-
-        for row in 0..batch.num_rows() {
-            let key = keys.value(row);
-            if kinds.value(row) == "insert" {
-                state
-                    .insert(key, (sums.value(row), counts.value(row), epochs.value(row)));
-            } else if !state.contains_key(&key) {
-                state.remove(&key);
-            }
-        }
-    }
-    Ok(state)
-}
-
-/// Build the `delete(old) + insert(new)` batch for the affected groups.
-///
-/// Groups whose state already carries `epoch` were written by a previous
-/// attempt of the same window (a refresh that crashed before advancing its
-/// cursors) and are skipped, which makes the refresh idempotent.
-fn build_mv_batch(
-    view: &SumCountView,
-    delta: &HashMap<i64, (i64, i64)>,
-    state: &HashMap<i64, (i64, i64, i64)>,
-    epoch: i64,
-) -> Result<arrow::record_batch::RecordBatch> {
-    let mut keys = Vec::new();
-    let mut sums = Vec::new();
-    let mut counts = Vec::new();
-    let mut kinds = Vec::new();
-    let mut epochs = Vec::new();
-
-    let mut affected = delta.keys().copied().collect::<Vec<_>>();
-    affected.sort_unstable();
-    for key in affected {
-        let (delta_sum, delta_count) = delta[&key];
-        let previous = state.get(&key).copied();
-        if previous.is_some_and(|(_, _, state_epoch)| state_epoch == epoch) {
-            continue;
-        }
-        let previous = previous.map(|(sum, count, _)| (sum, count));
-
-        if let Some((old_sum, old_count)) = previous {
-            keys.push(key);
-            sums.push(old_sum);
-            counts.push(old_count);
-            kinds.push("delete");
-            epochs.push(epoch);
-        }
-
-        let (old_sum, old_count) = previous.unwrap_or((0, 0));
-        let new_count = old_count + delta_count;
-        if new_count != 0 {
-            keys.push(key);
-            sums.push(old_sum + delta_sum);
-            counts.push(new_count);
-            kinds.push("insert");
-            epochs.push(epoch);
-        }
-    }
-
-    Ok(arrow::record_batch::RecordBatch::try_new(
-        view.mv.schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(keys)),
-            Arc::new(Int64Array::from(sums)),
-            Arc::new(Int64Array::from(counts)),
-            Arc::new(StringArray::from(kinds)),
-            Arc::new(Int64Array::from(epochs)),
-        ],
-    )?)
-}
-
-/// Build the `insert`-only batch of a full rebuild.
-fn build_full_batch(
-    view: &SumCountView,
-    full: &HashMap<i64, (i64, i64)>,
-    epoch: i64,
-) -> Result<RecordBatch> {
-    let mut keys = Vec::new();
-    let mut sums = Vec::new();
-    let mut counts = Vec::new();
-    let mut kinds = Vec::new();
-    let mut epochs = Vec::new();
-
-    let mut affected = full.keys().copied().collect::<Vec<_>>();
-    affected.sort_unstable();
-    for key in affected {
-        let (sum, count) = full[&key];
-        if count == 0 {
-            continue;
-        }
-        keys.push(key);
-        sums.push(sum);
-        counts.push(count);
-        kinds.push("insert");
-        epochs.push(epoch);
-    }
-
-    Ok(RecordBatch::try_new(
-        view.mv.schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(keys)),
-            Arc::new(Int64Array::from(sums)),
-            Arc::new(Int64Array::from(counts)),
-            Arc::new(StringArray::from(kinds)),
-            Arc::new(Int64Array::from(epochs)),
-        ],
-    )?)
-}
-
-/// One surviving row of the MIN/MAX value-count state table.
-struct StateEntry {
-    count: i64,
-    row_kinds: String,
-    epoch: i64,
-}
-
-/// One surviving row of a MIN/MAX materialized view.
-struct MvEntry {
-    value: i64,
-    epoch: i64,
-}
-
-/// Read the value-count state.
-fn read_value_count_state(
-    view: &ValueCountView<'_>,
-    batches: Vec<RecordBatch>,
-) -> Result<HashMap<(i64, i64), StateEntry>> {
-    let mut state = HashMap::new();
-    for batch in batches {
-        let schema = batch.schema();
-        let group_index = schema.index_of(view.group_key)?;
-        let value_index = schema.index_of(IVM_VALUE_COLUMN)?;
-        let count_index = schema.index_of(IVM_VALUE_COUNT_COLUMN)?;
-        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
-        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
-
-        let groups = int64_column(&batch, group_index, view.group_key)?;
-        let values = int64_column(&batch, value_index, IVM_VALUE_COLUMN)?;
-        let counts = int64_column(&batch, count_index, IVM_VALUE_COUNT_COLUMN)?;
-        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
-        let kinds = batch
-            .column(kind_index)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
-
-        for row in 0..batch.num_rows() {
-            state.insert(
-                (groups.value(row), values.value(row)),
-                StateEntry {
-                    count: counts.value(row),
-                    row_kinds: kinds.value(row).to_string(),
-                    epoch: epochs.value(row),
-                },
-            );
-        }
-    }
-    Ok(state)
-}
-
-/// Read the current state of a value-count materialized view.
-fn read_value_count_mv(
-    view: &ValueCountView<'_>,
-    batches: Vec<RecordBatch>,
-) -> Result<HashMap<i64, MvEntry>> {
-    let mut mv = HashMap::new();
-    for batch in batches {
-        let schema = batch.schema();
-        let group_index = schema.index_of(view.group_key)?;
-        let value_index = schema.index_of(IVM_VALUE_COLUMN)?;
-        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
-        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
-
-        let groups = int64_column(&batch, group_index, view.group_key)?;
-        let values = int64_column(&batch, value_index, IVM_VALUE_COLUMN)?;
-        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
-        let kinds = batch
-            .column(kind_index)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
-
-        for row in 0..batch.num_rows() {
-            let group = groups.value(row);
-            if kinds.value(row) == "insert" {
-                mv.insert(
-                    group,
-                    MvEntry {
-                        value: values.value(row),
-                        epoch: epochs.value(row),
-                    },
-                );
-            } else {
-                mv.remove(&group);
-            }
-        }
-    }
-    Ok(mv)
-}
-
-/// `(group, value) -> count` over the non-delete rows of the batches.
-async fn count_rows_by_group_value(
-    view: &ValueCountView<'_>,
-    batches: &[RecordBatch],
-) -> Result<HashMap<(i64, i64), i64>> {
-    if batches.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let context = SessionContext::new();
-    let frame = context.read_batches(batches.to_vec())?;
-    let frame = filter_deletes(frame, change_column(view.source))?;
-    let aggregated = frame.aggregate(
-        vec![col(view.group_key), col(view.value_column)],
-        vec![count(lit(1_i64)).alias("rows")],
-    )?;
-
-    let mut counts = HashMap::new();
-    for batch in aggregated.collect().await? {
-        let groups = int64_column(&batch, 0, view.group_key)?;
-        let values = int64_column(&batch, 1, view.value_column)?;
-        let rows = int64_column(&batch, 2, "rows")?;
-        for row in 0..batch.num_rows() {
-            counts.insert((groups.value(row), values.value(row)), rows.value(row));
-        }
-    }
-    Ok(counts)
-}
-
-/// Retract the previous version of every key in `delta` from `counts`.
-async fn subtract_changed_old_counts(
-    view: &ValueCountView<'_>,
-    delta: &[RecordBatch],
-    old: &[RecordBatch],
-    counts: &mut HashMap<(i64, i64), i64>,
-) -> Result<()> {
-    if old.is_empty() || delta.is_empty() {
-        return Ok(());
-    }
-
-    let context = SessionContext::new();
-    let delta_frame = context.read_batches(delta.to_vec())?;
-    let old_frame = context.read_batches(old.to_vec())?;
-    let pk_columns = view
-        .source
-        .primary_keys
+fn quoted_list(columns: &[String]) -> String {
+    columns
         .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let changed_keys = delta_frame
-        .select(
-            pk_columns
-                .iter()
-                .map(|column| col(*column))
-                .collect::<Vec<_>>(),
-        )?
-        .distinct()?;
-    let changed_old = old_frame.join(
-        changed_keys,
-        JoinType::LeftSemi,
-        &pk_columns,
-        &pk_columns,
-        None,
-    )?;
-    for (key, count) in
-        count_rows_by_group_value(view, &changed_old.collect().await?).await?
-    {
-        *counts.entry(key).or_insert(0) -= count;
+        .map(|column| quote_ident(column))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn field_type(schema: &Schema, column: &str) -> Result<DataType> {
+    Ok(schema.field_with_name(column)?.data_type().clone())
+}
+
+/// The result type of `SUM` over `value_type`, matching DataFusion's rules.
+fn sum_result_type(value_type: &DataType) -> Result<DataType> {
+    Ok(match value_type {
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+            DataType::Int64
+        }
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+            DataType::UInt64
+        }
+        DataType::Float32 | DataType::Float64 => value_type.clone(),
+        DataType::Decimal128(_, scale) => DataType::Decimal128(38, *scale),
+        DataType::Decimal256(_, scale) => DataType::Decimal256(76, *scale),
+        other => {
+            return Err(report!("SUM is not supported for value type {other}"));
+        }
+    })
+}
+
+fn key_schema(source_schema: &Schema, group_keys: &[String]) -> Result<SchemaRef> {
+    Ok(Arc::new(Schema::new(key_fields(
+        source_schema,
+        group_keys,
+    )?)))
+}
+
+fn validate_group_keys(
+    source: &IvmTable,
+    group_keys: &[String],
+    view_id: &str,
+) -> Result<()> {
+    if group_keys.is_empty() {
+        return Err(report!("view {view_id} needs at least one group key"));
+    }
+    for key in group_keys {
+        source.schema.field_with_name(key).map_err(|_| {
+            report!("view {view_id}: group key {key} is not in the source")
+        })?;
     }
     Ok(())
 }
 
-/// The positive-count values of every group in the state table.
-fn values_by_group(
-    state: &HashMap<(i64, i64), StateEntry>,
-) -> HashMap<i64, BTreeMap<i64, i64>> {
-    let mut by_group = HashMap::new();
-    for ((group, value), entry) in state {
-        if entry.row_kinds == "insert" && entry.count > 0 {
-            by_group
-                .entry(*group)
-                .or_insert_with(BTreeMap::new)
-                .insert(*value, entry.count);
-        }
+fn register_table(
+    context: &SessionContext,
+    name: &str,
+    mut batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+) -> Result<()> {
+    // SQL results may carry different nullability than the declared schema;
+    // use the batches' own schema when there is one, and an empty batch with
+    // the declared schema otherwise.
+    let actual_schema = batches
+        .first()
+        .map(|batch| batch.schema())
+        .unwrap_or_else(|| schema.clone());
+    if batches.is_empty() {
+        batches.push(RecordBatch::new_empty(actual_schema.clone()));
     }
-    by_group
+    let table: Arc<dyn datafusion::catalog::TableProvider> = Arc::new(
+        datafusion::datasource::memory::MemTable::try_new(actual_schema, vec![batches])
+            .map_err(|error| report!("registering {name}: {error}"))?,
+    );
+    context.register_table(name, table)?;
+    Ok(())
 }
 
-/// Rows to write into the MIN/MAX value-count state table.
-#[derive(Default)]
-struct StateDeltaRows {
-    groups: Vec<i64>,
-    values: Vec<i64>,
-    counts: Vec<i64>,
-    kinds: Vec<&'static str>,
-    epochs: Vec<i64>,
-}
-
-impl StateDeltaRows {
-    fn is_empty(&self) -> bool {
-        self.groups.is_empty()
-    }
-
-    fn push_delete(&mut self, (group, value): (i64, i64), count: i64, epoch: i64) {
-        self.groups.push(group);
-        self.values.push(value);
-        self.counts.push(count);
-        self.kinds.push("delete");
-        self.epochs.push(epoch);
-    }
-
-    fn push_insert(&mut self, (group, value): (i64, i64), count: i64, epoch: i64) {
-        self.groups.push(group);
-        self.values.push(value);
-        self.counts.push(count);
-        self.kinds.push("insert");
-        self.epochs.push(epoch);
-    }
-
-    fn into_batch(self, table: &IvmTable) -> Result<RecordBatch> {
-        Ok(RecordBatch::try_new(
-            table.schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(self.groups)),
-                Arc::new(Int64Array::from(self.values)),
-                Arc::new(Int64Array::from(self.counts)),
-                Arc::new(StringArray::from(self.kinds)),
-                Arc::new(Int64Array::from(self.epochs)),
-            ],
-        )?)
+/// `alias.column <> 'delete'` when the source has a change column.
+fn source_delete_filter(alias: &str, change_column: Option<&str>) -> String {
+    match change_column {
+        Some(column) => format!("{alias}.{} <> 'delete'", quote_ident(column)),
+        None => "true".to_string(),
     }
 }
 
-/// Rows to write into a MIN/MAX materialized view.
-#[derive(Default)]
-struct ValueRows {
-    groups: Vec<i64>,
-    values: Vec<i64>,
-    kinds: Vec<&'static str>,
-    epochs: Vec<i64>,
+fn key_join_condition(left: &str, right: &str, keys: &[String]) -> String {
+    keys.iter()
+        .map(|key| format!("{left}.{} = {right}.{}", quote_ident(key), quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
-impl ValueRows {
-    fn is_empty(&self) -> bool {
-        self.groups.is_empty()
-    }
+/// Null-safe key equality (`IS NOT DISTINCT FROM`), used wherever NULL is a
+/// valid group/partition value (SQL groups NULLs together).
+fn key_join_condition_null_safe(left: &str, right: &str, keys: &[String]) -> String {
+    keys.iter()
+        .map(|key| {
+            format!(
+                "({left}.{} IS NOT DISTINCT FROM {right}.{})",
+                quote_ident(key),
+                quote_ident(key)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
 
-    fn push_delete(&mut self, group: i64, value: i64, epoch: i64) {
-        self.groups.push(group);
-        self.values.push(value);
-        self.kinds.push("delete");
-        self.epochs.push(epoch);
-    }
+/// SQL for one `SUM`/`COUNT` refresh window: a `delete` part (the previous
+/// accumulator of changed groups) unioned with an `insert` part (the new
+/// accumulator). Keys already written for this epoch are skipped.
+fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String {
+    let keys = quoted_list(&view.group_keys);
+    let sum_expr = match &view.value_column {
+        Some(column) => format!("sum({})", quote_ident(column)),
+        None => "sum(0)".to_string(),
+    };
+    let nonnull_expr = match &view.value_column {
+        Some(column) => format!("count({})", quote_ident(column)),
+        None => "count(1)".to_string(),
+    };
+    let delta_filter = source_delete_filter("delta", change_column(&view.source));
+    let old_filter = source_delete_filter("o", change_column(&view.source));
+    let pk_match = key_join_condition("o", "p", &view.source.primary_keys);
+    let delta_part = format!(
+        "new_agg as (select {keys}, {sum_expr} as dsum, count(1) as dcount, \
+                            {nonnull_expr} as dnonnull \
+                     from delta where {delta_filter} group by {keys})"
+    );
+    let d2 = if keyed {
+        format!(
+            "old_changed as (select o.* from old o where {old_filter} \
+                            and exists (select 1 from delta_pks p where {pk_match})), \
+             old_agg as (select {keys}, {sum_expr} as osum, count(1) as ocount, \
+                                 {nonnull_expr} as ononnull \
+                         from old_changed group by {keys}), \
+             raw as (select {coalesced_keys}, n.dsum as new_sum, o.osum as old_sum, \
+                            n.dcount as new_count, o.ocount as old_count, \
+                            n.dnonnull as new_nonnull, o.ononnull as old_nonnull \
+                     from new_agg n full join old_agg o on {agg_match}), \
+             d2 as (select {keys}, \
+                           coalesce(new_sum - old_sum, new_sum, -old_sum) as dsum, \
+                           coalesce(new_count - old_count, new_count, -old_count) as dcount, \
+                           coalesce(new_nonnull - old_nonnull, new_nonnull, -old_nonnull) as dnonnull \
+                    from raw \
+                    where coalesce(new_sum - old_sum, new_sum, -old_sum) <> 0 \
+                       or coalesce(new_count - old_count, new_count, -old_count) <> 0 \
+                       or coalesce(new_nonnull - old_nonnull, new_nonnull, -old_nonnull) <> 0)",
+            coalesced_keys = view
+                .group_keys
+                .iter()
+                .map(|key| format!("coalesce(n.{q}, o.{q}) as {q}", q = quote_ident(key)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            agg_match = key_join_condition_null_safe("n", "o", &view.group_keys),
+        )
+    } else {
+        format!(
+            "d2 as (select {keys}, dsum, dcount, dnonnull from new_agg \
+                    where dsum <> 0 or dcount <> 0 or dnonnull <> 0)"
+        )
+    };
+    let active_match = key_join_condition_null_safe("s", "d2", &view.group_keys);
+    let coalesced_keys = view
+        .group_keys
+        .iter()
+        .map(|key| format!("coalesce(s.{q}, d2.{q}) as {q}", q = quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let already_match = view
+        .group_keys
+        .iter()
+        .map(|key| format!("(a.{q} IS NOT DISTINCT FROM {q})", q = quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    format!(
+        "with delta_pks as (select distinct {pks} from delta), \
+         {delta_part}, {d2}, \
+         already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+         active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         merged as (select {coalesced_keys}, s.sum_v, s.count_v, s.{nonnull_c} as s_nonnull, \
+                           s.\"__ivm_epoch\" as s_epoch, d2.dsum, d2.dcount, d2.dnonnull, \
+                           coalesce(s.{nonnull_c} + d2.dnonnull, s.{nonnull_c}, d2.dnonnull) as n_nonnull \
+                    from active s full join d2 on {active_match}), \
+         deletes as (select {keys}, sum_v, count_v, s_nonnull as {nonnull_c}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from merged where s_epoch is not null and dcount is not null), \
+         inserts as (select {keys}, \
+                            case when n_nonnull > 0 then coalesce(sum_v + dsum, sum_v, dsum) else null end as sum_v, \
+                            coalesce(count_v + dcount, count_v, dcount) as count_v, \
+                            n_nonnull as {nonnull_c}, \
+                            'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from merged \
+                     where dcount is not null \
+                       and coalesce(count_v + dcount, count_v, dcount) <> 0 \
+                       and not exists (select 1 from already a where {already_match})) \
+         select * from deletes union all select * from inserts \
+         order by {keys}, \"rowKinds\"",
+        pks = quoted_list(&view.source.primary_keys),
+        nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
+    )
+}
 
-    fn push_insert(&mut self, group: i64, value: i64, epoch: i64) {
-        self.groups.push(group);
-        self.values.push(value);
-        self.kinds.push("insert");
-        self.epochs.push(epoch);
-    }
+/// SQL for a full `SUM`/`COUNT` rebuild.
+fn sum_count_rebuild_sql(view: &SumCountView, epoch: i64) -> String {
+    let keys = quoted_list(&view.group_keys);
+    let sum_expr = match &view.value_column {
+        Some(column) => format!("sum({})", quote_ident(column)),
+        None => "sum(0)".to_string(),
+    };
+    let nonnull_expr = match &view.value_column {
+        Some(column) => format!("count({})", quote_ident(column)),
+        None => "count(1)".to_string(),
+    };
+    format!(
+        "select {keys}, {sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from src where {} group by {keys}",
+        quote_ident(IVM_SUM_COLUMN),
+        quote_ident(IVM_COUNT_COLUMN),
+        quote_ident(IVM_NONNULL_COUNT_COLUMN),
+        source_delete_filter("src", change_column(&view.source)),
+    )
+}
 
-    fn into_batch(self, table: &IvmTable) -> Result<RecordBatch> {
-        Ok(RecordBatch::try_new(
-            table.schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(self.groups)),
-                Arc::new(Int64Array::from(self.values)),
-                Arc::new(StringArray::from(self.kinds)),
-                Arc::new(Int64Array::from(self.epochs)),
-            ],
-        )?)
-    }
+/// The CTE chain of one value-count refresh window. It defines `counts`
+/// (`(group, value) -> dcount`), `state_del` / `state_ins` (the state rows to
+/// write) and `merged` (the post-window state with `n_count`).
+fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -> String {
+    let keys = quoted_list(view.group_keys);
+    let source_value = quote_ident(view.value_column);
+    let state_value = quote_ident(IVM_VALUE_COLUMN);
+    let delta_filter = source_delete_filter("delta", change_column(view.source));
+    let old_filter = source_delete_filter("o", change_column(view.source));
+    let pk_match = key_join_condition("o", "p", &view.source.primary_keys);
+    let new_select = format!("{keys}, {source_value} as {state_value}");
+    let new_group = format!("{keys}, {source_value}");
+    let state_value_keys = view
+        .group_keys
+        .iter()
+        .cloned()
+        .chain(std::iter::once(IVM_VALUE_COLUMN.to_string()))
+        .collect::<Vec<_>>();
+    let state_list = quoted_list(&state_value_keys);
+    let counts = if keyed {
+        let agg_match = key_join_condition_null_safe("n", "o", &state_value_keys);
+        let coalesced = state_value_keys
+            .iter()
+            .map(|key| format!("coalesce(n.{q}, o.{q}) as {q}", q = quote_ident(key)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "delta_pks as (select distinct {pks} from delta), \
+             old_changed as (select o.* from old o where {old_filter} \
+                             and exists (select 1 from delta_pks p where {pk_match})), \
+             old_agg as (select {new_select}, count(1) as ocount \
+                         from old_changed group by {new_group}), \
+             raw as (select {coalesced}, n.dcount as new_c, o.ocount as old_c \
+                     from new_agg n full join old_agg o on {agg_match}), \
+             counts as (select {state_list}, \
+                               coalesce(new_c - old_c, new_c, -old_c) as dcount \
+                        from raw \
+                        where coalesce(new_c - old_c, new_c, -old_c) <> 0)",
+            pks = quoted_list(&view.source.primary_keys),
+        )
+    } else {
+        format!("counts as (select {state_list}, dcount from new_agg where dcount <> 0)")
+    };
+    let merged_match = key_join_condition_null_safe("s", "c", &state_value_keys);
+    let coalesced = state_value_keys
+        .iter()
+        .map(|key| format!("coalesce(s.{q}, c.{q}) as {q}", q = quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let already_match = state_value_keys
+        .iter()
+        .map(|key| format!("(a.{q} IS NOT DISTINCT FROM {q})", q = quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    format!(
+        "with new_agg as (select {new_select}, count(1) as dcount from delta \
+                          where {delta_filter} group by {new_group}), \
+         {counts}, \
+         already as (select distinct {state_list} from state \
+                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+         active as (select * from state \
+                    where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         merged as (select {coalesced}, s.{value_count}, s.\"__ivm_epoch\" as s_epoch, c.dcount, \
+                           coalesce(s.{value_count} + c.dcount, s.{value_count}, c.dcount) as n_count \
+                    from active s full join counts c on {merged_match}), \
+         state_del as (select {state_list}, {value_count}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                       from merged where s_epoch is not null and dcount is not null), \
+         state_ins as (select {state_list}, n_count as {value_count}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                       from merged where dcount is not null and n_count > 0 \
+                         and not exists (select 1 from already a where {already_match}))",
+        value_count = quote_ident(IVM_VALUE_COUNT_COLUMN),
+    )
+}
+
+/// SQL comparing the affected groups' recomputed extreme with the MV.
+fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
+    let keys = quoted_list(view.group_keys);
+    let value = quote_ident(IVM_VALUE_COLUMN);
+    let affected_match = key_join_condition_null_safe("a", "state_now", view.group_keys);
+    let active_match = key_join_condition_null_safe("a", "active", view.group_keys);
+    let agg_match = key_join_condition_null_safe("a", "agg", view.group_keys);
+    format!(
+        "with agg as (select {keys}, {agg} as {value} from state_now \
+                      where \"rowKinds\" = 'insert' and {value_count} > 0 \
+                        and exists (select 1 from affected a where {affected_match}) \
+                      group by {keys}), \
+         mv_rows as (select * from mv where \"rowKinds\" = 'insert'), \
+         already as (select distinct {keys} from mv_rows where \"__ivm_epoch\" = {epoch}), \
+         active as (select * from mv_rows where \"__ivm_epoch\" <> {epoch}), \
+         mv_del as (select {keys}, {value} as {value}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                    from active where exists (select 1 from affected a where {active_match})), \
+         mv_ins as (select {keys}, {value}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                    from agg where not exists (select 1 from already a where {agg_match})) \
+         select * from mv_del union all select * from mv_ins order by {keys}, \"rowKinds\"",
+        agg = view.agg.sql(IVM_VALUE_COLUMN),
+        value_count = quote_ident(IVM_VALUE_COUNT_COLUMN),
+    )
 }
 
 /// Validate that a window view can be maintained.
@@ -2675,20 +2924,25 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             view.view_id
         ));
     }
-    for column in view
-        .partition_keys
-        .iter()
-        .chain(view.source.primary_keys.iter())
-    {
-        let field = view.source.schema.field_with_name(column).map_err(|_| {
+    for column in &view.partition_keys {
+        view.source.schema.field_with_name(column).map_err(|_| {
             report!(
-                "window view {}: column {column} is not in the source",
+                "window view {}: partition column {column} is not in the source",
                 view.view_id
             )
         })?;
-        if *field.data_type() != DataType::Int64 {
+    }
+    // The primary keys identify a row, so they must not be NULL.
+    for column in &view.source.primary_keys {
+        let field = view.source.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "window view {}: key column {column} is not in the source",
+                view.view_id
+            )
+        })?;
+        if field.is_nullable() {
             return Err(report!(
-                "window view {}: partition/key column {column} must be Int64",
+                "window view {}: key column {column} must be non-nullable",
                 view.view_id
             ));
         }
@@ -2704,247 +2958,111 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
     Ok(())
 }
 
-/// The distinct `columns`-tuples of the batches.
-fn key_set(batches: &[RecordBatch], columns: &[String]) -> Result<HashSet<Vec<i64>>> {
-    let mut keys = HashSet::new();
-    for batch in batches {
-        let mut arrays = Vec::with_capacity(columns.len());
-        for column in columns {
-            let index = batch.schema().index_of(column)?;
-            arrays.push(int64_column(batch, index, column)?);
-        }
-        for row in 0..batch.num_rows() {
-            keys.insert(arrays.iter().map(|array| array.value(row)).collect());
-        }
-    }
-    Ok(keys)
+/// The `computed` CTE: `ROW_NUMBER()` over the current source state, with the
+/// primary keys appended to the ordering for deterministic ties.
+fn window_ranking_cte(view: &WindowView, source_alias: &str) -> String {
+    let parts = quoted_list(&view.partition_keys);
+    let pks = quoted_list(&view.source.primary_keys);
+    let mut order = view.order_keys.clone();
+    order.extend(view.source.primary_keys.iter().cloned());
+    let orders = quoted_list(&order);
+    let filter = source_delete_filter(source_alias, change_column(&view.source));
+    format!(
+        "computed as (select {pks}, {parts}, \
+         cast(row_number() over (partition by {parts} order by {orders}) as bigint) \
+             as \"row_number\" \
+         from {source_alias} where {filter})"
+    )
 }
 
-/// One surviving row of a window materialized view.
-struct WindowEntry {
-    partition: Vec<i64>,
-    number: i64,
-    epoch: i64,
-}
-
-/// Read the current state of a window materialized view.
-fn read_window_state(
-    view: &WindowView,
-    batches: Vec<RecordBatch>,
-) -> Result<HashMap<Vec<i64>, WindowEntry>> {
-    let mut state = HashMap::new();
-    for batch in batches {
-        let schema = batch.schema();
-        let number_index = schema.index_of(IVM_ROW_NUMBER_COLUMN)?;
-        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN)?;
-        let epoch_index = schema.index_of(IVM_EPOCH_COLUMN)?;
-
-        let mut partition_arrays = Vec::with_capacity(view.partition_keys.len());
-        for column in &view.partition_keys {
-            partition_arrays.push(int64_column(
-                &batch,
-                schema.index_of(column)?,
-                column,
-            )?);
-        }
-        let mut row_arrays = Vec::with_capacity(view.source.primary_keys.len());
-        for column in &view.source.primary_keys {
-            row_arrays.push(int64_column(&batch, schema.index_of(column)?, column)?);
-        }
-        let numbers = int64_column(&batch, number_index, IVM_ROW_NUMBER_COLUMN)?;
-        let epochs = int64_column(&batch, epoch_index, IVM_EPOCH_COLUMN)?;
-        let kinds = batch
-            .column(kind_index)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| report!("{IVM_ROW_KINDS_COLUMN} must be a Utf8 column"))?;
-
-        for row in 0..batch.num_rows() {
-            let row_key = row_arrays
-                .iter()
-                .map(|array| array.value(row))
-                .collect::<Vec<_>>();
-            if kinds.value(row) == "insert" {
-                state.insert(
-                    row_key,
-                    WindowEntry {
-                        partition: partition_arrays
-                            .iter()
-                            .map(|array| array.value(row))
-                            .collect(),
-                        number: numbers.value(row),
-                        epoch: epochs.value(row),
-                    },
-                );
-            } else {
-                state.remove(&row_key);
-            }
-        }
-    }
-    Ok(state)
-}
-
-/// Rank the source rows with `ROW_NUMBER()`.
-///
-/// `filter_partitions` keeps only the partitions that have to be recomputed;
-/// `None` ranks every partition (a rebuild).
-async fn compute_row_numbers(
-    view: &WindowView,
-    batches: Vec<RecordBatch>,
-    filter_partitions: Option<&HashSet<Vec<i64>>>,
-) -> Result<HashMap<Vec<i64>, (Vec<i64>, i64)>> {
-    if batches.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let context = SessionContext::new();
-    let table: Arc<dyn datafusion::catalog::TableProvider> =
-        Arc::new(datafusion::datasource::memory::MemTable::try_new(
-            view.source.schema.clone(),
-            vec![batches],
-        )?);
-    context.register_table("src", table)?;
-
-    let quoted = |columns: &[String]| {
-        columns
-            .iter()
-            .map(|column| format!("\"{column}\""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let order_columns = view
-        .order_keys
+/// SQL for one `ROW_NUMBER()` refresh window: recompute the affected
+/// partitions and rewrite their MV rows (`delete` then `insert`).
+fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
+    let parts = quoted_list(&view.partition_keys);
+    let pks = quoted_list(&view.source.primary_keys);
+    let mv_pks = view
+        .source
+        .primary_keys
         .iter()
-        .chain(view.source.primary_keys.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    let filter = match change_column(&view.source) {
-        Some(column) => format!(" where \"{column}\" != 'delete'"),
-        None => String::new(),
-    };
-    let frame = context
-        .sql(&format!(
-            "select {}, {}, cast(row_number() over (partition by {} order by {}) as bigint) as \"{IVM_ROW_NUMBER_COLUMN}\" from src{}",
-            quoted(&view.source.primary_keys),
-            quoted(&view.partition_keys),
-            quoted(&view.partition_keys),
-            quoted(&order_columns),
-            filter,
-        ))
-        .await?;
-
-    let row_key_count = view.source.primary_keys.len();
-    let mut computed = HashMap::new();
-    for batch in frame.collect().await? {
-        let mut row_arrays = Vec::with_capacity(row_key_count);
-        for (index, column) in view.source.primary_keys.iter().enumerate() {
-            row_arrays.push(int64_column(&batch, index, column)?);
-        }
-        let mut partition_arrays = Vec::with_capacity(view.partition_keys.len());
-        for (index, column) in view.partition_keys.iter().enumerate() {
-            partition_arrays.push(int64_column(&batch, row_key_count + index, column)?);
-        }
-        let numbers = int64_column(
-            &batch,
-            row_key_count + view.partition_keys.len(),
-            IVM_ROW_NUMBER_COLUMN,
-        )?;
-        for row in 0..batch.num_rows() {
-            let partition = partition_arrays
-                .iter()
-                .map(|array| array.value(row))
-                .collect::<Vec<_>>();
-            if filter_partitions.is_some_and(|filter| !filter.contains(&partition)) {
-                continue;
-            }
-            let row_key = row_arrays
-                .iter()
-                .map(|array| array.value(row))
-                .collect::<Vec<_>>();
-            computed.insert(row_key, (partition, numbers.value(row)));
-        }
-    }
-    Ok(computed)
+        .map(|key| {
+            format!(
+                "{} as {}",
+                quote_ident(key),
+                quote_ident(&format!("__mv_{key}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mv_delta_match = view
+        .source
+        .primary_keys
+        .iter()
+        .map(|key| {
+            format!(
+                "m.{} = d.{}",
+                quote_ident(&format!("__mv_{key}")),
+                quote_ident(key)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let computed_pks = view
+        .source
+        .primary_keys
+        .iter()
+        .map(|key| format!("c.{}", quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let computed_parts = view
+        .partition_keys
+        .iter()
+        .map(|key| format!("c.{}", quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let part_match_computed =
+        key_join_condition_null_safe("c", "a", &view.partition_keys);
+    let pk_match_computed = key_join_condition("c", "a", &view.source.primary_keys);
+    let part_match_active =
+        key_join_condition_null_safe("active", "a", &view.partition_keys);
+    format!(
+        "with delta_parts as (select distinct {parts} from delta), \
+         delta_rows as (select distinct {pks} from delta), \
+         old_parts as (select distinct {parts} \
+                       from (select {parts}, {mv_pks} from mv) m \
+                       join delta_rows d on {mv_delta_match}), \
+         affected as (select * from delta_parts union select * from old_parts), \
+         {computed}, \
+         already as (select distinct {pks} from mv \
+                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+         active as (select * from mv \
+                    where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         inserts as (select {computed_parts}, {computed_pks}, c.\"row_number\", \
+                            'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from computed c \
+                     where exists (select 1 from affected a where {part_match_computed}) \
+                       and not exists (select 1 from already a where {pk_match_computed})), \
+         deletes as (select {parts}, {pks}, \"row_number\", \
+                            'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from active \
+                     where exists (select 1 from affected a where {part_match_active})) \
+         select * from deletes union all select * from inserts \
+         order by {pks}, \"rowKinds\"",
+        computed = window_ranking_cte(view, "src"),
+    )
 }
 
-/// Rows to write into a window materialized view.
-#[derive(Default)]
-struct WindowRows {
-    partitions: Vec<Vec<i64>>,
-    row_keys: Vec<Vec<i64>>,
-    numbers: Vec<i64>,
-    kinds: Vec<&'static str>,
-    epochs: Vec<i64>,
+/// SQL for a full `ROW_NUMBER()` rebuild.
+fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
+    let parts = quoted_list(&view.partition_keys);
+    let pks = quoted_list(&view.source.primary_keys);
+    format!(
+        "with {computed} \
+         select {parts}, {pks}, \"row_number\", 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from computed",
+        computed = window_ranking_cte(view, "src"),
+    )
 }
 
-impl WindowRows {
-    fn is_empty(&self) -> bool {
-        self.row_keys.is_empty()
-    }
-
-    fn push_delete(
-        &mut self,
-        partition: &[i64],
-        row_key: &[i64],
-        number: i64,
-        epoch: i64,
-    ) {
-        self.push(partition, row_key, number, "delete", epoch);
-    }
-
-    fn push_insert(
-        &mut self,
-        partition: &[i64],
-        row_key: &[i64],
-        number: i64,
-        epoch: i64,
-    ) {
-        self.push(partition, row_key, number, "insert", epoch);
-    }
-
-    fn push(
-        &mut self,
-        partition: &[i64],
-        row_key: &[i64],
-        number: i64,
-        kind: &'static str,
-        epoch: i64,
-    ) {
-        self.partitions.push(partition.to_vec());
-        self.row_keys.push(row_key.to_vec());
-        self.numbers.push(number);
-        self.kinds.push(kind);
-        self.epochs.push(epoch);
-    }
-
-    fn into_batch(self, view: &WindowView) -> Result<RecordBatch> {
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(
-            view.partition_keys.len() + view.source.primary_keys.len() + 3,
-        );
-        for index in 0..view.partition_keys.len() {
-            arrays.push(Arc::new(Int64Array::from(
-                self.partitions
-                    .iter()
-                    .map(|partition| partition[index])
-                    .collect::<Vec<_>>(),
-            )));
-        }
-        for index in 0..view.source.primary_keys.len() {
-            arrays.push(Arc::new(Int64Array::from(
-                self.row_keys
-                    .iter()
-                    .map(|row_key| row_key[index])
-                    .collect::<Vec<_>>(),
-            )));
-        }
-        arrays.push(Arc::new(Int64Array::from(self.numbers)));
-        arrays.push(Arc::new(StringArray::from(self.kinds)));
-        arrays.push(Arc::new(Int64Array::from(self.epochs)));
-        Ok(RecordBatch::try_new(view.mv.schema.clone(), arrays)?)
-    }
-}
-
-/// Build a [`DataFrame`] over the batches (possibly empty) with `schema`.
 fn dataframe(
     context: &SessionContext,
     batches: Vec<RecordBatch>,
@@ -2963,6 +3081,20 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             "semi/anti view {} needs a left source with a primary key",
             view.view_id
         ));
+    }
+    for key in &view.left.primary_keys {
+        let field = view.left.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "semi/anti view {}: key column {key} is not in the left source",
+                view.view_id
+            )
+        })?;
+        if field.is_nullable() {
+            return Err(report!(
+                "semi/anti view {}: key column {key} must be non-nullable",
+                view.view_id
+            ));
+        }
     }
     if view.join_keys.is_empty() {
         return Err(report!(
@@ -2985,16 +3117,4 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
         })?;
     }
     Ok(())
-}
-
-fn int64_column<'a>(
-    batch: &'a arrow::record_batch::RecordBatch,
-    index: usize,
-    name: &str,
-) -> Result<&'a Int64Array> {
-    batch
-        .column(index)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .ok_or_else(|| report!("column {name} must be Int64"))
 }
