@@ -1191,6 +1191,10 @@ public class DBManager {
         namespaceDao.deleteByNamespace(namespace);
     }
 
+    public List<String> getPinnedFilePaths(List<String> filePaths) {
+        return dataCommitInfoDao.selectPinnedFilePaths(filePaths);
+    }
+
     public void insertDiscardCompressedFile(DiscardCompressedFileInfo discardCompressedFileInfo) {
         discardCompressedFileDao.insert(discardCompressedFileInfo);
     }
