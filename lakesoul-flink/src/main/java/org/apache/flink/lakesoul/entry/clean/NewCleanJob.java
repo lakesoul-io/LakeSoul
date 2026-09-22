@@ -49,6 +49,17 @@ public class NewCleanJob {
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        buildPipeline(env, parameter);
+        env.execute("清理服务");
+    }
+
+    /**
+     * Assemble the clean pipeline. Exposed separately from {@link #main} so tests can run it on a
+     * mini cluster.
+     */
+    public static void buildPipeline(StreamExecutionEnvironment env, ParameterTool parameter)
+            throws Exception {
         PgCleanDeserialization deserialization = new PgCleanDeserialization();
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("include.unknown.datatypes", "true");
@@ -116,7 +127,6 @@ public class NewCleanJob {
                         .debeziumProperties(debeziumProperties)
                         .build();
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         DataStreamSource<String> postgresParallelSource =
                 env.fromSource(
                                 postgresIncrementalSource,
@@ -245,6 +255,5 @@ public class NewCleanJob {
                 .process(new DiscardFileDeleteFunction(pgUrl, userName, passWord))
                 .name("批量异步删除数据");
 
-        env.execute("清理服务");
     }
 }
