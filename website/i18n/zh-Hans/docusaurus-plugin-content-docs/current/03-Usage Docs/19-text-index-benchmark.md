@@ -246,7 +246,7 @@ SQL 路径的质量与 scan API 一致，但延迟约为其 14 倍（117 ms 对 
 | 重写第 1 轮 | 2,000 篇，1,271 docs/s；质量不变 |
 | 重写第 2 轮 | 2,000 篇，1,240 docs/s；质量不变 |
 
-质量与引擎一致（带标注的 MS MARCO 子集较小，因此绝对 nDCG 高于全语料）。每次 HTTP 写入与检索都要付 merge-on-read 加索引维护的成本，默认 4 个 bucket 的布局又把检索延迟按 shard 数放大；网关面向 WeKnora 类客户端的兼容性，而不是延迟优化端点。
+后续的网关优化又复测了同样的 20K/4-bucket 配置：批量写入约 1.0–1.2K docs/s、检索 p50 约 0.42 s（存在运行间波动）；[网关性能调参](18-es-compatible-gateway.md#性能调参)中记录的 1 bucket 配置写入约 2.9K docs/s、检索 p50 约 76 ms。质量与引擎一致（带标注的 MS MARCO 子集较小，因此绝对 nDCG 高于全语料）。每次 HTTP 写入与检索都要付 merge-on-read 加索引维护的成本，默认 4 个 bucket 的布局又把检索延迟按 shard 数放大；网关面向 WeKnora 类客户端的兼容性，而不是延迟优化端点。
 
 ![T7 网关](/img/text-benchmark/t7_gateway.png)
 

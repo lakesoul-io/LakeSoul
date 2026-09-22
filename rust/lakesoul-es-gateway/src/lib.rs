@@ -22,6 +22,7 @@ pub mod query;
 pub mod schema;
 pub mod search;
 pub mod state;
+pub mod timing;
 pub mod update;
 
 use std::sync::Arc;

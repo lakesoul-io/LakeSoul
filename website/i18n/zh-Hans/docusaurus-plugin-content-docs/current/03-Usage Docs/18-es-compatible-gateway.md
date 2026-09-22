@@ -85,6 +85,21 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 候选来自向量索引，网关对当前行重新计算精确余弦并 clamp 到 `[0, 1]`（与脚本的 `Math.max` 一致），`min_score` 过滤 clamp 后的分数。filter-only 查询（无评分子句）作为普通扫描执行并返回完整 `_source`，对应索引复制路径。
 
+## 性能调参
+
+每个 hash bucket 是独立的数据文件与索引 shard，因此 `hash_bucket_num` 是写入并行度与单请求开销之间的主要取舍。用同一批 20,000 篇 MS MARCO 文档、每批 500 条写入实测：
+
+| Buckets | 批量写入 | 检索 p50 | 检索 QPS | Recall@100 |
+|--------:|---------:|---------:|---------:|-----------:|
+| 4 | 约 1,200 docs/s | 约 237 ms | 约 5 | 85.7% |
+| 1 | 约 2,900 docs/s | 约 76 ms | 约 15 | 85.7% |
+
+建议**每个分区从 1 个 bucket 起步**，只有并发写入需要更高并行度时再增加。其他参数：
+
+- **`nprobe`**（向量，默认 64）——每个 shard 探测的聚类数；降低可减延迟，提高可增召回。
+- **写路径索引 GC**——默认 `gc_grace_seconds = 3600` 时新写入不可能产生可回收文件，因此 GC 已摊销：默认每 16 次写入执行一次，可用 `LAKESOUL_INDEX_GC_EVERY` 调整（设为 `1` 恢复旧的每次写入都执行；grace 为 `0` 时始终每次执行）。
+- **分阶段计时**——启动网关时设置 `LAKESOUL_ES_GATEWAY_TIMING=1` 与 `RUST_LOG=lakesoul_es_gateway::timing=info`，即可按请求打印写（`parse`、`upsert`）与检索（`files`、`resolve`、`lease`、`shard_search`、`fetch`、`verify`）各阶段耗时。
+
 ## 限制
 
 - delete/update 通过表扫描解析过滤条件；只有主键有快速路径。

@@ -49,7 +49,9 @@ use crate::index::config::{
     IndexTableConfig, index_columns_to_json, parse_index_columns,
     parse_index_from_table_properties,
 };
-use crate::index::gc::{IndexGcOptions, IndexGcReport, gc_index_shards, gc_shard_now};
+use crate::index::gc::{
+    IndexGcOptions, IndexGcReport, gc_index_shards, gc_shard_now, should_run_write_gc,
+};
 use crate::index::store_for_files;
 
 pub use crate::index::gc::DEFAULT_GC_GRACE_SECONDS;
@@ -331,6 +333,7 @@ pub async fn auto_build_vector_index(
                 (shard.partition_desc, shard.bucket, shard.files);
             let prefix =
                 shard_index_prefix(&bucket_files, IndexKind::Vector, &config.column);
+            let resolve_started = std::time::Instant::now();
             let resolved = match catalog.resolve(&prefix).await {
                 Ok(view) => view,
                 Err(error) => {
@@ -340,6 +343,7 @@ pub async fn auto_build_vector_index(
                     continue;
                 }
             };
+            let resolve_ms = resolve_started.elapsed().as_secs_f64() * 1000.0;
             let full_shard_files = shard_all_files.get(&prefix).cloned();
             let should_rebuild = auto_rebuild
                 && full_shard_files
@@ -366,6 +370,7 @@ pub async fn auto_build_vector_index(
                 builder = builder.with_base(to_resolved_shard(&prefix, view)?);
             }
             let mut commit_mode = plan.mode;
+            let build_started = std::time::Instant::now();
             let outcome = match builder.build().await {
                 Ok(outcome) => outcome,
                 Err(error) if commit_mode == CommitMode::Delta => {
@@ -406,6 +411,8 @@ pub async fn auto_build_vector_index(
                     continue;
                 }
             };
+            let build_ms = build_started.elapsed().as_secs_f64() * 1000.0;
+            let commit_started = std::time::Instant::now();
             match commit_if_non_empty(
                 catalog,
                 &prefix,
@@ -424,9 +431,12 @@ pub async fn auto_build_vector_index(
                     continue;
                 }
             }
+            let commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
             built += 1;
-            if management.gc_enabled
-                && let Err(error) = gc_shard_now(
+            let mut gc_ms = 0.0;
+            if management.gc_enabled && should_run_write_gc(management.gc_grace_seconds) {
+                let gc_started = std::time::Instant::now();
+                if let Err(error) = gc_shard_now(
                     &store,
                     catalog,
                     &prefix,
@@ -435,9 +445,20 @@ pub async fn auto_build_vector_index(
                     &is_vector_segment_file,
                 )
                 .await
-            {
-                warn!("vector index gc failed for '{prefix}': {error}");
+                {
+                    warn!("vector index gc failed for '{prefix}': {error}");
+                }
+                gc_ms = gc_started.elapsed().as_secs_f64() * 1000.0;
             }
+            debug!(
+                prefix = %prefix,
+                rebuilt = should_rebuild,
+                resolve_ms,
+                build_ms,
+                commit_ms,
+                gc_ms,
+                "vector index shard updated"
+            );
         }
         if !failures.is_empty() {
             return Err(report!(
