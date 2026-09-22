@@ -657,10 +657,17 @@ impl LakeSoulHashSinkExec {
 
         let table_ref = TableReference::from(table_name.as_str());
         let namespace = table_ref.schema().unwrap_or("default").to_string();
-        let (configs, text_configs) = if let Some(fresh_info) = client
+
+        let (configs, text_configs, deferred) = if let Some(fresh_info) = client
             .get_table_info_by_table_name(table_ref.table(), &namespace)
             .await?
         {
+            let deferred = serde_json::from_str::<crate::catalog::LakeSoulTableProperty>(
+                &fresh_info.properties,
+            )
+            .ok()
+            .and_then(|properties| properties.index_maintenance)
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("deferred"));
             (
                 crate::vector_index::parse_vector_index_from_table_properties(
                     &fresh_info.properties,
@@ -670,10 +677,19 @@ impl LakeSoulHashSinkExec {
                     &fresh_info.properties,
                 )
                 .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+                deferred,
             )
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), false)
         };
+
+        // A deferred table commits data only; the embedder builds the
+        // pending shards out of band from the recorded data-file coverage
+        // (see lakesoul_common::index::pending_shard_files).
+        if deferred {
+            debug!("index maintenance deferred for {}", &table_name);
+            return Ok(count);
+        }
 
         // One active-files listing serves both auto-rebuild policies.
         let wants_vector_rebuild = !configs.is_empty()

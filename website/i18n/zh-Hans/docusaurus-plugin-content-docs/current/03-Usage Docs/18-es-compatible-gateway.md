@@ -98,6 +98,7 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 - **`nprobe`**（向量，默认 64）——每个 shard 探测的聚类数；降低可减延迟，提高可增召回。
 - **写路径索引 GC**——默认 `gc_grace_seconds = 3600` 时新写入不可能产生可回收文件，因此 GC 已摊销：默认每 16 次写入执行一次，可用 `LAKESOUL_INDEX_GC_EVERY` 调整（设为 `1` 恢复旧的每次写入都执行；grace 为 `0` 时始终每次执行）。
+- **`index_build`**——`inline`（默认）在写入返回前完成索引增量构建；`deferred` 只提交数据，由后台任务按 `index_build_interval_secs`（默认 15 秒）构建未入索引的 shard。存在积压期间，检索会精确扫描尚未入索引的数据文件，因此写入立即可检索，代价是读取积压数据；在 20K 文档、1 bucket、每批 500 条的实测中，deferred 写入约 12,900 docs/s（inline 约 3,100 docs/s），recall@100 完全一致；存在积压时检索 p50 约 160 ms，后台追平后约 46 ms。该模式是 provision 时写入的表属性；已有表保持 inline，配置不一致时网关会输出警告。
 - **分阶段计时**——启动网关时设置 `LAKESOUL_ES_GATEWAY_TIMING=1` 与 `RUST_LOG=lakesoul_es_gateway::timing=info`，即可按请求打印写（`parse`、`upsert`）与检索（`files`、`resolve`、`lease`、`shard_search`、`fetch`、`verify`）各阶段耗时。
 
 ## 限制

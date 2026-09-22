@@ -20,7 +20,7 @@ use lakesoul_metadata::MetaDataClient;
 
 use crate::cli::CoreArgs;
 use crate::lakesoul_table::LakeSoulTable;
-use crate::tests::create_table_with_text_index;
+use crate::tests::{create_table_with_text_index, create_table_with_text_index_mode};
 
 fn text_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -493,4 +493,68 @@ async fn text_match_works_without_an_index() {
 
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_table_builds_pending_shards_out_of_band() {
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "text_search_deferred";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(text_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_text_index_mode(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &text_configs(),
+        Some("deferred"),
+    )
+    .await
+    .unwrap();
+
+    // A deferred write commits data only; the index stays untouched.
+    LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch(&[(1, "apple pie"), (2, "banana bread")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        split_count(table_name),
+        0,
+        "deferred write must not build the text index inline"
+    );
+
+    // The out-of-band builder picks up exactly the pending files, once.
+    let built = crate::index_maintenance::build_pending_indices(
+        client.clone(),
+        table_name,
+        "default",
+    )
+    .await
+    .unwrap();
+    assert!(built > 0, "pending shard was not built");
+    assert!(split_count(table_name) > 0, "text index split missing");
+
+    let again = crate::index_maintenance::build_pending_indices(
+        client.clone(),
+        table_name,
+        "default",
+    )
+    .await
+    .unwrap();
+    assert_eq!(again, 0, "a covered shard must not be built again");
+
+    // The rows are searchable through SQL after the out-of-band build.
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         where text_match(body, 'apple') limit 10"
+    );
+    assert_eq!(query_ids(&ctx, &sql).await, vec![1]);
 }

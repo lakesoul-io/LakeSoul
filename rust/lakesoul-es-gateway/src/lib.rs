@@ -16,6 +16,7 @@ pub mod delete;
 pub mod document;
 pub mod error;
 pub mod index_api;
+pub mod maintenance;
 pub mod protocol;
 pub mod provision;
 pub mod query;

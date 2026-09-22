@@ -65,11 +65,19 @@ pub struct TextSplitEntry {
     pub file_size: u64,
     /// Bundle format version.
     pub format_version: u32,
+    /// Data files whose rows this split indexed.  Empty for splits written
+    /// before coverage tracking.
+    #[serde(default)]
+    pub data_files: Vec<String>,
 }
 
 impl CatalogSegment for TextSplitEntry {
     fn filename(&self) -> &str {
         &self.filename
+    }
+
+    fn data_files(&self) -> &[String] {
+        &self.data_files
     }
 
     fn sort_key(&self) -> (u64, u64) {
@@ -203,6 +211,9 @@ pub async fn write_split(
         num_docs,
         file_size,
         format_version: SPLIT_FORMAT_VERSION,
+        // The caller records which data files the split covers; a bare
+        // `write_split` call has no input file list.
+        data_files: Vec::new(),
     })
 }
 
@@ -483,6 +494,7 @@ mod tests {
     #[test]
     fn split_entry_uses_the_bundle_name() {
         let entry = TextSplitEntry {
+            data_files: Vec::new(),
             split_id: "abc".to_string(),
             filename: "abc.split".to_string(),
             num_docs: 1,

@@ -54,6 +54,7 @@ async fn ensure_table(
         .await?
     {
         validate_existing(runtime, &info)?;
+        warn_deferred_mismatch(state, runtime, &info.properties);
         return Ok(());
     }
 
@@ -68,6 +69,9 @@ async fn ensure_table(
         text_index_columns: Some(text_index_columns),
         vector_index_columns,
         file_format: Some("parquet".to_string()),
+        index_maintenance: (state.config.defaults.index_build
+            == crate::config::IndexBuildMode::Deferred)
+            .then(|| "deferred".to_string()),
         ..Default::default()
     };
     let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
@@ -96,6 +100,7 @@ async fn ensure_table(
             .await?
             .context("table disappeared during provisioning")?;
         validate_existing(runtime, &info)?;
+        warn_deferred_mismatch(state, runtime, &info.properties);
     }
     Ok(())
 }
@@ -154,6 +159,30 @@ fn vector_index_json(runtime: &IndexRuntime) -> anyhow::Result<Option<String>> {
 }
 
 /// Validate that an existing table matches the declared schema and indexes.
+/// Warn when deferred builds are configured but the existing table keeps its
+/// inline `index_maintenance` property (properties are provision-time only).
+fn warn_deferred_mismatch(
+    state: &GatewayState,
+    runtime: &IndexRuntime,
+    properties: &str,
+) {
+    if state.config.defaults.index_build != crate::config::IndexBuildMode::Deferred {
+        return;
+    }
+    let deferred = serde_json::from_str::<LakeSoulTableProperty>(properties)
+        .ok()
+        .and_then(|properties| properties.index_maintenance)
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("deferred"));
+    if !deferred {
+        tracing::warn!(
+            table = %runtime.table,
+            "this table was provisioned with inline index maintenance; \
+             set its index_maintenance property to 'deferred' (or recreate \
+             the table) to enable deferred builds"
+        );
+    }
+}
+
 fn validate_existing(runtime: &IndexRuntime, info: &TableInfo) -> anyhow::Result<()> {
     let schema = schema_from_table_info_metadata(
         &info.table_schema,
