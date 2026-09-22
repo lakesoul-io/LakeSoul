@@ -8,6 +8,7 @@ on:
       - "rust/lakesoul-es-gateway/**"
       - "rust/lakesoul-ivm/**"
       - "rust/postgres-lakesoul/**"
+      - "script/weknora-es-harness/**"
     branches:
       - "main"
       - "release/**"
@@ -21,6 +22,7 @@ on:
       - "rust/lakesoul-es-gateway/**"
       - "rust/lakesoul-ivm/**"
       - "rust/postgres-lakesoul/**"
+      - "script/weknora-es-harness/**"
     branches:
       - "main"
       - "release/**"

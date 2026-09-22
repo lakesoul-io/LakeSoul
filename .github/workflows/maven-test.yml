@@ -24,6 +24,7 @@ on:
       - "script/benchmark/embodied/**"
       - "script/benchmark/text/**"
       - "script/benchmark/vector/**"
+      - "script/weknora-es-harness/**"
     branches:
       - "main"
   pull_request:
@@ -42,6 +43,7 @@ on:
       - "script/benchmark/embodied/**"
       - "script/benchmark/text/**"
       - "script/benchmark/vector/**"
+      - "script/weknora-es-harness/**"
     branches:
       - "main"
       - "release/**"
