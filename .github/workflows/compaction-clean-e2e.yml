@@ -59,9 +59,14 @@ jobs:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: "JAVA_HOME"
+          shared-key: "native-glibc217"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
       - name: Download Flink / Hadoop dependencies
         run: |
           wget -q https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O "$HOME/hadoop-3.3.5.tar.gz"
@@ -71,17 +76,17 @@ jobs:
           wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
           wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O "$HOME/flink-parquet-1.20.1.jar"
           wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
-      - name: Build native libraries
+      - name: Build native libraries and python extension
         run: |
-          cargo -q build --release --package lakesoul-io-c --package lakesoul-metadata-c
+          cargo -q build --release --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-python/ci-unify
+          cp rust/target/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
       - name: Build Maven modules
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
-      - name: Install python package
+      - name: Install python dependencies
         run: |
           cd python
           uv sync --no-install-project --python 3.10 --group dev
-          uv sync --reinstall-package lakesoul --no-default-groups --inexact
       - name: Copy jars to work-dir
         run: |
           FLINK_JAR_NAME="$(python script/get_jar_name.py lakesoul-flink)"
