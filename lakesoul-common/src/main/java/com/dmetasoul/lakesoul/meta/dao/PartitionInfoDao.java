@@ -759,6 +759,7 @@ public class PartitionInfoDao {
                         .setVersion(rs.getInt("version"))
                         .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")))
                         .setDomain(rs.getString("domain"))
+                        .setPinned(rs.getBoolean("pinned"))
                         .setTimestamp(rs.getLong("timestamp"));
         Array snapshotArray = rs.getArray("snapshot");
         partitionInfo.addAllSnapshot(
