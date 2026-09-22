@@ -122,7 +122,7 @@ impl TextShardIndexBuilder {
             });
         }
 
-        let split = write_split(
+        let mut split = write_split(
             &self.store,
             &index_prefix,
             &self.config,
@@ -133,6 +133,8 @@ impl TextShardIndexBuilder {
         .map_err(|error| {
             report!("failed to write text index split at '{index_prefix}': {error}")
         })?;
+        // Coverage bookkeeping: the split indexes exactly these data files.
+        split.data_files = self.file_paths.clone();
         info!(
             index_prefix,
             docs = split.num_docs,

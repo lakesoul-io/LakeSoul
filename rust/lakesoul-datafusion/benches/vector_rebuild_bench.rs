@@ -1012,6 +1012,7 @@ fn vector_segments(
                 filename: segment.segment_filename.clone(),
                 num_vectors: segment.num_vectors,
                 file_size: segment.file_size,
+                data_files: Vec::new(),
             },
         )
         .collect()

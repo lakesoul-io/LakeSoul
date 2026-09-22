@@ -81,6 +81,14 @@ pub struct LakeSoulTableProperty {
     /// Whether use cdc is enabled for the LakeSoul table.
     #[serde(rename = "use_cdc", default, skip_serializing_if = "Option::is_none")]
     pub use_cdc: Option<String>,
+    /// Secondary index maintenance mode: `inline` (default) or `deferred`.
+    /// Deferred tables commit data only; index builders run out of band.
+    #[serde(
+        rename = "index_maintenance",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub index_maintenance: Option<String>,
     /// Vector index configurations (JSON array of
     /// [`VectorIndexTableConfig`](crate::vector_index::VectorIndexTableConfig)
     /// entries), matching the Python SDK's `vector_index_columns` property.

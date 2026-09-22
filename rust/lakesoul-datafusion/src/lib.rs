@@ -21,6 +21,7 @@ pub mod datasource;
 pub mod distributed;
 mod error;
 pub mod index;
+pub mod index_maintenance;
 pub mod lakesoul_table;
 pub mod planner;
 pub mod session;

@@ -339,7 +339,7 @@ A later gateway optimization pass re-measured the same 20K/4-bucket
 setup at 1.0-1.2K docs/s bulk and ~0.42 s search p50 (run-to-run
 variance); the one-bucket configuration documented in the
 [gateway performance tuning](18-es-compatible-gateway.md#performance-tuning)
-writes ~2.9K docs/s and answers at p50 ~76 ms.  Quality matches the engine (the judged MS MARCO subset is small, so the
+writes ~2.9K docs/s and answers at p50 ~76 ms; with the gateway's deferred index maintenance the same table writes ~12.9K docs/s and still answers at p50 ~46 ms once the background build catches up.  Quality matches the engine (the judged MS MARCO subset is small, so the
 absolute nDCG is higher than on the full corpus).  Writes and searches both
 pay the merge-on-read plus index-maintenance cost per HTTP request, and the
 default 4-bucket layout multiplies search latency by the shard count; the

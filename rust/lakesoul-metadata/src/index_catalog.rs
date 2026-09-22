@@ -104,11 +104,19 @@ pub struct VectorSegmentEntry {
     pub filename: String,
     pub num_vectors: u32,
     pub file_size: u64,
+    /// Data files whose vectors this segment indexed.  Empty for segments
+    /// written before coverage tracking.
+    #[serde(default)]
+    pub data_files: Vec<String>,
 }
 
 impl CatalogSegment for VectorSegmentEntry {
     fn filename(&self) -> &str {
         &self.filename
+    }
+
+    fn data_files(&self) -> &[String] {
+        &self.data_files
     }
 
     fn sort_key(&self) -> (u64, u64) {
@@ -1087,6 +1095,7 @@ mod tests {
             filename: "b".to_string(),
             num_vectors: 1,
             file_size: 1,
+            data_files: Vec::new(),
         };
         let delta = VectorSegmentEntry {
             cluster_id: 1,
@@ -1094,6 +1103,7 @@ mod tests {
             filename: "d".to_string(),
             num_vectors: 1,
             file_size: 1,
+            data_files: Vec::new(),
         };
         assert!(base.sort_key() > delta.sort_key());
     }

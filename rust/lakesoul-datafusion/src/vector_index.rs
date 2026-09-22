@@ -269,7 +269,10 @@ fn to_resolved_shard(
     })
 }
 
-fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
+fn to_catalog_segments(
+    segments: &[SegmentEntry],
+    data_files: &[String],
+) -> Vec<VectorSegmentEntry> {
     segments
         .iter()
         .map(|segment| VectorSegmentEntry {
@@ -278,6 +281,7 @@ fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
             filename: segment.segment_filename.clone(),
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
+            data_files: data_files.to_vec(),
         })
         .collect()
 }
@@ -366,6 +370,9 @@ pub async fn auto_build_vector_index(
                 object_store_options.clone(),
                 None,
             );
+            // The files this build reads, recorded on the new segments as
+            // their coverage.
+            let covered_files = plan.files.clone();
             if let Some(view) = &plan.base {
                 builder = builder.with_base(to_resolved_shard(&prefix, view)?);
             }
@@ -417,7 +424,7 @@ pub async fn auto_build_vector_index(
                 catalog,
                 &prefix,
                 &outcome.header,
-                &to_catalog_segments(&outcome.new_segments),
+                &to_catalog_segments(&outcome.new_segments, &covered_files),
                 commit_mode,
             )
             .await
@@ -533,6 +540,7 @@ pub async fn rebuild_vector_index(
                 .collect();
         shards.sort_by(|a, b| a.0.cmp(&b.0));
         for (prefix, files) in shards {
+            let covered_files = files.clone();
             let result = VectorShardIndexBuilder::new(
                 store.clone(),
                 vector_config.clone(),
@@ -549,7 +557,7 @@ pub async fn rebuild_vector_index(
                         &catalog,
                         &prefix,
                         &outcome.header,
-                        &to_catalog_segments(&outcome.new_segments),
+                        &to_catalog_segments(&outcome.new_segments, &covered_files),
                         CommitMode::Rebuild,
                     )
                     .await

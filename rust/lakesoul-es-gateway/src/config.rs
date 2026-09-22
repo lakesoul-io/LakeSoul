@@ -25,6 +25,22 @@ fn default_true() -> bool {
     true
 }
 
+/// How secondary indexes are maintained relative to writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexBuildMode {
+    /// Build index deltas before the write response returns (default).
+    #[default]
+    Inline,
+    /// Commit data only; a background task builds index deltas, and searches
+    /// scan the not-yet-indexed data files exactly.
+    Deferred,
+}
+
+fn default_index_build_interval() -> u64 {
+    15
+}
+
 fn default_hash_bucket_num() -> usize {
     4
 }
@@ -97,6 +113,15 @@ pub struct LakesoulConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct IndexDefaults {
+    /// When secondary index maintenance runs: `inline` (before the write
+    /// returns) or `deferred` (a background task every
+    /// `index_build_interval_secs`; searches fall back to the unindexed
+    /// data files in the meantime).
+    #[serde(default)]
+    pub index_build: IndexBuildMode,
+    /// Deferred index build period, seconds.
+    #[serde(default = "default_index_build_interval")]
+    pub index_build_interval_secs: u64,
     #[serde(default = "default_hash_bucket_num")]
     pub hash_bucket_num: usize,
     #[serde(default = "default_tokenizer")]
@@ -111,6 +136,8 @@ pub struct IndexDefaults {
 impl Default for IndexDefaults {
     fn default() -> Self {
         Self {
+            index_build: IndexBuildMode::default(),
+            index_build_interval_secs: default_index_build_interval(),
             hash_bucket_num: default_hash_bucket_num(),
             tokenizer: default_tokenizer(),
             with_positions: default_true(),

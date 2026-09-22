@@ -260,6 +260,7 @@ fn run_shard_vector_index(
         .or_else(|| store_config.get("bucket").map(|b| format!("s3://{}", b)));
 
     let index_prefix = shard_index_prefix(&file_paths, IndexKind::Vector, &config.column_name);
+    let covered_files = file_paths.clone();
     let builder = VectorShardIndexBuilder::new(
         store,
         config,
@@ -319,7 +320,7 @@ fn run_shard_vector_index(
                 .commit(
                     &outcome.index_prefix,
                     &outcome.header,
-                    &to_catalog_segments(&outcome.new_segments),
+                    &to_catalog_segments(&outcome.new_segments, &covered_files),
                     mode,
                 )
                 .await
@@ -359,7 +360,10 @@ fn to_resolved_shard(
     })
 }
 
-fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
+fn to_catalog_segments(
+    segments: &[SegmentEntry],
+    data_files: &[String],
+) -> Vec<VectorSegmentEntry> {
     segments
         .iter()
         .map(|segment| VectorSegmentEntry {
@@ -368,6 +372,7 @@ fn to_catalog_segments(segments: &[SegmentEntry]) -> Vec<VectorSegmentEntry> {
             filename: segment.segment_filename.clone(),
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
+            data_files: data_files.to_vec(),
         })
         .collect()
 }

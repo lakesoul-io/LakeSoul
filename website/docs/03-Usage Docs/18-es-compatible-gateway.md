@@ -122,6 +122,17 @@ writers need more parallelism.  Other knobs:
   it runs on every 16th write and can be tuned with
   `LAKESOUL_INDEX_GC_EVERY` (set `1` for the old per-write behavior; a grace
   of `0` always runs it per write).
+- **`index_build`** — `inline` (default) builds index deltas before the
+  write response returns; `deferred` commits data only and a background task
+  builds the pending shards every `index_build_interval_secs` (default 15).
+  While shards are pending, searches scan the not-yet-indexed data files
+  exactly, so every write is searchable immediately at the cost of reading
+  the backlog.  On the 20K-document corpus above (1 bucket, 500-document
+  batches) deferred writes reached ~12,900 docs/s against ~3,100 docs/s
+  inline, with identical recall@100; search p50 was ~160 ms while a backlog
+  existed and ~46 ms once the background build caught up.  The mode is a
+  table property set at provisioning; existing tables keep inline and the
+  gateway logs a warning when the configuration differs.
 - **Per-phase timings** — start the gateway with
   `LAKESOUL_ES_GATEWAY_TIMING=1` and
   `RUST_LOG=lakesoul_es_gateway::timing=info` to log write

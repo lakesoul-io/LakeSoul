@@ -32,15 +32,18 @@ use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::logical_expr::{Expr, Operator, binary_expr, col, lit};
 use futures::StreamExt;
 use lakesoul_common::IndexKind;
+use lakesoul_common::index::pending_shard_files;
 use lakesoul_io::index::Candidate;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::prefix::shard_index_prefix;
+use lakesoul_io::index::reader::read_shard_batches;
 use lakesoul_io::text::reader::collect_text_values;
 use lakesoul_io::text::search::search_resolved_shard;
+use lakesoul_io::vector::reader::extract_vector_batch;
 use lakesoul_io::vector::search::search_resolved_shard as search_vector_shard;
 use lakesoul_metadata::index_catalog::{IndexCommitView, VectorSegmentEntry};
-use lakesoul_text::{TextIndexConfig, TextSplitEntry, matching_ids};
+use lakesoul_text::{TextIndexConfig, TextSplitEntry, matching_ids, matching_scores};
 use lakesoul_vector::SegmentEntry;
 use object_store::ObjectStore;
 use serde_json::{Map, Value, json};
@@ -795,17 +798,78 @@ async fn index_store(
         .map_err(crate::error::internal)
 }
 
-/// Distinct index shard prefixes behind a table's active files.
-fn shard_prefixes(files: &[String], kind: IndexKind, column: &str) -> Vec<String> {
-    let mut prefixes = Vec::new();
-    let mut seen = HashSet::new();
+/// Active data files grouped by index shard prefix, in listing order.
+fn shard_file_groups(
+    files: &[String],
+    kind: IndexKind,
+    column: &str,
+) -> Vec<(String, Vec<String>)> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut positions: HashMap<String, usize> = HashMap::new();
     for file in files {
         let prefix = shard_index_prefix(std::slice::from_ref(file), kind, column);
-        if seen.insert(prefix.clone()) {
-            prefixes.push(prefix);
+        match positions.get(&prefix) {
+            Some(position) => groups[*position].1.push(file.clone()),
+            None => {
+                positions.insert(prefix.clone(), groups.len());
+                groups.push((prefix, vec![file.clone()]));
+            }
         }
     }
-    prefixes
+    groups
+}
+
+/// Exact candidates from data files that no index commit covers yet.
+///
+/// This is the read-your-writes fallback of deferred index maintenance: the
+/// pending tail is read with merge-on-read semantics and scored exactly, so
+/// a document is searchable as soon as its write commits.
+async fn text_tail_candidates(
+    files: &[String],
+    config: &TextIndexConfig,
+    query: &str,
+) -> Result<Vec<Candidate>, EsError> {
+    let projection = vec![config.column_name.clone()];
+    let batches =
+        read_shard_batches(files, PK_COLUMN, &projection, &HashMap::new(), None)
+            .await
+            .map_err(crate::error::internal)?;
+    let mut rows: Vec<(u64, Option<String>)> = Vec::new();
+    for batch in &batches {
+        let values = collect_text_values(batch, PK_COLUMN, &config.column_name)
+            .map_err(|error| EsError::internal(format!("text tail read: {error}")))?;
+        rows.extend(values.into_iter().flatten());
+    }
+    let scores = matching_scores(config, &rows, query)
+        .map_err(|error| EsError::internal(format!("text tail score: {error}")))?;
+    Ok(scores
+        .into_iter()
+        .map(|(id, score)| Candidate::scored(id, score))
+        .collect())
+}
+
+/// Exact cosine candidates from the not-yet-indexed data files.
+async fn vector_tail_candidates(
+    files: &[String],
+    column: &str,
+    query: &[f32],
+    dim: usize,
+) -> Result<Vec<Candidate>, EsError> {
+    let projection = vec![column.to_string()];
+    let batches =
+        read_shard_batches(files, PK_COLUMN, &projection, &HashMap::new(), None)
+            .await
+            .map_err(crate::error::internal)?;
+    let mut hits = Vec::new();
+    for batch in &batches {
+        let extracted = extract_vector_batch(batch, PK_COLUMN, column, dim)
+            .map_err(|error| EsError::internal(format!("vector tail read: {error}")))?;
+        for (index, id) in extracted.ids.iter().enumerate() {
+            let stored = &extracted.vectors[index * dim..(index + 1) * dim];
+            hits.push(Candidate::scored(*id, cosine(query, stored)));
+        }
+    }
+    Ok(hits)
 }
 
 /// Per-shard slow-path timings, summed over the shards of one request.
@@ -814,6 +878,7 @@ struct ShardTimings {
     resolve_ms: f64,
     lease_ms: f64,
     search_ms: f64,
+    tail_ms: f64,
 }
 
 impl ShardTimings {
@@ -821,12 +886,13 @@ impl ShardTimings {
         self.resolve_ms += other.resolve_ms;
         self.lease_ms += other.lease_ms;
         self.search_ms += other.search_ms;
+        self.tail_ms += other.tail_ms;
     }
 }
 
 struct TextShardOutcome {
     hits: Vec<Candidate>,
-    config: Option<TextIndexConfig>,
+    config: TextIndexConfig,
     lease: Option<IndexLease>,
     timings: ShardTimings,
 }
@@ -843,6 +909,9 @@ struct VectorShardOutcome {
 const SHARD_CONCURRENCY: usize = 8;
 
 /// Search every shard's text index and merge the candidate scores.
+///
+/// Shards whose data files are not fully covered by the index commit also
+/// contribute exact candidates from those files (deferred maintenance).
 async fn collect_candidates(
     state: Arc<GatewayState>,
     runtime: IndexRuntime,
@@ -860,36 +929,66 @@ async fn collect_candidates(
         return Ok((Vec::new(), None, 0));
     }
     let store = index_store(Arc::clone(&state), runtime.clone()).await?;
-    let prefixes = shard_prefixes(&files, IndexKind::Text, &column);
+    let groups = shard_file_groups(&files, IndexKind::Text, &column);
     let files_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let catalog = state
         .client
         .index_catalog::<TextSplitEntry>(IndexKind::Text);
-    let shards = prefixes.len();
+    let fallback_config = TextIndexConfig {
+        column_name: column.clone(),
+        tokenizer: runtime.tokenizer(&state.config.defaults).to_string(),
+        with_positions: runtime.with_positions(&state.config.defaults),
+        stored: false,
+    };
+    let shards = groups.len();
     let concurrency = shards.clamp(1, SHARD_CONCURRENCY);
-    let outcomes: Vec<Result<Option<TextShardOutcome>, EsError>> =
-        futures::stream::iter(prefixes)
-            .map(|prefix| {
-                let store = Arc::clone(&store);
-                let catalog = &catalog;
-                let query = query.as_str();
-                async move {
-                    let resolve_started = Instant::now();
-                    let Some(view) = catalog
-                        .resolve_cached(&prefix)
-                        .await
-                        .map_err(crate::error::internal)?
-                    else {
-                        tracing::warn!(
-                            index = %prefix,
-                            "text index shard has no commit; skipping"
-                        );
-                        return Ok(None);
-                    };
-                    let resolve_ms = resolve_started.elapsed().as_secs_f64() * 1000.0;
-                    let config =
-                        serde_json::from_slice::<TextIndexConfig>(&view.header).ok();
+    let outcomes: Vec<Result<TextShardOutcome, EsError>> = futures::stream::iter(groups)
+        .map(|(prefix, shard_files)| {
+            let store = Arc::clone(&store);
+            let catalog = &catalog;
+            let query = query.as_str();
+            let fallback_config = fallback_config.clone();
+            async move {
+                let resolve_started = Instant::now();
+                let view = catalog
+                    .resolve_cached(&prefix)
+                    .await
+                    .map_err(crate::error::internal)?;
+                let resolve_ms = resolve_started.elapsed().as_secs_f64() * 1000.0;
+                let config = view
+                    .as_ref()
+                    .and_then(|view| {
+                        serde_json::from_slice::<TextIndexConfig>(&view.header).ok()
+                    })
+                    .unwrap_or_else(|| fallback_config.clone());
+                let lease_started = Instant::now();
+                let mut lease = None;
+                let mut hits = Vec::new();
+                let mut search_ms = 0.0;
+                if let Some(view) = &view {
+                    if !lakesoul_io::index::cache::is_loaded(
+                        &store,
+                        IndexKind::Text,
+                        &prefix,
+                        view.commit_id,
+                    )
+                    .await
+                    {
+                        match catalog
+                            .acquire_lease(&prefix, lease_ttl(), &lease_owner())
+                            .await
+                        {
+                            Ok(Some(handle)) => lease = Some(IndexLease::new(handle)),
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(
+                                    index = %prefix,
+                                    "failed to lease text index: {error}"
+                                );
+                            }
+                        }
+                    }
                     let resolved = ResolvedIndex {
                         kind: IndexKind::Text,
                         index_prefix: prefix.clone(),
@@ -900,64 +999,54 @@ async fn collect_candidates(
                         segments: serde_json::to_value(&view.segments)
                             .map_err(crate::error::internal)?,
                     };
-                    let lease_started = Instant::now();
-                    let lease = if lakesoul_io::index::cache::is_loaded(
-                        &store,
-                        IndexKind::Text,
-                        &prefix,
-                        view.commit_id,
-                    )
-                    .await
-                    {
-                        // The splits are already resident, so the query will
-                        // not touch any file and the grace period protects
-                        // them; no reader lease is needed.
-                        None
-                    } else {
-                        match catalog
-                            .acquire_lease(&prefix, lease_ttl(), &lease_owner())
-                            .await
-                        {
-                            Ok(Some(handle)) => Some(IndexLease::new(handle)),
-                            Ok(None) => None,
-                            Err(error) => {
-                                tracing::warn!(
-                                    index = %prefix,
-                                    "failed to lease text index: {error}"
-                                );
-                                None
-                            }
-                        }
-                    };
-                    let lease_ms = lease_started.elapsed().as_secs_f64() * 1000.0;
                     let search_started = Instant::now();
-                    let hits = search_resolved_shard(&store, &resolved, query, top_k)
+                    hits = search_resolved_shard(&store, &resolved, query, top_k)
                         .await
                         .map_err(crate::error::internal)?;
-                    Ok(Some(TextShardOutcome {
-                        hits,
-                        config,
-                        lease,
-                        timings: ShardTimings {
-                            resolve_ms,
-                            lease_ms,
-                            search_ms: search_started.elapsed().as_secs_f64() * 1000.0,
-                        },
-                    }))
+                    search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
                 }
-            })
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
+                let lease_ms = lease_started.elapsed().as_secs_f64() * 1000.0;
+
+                // Files no segment covers: an untouched shard contributes
+                // all of them, a legacy commit (no coverage recorded) is
+                // skipped by the helper.
+                let pending = match &view {
+                    Some(view) => pending_shard_files(&shard_files, &view.segments),
+                    None => shard_files.clone(),
+                };
+                let tail_started = Instant::now();
+                let mut tail_hits = Vec::new();
+                if !pending.is_empty() {
+                    tail_hits = text_tail_candidates(&pending, &config, query).await?;
+                }
+                let tail_ms = tail_started.elapsed().as_secs_f64() * 1000.0;
+                hits.extend(tail_hits);
+
+                Ok(TextShardOutcome {
+                    hits,
+                    config,
+                    lease,
+                    timings: ShardTimings {
+                        resolve_ms,
+                        lease_ms,
+                        search_ms,
+                        tail_ms,
+                    },
+                })
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
 
     let mut candidates = Vec::new();
     let mut config = None;
     let mut leases = Vec::new();
     let mut timings = ShardTimings::default();
     for outcome in outcomes {
-        let Some(outcome) = outcome? else { continue };
+        let outcome = outcome?;
         if config.is_none() {
-            config = outcome.config;
+            config = Some(outcome.config);
         }
         if let Some(lease) = outcome.lease {
             leases.push(lease);
@@ -973,11 +1062,12 @@ async fn collect_candidates(
         tracing::info!(
             target: "lakesoul_es_gateway::timing",
             "search.text files_ms={:.1} resolve_ms={:.1} lease_ms={:.1} \
-             shard_search_ms={:.1} shards={}",
+             shard_search_ms={:.1} tail_ms={:.1} shards={}",
             files_ms,
             timings.resolve_ms,
             timings.lease_ms,
             timings.search_ms,
+            timings.tail_ms,
             shards
         );
     }
@@ -987,6 +1077,9 @@ async fn collect_candidates(
 }
 
 /// Search every shard's vector index and merge the candidate distances.
+///
+/// Shards whose data files are not fully covered by the index commit also
+/// contribute exact cosine candidates from those files.
 async fn collect_vector_candidates(
     state: Arc<GatewayState>,
     runtime: IndexRuntime,
@@ -995,6 +1088,11 @@ async fn collect_vector_candidates(
 ) -> Result<(Vec<Candidate>, usize), EsError> {
     let started = Instant::now();
     let column = runtime.config.embedding_column.clone();
+    let Some(dim) = runtime.dim else {
+        return Err(EsError::unsupported(
+            "the index is keyword-only: no embedding dimension is configured",
+        ));
+    };
     let files = state
         .client
         .get_data_files_by_table_name(&runtime.table, &runtime.namespace)
@@ -1004,75 +1102,87 @@ async fn collect_vector_candidates(
         return Ok((Vec::new(), 0));
     }
     let store = index_store(Arc::clone(&state), runtime.clone()).await?;
-    let prefixes = shard_prefixes(&files, IndexKind::Vector, &column);
+    let groups = shard_file_groups(&files, IndexKind::Vector, &column);
     let files_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let catalog = state.client.vector_index_catalog();
-    let shards = prefixes.len();
+    let shards = groups.len();
     let nprobe = runtime.nprobe(&state.config.defaults);
     let concurrency = shards.clamp(1, SHARD_CONCURRENCY);
-    let outcomes: Vec<Result<Option<VectorShardOutcome>, EsError>> =
-        futures::stream::iter(prefixes)
-            .map(|prefix| {
+    let outcomes: Vec<Result<VectorShardOutcome, EsError>> =
+        futures::stream::iter(groups)
+            .map(|(prefix, shard_files)| {
                 let store = Arc::clone(&store);
                 let catalog = &catalog;
                 let query = query.as_slice();
+                let column = column.clone();
                 async move {
                     let resolve_started = Instant::now();
-                    let Some(view) = catalog
+                    let view = catalog
                         .resolve_cached(&prefix)
                         .await
-                        .map_err(crate::error::internal)?
-                    else {
-                        tracing::warn!(
-                            index = %prefix,
-                            "vector index shard has no commit; skipping"
-                        );
-                        return Ok(None);
-                    };
+                        .map_err(crate::error::internal)?;
                     let resolve_ms = resolve_started.elapsed().as_secs_f64() * 1000.0;
                     let lease_started = Instant::now();
-                    let lease = if lakesoul_io::index::cache::is_loaded(
-                        &store,
-                        IndexKind::Vector,
-                        &prefix,
-                        view.commit_id,
-                    )
-                    .await
-                    {
-                        None
-                    } else {
-                        match catalog
-                            .acquire_lease(&prefix, lease_ttl(), &lease_owner())
-                            .await
+                    let mut lease = None;
+                    let mut hits = Vec::new();
+                    let mut search_ms = 0.0;
+                    if let Some(view) = &view {
+                        if !lakesoul_io::index::cache::is_loaded(
+                            &store,
+                            IndexKind::Vector,
+                            &prefix,
+                            view.commit_id,
+                        )
+                        .await
                         {
-                            Ok(Some(handle)) => Some(IndexLease::new(handle)),
-                            Ok(None) => None,
-                            Err(error) => {
-                                tracing::warn!(
-                                    index = %prefix,
-                                    "failed to lease vector index: {error}"
-                                );
-                                None
+                            match catalog
+                                .acquire_lease(&prefix, lease_ttl(), &lease_owner())
+                                .await
+                            {
+                                Ok(Some(handle)) => lease = Some(IndexLease::new(handle)),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    tracing::warn!(
+                                        index = %prefix,
+                                        "failed to lease vector index: {error}"
+                                    );
+                                }
                             }
                         }
-                    };
+                        let resolved = vector_resolved(&prefix, view)?;
+                        let search_started = Instant::now();
+                        hits =
+                            search_vector_shard(&store, &resolved, query, top_k, nprobe)
+                                .await
+                                .map_err(crate::error::internal)?;
+                        search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
+                    }
                     let lease_ms = lease_started.elapsed().as_secs_f64() * 1000.0;
-                    let resolved = vector_resolved(&prefix, &view)?;
-                    let search_started = Instant::now();
-                    let hits =
-                        search_vector_shard(&store, &resolved, query, top_k, nprobe)
-                            .await
-                            .map_err(crate::error::internal)?;
-                    Ok(Some(VectorShardOutcome {
+
+                    let pending = match &view {
+                        Some(view) => pending_shard_files(&shard_files, &view.segments),
+                        None => shard_files.clone(),
+                    };
+                    let tail_started = Instant::now();
+                    let mut tail_hits = Vec::new();
+                    if !pending.is_empty() {
+                        tail_hits =
+                            vector_tail_candidates(&pending, &column, query, dim).await?;
+                    }
+                    let tail_ms = tail_started.elapsed().as_secs_f64() * 1000.0;
+                    hits.extend(tail_hits);
+
+                    Ok(VectorShardOutcome {
                         hits,
                         lease,
                         timings: ShardTimings {
                             resolve_ms,
                             lease_ms,
-                            search_ms: search_started.elapsed().as_secs_f64() * 1000.0,
+                            search_ms,
+                            tail_ms,
                         },
-                    }))
+                    })
                 }
             })
             .buffer_unordered(concurrency)
@@ -1083,7 +1193,7 @@ async fn collect_vector_candidates(
     let mut leases = Vec::new();
     let mut timings = ShardTimings::default();
     for outcome in outcomes {
-        let Some(outcome) = outcome? else { continue };
+        let outcome = outcome?;
         if let Some(lease) = outcome.lease {
             leases.push(lease);
         }
@@ -1096,11 +1206,12 @@ async fn collect_vector_candidates(
         tracing::info!(
             target: "lakesoul_es_gateway::timing",
             "search.vector files_ms={:.1} resolve_ms={:.1} lease_ms={:.1} \
-             shard_search_ms={:.1} shards={}",
+             shard_search_ms={:.1} tail_ms={:.1} shards={}",
             files_ms,
             timings.resolve_ms,
             timings.lease_ms,
             timings.search_ms,
+            timings.tail_ms,
             shards
         );
     }

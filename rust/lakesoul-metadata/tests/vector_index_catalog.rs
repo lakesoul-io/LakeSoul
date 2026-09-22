@@ -30,6 +30,7 @@ fn segment(
         ),
         num_vectors,
         file_size: 1024,
+        data_files: Vec::new(),
     }
 }
 

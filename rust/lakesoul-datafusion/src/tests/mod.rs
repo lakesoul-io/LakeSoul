@@ -107,7 +107,7 @@ pub(crate) async fn create_table(
     table_name: &str,
     config: LakeSoulIOConfig,
 ) -> Result<()> {
-    create_table_inner(client, table_name, config, None, None).await
+    create_table_inner(client, table_name, config, None, None, None).await
 }
 
 /// Create a LakeSoul table that declares vector indexes through the
@@ -130,7 +130,7 @@ pub(crate) async fn create_table_with_vector_index(
     )?;
     let vector_index_columns = (!vector_index_configs.is_empty())
         .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
-    create_table_inner(client, table_name, config, vector_index_columns, None).await
+    create_table_inner(client, table_name, config, vector_index_columns, None, None).await
 }
 
 /// Create a LakeSoul table that declares text indexes through the
@@ -145,6 +145,25 @@ pub(crate) async fn create_table_with_text_index(
     config: LakeSoulIOConfig,
     text_index_configs: &[crate::text_index::TextIndexTableConfig],
 ) -> Result<()> {
+    create_table_with_text_index_mode(
+        client,
+        table_name,
+        config,
+        text_index_configs,
+        None,
+    )
+    .await
+}
+
+/// Like [`create_table_with_text_index`], with an explicit
+/// `index_maintenance` table property (`deferred` skips inline builds).
+pub(crate) async fn create_table_with_text_index_mode(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+    text_index_configs: &[crate::text_index::TextIndexTableConfig],
+    index_maintenance: Option<&str>,
+) -> Result<()> {
     crate::text_index::validate_text_index_configs(
         text_index_configs,
         config.target_schema().as_ref(),
@@ -152,7 +171,15 @@ pub(crate) async fn create_table_with_text_index(
     )?;
     let text_index_columns = (!text_index_configs.is_empty())
         .then(|| crate::text_index::text_index_columns_to_json(text_index_configs));
-    create_table_inner(client, table_name, config, None, text_index_columns).await
+    create_table_inner(
+        client,
+        table_name,
+        config,
+        None,
+        text_index_columns,
+        index_maintenance.map(str::to_string),
+    )
+    .await
 }
 
 async fn create_table_inner(
@@ -161,6 +188,7 @@ async fn create_table_inner(
     config: LakeSoulIOConfig,
     vector_index_columns: Option<String>,
     text_index_columns: Option<String>,
+    index_maintenance: Option<String>,
 ) -> Result<()> {
     debug!("create_table: {:?}", &table_name);
     let target_schema = config.target_schema();
@@ -192,6 +220,7 @@ async fn create_table_inner(
                 ),
                 vector_index_columns,
                 text_index_columns,
+                index_maintenance,
                 ..Default::default()
             })?,
             partitions: format!(
