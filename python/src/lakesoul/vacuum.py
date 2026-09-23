@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+"""Reclaim blob packs that are no longer referenced by any live data file.
+
+A pack survives when at least one data file reachable from the latest
+partition versions or from any snapshot/tag lists it in its ``.blobref``
+sidecar. Everything else is deleted once it is older than the grace period.
+
+The live set is collected twice; if the two collections disagree (a commit
+landed while scanning) or any live data file is missing its sidecar, the
+vacuum aborts without deleting anything.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+import pyarrow.fs as pafs
+
+from .blob import BLOB_DIR, read_blobref
+from .purge import DEFAULT_OLDER_THAN, _filesystem, _grace_ms, _uuid_hex
+
+if TYPE_CHECKING:
+    from .catalog import LakeSoulCatalog, LakeSoulTable
+
+__all__ = ["VacuumResult", "vacuum_blobs"]
+
+
+@dataclass(frozen=True)
+class VacuumResult:
+    dry_run: bool
+    data_files: int = 0
+    packs_total: int = 0
+    packs_used: int = 0
+    packs_deleted: int = 0
+    bytes_deleted: int = 0
+    aborted: bool = False
+
+
+def _live_data_files(catalog: LakeSoulCatalog, table: LakeSoulTable) -> set[str]:
+    client = catalog._client
+    table_id = table.id
+    latest = list(client.get_all_partition_info(table_id))
+    if not latest:
+        return set()
+
+    snapshot_ids = {
+        snapshot.snapshot_id
+        for snapshot in client.list_snapshots(table.name, namespace=table.namespace)
+    }
+    for tag in client.list_tags(table.name, namespace=table.namespace):
+        snapshot_id = getattr(tag, "snapshot_id", None)
+        if snapshot_id is not None:
+            snapshot_ids.add(snapshot_id)
+
+    live_commits: set[tuple[str, str]] = set()
+    for snapshot_id in snapshot_ids:
+        for row in client.list_snapshot_commits(table_id, snapshot_id):
+            live_commits.add((row.partition_desc, _uuid_hex(row.commit_id)))
+    for item in latest:
+        for commit_id in item.snapshot:
+            live_commits.add((item.partition_desc, _uuid_hex(commit_id)))
+
+    by_partition: dict[str, list[Any]] = {}
+    for partition_desc, commit_id in live_commits:
+        by_partition.setdefault(partition_desc, []).append(commit_id)
+    files: set[str] = set()
+    for partition_desc, commit_ids in by_partition.items():
+        uuids = [
+            (int(commit_id[:16], 16), int(commit_id[16:], 16))
+            for commit_id in commit_ids
+        ]
+        for path in client._inner.get_data_files_of_single_partition(
+            table_id, partition_desc, uuids
+        ):
+            files.add(path)
+    return files
+
+
+def _collect(
+    catalog: LakeSoulCatalog, table: LakeSoulTable
+) -> tuple[tuple[str, ...], set[str], bool]:
+    live = _live_data_files(catalog, table)
+    used: set[str] = set()
+    missing = False
+    for path in sorted(live):
+        packs = read_blobref(path)
+        if packs is None:
+            missing = True
+            continue
+        used.update(packs)
+    return tuple(sorted(live)), used, missing
+
+
+def _pack_key(path: str) -> str:
+    return "/".join(path.rstrip("/").split("/")[-2:])
+
+
+def _list_packs(
+    table: LakeSoulTable, options: dict[str, str]
+) -> tuple[pafs.FileSystem | None, str, list[Any]]:
+    root = f"{table.path.rstrip('/')}/{BLOB_DIR}"
+    filesystem, base = _filesystem(root, options)
+    try:
+        infos = filesystem.get_file_info(
+            pafs.FileSelector(base, allow_not_found=True, recursive=True)
+        )
+    except FileNotFoundError:
+        return filesystem, base, []
+    return (
+        filesystem,
+        base,
+        [
+            info
+            for info in infos
+            if info.type == pafs.FileType.File and info.path.endswith(".blob")
+        ],
+    )
+
+
+def _mtime_ns(info: Any) -> int | None:
+    mtime_ns = getattr(info, "mtime_ns", None)
+    if mtime_ns is not None:
+        return int(mtime_ns)
+    mtime = getattr(info, "mtime", None)
+    if mtime is None:
+        return None
+    if mtime.tzinfo is None:
+        mtime = mtime.replace(tzinfo=dt.timezone.utc)
+    return int(mtime.timestamp() * 1_000_000_000)
+
+
+def vacuum_blobs(
+    catalog: LakeSoulCatalog,
+    table: LakeSoulTable,
+    *,
+    older_than: dt.timedelta | int = DEFAULT_OLDER_THAN,
+    dry_run: bool = True,
+) -> VacuumResult:
+    """Delete blob packs that no live data file references.
+
+    ``older_than`` is a grace period (``timedelta`` or milliseconds); packs
+    younger than it are never removed. With ``dry_run`` nothing is deleted
+    and the result only reports what would happen.
+    """
+    blob_option = table._blob_columns_option()
+    if not blob_option:
+        return VacuumResult(dry_run)
+
+    first_files, used, missing = _collect(catalog, table)
+    if missing:
+        return VacuumResult(dry_run, aborted=True)
+    second_files, used_again, missing = _collect(catalog, table)
+    if missing or second_files != first_files:
+        return VacuumResult(dry_run, aborted=True)
+    used = used | used_again
+
+    options = dict(catalog.object_store_options or {})
+    filesystem, _base, infos = _list_packs(table, options)
+    if filesystem is None:
+        return VacuumResult(dry_run, aborted=True)
+
+    used_keys = {_pack_key(path) for path in used}
+    cutoff_ns = (
+        dt.datetime.now(dt.timezone.utc).timestamp() * 1_000_000_000
+        - _grace_ms(older_than) * 1_000_000
+    )
+    deleted = 0
+    bytes_deleted = 0
+    for info in infos:
+        if _pack_key(info.path) in used_keys:
+            continue
+        mtime_ns = _mtime_ns(info)
+        if mtime_ns is None or mtime_ns > cutoff_ns:
+            continue
+        deleted += 1
+        bytes_deleted += info.size or 0
+        if not dry_run:
+            filesystem.delete_file(info.path)
+    return VacuumResult(
+        dry_run=dry_run,
+        data_files=len(first_files),
+        packs_total=len(infos),
+        packs_used=len(used_keys),
+        packs_deleted=deleted,
+        bytes_deleted=bytes_deleted,
+    )
