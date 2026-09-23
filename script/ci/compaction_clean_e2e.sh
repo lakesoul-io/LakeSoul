@@ -142,7 +142,7 @@ docker exec -t "$JOBMANAGER" flink run -d \
   --dataExpiredTime 0 --ontimer_interval 1
 
 log "start Spark compaction task"
-docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 >/dev/null
+docker pull swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 >/dev/null
 (
   cd "$WORK_DIR"
   docker rm -f lakesoul-e2e-compaction >/dev/null 2>&1 || true
@@ -153,7 +153,7 @@ docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py31
     -v "${PWD}:/opt/spark/work-dir" \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
     --env LAKESOUL_IO_USE_V2_MERGE=true \
-    swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
+    swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
     spark-submit --driver-memory 2G --executor-memory 2G \
     --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m \
     --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp \
