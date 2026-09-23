@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -304,6 +306,106 @@ class LakeSoulCatalog:
             domain=domain,
         )
         return self.table(table_name, namespace)
+
+    def create_snapshot(
+        self,
+        table: str | LakeSoulTable,
+        description: str | None = None,
+    ) -> int:
+        """Freeze the current table state and return the new snapshot id."""
+        handle = self._resolve_table(table)
+        info = self._client.create_snapshot(
+            handle.name,
+            description or "",
+            namespace=handle.namespace,
+        )
+        return info.snapshot_id
+
+    def create_tag(
+        self,
+        table: str | LakeSoulTable,
+        tag: str,
+        snapshot: int | None = None,
+    ) -> int:
+        """Tag a snapshot (creating one first when ``snapshot`` is omitted)."""
+        handle = self._resolve_table(table)
+        snapshot_id = snapshot
+        if snapshot_id is None:
+            snapshot_id = self._client.create_snapshot(
+                handle.name,
+                "",
+                namespace=handle.namespace,
+            ).snapshot_id
+        info = self._client.create_tag(
+            handle.name,
+            tag,
+            snapshot_id,
+            namespace=handle.namespace,
+        )
+        return info.snapshot_id
+
+    def list_snapshots(self, table: str | LakeSoulTable) -> list[Any]:
+        handle = self._resolve_table(table)
+        return list(
+            self._client.list_snapshots(handle.name, namespace=handle.namespace)
+        )
+
+    def list_tags(self, table: str | LakeSoulTable) -> list[Any]:
+        handle = self._resolve_table(table)
+        return list(self._client.list_tags(handle.name, namespace=handle.namespace))
+
+    def drop_tag(self, table: str | LakeSoulTable, tag: str) -> bool:
+        handle = self._resolve_table(table)
+        return self._client.drop_tag(
+            handle.name,
+            tag,
+            namespace=handle.namespace,
+        )
+
+    def drop_snapshot(self, table: str | LakeSoulTable, snapshot: int) -> bool:
+        """Drop a snapshot; refuses while any tag still points at it."""
+        handle = self._resolve_table(table)
+        for tag_info in self.list_tags(handle):
+            if tag_info.snapshot_id == int(snapshot):
+                raise ValueError(
+                    f"snapshot {snapshot} is tagged as {tag_info.tag!r}; "
+                    "drop the tag first"
+                )
+        return self._client.drop_snapshot(
+            handle.name,
+            snapshot,
+            namespace=handle.namespace,
+        )
+
+    def purge(
+        self,
+        table: str | LakeSoulTable,
+        *,
+        older_than: dt.timedelta | int = dt.timedelta(days=1),
+        dry_run: bool = True,
+    ) -> Any:
+        """Delete unpinned versions/files older than the grace period.
+
+        Versions kept alive by a snapshot or tag, and the latest version of
+        every partition, are never touched. Blob packs follow their data file.
+        """
+        from lakesoul.purge import purge_table
+
+        return purge_table(
+            self,
+            self._resolve_table(table),
+            older_than=older_than,
+            dry_run=dry_run,
+        )
+
+    def _resolve_table(self, table: str | LakeSoulTable) -> LakeSoulTable:
+        if isinstance(table, LakeSoulTable):
+            return table
+        if isinstance(table, str):
+            return self.table(table)
+        raise TypeError(
+            f"table must be a name or LakeSoulTable, got {type(table).__name__}"
+        )
 
     def drop_table(
         self,
@@ -1007,6 +1109,10 @@ class LakeSoulScan:
         retain_partition_columns: bool,
         object_store_options: Mapping[str, str],
         _reader_options: Mapping[str, str] | None = None,
+        _timestamp: Any = None,
+        _time_zone: str | None = None,
+        _snapshot: int | None = None,
+        _tag: str | None = None,
     ) -> None:
         _validate_scan_runtime_options(
             batch_size=batch_size,
@@ -1025,6 +1131,10 @@ class LakeSoulScan:
         self._retain_partition_columns = retain_partition_columns
         self._object_store_options = dict(object_store_options)
         self._reader_options = dict(_reader_options or {})
+        self._timestamp = _timestamp
+        self._time_zone = _time_zone
+        self._snapshot = _snapshot
+        self._tag = _tag
 
     @property
     def table(self) -> LakeSoulTable:
@@ -1078,6 +1188,10 @@ class LakeSoulScan:
         retain_partition_columns: bool | None = None,
         object_store_options: Mapping[str, str] | None = None,
         reader_options: Mapping[str, str] | None = None,
+        timestamp: Any = None,
+        time_zone: str | None = None,
+        snapshot: int | None = None,
+        tag: str | None = None,
     ) -> LakeSoulScan:
         updates: dict[str, Any] = {}
         if batch_size is not None:
@@ -1092,16 +1206,76 @@ class LakeSoulScan:
             )
         if reader_options is not None:
             updates["_reader_options"] = dict(reader_options)
+        if timestamp is not None:
+            updates["_timestamp"] = timestamp
+        if time_zone is not None:
+            updates["_time_zone"] = time_zone
+        if snapshot is not None:
+            updates["_snapshot"] = int(snapshot)
+        if tag is not None:
+            updates["_tag"] = tag
         return self._replace(**updates)
 
     def scan_plan(self) -> tuple[Any, ...]:
+        as_of_ms, snapshot_commits = self._time_travel()
         return tuple(
             self._table.catalog._client.get_scan_plan_partitions(
                 self._table.name,
                 partitions=self._partitions,
                 namespace=self._table.namespace,
+                as_of_ms=as_of_ms,
+                snapshot_commits=snapshot_commits,
             )
         )
+
+    def _time_travel(self) -> tuple[int | None, dict[str, list[Any]] | None]:
+        """Resolve the scan's time-travel selection.
+
+        Returns ``(as_of_ms, snapshot_commits)`` where ``snapshot_commits``
+        maps a partition description to the commit ids frozen in a snapshot.
+        """
+        chosen = [
+            name
+            for name, value in (
+                ("timestamp", self._timestamp),
+                ("snapshot", self._snapshot),
+                ("tag", self._tag),
+            )
+            if value is not None
+        ]
+        if len(chosen) > 1:
+            raise ValueError(
+                f"only one of timestamp, snapshot, tag can be selected, got {chosen}"
+            )
+        if self._timestamp is not None:
+            from lakesoul.time_utils import resolve_timestamp_ms
+
+            return resolve_timestamp_ms(self._timestamp, self._time_zone), None
+        if self._time_zone is not None:
+            raise ValueError("time_zone requires a timestamp")
+        if self._snapshot is None and self._tag is None:
+            return None, None
+
+        client = self._table.catalog._client
+        snapshot_id = self._snapshot
+        if self._tag is not None:
+            tag_info = client.get_tag(
+                self._table.name, self._tag, namespace=self._table.namespace
+            )
+            if tag_info is None:
+                raise ValueError(
+                    f"unknown tag {self._tag!r} on table {self._table.name!r}"
+                )
+            snapshot_id = tag_info.snapshot_id
+        rows = client.list_snapshot_commits(self._table.id, int(snapshot_id))
+        if not rows:
+            raise ValueError(
+                f"unknown snapshot {snapshot_id} on table {self._table.name!r}"
+            )
+        commits: dict[str, list[Any]] = {}
+        for row in rows:
+            commits.setdefault(row.partition_desc, []).append(row.commit_id)
+        return None, commits
 
     def to_arrow_dataset(self) -> ds.Dataset:
         from lakesoul.arrow import lakesoul_dataset
@@ -1264,6 +1438,10 @@ class LakeSoulScan:
             "retain_partition_columns": self._retain_partition_columns,
             "object_store_options": self._object_store_options,
             "_reader_options": self._reader_options,
+            "_timestamp": self._timestamp,
+            "_time_zone": self._time_zone,
+            "_snapshot": self._snapshot,
+            "_tag": self._tag,
         }
         values.update(updates)
         # A score-requesting scan must read the reserved score column; add it

@@ -62,6 +62,8 @@ message PartitionInfo {
   //  Domain this entry belongs to.
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 9;
+  //  Whether a snapshot or tag keeps this version alive.
+  bool pinned = 6;
 }
 
 //  Namespace of tables
@@ -128,6 +130,8 @@ message DataCommitInfo {
   //   mark define if this DataCommit has already committed as PartitionInfo of table
   bool committed = 7;
   string domain = 8;
+  //  Whether a snapshot or tag keeps this commit alive.
+  bool pinned = 9;
 }
 
 //  Relationship between 'TableNamespace.TableName' and TableId
@@ -175,6 +179,29 @@ message Uuid {
   uint64 low = 2;
 }
 
+message SnapshotInfo {
+  string table_id = 1;
+  int64 snapshot_id = 2;
+  int64 created_at = 3;
+  string description = 4;
+}
+
+message SnapshotCommitInfo {
+  string table_id = 1;
+  int64 snapshot_id = 2;
+  string partition_desc = 3;
+  int32 version = 4;
+  Uuid commit_id = 5;
+}
+
+message SnapshotTagInfo {
+  string table_id = 1;
+  string tag = 2;
+  int64 snapshot_id = 3;
+  int64 created_at = 4;
+  int64 expire_at = 5;
+}
+
 message JniWrapper {
   repeated Namespace namespace = 1;
   repeated TableInfo table_info = 2;
@@ -183,4 +210,7 @@ message JniWrapper {
   repeated PartitionInfo partition_info = 5;
   repeated DataCommitInfo data_commit_info = 6;
   repeated DiscardCompressedFileInfo discard_compressed_file_info = 7;
+  repeated SnapshotInfo snapshot_info = 8;
+  repeated SnapshotCommitInfo snapshot_commit_info = 9;
+  repeated SnapshotTagInfo snapshot_tag_info = 10;
 }

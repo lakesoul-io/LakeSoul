@@ -233,6 +233,14 @@ public class DBManager {
     }
 
     public List<String> deleteMetaPartitionInfo(String tableId, String partitionDesc) {
+        List<PartitionInfo> versions = getOnePartitionVersions(tableId, partitionDesc);
+        if (versions.stream().anyMatch(PartitionInfo::getPinned)) {
+            LOG.warn(
+                    "partition {}/{} is pinned by a snapshot or tag; skipping drop",
+                    tableId,
+                    partitionDesc);
+            return new ArrayList<>();
+        }
         List<DataFileOp> fileOps = new ArrayList<>();
         List<String> deleteFilePathList = new ArrayList<>();
         deleteSinglePartitionMetaInfo(tableId, partitionDesc, fileOps, deleteFilePathList);
@@ -324,7 +332,7 @@ public class DBManager {
             timestampToPartition.put(curTimestamp, p);
             if (curTimestamp > utcMills) {
                 minValueToUtcMills = Math.min(minValueToUtcMills, curTimestamp);
-            } else {
+            } else if (!p.getPinned()) {
                 filterPartition.add(p);
             }
         }
@@ -1181,6 +1189,10 @@ public class DBManager {
 
     public void deleteNamespace(String namespace) {
         namespaceDao.deleteByNamespace(namespace);
+    }
+
+    public List<String> getPinnedFilePaths(List<String> filePaths) {
+        return dataCommitInfoDao.selectPinnedFilePaths(filePaths);
     }
 
     public void insertDiscardCompressedFile(DiscardCompressedFileInfo discardCompressedFileInfo) {

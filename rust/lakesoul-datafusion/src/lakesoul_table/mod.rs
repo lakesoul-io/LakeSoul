@@ -444,6 +444,7 @@ impl LakeSoulTable {
             let data_commit_info = DataCommitInfo {
                 table_id: self.table_info.table_id.clone(),
                 partition_desc,
+                pinned: false,
                 commit_id: {
                     let (high, low) = Uuid::new_v4().as_u64_pair();
                     Some(lakesoul_metadata_proto::entity::Uuid { high, low })

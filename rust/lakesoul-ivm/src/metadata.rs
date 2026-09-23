@@ -16,7 +16,11 @@
 //!   `(view, generation, window_key)` with its monotonic epoch, the consumed
 //!   source ranges, and the MV partition versions before/after the write. A
 //!   refresh uses it to skip windows that are already applied without reading
-//!   the MV data again.
+//!   the MV data again;
+//! * `ivm.states` binds every `(view, role)` to the internal LakeSoul table
+//!   that holds the state (`mv` for the output, `state` for the value-count
+//!   table), so internal tables are discoverable and a view id cannot silently
+//!   switch to a different state table.
 
 use std::collections::HashMap;
 
@@ -91,6 +95,20 @@ do $$ begin
         on ivm.epochs (view_id, generation, window_key);
 exception when duplicate_table or unique_violation then null;
 end $$;
+
+do $$ begin
+    create table if not exists ivm.states (
+        view_id    text   not null,
+        role       text   not null,
+        table_id   text   not null,
+        table_name text   not null,
+        namespace  text   not null default 'default',
+        table_path text   not null,
+        created_at bigint not null,
+        primary key (view_id, role)
+    );
+exception when duplicate_table or unique_violation then null;
+end $$;
 ";
 
 /// The persisted cursor of one source partition.
@@ -152,6 +170,55 @@ impl EpochStatus {
             other => Err(rootcause::report!("unknown epoch status {other:?}")),
         }
     }
+}
+
+/// The role an internal table plays for a view in `ivm.states`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StateRole {
+    /// The materialized view output (which is also the state for views that
+    /// keep their accumulator in the output, e.g. SUM/COUNT).
+    Mv,
+    /// An auxiliary state table (the value-count table of MIN/MAX and
+    /// DISTINCT views).
+    State,
+}
+
+impl StateRole {
+    /// The persisted role name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StateRole::Mv => "mv",
+            StateRole::State => "state",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "mv" => Ok(StateRole::Mv),
+            "state" => Ok(StateRole::State),
+            other => Err(rootcause::report!("unknown state role {other:?}")),
+        }
+    }
+}
+
+/// One row of `ivm.states`: the internal table bound to a `(view, role)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateTable {
+    /// The view the table belongs to.
+    pub view_id: String,
+    /// The role of the table in the view.
+    pub role: StateRole,
+    /// The LakeSoul table id.
+    pub table_id: String,
+    /// The LakeSoul table name.
+    pub table_name: String,
+    /// The namespace of the table.
+    pub namespace: String,
+    /// The table root path.
+    pub table_path: String,
+    /// The registration time (unix milliseconds).
+    pub created_at: i64,
 }
 
 /// One row of `ivm.epochs`: a refresh window.
@@ -607,8 +674,94 @@ impl IvmMetadata {
         Ok(())
     }
 
+    /// Register the internal table a view uses for one state role.
+    ///
+    /// Registration is idempotent for the same table but refuses to bind an
+    /// existing `(view, role)` to a different one, so a view id cannot silently
+    /// switch or share its state.
+    pub async fn register_state(
+        &self,
+        view_id: &str,
+        role: StateRole,
+        table: &crate::table::IvmTable,
+    ) -> Result<()> {
+        let (conn, statement) = self
+            .client
+            .prepare_cached(
+                "insert into ivm.states(
+                     view_id, role, table_id, table_name, namespace, table_path, created_at)
+                 values ($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::TEXT, $6::TEXT, $7::BIGINT)
+                 on conflict (view_id, role) do nothing",
+                QueryType::RW,
+            )
+            .await?;
+        conn.execute(
+            &statement,
+            &[
+                &view_id,
+                &role.as_str(),
+                &table.table_id,
+                &table.table_name,
+                &table.namespace,
+                &table.table_path,
+                &crate::now_ms(),
+            ],
+        )
+        .await?;
+
+        if let Some(existing) = self.get_state(view_id, role).await?
+            && existing.table_id != table.table_id
+        {
+            return Err(rootcause::report!(
+                "view {view_id} already uses table {} as its {} state",
+                existing.table_name,
+                role.as_str()
+            ));
+        }
+        Ok(())
+    }
+
+    /// The internal table registered for one `(view, role)`.
+    pub async fn get_state(
+        &self,
+        view_id: &str,
+        role: StateRole,
+    ) -> Result<Option<StateTable>> {
+        let row = self
+            .client
+            .query_opt(
+                "select view_id, role, table_id, table_name, namespace, table_path, created_at
+                 from ivm.states where view_id = $1::TEXT and role = $2::TEXT",
+                QueryType::RO,
+                &[&view_id, &role.as_str()],
+            )
+            .await?;
+        row.map(|row| state_table_from_row(&row)).transpose()
+    }
+
+    /// All internal tables registered for a view.
+    pub async fn list_states(&self, view_id: &str) -> Result<Vec<StateTable>> {
+        let rows = self
+            .client
+            .query(
+                "select view_id, role, table_id, table_name, namespace, table_path, created_at
+                 from ivm.states where view_id = $1::TEXT order by role, table_name",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        rows.iter().map(state_table_from_row).collect()
+    }
+
     /// Delete a view and its cursors.
     pub async fn delete_view(&self, view_id: &str) -> Result<()> {
+        self.client
+            .execute(
+                "delete from ivm.states where view_id = $1::TEXT",
+                QueryType::RW,
+                &[&view_id],
+            )
+            .await?;
         self.client
             .execute(
                 "delete from ivm.epochs where view_id = $1::TEXT",
@@ -632,6 +785,18 @@ impl IvmMetadata {
             .await?;
         Ok(())
     }
+}
+
+fn state_table_from_row(row: &tokio_postgres::Row) -> Result<StateTable> {
+    Ok(StateTable {
+        view_id: row.get(0),
+        role: StateRole::parse(row.get::<_, String>(1).as_str())?,
+        table_id: row.get(2),
+        table_name: row.get(3),
+        namespace: row.get(4),
+        table_path: row.get(5),
+        created_at: row.get(6),
+    })
 }
 
 fn epoch_record_from_row(row: &tokio_postgres::Row) -> Result<EpochRecord> {

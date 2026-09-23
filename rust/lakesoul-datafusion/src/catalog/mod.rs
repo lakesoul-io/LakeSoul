@@ -245,6 +245,7 @@ pub(crate) async fn commit_data(
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,
             partition_desc,
+            pinned: false,
             file_ops: files
                 .iter()
                 .map(|file| DataFileOp {

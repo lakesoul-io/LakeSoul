@@ -189,6 +189,11 @@ impl NativeMetadataClient {
             .map_err(|error| metadata_error_to_py(error, MissingObject::Unknown))
     }
 
+    fn exec_update(&self, py: Python, query_type: i32, joined_string: String) -> PyResult<i32> {
+        py.detach(|| RUNTIME.block_on(self.client.execute_update_raw(query_type, joined_string)))
+            .map_err(|error| metadata_error_to_py(error, MissingObject::Unknown))
+    }
+
     fn commit_data_files(
         &self,
         py: Python,

@@ -72,6 +72,34 @@ public class DataCommitInfoDao {
         }
     }
 
+    public List<String> selectPinnedFilePaths(List<String> filePaths) {
+        if (filePaths == null || filePaths.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        List<String> pinned = new ArrayList<>();
+        String sql =
+                "select p.path from unnest(?::text[]) as p(path) where exists ("
+                        + " select 1 from data_commit_info dci, unnest(dci.file_ops) as f"
+                        + " where dci.pinned = true and f.path = p.path)";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.setArray(1, conn.createArrayOf("text", filePaths.toArray()));
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                pinned.add(rs.getString(1));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return pinned;
+    }
+
     public void deleteByTableIdPartitionDescCommitList(
             String tableId, String partitionDesc, List<Uuid> commitIdList) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
@@ -97,7 +125,7 @@ public class DataCommitInfoDao {
                 String.format(
                         "delete from data_commit_info where table_id = ? and partition_desc = ? and"
                                 + " commit_id in (%s)",
-                        String.join(",", Collections.nCopies(commitIdList.size(), "?")));
+                        String.join(",", Collections.nCopies(commitIdList.size(), "?::uuid")));
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -267,7 +295,7 @@ public class DataCommitInfoDao {
                 String.format(
                         "select * from data_commit_info where table_id = ? and partition_desc = ?"
                                 + " and commit_id in (%s) order by position(commit_id::text in ?) ",
-                        String.join(",", Collections.nCopies(commitIdList.size(), "?")));
+                        String.join(",", Collections.nCopies(commitIdList.size(), "?::uuid")));
 
         try {
             conn = DBConnector.getConn();
@@ -305,6 +333,7 @@ public class DataCommitInfoDao {
                 .setTimestamp(rs.getLong("timestamp"))
                 .setCommitted(rs.getBoolean("committed"))
                 .setDomain(rs.getString("domain"))
+                .setPinned(rs.getBoolean("pinned"))
                 .build();
     }
 
