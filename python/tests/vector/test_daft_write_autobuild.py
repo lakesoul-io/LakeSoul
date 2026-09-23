@@ -12,7 +12,7 @@ Requires a live PostgreSQL metadata store:
     docker run -d --name lakesoul-pg \
         -e POSTGRES_PASSWORD=lakesoul_test -e POSTGRES_USER=lakesoul_test \
         -e POSTGRES_DB=lakesoul_test -p 5432:5432 \
-        swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
+        swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
     ./script/meta_init_for_local_test.sh -j 2
 """
 

@@ -102,7 +102,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          env-vars: "JAVA_HOME"
           shared-key: "rust-consistency"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Zig

@@ -94,7 +94,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          env-vars: "JAVA_HOME"
           shared-key: "native-glibc217"
           save-if: false
       - name: Install Zig
@@ -109,9 +108,9 @@ jobs:
       - name: Prefetch images
         run: |
           (
-            docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 &
-            docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296 &
-            docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix &
+            docker pull -q swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 &
+            docker pull -q swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/presto:0.296 &
+            docker pull -q swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix &
             (cd docker/lakesoul-docker-compose-env && docker compose --profile s3 pull -q) &
             wait
             touch /tmp/images-ready
@@ -189,7 +188,7 @@ jobs:
             -v "${PWD}/script/benchmark/work-dir:/opt/spark/work-dir" \
             -v "${PWD}/script/benchmark/presto-native-coordinator/lakesoul.properties:/root/lakesoul.properties" \
             --env lakesoul_home=/root/lakesoul.properties \
-            swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/presto:0.296
           sleep 15s
           docker run -d \
             --net lakesoul-docker-compose-env_default \
@@ -201,7 +200,7 @@ jobs:
             --env RUST_BACKTRACE=full \
             -v "${PWD}/script/benchmark/presto-native-worker/config.properties:/opt/etc/config.properties" \
             -v "${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties" \
-            swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix
       - name: Wait for Presto worker to become active
         run: |
           TIMEOUT_SECONDS=20 ./script/benchmark/wait_presto_worker.sh
@@ -213,7 +212,7 @@ jobs:
             --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
             --env LAKESOUL_IO_USE_V2_MERGE=true \
             --env RUST_LOG=info \
-            swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
             spark-submit --driver-memory 2G --executor-memory 2G \
             --conf spark.driver.memoryOverhead=1500m \
             --conf spark.executor.memoryOverhead=1500m \
