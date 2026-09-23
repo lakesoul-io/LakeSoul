@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::listing::PartitionedFile;
@@ -277,9 +277,10 @@ impl LakeSoulTextSearchExec {
                     .max(100)
                     .to_string(),
             );
-        if self.text_search.order_by {
-            // Relevance ordering needs the BM25 score of every verified
-            // row; requesting scores also enables the verification pass.
+        if self.text_search.order_by || self.text_search.expose_score {
+            // Relevance ordering and score projection need the BM25 score of
+            // every verified row; requesting scores also enables the
+            // verification pass.
             builder = builder.with_option(OPTION_KEY_TEXT_SEARCH_SCORES, "true");
         } else {
             // The exact `text_match` predicate above the scan verifies, so
@@ -309,6 +310,54 @@ impl ExecutionPlanProperties for LakeSoulTextSearchExec {
 
     fn equivalence_properties(&self) -> &EquivalenceProperties {
         self.properties.equivalence_properties()
+    }
+}
+
+impl LakeSoulTextSearchExec {
+    /// The search parameters carried by this scan.
+    pub fn text_search(&self) -> &TextSearchRequest {
+        &self.text_search
+    }
+
+    /// A copy of this scan whose output schema appends the internal BM25
+    /// score column.  The physical score-projection rule calls this to serve
+    /// `SELECT text_score(column, query)`; the copy requests scores from the
+    /// reader, which also enables the exact verification pass.
+    pub fn with_exposed_score(&self) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let mut fields: Vec<Arc<Field>> = self.schema.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new(
+            TEXT_SCORE_FIELD,
+            DataType::Float32,
+            true,
+        )));
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            self.schema.metadata().clone(),
+        ));
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        let mut text_search = self.text_search.clone();
+        text_search.expose_score = true;
+        Ok(Arc::new(Self {
+            schema,
+            file_schema: Arc::clone(&self.file_schema),
+            partition_cols: self.partition_cols.clone(),
+            file_groups: self.file_groups.clone(),
+            partition_values: self.partition_values.clone(),
+            object_store_url: self.object_store_url.clone(),
+            primary_keys: self.primary_keys.clone(),
+            object_store_options: self.object_store_options.clone(),
+            cdc_column: self.cdc_column.clone(),
+            config: self.config.clone(),
+            text_search,
+            catalog: self.catalog.clone(),
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+        }))
     }
 }
 

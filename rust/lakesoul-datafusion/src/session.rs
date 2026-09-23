@@ -242,6 +242,9 @@ impl LakeSoulSessionFactory {
             ))
             .with_optimizer_rule(Arc::new(
                 crate::planner::text_search_rule::TextSearchPushdownRule,
+            ))
+            .with_physical_optimizer_rule(Arc::new(
+                crate::planner::text_score_rule::TextScoreProjectionRule,
             ));
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
             builder = builder
