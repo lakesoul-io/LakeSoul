@@ -78,10 +78,22 @@ All responses carry `X-Elastic-Product: Elasticsearch`, and errors use the
 
 Keyword search (`match` on the content column) returns hits ordered by BM25
 with a numeric `_score`. Candidates are verified against the current rows, so
-updated or deleted documents never leak into the response. Ordering across
-hash buckets uses each bucket's own index statistics — the same trade-off as
-a default Elasticsearch search across shards; rank fusion (RRF) stays on the
-client side.
+updated or deleted documents never leak into the response.
+
+Plain (no explicit syntax) keyword queries are scored with **corpus-wide BM25
+statistics**: the gateway collects each shard's document count, average field
+length and query-term document frequencies, then computes one score per
+matching row against the merged numbers — the `dfs_query_then_fetch`
+semantics of a distributed search engine. Ordering therefore no longer
+depends on the number of hash buckets: measured on the same 20K-document
+corpus, the one-bucket and four-bucket configurations return identical
+nDCG@10 and Recall@100. Queries with explicit syntax (phrases, `AND`/`OR`)
+keep Tantivy's per-shard scoring.
+
+When verification under-fills the requested `size` (stale candidates consumed
+the per-shard budget), the search retries with a four-times larger candidate
+budget before returning fewer hits. Rank fusion (RRF) stays on the client
+side.
 
 Vector search uses the `script_score` form the clients send:
 

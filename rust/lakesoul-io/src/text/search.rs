@@ -51,39 +51,7 @@ pub async fn search_resolved_shard(
             resolved.index_prefix
         ));
     }
-    let splits: Vec<TextSplitEntry> = resolved.segments_as()?;
-
-    let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
-    let cache_prefix = prefix.clone();
-    let commit_id = resolved.commit_id;
-    let entry =
-        cache::get_or_load(store, IndexKind::Text, &prefix, commit_id, move || {
-            let store = store.clone();
-            let prefix = cache_prefix.clone();
-            let splits = splits.clone();
-            async move {
-                let split_cache = SplitCache::from_env();
-                let mut indexes = Vec::with_capacity(splits.len());
-                let mut bytes = 0usize;
-                for split in &splits {
-                    indexes.push(split_cache.open(&store, &prefix, split).await?);
-                    bytes += split.file_size as usize;
-                }
-                Ok::<CachedTextShard, TextError>(CachedTextShard {
-                    commit_id,
-                    indexes,
-                    bytes,
-                })
-            }
-        })
-        .await
-        .map_err(|error| {
-            rootcause::report!(
-                "failed to load text index at '{}': {:?}",
-                resolved.index_prefix,
-                error
-            )
-        })?;
+    let entry = open_cached_shard(store, resolved).await?;
 
     let mut hits: Vec<TextHit> = Vec::new();
     for index in &entry.indexes {
@@ -106,6 +74,76 @@ pub async fn search_resolved_shard(
         .into_iter()
         .map(|hit| Candidate::scored(hit.id, hit.score))
         .collect())
+}
+
+/// Global BM25 statistics of one text index shard (all of its splits).
+///
+/// The statistics are merged across shards by the caller and used to score
+/// candidates against one corpus-wide ranking (consistent cross-shard
+/// relevance, like Elasticsearch's `dfs_query_then_fetch`).
+pub async fn shard_stats(
+    store: &Arc<dyn ObjectStore>,
+    resolved: &ResolvedIndex,
+    terms: &[String],
+) -> IoResult<lakesoul_text::CorpusStats> {
+    if !resolved.is_kind(IndexKind::Text) {
+        return Err(rootcause::report!(
+            "resolved index '{}' is not a text index",
+            resolved.index_prefix
+        ));
+    }
+    let entry = open_cached_shard(store, resolved).await?;
+    let mut stats = lakesoul_text::CorpusStats::default();
+    for index in &entry.indexes {
+        stats.merge(lakesoul_text::collect_index_stats(index, terms).map_err(
+            |error| {
+                rootcause::report!(
+                    "failed to collect text index statistics at '{}': {}",
+                    resolved.index_prefix,
+                    error
+                )
+            },
+        )?);
+    }
+    Ok(stats)
+}
+
+/// Open (or reuse from the shared cache) every split of a text shard.
+async fn open_cached_shard(
+    store: &Arc<dyn ObjectStore>,
+    resolved: &ResolvedIndex,
+) -> IoResult<Arc<CachedTextShard>> {
+    let splits: Vec<TextSplitEntry> = resolved.segments_as()?;
+    let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
+    let cache_prefix = prefix.clone();
+    let commit_id = resolved.commit_id;
+    cache::get_or_load(store, IndexKind::Text, &prefix, commit_id, move || {
+        let store = store.clone();
+        let prefix = cache_prefix.clone();
+        let splits = splits.clone();
+        async move {
+            let split_cache = SplitCache::from_env();
+            let mut indexes = Vec::with_capacity(splits.len());
+            let mut bytes = 0usize;
+            for split in &splits {
+                indexes.push(split_cache.open(&store, &prefix, split).await?);
+                bytes += split.file_size as usize;
+            }
+            Ok::<CachedTextShard, TextError>(CachedTextShard {
+                commit_id,
+                indexes,
+                bytes,
+            })
+        }
+    })
+    .await
+    .map_err(|error| {
+        rootcause::report!(
+            "failed to load text index at '{}': {:?}",
+            resolved.index_prefix,
+            error
+        )
+    })
 }
 
 /// Search the text index matching a single bucket's files.

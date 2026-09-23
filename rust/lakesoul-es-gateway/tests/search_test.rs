@@ -198,3 +198,66 @@ async fn gateway_keyword_search_contract() {
 
     cleanup(&state, &table).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyword_search_refills_when_candidates_are_deleted() {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let table = format!("es_gw_refill_{}", &suffix[..10]);
+    let index = format!("esgwrefill{}", &suffix[..10]);
+    // Two buckets so the shard statistics merge path is involved too.
+    let state = build_state(test_config(&index, &table, None, 2))
+        .await
+        .unwrap();
+    let app = build_router(Arc::clone(&state));
+
+    // 120 documents match "apple"; deleting the first 110 leaves ten live
+    // rows that the index no longer covers.  The first candidate pass (100
+    // per shard) is all stale, so the search must widen its budget to fill
+    // `size`.
+    let mut lines: Vec<String> = Vec::new();
+    let mut chunk_ids: Vec<String> = Vec::new();
+    for number in 0..120 {
+        lines.push(r#"{"create":{}}"#.to_string());
+        lines.push(format!(
+            r#"{{"content":"apple document {number}","source_id":"s{number}","chunk_id":"c{number}","knowledge_base_id":"kb1","embedding":[1.0,0.0,0.0],"is_enabled":true}}"#
+        ));
+        chunk_ids.push(format!("c{number}"));
+    }
+    lines.push(String::new());
+    let bulk = lines.join("\n");
+    let (status, _, body) =
+        call(&app, "POST", &format!("/{index}/_bulk"), Some(&bulk)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], false);
+
+    let deleted: Vec<String> = chunk_ids[..110]
+        .iter()
+        .map(|id| format!(r#""{id}""#))
+        .collect();
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &format!("/{index}/_delete_by_query"),
+        Some(&format!(
+            r#"{{"query":{{"terms":{{"chunk_id":[{}]}}}}}}"#,
+            deleted.join(",")
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &format!("/{index}/_search"),
+        Some(r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"size":10}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["hits"]["total"]["value"], 10,
+        "the retry must find the ten live documents: {body}"
+    );
+
+    cleanup(&state, &table).await;
+}

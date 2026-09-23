@@ -27,7 +27,7 @@ pub struct TextHit {
 }
 
 /// Query-syntax characters that switch parsing to [`QueryParser`].
-fn has_query_syntax(query: &str) -> bool {
+pub(crate) fn has_query_syntax(query: &str) -> bool {
     const SYNTAX: &[char] = &[
         '"', '(', ')', '[', ']', '{', '}', '+', '-', '*', '~', ':', '^', '\\',
     ];
