@@ -81,13 +81,13 @@ def _live_data_files(catalog: LakeSoulCatalog, table: LakeSoulTable) -> set[str]
 
 
 def _collect(
-    catalog: LakeSoulCatalog, table: LakeSoulTable
+    catalog: LakeSoulCatalog, table: LakeSoulTable, filesystem: pafs.FileSystem
 ) -> tuple[tuple[str, ...], set[str], bool]:
     live = _live_data_files(catalog, table)
     used: set[str] = set()
     missing = False
     for path in sorted(live):
-        packs = read_blobref(path)
+        packs = read_blobref(path, filesystem)
         if packs is None:
             missing = True
             continue
@@ -150,15 +150,16 @@ def vacuum_blobs(
     if not blob_option:
         return VacuumResult(dry_run)
 
-    first_files, used, missing = _collect(catalog, table)
+    options = dict(catalog.object_store_options or {})
+    filesystem, _ = _filesystem(table.path, options)
+    first_files, used, missing = _collect(catalog, table, filesystem)
     if missing:
         return VacuumResult(dry_run, aborted=True)
-    second_files, used_again, missing = _collect(catalog, table)
+    second_files, used_again, missing = _collect(catalog, table, filesystem)
     if missing or second_files != first_files:
         return VacuumResult(dry_run, aborted=True)
     used = used | used_again
 
-    options = dict(catalog.object_store_options or {})
     filesystem, _base, infos = _list_packs(table, options)
     if filesystem is None:
         return VacuumResult(dry_run, aborted=True)

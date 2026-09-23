@@ -10,25 +10,31 @@ from lakesoul import vacuum
 from lakesoul.vacuum import VacuumResult, vacuum_blobs
 
 
+def _catalog():
+    return types.SimpleNamespace(object_store_options={})
+
+
 def _table(blob_option: str | None = '["frame"]'):
-    return types.SimpleNamespace(_blob_columns_option=lambda: blob_option)
+    return types.SimpleNamespace(
+        _blob_columns_option=lambda: blob_option, path="file:///tmp/t"
+    )
 
 
 def test_no_blob_columns_is_noop():
-    result = vacuum_blobs(object(), _table(None))
+    result = vacuum_blobs(_catalog(), _table(None))
     assert result == VacuumResult(dry_run=True)
 
 
 def test_aborts_when_sidecar_missing(monkeypatch):
-    monkeypatch.setattr(vacuum, "_collect", lambda c, t: (("f",), set(), True))
-    result = vacuum_blobs(object(), _table())
+    monkeypatch.setattr(vacuum, "_collect", lambda c, t, f: (("f",), set(), True))
+    result = vacuum_blobs(_catalog(), _table())
     assert result.aborted
 
 
 def test_aborts_when_live_set_changes(monkeypatch):
     calls = iter([(("a",), {"p"}, False), (("b",), {"p"}, False)])
-    monkeypatch.setattr(vacuum, "_collect", lambda c, t: next(calls))
-    result = vacuum_blobs(object(), _table())
+    monkeypatch.setattr(vacuum, "_collect", lambda c, t, f: next(calls))
+    result = vacuum_blobs(_catalog(), _table())
     assert result.aborted
 
 
@@ -41,7 +47,7 @@ def _info(path: str, mtime_ns: int, size: int = 10):
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_deletes_unused_old_packs(monkeypatch, dry_run):
     used_uri = "s3://b/t/_blob/frame/used.blob"
-    monkeypatch.setattr(vacuum, "_collect", lambda c, t: (("f",), {used_uri}, False))
+    monkeypatch.setattr(vacuum, "_collect", lambda c, t, f: (("f",), {used_uri}, False))
     old = _info("b/t/_blob/frame/old.blob", 0)
     young = _info("b/t/_blob/frame/young.blob", 10**30)
     used = _info("b/t/_blob/frame/used.blob", 0)
@@ -52,11 +58,7 @@ def test_deletes_unused_old_packs(monkeypatch, dry_run):
         "_list_packs",
         lambda t, o: (filesystem, "b/t/_blob", [old, young, used]),
     )
-    table = types.SimpleNamespace(
-        _blob_columns_option=lambda: '["frame"]', path="s3://b/t"
-    )
-    catalog = types.SimpleNamespace(object_store_options={})
-    result = vacuum_blobs(catalog, table, dry_run=dry_run)
+    result = vacuum_blobs(_catalog(), _table(), dry_run=dry_run)
     assert result.packs_total == 3
     assert result.packs_deleted == 1
     assert result.bytes_deleted == 10
