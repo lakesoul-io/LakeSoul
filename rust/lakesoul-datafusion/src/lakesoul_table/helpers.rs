@@ -129,7 +129,10 @@ pub async fn prune_partitions(
     filters: &[Expr],
     partition_cols: &[(String, DataType)],
 ) -> Result<Vec<PartitionInfo>> {
-    if filters.is_empty() {
+    // Without partition columns there is nothing to prune, and without
+    // filters there is no predicate to evaluate on partition values. Both
+    // cases return every partition untouched.
+    if filters.is_empty() || partition_cols.is_empty() {
         return Ok(all_partition_info);
     }
 
