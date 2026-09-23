@@ -266,6 +266,19 @@ impl FileSinkWriter {
         .await
     }
 
+    /// Strip the scheme (and, for object stores, the bucket) from a URL so the
+    /// result is an object-store path. Local paths keep their leading slash.
+    fn url_to_object_path(url: &str) -> String {
+        match url.split_once("://") {
+            Some(("file", rest)) => rest.to_string(),
+            Some((_, rest)) => rest
+                .split_once('/')
+                .map(|(_, path)| path.to_string())
+                .unwrap_or_default(),
+            None => url.to_string(),
+        }
+    }
+
     /// Replace every blob column with its tagged encoding, spilling values over
     /// the policy threshold into the per-column pack buffer.
     fn encode_blob_columns(&mut self, mut batch: RecordBatch) -> Result<RecordBatch> {
@@ -324,10 +337,13 @@ impl FileSinkWriter {
                 continue;
             };
             object_store
-                .put(&Path::from(pack_path.clone()), buffer.into_data().into())
+                .put(
+                    &Path::from(Self::url_to_object_path(&pack_path)),
+                    buffer.into_data().into(),
+                )
                 .await?;
             debug!("wrote blob pack {}", pack_path);
-            written.push(self.path_to_url_string(&Path::from(pack_path)));
+            written.push(pack_path);
         }
         written.sort();
         let packs = written
