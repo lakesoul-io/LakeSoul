@@ -174,6 +174,8 @@ docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py31
 )
 
 log "run data rounds and assertions"
+# the hdfs feature links libhdfs and libjvm, point the loader at both
+export LD_LIBRARY_PATH="$HADOOP_HOME/lib/native${JAVA_HOME:+:$JAVA_HOME/lib/server}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 LAKESOUL_PG_URL="${LAKESOUL_PG_URL:-jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified}" \
 LAKESOUL_PG_USERNAME="${LAKESOUL_PG_USERNAME:-lakesoul_test}" \
 LAKESOUL_PG_PASSWORD="${LAKESOUL_PG_PASSWORD:-lakesoul_test}" \

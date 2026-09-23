@@ -109,7 +109,6 @@ jobs:
       - name: Run compaction clean e2e
         run: |
           PYTHONPATH="$PWD/python/src" PATH="$PWD/python/.venv/bin:$PATH" \
-            LD_LIBRARY_PATH="$HADOOP_HOME/lib/native" \
             script/ci/compaction_clean_e2e.sh --down
       - name: Upload logs on failure
         if: failure()
