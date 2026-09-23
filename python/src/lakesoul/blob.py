@@ -21,7 +21,9 @@ Example:
 
 from __future__ import annotations
 
+import json
 import struct
+import uuid
 import zlib
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -31,7 +33,69 @@ import pyarrow as pa
 BLOB_TAG_INLINE = 0x00
 BLOB_TAG_EXTERNAL = 0x01
 
+BLOB_DIR = "_blob"
+BLOBREF_SUFFIX = ".blobref"
+BLOBREF_VERSION = 1
+
 _REF_PREFIX = struct.Struct("<IIQ")
+
+
+def blob_pack_path(table_path: str, column: str, pack_id: str | None = None) -> str:
+    """Return the immutable pack path for a column.
+
+    Packs are shared between data files, so the name only carries a random id.
+    """
+    return (
+        f"{table_path.rstrip('/')}/{BLOB_DIR}/{column}/"
+        f"{pack_id or uuid.uuid4().hex}.blob"
+    )
+
+
+def blobref_path(data_file: str) -> str:
+    """Return the sidecar path that belongs to a data file."""
+    return f"{data_file}{BLOBREF_SUFFIX}"
+
+
+def write_blobref(
+    data_file: str,
+    packs: list[str],
+    filesystem: pa.fs.FileSystem | None = None,
+) -> str:
+    """Write the ``.blobref`` sidecar next to a data file and return its path."""
+    payload = json.dumps(
+        {"version": BLOBREF_VERSION, "packs": sorted(set(packs))},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    resolved, path = _resolve(data_file, filesystem)
+    with resolved.open_output_stream(blobref_path(path)) as stream:
+        stream.write(payload)
+    return blobref_path(data_file)
+
+
+def read_blobref(
+    data_file: str,
+    filesystem: pa.fs.FileSystem | None = None,
+) -> list[str] | None:
+    """Read the packs referenced by a data file, or ``None`` when absent."""
+    resolved, path = _resolve(data_file, filesystem)
+    sidecar = blobref_path(path)
+    try:
+        with resolved.open_input_file(sidecar) as stream:
+            payload = json.loads(stream.read().decode("utf-8"))
+    except FileNotFoundError:
+        return None
+    if payload.get("version") != BLOBREF_VERSION:
+        raise ValueError(f"unsupported blobref version in {sidecar}")
+    return list(payload.get("packs", []))
+
+
+def _resolve(
+    uri: str, filesystem: pa.fs.FileSystem | None
+) -> tuple[pa.fs.FileSystem, str]:
+    if filesystem is not None:
+        parsed = urlparse(uri)
+        return filesystem, f"{parsed.netloc}/{parsed.path.lstrip('/')}"
+    return _open_filesystem(uri)
 
 
 @dataclass(frozen=True)
