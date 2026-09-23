@@ -45,7 +45,7 @@ pub struct FileSinkWriter {
     flush_results: Option<Vec<FlushOutput>>,
     /// Blob columns of this leaf file, keyed by column name.
     blob_columns: HashMap<String, BlobPolicy>,
-    /// Pack file URL per blob column (`<data_file>.<column>.blob`).
+    /// Pack file URL per blob column (`<table_path>/_blob/<column>/<uuid>.blob`).
     pack_paths: HashMap<String, String>,
     /// Buffered external values per blob column, flushed on `flush`.
     pack_buffers: HashMap<String, PackBuffer>,
@@ -86,9 +86,21 @@ impl FileSinkWriter {
                 .ok_or_else(|| {
                     report!("blob columns need a single-file writer to place pack files")
                 })?;
+            let table_dir = file_url
+                .rsplit_once('/')
+                .map(|(dir, _)| dir)
+                .unwrap_or_default();
             blob_columns
                 .keys()
-                .map(|column| (column.clone(), format!("{file_url}.{column}.blob")))
+                .map(|column| {
+                    (
+                        column.clone(),
+                        format!(
+                            "{table_dir}/_blob/{column}/{}.blob",
+                            uuid::Uuid::new_v4().simple()
+                        ),
+                    )
+                })
                 .collect()
         };
 
@@ -283,9 +295,9 @@ impl FileSinkWriter {
         Ok(batch)
     }
 
-    /// Upload the accumulated pack files next to the data file.
+    /// Upload the accumulated pack files and the `.blobref` sidecar.
     async fn write_blob_packs(&mut self) -> Result<()> {
-        if self.pack_buffers.is_empty() {
+        if self.blob_columns.is_empty() {
             return Ok(());
         }
         let Some(data_path) = self
@@ -303,16 +315,36 @@ impl FileSinkWriter {
             .runtime_env()
             .object_store(&self.sink.config().object_store_url)?;
         let buffers = std::mem::take(&mut self.pack_buffers);
+        let mut written: Vec<String> = Vec::new();
         for (column, buffer) in buffers {
             if buffer.is_empty() {
                 continue;
             }
-            let pack_path = Path::from(format!("{data_path}.{column}.blob"));
+            let Some(pack_path) = self.pack_paths.get(&column).cloned() else {
+                continue;
+            };
             object_store
-                .put(&pack_path, buffer.into_data().into())
+                .put(&Path::from(pack_path.clone()), buffer.into_data().into())
                 .await?;
             debug!("wrote blob pack {}", pack_path);
+            written.push(self.path_to_url_string(&Path::from(pack_path)));
         }
+        written.sort();
+        let packs = written
+            .iter()
+            .map(|path| format!("\"{path}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sidecar = Path::from(format!("{data_path}.blobref"));
+        object_store
+            .put(
+                &sidecar,
+                format!("{{\"version\":1,\"packs\":[{packs}]}}")
+                    .into_bytes()
+                    .into(),
+            )
+            .await?;
+        debug!("wrote blob reference {}", sidecar);
         Ok(())
     }
 
