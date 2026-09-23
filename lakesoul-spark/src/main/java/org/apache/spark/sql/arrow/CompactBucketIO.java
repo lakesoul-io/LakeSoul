@@ -407,6 +407,16 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             LOG.info("Task {}, targetDir not exists, create dir {}", taskId, targetDir);
         }
         fileSystem.rename(new Path(fileInfo.getFilePath()), new Path(targetPath));
+        Path blobrefSource = new Path(fileInfo.getFilePath() + ".blobref");
+        if (fileSystem.exists(blobrefSource)) {
+            Path blobrefTarget = new Path(targetPath + ".blobref");
+            fileSystem.rename(blobrefSource, blobrefTarget);
+            LOG.info(
+                    "Task {}, MOVE blobref {} to {}",
+                    taskId,
+                    blobrefSource,
+                    blobrefTarget);
+        }
         FileStatus fileStatus = fileSystem.getFileStatus(new Path(targetPath));
         return new CompressDataFileInfo(
                 targetPath, fileSize, fileExistCols, fileStatus.getModificationTime());
