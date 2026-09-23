@@ -15,6 +15,7 @@ from ray.data.datasource import Datasink
 
 from lakesoul.io import IOConfig, Writer, merge_blob_option
 from lakesoul.io import WriteResult as LakeSoulWriteResult
+from lakesoul.vacuum import maybe_vacuum_after_commit
 
 if TYPE_CHECKING:
     from lakesoul.catalog import LakeSoulTable
@@ -117,6 +118,7 @@ class LakeSoulDatasink(Datasink):
                 self._table.namespace,
                 files,
             )
+            maybe_vacuum_after_commit(self._table_handle.catalog, self._table_handle)
 
     def _writer_config(self) -> IOConfig:
         return IOConfig(

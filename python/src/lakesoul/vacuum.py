@@ -15,6 +15,7 @@ vacuum aborts without deleting anything.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +27,14 @@ from .purge import DEFAULT_OLDER_THAN, _filesystem, _grace_ms, _uuid_hex
 if TYPE_CHECKING:
     from .catalog import LakeSoulCatalog, LakeSoulTable
 
-__all__ = ["VacuumResult", "vacuum_blobs"]
+logger = logging.getLogger(__name__)
+
+__all__ = ["VacuumResult", "maybe_vacuum_after_commit", "vacuum_blobs"]
+
+#: Table property that controls the automatic vacuum cadence, counted in
+#: partition versions. ``0`` disables the automatic vacuum.
+BLOB_VACUUM_INTERVAL_KEY = "blob_vacuum_interval"
+DEFAULT_BLOB_VACUUM_INTERVAL = 20
 
 
 @dataclass(frozen=True)
@@ -180,7 +188,11 @@ def vacuum_blobs(
         deleted += 1
         bytes_deleted += info.size or 0
         if not dry_run:
-            filesystem.delete_file(info.path)
+            try:
+                filesystem.delete_file(info.path)
+            except FileNotFoundError:
+                # Another writer process may have reclaimed the pack first.
+                pass
     return VacuumResult(
         dry_run=dry_run,
         data_files=len(first_files),
@@ -189,3 +201,74 @@ def vacuum_blobs(
         packs_deleted=deleted,
         bytes_deleted=bytes_deleted,
     )
+
+
+def _vacuum_interval(table: LakeSoulTable) -> int:
+    raw = dict(table.properties).get(BLOB_VACUUM_INTERVAL_KEY)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_BLOB_VACUUM_INTERVAL
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        logger.warning(
+            "invalid %s %r on table %s.%s, using %d",
+            BLOB_VACUUM_INTERVAL_KEY,
+            raw,
+            table.namespace,
+            table.name,
+            DEFAULT_BLOB_VACUUM_INTERVAL,
+        )
+        return DEFAULT_BLOB_VACUUM_INTERVAL
+    return value
+
+
+def maybe_vacuum_after_commit(
+    catalog: LakeSoulCatalog, table: LakeSoulTable
+) -> VacuumResult | None:
+    """Reclaim blob packs after a commit when the table asks for it.
+
+    Blob tables vacuum every ``blob_vacuum_interval`` partition versions
+    (default 20, ``0`` disables it). The cleanup never propagates failures:
+    the data is already committed and the next write that crosses an interval
+    retries it.
+    """
+    try:
+        if not table._blob_columns_option():
+            return None
+        interval = _vacuum_interval(table)
+        if interval <= 0:
+            return None
+        partitions = list(catalog._client.get_all_partition_info(table.id))
+        version = max((int(info.version) for info in partitions), default=0)
+        if version <= 0 or version % interval != 0:
+            return None
+        result = vacuum_blobs(
+            catalog,
+            table,
+            older_than=DEFAULT_OLDER_THAN,
+            dry_run=False,
+        )
+        logger.info(
+            "blob vacuum for %s.%s at version %d: packs_total=%d packs_used=%d"
+            " packs_deleted=%d bytes_deleted=%d aborted=%s",
+            table.namespace,
+            table.name,
+            version,
+            result.packs_total,
+            result.packs_used,
+            result.packs_deleted,
+            result.bytes_deleted,
+            result.aborted,
+        )
+        return result
+    # Cleanup must never fail a write that is already committed.
+    except Exception:
+        logger.warning(
+            "blob vacuum after commit failed for %s.%s",
+            table.namespace,
+            table.name,
+            exc_info=True,
+        )
+        return None

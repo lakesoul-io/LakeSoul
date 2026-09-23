@@ -185,7 +185,10 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
         catalog,
         name,
         schema,
-        properties={"blob_columns": json.dumps({"payload": {"mode": "external"}})},
+        properties={
+            "blob_columns": json.dumps({"payload": {"mode": "external"}}),
+            "blob_vacuum_interval": "2",
+        },
     )
     try:
         for round_index in range(ROUNDS):

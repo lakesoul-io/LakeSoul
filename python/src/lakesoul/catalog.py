@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import datetime as dt
-
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ from lakesoul.metadata import (
 )
 
 from . import index as _index
+from .vacuum import maybe_vacuum_after_commit
 
 if TYPE_CHECKING:
     from lakesoul._lib.vector import VectorIndexConfig
@@ -459,6 +459,7 @@ class LakeSoulCatalog:
         ]
         if files:
             self._client.commit_data_files(table.name, table.namespace, files)
+            maybe_vacuum_after_commit(self, table)
 
 
 class LakeSoulTable:
