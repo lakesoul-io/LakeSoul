@@ -52,6 +52,9 @@ pub struct TextSearchRequest {
     /// `ORDER BY text_score(column, query) DESC` was present: the scan must
     /// return the global top-`top_k` ordered by BM25 score.
     pub order_by: bool,
+    /// The caller needs the internal BM25 score column in the scan output
+    /// (`SELECT text_score(...)`); set after parsing, never by the marker.
+    pub expose_score: bool,
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
@@ -107,6 +110,7 @@ pub fn parse_text_search_request(filters: &[Expr]) -> Option<TextSearchRequest> 
                 query,
                 top_k,
                 order_by,
+                expose_score: false,
             })
         })
 }
