@@ -10,6 +10,7 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use arrow_cast::pretty::pretty_format_batches;
 use chrono::Utc;
+use datafusion::datasource::listing::ListingOptions;
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::{
@@ -32,7 +33,7 @@ use rootcause::{Report, report};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
+use crate::datasource::file_format::LakeSoulMetaDataFormat;
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::{
     Result,
@@ -315,8 +316,12 @@ impl LakeSoulTable {
             Arc::new(LakeSoulFormatRegistry::new(io_config.clone(), false)?);
 
         Ok(Arc::new(LakeSoulTableProvider {
-            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
-                .await?,
+            listing_options: ListingOptions::new(Arc::new(LakeSoulMetaDataFormat::new(
+                self.client(),
+                self.table_info(),
+                io_config.clone(),
+                format_registry.clone(),
+            )?)),
             listing_table_paths: vec![],
             client: self.client(),
             table_info: self.table_info(),

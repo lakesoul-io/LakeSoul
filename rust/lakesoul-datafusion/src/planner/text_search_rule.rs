@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use datafusion::common::Result as DFResult;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::logical_expr::TableSource;
 use datafusion::logical_expr::{Expr, LogicalPlan, Sort, TableScan};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
@@ -55,6 +55,9 @@ struct Detected {
     top_k: usize,
     /// `ORDER BY text_score(column, query) DESC` was present.
     order_by: bool,
+    /// Output name of every projected `text_score(column, query)` call, so
+    /// `ORDER BY <alias> DESC` can be recognized as a relevance sort.
+    score_aliases: std::collections::HashMap<String, (String, String)>,
     source: Arc<dyn TableSource>,
 }
 
@@ -85,21 +88,44 @@ impl OptimizerRule for TextSearchPushdownRule {
 /// Match the plan shape described in the module docs and collect the search
 /// parameters.
 fn detect(plan: &LogicalPlan) -> Option<Detected> {
-    let LogicalPlan::Limit(limit) = plan else {
-        return None;
+    // The finite `LIMIT` may still be a `Limit` node, or `LimitPushdown` may
+    // have already folded it into the relevance `Sort`'s fetch.
+    let (top_k, mut current) = match plan {
+        LogicalPlan::Limit(limit) => {
+            let top_k = fetch_value(limit.fetch.as_deref())?;
+            (top_k, Arc::clone(&limit.input))
+        }
+        LogicalPlan::Sort(sort) => (sort.fetch? as usize, Arc::new(plan.clone())),
+        _ => return None,
     };
-    let top_k = fetch_value(limit.fetch.as_deref())?;
     if top_k == 0 {
         return None;
     }
 
-    let mut current = Arc::clone(&limit.input);
     let mut order_by = false;
     let mut sort_key: Option<(String, String)> = None;
     let mut filter_key: Option<(String, String)> = None;
+    // Every `text_score(column, query)` projected above the filter.
+    let mut projected_scores: Vec<(String, String)> = Vec::new();
+    let mut score_aliases: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    // `ORDER BY <column> DESC` where the column is a projected score alias;
+    // resolved against `score_aliases` once the projections are seen.
+    let mut sort_alias: Option<String> = None;
     loop {
         match current.as_ref() {
             LogicalPlan::Projection(projection) => {
+                for (index, expr) in projection.expr.iter().enumerate() {
+                    let mut calls = Vec::new();
+                    collect_text_score_calls(expr, &mut calls);
+                    for key in calls {
+                        projected_scores.push(key.clone());
+                        // A bare call keeps its display name; an alias uses
+                        // the user-provided one.
+                        let name = projection.schema.field(index).name().clone();
+                        score_aliases.insert(name, key);
+                    }
+                }
                 current = Arc::clone(&projection.input);
             }
             LogicalPlan::Sort(sort) => {
@@ -112,6 +138,17 @@ fn detect(plan: &LogicalPlan) -> Option<Detected> {
                     let key = text_score_sort_key(sort)?;
                     sort_key = Some(key);
                     order_by = true;
+                } else if sort.expr.len() == 1
+                    && !sort.expr[0].asc
+                    && let Expr::Column(column) = &sort.expr[0].expr
+                {
+                    // `ORDER BY score DESC` over a projected alias.
+                    if sort_alias.is_some() {
+                        return None;
+                    }
+                    sort_alias = Some(column.name.clone());
+                } else if sort.expr.len() == 1 && !sort.expr[0].asc {
+                    return None;
                 }
                 current = Arc::clone(&sort.input);
             }
@@ -126,9 +163,22 @@ fn detect(plan: &LogicalPlan) -> Option<Detected> {
                     return None;
                 }
                 let (column, query) = filter_key?;
+                let key = (column.clone(), query.clone());
+                if let Some(sort_alias) = &sort_alias {
+                    if score_aliases.get(sort_alias) != Some(&key) {
+                        return None;
+                    }
+                    sort_key = Some(key.clone());
+                    order_by = true;
+                }
                 if let Some(sort_key) = &sort_key
-                    && *sort_key != (column.clone(), query.clone())
+                    && *sort_key != key
                 {
+                    return None;
+                }
+                // A projected score must refer to the same search; anything
+                // else is left to the (unsupported) scalar evaluation.
+                if projected_scores.iter().any(|projected| *projected != key) {
                     return None;
                 }
                 return Some(Detected {
@@ -136,12 +186,40 @@ fn detect(plan: &LogicalPlan) -> Option<Detected> {
                     query,
                     top_k,
                     order_by,
+                    score_aliases,
                     source: Arc::clone(&scan.source),
                 });
             }
             _ => return None,
         }
     }
+}
+
+/// Whether a `Sort` is the relevance order of the detected search, either
+/// written directly as `text_score(...) DESC` or as `ORDER BY <alias> DESC`
+/// where the alias projects the score.
+fn sort_is_relevance_order(sort: &Sort, found: &Detected) -> bool {
+    if text_score_sort_key(sort) == Some((found.column.clone(), found.query.clone())) {
+        return true;
+    }
+    if sort.expr.len() != 1 || sort.expr[0].asc {
+        return false;
+    }
+    let Expr::Column(column) = &sort.expr[0].expr else {
+        return false;
+    };
+    found.score_aliases.get(&column.name)
+        == Some(&(found.column.clone(), found.query.clone()))
+}
+
+/// Append every `text_score(column, query)` call inside an expression.
+fn collect_text_score_calls(expr: &Expr, out: &mut Vec<(String, String)>) {
+    let _ = expr.apply(|node| {
+        if let Some((column, query)) = parse_text_score_call(node) {
+            out.push((column, query));
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
 }
 
 /// The sort key of `ORDER BY text_score(column, query) DESC`, when the sort
@@ -219,7 +297,7 @@ fn rewrite_plan(
             table_name: scan.table_name.clone(),
             source: Arc::clone(&scan.source),
             projection: scan.projection.clone(),
-            projected_schema: scan.projected_schema.clone(),
+            projected_schema: Arc::clone(&scan.projected_schema),
             filters,
             fetch: scan.fetch,
             statistics_requests: scan.statistics_requests.clone(),
@@ -228,7 +306,7 @@ fn rewrite_plan(
     if remove_sort
         && found.order_by
         && let LogicalPlan::Sort(sort) = &plan
-        && text_score_sort_key(sort) == Some((found.column.clone(), found.query.clone()))
+        && sort_is_relevance_order(sort, found)
     {
         return rewrite_plan((*sort.input).clone(), found, false);
     }

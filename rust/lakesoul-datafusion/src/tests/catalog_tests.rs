@@ -613,9 +613,145 @@ fn test_insert_from_multi_partition_source_keeps_all_rows() {
             .collect()
             .await
             .unwrap();
+        #[rustfmt::skip]
         assert_batches_eq!(
-            &["+------+", "| c    |", "+------+", "| 1000 |", "+------+"],
+               ["+------+",
+                "| c    |",
+                "+------+",
+                "| 1000 |",
+                "+------+"],
             &batches
+        );
+    });
+}
+
+/// A query that reads only the *second* of a table's two partition columns.
+///
+/// The scan pairs a file's partition values with the partition columns it
+/// declares by index, so a projection that drops a leading partition column
+/// must not shift the values of the ones behind it.
+#[test]
+fn test_catalog_sql_projection_keeps_partition_values_aligned() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let sc = create_lakesoul_session_ctx(client, &CoreArgs::default()).unwrap();
+
+        let rng = &mut rand::rng();
+        let namespace = format!("issue_partition_projection_{}", rng.random::<u32>());
+        let table_name = format!("test_{}", rng.random::<u32>());
+        let table_path = format!(
+            "file://{}/test_data/{}/{}",
+            env::current_dir()
+                .unwrap_or(env::temp_dir())
+                .to_str()
+                .unwrap(),
+            namespace,
+            table_name
+        );
+
+        sc.sql(&format!("create schema lakesoul.{namespace}"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        // An append-only (no primary key) table with two partition columns.
+        sc.sql(&format!(
+            "CREATE EXTERNAL TABLE lakesoul.{namespace}.{table_name} (
+                id INT NOT NULL,
+                p1 INT NOT NULL,
+                p2 INT NOT NULL
+            )
+            STORED AS LAKESOUL
+            PARTITIONED BY (p1, p2)
+            LOCATION '{table_path}'"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+        sc.sql(&format!(
+            "INSERT INTO lakesoul.{namespace}.{table_name} VALUES
+                (1, 10, 100),
+                (2, 10, 200),
+                (3, 20, 100)"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+        // `p1` is dropped although it precedes `p2`.
+        let p2_only = sc
+            .sql(&format!(
+                "SELECT id, p2 FROM lakesoul.{namespace}.{table_name} ORDER BY id"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+-----+",
+                "| id | p2  |",
+                "+----+-----+",
+                "| 1  | 100 |",
+                "| 2  | 200 |",
+                "| 3  | 100 |",
+                "+----+-----+",
+            ],
+            &p2_only
+        );
+
+        let both = sc
+            .sql(&format!(
+                "SELECT id, p1, p2 FROM lakesoul.{namespace}.{table_name} ORDER BY id"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+----+-----+",
+                "| id | p1 | p2  |",
+                "+----+----+-----+",
+                "| 1  | 10 | 100 |",
+                "| 2  | 10 | 200 |",
+                "| 3  | 20 | 100 |",
+                "+----+----+-----+",
+            ],
+            &both
+        );
+
+        // A predicate on the partition column the projection drops.
+        let filtered = sc
+            .sql(&format!(
+                "SELECT id, p2 FROM lakesoul.{namespace}.{table_name}
+                 WHERE p1 = 10 ORDER BY id"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+-----+",
+                "| id | p2  |",
+                "+----+-----+",
+                "| 1  | 100 |",
+                "| 2  | 200 |",
+                "+----+-----+",
+            ],
+            &filtered
         );
     });
 }

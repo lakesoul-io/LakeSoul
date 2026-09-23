@@ -9,6 +9,7 @@ use std::time::Duration;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use jiff::tz::TimeZone;
+use lakesoul_datafusion::distributed::DistributedOptions;
 use parking_lot::RwLock;
 use rootcause::bail;
 
@@ -136,6 +137,17 @@ impl PgSessionFactory {
                 include_synthetic_postgres_database: false,
             },
         })
+    }
+
+    /// Plans every session against distributed workers.
+    ///
+    /// Installed by the server entry point when workers are configured: the
+    /// coordinator then serves the queries the distributed planner cannot
+    /// plan by itself — or, in production mode, fails them instead of falling
+    /// back to single-node execution.
+    pub fn with_distributed(mut self, options: DistributedOptions) -> Self {
+        self.base = self.base.with_distributed(options);
+        self
     }
 
     /// The metadata view shared by every connection of this factory.

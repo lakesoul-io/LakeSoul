@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{RecordBatch, StringArray, UInt64Array};
+use arrow::array::{Float32Array, RecordBatch, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::execution::context::SessionContext;
@@ -557,4 +557,124 @@ async fn deferred_table_builds_pending_shards_out_of_band() {
          where text_match(body, 'apple') limit 10"
     );
     assert_eq!(query_ids(&ctx, &sql).await, vec![1]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_text_score_is_projectable_with_text_match() {
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "text_search_score_projection";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(text_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_text_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &text_configs(),
+    )
+    .await
+    .unwrap();
+    LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch(&[
+            (1, "apple apple apple"),
+            (2, "apple banana"),
+            (3, "banana split"),
+        ]))
+        .await
+        .unwrap();
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let base = format!("\"lakesoul\".default.{table_name}");
+
+    // The score can be projected next to the predicate and the relevance
+    // sort; higher term frequency ranks first.
+    let sql = format!(
+        "select id, text_score(body, 'apple') as score from {base} \
+         where text_match(body, 'apple') \
+         order by text_score(body, 'apple') desc limit 10"
+    );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(
+        explain.contains("LakeSoulTextSearchExec"),
+        "plan must use the text-index exec:\n{explain}"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let scores = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((ids.value(row), scores.value(row)));
+        }
+    }
+    assert_eq!(
+        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![1, 2],
+        "{rows:?}"
+    );
+    assert!(rows[0].1 > rows[1].1, "score order: {rows:?}");
+    assert!(rows[0].1 > 0.0 && rows[1].1 > 0.0, "{rows:?}");
+
+    // Ordering by the projected alias must produce the same ranking.
+    let sql = format!(
+        "select id, text_score(body, 'apple') as score from {base} \
+         where text_match(body, 'apple') order by score desc limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut alias_rows = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let scores = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            alias_rows.push((ids.value(row), scores.value(row)));
+        }
+    }
+    assert_eq!(alias_rows, rows, "alias ordering must match");
+
+    // Without a relevance sort the score is still projectable.
+    let sql = format!(
+        "select id, text_score(body, 'apple') as score from {base} \
+         where text_match(body, 'apple') limit 10"
+    );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(
+        explain.contains("LakeSoulTextSearchExec"),
+        "no-sort plan must use the text-index exec:\n{explain}"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows_without_sort: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows_without_sort, 2, "both matches: {batches:?}");
+
+    // `select *` must not expose the internal score column.
+    let sql = format!("select * from {base} where text_match(body, 'apple') limit 1");
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    assert_eq!(
+        batches[0].schema().fields().len(),
+        2,
+        "internal score column leaked: {:?}",
+        batches[0].schema()
+    );
 }

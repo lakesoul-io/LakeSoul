@@ -302,33 +302,53 @@ fn assert_vector_index_built(table_name: &str) {
     );
 }
 
-/// Reads the first data parquet file of `table_name` and returns the
-/// DataType of its `vec` column (to assert what was actually stored).
-fn stored_vec_column_type(table_name: &str) -> DataType {
+/// Reads the first data file of `table_name` and returns the DataType of its
+/// `vec` column (to assert what was actually stored).
+///
+/// The file is opened through its own physical format, so the probe reports
+/// the stored type whatever format the table was written in.
+async fn stored_vec_column_type(
+    ctx: &datafusion::execution::context::SessionContext,
+    table_name: &str,
+) -> DataType {
+    use datafusion::datasource::object_store::ObjectStoreUrl;
+    use lakesoul_io::config::LakeSoulIOConfig;
+    use lakesoul_io::file_format::{LakeSoulFormatRegistry, PhysicalFormat};
+
     let root = std::env::current_dir()
         .unwrap()
         .join("default")
         .join(table_name);
-    let mut found = None;
-    for entry in std::fs::read_dir(&root).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().map(|e| e == "parquet").unwrap_or(false) {
-            use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-            let file = std::fs::File::open(&path).unwrap();
-            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-                .unwrap()
-                .build()
-                .unwrap();
-            for batch in reader.take(1) {
-                let batch = batch.unwrap();
-                if let Some(field) = batch.schema().column_with_name("vec") {
-                    found = Some(field.1.data_type().clone());
-                    break;
-                }
-            }
-        }
-    }
-    found.expect("no data parquet file found for table")
+    let data_file = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "parquet" || extension == "vortex")
+        })
+        .unwrap_or_else(|| panic!("no data file under {root:?}"));
+    let path = data_file.display().to_string();
+
+    use object_store::ObjectStoreExt;
+
+    let store_url = ObjectStoreUrl::parse("file://").unwrap();
+    let object_store = ctx.state().runtime_env().object_store(&store_url).unwrap();
+    let meta = object_store
+        .head(&object_store::path::Path::from_url_path(&path).unwrap())
+        .await
+        .unwrap();
+    let format = LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false)
+        .unwrap()
+        .file_format(PhysicalFormat::from_extension(&path).unwrap());
+    let schema = format
+        .infer_schema(&ctx.state(), &object_store, &[meta])
+        .await
+        .unwrap();
+
+    schema
+        .column_with_name("vec")
+        .map(|(_, field)| field.data_type().clone())
+        .unwrap_or_else(|| panic!("no vec column in {path}"))
 }
 
 async fn explain_plan(
@@ -808,7 +828,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
     // The index must be committed (a LATEST manifest per shard), and the
     // data column stored as Float32 lists (SQL FLOAT -> Float32).
     assert_vector_index_built(table_name);
-    let stored = stored_vec_column_type(table_name);
+    let stored = stored_vec_column_type(&ctx, table_name).await;
     assert!(
         matches!(&stored, DataType::List(f)
             if matches!(f.data_type(), DataType::Float32)),
@@ -938,7 +958,7 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
     ctx.sql(&insert_sql).await.unwrap().collect().await.unwrap();
 
     // Data stays Float64 on disk; the index build converted it to f32.
-    let stored = stored_vec_column_type(table_name);
+    let stored = stored_vec_column_type(&ctx, table_name).await;
     assert!(
         matches!(&stored, DataType::List(f)
             if matches!(f.data_type(), DataType::Float64)),

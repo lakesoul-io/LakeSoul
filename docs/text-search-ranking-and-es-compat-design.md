@@ -207,9 +207,13 @@ vector path only.
    `lakesoul_io::text::search::shard_stats`), and the deferred-maintenance
    tail contributes its rows to the statistics.  Verified by identical
    nDCG@10/recall@100 for one and four hash buckets on the same corpus.
-5. Score projection in SQL (`SELECT text_score(...)`): the logical schema
-   cannot carry the internal score column through a projection yet; the ES
-   gateway reads scores from the lower-level scan API instead.
+5. ~~Score projection in SQL (`SELECT text_score(...)`).~~  Implemented
+   through a physical optimizer rule: the logical `TableScan` cannot carry a
+   field the provider does not declare, so the text scan is expanded with
+   the internal score column after physical planning and the projected
+   `text_score` UDF call is replaced by a reference to it
+   (`TextScoreProjectionRule`).  Requires a `text_match` filter and a finite
+   `LIMIT`; `ORDER BY <alias> DESC` is recognized too.
 
 ## Staging
 

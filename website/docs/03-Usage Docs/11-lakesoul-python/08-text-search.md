@@ -223,7 +223,17 @@ ORDER BY text_score(body, 'quick fox') DESC
 LIMIT 10;
 ```
 
-`text_score` is only supported in `ORDER BY` together with a `text_match` filter and a `LIMIT`; it cannot be projected into the `SELECT` list yet (use the scan API with `text_search_scores` to read scores). As with Daft, ranking across shards uses per-shard BM25 statistics and is approximate.
+`text_score` can also be projected into the result, together with a `text_match` filter and a finite `LIMIT` (the score of a row comes from the same candidate scan):
+
+```sql
+SELECT id, text_score(body, 'quick fox') AS score
+FROM documents
+WHERE text_match(body, 'quick fox')
+ORDER BY text_score(body, 'quick fox') DESC
+LIMIT 10;
+```
+
+`ORDER BY score DESC` over the projected alias works as well. As with Daft, ranking across shards uses per-shard BM25 statistics and is approximate; the ES-compatible gateway rescores plain queries against corpus-wide statistics.
 
 `text_match` works on tables without a text index too, again as an exact full-scan predicate. When several `text_match` terms are combined with `AND`, only the first one is pushed down as an index search; all of them are still evaluated exactly.
 
@@ -249,7 +259,7 @@ Plain query text is analyzed into terms that are OR-combined (each term contribu
 ## Limitations
 
 - Relevance ranking compares per-shard BM25 statistics (splits are built and scored per `(partition, bucket)`), so cross-shard ordering is approximate — the same trade-off as a default Elasticsearch search across shards. Global statistics are future work.
-- `text_score` can order results but cannot be projected into the `SELECT` list yet; read scores through `text_search_scores` or Daft's `with_score=True`.
+- `text_score` in SQL requires a `text_match` filter and a finite `LIMIT`; outside that shape read scores through `text_search_scores` or Daft's `with_score=True`.
 - Multiple text columns require an explicit `text_search_column`/`column`.
 - Phrase queries require `with_positions=true` (the default); with positions disabled only term/boolean queries are available.
 - `write_ray` does not build or update secondary indexes; use `build_text_index()`.

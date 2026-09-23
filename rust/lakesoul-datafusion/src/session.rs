@@ -242,6 +242,9 @@ impl LakeSoulSessionFactory {
             ))
             .with_optimizer_rule(Arc::new(
                 crate::planner::text_search_rule::TextSearchPushdownRule,
+            ))
+            .with_physical_optimizer_rule(Arc::new(
+                crate::planner::text_score_rule::TextScoreProjectionRule,
             ));
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
             builder = builder
@@ -274,7 +277,6 @@ impl LakeSoulSessionFactory {
             builder = builder.with_query_planner(Arc::new(
                 LakeSoulDistributedQueryPlanner::new(
                     distributed_planner,
-                    Arc::clone(resolver),
                     dist.fallback_to_local,
                 ),
             ));

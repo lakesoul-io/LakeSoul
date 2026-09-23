@@ -179,6 +179,87 @@ async fn catalog_select_reads_mixed_parquet_and_vortex_table() -> Result<()> {
     Ok(())
 }
 
+/// `LakeSoulTable::to_dataframe` infers the file schema from the table's own
+/// files to build its provider. A vortex table must not be inferred as
+/// Parquet: the format of each file decides who infers it.
+#[tokio::test(flavor = "multi_thread")]
+async fn to_dataframe_reads_vortex_table() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let table_name = unique_table_name("to_dataframe_vortex");
+    create_table_with_batches(
+        client.clone(),
+        &table_name,
+        vec![(PhysicalFormat::Vortex, batch(&[3, 1, 2], &[30, 10, 20]))],
+    )
+    .await?;
+
+    let ctx = create_lakesoul_session_ctx(client, &CoreArgs::default())?;
+    let dataframe = LakeSoulTable::for_name(&table_name)
+        .await?
+        .to_dataframe(&ctx)
+        .await?;
+    let results = dataframe
+        .sort(vec![col("id").sort(true, true)])?
+        .collect()
+        .await?;
+
+    assert_batches_eq!(
+        &[
+            "+----+-------+",
+            "| id | score |",
+            "+----+-------+",
+            "| 1  | 10    |",
+            "| 2  | 20    |",
+            "| 3  | 30    |",
+            "+----+-------+",
+        ],
+        &results
+    );
+    Ok(())
+}
+
+/// A table holding Parquet and vortex files at once: inference groups the
+/// files by their own format and merges the group schemas.
+#[tokio::test(flavor = "multi_thread")]
+async fn to_dataframe_reads_mixed_parquet_and_vortex_table() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let table_name = unique_table_name("to_dataframe_mixed");
+    create_table_with_batches(
+        client.clone(),
+        &table_name,
+        vec![
+            (PhysicalFormat::Parquet, batch(&[2, 1], &[20, 10])),
+            (PhysicalFormat::Vortex, batch(&[4, 3], &[40, 30])),
+        ],
+    )
+    .await?;
+
+    let ctx = create_lakesoul_session_ctx(client, &CoreArgs::default())?;
+    let dataframe = LakeSoulTable::for_name(&table_name)
+        .await?
+        .to_dataframe(&ctx)
+        .await?;
+    let results = dataframe
+        .sort(vec![col("id").sort(true, true)])?
+        .collect()
+        .await?;
+
+    assert_batches_eq!(
+        &[
+            "+----+-------+",
+            "| id | score |",
+            "+----+-------+",
+            "| 1  | 10    |",
+            "| 2  | 20    |",
+            "| 3  | 30    |",
+            "| 4  | 40    |",
+            "+----+-------+",
+        ],
+        &results
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn catalog_mixed_format_scan_preserves_commit_order_for_use_last() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
@@ -281,7 +362,7 @@ async fn catalog_scan_accepts_filter_column_outside_projection() -> Result<()> {
 async fn catalog_cdc_scan_filters_delete_tombstones_before_projection() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let table_name = unique_table_name("catalog_cdc_delete_filter");
-    create_cdc_table(client.clone(), &table_name).await?;
+    create_cdc_table(client.clone(), &table_name, PhysicalFormat::Parquet).await?;
 
     let table = LakeSoulTable::for_name(&table_name).await?;
     write_batch_to_table(

@@ -223,7 +223,17 @@ ORDER BY text_score(body, 'quick fox') DESC
 LIMIT 10;
 ```
 
-`text_score` 仅支持与 `text_match` 过滤条件和 `LIMIT` 一起出现在 `ORDER BY` 中，暂不支持投影到 `SELECT` 列表（需要分数时请使用 scan API 的 `text_search_scores`）。与 Daft 一样，跨 shard 排序基于各自的 BM25 统计量，是近似排序。
+`text_score` 也可以投影到结果中，与 `text_match` 过滤条件和有限的 `LIMIT` 一起使用（分数来自同一次候选扫描）：
+
+```sql
+SELECT id, text_score(body, 'quick fox') AS score
+FROM documents
+WHERE text_match(body, 'quick fox')
+ORDER BY text_score(body, 'quick fox') DESC
+LIMIT 10;
+```
+
+也可以直接 `ORDER BY score DESC`（引用投影别名）。与 Daft 一样，跨 shard 排序基于各自的 BM25 统计量，是近似排序；ES 兼容网关会对普通查询使用全语料统计量重新打分。
 
 `text_match` 也可以用于没有文本索引的表，同样是全表扫描的精确谓词。多个 `text_match` 通过 `AND` 组合时，只有第一个会被下推为索引检索；其余仍会被精确求值。
 
@@ -249,7 +259,7 @@ LIMIT 10;
 ## 限制
 
 - 相关性排序基于各 shard 的 BM25 统计量（split 按 `(partition, bucket)` 构建并打分），因此跨 shard 排序是近似排序——与 Elasticsearch 默认的跨 shard 检索是同一取舍。全局统计量属于后续工作。
-- `text_score` 可用于排序，但暂不支持投影到 `SELECT` 列表；需要分数时请通过 `text_search_scores` 或 Daft 的 `with_score=True` 读取。
+- SQL 中的 `text_score` 需要与 `text_match` 过滤条件和有限的 `LIMIT` 搭配；其他情形请通过 `text_search_scores` 或 Daft 的 `with_score=True` 读取分数。
 - 存在多个文本列时必须显式指定 `text_search_column`/`column`。
 - 短语查询需要 `with_positions=true`（默认）；关闭位置后仅支持词项/布尔查询。
 - `write_ray` 不会构建或更新二级索引；请使用 `build_text_index()`。

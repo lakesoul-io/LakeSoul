@@ -542,9 +542,9 @@ mod tests {
 
     #[test]
     fn empty_snapshot_is_ok_empty() {
-        // An empty snapshot must not error here: the fast-fail policy lives
-        // in the planner gate, which distinguishes production from
-        // dev-fallback mode.
+        // An empty snapshot must not error here: the distributed planner
+        // plans such queries single-node by itself, and the gate's fallback
+        // policy only covers failures of that planner.
         let resolver = StaticWorkerResolver::new(Vec::new()).unwrap();
         assert!(resolver.get_urls().unwrap().is_empty());
     }

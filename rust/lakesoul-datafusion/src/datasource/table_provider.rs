@@ -18,21 +18,22 @@ use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::{Constraint, DFSchema, Statistics, ToDFSchema, project_schema};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::FileFormat;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfigBuilder, FileSinkConfig,
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig,
 };
 use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
-use datafusion::logical_expr::utils::conjunction;
+use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     CreateExternalTable, TableProviderFilterPushDown, TableType,
 };
-use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr};
+use datafusion::physical_expr::{
+    LexOrdering, PhysicalExpr, PhysicalSortExpr, create_physical_expr,
+};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -50,8 +51,8 @@ use futures::stream::FuturesUnordered;
 
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::file_format::{
-    LakeSoulFormatRegistry, PhysicalFormat, compute_project_column_indices,
-    flatten_file_scan_config_for_format,
+    LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec,
+    compute_project_column_indices, flatten_file_scan_config_for_format,
 };
 use lakesoul_io::helpers::{
     listing_sink_table_from_lakesoul_io_config,
@@ -78,7 +79,7 @@ use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_parts,
 };
 
-use super::file_format::LakeSoulMetaDataParquetFormat;
+use super::file_format::LakeSoulMetaDataFormat;
 
 struct FormatScanGroup {
     object_store_url: ObjectStoreUrl,
@@ -110,6 +111,9 @@ pub struct LakeSoulTableProvider {
     pub(crate) file_schema: SchemaRef,
     pub(crate) primary_keys: Vec<String>,
     pub(crate) range_partitions: Vec<String>,
+    /// Whether row-level predicates may be forwarded to the `FileSource`s
+    /// (e.g. Parquet page/row-group pruning). Range-partition metadata
+    /// pruning is independent of this flag.
     pub(crate) pushdown_filters: bool,
     pub(crate) io_config: LakeSoulIOConfig,
     /// Vector index configurations declared by the table's
@@ -253,17 +257,12 @@ impl LakeSoulTableProvider {
             lakesoul_io_config.clone(),
             parquet_force_view_types,
         )?);
-        let file_format: Arc<dyn FileFormat> = Arc::new(
-            LakeSoulMetaDataParquetFormat::new(
-                client.clone(),
-                Arc::new(
-                    ParquetFormat::new().with_force_view_types(parquet_force_view_types),
-                ),
-                table_info.clone(),
-                lakesoul_io_config.clone(),
-            )
-            .await?,
-        );
+        let file_format: Arc<dyn FileFormat> = Arc::new(LakeSoulMetaDataFormat::new(
+            client.clone(),
+            table_info.clone(),
+            lakesoul_io_config.clone(),
+            format_registry.clone(),
+        )?);
 
         let (_, listing_table) = match source_session {
             Some(session) => {
@@ -511,8 +510,12 @@ impl LakeSoulTableProvider {
             )
             .unwrap_or_default();
         Ok(Self {
-            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
-                .await?,
+            listing_options: ListingOptions::new(Arc::new(LakeSoulMetaDataFormat::new(
+                client.clone(),
+                table_info.clone(),
+                io_config.clone(),
+                format_registry.clone(),
+            )?)),
             listing_table_paths: vec![],
             client,
             table_info,
@@ -555,14 +558,6 @@ impl LakeSoulTableProvider {
 
     fn table_id(&self) -> &str {
         &self.table_info.table_id
-    }
-
-    fn is_partition_filter(&self, f: &Expr) -> bool {
-        info!("is_partition_filter: {:?}", f);
-        // O(nm), n = number of expr fields, m = number of range partitions
-        f.column_refs()
-            .iter()
-            .all(|col| self.range_partitions.contains(&col.name))
     }
 
     pub fn options(&self) -> &ListingOptions {
@@ -619,10 +614,18 @@ impl LakeSoulTableProvider {
         Ok(all_sort_orders)
     }
 
+    /// Lists the work units that survive `partition_filters`.
+    ///
+    /// The caller hands in predicates that classify as
+    /// [`FilterRole::partition_pruning`]: they are evaluated on the partition
+    /// values, so a work unit whose values cannot match is left out before
+    /// any file is opened. Row-level pushdown is a separate decision
+    /// ([`ClassifiedFilters::pre_merge_pushdown`]); a predicate reaching this
+    /// function is not thereby allowed below the merge.
     pub(crate) async fn list_files_for_scan<'a>(
         &'a self,
         ctx: &'a SessionState,
-        filters: &'a [Expr],
+        partition_filters: &'a [Expr],
         _limit: Option<usize>,
     ) -> Result<(Vec<Vec<PartitionedFile>>, Statistics)> {
         let store = if let Some(url) = self.table_paths().first() {
@@ -638,15 +641,9 @@ impl LakeSoulTableProvider {
             .get_all_partition_info(self.table_id())
             .await
             .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
-        let partition_filters = filters
-            .iter()
-            .filter(|f| self.is_partition_filter(f))
-            .cloned()
-            .collect::<Vec<Expr>>();
-
         let prune_partition_info = prune_partitions(
             all_partition_info,
-            partition_filters.as_slice(),
+            partition_filters,
             self.table_partition_cols(),
         )
         .await
@@ -703,7 +700,7 @@ impl LakeSoulTableProvider {
         &self,
         session_state: &SessionState,
         request: crate::udf::vector_search_marker::VectorSearchRequest,
-        filters: &[Expr],
+        partition_filters: &[Expr],
         limit: Option<usize>,
     ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
         if self.primary_keys.is_empty() {
@@ -734,7 +731,7 @@ impl LakeSoulTableProvider {
             return Ok(None);
         }
         let (partitioned_file_lists, _) = self
-            .list_files_for_scan(session_state, filters, limit)
+            .list_files_for_scan(session_state, partition_filters, limit)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
         if partitioned_file_lists.is_empty() {
@@ -791,7 +788,7 @@ impl LakeSoulTableProvider {
         &self,
         session_state: &SessionState,
         request: crate::udf::text_search_marker::TextSearchRequest,
-        filters: &[Expr],
+        partition_filters: &[Expr],
         limit: Option<usize>,
     ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
         if self.primary_keys.is_empty() {
@@ -816,7 +813,7 @@ impl LakeSoulTableProvider {
             return Ok(None);
         }
         let (partitioned_file_lists, _) = self
-            .list_files_for_scan(session_state, filters, limit)
+            .list_files_for_scan(session_state, partition_filters, limit)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
         if partitioned_file_lists.is_empty() {
@@ -863,6 +860,34 @@ impl LakeSoulTableProvider {
             catalog,
         )?;
         Ok(Some(Arc::new(exec)))
+    }
+
+    /// The file format a work unit's files are read with.
+    ///
+    /// `format_scan_groups` derived it from the first file's extension when it
+    /// built the work unit's per-file scan configs, and a work unit holds files
+    /// of one format group.
+    fn work_unit_format(
+        &self,
+        configs: &[FileScanConfig],
+    ) -> DFResult<Option<Arc<dyn FileFormat>>> {
+        let Some(path) = configs
+            .first()
+            .and_then(|config| config.file_groups.first())
+            .and_then(|group| group.files().first())
+            .map(|file| file.object_meta.location.as_ref())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.format_registry.file_format(
+                self.format_registry
+                    .physical_format_for_path(path)
+                    .map_err(|report| {
+                        DataFusionError::External(report.into_boxed_error())
+                    })?,
+            ),
+        ))
     }
 
     fn format_scan_groups(
@@ -938,31 +963,6 @@ impl LakeSoulTableProvider {
         }
     }
 
-    fn classify_filter_pushdown(
-        pushdown_filters: bool,
-        primary_keys: &[String],
-        filters: &[&Expr],
-    ) -> DFResult<Vec<TableProviderFilterPushDown>> {
-        filters
-            .iter()
-            .map(|f| {
-                let cols = f.column_refs();
-                let pk_only = !primary_keys.is_empty()
-                    && cols.iter().all(|col| primary_keys.contains(&col.name));
-                if pk_only {
-                    // Primary-key filters are always handed to the scan so
-                    // the row locator can turn them into row-level fetches.
-                    // Inexact keeps DataFusion's own FilterExec on top.
-                    Ok(TableProviderFilterPushDown::Inexact)
-                } else if pushdown_filters && primary_keys.is_empty() {
-                    Ok(TableProviderFilterPushDown::Inexact)
-                } else {
-                    Ok(TableProviderFilterPushDown::Unsupported)
-                }
-            })
-            .collect()
-    }
-
     fn build_partitioned_exec(
         partitioned_execs: Vec<Arc<dyn ExecutionPlan>>,
         empty_schema: SchemaRef,
@@ -1015,6 +1015,152 @@ impl LakeSoulTableProvider {
     }
 }
 
+/// What one predicate may be used for when scanning a LakeSoul table.
+///
+/// The roles are independent by design. A predicate can be safe for metadata
+/// pruning while being unsafe to evaluate per file, and a predicate can be
+/// safe to push below the merge while being useless for pruning:
+///
+/// - `partition_pruning`: every referenced column is a range-partition
+///   column, so the predicate can be evaluated exactly on the partition
+///   values and whole work units whose values cannot match can be dropped
+///   before any file is opened. This does *not* imply the predicate may be
+///   evaluated below the merge, and it does not depend on the table having
+///   primary keys or on row-level pushdown being enabled.
+/// - `pre_merge_pushdown`: the predicate is row-invariant across every
+///   version of a merge key (primary-key columns) or the table has no merge
+///   at all, *and* row-level/`FileSource` pushdown is enabled. Only such
+///   predicates may be forwarded to `FileSource::try_pushdown_filters`.
+///   `pushdown_filters` gates this role; it never gates `partition_pruning`.
+/// - `pk_candidates`: the predicate references only primary-key columns and
+///   may feed the primary-key candidate / row-locator path. Like pruning,
+///   this is independent of row-level pushdown.
+///
+/// A predicate with none of the roles stays above the scan; for a
+/// merge-on-read table it is evaluated by the `FilterExec` DataFusion keeps
+/// because `supports_filters_pushdown` never returns `Exact`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FilterRole {
+    partition_pruning: bool,
+    pre_merge_pushdown: bool,
+    pk_candidates: bool,
+}
+
+/// Whether every column referenced by `expr` is one of `columns`.
+///
+/// A predicate without columns (a constant) is not classified: it cannot
+/// prune partitions and carries no version semantics, so DataFusion's own
+/// `FilterExec` handles it.
+fn columns_within(expr: &Expr, columns: &[String]) -> bool {
+    let refs = expr.column_refs();
+    !refs.is_empty() && refs.iter().all(|col| columns.contains(&col.name))
+}
+
+/// Classifies one predicate against the table's key layout and the
+/// row-level pushdown option.
+///
+/// Callers pass the *conjuncts* of their filter list: DataFusion splits
+/// top-level `AND` predicates before asking `supports_filters_pushdown`, and
+/// `LakeSoulTableProvider::scan` splits them again so that a direct caller of
+/// the trait method gets the same independent treatment (`part = 0 AND v > 3`
+/// must prune by `part` while leaving `v > 3` above the merge).
+fn classify_filter(
+    pushdown_filters: bool,
+    primary_keys: &[String],
+    range_partitions: &[String],
+    expr: &Expr,
+) -> FilterRole {
+    let range_only = columns_within(expr, range_partitions);
+    let pk_only = columns_within(expr, primary_keys);
+    FilterRole {
+        // Metadata pruning is independent of the primary keys and of the
+        // row-level pushdown option.
+        partition_pruning: range_only,
+        // Safety: without a merge the per-file scans are concatenated, so
+        // every predicate is safe below the scan; with a merge only
+        // primary-key predicates are row-invariant across versions. Policy:
+        // row-level/FileSource pushdown must also be enabled. A range
+        // predicate may drop whole work units, but it is deliberately *not*
+        // pushed into the per-file scans — "safe to prune" and "safe to
+        // evaluate on one version of a row" are different questions.
+        pre_merge_pushdown: pushdown_filters && (primary_keys.is_empty() || pk_only),
+        // The row locator is a separate optimization from FileSource
+        // pushdown, so it is not gated by `pushdown_filters`.
+        pk_candidates: pk_only,
+    }
+}
+
+/// A filter list split into its independent uses for one scan.
+///
+/// The predicates not selected for any role remain for DataFusion's own
+/// `FilterExec` above the scan; `LakeSoulTableProvider::scan` never forwards
+/// the complete filter list to a `FileSource`.
+#[derive(Debug, Default)]
+struct ClassifiedFilters {
+    /// Predicates that may be evaluated on range-partition values to drop
+    /// whole work units before any file is opened.
+    partition_pruning: Vec<Expr>,
+    /// Predicates that may be forwarded to `FileSource::try_pushdown_filters`
+    /// (already gated by `pushdown_filters`): row-invariant predicates below
+    /// `MergeParquetExec`, or every predicate when there is no merge.
+    pre_merge_pushdown: Vec<Expr>,
+    /// Predicates that may feed the primary-key candidate / row locator.
+    pk_candidates: Vec<Expr>,
+}
+
+impl ClassifiedFilters {
+    /// Splits `filters` into conjuncts and classifies each one on its own, so
+    /// a conjunction never forces one predicate's safety onto another.
+    fn classify(
+        pushdown_filters: bool,
+        filters: &[Expr],
+        primary_keys: &[String],
+        range_partitions: &[String],
+    ) -> Self {
+        let mut classified = Self::default();
+        for expr in filters.iter().flat_map(|filter| split_conjunction(filter)) {
+            let role =
+                classify_filter(pushdown_filters, primary_keys, range_partitions, expr);
+            if role.partition_pruning {
+                classified.partition_pruning.push(expr.clone());
+            }
+            if role.pre_merge_pushdown {
+                classified.pre_merge_pushdown.push(expr.clone());
+            }
+            if role.pk_candidates {
+                classified.pk_candidates.push(expr.clone());
+            }
+        }
+        classified
+    }
+}
+
+/// The DataFusion verdict for one predicate.
+///
+/// `Inexact` predicates are added to `TableScan.filters` (so `scan` can use
+/// them for pruning, the row locator, or an enabled row-level pushdown) while
+/// DataFusion keeps its own `FilterExec` for correctness. `Unsupported`
+/// predicates never reach `scan`; DataFusion evaluates them above the scan.
+/// Nothing is ever `Exact`: the file-level filters are best-effort, so
+/// DataFusion must always re-check.
+fn filter_pushdown_verdict(
+    pushdown_filters: bool,
+    primary_keys: &[String],
+    range_partitions: &[String],
+    expr: &Expr,
+) -> TableProviderFilterPushDown {
+    let role = classify_filter(pushdown_filters, primary_keys, range_partitions, expr);
+    // Anything `scan` can use must reach it, including range predicates used
+    // only for metadata pruning and primary-key predicates used only by the
+    // row locator. DataFusion does not pass `Unsupported` predicates to
+    // `TableProvider::scan`.
+    if role.partition_pruning || role.pre_merge_pushdown || role.pk_candidates {
+        TableProviderFilterPushDown::Inexact
+    } else {
+        TableProviderFilterPushDown::Unsupported
+    }
+}
+
 #[async_trait]
 impl TableProvider for LakeSoulTableProvider {
     fn schema(&self) -> SchemaRef {
@@ -1037,10 +1183,9 @@ impl TableProvider for LakeSoulTableProvider {
             .downcast_ref::<SessionState>()
             .unwrap();
 
-        // Vector search pushdown: when the optimizer annotated the scan
-        // with the vector-search marker, read only the index candidates
-        // through the native reader.  The `Sort` + `Limit` above the scan
-        // then compute the exact global top-k.
+        // Both index pushdowns are optimizations: they only need the
+        // partition-pruning half of the filters to enumerate candidate work
+        // units, so they receive `classified.partition_pruning` below.
         let vector_search =
             crate::udf::vector_search_marker::parse_vector_search_request(filters);
         let filters: Vec<Expr> = filters
@@ -1048,9 +1193,38 @@ impl TableProvider for LakeSoulTableProvider {
             .filter(|f| !crate::udf::vector_search_marker::is_marker_expr(f))
             .cloned()
             .collect();
+        let text_search =
+            crate::udf::text_search_marker::parse_text_search_request(&filters);
+        let filters: Vec<Expr> = filters
+            .iter()
+            .filter(|f| !crate::udf::text_search_marker::is_marker_expr(f))
+            .cloned()
+            .collect();
+
+        // Split the filters into their independent uses before touching the
+        // metadata: range predicates prune whole work units, primary-key
+        // predicates are safety-pushable below the merge (and feed the row
+        // locator), and everything else stays for DataFusion's `FilterExec`
+        // above the scan. See `FilterRole`.
+        let classified = ClassifiedFilters::classify(
+            self.pushdown_filters,
+            &filters,
+            &self.primary_keys,
+            &self.range_partitions,
+        );
+
+        // Vector search pushdown: when the optimizer annotated the scan
+        // with the vector-search marker, read only the index candidates
+        // through the native reader.  The `Sort` + `Limit` above the scan
+        // then compute the exact global top-k.
         if let Some(request) = vector_search
             && let Some(exec) = self
-                .try_build_vector_search_exec(session_state, request, &filters, limit)
+                .try_build_vector_search_exec(
+                    session_state,
+                    request,
+                    &classified.partition_pruning,
+                    limit,
+                )
                 .await?
         {
             return Ok(exec);
@@ -1059,16 +1233,14 @@ impl TableProvider for LakeSoulTableProvider {
         // Text search pushdown: the marker switches the scan to the text
         // index candidates; the rewritten `text_match` predicate above the
         // scan verifies them exactly.
-        let text_search =
-            crate::udf::text_search_marker::parse_text_search_request(&filters);
-        let filters: Vec<Expr> = filters
-            .iter()
-            .filter(|f| !crate::udf::text_search_marker::is_marker_expr(f))
-            .cloned()
-            .collect();
         if let Some(request) = text_search
             && let Some(exec) = self
-                .try_build_text_search_exec(session_state, request, &filters, limit)
+                .try_build_text_search_exec(
+                    session_state,
+                    request,
+                    &classified.partition_pruning,
+                    limit,
+                )
                 .await?
         {
             return Ok(exec);
@@ -1081,7 +1253,7 @@ impl TableProvider for LakeSoulTableProvider {
             let pk = &self.primary_keys[0];
             self.file_schema.field_with_name(pk).ok().and_then(|field| {
                 lakesoul_io::pk_locator::extract_pk_candidates(
-                    &filters,
+                    &classified.pk_candidates,
                     pk,
                     field.data_type(),
                 )
@@ -1091,7 +1263,7 @@ impl TableProvider for LakeSoulTableProvider {
         };
 
         let (partitioned_file_lists, statistics) = self
-            .list_files_for_scan(session_state, &filters, limit)
+            .list_files_for_scan(session_state, &classified.partition_pruning, limit)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
@@ -1137,20 +1309,41 @@ impl TableProvider for LakeSoulTableProvider {
         let merged_schema =
             project_schema(table_schema.table_schema(), merged_projection.as_ref())?;
 
-        let filter = if let Some(expr) = conjunction(filters.to_vec()) {
-            // Filters are evaluated before projection and may reference partition
-            // columns or columns omitted from the output projection.
-            let table_df_schema =
-                table_schema.table_schema().as_ref().clone().to_dfschema()?;
-            Some(create_physical_expr(
-                &expr,
-                &table_df_schema,
-                session_state.execution_props(),
-                &PhysicalPlanningContext::default(),
-            )?)
-        } else {
-            None
-        };
+        // Only the pre-merge subset reaches the file sources, and only when
+        // row-level pushdown is enabled (the classification already applied
+        // the flag). A non-key predicate must never be evaluated on a single
+        // version below the merge: filtering `v = 1` before the merge can
+        // keep an old `(id=1, v=1)` file while the new `(id=1, v=100)`
+        // version is dropped, resurrecting a superseded row. DataFusion's
+        // upper `FilterExec` evaluates those predicates on the merged rows.
+        //
+        // The conjuncts are offered to the source one by one. A file source
+        // judges every predicate on its own, and the common `part = .. AND
+        // v = ..` shape mixes a partition column - which has no file-schema
+        // entry - with file columns, so a conjunction judged as a whole is
+        // refused outright and takes the file columns' pushdown with it.
+        let pushed_filters: Vec<Arc<dyn PhysicalExpr>> =
+            if classified.pre_merge_pushdown.is_empty() {
+                Vec::new()
+            } else {
+                // Filters are evaluated before projection and may reference
+                // partition columns or columns omitted from the output
+                // projection.
+                let table_df_schema =
+                    table_schema.table_schema().as_ref().clone().to_dfschema()?;
+                classified
+                    .pre_merge_pushdown
+                    .iter()
+                    .map(|expr| {
+                        create_physical_expr(
+                            expr,
+                            &table_df_schema,
+                            session_state.execution_props(),
+                            &PhysicalPlanningContext::default(),
+                        )
+                    })
+                    .collect::<DFResult<Vec<_>>>()?
+            };
 
         let partition_schema = Arc::new(Schema::new(table_partition_cols));
         let output_ordering = self
@@ -1167,9 +1360,9 @@ impl TableProvider for LakeSoulTableProvider {
         for group in format_groups {
             let file_format = self.format_registry.file_format(group.physical_format);
             let mut file_source = file_format.file_source(table_schema.clone());
-            if let Some(filter) = &filter {
+            if !pushed_filters.is_empty() {
                 let result = file_source.try_pushdown_filters(
-                    vec![filter.clone()],
+                    pushed_filters.clone(),
                     session_state.config_options(),
                 )?;
                 if let Some(updated_source) = result.updated_node {
@@ -1229,7 +1422,11 @@ impl TableProvider for LakeSoulTableProvider {
             String,
             (
                 Arc<HashMap<String, String>>,
-                (Vec<Arc<dyn ExecutionPlan>>, Vec<String>),
+                (
+                    Vec<Arc<dyn ExecutionPlan>>,
+                    Vec<String>,
+                    Vec<FileScanConfig>,
+                ),
             ),
         > = HashMap::new();
         let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
@@ -1243,16 +1440,20 @@ impl TableProvider for LakeSoulTableProvider {
             let file_path = config.file_groups[0].files()[0].path().to_string();
             let input: Arc<dyn ExecutionPlan> = match &candidate_inputs {
                 Some(inputs) => Arc::clone(&inputs[index]),
-                None => DataSourceExec::from_data_source(config),
+                None => DataSourceExec::from_data_source(config.clone()),
             };
             all_inputs.push(input.clone());
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {
                 inputs.0.push(input);
                 inputs.1.push(file_path);
+                inputs.2.push(config);
             } else {
                 inputs_map.insert(
                     partition_desc,
-                    (partition_values, (vec![input], vec![file_path])),
+                    (
+                        partition_values,
+                        (vec![input], vec![file_path], vec![config]),
+                    ),
                 );
             }
         }
@@ -1264,19 +1465,48 @@ impl TableProvider for LakeSoulTableProvider {
         );
 
         let mut partitioned_execs = Vec::new();
-        for (_, (partition_values, (inputs, file_paths))) in inputs_map {
-            let mut io_config = self.io_config.clone();
-            io_config.set_files(file_paths);
-            let merge_exec = Arc::new(
-                lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
-                    merged_schema.clone(),
-                    inputs,
-                    io_config,
-                    partition_values,
-                )
-                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
-            ) as Arc<dyn ExecutionPlan>;
-            partitioned_execs.push(merge_exec);
+        for (_, (partition_values, (inputs, file_paths, configs))) in inputs_map {
+            // A work unit of a table without primary keys never merges
+            // (`merge_stream` concatenates), so it is served by a plain scan
+            // leaf: same rows, but the distributed planner can split it over
+            // worker tasks, which a `MergeParquetExec` cannot allow. Only a
+            // work unit whose files cannot be read by one leaf keeps the merge
+            // operator.
+            let leaf = if self.io_config.primary_keys_slice().is_empty() {
+                match self.work_unit_format(&configs)? {
+                    Some(format) => append_only_scan_exec(
+                        session_state,
+                        format.as_ref(),
+                        &configs,
+                        &merged_schema,
+                    )
+                    .map_err(|report| {
+                        DataFusionError::External(report.into_boxed_error())
+                    })?,
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let work_unit_exec = match leaf {
+                Some(exec) => exec,
+                None => {
+                    let mut io_config = self.io_config.clone();
+                    io_config.set_files(file_paths);
+                    Arc::new(
+                        lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                            merged_schema.clone(),
+                            inputs,
+                            io_config,
+                            partition_values,
+                        )
+                        .map_err(|report| {
+                            DataFusionError::External(report.into_boxed_error())
+                        })?,
+                    ) as Arc<dyn ExecutionPlan>
+                }
+            };
+            partitioned_execs.push(work_unit_exec);
         }
 
         let empty_exec_schema = Self::empty_partitioned_exec_schema(
@@ -1323,7 +1553,17 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[&Expr],
     ) -> DFResult<Vec<TableProviderFilterPushDown>> {
         info!("supports_filters_pushdown: {:?}", filters);
-        Self::classify_filter_pushdown(self.pushdown_filters, &self.primary_keys, filters)
+        Ok(filters
+            .iter()
+            .map(|filter| {
+                filter_pushdown_verdict(
+                    self.pushdown_filters,
+                    &self.primary_keys,
+                    &self.range_partitions,
+                    filter,
+                )
+            })
+            .collect())
     }
 
     #[instrument(skip(self, state))]
@@ -1344,7 +1584,11 @@ impl TableProvider for LakeSoulTableProvider {
             table_partition_cols: self.options().table_partition_cols.clone(),
             insert_op,
             keep_partition_by_columns: false,
-            file_extension: "parquet".to_string(),
+            // The table's own format decides the sink's file extension; the
+            // LakeSoul sink writes one file per input partition itself.
+            // Actually, we don't need to set `file_extension` here, as the
+            // LakeSoul sink will set it to the table's format extension.
+            file_extension: self.options().format.get_ext(),
             file_output_mode: FileOutputMode::Automatic,
         };
 
@@ -1431,46 +1675,177 @@ mod tests {
         ));
     }
 
+    /// The filter roles are independent: a range predicate prunes partitions
+    /// regardless of the primary keys and of the row-level pushdown flag; a
+    /// primary-key predicate may feed the row locator and, when pushdown is
+    /// enabled, reach the file source; a value predicate does neither on a
+    /// merge-on-read table.
     #[test]
-    fn filter_pushdown_classification_never_returns_exact() {
-        let id_filter = Expr::Column(datafusion::common::Column::from_name("id"));
-        let score_filter = Expr::Column(datafusion::common::Column::from_name("score"));
-        let filters = vec![&id_filter, &score_filter];
-
-        let disabled =
-            LakeSoulTableProvider::classify_filter_pushdown(false, &[], &filters)
-                .unwrap();
-        assert_eq!(
-            disabled,
-            vec![
-                TableProviderFilterPushDown::Unsupported,
-                TableProviderFilterPushDown::Unsupported,
-            ]
-        );
-
-        let without_primary_keys =
-            LakeSoulTableProvider::classify_filter_pushdown(true, &[], &filters).unwrap();
-        assert_eq!(
-            without_primary_keys,
-            vec![
-                TableProviderFilterPushDown::Inexact,
-                TableProviderFilterPushDown::Inexact,
-            ]
-        );
+    fn filter_roles_separate_pruning_from_pre_merge_pushdown() {
+        use datafusion::prelude::col;
 
         let primary_keys = vec![String::from("id")];
-        let with_primary_keys = LakeSoulTableProvider::classify_filter_pushdown(
-            true,
-            &primary_keys,
-            &filters,
-        )
-        .unwrap();
+        let range_partitions = vec![String::from("part")];
+        let pk_filter = col("id").eq(lit(1i32));
+        let range_filter = col("part").eq(lit(0i32));
+        let value_filter = col("v").gt(lit(3i32));
+
+        // Merge-on-read table, row-level pushdown enabled.
         assert_eq!(
-            with_primary_keys,
-            vec![
-                TableProviderFilterPushDown::Inexact,
-                TableProviderFilterPushDown::Unsupported,
-            ]
+            classify_filter(true, &primary_keys, &range_partitions, &pk_filter),
+            FilterRole {
+                partition_pruning: false,
+                pre_merge_pushdown: true,
+                pk_candidates: true,
+            }
+        );
+        assert_eq!(
+            classify_filter(true, &primary_keys, &range_partitions, &range_filter),
+            FilterRole {
+                partition_pruning: true,
+                pre_merge_pushdown: false,
+                pk_candidates: false,
+            }
+        );
+        assert_eq!(
+            classify_filter(true, &primary_keys, &range_partitions, &value_filter),
+            FilterRole::default(),
+        );
+
+        // Metadata pruning is independent of the row-level flag; the pk
+        // locator is too, but pk row-level pushdown is not.
+        assert_eq!(
+            classify_filter(false, &primary_keys, &range_partitions, &range_filter),
+            FilterRole {
+                partition_pruning: true,
+                pre_merge_pushdown: false,
+                pk_candidates: false,
+            }
+        );
+        assert_eq!(
+            classify_filter(false, &primary_keys, &range_partitions, &pk_filter),
+            FilterRole {
+                partition_pruning: false,
+                pre_merge_pushdown: false,
+                pk_candidates: true,
+            }
+        );
+
+        // Append-only table: every predicate is safe below the scan, but
+        // only row-level pushdown enabled sends it there; pruning still
+        // works with the flag off.
+        let no_primary_keys: Vec<String> = vec![];
+        assert_eq!(
+            classify_filter(true, &no_primary_keys, &range_partitions, &value_filter),
+            FilterRole {
+                partition_pruning: false,
+                pre_merge_pushdown: true,
+                pk_candidates: false,
+            }
+        );
+        assert_eq!(
+            classify_filter(false, &no_primary_keys, &range_partitions, &value_filter),
+            FilterRole::default(),
+        );
+        assert_eq!(
+            classify_filter(false, &no_primary_keys, &range_partitions, &range_filter),
+            FilterRole {
+                partition_pruning: true,
+                pre_merge_pushdown: false,
+                pk_candidates: false,
+            }
+        );
+
+        // A conjunction must not bind the safe predicate to the unsafe one:
+        // `part = 0` keeps pruning while `v > 3` stays out of the file source
+        // even with row-level pushdown disabled.
+        let classified = ClassifiedFilters::classify(
+            false,
+            &[range_filter.and(value_filter)],
+            &primary_keys,
+            &range_partitions,
+        );
+        assert_eq!(
+            classified.partition_pruning,
+            vec![col("part").eq(lit(0i32))]
+        );
+        assert!(classified.pre_merge_pushdown.is_empty());
+        assert!(classified.pk_candidates.is_empty());
+    }
+
+    /// The DataFusion verdict lets every predicate `scan` can use reach it —
+    /// pruning, the pk locator, or an enabled row-level pushdown — and keeps
+    /// the rest above, independently of the table shape. It never returns
+    /// `Exact`: file-level filters are best-effort, so DataFusion must always
+    /// keep its own `FilterExec`.
+    #[test]
+    fn filter_pushdown_verdict_never_returns_exact() {
+        use datafusion::prelude::col;
+
+        let primary_keys = vec![String::from("id")];
+        let range_partitions = vec![String::from("part")];
+        let pk_filter = col("id").eq(lit(1i32));
+        let range_filter = col("part").eq(lit(0i32));
+        let value_filter = col("v").gt(lit(3i32));
+
+        // Merge-on-read table: the value predicate stays above in both
+        // modes; pk and range predicates reach `scan` in both modes.
+        for pushdown_filters in [true, false] {
+            let verdict = |expr: &Expr| {
+                filter_pushdown_verdict(
+                    pushdown_filters,
+                    &primary_keys,
+                    &range_partitions,
+                    expr,
+                )
+            };
+            assert_eq!(verdict(&pk_filter), TableProviderFilterPushDown::Inexact);
+            assert_eq!(verdict(&range_filter), TableProviderFilterPushDown::Inexact);
+            assert_eq!(
+                verdict(&value_filter),
+                TableProviderFilterPushDown::Unsupported
+            );
+        }
+
+        // Append-only table: range predicates reach `scan` for metadata
+        // pruning in both modes; ordinary predicates only when row-level
+        // pushdown is enabled.
+        let no_primary_keys: Vec<String> = vec![];
+        assert_eq!(
+            filter_pushdown_verdict(
+                true,
+                &no_primary_keys,
+                &range_partitions,
+                &range_filter
+            ),
+            TableProviderFilterPushDown::Inexact
+        );
+        assert_eq!(
+            filter_pushdown_verdict(
+                false,
+                &no_primary_keys,
+                &range_partitions,
+                &range_filter
+            ),
+            TableProviderFilterPushDown::Inexact
+        );
+        assert_eq!(
+            filter_pushdown_verdict(
+                true,
+                &no_primary_keys,
+                &range_partitions,
+                &value_filter
+            ),
+            TableProviderFilterPushDown::Inexact
+        );
+        assert_eq!(
+            filter_pushdown_verdict(
+                false,
+                &no_primary_keys,
+                &range_partitions,
+                &value_filter
+            ),
+            TableProviderFilterPushDown::Unsupported
         );
     }
 
