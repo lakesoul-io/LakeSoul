@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 services:
   lakesoul-meta-db:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
     container_name: lakesoul-test-pg
     hostname: lakesoul-docker-compose-env-lakesoul-meta-db-1
     ports:
@@ -24,7 +24,7 @@ services:
       - ./meta_cleanup.sql:/meta_cleanup.sql
 
   mysql:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/mysql:8.0
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/mysql:8.0
     ports:
       - "3306:3306"
     restart: always
@@ -39,7 +39,7 @@ services:
       - ../../script/benchmark/properties:/properties
 
   rustfs:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -61,7 +61,7 @@ services:
     profiles: ["s3"]
 
   rc_setup:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16
     depends_on:
       rustfs:
         condition: service_healthy
@@ -85,7 +85,7 @@ services:
     profiles: ["s3"]
 
   jobmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
     ports:
       - "8081:8081"
     command: jobmanager
@@ -118,7 +118,7 @@ services:
       - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
   taskmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
     depends_on:
       - jobmanager
     command: taskmanager

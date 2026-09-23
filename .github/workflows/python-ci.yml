@@ -60,7 +60,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
       rustfs:
-        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -87,7 +87,7 @@ jobs:
         run: |
           docker run --rm --network host \
             --entrypoint /bin/sh \
-            swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
             -c '
               set -e
 
@@ -137,7 +137,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          env-vars: "JAVA_HOME"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build native libraries
         run: |

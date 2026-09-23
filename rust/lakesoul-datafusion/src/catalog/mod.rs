@@ -109,7 +109,7 @@ pub struct LakeSoulTableProperty {
     pub text_index_columns: Option<String>,
     /// File format used for writes: `"parquet"`, `"vortex"` or
     /// `"vortex-compact"` (same `file_format` option as the Spark/Flink
-    /// connectors).  Defaults to parquet when unset.
+    /// connectors). Unset means `vortex-compact`, the connectors' default.
     #[serde(
         rename = "file_format",
         default,
@@ -137,12 +137,17 @@ pub struct LakeSoulTableProperty {
 }
 
 /// Resolve the file format declared by a table's properties
-/// (`file_format`, the Spark/Flink-compatible option); parquet when unset.
+/// (`file_format`, the Spark/Flink-compatible option).
+///
+/// An unset property means [`PhysicalFormat::default`] (`vortex-compact`),
+/// the default the Spark (`native.io.physical_format`), Flink
+/// (`file_format`) and Python (`format=`) writers use as well, so a table
+/// created without the option is written the same way from every engine.
 pub(crate) fn table_file_format(properties_json: &str) -> Result<PhysicalFormat> {
     let properties: LakeSoulTableProperty = serde_json::from_str(properties_json)?;
     match properties.file_format {
         Some(ref format) => Ok(format.parse()?),
-        None => Ok(PhysicalFormat::Parquet),
+        None => Ok(PhysicalFormat::default()),
     }
 }
 

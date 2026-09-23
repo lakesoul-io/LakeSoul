@@ -15,6 +15,7 @@ use arrow_cast::can_cast_types;
 use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -23,11 +24,13 @@ use datafusion::datasource::physical_plan::{
     ParquetSource,
 };
 use datafusion::datasource::table_schema::TableSchema;
-use datafusion::physical_expr::LexRequirement;
+use datafusion::physical_expr::{
+    LexRequirement, PhysicalExpr, expressions::Column, projection::ProjectionExprs,
+};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion_common::{
-    DataFusionError, Statistics, error::Result as DFResult, project_schema,
+    Constraints, DataFusionError, Statistics, error::Result as DFResult, project_schema,
 };
 use futures::{StreamExt, TryStreamExt};
 use object_store::{ObjectMeta, ObjectStore};
@@ -818,7 +821,9 @@ pub async fn flatten_file_scan_config_for_format(
                             );
                             let mut source = format.file_source(table_schema);
                             source = adapt_file_source_for_single_file(
-                                source, &format, &conf,
+                                source,
+                                format.as_ref(),
+                                &conf,
                             )?;
                             if let Some(predicate) = conf.file_source.filter() {
                                 let result = source.try_pushdown_filters(
@@ -900,7 +905,7 @@ fn table_statistics(
 
 fn adapt_file_source_for_single_file(
     source: Arc<dyn FileSource>,
-    format: &Arc<dyn FileFormat>,
+    format: &dyn FileFormat,
     conf: &FileScanConfig,
 ) -> DFResult<Arc<dyn FileSource>> {
     let Some(format) = format.downcast_ref::<LakeSoulParquetFormat>() else {
@@ -953,10 +958,170 @@ pub fn compute_project_column_indices(
     )
 }
 
+/// Whether a work unit's per-file scan configs can share one scan leaf.
+///
+/// A leaf reads through a single file source from a single object store, so
+/// files of several physical formats or compressions would have to be read by
+/// another format's reader. The LakeSoul scans group files by physical format
+/// before building work units, so this is a guard rather than a policy.
+fn share_one_scan_leaf(configs: &[FileScanConfig]) -> bool {
+    let Some(first) = configs.first() else {
+        return false;
+    };
+    configs.iter().skip(1).all(|config| {
+        config.file_source.file_type() == first.file_source.file_type()
+            && config.file_compression_type == first.file_compression_type
+            && config.object_store_url == first.object_store_url
+    })
+}
+
+/// Builds the scan leaf of one work unit whose rows are only concatenated.
+///
+/// A work unit of a table without primary keys never merges: `merge_stream`
+/// concatenates its files. The leaf therefore only has to produce what the
+/// merge operator's concat path produces for such a work unit — `merged_schema`
+/// rows, with the work unit's partition values as constants — and it *declares*
+/// that schema instead of deriving it from the files: the reader adapts every
+/// file to the declared schema, padding columns the file does not have with
+/// NULLs, casting drifted types, and leaving out columns the table does not
+/// have. Schema evolution (older files missing newer columns) therefore needs
+/// no merge operator either.
+///
+/// What the plain leaf buys is distribution: the distributed planner's default
+/// file-scan handlers rebalance exactly this shape over the stage's tasks,
+/// while a merge work unit has to stay in one task.
+///
+/// Returns `None` when the work unit cannot be read by one leaf — its files do
+/// not share a file source, a compression or an object store — in which case
+/// the caller keeps `MergeParquetExec` over the per-file inputs.
+pub fn append_only_scan_exec(
+    state: &dyn Session,
+    format: &dyn FileFormat,
+    configs: &[FileScanConfig],
+    merged_schema: &SchemaRef,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    let Some(base) = configs.first() else {
+        return Ok(None);
+    };
+    if !share_one_scan_leaf(configs) {
+        debug!("work unit files need more than one scan leaf");
+        return Ok(None);
+    }
+
+    // One file group per work unit: locally that is one partition reading the
+    // files in order, and the distributed planner splits the group — by file,
+    // or by byte range when a file is larger than a task's share — over the
+    // tasks of the stage.
+    let files = configs
+        .iter()
+        .flat_map(|config| config.file_groups.iter())
+        .flat_map(|group| group.iter().cloned())
+        .collect::<Vec<_>>();
+
+    // The leaf declares the merged schema's data columns followed by the
+    // *table's* partition columns: a file's partition values are paired with
+    // the declared partition columns by index, and they were parsed against
+    // this list, so declaring only the columns the scan reads would hand a
+    // surviving partition column the value of an earlier one. The columns the
+    // scan does not read are projected away below, so the leaf still emits
+    // exactly the columns its consumers expect.
+    let partition_columns = base
+        .file_source
+        .table_schema()
+        .table_partition_cols()
+        .to_vec();
+    let file_schema = Arc::new(Schema::new(
+        merged_schema
+            .fields()
+            .iter()
+            .filter(|field| {
+                !partition_columns
+                    .iter()
+                    .any(|column| column.name() == field.name())
+            })
+            .cloned()
+            .collect::<Vec<FieldRef>>(),
+    ));
+    let table_schema = TableSchema::builder(file_schema)
+        .with_table_partition_cols(partition_columns)
+        .build();
+
+    let mut source = format.file_source(table_schema);
+    source = adapt_file_source_for_single_file(source, format, base)?;
+    if let Some(predicate) = base.file_source.filter() {
+        let result =
+            source.try_pushdown_filters(vec![predicate], state.config_options())?;
+        if let Some(updated_node) = result.updated_node {
+            source = updated_node;
+        }
+    }
+
+    // `merged_schema` selects this leaf's columns the way its consumers order
+    // them: the reader takes the projection itself and materializes the
+    // partition columns it keeps from the files' partition values, so no node
+    // has to trim or reorder the rows the leaf reads, and the file-scan shape
+    // the distributed planner rebalances stays untouched. A source that cannot
+    // take a projection keeps the full table schema, which the projection below
+    // then reduces by name.
+    let leaf_schema = source.table_schema().table_schema().clone();
+    let projection = merged_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            leaf_schema
+                .index_of(field.name())
+                .map_err(|_| report!("scan leaf cannot read column '{}'", field.name()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let projection = ProjectionExprs::from_indices(&projection, &leaf_schema);
+    source = source
+        .try_pushdown_projection(&projection)?
+        .unwrap_or(source);
+
+    let config = FileScanConfigBuilder::from(base.clone())
+        .with_source(source)
+        .with_file_groups(vec![FileGroup::new(files)])
+        // Constraints index the outer table schema, not this leaf's.
+        .with_constraints(Constraints::default())
+        .with_statistics(Statistics::new_unknown(merged_schema))
+        // A declared partitioning describes the outer scan's file groups, not
+        // this leaf's single group.
+        .with_output_partitioning(None)
+        .build();
+    let leaf: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(config);
+    if leaf.schema() == *merged_schema {
+        return Ok(Some(leaf));
+    }
+
+    // A file source that refuses the projection leaves the leaf with the whole
+    // table schema, and declared field metadata can still differ from the
+    // merged schema's; select `merged_schema` by name in that case.
+    let exprs = merged_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let index = leaf.schema().index_of(field.name()).map_err(|_| {
+                report!("scan leaf cannot read column '{}'", field.name())
+            })?;
+            Ok((
+                Arc::new(Column::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
+                field.name().clone(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let leaf: Arc<dyn ExecutionPlan> =
+        Arc::new(ProjectionExec::try_new(exprs, leaf).map_err(|e| report!(e))?);
+    Ok((leaf.schema() == *merged_schema).then_some(leaf))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_schema::{DataType, Field};
+    use arrow_schema::{DataType, Field, FieldRef};
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::prelude::SessionContext;
+    use datafusion::scalar::ScalarValue;
 
     #[test]
     fn merge_schema_refs_allows_castable_field_types() {
@@ -970,6 +1135,207 @@ mod tests {
         assert_eq!(
             merged.field_with_name("id").unwrap().data_type(),
             &DataType::Int64
+        );
+    }
+
+    fn object_meta(location: &str) -> ObjectMeta {
+        ObjectMeta {
+            location: object_store::path::Path::from(location),
+            last_modified: chrono::DateTime::<chrono::Utc>::from(
+                std::time::SystemTime::UNIX_EPOCH,
+            ),
+            size: 100,
+            e_tag: None,
+            version: None,
+        }
+    }
+
+    /// One member of a work unit: a single file with `file_schema` and, for a
+    /// range-partitioned table, the partition values of the work unit.
+    fn scan_config(
+        file_schema: SchemaRef,
+        partition_cols: Vec<FieldRef>,
+        partition_values: Vec<ScalarValue>,
+    ) -> FileScanConfig {
+        let source: Arc<dyn FileSource> = Arc::new(ParquetSource::new(TableSchema::new(
+            file_schema,
+            partition_cols,
+        )));
+        let file = PartitionedFile::new_from_meta(object_meta("part-0.parquet"))
+            .with_partition_values(partition_values);
+        FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
+            .with_file_groups(vec![FileGroup::new(vec![file])])
+            .build()
+    }
+
+    fn field(name: &str, nullable: bool) -> FieldRef {
+        Arc::new(Field::new(name, DataType::Int32, nullable))
+    }
+
+    /// The plan of one work unit, unwrapped from a reordering projection.
+    fn leaf_scan_config(leaf: &dyn ExecutionPlan) -> &FileScanConfig {
+        let leaf = leaf
+            .downcast_ref::<ProjectionExec>()
+            .map_or(leaf, |projection| projection.input().as_ref());
+        leaf.downcast_ref::<DataSourceExec>()
+            .expect("the work unit must scan as a plain file scan")
+            .data_source()
+            .downcast_ref::<FileScanConfig>()
+            .expect("the scan leaf must carry a file scan config")
+    }
+
+    /// Scans one append-only work unit as a plain leaf.
+    fn build_leaf(
+        configs: &[FileScanConfig],
+        merged: &SchemaRef,
+    ) -> Arc<dyn ExecutionPlan> {
+        let state = SessionContext::new().state();
+        let format = ParquetFormat::default();
+        append_only_scan_exec(&state, &format, configs, merged)
+            .expect("the leaf builder must not fail")
+            .expect("an append-only work unit scans as a plain leaf")
+    }
+
+    /// A work unit becomes one leaf with a single file group: locally one
+    /// partition reading the files in order, and the unit the distributed
+    /// planner splits over the stage's tasks.
+    #[test]
+    fn append_only_scan_exec_groups_one_schema_into_one_file_group() {
+        let merged: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let configs = vec![
+            scan_config(Arc::clone(&merged), vec![], vec![]),
+            scan_config(Arc::clone(&merged), vec![], vec![]),
+        ];
+
+        let leaf = build_leaf(&configs, &merged);
+
+        assert_eq!(leaf.schema(), merged);
+        let scan = leaf_scan_config(leaf.as_ref());
+        assert_eq!(scan.file_groups.len(), 1);
+        assert_eq!(scan.file_groups[0].files().len(), 2);
+    }
+
+    /// Schema evolution leaves older files narrower than the table. The leaf
+    /// declares the merged schema and the reader pads what a file does not
+    /// have, so such a work unit still scans as one distributable leaf.
+    #[test]
+    fn append_only_scan_exec_serves_files_that_drift_apart() {
+        let old: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let merged: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, true),
+        ]));
+        let configs = vec![
+            scan_config(old, vec![], vec![]),
+            scan_config(Arc::clone(&merged), vec![], vec![]),
+        ];
+
+        let leaf = build_leaf(&configs, &merged);
+
+        assert_eq!(leaf.schema(), merged);
+        let scan = leaf_scan_config(leaf.as_ref());
+        assert_eq!(scan.file_groups[0].files().len(), 2);
+        assert_eq!(
+            scan.file_source.table_schema().file_schema(),
+            &Arc::new((*merged).clone()),
+            "the leaf reads the files as the merged schema"
+        );
+    }
+
+    /// Partition columns are constants of their work unit: the leaf declares
+    /// them, and the reader fills them from each file's partition values.
+    #[test]
+    fn append_only_scan_exec_declares_the_partition_column_of_a_work_unit() {
+        let file_schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let partition_cols = vec![field("part", false)];
+        let configs = vec![
+            scan_config(
+                Arc::clone(&file_schema),
+                partition_cols.clone(),
+                vec![ScalarValue::Int32(Some(7))],
+            ),
+            scan_config(
+                file_schema,
+                partition_cols,
+                vec![ScalarValue::Int32(Some(8))],
+            ),
+        ];
+        let merged: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("part", DataType::Int32, false),
+        ]));
+
+        let leaf = build_leaf(&configs, &merged);
+
+        assert_eq!(leaf.schema(), merged);
+        let scan = leaf_scan_config(leaf.as_ref());
+        assert_eq!(
+            scan.table_partition_cols()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            vec!["part"]
+        );
+        assert_eq!(
+            scan.file_groups[0]
+                .files()
+                .iter()
+                .map(|file| file.partition_values.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                vec![ScalarValue::Int32(Some(7))],
+                vec![ScalarValue::Int32(Some(8))]
+            ],
+            "every file keeps the partition values of its own work unit"
+        );
+    }
+
+    /// The merged schema is a projection of the table schema, so a partition
+    /// column can precede a data column: the leaf reorders it.
+    #[test]
+    fn append_only_scan_exec_reorders_a_merged_schema_that_differs_from_the_table() {
+        let file_schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let configs = vec![scan_config(
+            file_schema,
+            vec![field("part", false)],
+            vec![ScalarValue::Int32(Some(7))],
+        )];
+        let merged: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("part", DataType::Int32, false),
+            Field::new("id", DataType::Int32, false),
+        ]));
+
+        let leaf = build_leaf(&configs, &merged);
+
+        assert_eq!(leaf.schema(), merged);
+        assert_eq!(
+            leaf_scan_config(leaf.as_ref()).file_groups[0].files().len(),
+            1
+        );
+    }
+
+    /// A leaf reads through one file source: files of several compressions
+    /// keep the merge operator over their per-file inputs.
+    #[test]
+    fn append_only_scan_exec_needs_one_file_source() {
+        let merged: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let same = scan_config(Arc::clone(&merged), vec![], vec![]);
+        let mut other = scan_config(Arc::clone(&merged), vec![], vec![]);
+        other.file_compression_type = FileCompressionType::ZSTD;
+        let state = SessionContext::new().state();
+        let format = ParquetFormat::default();
+
+        let leaf = append_only_scan_exec(&state, &format, &[same, other], &merged)
+            .expect("the leaf builder must not fail");
+
+        assert!(
+            leaf.is_none(),
+            "files read differently cannot share one scan leaf"
         );
     }
 }

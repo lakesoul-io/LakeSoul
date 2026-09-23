@@ -76,6 +76,26 @@ impl CoreArgs {
             worker_threads: 2,
         }
     }
+
+    pub fn merge_from_other(&mut self, other: &Self) {
+        if let Some(warehouse_prefix) = &other.warehouse_prefix {
+            self.warehouse_prefix = Some(warehouse_prefix.clone());
+        }
+        if let Some(endpoint) = &other.endpoint {
+            self.endpoint = Some(endpoint.clone());
+        }
+        if let Some(s3_access_key) = &other.s3_access_key {
+            self.s3_access_key = Some(s3_access_key.clone());
+        }
+        if let Some(s3_secret_key) = &other.s3_secret_key {
+            self.s3_secret_key = Some(s3_secret_key.clone());
+        }
+        if let Some(bucket) = &other.s3_bucket {
+            self.s3_bucket = Some(bucket.clone());
+        }
+        self.s3_virtual_host_style |= other.s3_virtual_host_style;
+        self.worker_threads = other.worker_threads;
+    }
 }
 
 #[cfg(test)]

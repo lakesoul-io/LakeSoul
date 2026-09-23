@@ -18,7 +18,10 @@
 //! of the same keys across files, a scan that is a single merge work unit and
 //! one that is several (distributed union), range partitions, hash buckets,
 //! CDC delete tombstones, filter pushdown, projections, `ORDER BY`/`LIMIT`,
-//! hash `GROUP BY` after the scan, and queries running while upserts commit.
+//! hash `GROUP BY` after the scan, queries running while upserts commit, and
+//! a plan-only matrix that pins which of the four table shapes
+//! (primary key × range partition) the distributed planner distributes at all
+//! (`test_distribution_matrix_by_table_shape`).
 //!
 //! Not covered by this suite, deliberately:
 //!
@@ -27,9 +30,11 @@
 //!   Spark integration), so the mix cannot be produced here;
 //! - *schema evolution and default-column filling across files*: writing a
 //!   narrower batch into a wider table needs a narrower declared schema,
-//!   which the upsert path does not offer. The nullability half of that path
-//!   — a logically non-null column kept non-null while merging files that
-//!   lack it — is pinned by `catalog`/`merge` unit tests instead.
+//!   which the upsert path does not offer, so this suite cannot produce the
+//!   state. The append-only scan leaf over such files is pinned by
+//!   `lakesoul-io`'s `append_only_leaf` test, and the nullability half of the
+//!   merge path — a logically non-null column kept non-null while merging
+//!   files that lack it — by `catalog`/`merge` unit tests instead.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,14 +42,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arrow::array::{ArrayRef, Int32Array, Int64Array};
 use arrow::record_batch::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use lakesoul_io::config::LakeSoulIOConfigBuilder;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionContext;
+use datafusion_distributed::{DistributedExec, display_plan_ascii};
+use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+use lakesoul_io::file_format::PhysicalFormat;
+use lakesoul_io::physical_plan::MergeParquetExec;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
 use crate::distributed::{DistributedOptions, LakeSoulWorkerOptions, WorkerDiscovery};
 use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
-use crate::tests::{assert_batches_eq, cdc_batch, create_cdc_table, create_table};
+use crate::tests::{
+    assert_batches_eq, cdc_batch, create_cdc_table, create_table_with_file_format,
+};
 use crate::{Result, cli::CoreArgs};
 
 const WORKER_COUNT: usize = 3;
@@ -66,6 +79,25 @@ where
 {
     let _serialized = DISTRIBUTED_TEST_LOCK.lock();
     Runtime::new().unwrap().block_on(future).unwrap();
+}
+
+/// Creates a table pinned to Parquet.
+///
+/// The distributed codec ships Parquet scan leaves to workers; a vortex scan
+/// leaf has no wire form yet (`VortexSource` has no `try_to_proto` and the
+/// encoding context `datafusion-proto` would need is not reachable from a
+/// `PhysicalExtensionCodec`), so distributed execution currently runs on
+/// Parquet tables only. A query over a vortex table that would use the workers
+/// is refused while planning (the gate in `distributed::planner`); one that
+/// stays on the coordinator still runs (see the vortex tests at the end of this
+/// module).
+async fn create_distributed_table(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+) -> Result<()> {
+    create_table_with_file_format(client, table_name, config, PhysicalFormat::Parquet)
+        .await
 }
 
 /// Spawns `workers` in-process LakeSoul workers on free ports and returns
@@ -140,7 +172,7 @@ async fn seed_tables(client: MetaDataClientRef) -> Result<(String, String)> {
     let t1_name = format!("distributed_t1_{suffix}");
     let t2_name = format!("distributed_t2_{suffix}");
 
-    create_table(
+    create_distributed_table(
         client.clone(),
         &t1_name,
         LakeSoulIOConfigBuilder::new()
@@ -157,7 +189,7 @@ async fn seed_tables(client: MetaDataClientRef) -> Result<(String, String)> {
     ))
     .await?;
 
-    create_table(
+    create_distributed_table(
         client.clone(),
         &t2_name,
         LakeSoulIOConfigBuilder::new()
@@ -216,7 +248,7 @@ async fn seed_pk_tables(client: MetaDataClientRef) -> Result<(String, String)> {
 
     // One work unit: `id` is the primary key and therefore the bucket key.
     let single_unit = format!("distributed_pk_one_{suffix}");
-    create_table(
+    create_distributed_table(
         client.clone(),
         &single_unit,
         LakeSoulIOConfigBuilder::new()
@@ -237,7 +269,7 @@ async fn seed_pk_tables(client: MetaDataClientRef) -> Result<(String, String)> {
         Field::new("hash", DataType::Int32, false),
         Field::new("v", DataType::Int32, false),
     ]));
-    create_table(
+    create_distributed_table(
         client.clone(),
         &multi_unit,
         LakeSoulIOConfigBuilder::new()
@@ -504,7 +536,7 @@ async fn test_cdc_deletes_and_pushdown_match_single_node_inner() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
     let table = format!("distributed_cdc_{suffix}");
-    create_cdc_table(client.clone(), &table).await?;
+    create_cdc_table(client.clone(), &table, PhysicalFormat::Parquet).await?;
     let lakehouse = crate::lakesoul_table::LakeSoulTable::for_name(&table).await?;
     for batch in [
         cdc_batch(&[1, 2, 3], &[10, 20, 30], &["insert", "insert", "insert"]),
@@ -581,7 +613,7 @@ async fn test_queries_during_concurrent_upserts_stay_consistent_inner() -> Resul
     let client = Arc::new(MetaDataClient::from_env().await?);
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
     let table = format!("distributed_concurrent_{suffix}");
-    create_table(
+    create_distributed_table(
         client.clone(),
         &table,
         LakeSoulIOConfigBuilder::new()
@@ -879,64 +911,51 @@ async fn test_explain_analyze_shows_distributed_stages_inner() -> Result<()> {
     Ok(())
 }
 
+/// A query is refused without a ready worker only when the distributed
+/// planner cannot plan it at all.
+///
+/// While no worker is ready the distributed planner plans the query
+/// single-node by itself — it caps every stage at one task, so no network
+/// boundary survives — and that plan is not a failure: it runs on the
+/// coordinator in both modes. `fallback_to_local` only decides what happens
+/// when the distributed planner fails, which is pinned by the gate's unit
+/// tests.
 #[test]
-fn test_production_fails_fast_without_workers() {
-    run_distributed_test(test_production_fails_fast_without_workers_inner());
+fn test_no_ready_workers_runs_on_the_coordinator() {
+    run_distributed_test(test_no_ready_workers_runs_on_the_coordinator_inner());
 }
 
-async fn test_production_fails_fast_without_workers_inner() -> Result<()> {
+async fn test_no_ready_workers_runs_on_the_coordinator_inner() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let (t1, _t2) = seed_tables(client.clone()).await?;
 
-    let distributed = distributed_factory(client.clone(), Vec::new(), false)?;
-    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
-
-    let sql = format!("SELECT part, b FROM {t1} WHERE b > 5");
-    let dataframe = ctx.sql(&sql).await.expect("logical planning must succeed");
-    let err = dataframe
-        .collect()
-        .await
-        .expect_err("production must fast-fail with no ready workers");
-    assert!(
-        err.to_string().contains("no ready LakeSoul workers"),
-        "unexpected error: {err}"
-    );
-
-    // The table is still readable single-node for comparison.
-    let single_node = single_node_factory(client)?;
-    let batches = single_node
-        .create_session(&LakeSoulSessionOptions::default())?
-        .sql(&format!(
-            "SELECT part, b FROM {t1} WHERE b > 5 ORDER BY part, b"
-        ))
-        .await?
-        .collect()
-        .await?;
-    assert_batches_eq(
-        "SELECT part, b FROM distributed_t1 WHERE b > 5 ORDER BY part, b",
-        FILTER_RESULT,
-        &batches,
-    );
-    Ok(())
-}
-
-#[test]
-fn test_dev_fallback_runs_single_node() {
-    run_distributed_test(test_dev_fallback_runs_single_node_inner());
-}
-
-async fn test_dev_fallback_runs_single_node_inner() -> Result<()> {
-    let client = Arc::new(MetaDataClient::from_env().await?);
-    let (t1, _t2) = seed_tables(client.clone()).await?;
-
-    let distributed = distributed_factory(client.clone(), Vec::new(), true)?;
+    let sql = format!("SELECT part, b FROM {t1} WHERE b > 5 ORDER BY part, b");
+    let queries = vec![(sql.clone(), FILTER_RESULT.to_vec())];
     let single_node = single_node_factory(client.clone())?;
 
-    let queries: Vec<(String, Vec<&str>)> = vec![(
-        format!("SELECT part, b FROM {t1} WHERE b > 5 ORDER BY part, b"),
-        FILTER_RESULT.to_vec(),
-    )];
-    assert_matches_single_node(&distributed, &single_node, &queries).await
+    for fallback_to_local in [false, true] {
+        let distributed =
+            distributed_factory(client.clone(), Vec::new(), fallback_to_local)?;
+        assert_matches_single_node(&distributed, &single_node, &queries).await?;
+
+        // The plan must not pretend to have run on a worker: with no ready
+        // worker the query is a single-node plan, not a distributed stage.
+        let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+        let plan = ctx
+            .sql(&format!("EXPLAIN ANALYZE {sql}"))
+            .await?
+            .collect()
+            .await?;
+        let explain = datafusion::arrow::util::pretty::pretty_format_batches(&plan)
+            .unwrap()
+            .to_string();
+        assert!(
+            !explain.contains("DistributedExec"),
+            "a plan with no ready worker must not claim a distributed stage \
+             (fallback_to_local={fallback_to_local}):\n{explain}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -945,4 +964,645 @@ fn worker_urls_reject_malformed_entries() {
 
     let resolver = StaticWorkerResolver::new(vec!["not a url".to_string()]);
     assert!(resolver.is_err());
+}
+
+/// An append-only work unit is a plain file scan, so its files fan out over
+/// the stage's tasks.
+///
+/// The table below has no range partition: all nine files of the table form a
+/// single work unit. Reading it must still use the workers — the scan leaf is
+/// the `DataSourceExec` the merge operator would have wrapped, and the
+/// distributed planner splits its one file group by file and byte range —
+/// whereas a work unit pinned to a merge operator runs entirely on the
+/// coordinator (or in one worker task) however many files it holds.
+#[test]
+fn test_append_only_scan_fans_out_over_tasks() {
+    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner());
+}
+
+async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
+    const FILES: usize = 9;
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_flat_{suffix}");
+
+    create_distributed_table(
+        client.clone(),
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(t1_schema())
+            .build(),
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    for round in 0..FILES as i32 {
+        table
+            .execute_upsert(batch(
+                t1_schema(),
+                vec![0, 0, 0, 1, 1, 1, 2, 2, 2],
+                vec![
+                    round * 100 + 1,
+                    round * 100 + 2,
+                    round * 100 + 3,
+                    round * 100 + 11,
+                    round * 100 + 12,
+                    round * 100 + 13,
+                    round * 100 + 21,
+                    round * 100 + 22,
+                    round * 100 + 23,
+                ],
+            ))
+            .await?;
+    }
+
+    // One task per file is reachable: nine workers, and one byte per requested
+    // partition, so the desired task count exceeds the number of files.
+    let (worker_urls, mut workers) = spawn_workers(FILES).await;
+    let distributed = LakeSoulSessionFactory::new(client.clone(), &CoreArgs::default())?
+        .with_distributed(DistributedOptions {
+            discovery: WorkerDiscovery::Static(worker_urls),
+            fallback_to_local: false,
+            target_partitions: FILES,
+            bytes_per_partition: Some(1),
+        });
+    let single_node = single_node_factory(client.clone())?;
+
+    // Projections of a partition column only, of a file column, and of both:
+    // the scan leaf reads the file columns and takes the partition columns as
+    // constants of the work unit.
+    let queries: Vec<(String, Vec<&str>)> = vec![
+        (
+            format!("SELECT count(*) AS cnt FROM {name}"),
+            vec!["+-----+", "| cnt |", "+-----+", "| 81  |", "+-----+"],
+        ),
+        (
+            format!(
+                "SELECT part, count(*) AS cnt, sum(b) AS total \
+                 FROM {name} GROUP BY part ORDER BY part"
+            ),
+            vec![
+                "+------+-----+-------+",
+                "| part | cnt | total |",
+                "+------+-----+-------+",
+                "| 0    | 27  | 10854 |",
+                "| 1    | 27  | 11124 |",
+                "| 2    | 27  | 11394 |",
+                "+------+-----+-------+",
+            ],
+        ),
+        (
+            format!("SELECT b FROM {name} WHERE part = 2 AND b < 30 ORDER BY b"),
+            vec![
+                "+----+", "| b  |", "+----+", "| 21 |", "| 22 |", "| 23 |", "+----+",
+            ],
+        ),
+    ];
+    assert_matches_single_node(&distributed, &single_node, &queries).await?;
+
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    let sql = format!("EXPLAIN ANALYZE SELECT part, count(*) FROM {name} GROUP BY part");
+    let plan = ctx.sql(&sql).await?.collect().await?;
+    let explain = datafusion::arrow::util::pretty::pretty_format_batches(&plan)
+        .unwrap()
+        .to_string();
+
+    assert!(
+        !explain.contains("MergeParquetExec"),
+        "append-only scan must not need a merge operator:\n{explain}"
+    );
+    let stage_tasks = explain
+        .lines()
+        .find(|line| line.contains("Stage 1 ──"))
+        .and_then(|line| line.split("tasks=").nth(1))
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|tasks| tasks.trim().parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("no scan stage in plan:\n{explain}"));
+    assert!(
+        stage_tasks > 1,
+        "single-work-unit append-only scan ran in {stage_tasks} task(s); \
+         its {FILES} files must fan out over the stage's tasks:\n{explain}"
+    );
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// One row of the distribution matrix: a query over one LakeSoul table shape
+/// and the physical plan it must produce.
+struct ShapeCase {
+    /// Table shape under test, used in assertion messages.
+    shape: &'static str,
+    sql: String,
+    /// Whether the distributed planner must wrap the plan in `DistributedExec`.
+    distributed: bool,
+    /// How many merge-on-read work units (`MergeParquetExec` nodes) the plan
+    /// must contain.
+    merge_units: usize,
+}
+
+/// One fresh table per shape of the distribution matrix.
+struct ShapeTables {
+    flat_append: String,
+    flat_pk: String,
+    partitioned_append: String,
+    partitioned_pk: String,
+    single_partition_pk: String,
+    empty_pk: String,
+}
+
+/// `part, id, v` — `part` is the range partition of the partitioned shapes,
+/// `id` the primary key of the primary-key shapes, `v` a value column.
+fn shape_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("id", DataType::Int32, false),
+        Field::new("v", DataType::Int32, false),
+    ]))
+}
+
+/// Three rows per range-partition value; `round` makes every key appear in a
+/// second file so primary-key tables need a real merge-on-read.
+fn shape_batch(round: i32, parts: &[i32]) -> RecordBatch {
+    let mut batch_parts = vec![];
+    let mut ids = vec![];
+    let mut values = vec![];
+    for &part in parts {
+        for row in 0..3 {
+            batch_parts.push(part);
+            ids.push(part * 10 + row);
+            values.push(round * 100 + part * 10 + row);
+        }
+    }
+    RecordBatch::try_new(
+        shape_schema(),
+        vec![
+            Arc::new(Int32Array::from(batch_parts)) as ArrayRef,
+            Arc::new(Int32Array::from(ids)) as ArrayRef,
+            Arc::new(Int32Array::from(values)) as ArrayRef,
+        ],
+    )
+    .unwrap()
+}
+
+/// Creates the six matrix tables; all but `empty_pk` get two versions of the
+/// same keys written through the normal upsert path.
+///
+/// For the partitioned shapes a single upsert covers all three range
+/// partitions, so each of them holds one work unit, i.e. one `MergeParquetExec`
+/// or one scan leaf per partition value.
+async fn seed_shape_matrix(client: MetaDataClientRef) -> Result<ShapeTables> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let tables = ShapeTables {
+        flat_append: format!("distributed_shape_flat_append_{suffix}"),
+        flat_pk: format!("distributed_shape_flat_pk_{suffix}"),
+        partitioned_append: format!("distributed_shape_part_append_{suffix}"),
+        partitioned_pk: format!("distributed_shape_part_pk_{suffix}"),
+        single_partition_pk: format!("distributed_shape_single_part_pk_{suffix}"),
+        empty_pk: format!("distributed_shape_empty_pk_{suffix}"),
+    };
+
+    let shapes: [(&str, &[&str], &[&str]); 6] = [
+        (&tables.flat_append, &[], &[]),
+        (&tables.flat_pk, &["id"], &[]),
+        (&tables.partitioned_append, &[], &["part"]),
+        (&tables.partitioned_pk, &["id"], &["part"]),
+        (&tables.single_partition_pk, &["id"], &["part"]),
+        (&tables.empty_pk, &["id"], &[]),
+    ];
+    for (name, primary_keys, range_partitions) in shapes {
+        create_distributed_table(
+            client.clone(),
+            name,
+            LakeSoulIOConfigBuilder::new()
+                .with_schema(shape_schema())
+                .with_primary_keys(primary_keys.iter().map(|k| k.to_string()).collect())
+                .with_range_partitions(
+                    range_partitions.iter().map(|p| p.to_string()).collect(),
+                )
+                .build(),
+        )
+        .await?;
+    }
+
+    for name in [
+        &tables.flat_append,
+        &tables.flat_pk,
+        &tables.partitioned_append,
+        &tables.partitioned_pk,
+    ] {
+        let table = crate::lakesoul_table::LakeSoulTable::for_name(name).await?;
+        table.execute_upsert(shape_batch(0, &[0, 1, 2])).await?;
+        table.execute_upsert(shape_batch(1, &[0, 1, 2])).await?;
+    }
+
+    // A range-partitioned primary-key table with a single populated range
+    // partition: one merge work unit, which must stay on the coordinator.
+    let table =
+        crate::lakesoul_table::LakeSoulTable::for_name(&tables.single_partition_pk)
+            .await?;
+    table.execute_upsert(shape_batch(0, &[0])).await?;
+    table.execute_upsert(shape_batch(1, &[0])).await?;
+
+    Ok(tables)
+}
+
+/// One identical `GROUP BY` per shape: the only variable is the scan leaf the
+/// table shape produces.
+fn shape_matrix_cases(tables: &ShapeTables) -> Vec<ShapeCase> {
+    let group_by =
+        |table: &str| format!("SELECT id, count(*) AS c FROM {table} GROUP BY id");
+    vec![
+        ShapeCase {
+            shape: "append-only, no range partition",
+            sql: group_by(&tables.flat_append),
+            distributed: true,
+            merge_units: 0,
+        },
+        ShapeCase {
+            shape: "primary key, no range partition",
+            sql: group_by(&tables.flat_pk),
+            distributed: false,
+            merge_units: 1,
+        },
+        ShapeCase {
+            shape: "append-only, range partitioned",
+            sql: group_by(&tables.partitioned_append),
+            distributed: true,
+            merge_units: 0,
+        },
+        ShapeCase {
+            shape: "primary key, range partitioned",
+            sql: group_by(&tables.partitioned_pk),
+            distributed: true,
+            merge_units: 3,
+        },
+        // A range predicate reaches `scan` for metadata pruning, so the
+        // three work units collapse to the one with `part = 0` and the plan
+        // stays on the coordinator. The unsafe value predicate must not
+        // prevent that pruning (conjunctions are classified per conjunct).
+        ShapeCase {
+            shape: "primary key, range partitioned, range filter",
+            sql: format!(
+                "SELECT id, count(*) AS c FROM {} WHERE part = 0 GROUP BY id",
+                tables.partitioned_pk
+            ),
+            distributed: false,
+            merge_units: 1,
+        },
+        ShapeCase {
+            shape: "primary key, range partitioned, range filter and value filter",
+            sql: format!(
+                "SELECT id, count(*) AS c FROM {} WHERE part = 0 AND v > 0 GROUP BY id",
+                tables.partitioned_pk
+            ),
+            distributed: false,
+            merge_units: 1,
+        },
+        ShapeCase {
+            shape: "primary key, range partitioned, single populated partition",
+            sql: group_by(&tables.single_partition_pk),
+            distributed: false,
+            merge_units: 1,
+        },
+        ShapeCase {
+            shape: "primary key, empty table",
+            sql: group_by(&tables.empty_pk),
+            distributed: false,
+            merge_units: 0,
+        },
+    ]
+}
+
+/// Counts merge-on-read work units in a physical plan.
+///
+/// Network boundaries expose the plan of their local stage as a child, so a
+/// single walk reaches the merge operators of distributed stages as well.
+fn count_merge_work_units(plan: &Arc<dyn ExecutionPlan>) -> usize {
+    let mut count = 0;
+    plan.apply(|node| {
+        if node.is::<MergeParquetExec>() {
+            count += 1;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("walking a physical plan cannot fail");
+    count
+}
+
+/// Plans `case.sql` without executing it and asserts the distribution decision
+/// and the scan leaf it was made on.
+async fn assert_plan_shape(ctx: &SessionContext, case: &ShapeCase) -> Result<()> {
+    let plan = ctx.sql(&case.sql).await?.create_physical_plan().await?;
+    let distributed = plan.is::<DistributedExec>();
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    assert_eq!(
+        distributed, case.distributed,
+        "{}: distributed={distributed}, expected {}\n{explain}",
+        case.shape, case.distributed,
+    );
+    assert_eq!(
+        count_merge_work_units(&plan),
+        case.merge_units,
+        "{}: unexpected merge work units\n{explain}",
+        case.shape,
+    );
+    Ok(())
+}
+
+/// Plans one query per LakeSoul table shape and pins whether the distributed
+/// planner distributes it, without executing anything.
+///
+/// The shapes differ in the scan leaf they produce: an append-only work unit is
+/// a plain file scan the distributed planner splits over tasks, a primary-key
+/// work unit is a merge operator pinned to one task, and range partitions add
+/// a union of work units per partition value. The assertions are structural —
+/// `DistributedExec` or not, and how many merge work units the plan holds — so
+/// they do not depend on file names, stage ids or plan formatting.
+#[test]
+fn test_distribution_matrix_by_table_shape() {
+    run_distributed_test(test_distribution_matrix_by_table_shape_inner());
+}
+
+async fn test_distribution_matrix_by_table_shape_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let tables = seed_shape_matrix(client.clone()).await?;
+
+    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    for case in shape_matrix_cases(&tables) {
+        assert_plan_shape(&ctx, &case).await?;
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// A single worker cannot host a second task: every stage is capped at one
+/// task, all network boundaries are elided, and even the shapes that distribute
+/// over three workers are planned for the coordinator.
+///
+/// This is the planner's own decision, not a fallback for a planning failure:
+/// the availability policy gate is only consulted when the distributed planner
+/// errors.
+#[test]
+fn test_single_worker_plans_every_shape_on_the_coordinator() {
+    run_distributed_test(test_single_worker_plans_every_shape_on_the_coordinator_inner());
+}
+
+async fn test_single_worker_plans_every_shape_on_the_coordinator_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let tables = seed_shape_matrix(client.clone()).await?;
+
+    let (worker_urls, mut workers) = spawn_workers(1).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    for case in shape_matrix_cases(&tables) {
+        let case = ShapeCase {
+            distributed: false,
+            ..case
+        };
+        assert_plan_shape(&ctx, &case).await?;
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Creates the append-only table the vortex wire tests read: no primary key,
+/// no range partition, two files of `t1_schema()` rows.
+async fn seed_vortex_append_table(client: MetaDataClientRef) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_vortex_append_{suffix}");
+    create_table_with_file_format(
+        client,
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(t1_schema())
+            .build(),
+        PhysicalFormat::Vortex,
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    table
+        .execute_upsert(batch(
+            t1_schema(),
+            vec![0, 0, 0, 1, 1, 1, 2, 2, 2],
+            vec![1, 2, 3, 11, 12, 13, 21, 22, 23],
+        ))
+        .await?;
+    table
+        .execute_upsert(batch(
+            t1_schema(),
+            vec![0, 0, 0, 1, 1, 1, 2, 2, 2],
+            vec![4, 5, 6, 14, 15, 16, 24, 25, 26],
+        ))
+        .await?;
+    Ok(name)
+}
+
+/// Rows per range partition of `seed_vortex_append_table`'s table: append-only,
+/// so both rounds stay visible.
+const VORTEX_APPEND_COUNTS: &[&str] = &[
+    "+------+-----+",
+    "| part | cnt |",
+    "+------+-----+",
+    "| 0    | 6   |",
+    "| 1    | 6   |",
+    "| 2    | 6   |",
+    "+------+-----+",
+];
+
+/// Creates a range-partitioned primary-key vortex table with two versions of
+/// every key: three merge work units, the shape the distributed planner
+/// distributes as a union of merge operators.
+async fn seed_vortex_pk_table(client: MetaDataClientRef) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_vortex_pk_{suffix}");
+    create_table_with_file_format(
+        client,
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(shape_schema())
+            .with_primary_keys(vec!["id".to_string()])
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+        PhysicalFormat::Vortex,
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    table.execute_upsert(shape_batch(0, &[0, 1, 2])).await?;
+    table.execute_upsert(shape_batch(1, &[0, 1, 2])).await?;
+    Ok(name)
+}
+
+/// A vortex scan that a query would send to a worker is refused while
+/// planning.
+///
+/// No worker can decode a vortex file source, and the coordinator only notices
+/// while sending the stage — its encoding error surfaces as a worker-side
+/// failure (the worker waits for a plan that never arrives) long after planning
+/// has returned. The gate therefore fails the query at planning time, where
+/// `fallback_to_local` can still act on it (see the next test).
+///
+/// Both shapes that send a scan to a worker are covered: an append-only table
+/// whose scan fans out over the stage's tasks, and a primary-key table whose
+/// three merge work units merge in the workers.
+#[test]
+fn test_vortex_table_is_refused_by_the_distributed_planner() {
+    run_distributed_test(test_vortex_table_is_refused_by_the_distributed_planner_inner());
+}
+
+async fn test_vortex_table_is_refused_by_the_distributed_planner_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let append = seed_vortex_append_table(client.clone()).await?;
+    let partitioned_pk = seed_vortex_pk_table(client.clone()).await?;
+
+    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+
+    for (shape, sql) in [
+        (
+            "append-only scan",
+            format!(
+                "SELECT part, count(*) AS cnt FROM {append} GROUP BY part ORDER BY part"
+            ),
+        ),
+        (
+            "primary-key work units",
+            format!("SELECT id, count(*) AS c FROM {partitioned_pk} GROUP BY id"),
+        ),
+    ] {
+        let err = ctx
+            .sql(&sql)
+            .await?
+            .collect()
+            .await
+            .expect_err("a vortex stage cannot be sent to a worker");
+        let message = err.find_root().to_string();
+        assert!(
+            message.contains("wire-encodable scan leaf"),
+            "{shape}: expected the gate to refuse the plan while planning: {message}"
+        );
+        assert!(message.contains(".vortex"), "{shape}: {message}");
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// The development fallback turns the same refusal into a coordinator-only
+/// query: the gate plans it with the plain LakeSoul planner, which reads vortex
+/// files in place.
+#[test]
+fn test_vortex_table_runs_on_the_coordinator_with_the_fallback() {
+    run_distributed_test(
+        test_vortex_table_runs_on_the_coordinator_with_the_fallback_inner(),
+    );
+}
+
+async fn test_vortex_table_runs_on_the_coordinator_with_the_fallback_inner() -> Result<()>
+{
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let name = seed_vortex_append_table(client.clone()).await?;
+
+    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, true)?;
+    let single_node = single_node_factory(client.clone())?;
+    let sql =
+        format!("SELECT part, count(*) AS cnt FROM {name} GROUP BY part ORDER BY part");
+    let queries = vec![(sql.clone(), VORTEX_APPEND_COUNTS.to_vec())];
+    assert_matches_single_node(&distributed, &single_node, &queries).await?;
+
+    // The plan is the local planner's: no stage is sent, so nothing about it
+    // depends on a worker.
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    let plan = ctx
+        .sql(&format!("EXPLAIN ANALYZE {sql}"))
+        .await?
+        .collect()
+        .await?;
+    let explain = datafusion::arrow::util::pretty::pretty_format_batches(&plan)
+        .unwrap()
+        .to_string();
+    assert!(
+        !explain.contains("DistributedExec"),
+        "the fallback must run the query on the coordinator:\n{explain}"
+    );
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Only stages are checked, so a vortex table whose plan the distributed
+/// planner keeps single-node runs without the fallback.
+///
+/// A primary-key table without range partitions has one merge work unit, which
+/// is pinned to one task, and the boundary above it is elided
+/// (`test_distribution_matrix_by_table_shape`), so the merge operator reads
+/// vortex files on the coordinator. Refusing that plan would fail a query no
+/// worker was ever asked to run.
+#[test]
+fn test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent() {
+    run_distributed_test(
+        test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent_inner(),
+    );
+}
+
+async fn test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent_inner()
+-> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_vortex_local_{suffix}");
+    create_table_with_file_format(
+        client.clone(),
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(pk_schema())
+            .with_primary_keys(vec!["id".to_string()])
+            .build(),
+        PhysicalFormat::Vortex,
+    )
+    .await?;
+    upsert_pk(&name, vec![1, 2, 3], vec![10, 20, 30]).await?;
+    upsert_pk(&name, vec![2, 3, 4], vec![200, 300, 400]).await?;
+
+    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+
+    let sql = format!("SELECT id, v FROM {name} ORDER BY id");
+    let plan = ctx
+        .sql(&format!("EXPLAIN ANALYZE {sql}"))
+        .await?
+        .collect()
+        .await?;
+    let explain = datafusion::arrow::util::pretty::pretty_format_batches(&plan)
+        .unwrap()
+        .to_string();
+    assert!(
+        !explain.contains("DistributedExec"),
+        "this shape must stay on the coordinator, or the gate would refuse \
+         it:\n{explain}"
+    );
+
+    let batches = ctx.sql(&sql).await?.collect().await?;
+    assert_batches_eq(
+        &sql,
+        &[
+            "+----+-----+",
+            "| id | v   |",
+            "+----+-----+",
+            "| 1  | 10  |",
+            "| 2  | 200 |",
+            "| 3  | 300 |",
+            "| 4  | 400 |",
+            "+----+-----+",
+        ],
+        &batches,
+    );
+
+    workers.abort_all();
+    Ok(())
 }
