@@ -17,6 +17,7 @@
 
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
+use datafusion::prelude::Expr;
 use lakesoul_common::ser::arrow_java::schema_to_metadata_str;
 use lakesoul_io::{
     config::{LakeSoulIOConfig, OPTION_KEY_STABLE_SORT},
@@ -234,15 +235,32 @@ impl IvmTable {
 
     /// Read the given data files with this table's schema and merge key.
     pub async fn read_files(&self, files: Vec<String>) -> Result<Vec<RecordBatch>> {
+        self.read_files_with_filters(files, Vec::new()).await
+    }
+
+    async fn read_files_with_filters(
+        &self,
+        files: Vec<String>,
+        filters: Vec<Expr>,
+    ) -> Result<Vec<RecordBatch>> {
         if files.is_empty() {
             return Ok(Vec::new());
         }
-        let config = LakeSoulIOConfig::builder()
+        let mut builder = LakeSoulIOConfig::builder()
             .with_files(files)
             .with_schema(self.schema.clone())
             .with_primary_keys(self.primary_keys.clone())
-            .with_physical_format(PhysicalFormat::Parquet)
-            .build();
+            .with_physical_format(PhysicalFormat::Parquet);
+        if !filters.is_empty() {
+            // `with_filters` is deprecated in favour of the string/proto
+            // variants, but it is the only API that keeps the filters as typed
+            // expressions, which is what the runtime builds.
+            #[allow(deprecated)]
+            {
+                builder = builder.with_filters(filters);
+            }
+        }
+        let config = builder.build();
         let mut reader = LakeSoulReader::new(config)?;
         reader.start().await?;
 
@@ -258,6 +276,19 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
     ) -> Result<Vec<RecordBatch>> {
+        self.read_current_filtered(client, Vec::new()).await
+    }
+
+    /// Read the current merge-on-read state restricted to `filters`.
+    ///
+    /// The filters are pushed into the LakeSoul reader, so row groups whose
+    /// statistics do not overlap the predicate can be skipped. Used by the
+    /// window refresh to read only the affected partitions of a source.
+    pub async fn read_current_filtered(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+    ) -> Result<Vec<RecordBatch>> {
         let mut files = Vec::new();
         for partition in client.get_all_partition_info(&self.table_id).await? {
             files.extend(
@@ -266,7 +297,10 @@ impl IvmTable {
                     .await?,
             );
         }
-        self.read_files(files).await
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.read_files_with_filters(files, filters).await
     }
 
     /// Read the state of the table as of `as_of_ms` (inclusive).
