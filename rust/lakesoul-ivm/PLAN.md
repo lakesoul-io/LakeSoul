@@ -32,8 +32,8 @@
 
 ### 路线图
 
-- **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~
-  （已完成）→ `ivm.states` 注册表 → Window 扩展
+- **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~、
+  ~~`ivm.states` 注册表~~（已完成）→ Window 扩展
   （RANK/DENSE_RANK/聚合窗口、源按分区裁剪）→ SEMI/ANTI 扩展（非等值、投影下推）
   → 投影/Filter/Union ALL 视图与 TOP-K
 - **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
@@ -570,6 +570,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/join_keyed.rs`：双侧 upsert/delete、join key 在 NULL/非 NULL 间
   迁移、payload 更新、两侧同窗口对齐、多列 join key（Utf8 + Int64）、rebuild
   以及与 SQL inner join 的逐行对照；另有混合源/可空主键校验测试。
+
+**`ivm.states` 注册表实施记录（已完成）**
+
+- 新增 PG 表 `ivm.states(view_id, role, table_id, table_name, namespace,
+  table_path, created_at)`，主键 `(view_id, role)`；角色 `StateRole::{Mv, State}`
+  （mv = MV 输出兼状态，state = 值计数状态表）。
+- `IvmMetadata::{register_state, get_state, list_states}`；`delete_view` 一并
+  清理状态注册。
+- 每个 `register_*_view`（SUM/COUNT、MIN/MAX、DISTINCT、WINDOW、SEMI/ANTI、
+  JOIN）在 `upsert_view` 之前注册内部表，因此冲突报错不会改动 `ivm.views`
+  里的 spec；重复注册同一张表幂等。
+- 绑定保护：同一 `(view, role)` 首次注册后，再用不同 table_id 注册同一个
+  view id 会报错，避免两个视图静默共用/切换状态表。
+- `IvmRuntime::list_states(view_id)` 暴露注册表查询。
+- 测试 `tests/states_registry.rs`：各类视图的角色与 table_id 注册、重复刷新与
+  rebuild 幂等、冲突表被拒绝且原绑定保留、`delete_view` 清理注册。
 
 ## 9. 风险与开放问题
 
