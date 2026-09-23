@@ -17,6 +17,7 @@ use std::sync::Arc;
 use arrow::record_batch::RecordBatch;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use datafusion::common::ScalarValue;
 use datafusion::prelude::{DataFrame, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
@@ -44,8 +45,12 @@ pub const IVM_NONNULL_COUNT_COLUMN: &str = "__ivm_nonnull_count";
 pub const IVM_VALUE_COLUMN: &str = "value";
 /// The value-count column of the MIN/MAX state table.
 pub const IVM_VALUE_COUNT_COLUMN: &str = "value_count";
-/// The row-number column of a [`WindowView`] materialized view.
+/// The row-number column of a `ROW_NUMBER()` [`WindowView`] materialized view.
 pub const IVM_ROW_NUMBER_COLUMN: &str = "row_number";
+/// The rank column of a `RANK()` [`WindowView`] materialized view.
+pub const IVM_RANK_COLUMN: &str = "rank";
+/// The rank column of a `DENSE_RANK()` [`WindowView`] materialized view.
+pub const IVM_DENSE_RANK_COLUMN: &str = "dense_rank";
 
 /// Whether a [`MinMaxView`] maintains the minimum or the maximum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,12 +73,63 @@ pub enum DistinctAggKind {
 }
 
 /// The window function a [`WindowView`] maintains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowFunction {
     /// `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)`. The source primary
     /// keys are appended to the ordering so ties are broken deterministically.
+    #[default]
     RowNumber,
+    /// `RANK() OVER (PARTITION BY ... ORDER BY ...)`. Ties share the smallest
+    /// rank and the next rank is skipped.
+    Rank,
+    /// `DENSE_RANK() OVER (PARTITION BY ... ORDER BY ...)`. Ties share a rank
+    /// and ranks are consecutive.
+    DenseRank,
+    /// `SUM(value_column) OVER (PARTITION BY ... [ORDER BY ...])`; without
+    /// order keys the whole partition is summed, otherwise the SQL default
+    /// running frame is used. The value is nullable.
+    Sum,
+    /// `COUNT(*)` or `COUNT(value_column) OVER (PARTITION BY ... [ORDER BY
+    /// ...])`. Never NULL.
+    Count,
+}
+
+impl WindowFunction {
+    /// The SQL window function name.
+    pub fn sql_name(self) -> &'static str {
+        match self {
+            WindowFunction::RowNumber => "row_number",
+            WindowFunction::Rank => "rank",
+            WindowFunction::DenseRank => "dense_rank",
+            WindowFunction::Sum => "sum",
+            WindowFunction::Count => "count",
+        }
+    }
+
+    /// The materialized view column holding the computed value.
+    pub fn column_name(self) -> &'static str {
+        match self {
+            WindowFunction::RowNumber => IVM_ROW_NUMBER_COLUMN,
+            WindowFunction::Rank => IVM_RANK_COLUMN,
+            WindowFunction::DenseRank => IVM_DENSE_RANK_COLUMN,
+            WindowFunction::Sum => IVM_SUM_COLUMN,
+            WindowFunction::Count => IVM_COUNT_COLUMN,
+        }
+    }
+
+    /// Whether the function aggregates a value column over the partition.
+    pub fn is_aggregate(self) -> bool {
+        matches!(self, WindowFunction::Sum | WindowFunction::Count)
+    }
+
+    /// Whether the source primary keys are appended to the ordering. Only
+    /// `ROW_NUMBER` needs it: for `RANK`/`DENSE_RANK` appending them would
+    /// break ties that must share a rank, and aggregate windows ignore the
+    /// ordering of peers.
+    fn breaks_ties_with_primary_keys(self) -> bool {
+        matches!(self, WindowFunction::RowNumber)
+    }
 }
 
 /// The persisted description of a view.
@@ -166,10 +222,14 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The `PARTITION BY` columns.
         partition_keys: Vec<String>,
-        /// The `ORDER BY` columns.
+        /// The `ORDER BY` columns; empty for whole-partition aggregates.
         order_keys: Vec<String>,
         /// The window function.
+        #[serde(default)]
         function: WindowFunction,
+        /// The aggregated column of a `SUM`/`COUNT` window function.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_column: Option<String>,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -763,6 +823,8 @@ pub struct WindowView {
     pub order_keys: Vec<String>,
     /// The window function.
     pub function: WindowFunction,
+    /// The aggregated column of a `SUM`/`COUNT` window function.
+    pub value_column: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -776,13 +838,56 @@ impl WindowView {
         partition_keys: Vec<String>,
         order_keys: Vec<String>,
     ) -> Self {
+        Self::new_with_function(
+            view_id,
+            source,
+            mv,
+            partition_keys,
+            order_keys,
+            WindowFunction::RowNumber,
+        )
+    }
+
+    /// A window view for an explicit ranking function.
+    pub fn new_with_function(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        partition_keys: Vec<String>,
+        order_keys: Vec<String>,
+        function: WindowFunction,
+    ) -> Self {
         Self {
             view_id: view_id.into(),
             source,
             mv,
             partition_keys,
             order_keys,
-            function: WindowFunction::RowNumber,
+            function,
+            value_column: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// An aggregate window view (`SUM`/`COUNT` over a partition, optionally
+    /// running when `order_keys` is not empty).
+    pub fn new_aggregate(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        partition_keys: Vec<String>,
+        order_keys: Vec<String>,
+        function: WindowFunction,
+        value_column: Option<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            partition_keys,
+            order_keys,
+            function,
+            value_column,
             refresh_interval_ms: 0,
         }
     }
@@ -795,6 +900,7 @@ impl WindowView {
             partition_keys: self.partition_keys.clone(),
             order_keys: self.order_keys.clone(),
             function: self.function,
+            value_column: self.value_column.clone(),
         }
     }
 }
@@ -902,6 +1008,23 @@ pub fn window_mv_schema_for(
     partition_keys: &[String],
     row_keys: &[String],
 ) -> Result<SchemaRef> {
+    window_ranking_mv_schema_for(
+        source_schema,
+        partition_keys,
+        row_keys,
+        WindowFunction::RowNumber,
+    )
+}
+
+/// The schema of a [`WindowView`] materialized view for a ranking function:
+/// the partition keys, the source primary keys, the rank column (named after
+/// the function), the row kind and the epoch.
+pub fn window_ranking_mv_schema_for(
+    source_schema: &Schema,
+    partition_keys: &[String],
+    row_keys: &[String],
+    function: WindowFunction,
+) -> Result<SchemaRef> {
     let keys = partition_keys
         .iter()
         .chain(row_keys.iter())
@@ -909,9 +1032,59 @@ pub fn window_mv_schema_for(
         .collect::<Vec<_>>();
     let mut fields = key_fields(source_schema, &keys)?;
     fields.push(Arc::new(Field::new(
-        IVM_ROW_NUMBER_COLUMN,
+        function.column_name(),
         DataType::Int64,
         false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of an aggregate [`WindowView`] (`SUM`/`COUNT` over a
+/// partition): the partition keys, the source primary keys and the aggregate
+/// value, named after the function (`sum_v` / `count_v`). A `SUM` is nullable
+/// (the frame may hold no non-NULL value), a `COUNT` never is.
+pub fn window_aggregate_mv_schema_for(
+    source_schema: &Schema,
+    partition_keys: &[String],
+    row_keys: &[String],
+    function: WindowFunction,
+    value_column: Option<&str>,
+) -> Result<SchemaRef> {
+    let keys = partition_keys
+        .iter()
+        .chain(row_keys.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut fields = key_fields(source_schema, &keys)?;
+    let (value_type, nullable) = match function {
+        WindowFunction::Count => (DataType::Int64, false),
+        WindowFunction::Sum => {
+            let value = value_column.ok_or_else(|| {
+                rootcause::report!("a SUM window view needs a value column")
+            })?;
+            (sum_result_type(&field_type(source_schema, value)?)?, true)
+        }
+        other => {
+            return Err(rootcause::report!(
+                "{} is not an aggregate window function",
+                other.sql_name()
+            ));
+        }
+    };
+    fields.push(Arc::new(Field::new(
+        function.column_name(),
+        value_type,
+        nullable,
     )));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -1745,25 +1918,42 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let context = SessionContext::new();
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let mv_batches = view.mv.read_current(&self.client).await?;
+
+        // Phase 1: the affected partitions follow from the delta and the MV
+        // alone, so the source scan can be pruned to them.
+        let affected_context = SessionContext::new();
         register_table(
-            &context,
+            &affected_context,
             "delta",
-            view.source.read_files(window.added_files).await?,
+            delta_batches.clone(),
             &view.source.schema,
         )?;
-        register_table(
-            &context,
-            "src",
-            view.source.read_current(&self.client).await?,
-            &view.source.schema,
-        )?;
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
+        register_table(&affected_context, "mv", mv_batches.clone(), &view.mv.schema)?;
+        let mut affected_batches = Vec::new();
+        for batch in affected_context
+            .sql(&window_affected_sql(view))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                affected_batches.push(batch);
+            }
+        }
+        let filters = partition_filters(&view.partition_keys, &affected_batches)?;
+        let src_batches = view
+            .source
+            .read_current_filtered(&self.client, filters)
+            .await?;
+
+        // Phase 2: recompute the affected partitions from their pruned
+        // current source rows.
+        let context = SessionContext::new();
+        register_table(&context, "delta", delta_batches, &view.source.schema)?;
+        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
+        register_table(&context, "src", src_batches, &view.source.schema)?;
         for batch in context
             .sql(&window_refresh_sql(view, epoch))
             .await?
@@ -3399,10 +3589,16 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             view.view_id
         ));
     }
-    if view.partition_keys.is_empty() || view.order_keys.is_empty() {
+    if view.partition_keys.is_empty() {
+        return Err(report!("window view {} needs partition keys", view.view_id));
+    }
+    // Ranking functions need an ordering; aggregates may span the whole
+    // partition (empty order keys).
+    if !view.function.is_aggregate() && view.order_keys.is_empty() {
         return Err(report!(
-            "window view {} needs partition and order keys",
-            view.view_id
+            "window view {}: {} needs order keys",
+            view.view_id,
+            view.function.sql_name()
         ));
     }
     for column in &view.partition_keys {
@@ -3436,29 +3632,82 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             )
         })?;
     }
+    match view.function {
+        WindowFunction::Sum => {
+            let value = view.value_column.as_deref().ok_or_else(|| {
+                report!("window view {}: SUM needs a value column", view.view_id)
+            })?;
+            let field = view.source.schema.field_with_name(value).map_err(|_| {
+                report!(
+                    "window view {}: value column {value} is not in the source",
+                    view.view_id
+                )
+            })?;
+            sum_result_type(field.data_type())?;
+        }
+        WindowFunction::Count => {
+            if let Some(value) = view.value_column.as_deref() {
+                view.source.schema.field_with_name(value).map_err(|_| {
+                    report!(
+                        "window view {}: value column {value} is not in the source",
+                        view.view_id
+                    )
+                })?;
+            }
+        }
+        function => {
+            if view.value_column.is_some() {
+                return Err(report!(
+                    "window view {}: {} does not take a value column",
+                    view.view_id,
+                    function.sql_name()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
-/// The `computed` CTE: `ROW_NUMBER()` over the current source state, with the
-/// primary keys appended to the ordering for deterministic ties.
-fn window_ranking_cte(view: &WindowView, source_alias: &str) -> String {
+/// The `computed` CTE: the window function over the current source state.
+/// `ROW_NUMBER` appends the primary keys to the ordering for deterministic
+/// ties; `RANK`/`DENSE_RANK` keep the declared ordering so ties share a rank,
+/// and aggregate windows use the SQL default frame (whole partition without
+/// order keys, running with them).
+fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     let parts = quoted_list(&view.partition_keys);
     let pks = quoted_list(&view.source.primary_keys);
     let mut order = view.order_keys.clone();
-    order.extend(view.source.primary_keys.iter().cloned());
-    let orders = quoted_list(&order);
+    if view.function.breaks_ties_with_primary_keys() {
+        order.extend(view.source.primary_keys.iter().cloned());
+    }
+    let over = if order.is_empty() {
+        format!("partition by {parts}")
+    } else {
+        format!("partition by {parts} order by {}", quoted_list(&order))
+    };
     let filter = source_delete_filter(source_alias, change_column(&view.source));
+    let value = quote_ident(view.function.column_name());
+    let computed = match view.function {
+        WindowFunction::Sum => format!(
+            "sum({}) over ({over})",
+            quote_ident(view.value_column.as_deref().unwrap_or_default())
+        ),
+        WindowFunction::Count => match view.value_column.as_deref() {
+            Some(column) => format!("count({}) over ({over})", quote_ident(column)),
+            None => format!("count(1) over ({over})"),
+        },
+        function => format!("cast({}() over ({over}) as bigint)", function.sql_name()),
+    };
     format!(
-        "computed as (select {pks}, {parts}, \
-         cast(row_number() over (partition by {parts} order by {orders}) as bigint) \
-             as \"row_number\" \
+        "computed as (select {pks}, {parts}, {computed} as {value} \
          from {source_alias} where {filter})"
     )
 }
 
-/// SQL for one `ROW_NUMBER()` refresh window: recompute the affected
-/// partitions and rewrite their MV rows (`delete` then `insert`).
-fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
+/// The CTE prefix computing the affected partitions of one refresh window:
+/// the partitions in the delta plus the partitions of the MV rows whose
+/// primary keys changed.
+fn window_affected_cte(view: &WindowView) -> String {
     let parts = quoted_list(&view.partition_keys);
     let pks = quoted_list(&view.source.primary_keys);
     let mv_pks = view
@@ -3487,6 +3736,73 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
         })
         .collect::<Vec<_>>()
         .join(" and ");
+    format!(
+        "delta_parts as (select distinct {parts} from delta), \
+         delta_rows as (select distinct {pks} from delta), \
+         old_parts as (select distinct {parts} \
+                       from (select {parts}, {mv_pks} from mv) m \
+                       join delta_rows d on {mv_delta_match}), \
+         affected as (select * from delta_parts union select * from old_parts)"
+    )
+}
+
+/// SQL returning the affected partitions of one window refresh.
+fn window_affected_sql(view: &WindowView) -> String {
+    format!("with {} select * from affected", window_affected_cte(view))
+}
+
+/// Equality/`IN` filters over the partition keys of the affected rows, used
+/// to read only those partitions of the source.
+fn partition_filters(
+    partition_keys: &[String],
+    batches: &[RecordBatch],
+) -> Result<Vec<datafusion::prelude::Expr>> {
+    let mut filters = Vec::new();
+    for key in partition_keys {
+        let mut values: Vec<ScalarValue> = Vec::new();
+        let mut has_null = false;
+        for batch in batches {
+            let index = batch.schema().index_of(key).map_err(|_| {
+                report!("partition column {key} is not in the affected partitions")
+            })?;
+            let array = batch.column(index);
+            for row in 0..array.len() {
+                if array.is_null(row) {
+                    has_null = true;
+                } else {
+                    let scalar = ScalarValue::try_from_array(array, row)?;
+                    if !values.contains(&scalar) {
+                        values.push(scalar);
+                    }
+                }
+            }
+        }
+        let mut filter = if values.is_empty() {
+            None
+        } else {
+            Some(
+                col(key.as_str())
+                    .in_list(values.iter().cloned().map(lit).collect(), false),
+            )
+        };
+        if has_null {
+            let null_filter = col(key.as_str()).is_null();
+            filter = Some(match filter {
+                Some(filter) => filter.or(null_filter),
+                None => null_filter,
+            });
+        }
+        filters.push(filter.unwrap_or_else(|| lit(false)));
+    }
+    Ok(filters)
+}
+
+/// SQL for one `ROW_NUMBER()` refresh window: recompute the affected
+/// partitions and rewrite their MV rows (`delete` then `insert`).
+fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
+    let parts = quoted_list(&view.partition_keys);
+    let pks = quoted_list(&view.source.primary_keys);
+    let value = quote_ident(view.function.column_name());
     let computed_pks = view
         .source
         .primary_keys
@@ -3506,29 +3822,24 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     let part_match_active =
         key_join_condition_null_safe("active", "a", &view.partition_keys);
     format!(
-        "with delta_parts as (select distinct {parts} from delta), \
-         delta_rows as (select distinct {pks} from delta), \
-         old_parts as (select distinct {parts} \
-                       from (select {parts}, {mv_pks} from mv) m \
-                       join delta_rows d on {mv_delta_match}), \
-         affected as (select * from delta_parts union select * from old_parts), \
-         {computed}, \
+        "with {affected}, {computed}, \
          already as (select distinct {pks} from mv \
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv \
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-         inserts as (select {computed_parts}, {computed_pks}, c.\"row_number\", \
+         inserts as (select {computed_parts}, {computed_pks}, c.{value}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from computed c \
                      where exists (select 1 from affected a where {part_match_computed}) \
                        and not exists (select 1 from already a where {pk_match_computed})), \
-         deletes as (select {parts}, {pks}, \"row_number\", \
+         deletes as (select {parts}, {pks}, {value}, \
                             'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from active \
                      where exists (select 1 from affected a where {part_match_active})) \
          select * from deletes union all select * from inserts \
          order by {pks}, \"rowKinds\"",
-        computed = window_ranking_cte(view, "src"),
+        affected = window_affected_cte(view),
+        computed = window_function_cte(view, "src"),
     )
 }
 
@@ -3536,11 +3847,12 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
 fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
     let parts = quoted_list(&view.partition_keys);
     let pks = quoted_list(&view.source.primary_keys);
+    let value = quote_ident(view.function.column_name());
     format!(
         "with {computed} \
-         select {parts}, {pks}, \"row_number\", 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         select {parts}, {pks}, {value}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from computed",
-        computed = window_ranking_cte(view, "src"),
+        computed = window_function_cte(view, "src"),
     )
 }
 

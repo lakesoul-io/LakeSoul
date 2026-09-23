@@ -25,7 +25,7 @@
 | SUM / COUNT | append-only 或 keyed；多列、任意类型 key，SUM 需数值 | MV 即状态，delete+insert |
 | MIN / MAX | 同上；value 任意可比较类型 | 值计数状态表 |
 | COUNT / SUM(DISTINCT) | 同上；value 任意可比较/可哈希类型 | 值计数状态表 |
-| ROW_NUMBER | keyed（需主键）+ 未分区；partition/order 列任意可排序类型、可多列 | 分区级重算 |
+| ROW_NUMBER / RANK / DENSE_RANK / SUM / COUNT OVER | keyed（需主键）+ 未分区；partition 列任意可排序类型、可多列；ranking 需 order 列，聚合可整体（无 order）或按 SQL 默认 frame running | 分区级重算，刷新按受影响分区裁剪源读取 |
 | INNER JOIN | 两侧 append-only 或两侧 keyed + 未分区；join key 可多列、任意相等比较类型，payload 任意 | append-only 源用 inclusion-exclusion；keyed 源输出按左右行身份键控，受影响 pair delete+insert |
 | SEMI / ANTI | 左 keyed，右 append-only/keyed；join key 可多列、任意相等比较类型 | 受影响左行 delete+insert |
 | 投影/Filter/Union ALL、join upsert、非等值 join、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK、聚合窗口函数 | — | **未支持** |
@@ -33,8 +33,8 @@
 ### 路线图
 
 - **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~、
-  ~~`ivm.states` 注册表~~（已完成）→ Window 扩展
-  （RANK/DENSE_RANK/聚合窗口、源按分区裁剪）→ SEMI/ANTI 扩展（非等值、投影下推）
+  ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~
+  （已完成）→ SEMI/ANTI 扩展（非等值、投影下推）
   → 投影/Filter/Union ALL 视图与 TOP-K
 - **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
   `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
@@ -586,6 +586,41 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - `IvmRuntime::list_states(view_id)` 暴露注册表查询。
 - 测试 `tests/states_registry.rs`：各类视图的角色与 table_id 注册、重复刷新与
   rebuild 幂等、冲突表被拒绝且原绑定保留、`delete_view` 清理注册。
+
+**Window RANK/DENSE_RANK 实施记录（已完成）**
+
+- `WindowFunction` 增加 `Rank`/`DenseRank`：`sql_name()` 生成 SQL 函数名，
+  `column_name()` 决定 MV 列名（`row_number`/`rank`/`dense_rank`），后两者导出为
+  `IVM_RANK_COLUMN`/`IVM_DENSE_RANK_COLUMN`。
+- `window_ranking_mv_schema_for(source, partitions, row_keys, function)` 生成对应
+  schema，`window_mv_schema_for` 委托为 `RowNumber` 兼容包装；
+  `WindowView::new_with_function` 指定函数，`new` 保持 ROW_NUMBER。
+- `window_ranking_cte` 按函数生成 `cast(fn() over (...) as bigint)`；仅
+  ROW_NUMBER 继续把源主键追加到 ORDER BY 以保证确定性，RANK/DENSE_RANK 使用
+  声明的排序（并列名次相同），与 SQL 语义一致。
+- 刷新/重建沿用分区级 delete+insert 重算；测试 `tests/window_rank.rs` 覆盖并列
+  名次（含只按主键无法区分并列的反例）、并列插入/排序更新/删除、双分区、
+  rebuild、与 SQL `RANK()/DENSE_RANK()` 对照、spec 中函数持久化。
+
+**Window 聚合函数与分区裁剪实施记录（已完成）**
+
+- `WindowFunction` 增加 `Sum`/`Count`：SUM 需要 value 列且结果可空（`sum_v`），
+  COUNT 支持 `count(1)`（`value_column = None`）或 `count(value)`（`count_v`，非空）。
+  `WindowFunction` 增加 `is_aggregate()`、`Default = RowNumber`；`ViewSpec::Window`
+  的 `function`/`value_column` 带 `serde(default)`，旧 view spec 反序列化仍为
+  ROW_NUMBER。
+- `WindowView::new_aggregate` + `window_aggregate_mv_schema_for`：没有 order 列时
+  计算整分区聚合，有 order 列时用 SQL 默认 frame（RANGE UNBOUNDED PRECEDING..
+  CURRENT ROW，含并列）；`window_function_cte` 按函数生成窗口表达式，ranking
+  函数仍是 `cast(fn() over (...) as bigint)`。
+- 源按分区裁剪：刷新改为两阶段。阶段一仅用 delta + MV 计算受影响分区
+  （`window_affected_cte`/`window_affected_sql`，复用原 CTE 前缀），
+  `partition_filters` 把分区值（含 NULL）转成 DataFusion `Expr`（IN/IS NULL），
+  `IvmTable::read_current_filtered` 将过滤下推到 LakeSoul reader；阶段二只对
+  过滤后的源行做窗口重算。rebuild 仍读全量。
+- 测试 `tests/window_aggregate.rs`：SUM/COUNT 的 running（含并列）与整分区、
+  NULL 值/全 NULL 分区、更新/跨分区迁移/删除、rebuild、与 SQL 对照；以及
+  `read_current_filtered` 的等值/IN/false 过滤读数验证。
 
 ## 9. 风险与开放问题
 
