@@ -230,6 +230,7 @@ vector path only.
    (`script_score`/`cosineSimilarity`/`min_score` semantics).
 3. **Enhancements**: consistent cross-shard statistics — *implemented for
    the gateway* (global BM25 rescoring of plain queries plus the
-   verification-retry when the candidate budget under-fills `size`).  Open:
-   highlight/snippet support via `stored=true`, and query-time analyzer
-   overrides.
+   verification-retry when the candidate budget under-fills `size`).  Also
+   implemented: a per-query `analyzer` override in `match` queries (query
+   text only; documents keep the index-time analyzer).  Open: ES
+   `highlight`/snippet fragments (implemented in the gateway highlight PR).

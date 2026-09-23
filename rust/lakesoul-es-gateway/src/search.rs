@@ -39,13 +39,13 @@ use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::prefix::shard_index_prefix;
 use lakesoul_io::index::reader::read_shard_batches;
 use lakesoul_io::text::reader::collect_text_values;
-use lakesoul_io::text::search::{search_resolved_shard, shard_stats};
+use lakesoul_io::text::search::{search_resolved_shard_with, shard_stats};
 use lakesoul_io::vector::reader::extract_vector_batch;
 use lakesoul_io::vector::search::search_resolved_shard as search_vector_shard;
 use lakesoul_metadata::index_catalog::{IndexCommitView, VectorSegmentEntry};
 use lakesoul_text::{
-    CorpusStats, TextIndexConfig, TextSplitEntry, bm25_scores, is_plain_query,
-    matching_ids, matching_scores, query_terms, stats_for_rows,
+    CorpusStats, TextIndexConfig, TextSplitEntry, bm25_scores_with_terms, is_plain_query,
+    matching_ids_with, matching_scores_with, query_terms, stats_for_rows,
 };
 use lakesoul_vector::SegmentEntry;
 use object_store::ObjectStore;
@@ -172,11 +172,21 @@ struct VectorQuery {
     min_score: Option<f32>,
 }
 
+/// A parsed `match` clause.
+#[derive(Debug, Clone)]
+struct MatchQuery {
+    field: String,
+    query: String,
+    /// Query-time analyzer override (already validated and dropped when it
+    /// equals the index-time analyzer).
+    analyzer: Option<String>,
+}
+
 /// The parsed query: an optional scoring clause (`match` or `script_score`)
 /// plus non-scoring equality constraints.
 #[derive(Debug, Default, Clone)]
 struct ParsedQuery {
-    match_query: Option<(String, String)>,
+    match_query: Option<MatchQuery>,
     vector_query: Option<VectorQuery>,
     positive: Vec<(String, Vec<Value>)>,
     negative: Vec<(String, Vec<Value>)>,
@@ -239,20 +249,50 @@ impl ParsedQuery {
             let Some((field, value)) = match_query.iter().next() else {
                 return Err(EsError::bad_request("'match' must name a field"));
             };
-            let query = match value {
-                Value::String(query) => query.clone(),
-                Value::Object(inner) => inner
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        EsError::bad_request("'match' query must be a string")
-                    })?
-                    .to_string(),
+            let (query, analyzer) = match value {
+                Value::String(query) => (query.clone(), None),
+                Value::Object(inner) => {
+                    let query = inner
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            EsError::bad_request("'match' query must be a string")
+                        })?
+                        .to_string();
+                    let analyzer = inner
+                        .get("analyzer")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    (query, analyzer)
+                }
                 _ => {
                     return Err(EsError::bad_request("'match' query must be a string"));
                 }
             };
-            self.match_query = Some((field.clone(), query));
+            let analyzer = match analyzer {
+                None => None,
+                Some(analyzer) => {
+                    if !lakesoul_text::is_supported(&analyzer) {
+                        return Err(EsError::bad_request(format!(
+                            "unsupported match analyzer '{analyzer}': expected one \
+                             of {:?}",
+                            lakesoul_text::SUPPORTED_TOKENIZERS
+                        )));
+                    }
+                    if !lakesoul_text::is_plain_query(&query) {
+                        return Err(EsError::unsupported(
+                            "a match analyzer override only supports plain query \
+                             text, not query syntax",
+                        ));
+                    }
+                    Some(analyzer)
+                }
+            };
+            self.match_query = Some(MatchQuery {
+                field: field.clone(),
+                query,
+                analyzer,
+            });
             return Ok(());
         }
         if map.contains_key("match_all") {
@@ -485,12 +525,11 @@ async fn search_impl(
             body.clone(),
         )
         .await?
-    } else if let Some((field, query)) = &parsed.match_query {
+    } else if let Some(match_query) = &parsed.match_query {
         keyword_hits(
             Arc::clone(&state),
             runtime.clone(),
-            field.clone(),
-            query.clone(),
+            match_query.clone(),
             parsed.clone(),
             body.clone(),
         )
@@ -671,11 +710,17 @@ async fn vector_hits(
 async fn keyword_hits(
     state: Arc<GatewayState>,
     runtime: IndexRuntime,
-    field: String,
-    query: String,
+    match_query: MatchQuery,
     parsed: ParsedQuery,
     body: SearchBody,
 ) -> Result<(Vec<Hit>, usize), EsError> {
+    let field = match_query.field;
+    let query = match_query.query;
+    // An override equal to the index-time analyzer changes nothing.
+    let analyzer = match_query
+        .analyzer
+        .filter(|analyzer| analyzer != runtime.tokenizer(&state.config.defaults));
+    let analyzer = analyzer.as_deref();
     if field != runtime.config.content_column {
         return Err(EsError::unsupported(format!(
             "match on '{field}' is not supported: only the indexed content \
@@ -696,6 +741,7 @@ async fn keyword_hits(
             field.clone(),
             query.clone(),
             candidate_k,
+            analyzer,
         )
         .await?;
         if candidates.is_empty() {
@@ -736,15 +782,26 @@ async fn keyword_hits(
             all_rows.extend(rows.iter().flatten().map(|(id, text)| (*id, text.clone())));
             batch_rows.push(rows);
         }
-        let matched: HashSet<u64> = matching_ids(&config, &all_rows, &query)
-            .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
+        let matched: HashSet<u64> =
+            matching_ids_with(&config, &all_rows, &query, analyzer)
+                .map_err(|error| EsError::internal(format!("text verify: {error}")))?;
 
         // One corpus-wide BM25 score per matching row, so the merged order
         // no longer depends on which shard returned a candidate (the
         // `dfs_query_then_fetch` semantics of a distributed search engine).
         if let Some(stats) = &stats {
-            let global =
-                bm25_scores(&config, &all_rows, &query, stats).map_err(|error| {
+            let query_config = match analyzer {
+                Some(analyzer) => TextIndexConfig {
+                    tokenizer: analyzer.to_string(),
+                    ..config.clone()
+                },
+                None => config.clone(),
+            };
+            let terms = query_terms(&query_config, &query).map_err(|error| {
+                EsError::internal(format!("global text terms: {error}"))
+            })?;
+            let global = bm25_scores_with_terms(&config, &all_rows, &terms, stats)
+                .map_err(|error| {
                     EsError::internal(format!("global text score: {error}"))
                 })?;
             if !global.is_empty() {
@@ -868,6 +925,7 @@ async fn text_tail_candidates(
     files: &[String],
     config: &TextIndexConfig,
     query: &str,
+    analyzer: Option<&str>,
 ) -> Result<(Vec<Candidate>, CorpusStats), EsError> {
     let projection = vec![config.column_name.clone()];
     let batches =
@@ -880,7 +938,7 @@ async fn text_tail_candidates(
             .map_err(|error| EsError::internal(format!("text tail read: {error}")))?;
         rows.extend(values.into_iter().flatten());
     }
-    let scores = matching_scores(config, &rows, query)
+    let scores = matching_scores_with(config, &rows, query, analyzer)
         .map_err(|error| EsError::internal(format!("text tail score: {error}")))?;
     // The tail documents are not part of any index commit, so they must
     // still count towards the corpus statistics.
@@ -966,6 +1024,7 @@ async fn collect_candidates(
     column: String,
     query: String,
     top_k: usize,
+    analyzer: Option<&str>,
 ) -> Result<
     (
         Vec<Candidate>,
@@ -999,8 +1058,15 @@ async fn collect_candidates(
     };
     // Plain queries can be scored against one corpus-wide ranking; the
     // per-shard statistics are collected while the shards are searched.
+    let terms_config = match analyzer {
+        Some(analyzer) => TextIndexConfig {
+            tokenizer: analyzer.to_string(),
+            ..fallback_config.clone()
+        },
+        None => fallback_config.clone(),
+    };
     let terms = if is_plain_query(&query) {
-        query_terms(&fallback_config, &query).unwrap_or_default()
+        query_terms(&terms_config, &query).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -1065,9 +1131,11 @@ async fn collect_candidates(
                             .map_err(crate::error::internal)?,
                     };
                     let search_started = Instant::now();
-                    hits = search_resolved_shard(&store, &resolved, query, top_k)
-                        .await
-                        .map_err(crate::error::internal)?;
+                    hits = search_resolved_shard_with(
+                        &store, &resolved, query, top_k, analyzer,
+                    )
+                    .await
+                    .map_err(crate::error::internal)?;
                     search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
                     if !terms.is_empty() {
                         match shard_stats(&store, &resolved, &terms).await {
@@ -1092,7 +1160,7 @@ async fn collect_candidates(
                 let mut tail_hits = Vec::new();
                 if !pending.is_empty() {
                     let (tail, tail_stats) =
-                        text_tail_candidates(&pending, &config, query).await?;
+                        text_tail_candidates(&pending, &config, query, analyzer).await?;
                     tail_hits = tail;
                     stats.merge(tail_stats);
                 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use lakesoul_common::IndexKind;
 use lakesoul_text::tantivy::Index;
 use lakesoul_text::{
-    SplitCache, TextError, TextHit, TextSplitEntry, merge_hits, search_index,
+    SplitCache, TextError, TextHit, TextSplitEntry, merge_hits, search_index_with,
 };
 use object_store::ObjectStore;
 
@@ -45,6 +45,18 @@ pub async fn search_resolved_shard(
     query: &str,
     top_k: usize,
 ) -> IoResult<Vec<Candidate>> {
+    search_resolved_shard_with(store, resolved, query, top_k, None).await
+}
+
+/// Like [`search_resolved_shard`], with an optional query-time analyzer
+/// override for the query text.
+pub async fn search_resolved_shard_with(
+    store: &Arc<dyn ObjectStore>,
+    resolved: &ResolvedIndex,
+    query: &str,
+    top_k: usize,
+    analyzer: Option<&str>,
+) -> IoResult<Vec<Candidate>> {
     if !resolved.is_kind(IndexKind::Text) {
         return Err(rootcause::report!(
             "resolved index '{}' is not a text index",
@@ -55,13 +67,15 @@ pub async fn search_resolved_shard(
 
     let mut hits: Vec<TextHit> = Vec::new();
     for index in &entry.indexes {
-        hits.extend(search_index(index, query, top_k).map_err(|error| {
-            rootcause::report!(
-                "text search failed at '{}': {}",
-                resolved.index_prefix,
-                error
-            )
-        })?);
+        hits.extend(search_index_with(index, query, top_k, analyzer).map_err(
+            |error| {
+                rootcause::report!(
+                    "text search failed at '{}': {}",
+                    resolved.index_prefix,
+                    error
+                )
+            },
+        )?);
     }
     let merged = merge_hits(hits, top_k);
     tracing::info!(

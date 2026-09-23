@@ -244,7 +244,7 @@ Plain query text is analyzed into terms that are OR-combined (each term contribu
 - Plain text (no quotes, parentheses or boolean operators) is analyzed into terms with the index analyzer and OR-combined, so Chinese sentences match by words rather than as one phrase.
 - Query strings with explicit syntax are parsed with Tantivy's query parser on the indexed text field; `AND`/`OR`/`NOT` and parentheses refine the query.
 - Quoted phrases match consecutive positions; they need `with_positions=true` (the default). With positions disabled, phrase syntax cannot match.
-- The analyzer is fixed at index time by `tokenizer`. The `jieba` analyzer segments Chinese words and lowercases the tokens; `default`/`en_stem` are Tantivy's word-boundary analyzers. There is no query-time analyzer override — searching a jieba index with the query string is always consistent with how the text was indexed.
+- The analyzer is fixed at index time by `tokenizer`. The `jieba` analyzer segments Chinese words and lowercases the tokens; `default`/`en_stem` are Tantivy's word-boundary analyzers. The SQL/Daft surface has no query-time analyzer override — searching a jieba index with the query string is always consistent with how the text was indexed (the ES-compatible gateway's `match` query does accept an `analyzer`).
 
 ## How it works
 
