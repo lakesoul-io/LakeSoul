@@ -25,6 +25,9 @@ use crate::session::ObjectStoreConfig;
 #[derive(Debug, Default, Clone)]
 pub struct LakeSoulProviderOptions {
     pub parquet_force_view_types: bool,
+    /// Whether row-level predicates may be pushed into the `FileSource`s
+    /// (e.g. Parquet page/row-group pruning). Range-partition metadata
+    /// pruning is independent of this option.
     pub pushdown_filters: bool,
     /// Object-store options (`fs.s3a.*`, `fs.defaultFS`, …) captured from the
     /// session. Stores resolved through the session runtime already carry

@@ -389,6 +389,6 @@ echo "==> rows=$ROWS vec_rows=$VEC_ROWS partitions=$PARTITIONS sf=$SF with_tpch=
 if [ -n "${CONSOLE_BIN:-}" ]; then
     exec "$CONSOLE_BIN" --worker-threads "$WORKER_THREADS" "$@" --file "$SQL_FILE"
 else
-    exec cargo run --release --quiet --bin lakesoul-console -- \
+    exec cargo run --quiet --bin lakesoul-console -- \
         --worker-threads "$WORKER_THREADS" "$@" --file "$SQL_FILE"
 fi

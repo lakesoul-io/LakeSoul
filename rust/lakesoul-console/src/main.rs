@@ -60,7 +60,9 @@ struct Cli {
     #[arg(long)]
     bytes_per_partition: Option<usize>,
 
-    /// Development only: execute locally if no configured worker is available.
+    /// Development only: plan with the single-node planner when the
+    /// distributed planner fails to plan a query, or plans one whose stages
+    /// cannot be sent to a worker (a scan leaf without a wire form).
     #[arg(long)]
     distributed_fallback_local: bool,
 

@@ -731,8 +731,14 @@ mod tests {
             vec![false; 4],
         )?;
         let merged = common::collect(merge_stream).await?;
+        #[rustfmt::skip]
         assert_batches_eq!(
-            &["+----+", "| id |", "+----+", "| 1  |", "| 2  |", "+----+"],
+            &["+----+",
+              "| id |",
+              "+----+",
+              "| 1  |",
+              "| 2  |",
+              "+----+"],
             &merged
         );
 

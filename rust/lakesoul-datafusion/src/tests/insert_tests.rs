@@ -15,12 +15,13 @@ use arrow_cast::pretty::print_batches;
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::col;
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
+use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::session::create_session_context;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use rootcause::report;
 
 use crate::lakesoul_table::LakeSoulTable;
-use crate::tests::{assert_batches_eq, create_table};
+use crate::tests::{assert_batches_eq, create_table, create_table_with_file_format};
 use crate::{Result, catalog::create_io_config_builder};
 
 async fn init_table(
@@ -30,6 +31,18 @@ async fn init_table(
 ) -> Result<()> {
     let builder = LakeSoulIOConfigBuilder::new().with_schema(schema.clone());
     create_table(client, table_name, builder.build()).await
+}
+
+/// `init_table` pinned to one physical format, for cases whose arrow types a
+/// single format cannot encode.
+async fn init_table_with_file_format(
+    client: MetaDataClientRef,
+    schema: SchemaRef,
+    table_name: &str,
+    file_format: PhysicalFormat,
+) -> Result<()> {
+    let builder = LakeSoulIOConfigBuilder::new().with_schema(schema.clone());
+    create_table_with_file_format(client, table_name, builder.build(), file_format).await
 }
 
 async fn init_partitioned_table(
@@ -638,7 +651,16 @@ async fn test_datatypes() -> Result<()> {
         // ("UInt64Dictionary", Arc::new(UInt64DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
     ];
     let record_batch = RecordBatch::try_from_iter_with_nullable(iter).unwrap();
-    init_table(client.clone(), record_batch.schema(), table_name).await?;
+    // The matrix spans every arrow type the connectors accept; the vortex
+    // writer cannot encode `FixedSizeBinary`, so this table stays on Parquet
+    // and vortex type coverage lives in the vortex-specific suites.
+    init_table_with_file_format(
+        client.clone(),
+        record_batch.schema(),
+        table_name,
+        PhysicalFormat::Parquet,
+    )
+    .await?;
     do_insert(record_batch, table_name).await?;
     check_insert(client.clone(), table_name, vec![], None, &[
     "+---------+--------+------------+-------------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-------------------+--------------+-------------------+--------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
