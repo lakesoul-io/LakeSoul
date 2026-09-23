@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI with compaction clean e2e Test
+
+on:
+  push:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "cpp/**"
+      - "python/**"
+      - "**.md"
+      - "script/benchmark/**"
+    branches:
+      - "main"
+  pull_request:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "cpp/**"
+      - "python/**"
+      - "**.md"
+      - "script/benchmark/**"
+    branches:
+      - "main"
+      - "release/**"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compaction-clean-e2e:
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings"
+      LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+      LAKESOUL_PG_USERNAME: lakesoul_test
+      LAKESOUL_PG_PASSWORD: lakesoul_test
+      LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v5
+        with:
+          java-version: "11"
+          distribution: "temurin"
+          cache: maven
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: "JAVA_HOME"
+          shared-key: "native-glibc217"
+          save-if: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Download Flink / Hadoop dependencies
+        run: |
+          wget -q https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O "$HOME/hadoop-3.3.5.tar.gz"
+          tar xf "$HOME/hadoop-3.3.5.tar.gz" -C "$HOME"
+          echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> "$GITHUB_ENV"
+          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O "$HOME/flink-s3-fs-hadoop-1.20.1.jar"
+          wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
+          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O "$HOME/flink-parquet-1.20.1.jar"
+          wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+          use-cache: false
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.18.3
+      - name: Build native libraries and python extension
+        run: |
+          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
+      - name: Build Maven modules
+        run: |
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
+      - name: Install python dependencies
+        run: |
+          cd python
+          uv sync --no-install-project --python 3.10 --group dev
+      - name: Copy jars to work-dir
+        run: |
+          FLINK_JAR_NAME="$(python script/get_jar_name.py lakesoul-flink)"
+          SPARK_JAR_NAME="$(python script/get_jar_name.py lakesoul-spark)"
+          cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
+          cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
+          echo "FLINK_JAR_NAME=$FLINK_JAR_NAME" >> "$GITHUB_ENV"
+          echo "SPARK_JAR_NAME=$SPARK_JAR_NAME" >> "$GITHUB_ENV"
+      - name: Run compaction clean e2e
+        run: |
+          PYTHONPATH="$PWD/python/src" PATH="$PWD/python/.venv/bin:$PATH" \
+            script/ci/compaction_clean_e2e.sh --down
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compaction-clean-logs
+          path: |
+            script/benchmark/work-dir/compaction.log
+          if-no-files-found: ignore

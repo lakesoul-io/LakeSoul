@@ -12,7 +12,7 @@ import org.apache.spark.sql.lakesoul.utils._
 
 import java.util
 import scala.collection.JavaConverters
-import scala.collection.JavaConverters.asScalaBufferConverter
+import scala.collection.JavaConverters._
 
 object MetaCommit extends Logging {
   // meta commit process
@@ -151,9 +151,18 @@ object MetaCommit extends Logging {
   def recordDiscardFileInfo(
       discardCompressedFileList: util.List[DiscardCompressedFileInfo]
   ): Unit = {
-    SparkMetaVersion.dbManager.batchInsertDiscardCompressedFile(
-      discardCompressedFileList
-    )
+    val filePaths = discardCompressedFileList.asScala.map(_.getFilePath).asJava
+    val pinned = SparkMetaVersion.dbManager.getPinnedFilePaths(filePaths)
+    val kept = discardCompressedFileList.asScala
+      .filterNot(file => pinned.contains(file.getFilePath))
+      .asJava
+    if (kept.size() < discardCompressedFileList.size()) {
+      logWarning(
+        s"skip ${discardCompressedFileList.size() - kept.size()} pinned files " +
+          "when recording discard file info"
+      )
+    }
+    SparkMetaVersion.dbManager.batchInsertDiscardCompressedFile(kept)
   }
 
 }

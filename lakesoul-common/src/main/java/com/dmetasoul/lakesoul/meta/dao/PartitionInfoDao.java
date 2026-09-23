@@ -195,8 +195,8 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql =
-                "delete from partition_info where table_id = ? and partition_desc = ? and timestamp"
-                        + " <= ?";
+                "delete from partition_info where table_id = ? and partition_desc = ? and pinned ="
+                        + " false and timestamp <= ?";
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -235,7 +235,7 @@ public class PartitionInfoDao {
         String sql =
                 String.format(
                         "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot,"
-                            + " m.timestamp m.expression, m.domain from (select"
+                            + " m.timestamp, m.expression, m.domain, m.pinned from (select"
                             + " table_id,partition_desc,max(version) from partition_info where"
                             + " table_id = ? and partition_desc in (%s) group by"
                             + " table_id,partition_desc) t left join partition_info m on t.table_id"
@@ -280,7 +280,7 @@ public class PartitionInfoDao {
         String sql =
                 String.format(
                         "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot,"
-                            + " m.expression, m.timestamp, m.domain from (select"
+                            + " m.expression, m.timestamp, m.domain, m.pinned from (select"
                             + " table_id,partition_desc,max(version) from partition_info where"
                             + " table_id = '%s' and partition_desc = '%s' group by"
                             + " table_id,partition_desc) t left join partition_info m on t.table_id"
@@ -471,7 +471,7 @@ public class PartitionInfoDao {
         String sql =
                 String.format(
                         "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot,"
-                            + " m.expression, m.timestamp, m.domain from (select"
+                            + " m.expression, m.timestamp, m.domain, m.pinned from (select"
                             + " table_id,partition_desc,max(version) from partition_info where"
                             + " table_id = '%s' group by table_id,partition_desc) t left join"
                             + " partition_info m on t.table_id = m.table_id and t.partition_desc ="
@@ -637,7 +637,7 @@ public class PartitionInfoDao {
         String sql =
                 String.format(
                         "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot,"
-                                + " m.timestamp, m.expression, m.domain\n"
+                                + " m.timestamp, m.expression, m.domain, m.pinned\n"
                                 + "            from (\n"
                                 + "                select table_id,partition_desc,max(version)\n"
                                 + "                from partition_info\n"
@@ -759,6 +759,7 @@ public class PartitionInfoDao {
                         .setVersion(rs.getInt("version"))
                         .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")))
                         .setDomain(rs.getString("domain"))
+                        .setPinned(rs.getBoolean("pinned"))
                         .setTimestamp(rs.getLong("timestamp"));
         Array snapshotArray = rs.getArray("snapshot");
         partitionInfo.addAllSnapshot(
