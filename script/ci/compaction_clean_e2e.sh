@@ -76,6 +76,7 @@ services:
       https_proxy: ""
       NO_PROXY: "rustfs,localhost,127.0.0.1"
       no_proxy: "rustfs,localhost,127.0.0.1"
+      LD_LIBRARY_PATH: "/opt/hadoop/lib/native"
   taskmanager:
     environment:
       HTTP_PROXY: ""
@@ -84,6 +85,7 @@ services:
       https_proxy: ""
       NO_PROXY: "rustfs,localhost,127.0.0.1"
       no_proxy: "rustfs,localhost,127.0.0.1"
+      LD_LIBRARY_PATH: "/opt/hadoop/lib/native"
 YAML
 (cd "$COMPOSE_DIR" && docker compose -f docker-compose.yml -f "$PROXY_OVERRIDE" --profile s3 up -d)
 
@@ -147,6 +149,7 @@ docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py31
   nohup docker run --name lakesoul-e2e-compaction --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t \
     --env HTTP_PROXY= --env HTTPS_PROXY= --env http_proxy= --env https_proxy= \
     --env NO_PROXY="rustfs,localhost,127.0.0.1" --env no_proxy="rustfs,localhost,127.0.0.1" \
+    -v "$HADOOP_HOME:/opt/hadoop" --env LD_LIBRARY_PATH=/opt/hadoop/lib/native \
     -v "${PWD}:/opt/spark/work-dir" \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
     --env LAKESOUL_IO_USE_V2_MERGE=true \
