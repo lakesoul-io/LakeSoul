@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use crate::limits::Limits;
 use datafusion::prelude::SessionContext;
 use datafusion_postgres::DfSessionService;
 use datafusion_postgres::pgwire;
@@ -30,7 +31,9 @@ use pgwire::api::{
     METADATA_DATABASE, METADATA_USER, PgWireConnectionState, SessionExtensions,
 };
 use pgwire::error::PgWireError;
-use pgwire::messages::extendedquery::{Bind, Execute, Parse};
+use pgwire::messages::extendedquery::{
+    Bind, Close, Execute, Parse, TARGET_TYPE_BYTE_PORTAL,
+};
 use pgwire::messages::simplequery::Query;
 use pgwire::messages::{
     PgWireBackendMessage, PgWireFrontendMessage, ProtocolVersion,
@@ -67,6 +70,17 @@ async fn attach_session(
     client: &mut MockClient,
     user: &str,
 ) -> Arc<ConnectionSession> {
+    attach_session_with_limits(factory, client, user, crate::limits::Limits::default())
+        .await
+}
+
+/// The same, with the statement limits a test wants to exercise.
+async fn attach_session_with_limits(
+    factory: &PgSessionFactory,
+    client: &mut MockClient,
+    user: &str,
+    limits: crate::limits::Limits,
+) -> Arc<ConnectionSession> {
     // `default` is the namespace guaranteed by the metadata schema init;
     // PG maps the database parameter to a LakeSoul namespace.
     let session = factory
@@ -86,15 +100,28 @@ async fn attach_session(
         Arc::clone(&session.context),
         crate::read_only::statement_hooks(),
     ));
+    let server = crate::limits::ServerLimits::new(limits);
     let state = Arc::new(ConnectionSession {
         session,
         service,
-        cancellation: Arc::new(crate::cancel::QueryCancellation::new()),
+        cancellation: Arc::new(crate::cancel::QueryCancellation::new(
+            Arc::clone(&server),
+            user,
+        )),
+        permit: server
+            .admit_connection()
+            .expect("the test server admits a connection"),
     });
     client.session_extensions().insert(ConnectionSession {
         session: Arc::clone(&state.session),
         service: Arc::clone(&state.service),
         cancellation: Arc::clone(&state.cancellation),
+        // The copy inserted for the client owns a slot of its own: a
+        // `ConnectionPermit` is not cloneable, and the mock connection lives
+        // as long as the test's client does.
+        permit: server
+            .admit_connection()
+            .expect("the test server admits the inserted connection"),
     });
     state
 }
@@ -379,10 +406,17 @@ async fn connection_close_releases_session() {
 
     let client = MockClient::new();
     let service = Arc::new(DfSessionService::new(Arc::clone(&session.context)));
+    let server = crate::limits::ServerLimits::new(crate::limits::Limits::default());
     client.session_extensions().insert(ConnectionSession {
         session,
         service,
-        cancellation: Arc::new(crate::cancel::QueryCancellation::new()),
+        cancellation: Arc::new(crate::cancel::QueryCancellation::new(
+            Arc::clone(&server),
+            "user_a",
+        )),
+        permit: server
+            .admit_connection()
+            .expect("the test server admits a connection"),
     });
     assert!(Arc::strong_count(&context) > baseline);
 
@@ -400,6 +434,7 @@ async fn startup_handler_installs_session() {
         Arc::clone(&factory),
         Arc::new(crate::cancel::CancelRegistry::new()),
         Arc::new(pgwire::api::ConnectionManager::new()),
+        crate::limits::ServerLimits::new(crate::limits::Limits::default()),
     );
     let mut client = MockClient::new();
     client
@@ -429,6 +464,7 @@ async fn startup_rejects_unsupported_default_isolation() {
         Arc::clone(&factory),
         Arc::new(crate::cancel::CancelRegistry::new()),
         Arc::new(pgwire::api::ConnectionManager::new()),
+        crate::limits::ServerLimits::new(crate::limits::Limits::default()),
     );
     let sync = || PgWireFrontendMessage::Sync(PgSync::new());
 
@@ -671,6 +707,43 @@ async fn a_statement_timeout_interrupts_a_slow_statement() {
     }
 }
 
+/// A `SET statement_timeout` in the same batch applies to the statements that
+/// follow it: the hook writes the timeout into the connection metadata, and the
+/// next statement's deadline comes from there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_set_statement_timeout_bounds_the_next_statement() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    // The statement after the `SET` streams from a source whose size the test
+    // controls: how long a scan of `pg_catalog` streams depends on the
+    // environment, and the 1ms deadline must be what ends this one. The
+    // runtime is multi-threaded because the deadline has to be polled while
+    // the rows are being sent.
+    let error = router
+        .run_statements(
+            &mut client,
+            "SET statement_timeout = '1ms'; \
+             select x from generate_series(1, 200000) as g(x)"
+                .to_string(),
+        )
+        .await
+        .expect_err("the statement after the SET must be timed out");
+    match error {
+        PgWireError::UserError(info) => {
+            assert_eq!(info.code, "57014");
+            assert!(
+                info.message.contains("statement timeout"),
+                "{}",
+                info.message
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
 /// Planning happens at Parse, so that phase is its own bounded execution:
 /// while it runs the statement is the connection's current one, and when it
 /// returns nothing is in flight any more.
@@ -710,11 +783,13 @@ async fn a_cancel_during_a_batch_hits_the_statement_being_sent() {
     let cancellation = Arc::clone(&state.cancellation);
     let router = Arc::new(LakeSoulQueryRouter::new());
 
-    // A streaming source with a row count the test controls: how long a scan
-    // of `pg_catalog` streams depends on the environment (an empty local
-    // database has a handful of rows, CI may have preset data). The session
-    // is read-only, so the batch selects from the `generate_series` table
-    // function instead of creating a table.
+    // A streaming source with a row count the test controls: how long a scan of
+    // `pg_catalog` streams depends on the environment (an empty local database
+    // has a handful of rows, CI may have preset data). The session is
+    // read-only, so the batch selects from the `generate_series` table function
+    // instead of creating a table. The first statement streams for long enough
+    // to be cancelled while its rows are being sent; the `SET` that follows it
+    // must never run.
     let batch = "select x from generate_series(1, 200000) as g(x); \
                  set statement_timeout = '7s'";
     let runner = Arc::clone(&router);
@@ -757,112 +832,6 @@ async fn a_cancel_during_a_batch_hits_the_statement_being_sent() {
     );
 }
 
-/// A cancel request received while the untrusted query text is still being
-/// parsed must reach the statement it targets: the batch's current execution
-/// is created before `split_statements` parses the text, so the request is
-/// not discarded and no statement of the batch runs on its behalf.
-///
-/// Needs a multi-thread runtime: the batch task must be parsing while the
-/// canceller runs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancel_received_while_parsing_stops_the_whole_batch() {
-    let factory = test_factory().await;
-    let mut client = MockClient::new();
-    let state = attach_session(&factory, &mut client, "user_a").await;
-    let cancellation = Arc::clone(&state.cancellation);
-    let router = Arc::new(LakeSoulQueryRouter::new());
-
-    // A batch whose text takes far longer to parse than any of its statements
-    // takes to run: the first statement is trivial, so a cancel that reaches
-    // the connection within the parse can only be answered by the
-    // registration that precedes the parse.
-    let batch = "select 1; ".repeat(60_000) + "select 2";
-    let runner = Arc::clone(&router);
-    let batch_task = tokio::spawn(async move {
-        let result = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
-            runner.as_ref(),
-            &mut client,
-            Query::new(batch),
-        )
-        .await;
-        (result, client)
-    });
-
-    // The statement is registered before parsing starts, so this lands while
-    // the parse is still running.
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert!(
-        cancellation.cancel(),
-        "the batch must have a statement in flight while it parses"
-    );
-    let (result, client) = batch_task.await.expect("batch task");
-
-    let error = result.expect_err("a batch cancelled during its parse fails");
-    match error {
-        PgWireError::UserError(info) => {
-            assert_eq!(info.code, "57014");
-            assert!(info.message.contains("user request"), "{}", info.message);
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
-    assert_eq!(
-        sent_data_rows(&client),
-        0,
-        "no statement of a batch cancelled during its parse may produce rows"
-    );
-}
-
-/// The same parse-window cancel as above, but the first statement is a `SET`,
-/// which completes without producing rows: the pre-fired limit must stop it
-/// before its side effect reaches the session, not merely fail the batch
-/// afterwards.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancel_received_while_parsing_prevents_the_first_set_from_taking_effect() {
-    let factory = test_factory().await;
-    let mut client = MockClient::new();
-    let state = attach_session(&factory, &mut client, "user_a").await;
-    let cancellation = Arc::clone(&state.cancellation);
-    let router = Arc::new(LakeSoulQueryRouter::new());
-
-    // The first statement is the side effect; the text after it only makes
-    // the parse outlast the cancel, so the token fires before the `SET` runs.
-    let batch = format!(
-        "set statement_timeout = '99s'; {}",
-        "select 1; ".repeat(60_000)
-    );
-    let runner = Arc::clone(&router);
-    let batch_task = tokio::spawn(async move {
-        let result = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
-            runner.as_ref(),
-            &mut client,
-            Query::new(batch),
-        )
-        .await;
-        (result, client)
-    });
-
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert!(
-        cancellation.cancel(),
-        "the batch must have a statement in flight while it parses"
-    );
-    let (result, client) = batch_task.await.expect("batch task");
-
-    let error = result.expect_err("a batch cancelled during its parse fails");
-    match error {
-        PgWireError::UserError(info) => {
-            assert_eq!(info.code, "57014");
-            assert!(info.message.contains("user request"), "{}", info.message);
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
-    assert_eq!(
-        client.metadata().get(crate::cancel::STATEMENT_TIMEOUT_KEY),
-        None,
-        "the cancelled statement's side effect must not have taken effect"
-    );
-}
-
 /// The `Execute` of a portal runs one statement: the one the boundary started,
 /// and it is over when the Execute returns.
 #[tokio::test]
@@ -901,12 +870,74 @@ async fn an_execute_leaves_no_statement_in_flight() {
     );
 }
 
+/// An `Execute` of a statement that answers without rows (`SET`, a transaction
+/// command) ends the statement it ran: a named portal that keeps such a
+/// statement open must not hold the connection's statement slot, or a single
+/// prepared `SET` would block every later statement of that connection.
+#[tokio::test]
+async fn an_execute_without_rows_releases_its_slot() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session_with_limits(
+        &factory,
+        &mut client,
+        "user_a",
+        Limits {
+            max_queries_per_user: 1,
+            ..Limits::default()
+        },
+    )
+    .await;
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(
+            Some("p".to_string()),
+            "set statement_timeout = '7s'".to_string(),
+            vec![],
+        ),
+    )
+    .await
+    .expect("parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("p".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("bind");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 0),
+    )
+    .await
+    .expect("execute");
+
+    assert!(
+        client
+            .metadata()
+            .get(crate::cancel::STATEMENT_TIMEOUT_KEY)
+            .is_some(),
+        "the SET ran"
+    );
+    assert!(
+        state.cancellation.begin_statement(None, None).is_ok(),
+        "a statement that answered without rows has released its slot"
+    );
+}
+
 /// An `Execute` that the limit ends must release the portal: a client that does
-/// not close it afterwards must not leave the execution alive behind the
-/// response the portal still held. Dropping that stream is also what stops a
-/// distributed execution, but this test's session is single-node and its
-/// `pg_catalog` query would not distribute anyway; the distributed half is
-/// covered by lakesoul-datafusion's cancellation tests.
+/// not close it afterwards must not leave the execution - and its distributed
+/// stages - alive behind the response the portal still held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_interrupted_execute_releases_its_portal() {
     let factory = test_factory().await;
@@ -962,6 +993,147 @@ async fn an_interrupted_execute_releases_its_portal() {
         client.portal_store().get_portal("p").is_none(),
         "an interrupted Execute must not leave the portal holding its stream"
     );
+}
+
+/// A suspended portal still holds rows, so it keeps the statement's slot: a
+/// client cannot park results and run more statements than its limit allows.
+#[tokio::test]
+async fn a_suspended_portal_holds_its_slot() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session_with_limits(
+        &factory,
+        &mut client,
+        "user_a",
+        crate::limits::Limits {
+            max_queries_per_user: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(
+            Some("s".to_string()),
+            "select * from pg_catalog.pg_class".to_string(),
+            vec![],
+        ),
+    )
+    .await
+    .expect("parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("s".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("bind");
+    // One row suspends the portal, with the rest of its result still to fetch.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 1),
+    )
+    .await
+    .expect("first fetch");
+    assert_eq!(sent_data_rows(&client), 1);
+
+    let refused = <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(None, "select 1".to_string(), vec![]),
+    )
+    .await
+    .expect_err("the suspended portal still holds the user's only slot");
+    match refused {
+        PgWireError::UserError(info) => assert_eq!(info.code, "53400"),
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    // Closing the portal ends the statement and returns the slot.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_close(
+        &router,
+        &mut client,
+        Close::new(TARGET_TYPE_BYTE_PORTAL, Some("p".to_string())),
+    )
+    .await
+    .expect("close");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(None, "select 1".to_string(), vec![]),
+    )
+    .await
+    .expect("the slot returns with the portal");
+
+    assert!(!state.cancellation.cancel(), "nothing is in flight");
+}
+
+/// A statement the server cancels must give its slot back: otherwise a
+/// connection would be stuck at its own limit until it disconnects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_statement_does_not_keep_its_slot() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session_with_limits(
+        &factory,
+        &mut client,
+        "user_a",
+        crate::limits::Limits {
+            max_queries_per_user: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    let cancellation = Arc::clone(&state.cancellation);
+    let router = Arc::new(LakeSoulQueryRouter::new());
+
+    // A streaming source whose row count the test controls, for the same reason
+    // as above: the environment decides how long a `pg_catalog` scan streams,
+    // so the statement must not rely on it.
+    let batch = "select x from generate_series(1, 200000) as g(x); \
+                 set statement_timeout = '7s'";
+    let runner = Arc::clone(&router);
+    let batch_task = tokio::spawn(async move {
+        let result = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+            runner.as_ref(),
+            &mut client,
+            Query::new(batch.to_string()),
+        )
+        .await;
+        (result, client)
+    });
+    // Poll until the statement is registered: a fixed wait could land before
+    // it is, and a cancel with nothing in flight would be discarded.
+    let mut cancelled = false;
+    for _ in 0..500 {
+        if cancellation.cancel() {
+            cancelled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert!(cancelled, "a statement is in flight");
+    let (result, mut client) = batch_task.await.expect("batch task");
+    assert!(result.is_err(), "the cancelled statement fails the batch");
+
+    // The slot came back with the cancelled statement.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(None, "select 1".to_string(), vec![]),
+    )
+    .await
+    .expect("the connection is not stuck at its limit");
 }
 
 /// An `Execute` for a portal that does not exist must not register anything: a
@@ -1114,6 +1286,59 @@ async fn every_statement_of_a_batch_gets_its_own_deadline() {
     }
 }
 
+/// The transaction hook reads the client's status once per statement, so every
+/// statement's transitions must reach the client before the next statement of
+/// the batch runs.
+///
+/// - `ROLLBACK; SELECT 1` starting from the aborted status must execute the
+///   SELECT: the hook gates statements against the status it reads, and a
+///   stale pre-ROLLBACK status would reject the SELECT with `25P01`.
+/// - `COMMIT; BEGIN` must end the batch inside the transaction the `BEGIN`
+///   opened: a stale post-COMMIT status would make the hook treat the BEGIN as
+///   a nested one and begin nothing.
+///
+/// The test starts from the status a real server's error path leaves behind
+/// (pgwire derives it from the client's status after reporting a failed
+/// statement), because the router is driven directly here.
+#[tokio::test]
+async fn a_batch_persists_transaction_transitions_between_statements() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+    let router = LakeSoulQueryRouter::new();
+
+    // What pgwire's error handling leaves behind after a failed statement: the
+    // current status derived to its error state.
+    client.set_transaction_status(TransactionStatus::Error);
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("rollback; select 1".to_string()),
+    )
+    .await
+    .expect("the ROLLBACK must end the aborted transaction and let SELECT run");
+    assert_eq!(
+        client.transaction_status(),
+        TransactionStatus::Idle,
+        "ROLLBACK; SELECT 1 leaves the connection idle"
+    );
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("commit; begin".to_string()),
+    )
+    .await
+    .expect("commit ends nothing and begin opens a transaction");
+    assert_eq!(
+        client.transaction_status(),
+        TransactionStatus::Transaction,
+        "the batch's BEGIN opened a transaction"
+    );
+}
+
 /// pgwire reports a failing statement against the client's transaction
 /// status, so the status the statements that already ran left behind must
 /// reach the client before the error is reported: an error after a `COMMIT`
@@ -1155,59 +1380,6 @@ async fn a_failed_statement_reports_the_status_the_batch_left_behind() {
         client.transaction_status(),
         TransactionStatus::Idle,
         "the `COMMIT`'s status must reach the client before the error is reported"
-    );
-}
-
-/// The transaction hook reads the client's status once per statement, so every
-/// statement's transitions must reach the client before the next statement of
-/// the batch runs.
-///
-/// - `ROLLBACK; SELECT 1` starting from the aborted status must execute the
-///   SELECT: the hook gates statements against the status it reads, and a
-///   stale pre-ROLLBACK status would reject the SELECT with `25P01`.
-/// - `COMMIT; BEGIN` must end the batch inside the transaction the `BEGIN`
-///   opened: a stale post-COMMIT status would make the hook treat the BEGIN
-///   as a nested one and begin nothing.
-///
-/// The test starts from the status a real server's error path leaves behind
-/// (pgwire derives it from the client's status after reporting a failed
-/// statement), because the router is driven directly here.
-#[tokio::test]
-async fn a_batch_persists_transaction_transitions_between_statements() {
-    let factory = test_factory().await;
-    let mut mock = MockClient::new();
-    attach_session(&factory, &mut mock, "user_a").await;
-    let mut client = TrackingClient::new(mock);
-    let router = LakeSoulQueryRouter::new();
-
-    // What pgwire's error handling leaves behind after a failed statement:
-    // the current status derived to its error state.
-    client.set_transaction_status(TransactionStatus::Error);
-
-    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
-        &router,
-        &mut client,
-        Query::new("rollback; select 1".to_string()),
-    )
-    .await
-    .expect("the ROLLBACK must end the aborted transaction and let SELECT run");
-    assert_eq!(
-        client.transaction_status(),
-        TransactionStatus::Idle,
-        "ROLLBACK; SELECT 1 leaves the connection idle"
-    );
-
-    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
-        &router,
-        &mut client,
-        Query::new("commit; begin".to_string()),
-    )
-    .await
-    .expect("commit ends nothing and begin opens a transaction");
-    assert_eq!(
-        client.transaction_status(),
-        TransactionStatus::Transaction,
-        "the batch's BEGIN opened a transaction"
     );
 }
 
@@ -1326,6 +1498,429 @@ async fn a_sql_close_all_forgots_every_portal_s_statement() {
     );
 }
 
+/// A portal's result is what its current `Bind` fetches: re-binding the name
+/// starts a new result, and the rows the previous one produced are not charged
+/// against it. Without the bind boundary the second result would be refused by
+/// a limit the first one had already spent.
+#[tokio::test]
+async fn rebinding_a_portal_starts_the_result_limit_over() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session_with_limits(
+        &factory,
+        &mut client,
+        "user_a",
+        Limits {
+            max_result_rows: 1,
+            ..Limits::default()
+        },
+    )
+    .await;
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(
+            Some("stmt".to_string()),
+            "select x from generate_series(1, 1) as g(x)".to_string(),
+            vec![],
+        ),
+    )
+    .await
+    .expect("parse");
+
+    for fetch in 1..=2 {
+        <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+            &router,
+            &mut client,
+            Bind::new(
+                Some("p".to_string()),
+                Some("stmt".to_string()),
+                vec![],
+                vec![],
+                vec![],
+            ),
+        )
+        .await
+        .expect("bind");
+        <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+            &router,
+            &mut client,
+            Execute::new(Some("p".to_string()), 0),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("fetch {fetch} must stay inside the result limit: {error}")
+        });
+    }
+    assert_eq!(
+        state.cancellation.portal_count(),
+        1,
+        "the last binding is the one the portal keeps"
+    );
+}
+
+/// Replacing a suspended portal under the same name gives its slot back: a
+/// `Bind` drops the result the old portal was fetching, so the statement
+/// behind it is over even if the replacement is never executed.
+#[tokio::test]
+async fn rebinding_a_suspended_portal_releases_its_slot() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session_with_limits(
+        &factory,
+        &mut client,
+        "user_a",
+        Limits {
+            max_queries_per_user: 1,
+            ..Limits::default()
+        },
+    )
+    .await;
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(
+            Some("stmt".to_string()),
+            "select x from generate_series(1, 10) as g(x)".to_string(),
+            vec![],
+        ),
+    )
+    .await
+    .expect("parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("stmt".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("bind");
+    // One row per fetch: the portal suspends with the rest of its result
+    // still to fetch, and keeps the connection's only slot.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 1),
+    )
+    .await
+    .expect("execute");
+    assert!(
+        state.cancellation.begin_statement(None, None).is_err(),
+        "the suspended portal holds the slot"
+    );
+
+    // The same name bound again replaces the portal: the replaced statement
+    // ends and its slot returns.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("stmt".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("rebind");
+    assert!(
+        state.cancellation.begin_statement(None, None).is_ok(),
+        "the replaced portal must not keep holding the slot"
+    );
+}
+
+/// A cancel request received while the untrusted query text is still being
+/// parsed must reach the statement it targets: the batch's current execution
+/// is created before `split_statements` parses the text, so the request is
+/// not discarded and no statement of the batch runs on its behalf.
+///
+/// Needs a multi-thread runtime: the batch task must be parsing while the
+/// canceller runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_received_while_parsing_stops_the_whole_batch() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session(&factory, &mut client, "user_a").await;
+    let cancellation = Arc::clone(&state.cancellation);
+    let router = Arc::new(LakeSoulQueryRouter::new());
+
+    // A batch whose text takes far longer to parse than any of its statements
+    // takes to run: the first statement is trivial, so a cancel that reaches
+    // the connection within the parse can only be answered by the
+    // registration that precedes the parse.
+    let batch = "select 1; ".repeat(60_000) + "select 2";
+    let runner = Arc::clone(&router);
+    let batch_task = tokio::spawn(async move {
+        let result = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+            runner.as_ref(),
+            &mut client,
+            Query::new(batch),
+        )
+        .await;
+        (result, client)
+    });
+
+    // The statement is registered before parsing starts, so this lands while
+    // the parse is still running.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert!(
+        cancellation.cancel(),
+        "the batch must have a statement in flight while it parses"
+    );
+    let (result, client) = batch_task.await.expect("batch task");
+
+    let error = result.expect_err("a batch cancelled during its parse fails");
+    match error {
+        PgWireError::UserError(info) => {
+            assert_eq!(info.code, "57014");
+            assert!(info.message.contains("user request"), "{}", info.message);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(
+        sent_data_rows(&client),
+        0,
+        "no statement of a batch cancelled during its parse may produce rows"
+    );
+}
+
+/// The same parse-window cancel as above, but the first statement is a `SET`,
+/// which completes without producing rows: the pre-fired limit must stop it
+/// before its side effect reaches the session, not merely fail the batch
+/// afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_received_while_parsing_prevents_the_first_set_from_taking_effect() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session(&factory, &mut client, "user_a").await;
+    let cancellation = Arc::clone(&state.cancellation);
+    let router = Arc::new(LakeSoulQueryRouter::new());
+
+    // The first statement is the side effect; the text after it only makes
+    // the parse outlast the cancel, so the token fires before the `SET` runs.
+    let batch = format!(
+        "set statement_timeout = '99s'; {}",
+        "select 1; ".repeat(60_000)
+    );
+    let runner = Arc::clone(&router);
+    let batch_task = tokio::spawn(async move {
+        let result = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+            runner.as_ref(),
+            &mut client,
+            Query::new(batch),
+        )
+        .await;
+        (result, client)
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert!(
+        cancellation.cancel(),
+        "the batch must have a statement in flight while it parses"
+    );
+    let (result, client) = batch_task.await.expect("batch task");
+
+    let error = result.expect_err("a batch cancelled during its parse fails");
+    match error {
+        PgWireError::UserError(info) => {
+            assert_eq!(info.code, "57014");
+            assert!(info.message.contains("user request"), "{}", info.message);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(
+        client.metadata().get(crate::cancel::STATEMENT_TIMEOUT_KEY),
+        None,
+        "the cancelled statement's side effect must not have taken effect"
+    );
+}
+
+/// The registration covers reading the text, not only parsing it: a batch that
+/// opens with a long run of whitespace is scanned (`is_empty_query`) before its
+/// first statement exists, and a cancel request that arrives during that scan
+/// must not be discarded - the `set` at the end must not take effect.
+///
+/// The prefix is sized so that the scan, not the parse, is what is still
+/// running when the cancel below arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_received_while_the_text_is_scanned_prevents_the_first_set() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session(&factory, &mut client, "user_a").await;
+    let cancellation = Arc::clone(&state.cancellation);
+    let router = Arc::new(LakeSoulQueryRouter::new());
+
+    // Whitespace before the `SET` and nothing else: scanning it costs time,
+    // and the statement is at the end, where the scan finds it.
+    let batch = format!("{}set statement_timeout = '99s'", " ".repeat(8_000_000));
+    let runner = Arc::clone(&router);
+    let batch_task = tokio::spawn(async move {
+        let result = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+            runner.as_ref(),
+            &mut client,
+            Query::new(batch),
+        )
+        .await;
+        (result, client)
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert!(
+        cancellation.cancel(),
+        "the batch must have a statement in flight while its text is scanned"
+    );
+    let (result, client) = batch_task.await.expect("batch task");
+
+    let error = result.expect_err("a batch cancelled during its scan fails");
+    match error {
+        PgWireError::UserError(info) => {
+            assert_eq!(info.code, "57014");
+            assert!(info.message.contains("user request"), "{}", info.message);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(
+        client.metadata().get(crate::cancel::STATEMENT_TIMEOUT_KEY),
+        None,
+        "the cancelled statement's side effect must not have taken effect"
+    );
+}
+
+/// A batch that carries no statement at all - only separators - registers a
+/// statement before its text is read and gives it up again: it answers the
+/// empty query and leaves the connection's slot free for what runs next.
+#[tokio::test]
+async fn a_batch_with_no_statement_gives_its_registration_back() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session(&factory, &mut client, "user_a").await;
+    let router = Arc::new(LakeSoulQueryRouter::new());
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        router.as_ref(),
+        &mut client,
+        Query::new(";;  ;".to_string()),
+    )
+    .await
+    .expect("a batch with no statement answers");
+
+    assert!(
+        client.sent_messages().iter().any(|message| matches!(
+            message,
+            PgWireBackendMessage::EmptyQueryResponse(_)
+        )),
+        "an empty query is answered as one"
+    );
+    assert_eq!(sent_data_rows(&client), 0);
+    assert!(
+        state.cancellation.begin_statement(None, None).is_ok(),
+        "the registration the batch took before reading its text is given back"
+    );
+}
+
+/// A request that carries no statement runs no work, so the statement quota
+/// must not turn its empty answer into an error: with the user's only slot held
+/// by a portal suspended with rows still to fetch, an empty query still answers
+/// as one - and a statement still reports the refusal.
+#[tokio::test]
+async fn an_empty_query_is_not_refused_by_the_statement_quota() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session_with_limits(
+        &factory,
+        &mut client,
+        "user_a",
+        crate::limits::Limits {
+            max_queries_per_user: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    let router = LakeSoulQueryRouter::new();
+
+    // The user's only slot: a portal suspended with rows still to fetch.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(
+            Some("s".to_string()),
+            "select * from pg_catalog.pg_class".to_string(),
+            vec![],
+        ),
+    )
+    .await
+    .expect("parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("s".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("bind");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 1),
+    )
+    .await
+    .expect("first fetch");
+    assert_eq!(sent_data_rows(&client), 1);
+
+    for empty in ["", ";", "  ;  ", "  \n\t  "] {
+        let before = client.sent_messages().len();
+        <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+            &router,
+            &mut client,
+            Query::new(empty.to_string()),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "{empty:?} carries no statement, so the quota cannot refuse it: {error:?}"
+            )
+        });
+        let sent = &client.sent_messages()[before..];
+        assert!(
+            sent.iter().any(|message| matches!(
+                message,
+                PgWireBackendMessage::EmptyQueryResponse(_)
+            )),
+            "{empty:?} is answered as an empty query: {sent:?}"
+        );
+        assert_eq!(sent_data_rows(&client), 1, "no statement ran");
+    }
+
+    // The empty queries neither took a slot of their own nor gave the held one
+    // back: a statement still reports the refusal.
+    let refused = <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("select 1".to_string()),
+    )
+    .await
+    .expect_err("a statement is refused while the only slot is held");
+    match refused {
+        PgWireError::UserError(info) => assert_eq!(info.code, "53400"),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
 /// A cancel request reaches the connection it addresses - and only that one.
 #[tokio::test]
 async fn a_cancel_request_reaches_the_connection_it_addresses() {
@@ -1335,6 +1930,7 @@ async fn a_cancel_request_reaches_the_connection_it_addresses() {
         Arc::clone(&factory),
         Arc::clone(&registry),
         Arc::new(pgwire::api::ConnectionManager::new()),
+        crate::limits::ServerLimits::new(crate::limits::Limits::default()),
     ));
     let mut client = MockClient::new();
     client
@@ -1353,7 +1949,10 @@ async fn a_cancel_request_reaches_the_connection_it_addresses() {
         .session_extensions()
         .get::<ConnectionSession>()
         .expect("connection session");
-    let execution = state.cancellation.begin_statement(None, None);
+    let execution = state
+        .cancellation
+        .begin_statement(None, None)
+        .expect("statement admitted");
     let token = execution.token();
     assert!(
         !registry.cancel(pid, b"a-different-key"),

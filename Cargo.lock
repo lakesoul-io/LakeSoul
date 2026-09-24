@@ -7721,6 +7721,7 @@ dependencies = [
  "parking_lot",
  "rootcause",
  "rustls-pki-types",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",

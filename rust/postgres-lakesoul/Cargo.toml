@@ -26,6 +26,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true
 
 
 [dev-dependencies]
