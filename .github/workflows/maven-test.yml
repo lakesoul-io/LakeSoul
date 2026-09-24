@@ -73,17 +73,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-      - name: Point the linker at the current JDK
-        # hdfs-sys records the libjvm.so search path of the JDK present when
-        # its build script ran; a restored rust-cache can therefore pin a JDK
-        # directory the runner no longer has.  Add the current one explicitly.
-        run: |
-          jvm_dir="$(dirname "$(find "$JAVA_HOME" -name libjvm.so -print -quit)")"
-          if [ -z "$jvm_dir" ] || [ ! -d "$jvm_dir" ]; then
-            echo "libjvm.so not found under JAVA_HOME=$JAVA_HOME" >&2
-            exit 1
-          fi
-          echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-L $jvm_dir" >> "$GITHUB_ENV"
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
@@ -93,7 +82,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "native-glibc217"
+          shared-key: "native-glibc217-v2"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -109,6 +98,8 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           unset HADOOP_HOME HDFS_LIB_DIR
+          sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
+          export JAVA_HOME=/opt/lakesoul-jdk
           cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
       - name: Verify glibc compatibility
         run: |
