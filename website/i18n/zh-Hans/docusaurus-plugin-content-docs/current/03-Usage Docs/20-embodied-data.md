@@ -83,16 +83,20 @@ import_mcap(
 ### 用 Daft 分布式导入
 
 ```python
+import json
+
 from lakesoul.embodied.daft import import_lerobot_gop
 
 import_lerobot_gop(
     "/data/lerobot/pusht",
     table="pusht_daft",
     path="s3://bucket/lakesoul/pusht_daft",
+    properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
 )
 ```
 
 `lakesoul.embodied.daft` 还提供 `import_lerobot`（frames 布局）、`import_mcap`、`read_samples` 与 `read_gop_frames`。
+所有导入器（单机与 Daft、LeRobot 与 MCAP）都接受 `properties`（如 `blob_columns`），条目会按各建表的实际列过滤。
 
 ## 读取训练样本
 
@@ -300,7 +304,6 @@ blob pack 回收**不依赖** Flink clean job；clean job 仍负责清理过期�
 ## 限制与路线
 
 - manifest（`<table>__manifests` sibling 表与 `EmbodiedDataset.from_manifest`，用于跨快照的持久样本地址）已设计但**尚未实现**；
-- Daft 导入器不接受 `properties`；导入时外置 blob 目前只能通过单进程 `import_lerobot(properties=...)`；
 - 旧 Spark Parquet writer 路径不支持 blob 表（需要 native writer）；该路径计划移除而不是加拦截；
 - `read_samples` / `read_gop_frames` 位于 `lakesoul.embodied.daft`，需要 `daft` extra；
 - 单进程 LeRobot 导入支持 v3.0 数据集；MCAP 支持 JSON 与 protobuf。

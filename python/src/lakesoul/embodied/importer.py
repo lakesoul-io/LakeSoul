@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+import pyarrow as pa
 
 from lakesoul.catalog import LakeSoulCatalog, TableNotFoundError
 
@@ -61,8 +65,31 @@ def sibling_path(path: str | Path, suffix: str) -> str:
     return f"{str(path).rstrip('/')}{suffix}"
 
 
+def filter_properties(
+    properties: Mapping[str, str] | None, schema: pa.Schema
+) -> dict[str, str] | None:
+    """Keep ``blob_columns`` entries whose column exists in ``schema``."""
+    if not properties:
+        return dict(properties) if properties is not None else None
+    filtered = dict(properties)
+    raw = filtered.get("blob_columns")
+    if raw:
+        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        parsed = {
+            column: policy
+            for column, policy in parsed.items()
+            if column in schema.names
+        }
+        if parsed:
+            filtered["blob_columns"] = json.dumps(parsed)
+        else:
+            filtered.pop("blob_columns")
+    return filtered
+
+
 __all__ = [
     "ImportSummary",
+    "filter_properties",
     "prepare_table",
     "resolve_names",
     "sanitize",
