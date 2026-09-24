@@ -10,21 +10,23 @@ use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers}
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::DistributedOptions;
 use lakesoul_metadata::MetaDataClient;
-use rootcause::Report;
 use tokio::runtime::{self};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
 mod cancel;
 mod catalog;
+mod limits;
 mod misc;
 mod pg_compat;
 mod read_only;
 mod server;
 mod session;
+use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
 
@@ -61,6 +63,22 @@ struct Cli {
     /// it on the coordinator.
     #[clap(long)]
     distributed_fallback_local: bool,
+
+    /// Maximum number of concurrent connections, 0 for unlimited
+    #[clap(long, default_value_t = 0)]
+    max_connections: usize,
+
+    /// Maximum number of concurrent statements per user, 0 for unlimited
+    #[clap(long, default_value_t = 0)]
+    max_queries_per_user: usize,
+
+    /// Maximum number of rows a statement may return, 0 for unlimited
+    #[clap(long, default_value_t = 0)]
+    max_result_rows: usize,
+
+    /// Maximum encoded size a statement's result may reach, 0 for unlimited
+    #[clap(long, default_value_t = 0)]
+    max_result_bytes: usize,
 }
 
 async fn main_inner(cli: Cli) -> Result<()> {
@@ -96,12 +114,28 @@ async fn main_inner(cli: Cli) -> Result<()> {
         None => session_factory,
     };
 
+    info!(
+        "start serving on 127.0.0.1:{} (max_connections={}, max_queries_per_user={}, max_result_rows={}, max_result_bytes={})",
+        cli.port,
+        cli.max_connections,
+        cli.max_queries_per_user,
+        cli.max_result_rows,
+        cli.max_result_bytes
+    );
+
     let server_opts = ServerOptions::new()
         .with_host(String::from("127.0.0.1"))
         .with_port(cli.port);
-    info!("start serving on 127.0.0.1:{}", cli.port);
+
+    let limits = ServerLimits::new(Limits {
+        max_connections: cli.max_connections,
+        max_queries_per_user: cli.max_queries_per_user,
+        max_result_rows: cli.max_result_rows,
+        max_result_bytes: cli.max_result_bytes,
+    });
+
     serve_with_handlers(
-        Arc::new(LakeSoulHandlers::new(Arc::new(session_factory))),
+        Arc::new(LakeSoulHandlers::new(Arc::new(session_factory), limits)),
         &server_opts,
     )
     .await?;
@@ -112,7 +146,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(cli.core.worker_threads)
+        .worker_threads(cli.core.worker_threads.max(2))
         .thread_name("pg-lakesoul")
         .thread_stack_size(3 * 1024 * 1024) // 3MB
         .build()?;
