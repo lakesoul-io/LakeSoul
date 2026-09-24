@@ -64,15 +64,18 @@ public class CleanUtils {
         }
     }
 
-    /** Best-effort removal of the `<data_file>.blobref` sidecar of a deleted data file. */
-    private void deleteBlobref(FileSystem fs, String filePath) {
+    /** Remove the `<data_file>.blobref` sidecar; failures are surfaced so callers can retry. */
+    private void deleteBlobref(FileSystem fs, String filePath) throws SQLException {
         Path sidecar = new Path(filePath + ".blobref");
         try {
-            if (fs.exists(sidecar) && fs.delete(sidecar, false)) {
-                logger.info("blobref 已删除: {}", sidecar);
+            if (fs.exists(sidecar) && !fs.delete(sidecar, false)) {
+                logger.warn("blobref 删除失败: {}", sidecar);
+                throw new SQLException("删除 blobref 失败: " + sidecar);
             }
+            logger.info("blobref 已删除: {}", sidecar);
         } catch (IOException e) {
-            logger.debug("删除 blobref 失败: {}", sidecar, e);
+            logger.error("删除 blobref 失败: {}", sidecar, e);
+            throw new SQLException("删除 blobref 失败: " + sidecar, e);
         }
     }
 
@@ -169,7 +172,8 @@ public class CleanUtils {
                                 deleteFile(oldCompactionFileList);
                             }
                         } catch (SQLException e) {
-                            e.printStackTrace();
+                            logger.error("删除 compaction 文件失败，将重试", e);
+                            throw new RuntimeException(e);
                         }
                     }
                     String deleteDataCommitInfoSql =

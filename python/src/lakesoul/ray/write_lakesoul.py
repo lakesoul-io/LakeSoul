@@ -118,7 +118,11 @@ class LakeSoulDatasink(Datasink):
                 self._table.namespace,
                 files,
             )
-            maybe_vacuum_after_commit(self._table_handle.catalog, self._table_handle)
+            maybe_vacuum_after_commit(
+                self._table_handle.catalog,
+                self._table_handle,
+                {item[0] for item in files},
+            )
 
     def _writer_config(self) -> IOConfig:
         return IOConfig(

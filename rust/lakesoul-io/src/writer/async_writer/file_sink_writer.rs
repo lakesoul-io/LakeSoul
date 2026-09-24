@@ -279,6 +279,15 @@ impl FileSinkWriter {
         }
     }
 
+    /// Serialize the `.blobref` sidecar payload.
+    fn blobref_payload(packs: &[String]) -> Result<Vec<u8>> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "packs": packs,
+        }))
+        .map_err(|error| report!("failed to serialize blobref: {error}"))
+    }
+
     /// Replace every blob column with its tagged encoding, spilling values over
     /// the policy threshold into the per-column pack buffer.
     fn encode_blob_columns(&mut self, mut batch: RecordBatch) -> Result<RecordBatch> {
@@ -346,20 +355,10 @@ impl FileSinkWriter {
             written.push(pack_path);
         }
         written.sort();
-        let packs = written
-            .iter()
-            .map(|path| format!("\"{path}\""))
-            .collect::<Vec<_>>()
-            .join(",");
+        written.dedup();
+        let payload = Self::blobref_payload(&written)?;
         let sidecar = Path::from(format!("{data_path}.blobref"));
-        object_store
-            .put(
-                &sidecar,
-                format!("{{\"version\":1,\"packs\":[{packs}]}}")
-                    .into_bytes()
-                    .into(),
-            )
-            .await?;
+        object_store.put(&sidecar, payload.into()).await?;
         debug!("wrote blob reference {}", sidecar);
         Ok(())
     }
@@ -502,5 +501,23 @@ impl AsyncBatchWriter for FileSinkWriter {
 
     fn metrics(&self) -> Option<MetricsSet> {
         self.sink.metrics()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blobref_payload_escapes_paths() {
+        let packs = vec![
+            "s3://bucket/t\"a\\b/_blob/c/u.blob".to_string(),
+            "s3://bucket/t/_blob/c/u2.blob".to_string(),
+        ];
+        let payload = FileSinkWriter::blobref_payload(&packs).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["packs"][0], packs[0]);
+        assert_eq!(value["packs"][1], packs[1]);
     }
 }

@@ -96,8 +96,9 @@ The above cleaning tasks are effective for all LakeSoul tables.
 :::
 ### Clean up unreferenced blob packs
 
-Tables with `blob_columns` store external values in shared, immutable pack files under
-`<table_path>/_blob/<column>/<uuid>.blob`. Every data file records the packs it references in a
+Tables with `blob_columns` store external values in immutable pack files under the `_blob/`
+directory of the data file's own directory (`<data_file_dir>/_blob/<column>/<uuid>.blob`, one
+`_blob/` tree per partition directory). Every data file records the packs it references in a
 `<data_file>.blobref` sidecar. Retired data files are removed by the cleanup job and compaction,
 but the packs they referenced are only reclaimed by the blob vacuum. See
 [Embodied Data](./20-embodied-data.md) for the full reference model.

@@ -245,25 +245,38 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
         assert any(value for value in values), "blob payloads must stay readable"
 
         orphan = f"{_s3_path(base)}/_blob/payload/orphan-{uuid4().hex}.blob"
-        with filesystem.open_output_stream(orphan) as stream:
-            stream.write(b"orphan")
-        assert orphan in _list_files(base), "orphan pack must be visible"
+        partition_orphan = (
+            f"{_s3_path(base)}/episode_id=ep000000/_blob/payload/"
+            f"orphan-{uuid4().hex}.blob"
+        )
+        for path in (orphan, partition_orphan):
+            with filesystem.open_output_stream(path) as stream:
+                stream.write(b"orphan")
+        files = _list_files(base)
+        assert orphan in files and partition_orphan in files, (
+            "orphan packs must be visible"
+        )
 
         dry = vacuum_blobs(catalog, table, older_than=0, dry_run=True)
         assert not dry.aborted, f"vacuum must not abort: {dry}"
         assert dry.packs_deleted == dry.packs_total - dry.packs_used, f"dry run {dry}"
-        assert dry.packs_deleted >= 1, f"orphan pack must be reclaimable: {dry}"
+        assert dry.packs_deleted >= 2, f"orphan packs must be reclaimable: {dry}"
 
-        result = vacuum_blobs(catalog, table, older_than=0, dry_run=False)
+        result = vacuum_blobs(
+            catalog, table, older_than=0, dry_run=False, allow_short_grace=True
+        )
         assert not result.aborted, f"vacuum must not abort: {result}"
         assert result.packs_deleted == dry.packs_deleted, (
             f"vacuum deleted {result.packs_deleted} of {dry.packs_deleted} dry-run packs"
         )
         files = _list_files(base)
         assert orphan not in files, "orphan pack must be deleted"
+        assert partition_orphan not in files, "partition orphan pack must be deleted"
         for pack in used_packs:
             assert _s3_path(pack) in files, f"referenced pack deleted: {pack}"
-        again = vacuum_blobs(catalog, table, older_than=0, dry_run=False)
+        again = vacuum_blobs(
+            catalog, table, older_than=0, dry_run=False, allow_short_grace=True
+        )
         assert not again.aborted and again.packs_deleted == 0, (
             f"vacuum must be idempotent: {again}"
         )

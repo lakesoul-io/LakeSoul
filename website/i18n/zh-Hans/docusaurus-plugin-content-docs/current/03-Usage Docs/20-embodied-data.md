@@ -203,14 +203,18 @@ for epoch in range(args.epochs):
 
 ### 共享 pack 与 `.blobref` sidecar
 
-外置值存放在表级共享的不可变 pack 中：
+外置值存放在数据文件旁边的不可变 pack 中：
 
 ```
-<table>/_blob/<column>/<uuid>.blob     # 不可变 pack
-<data_file>.blobref                    # JSON {"version":1,"packs":[...]}
+<data_file_dir>/_blob/<column>/<uuid>.blob     # 不可变 pack
+<data_file>.blobref                            # JSON {"version":1,"packs":[...]}
 ```
 
-每个数据文件在自己的 sidecar 里记录所引用的 pack。compaction 透传 tagged 引用、不重写 blob 字节，并为输出重建 sidecar（输入 sidecar 的保守并集）；文件移动时 sidecar 随数据文件一起搬移，保证引用始终有效。clean job 删除数据文件时会一并删除 sidecar。
+pack 位于数据文件自身所在目录的 `_blob/` 下，因此分区表会按分区目录各有一份 `_blob` 树（例如
+`<table>/episode_id=ep000001/_blob/data/...`）。每个数据文件在自己的 sidecar 里记录所引用的
+pack；vacuum 会递归扫描表下所有 `_blob/` 目录，因此分区表的 pack 同样会被回收。compaction 透传
+tagged 引用、不重写 blob 字节，并为输出重建 sidecar（输入 sidecar 的保守并集）；文件移动时
+sidecar 随数据文件一起搬移，保证引用始终有效。clean job 删除数据文件时会一并删除 sidecar。
 
 ### `blob_columns`
 
@@ -274,7 +278,8 @@ properties={"blob_columns": json.dumps({"data": {"mode": "external"}}),
             "blob_vacuum_interval": "50"}
 ```
 
-vacuum 会收集两次 live 集合，一旦集合变化或 live 文件缺少 sidecar 就整体中止、不删任何东西，因此与并发写入同时运行是安全的。也可以手动执行（默认 dry run）：
+vacuum 会收集两次 live 集合，一旦集合变化或 live 文件缺少 sidecar 就整体中止、不删任何东西，因此与并发写入同时运行是安全的。由于写入方先上传 pack、后提交引用它的数据文件，非
+dry-run 且宽限期短于一小时的删除会被拒绝，除非显式传 `allow_short_grace=True`。也可以手动执行（默认 dry run）：
 
 ```python
 from lakesoul.vacuum import vacuum_blobs

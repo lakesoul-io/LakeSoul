@@ -61,3 +61,30 @@ def test_blobref_rejects_unknown_version(tmp_path) -> None:
     sidecar.write_text('{"version": 99, "packs": []}')
     with pytest.raises(ValueError, match="unsupported blobref version"):
         read_blobref(data_file, filesystem=filesystem)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "[]",
+        '{"version": 1}',
+        '{"version": 1, "packs": "x"}',
+        '{"version": 1, "packs": [1]}',
+        '{"version": 1, "packs": ["ok", null]}',
+    ],
+)
+def test_blobref_rejects_invalid_payloads(tmp_path, payload: str) -> None:
+    filesystem = pa_fs.LocalFileSystem()
+    data_file = str(tmp_path / "part-0.parquet")
+    sidecar = tmp_path / ("part-0.parquet" + BLOBREF_SUFFIX)
+    sidecar.write_text(payload)
+    with pytest.raises((TypeError, ValueError), match="invalid blobref"):
+        read_blobref(data_file, filesystem=filesystem)
+
+
+def test_blobref_allows_empty_pack_list(tmp_path) -> None:
+    filesystem = pa_fs.LocalFileSystem()
+    data_file = str(tmp_path / "part-0.parquet")
+    sidecar = tmp_path / ("part-0.parquet" + BLOBREF_SUFFIX)
+    sidecar.write_text('{"version": 1, "packs": []}')
+    assert read_blobref(data_file, filesystem=filesystem) == []
