@@ -64,6 +64,9 @@ struct Hit {
     source: Map<String, Value>,
     /// ES `highlight` result, keyed by field.
     highlight: Option<Value>,
+    /// Values of the columns referenced by `sort` and `aggs`, keyed by field.
+    /// Only populated when the request asks for them.
+    computed: Map<String, Value>,
 }
 
 /// `_source` projection of a search request.
@@ -82,6 +85,15 @@ struct SearchBody {
     size: usize,
     source: SourceFilter,
     highlight: Option<Highlight>,
+    /// Raw `sort` / `aggs` values; resolved against the index schema by
+    /// [`SearchBody::resolve`] once the runtime is known.
+    sort: Option<Value>,
+    aggregations: Option<Value>,
+    sort_fields: Vec<SortField>,
+    aggs: Vec<Aggregation>,
+    /// Union of the columns referenced by `sort` and `aggs`, collected once
+    /// so the hit loop only materializes what the request needs.
+    computed_fields: Vec<String>,
 }
 
 /// Parsed ES `highlight` request.
@@ -191,7 +203,30 @@ impl SearchBody {
                 .map(Highlight::parse)
                 .transpose()?
                 .flatten(),
+            sort: map.get("sort").cloned(),
+            aggregations: map.get("aggs").or_else(|| map.get("aggregations")).cloned(),
+            sort_fields: Vec::new(),
+            aggs: Vec::new(),
+            computed_fields: Vec::new(),
         })
+    }
+
+    /// Resolve `sort` and `aggs` against the index schema and collect the
+    /// columns their evaluation needs.
+    fn resolve(&mut self, runtime: &IndexRuntime) -> Result<(), EsError> {
+        self.sort_fields = SortField::parse_list(self.sort.as_ref(), runtime)?;
+        self.aggs = parse_aggregations(self.aggregations.as_ref(), runtime)?;
+        let mut fields: Vec<String> = Vec::new();
+        for sort in &self.sort_fields {
+            if let SortKey::Field(field) = &sort.key
+                && !fields.contains(field)
+            {
+                fields.push(field.clone());
+            }
+        }
+        collect_aggregation_fields(&self.aggs, &mut fields);
+        self.computed_fields = fields;
+        Ok(())
     }
 }
 
@@ -253,6 +288,529 @@ fn string_list(fields: &[Value]) -> Result<Vec<String>, EsError> {
                 .ok_or_else(|| EsError::bad_request("_source fields must be strings"))
         })
         .collect()
+}
+
+/// Sort order of one `sort` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortOrder {
+    Asc,
+    Desc,
+}
+
+impl SortOrder {
+    fn parse(value: &Value) -> Result<Self, EsError> {
+        match value.as_str().map(str::to_ascii_lowercase).as_deref() {
+            Some("asc") => Ok(Self::Asc),
+            Some("desc") => Ok(Self::Desc),
+            _ => Err(EsError::bad_request("sort order must be 'asc' or 'desc'")),
+        }
+    }
+}
+
+/// What a `sort` key refers to.
+#[derive(Debug, Clone)]
+enum SortKey {
+    Score,
+    Id,
+    Field(String),
+}
+
+/// One parsed `sort` entry.
+#[derive(Debug, Clone)]
+struct SortField {
+    key: SortKey,
+    order: SortOrder,
+}
+
+impl SortField {
+    /// Parse the ES `sort` value: a field name, `{field: order}`,
+    /// `{field: {"order": order}}` or an array of those.
+    fn parse_list(
+        value: Option<&Value>,
+        runtime: &IndexRuntime,
+    ) -> Result<Vec<Self>, EsError> {
+        let Some(value) = value else {
+            return Ok(Vec::new());
+        };
+        match value {
+            Value::Array(items) => {
+                let mut fields = Vec::with_capacity(items.len());
+                for item in items {
+                    fields.extend(Self::parse(item, runtime)?);
+                }
+                Ok(fields)
+            }
+            other => Self::parse(other, runtime),
+        }
+    }
+
+    fn parse(value: &Value, runtime: &IndexRuntime) -> Result<Vec<Self>, EsError> {
+        match value {
+            Value::String(field) => Ok(vec![Self::from_field(field, None, runtime)?]),
+            Value::Object(map) if !map.is_empty() => map
+                .iter()
+                .map(|(field, spec)| {
+                    let order = match spec {
+                        Value::String(_) => Some(SortOrder::parse(spec)?),
+                        Value::Object(options) => {
+                            options.get("order").map(SortOrder::parse).transpose()?
+                        }
+                        _ => {
+                            return Err(EsError::bad_request(format!(
+                                "invalid sort options for '{field}'"
+                            )));
+                        }
+                    };
+                    Self::from_field(field, order, runtime)
+                })
+                .collect(),
+            _ => Err(EsError::bad_request("invalid sort")),
+        }
+    }
+
+    fn from_field(
+        field: &str,
+        order: Option<SortOrder>,
+        runtime: &IndexRuntime,
+    ) -> Result<Self, EsError> {
+        // `_score` defaults to descending; every other key to ascending.
+        let (key, default_order) = match field {
+            "_score" => (SortKey::Score, SortOrder::Desc),
+            "_id" | "_doc" | "id" => (SortKey::Id, SortOrder::Asc),
+            _ => (
+                SortKey::Field(normalize_field(field, runtime)?),
+                SortOrder::Asc,
+            ),
+        };
+        Ok(Self {
+            key,
+            order: order.unwrap_or(default_order),
+        })
+    }
+}
+
+/// Total order across the JSON values the schema produces.  Cross-type
+/// comparisons only order by type, which a single column cannot mix.
+fn compare_json(left: &Value, right: &Value) -> Ordering {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => left
+            .as_f64()
+            .partial_cmp(&right.as_f64())
+            .unwrap_or(Ordering::Equal),
+        (Value::String(left), Value::String(right)) => left.cmp(right),
+        (Value::Bool(left), Value::Bool(right)) => left.cmp(right),
+        _ => json_type_rank(left).cmp(&json_type_rank(right)),
+    }
+}
+
+fn json_type_rank(value: &Value) -> u8 {
+    match value {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        Value::Object(_) => 5,
+    }
+}
+
+fn is_missing(value: Option<&Value>) -> bool {
+    matches!(value, None | Some(Value::Null))
+}
+
+/// Order two hits by the explicit `sort` keys.  Missing values sort last in
+/// either direction (Elasticsearch's default `missing: _last`), and ties fall
+/// back to the primary key so the order stays deterministic.
+fn compare_hits(left: &Hit, right: &Hit, sort: &[SortField]) -> Ordering {
+    for field in sort {
+        let ordering = match &field.key {
+            SortKey::Score => left
+                .score
+                .partial_cmp(&right.score)
+                .unwrap_or(Ordering::Equal),
+            SortKey::Id => left.id.cmp(&right.id),
+            SortKey::Field(name) => {
+                let left_value = left.computed.get(name);
+                let right_value = right.computed.get(name);
+                match (is_missing(left_value), is_missing(right_value)) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => return Ordering::Greater,
+                    (false, true) => return Ordering::Less,
+                    (false, false) => compare_json(
+                        left_value.expect("checked above"),
+                        right_value.expect("checked above"),
+                    ),
+                }
+            }
+        };
+        let ordering = match field.order {
+            SortOrder::Asc => ordering,
+            SortOrder::Desc => ordering.reverse(),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.id.cmp(&right.id)
+}
+
+/// A named aggregation in the request order.
+#[derive(Debug, Clone)]
+struct Aggregation {
+    name: String,
+    agg: Agg,
+}
+
+#[derive(Debug, Clone)]
+enum Agg {
+    Terms(TermsAgg),
+    Metric(MetricAgg),
+}
+
+#[derive(Debug, Clone)]
+struct TermsAgg {
+    field: String,
+    size: usize,
+    order: TermsOrder,
+    min_doc_count: u64,
+    sub: Vec<Aggregation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TermsOrderKey {
+    Count,
+    Key,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TermsOrder {
+    key: TermsOrderKey,
+    order: SortOrder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetricKind {
+    Avg,
+    Sum,
+    Min,
+    Max,
+    ValueCount,
+    Cardinality,
+    Stats,
+}
+
+#[derive(Debug, Clone)]
+struct MetricAgg {
+    kind: MetricKind,
+    field: String,
+}
+
+/// Elasticsearch caps `terms.size` well below this; the gateway rejects
+/// nothing and simply clamps.
+const MAX_TERMS_SIZE: u64 = 10_000;
+
+fn parse_aggregations(
+    value: Option<&Value>,
+    runtime: &IndexRuntime,
+) -> Result<Vec<Aggregation>, EsError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let map = value
+        .as_object()
+        .ok_or_else(|| EsError::bad_request("'aggs' must be an object"))?;
+    map.iter()
+        .map(|(name, spec)| parse_aggregation(name, spec, runtime))
+        .collect()
+}
+
+fn parse_aggregation(
+    name: &str,
+    value: &Value,
+    runtime: &IndexRuntime,
+) -> Result<Aggregation, EsError> {
+    let map = value.as_object().ok_or_else(|| {
+        EsError::bad_request(format!("aggregation '{name}' must be an object"))
+    })?;
+    let sub =
+        parse_aggregations(map.get("aggs").or_else(|| map.get("aggregations")), runtime)?;
+    if let Some(terms) = map.get("terms") {
+        let terms = terms.as_object().ok_or_else(|| {
+            EsError::bad_request(format!(
+                "'terms' aggregation '{name}' must be an object"
+            ))
+        })?;
+        let field = aggregation_field(name, terms.get("field"), runtime)?;
+        let size = terms
+            .get("size")
+            .and_then(Value::as_u64)
+            .unwrap_or(10)
+            .clamp(1, MAX_TERMS_SIZE) as usize;
+        let min_doc_count = terms
+            .get("min_doc_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        let order = parse_terms_order(terms.get("order"))?;
+        return Ok(Aggregation {
+            name: name.to_string(),
+            agg: Agg::Terms(TermsAgg {
+                field,
+                size,
+                order,
+                min_doc_count,
+                sub,
+            }),
+        });
+    }
+    for (key, kind) in [
+        ("avg", MetricKind::Avg),
+        ("sum", MetricKind::Sum),
+        ("min", MetricKind::Min),
+        ("max", MetricKind::Max),
+        ("value_count", MetricKind::ValueCount),
+        ("cardinality", MetricKind::Cardinality),
+        ("stats", MetricKind::Stats),
+    ] {
+        if let Some(spec) = map.get(key) {
+            let spec = spec.as_object().ok_or_else(|| {
+                EsError::bad_request(format!(
+                    "'{key}' aggregation '{name}' must be an object"
+                ))
+            })?;
+            let field = aggregation_field(name, spec.get("field"), runtime)?;
+            return Ok(Aggregation {
+                name: name.to_string(),
+                agg: Agg::Metric(MetricAgg { kind, field }),
+            });
+        }
+    }
+    Err(EsError::unsupported(format!(
+        "unsupported aggregation: {value}"
+    )))
+}
+
+fn aggregation_field(
+    name: &str,
+    field: Option<&Value>,
+    runtime: &IndexRuntime,
+) -> Result<String, EsError> {
+    let field = field.and_then(Value::as_str).ok_or_else(|| {
+        EsError::bad_request(format!("aggregation '{name}' requires a 'field'"))
+    })?;
+    normalize_field(field, runtime)
+}
+
+fn parse_terms_order(value: Option<&Value>) -> Result<TermsOrder, EsError> {
+    let Some(value) = value else {
+        // Elasticsearch defaults to `_count` descending.
+        return Ok(TermsOrder {
+            key: TermsOrderKey::Count,
+            order: SortOrder::Desc,
+        });
+    };
+    let (key, order) = match value {
+        Value::Object(options) => {
+            let Some((key, order)) = options.iter().next() else {
+                return Err(EsError::bad_request("terms order must not be empty"));
+            };
+            (key.clone(), SortOrder::parse(order)?)
+        }
+        Value::String(key) => (key.clone(), SortOrder::Desc),
+        _ => return Err(EsError::bad_request("invalid terms order")),
+    };
+    let key = match key.as_str() {
+        "_count" => TermsOrderKey::Count,
+        "_key" => TermsOrderKey::Key,
+        _ => {
+            return Err(EsError::unsupported(format!(
+                "terms order '{key}' is not supported: use _count or _key"
+            )));
+        }
+    };
+    Ok(TermsOrder { key, order })
+}
+
+fn collect_aggregation_fields(aggs: &[Aggregation], fields: &mut Vec<String>) {
+    for agg in aggs {
+        match &agg.agg {
+            Agg::Terms(terms) => {
+                if !fields.contains(&terms.field) {
+                    fields.push(terms.field.clone());
+                }
+                collect_aggregation_fields(&terms.sub, fields);
+            }
+            Agg::Metric(metric) => {
+                if !fields.contains(&metric.field) {
+                    fields.push(metric.field.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Evaluate aggregations over the verified hits (the page is cut after, so
+/// aggregations always cover the full match set the request fetched).
+fn eval_aggregations(aggs: &[Aggregation], hits: &[&Hit]) -> Value {
+    let mut result = Map::new();
+    for agg in aggs {
+        result.insert(agg.name.clone(), eval_aggregation(&agg.agg, hits));
+    }
+    Value::Object(result)
+}
+
+fn eval_aggregation(agg: &Agg, hits: &[&Hit]) -> Value {
+    match agg {
+        Agg::Metric(metric) => eval_metric(metric, hits),
+        Agg::Terms(terms) => eval_terms(terms, hits),
+    }
+}
+
+fn eval_metric(metric: &MetricAgg, hits: &[&Hit]) -> Value {
+    let numbers: Vec<f64> = hits
+        .iter()
+        .filter_map(|hit| hit.computed.get(&metric.field))
+        .filter_map(Value::as_f64)
+        .collect();
+    let value_count = || {
+        hits.iter()
+            .filter_map(|hit| hit.computed.get(&metric.field))
+            .filter(|value| !value.is_null())
+            .count() as u64
+    };
+    match metric.kind {
+        MetricKind::Avg => json!({"value": average(&numbers)}),
+        MetricKind::Sum => json!({"value": numbers.iter().sum::<f64>()}),
+        MetricKind::Min => json!({"value": numbers.iter().copied().reduce(f64::min)}),
+        MetricKind::Max => json!({"value": numbers.iter().copied().reduce(f64::max)}),
+        MetricKind::ValueCount => json!({"value": value_count()}),
+        MetricKind::Cardinality => {
+            let distinct: HashSet<String> = hits
+                .iter()
+                .filter_map(|hit| hit.computed.get(&metric.field))
+                .filter(|value| !value.is_null())
+                .map(value_key)
+                .collect();
+            json!({"value": distinct.len() as u64})
+        }
+        MetricKind::Stats => json!({
+            "count": value_count(),
+            "min": numbers.iter().copied().reduce(f64::min),
+            "max": numbers.iter().copied().reduce(f64::max),
+            "avg": average(&numbers),
+            "sum": numbers.iter().sum::<f64>(),
+        }),
+    }
+}
+
+struct TermsBucket<'a> {
+    key: Value,
+    count: u64,
+    hits: Vec<&'a Hit>,
+}
+
+fn eval_terms(terms: &TermsAgg, hits: &[&Hit]) -> Value {
+    let mut buckets: HashMap<String, TermsBucket> = HashMap::new();
+    for hit in hits {
+        let Some(value) = hit.computed.get(&terms.field) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let bucket = buckets
+            .entry(value_key(value))
+            .or_insert_with(|| TermsBucket {
+                key: value.clone(),
+                count: 0,
+                hits: Vec::new(),
+            });
+        bucket.count += 1;
+        bucket.hits.push(hit);
+    }
+    let mut buckets: Vec<TermsBucket> = buckets
+        .into_values()
+        .filter(|bucket| bucket.count >= terms.min_doc_count)
+        .collect();
+    buckets.sort_by(|left, right| match terms.order.key {
+        TermsOrderKey::Count => match terms.order.order {
+            // `_count` keeps the key ascending as its tie-break, so the
+            // primary order alone is reversed.
+            SortOrder::Desc => right
+                .count
+                .cmp(&left.count)
+                .then_with(|| compare_json(&left.key, &right.key)),
+            SortOrder::Asc => left
+                .count
+                .cmp(&right.count)
+                .then_with(|| compare_json(&left.key, &right.key)),
+        },
+        TermsOrderKey::Key => match terms.order.order {
+            SortOrder::Asc => compare_json(&left.key, &right.key),
+            SortOrder::Desc => compare_json(&right.key, &left.key),
+        },
+    });
+    let sum_other_doc_count: u64 = buckets
+        .iter()
+        .skip(terms.size)
+        .map(|bucket| bucket.count)
+        .sum();
+    buckets.truncate(terms.size);
+
+    let buckets: Vec<Value> = buckets
+        .iter()
+        .map(|bucket| {
+            let mut object = Map::new();
+            let (key, key_as_string) = term_key(&bucket.key);
+            object.insert("key".to_string(), key);
+            if let Some(key_as_string) = key_as_string {
+                object.insert("key_as_string".to_string(), key_as_string);
+            }
+            object.insert("doc_count".to_string(), json!(bucket.count));
+            if !terms.sub.is_empty()
+                && let Value::Object(sub) = eval_aggregations(&terms.sub, &bucket.hits)
+            {
+                for (name, value) in sub {
+                    object.insert(name, value);
+                }
+            }
+            Value::Object(object)
+        })
+        .collect();
+    json!({
+        "doc_count_error_upper_bound": 0,
+        "sum_other_doc_count": sum_other_doc_count,
+        "buckets": buckets,
+    })
+}
+
+/// Elasticsearch renders boolean term keys as 1/0 with a string form.
+fn term_key(value: &Value) -> (Value, Option<Value>) {
+    match value {
+        Value::Bool(value) => (
+            json!(u8::from(*value)),
+            Some(Value::String(value.to_string())),
+        ),
+        other => (other.clone(), None),
+    }
+}
+
+/// Canonical key for the exact `cardinality` and terms grouping.
+fn value_key(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => format!("bool:{value}"),
+        Value::Number(value) => format!("number:{value}"),
+        Value::String(value) => format!("string:{value}"),
+        other => format!("json:{other}"),
+    }
+}
+
+fn average(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
 }
 
 /// A parsed `script_score` vector query.
@@ -598,7 +1156,8 @@ async fn search_impl(
 ) -> Result<Value, EsError> {
     let started = Instant::now();
     let runtime = state.index(&index)?;
-    let body = SearchBody::parse(&body)?;
+    let mut body = SearchBody::parse(&body)?;
+    body.resolve(runtime)?;
     let parse_ms = started.elapsed().as_secs_f64() * 1000.0;
     let parsed = ParsedQuery::parse(&body.query, runtime)?;
     if parsed.vector_query.is_some() && parsed.match_query.is_some() {
@@ -607,6 +1166,7 @@ async fn search_impl(
         ));
     }
 
+    let computed = &body.computed_fields;
     let (mut hits, shards) = if let Some(vector) = &parsed.vector_query {
         vector_hits(
             Arc::clone(&state),
@@ -614,6 +1174,7 @@ async fn search_impl(
             vector.clone(),
             parsed.clone(),
             body.clone(),
+            computed,
         )
         .await?
     } else if let Some(match_query) = &parsed.match_query {
@@ -623,6 +1184,7 @@ async fn search_impl(
             match_query.clone(),
             parsed.clone(),
             body.clone(),
+            computed,
         )
         .await?
     } else {
@@ -631,19 +1193,33 @@ async fn search_impl(
             runtime.clone(),
             parsed.clone(),
             body.clone(),
+            computed,
         )
         .await?
     };
 
-    // Global relevance order, then pagination.
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    let max_score = hits.first().map(|hit| hit.score);
+    // Global order, then pagination.  Without an explicit `sort` the
+    // relevance order (score descending, primary key ascending) still
+    // applies; an explicit `sort` replaces it and ties fall back to the
+    // primary key.
+    if body.sort_fields.is_empty() {
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+    } else {
+        hits.sort_by(|left, right| compare_hits(left, right, &body.sort_fields));
+    }
+    let max_score = hits.iter().map(|hit| hit.score).reduce(f32::max);
+    let aggregations = if body.aggs.is_empty() {
+        None
+    } else {
+        let docs: Vec<&Hit> = hits.iter().collect();
+        Some(eval_aggregations(&body.aggs, &docs))
+    };
     let page: Vec<Value> = hits
         .into_iter()
         .skip(body.from)
@@ -681,7 +1257,7 @@ async fn search_impl(
             page.len()
         );
     }
-    Ok(json!({
+    let mut response = json!({
         "took": started.elapsed().as_millis() as u64,
         "timed_out": false,
         "_shards": {
@@ -695,7 +1271,13 @@ async fn search_impl(
             "max_score": max_score,
             "hits": page
         }
-    }))
+    });
+    if let Some(aggregations) = aggregations
+        && let Some(object) = response.as_object_mut()
+    {
+        object.insert("aggregations".to_string(), aggregations);
+    }
+    Ok(response)
 }
 
 /// Vector search: `script_score` cosine candidates + exact rerank.
@@ -705,6 +1287,7 @@ async fn vector_hits(
     vector: VectorQuery,
     parsed: ParsedQuery,
     body: SearchBody,
+    computed_fields: &[String],
 ) -> Result<(Vec<Hit>, usize), EsError> {
     let Some(dim) = runtime.dim else {
         return Err(EsError::unsupported(
@@ -781,6 +1364,7 @@ async fn vector_hits(
                     score,
                     source: source_for_row(batch, &runtime, row, &body.source)?,
                     highlight: None,
+                    computed: computed_for_row(batch, row, computed_fields)?,
                 });
             }
         }
@@ -811,6 +1395,7 @@ async fn keyword_hits(
     match_query: MatchQuery,
     parsed: ParsedQuery,
     body: SearchBody,
+    computed_fields: &[String],
 ) -> Result<(Vec<Hit>, usize), EsError> {
     let field = match_query.field;
     let query = match_query.query;
@@ -926,6 +1511,7 @@ async fn keyword_hits(
                     score: *score,
                     source: source_for_row(batch, &runtime, row, &body.source)?,
                     highlight: None,
+                    computed: computed_for_row(batch, row, computed_fields)?,
                 };
                 if let (Some(highlight), Some(terms), Some(text)) =
                     (&body.highlight, &highlight_terms, text)
@@ -969,6 +1555,7 @@ async fn filter_only_hits(
     runtime: IndexRuntime,
     parsed: ParsedQuery,
     body: SearchBody,
+    computed_fields: &[String],
 ) -> Result<(Vec<Hit>, usize), EsError> {
     let filter = filter_expr(&parsed, &runtime)?;
     let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
@@ -984,6 +1571,7 @@ async fn filter_only_hits(
                 score: 0.0,
                 source: source_for_row(batch, &runtime, row, &body.source)?,
                 highlight: None,
+                computed: computed_for_row(batch, row, computed_fields)?,
             });
         }
     }
@@ -1627,6 +2215,28 @@ fn source_for_row(
         map.insert(name.clone(), value_at(batch.column(index), row));
     }
     Ok(map)
+}
+
+/// Materialize the columns referenced by `sort`/`aggs` for one row.  Kept
+/// separate from `_source`: sorting and aggregating must not depend on the
+/// `_source` projection.
+fn computed_for_row(
+    batch: &RecordBatch,
+    row: usize,
+    fields: &[String],
+) -> Result<Map<String, Value>, EsError> {
+    if fields.is_empty() {
+        return Ok(Map::new());
+    }
+    let mut values = Map::new();
+    for field in fields {
+        let index = batch
+            .schema()
+            .index_of(field)
+            .map_err(crate::error::internal)?;
+        values.insert(field.clone(), value_at(batch.column(index), row));
+    }
+    Ok(values)
 }
 
 fn value_at(array: &ArrayRef, row: usize) -> Value {

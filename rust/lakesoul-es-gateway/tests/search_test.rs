@@ -426,3 +426,235 @@ async fn gateway_highlight_contract() {
 
     cleanup(&state, &table).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_sort_and_aggregations_contract() {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let table = format!("es_gw_sortagg_{}", &suffix[..10]);
+    let index = format!("esgwsort{}", &suffix[..10]);
+    let state = build_state(test_config(&index, &table, None, 1))
+        .await
+        .unwrap();
+    let app = build_router(Arc::clone(&state));
+    let search_path = format!("/{index}/_search");
+
+    // c4 has no source_type/is_enabled, so the missing-value rules and the
+    // terms buckets are exercised too.
+    let bulk = [
+        r#"{"create":{}}"#,
+        r#"{"content":"apple","source_id":"s1","source_type":3,"chunk_id":"c1","knowledge_base_id":"kb2","is_enabled":true}"#,
+        r#"{"create":{}}"#,
+        r#"{"content":"apple banana","source_id":"s2","source_type":1,"chunk_id":"c2","knowledge_base_id":"kb1","is_enabled":false}"#,
+        r#"{"create":{}}"#,
+        r#"{"content":"banana","source_id":"s3","source_type":2,"chunk_id":"c3","knowledge_base_id":"kb2","is_enabled":true}"#,
+        r#"{"create":{}}"#,
+        r#"{"content":"cherry","source_id":"s4","chunk_id":"c4","knowledge_base_id":"kb1"}"#,
+        "",
+    ]
+    .join("\n");
+    let (status, _, body) =
+        call(&app, "POST", &format!("/{index}/_bulk"), Some(&bulk)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], false);
+
+    // Ascending sort; ties stay in primary-key order and the doc missing the
+    // field sorts last even though the sort field is excluded from _source.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"sort":[{"source_type":"asc"}],"_source":{"includes":["chunk_id"]},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(hit_chunk_ids(&body), vec!["c2", "c3", "c1", "c4"], "{body}");
+    assert!(
+        body["hits"]["hits"][0]["_source"]
+            .get("source_type")
+            .is_none()
+    );
+
+    // Descending order keeps missing values last.
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"sort":[{"source_type":{"order":"desc"}}],"_source":{"includes":["chunk_id"]},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(hit_chunk_ids(&body), vec!["c1", "c3", "c2", "c4"], "{body}");
+
+    // The string shorthand sorts ascending; `_id` pagination happens after
+    // sorting.
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"sort":["chunk_id"],"_source":{"includes":["chunk_id"]},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(hit_chunk_ids(&body), vec!["c1", "c2", "c3", "c4"], "{body}");
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"sort":[{"chunk_id":"desc"}],"_source":{"includes":["chunk_id"]},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(hit_chunk_ids(&body), vec!["c4", "c3", "c2", "c1"], "{body}");
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"sort":["chunk_id"],"from":1,"size":2,"_source":{"includes":["chunk_id"]}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(hit_chunk_ids(&body), vec!["c2", "c3"], "{body}");
+
+    // Keyword search honours an explicit sort instead of the relevance order
+    // (c1 outranks c2 by BM25, the sort reverses that).
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"sort":[{"chunk_id":"desc"}],"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(hit_chunk_ids(&body), vec!["c2", "c1"], "{body}");
+
+    // Unsupported sort keys and orders are rejected.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(r#"{"sort":[{"nope":"asc"}]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(r#"{"sort":[{"chunk_id":"sideways"}]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Aggregations run over the full verified match set, independent of the
+    // page (size 0) and of the sort.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"size":0,"aggs":{
+                "by_type":{"terms":{"field":"source_type"}},
+                "by_kb":{"terms":{"field":"knowledge_base_id","order":{"_key":"asc"}}},
+                "top_kb":{"terms":{"field":"knowledge_base_id","size":1}},
+                "enabled":{"terms":{"field":"is_enabled"}},
+                "avg_type":{"avg":{"field":"source_type"}},
+                "stats_type":{"stats":{"field":"source_type"}},
+                "distinct_kb":{"cardinality":{"field":"knowledge_base_id"}},
+                "chunks":{"value_count":{"field":"chunk_id"}},
+                "nested":{"terms":{"field":"knowledge_base_id"},"aggs":{"avg_type":{"avg":{"field":"source_type"}}}}
+            }}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["hits"]["total"]["value"], 0);
+    let aggregations = &body["aggregations"];
+
+    let by_type = aggregations["by_type"]["buckets"].as_array().unwrap();
+    assert_eq!(by_type.len(), 3);
+    for (index, key) in [1, 2, 3].iter().enumerate() {
+        assert_eq!(by_type[index]["key"], *key, "{body}");
+        assert_eq!(by_type[index]["doc_count"], 1);
+    }
+    assert_eq!(aggregations["by_type"]["sum_other_doc_count"], 0);
+    assert_eq!(aggregations["by_type"]["doc_count_error_upper_bound"], 0);
+
+    let by_kb = aggregations["by_kb"]["buckets"].as_array().unwrap();
+    assert_eq!(by_kb[0]["key"], "kb1");
+    assert_eq!(by_kb[1]["key"], "kb2");
+
+    // size caps the buckets and reports the rest as sum_other_doc_count.
+    let top_kb = aggregations["top_kb"]["buckets"].as_array().unwrap();
+    assert_eq!(top_kb.len(), 1);
+    assert_eq!(top_kb[0]["key"], "kb1");
+    assert_eq!(aggregations["top_kb"]["sum_other_doc_count"], 2);
+
+    // Boolean term keys are 1/0 with the ES-style string form; the doc
+    // missing is_enabled is not in a bucket.
+    let enabled = aggregations["enabled"]["buckets"].as_array().unwrap();
+    assert_eq!(enabled[0]["key"], 1);
+    assert_eq!(enabled[0]["key_as_string"], "true");
+    assert_eq!(enabled[0]["doc_count"], 2);
+    assert_eq!(enabled[1]["key"], 0);
+    assert_eq!(enabled[1]["doc_count"], 1);
+
+    // Metrics skip the missing value: (3 + 1 + 2) / 3.
+    assert_eq!(aggregations["avg_type"]["value"], 2.0);
+    assert_eq!(aggregations["stats_type"]["count"], 3);
+    assert_eq!(aggregations["stats_type"]["min"], 1.0);
+    assert_eq!(aggregations["stats_type"]["max"], 3.0);
+    assert_eq!(aggregations["stats_type"]["avg"], 2.0);
+    assert_eq!(aggregations["stats_type"]["sum"], 6.0);
+    assert_eq!(aggregations["distinct_kb"]["value"], 2);
+    assert_eq!(aggregations["chunks"]["value"], 4);
+
+    let nested = aggregations["nested"]["buckets"].as_array().unwrap();
+    assert_eq!(nested[0]["key"], "kb1");
+    assert_eq!(nested[0]["avg_type"]["value"], 1.0);
+    assert_eq!(nested[1]["key"], "kb2");
+    assert_eq!(nested[1]["avg_type"]["value"], 2.5);
+
+    // Aggregations also run on the keyword path.
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"size":0,"aggs":{"by_kb":{"terms":{"field":"knowledge_base_id"}}}}"#,
+        ),
+    )
+    .await;
+    let buckets = body["aggregations"]["by_kb"]["buckets"].as_array().unwrap();
+    assert_eq!(buckets.len(), 2, "{body}");
+    assert_eq!(buckets[0]["key"], "kb1");
+    assert_eq!(buckets[0]["doc_count"], 1);
+    assert_eq!(buckets[1]["key"], "kb2");
+    assert_eq!(buckets[1]["doc_count"], 1);
+
+    // Unknown aggregation types and fields are rejected.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(r#"{"aggs":{"hist":{"histogram":{"field":"source_type"}}}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(r#"{"aggs":{"nope":{"terms":{"field":"nope"}}}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    cleanup(&state, &table).await;
+}
