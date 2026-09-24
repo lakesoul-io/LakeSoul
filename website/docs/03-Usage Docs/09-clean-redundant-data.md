@@ -94,3 +94,34 @@ Start the Spark cleanup command locally:
 :::tip
 The above cleaning tasks are effective for all LakeSoul tables.
 :::
+### Clean up unreferenced blob packs
+
+Tables with `blob_columns` store external values in shared, immutable pack files under
+`<table_path>/_blob/<column>/<uuid>.blob`. Every data file records the packs it references in a
+`<data_file>.blobref` sidecar. Retired data files are removed by the cleanup job and compaction,
+but the packs they referenced are only reclaimed by the blob vacuum. See
+[Embodied Data](./20-embodied-data.md) for the full reference model.
+
+Blob tables vacuum automatically after a successful write, once every `blob_vacuum_interval`
+partition versions (default `20`, set the table property to `0` to disable it). Only packs that no
+live data file references and that are older than the one-day grace period are deleted. The
+collection runs twice and the vacuum aborts without deleting anything when the live set changes or
+a sidecar is missing, so it is safe to run from concurrent writers.
+
+Users can also run the vacuum manually (defaults to a dry run):
+
+```python
+from lakesoul import LakeSoulCatalog
+from lakesoul.vacuum import vacuum_blobs
+
+catalog = LakeSoulCatalog.from_env()
+table = catalog.table("my_table", namespace="default")
+
+report = vacuum_blobs(catalog, table, dry_run=True)
+print(report)
+```
+
+:::tip
+Blob pack garbage collection does not depend on the Flink clean job; expired data files and
+metadata are still cleaned by the regular cleanup job and compaction.
+:::

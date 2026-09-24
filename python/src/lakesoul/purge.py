@@ -60,12 +60,12 @@ def _uuid_hex(uuid: Any) -> str:
 
 
 def _filesystem(uri: str, options: dict[str, str]):
-    from pyarrow.fs import FileSystem, S3FileSystem
+    from pyarrow.fs import FileSystem, LocalFileSystem, S3FileSystem
 
     parsed = urlparse(uri)
     if parsed.scheme in ("", "file"):
         path = unquote(parsed.path) if parsed.scheme == "file" else uri
-        return FileSystem.from_uri("file://")[0], path
+        return LocalFileSystem(), path
     if parsed.scheme in ("s3", "s3a") and "fs.s3a.endpoint" in options:
         endpoint = options["fs.s3a.endpoint"]
         filesystem = S3FileSystem(

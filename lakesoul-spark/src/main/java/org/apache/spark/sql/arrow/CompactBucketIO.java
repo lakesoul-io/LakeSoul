@@ -13,6 +13,10 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter.FlushResult;
 import com.dmetasoul.lakesoul.meta.BucketingUtils;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.MetaUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -35,6 +39,8 @@ import scala.Option;
 import scala.collection.JavaConverters;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -48,6 +54,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     public static String COMPACT_DIR = "compactdir";
     public static String INCREMENTAL_FILE = "incremental_file";
     public static Set<Integer> LOW_LEVEL_LIST = new HashSet<>(Arrays.asList(1, 2));
+
+    private static final String BLOB_COLUMNS_KEY = "blob_columns";
+    private static final String BLOBREF_SUFFIX = ".blobref";
+    private static final int BLOBREF_VERSION = 1;
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private final Configuration conf;
     private final List<String> primaryKeys;
     private final List<String> rangeColumns;
@@ -60,6 +71,16 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private final NativeIOOptions nativeIOOptions;
     private final List<CompressDataFileInfo> fileInfo;
     private final String metaPartitionExpr;
+
+    /** Whether the table declares blob columns and needs `.blobref` sidecars. */
+    private final boolean blobTable;
+
+    /**
+     * Union of the packs referenced by the input `.blobref` sidecars. Compaction rewrites rows with
+     * the tagged references untouched, so every output file may reference any of them; the union is
+     * conservative (never misses a pack) and is written to each output sidecar.
+     */
+    private final Set<String> blobrefPacks = new HashSet<>();
 
     /**
      * Physical file format of the compacted output, resolved on the driver (see {@code
@@ -203,7 +224,76 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         this.tableHashBucketNumChanged = tableHashBucketNumChanged;
         this.taskId = taskId;
 
+        this.blobTable = isBlobTable(tableInfo);
+        if (this.blobTable) {
+            collectBlobrefPacks();
+        }
+
         this.initLevelFile(this.fileInfo);
+    }
+
+    private static boolean isBlobTable(TableInfo tableInfo) {
+        if (tableInfo == null || tableInfo.configuration() == null) {
+            return false;
+        }
+        Map<String, String> configuration =
+                JavaConverters.mapAsJavaMapConverter(tableInfo.configuration()).asJava();
+        String raw = configuration.get(BLOB_COLUMNS_KEY);
+        return StringUtils.isNotBlank(raw);
+    }
+
+    /** Read the `.blobref` sidecars of the input files into {@link #blobrefPacks}. */
+    private void collectBlobrefPacks() {
+        for (CompressDataFileInfo info : this.fileInfo) {
+            readBlobref(info.getFilePath());
+        }
+    }
+
+    private void readBlobref(String dataFile) {
+        Path sidecar = new Path(dataFile + BLOBREF_SUFFIX);
+        try {
+            FileSystem fileSystem = sidecar.getFileSystem(conf);
+            if (!fileSystem.exists(sidecar)) {
+                // Files written before the blob R1 layout have no sidecar; their packs cannot be
+                // recovered, so only the sidecars that exist contribute to the union.
+                return;
+            }
+            try (InputStream in = fileSystem.open(sidecar)) {
+                JsonNode root = OBJECT_MAPPER.readTree(in);
+                JsonNode packs = root == null ? null : root.get("packs");
+                if (packs == null || !packs.isArray()) {
+                    throw new IllegalStateException("invalid blobref " + sidecar);
+                }
+                for (JsonNode pack : packs) {
+                    blobrefPacks.add(pack.asText());
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("failed to read blobref " + sidecar, e);
+        }
+    }
+
+    /** Write the pack union to the output file's sidecar (blob tables always get one). */
+    private void writeBlobref(String dataFile) {
+        if (!this.blobTable) {
+            return;
+        }
+        List<String> packs = new ArrayList<>(blobrefPacks);
+        Collections.sort(packs);
+        ObjectNode root = OBJECT_MAPPER.createObjectNode();
+        root.put("version", BLOBREF_VERSION);
+        ArrayNode array = root.putArray("packs");
+        packs.forEach(array::add);
+        Path sidecar = new Path(dataFile + BLOBREF_SUFFIX);
+        try {
+            FileSystem fileSystem = sidecar.getFileSystem(conf);
+            try (OutputStream out = fileSystem.create(sidecar, true)) {
+                OBJECT_MAPPER.writeValue(out, root);
+            }
+            LOG.info("Task {}, wrote blobref {} with {} packs", taskId, sidecar, packs.size());
+        } catch (IOException e) {
+            throw new RuntimeException("failed to write blobref " + sidecar, e);
+        }
     }
 
     private void initializeReader(List<CompressDataFileInfo> filePath) throws IOException {
@@ -407,6 +497,12 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             LOG.info("Task {}, targetDir not exists, create dir {}", taskId, targetDir);
         }
         fileSystem.rename(new Path(fileInfo.getFilePath()), new Path(targetPath));
+        Path blobrefSource = new Path(fileInfo.getFilePath() + ".blobref");
+        if (fileSystem.exists(blobrefSource)) {
+            Path blobrefTarget = new Path(targetPath + ".blobref");
+            fileSystem.rename(blobrefSource, blobrefTarget);
+            LOG.info("Task {}, MOVE blobref {} to {}", taskId, blobrefSource, blobrefTarget);
+        }
         FileStatus fileStatus = fileSystem.getFileStatus(new Path(targetPath));
         return new CompressDataFileInfo(
                 targetPath, fileSize, fileExistCols, fileStatus.getModificationTime());
@@ -728,6 +824,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                                         fileStatus.getLen(),
                                         fileExistCols,
                                         fileStatus.getModificationTime()));
+                        writeBlobref(filePath);
                     } catch (IOException e) {
                         throw new RuntimeException(e);
                     }

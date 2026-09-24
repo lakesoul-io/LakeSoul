@@ -96,6 +96,17 @@ class DelayedCopyCommitProtocol(
           false,
           taskContext.getConfiguration
         )
+        val srcBlobref = new Path(srcFile.path + ".blobref")
+        if (fs.exists(srcBlobref)) {
+          FileUtil.copy(
+            fs,
+            srcBlobref,
+            fs,
+            new Path(dstFile.toString + ".blobref"),
+            false,
+            taskContext.getConfiguration
+          )
+        }
         val status = fs.getFileStatus(dstFile)
         DataFileInfo(
           srcFile.range_partitions,

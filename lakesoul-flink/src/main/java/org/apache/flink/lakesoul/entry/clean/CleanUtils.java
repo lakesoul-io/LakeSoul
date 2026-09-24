@@ -49,6 +49,7 @@ public class CleanUtils {
             FileSystem fs = path.getFileSystem();
             if (!fs.exists(path)) {
                 logger.info("文件不存在: {}", filePath);
+                deleteBlobref(fs, filePath);
                 return;
             }
             if (!fs.delete(path, false)) {
@@ -56,9 +57,22 @@ public class CleanUtils {
                 return;
             }
             logger.info("文件已删除: {}", filePath);
+            deleteBlobref(fs, filePath);
         } catch (IOException e) {
             logger.error("删除文件失败: {}", filePath, e);
             throw new SQLException("删除文件失败: " + filePath, e);
+        }
+    }
+
+    /** Best-effort removal of the `<data_file>.blobref` sidecar of a deleted data file. */
+    private void deleteBlobref(FileSystem fs, String filePath) {
+        Path sidecar = new Path(filePath + ".blobref");
+        try {
+            if (fs.exists(sidecar) && fs.delete(sidecar, false)) {
+                logger.info("blobref 已删除: {}", sidecar);
+            }
+        } catch (IOException e) {
+            logger.debug("删除 blobref 失败: {}", sidecar, e);
         }
     }
 

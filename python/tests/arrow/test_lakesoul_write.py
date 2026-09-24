@@ -252,7 +252,11 @@ def test_blob_columns_property_roundtrip(tmp_path: Path) -> None:
         raw_path = Path(unquote(urlparse(result.files[0].path).path))
         raw_values = pq.read_table(raw_path).column("frame").to_pylist()
         assert [value[0] for value in raw_values] == [1, 1]
-        assert Path(f"{raw_path}.frame.blob").read_bytes() == b"tiny0123456789"
+        sidecar = Path(f"{raw_path}.blobref")
+        packs = json.loads(sidecar.read_text())["packs"]
+        assert len(packs) == 1
+        pack_path = Path(unquote(urlparse(packs[0]).path))
+        assert pack_path.read_bytes() == b"tiny0123456789"
 
         actual = catalog.scan(table_name).to_arrow_table()
         assert actual.column("frame").to_pylist() == [b"tiny", b"0123456789"]

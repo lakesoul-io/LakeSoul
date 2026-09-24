@@ -18,9 +18,10 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import pyarrow as pa
-from pyarrow.fs import FileSelector, FileType, S3FileSystem
-
 from lakesoul import LakeSoulCatalog
+from lakesoul.blob import read_blobref
+from lakesoul.vacuum import vacuum_blobs
+from pyarrow.fs import FileSelector, FileType, S3FileSystem
 
 S3_OPTIONS = {
     "fs.s3a.access.key": os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
@@ -52,6 +53,18 @@ def _list_files(uri: str) -> set[str]:
     path = f"{parsed.netloc}/{parsed.path.lstrip('/')}"
     infos = _s3().get_file_info(FileSelector(path, recursive=True))
     return {info.path for info in infos if info.type == FileType.File}
+
+
+def _s3_path(uri: str) -> str:
+    parsed = urlparse(uri)
+    return f"{parsed.netloc}/{parsed.path.lstrip('/')}"
+
+
+DATA_SUFFIXES = (".parquet", ".vortex")
+
+
+def _data_files(files: set[str]) -> set[str]:
+    return {path for path in files if path.endswith(DATA_SUFFIXES)}
 
 
 def _table(catalog: LakeSoulCatalog, name: str, schema: pa.Schema, **kwargs):
@@ -172,7 +185,10 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
         catalog,
         name,
         schema,
-        properties={"blob_columns": json.dumps({"payload": {"mode": "external"}})},
+        properties={
+            "blob_columns": json.dumps({"payload": {"mode": "external"}}),
+            "blob_vacuum_interval": "2",
+        },
     )
     try:
         for round_index in range(ROUNDS):
@@ -197,11 +213,70 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
             lambda: bool(before - _list_files(base)),
             "blob table compaction and cleanup",
         )
+
+        def settled() -> bool:
+            files = _list_files(base)
+            data_files = _data_files(files)
+            return bool(data_files) and all(
+                f"{path}.blobref" in files for path in data_files
+            )
+
+        _wait_for(settled, "compaction to settle with blobref sidecars")
+
+        files = _list_files(base)
+        data_files = sorted(_data_files(files))
+        assert data_files, "expected live data files after compaction"
+        filesystem = _s3()
+        used_packs: set[str] = set()
+        for path in data_files:
+            sidecar = f"{path}.blobref"
+            assert sidecar in files, f"missing blobref sidecar for {path}"
+            packs = read_blobref(f"s3://{path}", filesystem=filesystem)
+            assert packs is not None, f"unreadable blobref sidecar {sidecar}"
+            used_packs.update(packs)
+        assert used_packs, "compacted blob table must reference packs"
+        missing = {pack for pack in used_packs if _s3_path(pack) not in files}
+        assert not missing, f"referenced packs missing from storage: {missing}"
+        assert all("/_blob/payload/" in pack for pack in used_packs), (
+            "packs must use the shared _blob layout"
+        )
+
         values = table.scan().to_arrow_table().column("payload").to_pylist()
         assert any(value for value in values), "blob payloads must stay readable"
-        assert any(".blob" in path for path in _list_files(base)), (
-            "blob pack must exist"
+
+        orphan = f"{_s3_path(base)}/_blob/payload/orphan-{uuid4().hex}.blob"
+        with filesystem.open_output_stream(orphan) as stream:
+            stream.write(b"orphan")
+        assert orphan in _list_files(base), "orphan pack must be visible"
+
+        dry = vacuum_blobs(catalog, table, older_than=0, dry_run=True)
+        assert not dry.aborted, f"vacuum must not abort: {dry}"
+        assert dry.packs_deleted == dry.packs_total - dry.packs_used, f"dry run {dry}"
+        assert dry.packs_deleted >= 1, f"orphan pack must be reclaimable: {dry}"
+
+        result = vacuum_blobs(catalog, table, older_than=0, dry_run=False)
+        assert not result.aborted, f"vacuum must not abort: {result}"
+        assert result.packs_deleted == dry.packs_deleted, (
+            f"vacuum deleted {result.packs_deleted} of {dry.packs_deleted} dry-run packs"
         )
+        files = _list_files(base)
+        assert orphan not in files, "orphan pack must be deleted"
+        for pack in used_packs:
+            assert _s3_path(pack) in files, f"referenced pack deleted: {pack}"
+        again = vacuum_blobs(catalog, table, older_than=0, dry_run=False)
+        assert not again.aborted and again.packs_deleted == 0, (
+            f"vacuum must be idempotent: {again}"
+        )
+
+        def no_orphan_sidecars() -> bool:
+            current = _list_files(base)
+            return not {
+                path
+                for path in current
+                if path.endswith(".blobref") and path[: -len(".blobref")] not in current
+            }
+
+        _wait_for(no_orphan_sidecars, "clean job to delete blobref sidecars")
         print(f"[blob] ok: {name}")
     finally:
         catalog.drop_table(name, if_exists=True)

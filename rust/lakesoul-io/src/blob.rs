@@ -10,9 +10,11 @@
 //! * inline: `0x00 || raw bytes`
 //! * external: `0x01 || crc32(u32 LE) || length(u32 LE) || offset(u64 LE) || pack_path`
 //!
-//! External values live in a side pack file next to the data file
-//! (`<data_file>.<column>.blob`), so deleting the data file is enough to
-//! clean up its blobs. Readers materialize the raw bytes transparently.
+//! External values live in shared immutable packs
+//! (`<table_path>/_blob/<column>/<uuid>.blob`). Every data file lists the
+//! packs it references in a `<data_file>.blobref` sidecar, so deleting a data
+//! file only drops its references and unused packs are reclaimed by the
+//! vacuum tool. Readers materialize the raw bytes transparently.
 
 use std::collections::HashMap;
 use std::sync::Arc;
