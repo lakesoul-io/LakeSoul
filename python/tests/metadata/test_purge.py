@@ -83,6 +83,59 @@ def test_purge_removes_unpinned_old_version(tmp_path: Path) -> None:
         catalog.drop_table(name, if_exists=True)
 
 
+def test_purge_deletes_sidecar_with_data_file(monkeypatch) -> None:
+    import types
+
+    from lakesoul import purge as purge_module
+
+    commit = types.SimpleNamespace(high=1, low=2)
+    stale = types.SimpleNamespace(
+        version=0,
+        timestamp=10,
+        pinned=False,
+        snapshot=[commit],
+        partition_desc=PARTITION,
+    )
+    latest = types.SimpleNamespace(
+        version=1,
+        timestamp=20,
+        pinned=False,
+        snapshot=[],
+        partition_desc=PARTITION,
+    )
+    data_file = "file:///tmp/t/old.parquet"
+    info = types.SimpleNamespace(file_ops=[types.SimpleNamespace(path=data_file)])
+
+    client = types.SimpleNamespace(
+        get_all_partition_info=lambda table_id: [latest],
+        list_snapshots=lambda name, namespace=None: [],
+        list_tags=lambda name, namespace=None: [],
+        get_partition_info_by_table_id_and_desc=lambda table_id, desc: [stale, latest],
+        list_data_commit_info=lambda table_id, desc, uuids: [info],
+        exec_update=lambda *args, **kwargs: None,
+    )
+    catalog = types.SimpleNamespace(_client=client, object_store_options={})
+    table = types.SimpleNamespace(
+        id="t1",
+        name="tbl",
+        namespace="default",
+        path="file:///tmp/t",
+        _blob_columns_option=lambda: None,
+    )
+    deleted: list[str] = []
+
+    def fake_delete(uri, options, stats=None):
+        deleted.append(uri)
+        if stats is not None:
+            stats["files"] += 1
+
+    monkeypatch.setattr(purge_module, "_delete", fake_delete)
+
+    result = purge_module.purge_table(catalog, table, older_than=0, dry_run=False)
+    assert result.files == 1
+    assert deleted == [data_file, f"{data_file}.blobref"]
+
+
 def test_cleanup_sql_skips_pinned_rows(tmp_path: Path) -> None:
     catalog = LakeSoulCatalog.from_env()
     name = _table_name("purge_sql")

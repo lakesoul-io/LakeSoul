@@ -84,9 +84,14 @@ def read_blobref(
             payload = json.loads(stream.read().decode("utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(payload, dict):
+        raise TypeError(f"invalid blobref payload in {sidecar}")
     if payload.get("version") != BLOBREF_VERSION:
         raise ValueError(f"unsupported blobref version in {sidecar}")
-    return list(payload.get("packs", []))
+    packs = payload.get("packs")
+    if not isinstance(packs, list) or not all(isinstance(pack, str) for pack in packs):
+        raise ValueError(f"invalid blobref packs in {sidecar}")
+    return list(packs)
 
 
 def _resolve(
