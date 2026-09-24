@@ -32,7 +32,9 @@
 //! payloads, semi/anti joins may add arbitrary left/right comparison
 //! conditions on top of their equality keys and project a subset of the left
 //! columns, and window partition/order keys may be strings or any other
-//! sortable type. Group keys and window partition keys may be NULL (NULL
+//! sortable type, projection/filter views mirror the rows that pass their
+//! conditions, and `UNION ALL` merges several same-schema sources with a
+//! source index. Group keys and window partition keys may be NULL (NULL
 //! groups with NULL, following SQL), while row identities (source primary
 //! keys used by keyed views) must be non-nullable. An inner join over two
 //! keyed sources keeps a retractable output keyed by both row identities, so
@@ -73,17 +75,20 @@ pub use metadata::{
     SourceVersionRange, StateRole, StateTable,
 };
 pub use runtime::{
-    CompareOp, DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_DENSE_RANK_COLUMN,
-    IVM_NONNULL_COUNT_COLUMN, IVM_RANK_COLUMN, IVM_ROW_NUMBER_COLUMN, IVM_SUM_COLUMN,
-    IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView, MinMaxKind,
-    MinMaxView, SemiAntiCondition, SemiAntiView, SumCountView, ValueResultKind, ViewSpec,
-    WindowFunction, WindowView, distinct_agg_mv_schema, distinct_agg_mv_schema_for,
-    join_view_schema_for, keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    min_max_mv_schema, min_max_mv_schema_for, min_max_state_schema, semi_anti_mv_schema,
+    CompareOp, DistinctAggKind, DistinctAggView, FilterCondition, IVM_COUNT_COLUMN,
+    IVM_DENSE_RANK_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_RANK_COLUMN,
+    IVM_ROW_NUMBER_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
+    IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView, LiteralValue, MinMaxKind, MinMaxView,
+    RowView, SemiAntiCondition, SemiAntiView, SumCountView, UnionAllView,
+    ValueResultKind, ViewSpec, WindowFunction, WindowView, distinct_agg_mv_schema,
+    distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_output_primary_keys,
+    keyed_join_view_schema_for, min_max_mv_schema, min_max_mv_schema_for,
+    min_max_state_schema, row_mv_schema_for, semi_anti_mv_schema,
     semi_anti_mv_schema_for, sum_count_mv_schema, sum_count_mv_schema_for,
-    value_count_mv_schema, value_count_mv_schema_for, value_count_state_schema,
-    value_count_state_schema_for, window_aggregate_mv_schema_for, window_key,
-    window_mv_schema, window_mv_schema_for, window_ranking_mv_schema_for,
+    union_all_mv_schema_for, value_count_mv_schema, value_count_mv_schema_for,
+    value_count_state_schema, value_count_state_schema_for,
+    window_aggregate_mv_schema_for, window_key, window_mv_schema, window_mv_schema_for,
+    window_ranking_mv_schema_for,
 };
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,

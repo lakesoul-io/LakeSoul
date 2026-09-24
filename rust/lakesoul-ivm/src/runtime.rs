@@ -47,6 +47,8 @@ pub const IVM_VALUE_COLUMN: &str = "value";
 pub const IVM_VALUE_COUNT_COLUMN: &str = "value_count";
 /// The row-number column of a `ROW_NUMBER()` [`WindowView`] materialized view.
 pub const IVM_ROW_NUMBER_COLUMN: &str = "row_number";
+/// The source index column of a [`UnionAllView`] materialized view.
+pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
 /// The rank column of a `RANK()` [`WindowView`] materialized view.
 pub const IVM_RANK_COLUMN: &str = "rank";
 /// The rank column of a `DENSE_RANK()` [`WindowView`] materialized view.
@@ -133,7 +135,7 @@ impl WindowFunction {
 }
 
 /// The persisted description of a view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ViewSpec {
     /// `group_key`, `SUM(value_column)` and `COUNT(*)` over the source
@@ -252,6 +254,30 @@ pub enum ViewSpec {
         output_columns: Vec<String>,
         /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
         anti: bool,
+    },
+    /// A projection (and optional filter) of one source.
+    Row {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The projected source columns; empty means all of them.
+        #[serde(default)]
+        output_columns: Vec<String>,
+        /// The filter conditions, all of which must hold.
+        #[serde(default)]
+        filters: Vec<FilterCondition>,
+    },
+    /// `UNION ALL` of several sources with the same schema.
+    UnionAll {
+        /// The view id.
+        view_id: String,
+        /// The source table ids, in output order.
+        source_table_ids: Vec<String>,
+        /// The materialized view table id.
+        mv_table_id: String,
     },
 }
 
@@ -929,6 +955,33 @@ pub enum CompareOp {
     Ge,
 }
 
+/// A literal value of a [`FilterCondition`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum LiteralValue {
+    /// `NULL` (only meaningful with `=` / `<>`).
+    Null,
+    /// A boolean.
+    Bool(bool),
+    /// An integer.
+    Int(i64),
+    /// A float.
+    Float(f64),
+    /// A string.
+    String(String),
+}
+
+/// One filter condition of a [`RowView`]: `{column} {op} {value}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterCondition {
+    /// The source column.
+    pub column: String,
+    /// The comparison operator.
+    pub op: CompareOp,
+    /// The literal value.
+    pub value: LiteralValue,
+}
+
 /// One condition of a [`SemiAntiView`]:
 /// `left.{left_column} {op} right.{right_column}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1025,6 +1078,105 @@ impl SemiAntiView {
             conditions: self.conditions.clone(),
             output_columns: self.output_columns.clone(),
             anti: self.anti,
+        }
+    }
+}
+
+/// A projection (and optional filter) of one source.
+///
+/// A keyed source is maintained with `delete(old) + insert(current)` per
+/// changed primary key; an append-only source simply appends the rows that
+/// pass the filter.
+#[derive(Debug, Clone)]
+pub struct RowView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (keyed or append-only).
+    pub source: IvmTable,
+    /// The materialized view table: the projected columns plus the row kind
+    /// and the epoch.
+    pub mv: IvmTable,
+    /// The projected source columns; empty means all of them.
+    pub output_columns: Vec<String>,
+    /// The filter conditions, all of which must hold.
+    pub filters: Vec<FilterCondition>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl RowView {
+    /// A view that mirrors the source (all columns, no filter).
+    pub fn new(view_id: impl Into<String>, source: IvmTable, mv: IvmTable) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            output_columns: Vec::new(),
+            filters: Vec::new(),
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Project only `output_columns` (keyed sources must include their keys).
+    pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
+        self.output_columns = output_columns;
+        self
+    }
+
+    /// Add filter conditions (all of which must hold).
+    pub fn with_filters(mut self, filters: Vec<FilterCondition>) -> Self {
+        self.filters = filters;
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::Row {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            output_columns: self.output_columns.clone(),
+            filters: self.filters.clone(),
+        }
+    }
+}
+
+/// `UNION ALL` of several sources with the same schema.
+///
+/// With keyed sources the output is keyed by `(__ivm_source, primary keys)`,
+/// so updates and deletes are retracted per source; with append-only sources
+/// the output is append-only.
+#[derive(Debug, Clone)]
+pub struct UnionAllView {
+    /// The view id.
+    pub view_id: String,
+    /// The source tables, in output order.
+    pub sources: Vec<IvmTable>,
+    /// The materialized view table.
+    pub mv: IvmTable,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl UnionAllView {
+    /// A new union-all view over `sources`.
+    pub fn new(view_id: impl Into<String>, sources: Vec<IvmTable>, mv: IvmTable) -> Self {
+        Self {
+            view_id: view_id.into(),
+            sources,
+            mv,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::UnionAll {
+            view_id: self.view_id.clone(),
+            source_table_ids: self
+                .sources
+                .iter()
+                .map(|source| source.table_id.clone())
+                .collect(),
+            mv_table_id: self.mv.table_id.clone(),
         }
     }
 }
@@ -1194,6 +1346,62 @@ pub fn semi_anti_mv_schema_for(
             })
             .collect::<Result<Vec<_>>>()?
     };
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`RowView`] materialized view: the projected source
+/// columns plus the row kind and the epoch.
+pub fn row_mv_schema_for(
+    source_schema: &Schema,
+    output_columns: &[String],
+) -> Result<SchemaRef> {
+    let columns = if output_columns.is_empty() {
+        source_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>()
+    } else {
+        output_columns.to_vec()
+    };
+    let mut fields = project_schema(source_schema, &columns)?
+        .fields()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`UnionAllView`] materialized view: the source columns
+/// plus the source index, the row kind and the epoch. Keyed sources are keyed
+/// by `(__ivm_source, primary keys)`.
+pub fn union_all_mv_schema_for(source_schema: &Schema) -> Result<SchemaRef> {
+    let mut fields = source_schema.fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        IVM_SOURCE_COLUMN,
+        DataType::Int32,
+        false,
+    )));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
         DataType::Utf8,
@@ -1581,6 +1789,26 @@ impl IvmRuntime {
 
     /// Persist a semi/anti join view spec (idempotent).
     pub async fn register_semi_anti_view(&self, view: &SemiAntiView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a projection/filter view spec (idempotent).
+    pub async fn register_row_view(&self, view: &RowView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a union-all view spec (idempotent).
+    pub async fn register_union_all_view(&self, view: &UnionAllView) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
@@ -2720,6 +2948,475 @@ impl IvmRuntime {
             .await?;
         self.advance_cursors(&view.view_id, right_baseline.cursors)
             .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Refresh a projection/filter view.
+    ///
+    /// A keyed source is maintained per changed primary key (`delete(old) +
+    /// insert(current)` when the row passes the filter); an append-only source
+    /// simply appends the delta rows that pass.
+    pub async fn refresh_row(&self, view: &RowView) -> Result<Option<i64>> {
+        self.register_row_view(view).await?;
+        validate_row_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let keyed = !view.source.primary_keys.is_empty();
+
+        let context = SessionContext::new();
+        let delta = dataframe(
+            &context,
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        let output_columns = row_output_columns(view);
+        let output_exprs = output_columns
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>();
+        let predicate = row_filter_predicate(view);
+
+        if keyed {
+            let source_now = filter_deletes(
+                dataframe(
+                    &context,
+                    view.source.read_current(&self.client).await?,
+                    &view.source.schema,
+                )?,
+                change_column(&view.source),
+            )?;
+            let mv = dataframe(
+                &context,
+                view.mv.read_current(&self.client).await?,
+                &view.mv.schema,
+            )?;
+            let key_names = view
+                .source
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let key_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|column| col(column.as_str()))
+                .collect::<Vec<_>>();
+            let affected = delta.select(key_exprs.clone())?.distinct()?;
+            let mut passing = source_now.join(
+                affected.clone(),
+                JoinType::LeftSemi,
+                &key_names,
+                &key_names,
+                None,
+            )?;
+            if let Some(predicate) = predicate {
+                passing = passing.filter(predicate)?;
+            }
+            let already = mv
+                .clone()
+                .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
+                .select(key_exprs.clone())?
+                .distinct()?;
+            let inserts = passing
+                .select(output_exprs.clone())?
+                .join(already, JoinType::LeftAnti, &key_names, &key_names, None)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            let deletes = mv
+                .join(affected, JoinType::LeftSemi, &key_names, &key_names, None)?
+                .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+                .select(output_exprs)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            let mut sort_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| column_expr(key))
+                .collect::<Vec<_>>();
+            sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+            for batch in inserts
+                .union(deletes)?
+                .sort_by(sort_exprs)?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    view.mv.append_batch(&self.client, batch).await?;
+                }
+            }
+        } else {
+            let mut rows = delta;
+            if let Some(predicate) = predicate {
+                rows = rows.filter(predicate)?;
+            }
+            for batch in rows
+                .select(output_exprs)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    view.mv.append_batch(&self.client, batch).await?;
+                }
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a projection/filter view from the full source state.
+    pub async fn rebuild_row(&self, view: &RowView) -> Result<i64> {
+        self.register_row_view(view).await?;
+        validate_row_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let context = SessionContext::new();
+        let mut rows = filter_deletes(
+            dataframe(&context, baseline.batches, &view.source.schema)?,
+            change_column(&view.source),
+        )?;
+        if let Some(predicate) = row_filter_predicate(view) {
+            rows = rows.filter(predicate)?;
+        }
+        let output_exprs = row_output_columns(view)
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>();
+        for batch in rows
+            .select(output_exprs)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Refresh a `UNION ALL` view over keyed or append-only sources.
+    pub async fn refresh_union_all(&self, view: &UnionAllView) -> Result<Option<i64>> {
+        self.register_union_all_view(view).await?;
+        validate_union_all_view(view)?;
+        for source in &view.sources {
+            self.ensure_unpartitioned(source).await?;
+        }
+
+        let mut windows = Vec::new();
+        for source in &view.sources {
+            windows.push(self.collect_source_window(&view.view_id, source).await?);
+        }
+        if windows.iter().all(|window| window.added_files.is_empty()) {
+            return Ok(None);
+        }
+        let identity = windows
+            .iter()
+            .flat_map(|window| window.identity.iter().cloned())
+            .collect::<Vec<_>>();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                for window in &windows {
+                    self.advance_cursors(&view.view_id, window.cursors.clone())
+                        .await?;
+                }
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let keyed = !view.sources[0].primary_keys.is_empty();
+
+        let context = SessionContext::new();
+        let mut inserts = Vec::new();
+        let mut changed = Vec::new();
+        for (index, source) in view.sources.iter().enumerate() {
+            let delta = dataframe(
+                &context,
+                source
+                    .read_files(windows[index].added_files.clone())
+                    .await?,
+                &source.schema,
+            )?;
+            if keyed {
+                let source_now = filter_deletes(
+                    dataframe(
+                        &context,
+                        source.read_current(&self.client).await?,
+                        &source.schema,
+                    )?,
+                    change_column(source),
+                )?;
+                let key_names = source
+                    .primary_keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let key_exprs = source
+                    .primary_keys
+                    .iter()
+                    .map(|column| col(column.as_str()))
+                    .collect::<Vec<_>>();
+                let affected = delta
+                    .select(key_exprs)?
+                    .distinct()?
+                    .with_column(IVM_SOURCE_COLUMN, lit(index as i32))?;
+                let rows = source_now
+                    .join(
+                        affected.clone(),
+                        JoinType::LeftSemi,
+                        &key_names,
+                        &key_names,
+                        None,
+                    )?
+                    .select(union_all_projection(source, index)?)?;
+                inserts.push(rows);
+                changed.push(affected);
+            } else {
+                inserts.push(delta.select(union_all_projection(source, index)?)?);
+            }
+        }
+
+        let output_exprs = view.sources[0]
+            .schema
+            .fields()
+            .iter()
+            .map(|field| col(field.name().as_str()))
+            .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
+            .collect::<Vec<_>>();
+
+        if keyed {
+            let mv = dataframe(
+                &context,
+                view.mv.read_current(&self.client).await?,
+                &view.mv.schema,
+            )?;
+            let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
+            pair_names.extend(view.sources[0].primary_keys.iter().cloned());
+            let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
+            let pair_exprs = pair_names
+                .iter()
+                .map(|column| col(column.as_str()))
+                .collect::<Vec<_>>();
+            let already = mv
+                .clone()
+                .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
+                .select(pair_exprs.clone())?
+                .distinct()?;
+            let inserts = union_frames(inserts)?
+                .join(already, JoinType::LeftAnti, &pair_refs, &pair_refs, None)?
+                .select(output_exprs.clone())?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            let changed = union_frames(changed)?;
+            let deletes = mv
+                .join(changed, JoinType::LeftSemi, &pair_refs, &pair_refs, None)?
+                .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+                .select(output_exprs)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            let mut sort_exprs = vec![column_expr(IVM_SOURCE_COLUMN)];
+            sort_exprs.extend(
+                view.sources[0]
+                    .primary_keys
+                    .iter()
+                    .map(|key| column_expr(key)),
+            );
+            sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+            for batch in inserts
+                .union(deletes)?
+                .sort_by(sort_exprs)?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    view.mv.append_batch(&self.client, batch).await?;
+                }
+            }
+        } else {
+            for batch in union_frames(inserts)?
+                .select(output_exprs)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    view.mv.append_batch(&self.client, batch).await?;
+                }
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        for window in &windows {
+            self.advance_cursors(&view.view_id, window.cursors.clone())
+                .await?;
+        }
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a `UNION ALL` view from the full states of its sources.
+    pub async fn rebuild_union_all(&self, view: &UnionAllView) -> Result<i64> {
+        self.register_union_all_view(view).await?;
+        validate_union_all_view(view)?;
+        for source in &view.sources {
+            self.ensure_unpartitioned(source).await?;
+        }
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let mut baselines = Vec::new();
+        for source in &view.sources {
+            baselines.push(self.source_baseline(source).await?);
+        }
+        let to_versions = baselines
+            .iter()
+            .flat_map(|baseline| baseline.to_versions.iter().cloned())
+            .collect::<Vec<_>>();
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                for baseline in &baselines {
+                    self.advance_cursors(&view.view_id, baseline.cursors.clone())
+                        .await?;
+                }
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let context = SessionContext::new();
+        let mut frames = Vec::new();
+        for (index, source) in view.sources.iter().enumerate() {
+            let rows = filter_deletes(
+                dataframe(&context, baselines[index].batches.clone(), &source.schema)?,
+                change_column(source),
+            )?;
+            frames.push(rows.select(union_all_projection(source, index)?)?);
+        }
+        let output_exprs = view.sources[0]
+            .schema
+            .fields()
+            .iter()
+            .map(|field| col(field.name().as_str()))
+            .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
+            .collect::<Vec<_>>();
+        for batch in union_frames(frames)?
+            .select(output_exprs)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        for baseline in &baselines {
+            self.advance_cursors(&view.view_id, baseline.cursors.clone())
+                .await?;
+        }
         self.metadata
             .set_view_status(&view.view_id, "active")
             .await?;
@@ -4237,4 +4934,167 @@ fn semi_anti_join(
         .map(|(_, right)| right.as_str())
         .collect::<Vec<_>>();
     Ok(left.join(right, join_type, &left_on, &right_on, filter)?)
+}
+
+/// The expression of one filter condition.
+fn filter_expr(condition: &FilterCondition) -> Expr {
+    let column = col(condition.column.as_str());
+    match (&condition.value, condition.op) {
+        (LiteralValue::Null, CompareOp::Eq) => column.is_null(),
+        (LiteralValue::Null, CompareOp::Ne) => column.is_not_null(),
+        (LiteralValue::Bool(value), op) => semi_anti_compare(column, lit(*value), op),
+        (LiteralValue::Int(value), op) => semi_anti_compare(column, lit(*value), op),
+        (LiteralValue::Float(value), op) => semi_anti_compare(column, lit(*value), op),
+        (LiteralValue::String(value), op) => {
+            semi_anti_compare(column, lit(value.as_str()), op)
+        }
+        // A comparison with NULL is unknown; such a filter matches nothing.
+        _ => lit(false),
+    }
+}
+
+/// The conjunction of a row view's filter conditions.
+fn row_filter_predicate(view: &RowView) -> Option<Expr> {
+    view.filters
+        .iter()
+        .map(filter_expr)
+        .reduce(|left, right| left.and(right))
+}
+
+/// The source columns a [`RowView`] materializes.
+fn row_output_columns(view: &RowView) -> Vec<String> {
+    if view.output_columns.is_empty() {
+        view.source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect()
+    } else {
+        view.output_columns.clone()
+    }
+}
+
+/// Validate that a projection/filter view can be maintained.
+fn validate_row_view(view: &RowView) -> Result<()> {
+    project_schema(&view.source.schema, &row_output_columns(view))?;
+    if !view.source.primary_keys.is_empty() {
+        for key in &view.source.primary_keys {
+            let field = view.source.schema.field_with_name(key).map_err(|_| {
+                report!(
+                    "row view {}: key column {key} is not in the source",
+                    view.view_id
+                )
+            })?;
+            if field.is_nullable() {
+                return Err(report!(
+                    "row view {}: key column {key} must be non-nullable",
+                    view.view_id
+                ));
+            }
+            if !row_output_columns(view).contains(key) {
+                return Err(report!(
+                    "row view {}: output columns must contain the source key {key}",
+                    view.view_id
+                ));
+            }
+        }
+    }
+    for condition in &view.filters {
+        view.source
+            .schema
+            .field_with_name(&condition.column)
+            .map_err(|_| {
+                report!(
+                    "row view {}: filter column {} is not in the source",
+                    view.view_id,
+                    condition.column
+                )
+            })?;
+        if condition.value == LiteralValue::Null
+            && !matches!(condition.op, CompareOp::Eq | CompareOp::Ne)
+        {
+            return Err(report!(
+                "row view {}: NULL can only be compared with = or <>",
+                view.view_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate that a union-all view can be maintained.
+fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
+    if view.sources.is_empty() {
+        return Err(report!(
+            "union all view {} needs at least one source",
+            view.view_id
+        ));
+    }
+    let keyed = !view.sources[0].primary_keys.is_empty();
+    let first = &view.sources[0].schema;
+    for source in &view.sources {
+        if source.schema.fields().len() != first.fields().len()
+            || source
+                .schema
+                .fields()
+                .iter()
+                .zip(first.fields())
+                .any(|(left, right)| {
+                    left.name() != right.name() || left.data_type() != right.data_type()
+                })
+        {
+            return Err(report!(
+                "union all view {}: source {} does not have the same schema",
+                view.view_id,
+                source.table_name
+            ));
+        }
+        if keyed != !source.primary_keys.is_empty() {
+            return Err(report!(
+                "union all view {}: sources must be all keyed or all append-only",
+                view.view_id
+            ));
+        }
+        if keyed {
+            for key in &source.primary_keys {
+                let field = source.schema.field_with_name(key).map_err(|_| {
+                    report!(
+                        "union all view {}: key column {key} is not in source {}",
+                        view.view_id,
+                        source.table_name
+                    )
+                })?;
+                if field.is_nullable() {
+                    return Err(report!(
+                        "union all view {}: key column {key} must be non-nullable",
+                        view.view_id
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Frames of the projection of a source onto `(columns..., __ivm_source)`.
+fn union_all_projection(source: &IvmTable, index: usize) -> Result<Vec<Expr>> {
+    let mut exprs = source
+        .schema
+        .fields()
+        .iter()
+        .map(|field| col(field.name().as_str()))
+        .collect::<Vec<_>>();
+    exprs.push(lit(index as i32).alias(IVM_SOURCE_COLUMN));
+    Ok(exprs)
+}
+
+/// `UNION ALL` of several frames.
+fn union_frames(mut frames: Vec<DataFrame>) -> Result<DataFrame> {
+    let first = frames.remove(0);
+    let mut combined = first;
+    for frame in frames {
+        combined = combined.union(frame)?;
+    }
+    Ok(combined)
 }
