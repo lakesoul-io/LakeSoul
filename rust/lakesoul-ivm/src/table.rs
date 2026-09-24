@@ -235,20 +235,31 @@ impl IvmTable {
 
     /// Read the given data files with this table's schema and merge key.
     pub async fn read_files(&self, files: Vec<String>) -> Result<Vec<RecordBatch>> {
-        self.read_files_with_filters(files, Vec::new()).await
+        self.read_files_with_options(files, Vec::new(), None).await
     }
 
-    async fn read_files_with_filters(
+    /// Read the given data files projected to `projection`.
+    pub async fn read_files_projected(
+        &self,
+        files: Vec<String>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_files_with_options(files, Vec::new(), projection)
+            .await
+    }
+
+    async fn read_files_with_options(
         &self,
         files: Vec<String>,
         filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
         if files.is_empty() {
             return Ok(Vec::new());
         }
         let mut builder = LakeSoulIOConfig::builder()
             .with_files(files)
-            .with_schema(self.schema.clone())
+            .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
             .with_primary_keys(self.primary_keys.clone())
             .with_physical_format(PhysicalFormat::Parquet);
         if !filters.is_empty() {
@@ -276,7 +287,8 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_current_filtered(client, Vec::new()).await
+        self.read_current_with_options(client, Vec::new(), None)
+            .await
     }
 
     /// Read the current merge-on-read state restricted to `filters`.
@@ -289,6 +301,29 @@ impl IvmTable {
         client: &MetaDataClient,
         filters: Vec<Expr>,
     ) -> Result<Vec<RecordBatch>> {
+        self.read_current_with_options(client, filters, None).await
+    }
+
+    /// Read the current merge-on-read state projected to `projection`.
+    ///
+    /// The projection is pushed into the LakeSoul reader; it must contain the
+    /// merge key columns and the change column, otherwise the read cannot be
+    /// merged or filtered.
+    pub async fn read_current_projected(
+        &self,
+        client: &MetaDataClient,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_current_with_options(client, Vec::new(), projection)
+            .await
+    }
+
+    async fn read_current_with_options(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
         let mut files = Vec::new();
         for partition in client.get_all_partition_info(&self.table_id).await? {
             files.extend(
@@ -300,7 +335,8 @@ impl IvmTable {
         if files.is_empty() {
             return Ok(Vec::new());
         }
-        self.read_files_with_filters(files, filters).await
+        self.read_files_with_options(files, filters, projection)
+            .await
     }
 
     /// Read the state of the table as of `as_of_ms` (inclusive).
@@ -324,6 +360,28 @@ impl IvmTable {
             );
         }
         self.read_files(files).await
+    }
+
+    /// Read the state as of `as_of_ms`, projected to `projection`.
+    pub async fn read_as_of_projected(
+        &self,
+        client: &MetaDataClient,
+        as_of_ms: i64,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        let mut files = Vec::new();
+        for partition in client
+            .get_all_partition_info_as_of(&self.table_id, as_of_ms)
+            .await?
+        {
+            files.extend(
+                client
+                    .get_data_files_of_single_partition(&partition)
+                    .await?,
+            );
+        }
+        self.read_files_with_options(files, Vec::new(), projection)
+            .await
     }
 
     /// Read the given partition versions with this table's schema and merge key.
