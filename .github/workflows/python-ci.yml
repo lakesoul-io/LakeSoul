@@ -138,6 +138,18 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Point the linker at the current JDK
+        # hdfs-sys records the libjvm.so search path of the JDK present when
+        # its build script ran; a restored rust-cache can therefore pin a JDK
+        # directory the runner no longer has.  Add the current one explicitly.
+        run: |
+          jvm_dir="$(dirname "$(find "$JAVA_HOME" -name libjvm.so -print -quit)")"
+          if [ -z "$jvm_dir" ] || [ ! -d "$jvm_dir" ]; then
+            echo "libjvm.so not found under JAVA_HOME=$JAVA_HOME" >&2
+            exit 1
+          fi
+          echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-L $jvm_dir" >> "$GITHUB_ENV"
+
       - name: Build native libraries
         run: |
           cargo build --release --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-console --package lakesoul-python --features lakesoul-python/ci-unify
