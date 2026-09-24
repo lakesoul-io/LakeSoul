@@ -23,8 +23,8 @@ pub mod tokenizer;
 pub mod verify;
 
 pub use bm25::{
-    CorpusStats, bm25_scores, bm25_scores_with_terms, collect_index_stats,
-    is_plain_query, query_terms, stats_for_rows, tokenize,
+    CorpusStats, TokenSpan, bm25_scores, bm25_scores_with_terms, collect_index_stats,
+    is_plain_query, query_terms, stats_for_rows, token_spans, tokenize,
 };
 pub use config::TextIndexConfig;
 pub use error::{Result, TextError};

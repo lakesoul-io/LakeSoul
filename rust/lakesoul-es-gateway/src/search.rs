@@ -45,7 +45,7 @@ use lakesoul_io::vector::search::search_resolved_shard as search_vector_shard;
 use lakesoul_metadata::index_catalog::{IndexCommitView, VectorSegmentEntry};
 use lakesoul_text::{
     CorpusStats, TextIndexConfig, TextSplitEntry, bm25_scores_with_terms, is_plain_query,
-    matching_ids_with, matching_scores_with, query_terms, stats_for_rows,
+    matching_ids_with, matching_scores_with, query_terms, stats_for_rows, token_spans,
 };
 use lakesoul_vector::SegmentEntry;
 use object_store::ObjectStore;
@@ -62,6 +62,8 @@ struct Hit {
     id: u64,
     score: f32,
     source: Map<String, Value>,
+    /// ES `highlight` result, keyed by field.
+    highlight: Option<Value>,
 }
 
 /// `_source` projection of a search request.
@@ -79,6 +81,90 @@ struct SearchBody {
     from: usize,
     size: usize,
     source: SourceFilter,
+    highlight: Option<Highlight>,
+}
+
+/// Parsed ES `highlight` request.
+#[derive(Debug, Clone)]
+struct Highlight {
+    /// Requested fields; `*` (the default) matches the content column.
+    fields: Vec<String>,
+    pre_tags: Vec<String>,
+    post_tags: Vec<String>,
+    fragment_size: usize,
+    number_of_fragments: usize,
+}
+
+impl Default for Highlight {
+    fn default() -> Self {
+        Self {
+            fields: Vec::new(),
+            pre_tags: vec!["<em>".to_string()],
+            post_tags: vec!["</em>".to_string()],
+            fragment_size: 150,
+            number_of_fragments: 1,
+        }
+    }
+}
+
+impl Highlight {
+    fn parse(value: &Value) -> Result<Option<Self>, EsError> {
+        let Some(map) = value.as_object() else {
+            return Err(EsError::bad_request("'highlight' must be an object"));
+        };
+        let mut highlight = Highlight::default();
+        if let Some(fields) = map.get("fields") {
+            let fields = fields.as_object().ok_or_else(|| {
+                EsError::bad_request("'highlight.fields' must be an object")
+            })?;
+            highlight.fields = fields.keys().cloned().collect();
+        }
+        if let Some(tags) = map.get("pre_tags") {
+            highlight.pre_tags = string_list(tags.as_array().ok_or_else(|| {
+                EsError::bad_request("'highlight.pre_tags' must be an array")
+            })?)?;
+        }
+        if let Some(tags) = map.get("post_tags") {
+            highlight.post_tags = string_list(tags.as_array().ok_or_else(|| {
+                EsError::bad_request("'highlight.post_tags' must be an array")
+            })?)?;
+        }
+        if let Some(size) = map.get("fragment_size") {
+            highlight.fragment_size =
+                size.as_u64().unwrap_or(150).clamp(1, 10_000) as usize;
+        }
+        if let Some(count) = map.get("number_of_fragments") {
+            highlight.number_of_fragments =
+                count.as_u64().unwrap_or(1).clamp(1, 100) as usize;
+        }
+        if highlight.pre_tags.is_empty() {
+            highlight.pre_tags.push("<em>".to_string());
+        }
+        if highlight.post_tags.is_empty() {
+            highlight.post_tags.push("</em>".to_string());
+        }
+        Ok(Some(highlight))
+    }
+
+    /// Whether `field` should be highlighted.
+    fn applies_to(&self, field: &str) -> bool {
+        self.fields.is_empty()
+            || self
+                .fields
+                .iter()
+                .any(|requested| requested == field || requested == "*")
+    }
+
+    fn pre_tag(&self) -> &str {
+        self.pre_tags.first().map(String::as_str).unwrap_or("<em>")
+    }
+
+    fn post_tag(&self) -> &str {
+        self.post_tags
+            .first()
+            .map(String::as_str)
+            .unwrap_or("</em>")
+    }
 }
 
 impl SearchBody {
@@ -100,6 +186,11 @@ impl SearchBody {
             // of 10 applies.
             size: map.get("size").and_then(Value::as_u64).unwrap_or(10) as usize,
             source: parse_source(map.get("_source"))?,
+            highlight: map
+                .get("highlight")
+                .map(Highlight::parse)
+                .transpose()?
+                .flatten(),
         })
     }
 }
@@ -558,12 +649,18 @@ async fn search_impl(
         .skip(body.from)
         .take(body.size)
         .map(|hit| {
-            json!({
+            let mut object = json!({
                 "_index": index,
                 "_id": hit.id.to_string(),
                 "_score": hit.score,
                 "_source": hit.source
-            })
+            });
+            if let Some(highlight) = hit.highlight
+                && let Some(object) = object.as_object_mut()
+            {
+                object.insert("highlight".to_string(), highlight);
+            }
+            object
         })
         .collect();
 
@@ -683,6 +780,7 @@ async fn vector_hits(
                     id: ids.value(row),
                     score,
                     source: source_for_row(batch, &runtime, row, &body.source)?,
+                    highlight: None,
                 });
             }
         }
@@ -809,21 +907,36 @@ async fn keyword_hits(
             }
         }
 
+        let highlight_terms = body
+            .highlight
+            .as_ref()
+            .and_then(|_| query_terms(&config, &query).ok());
         let mut hits = Vec::new();
         for (batch_index, batch) in batches.iter().enumerate() {
             for (row, value) in batch_rows[batch_index].iter().enumerate() {
-                let Some((id, _)) = value else { continue };
+                let Some((id, text)) = value else { continue };
                 let Some(score) = scores.get(id) else {
                     continue;
                 };
                 if !matched.contains(id) {
                     continue;
                 }
-                hits.push(Hit {
+                let mut hit = Hit {
                     id: *id,
                     score: *score,
                     source: source_for_row(batch, &runtime, row, &body.source)?,
-                });
+                    highlight: None,
+                };
+                if let (Some(highlight), Some(terms), Some(text)) =
+                    (&body.highlight, &highlight_terms, text)
+                    && highlight.applies_to(&field)
+                {
+                    let fragments = highlight_fragments(&config, text, terms, highlight);
+                    if !fragments.is_empty() {
+                        hit.highlight = Some(json!({ &field: fragments }));
+                    }
+                }
+                hits.push(hit);
             }
         }
         if timing_enabled() {
@@ -870,6 +983,7 @@ async fn filter_only_hits(
                 id: ids.value(row),
                 score: 0.0,
                 source: source_for_row(batch, &runtime, row, &body.source)?,
+                highlight: None,
             });
         }
     }
@@ -1606,4 +1720,90 @@ fn lease_owner() -> String {
         std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
         std::process::id()
     )
+}
+
+/// Fragments of `text` around occurrences of the analyzed query `terms`.
+///
+/// Offsets come from the same analyzer that indexed the text, so the
+/// highlighted spans are exactly the tokens the search matched.  HTML in the
+/// source text is passed through unchanged (Elasticsearch only escapes it
+/// with an explicit `encoder`).
+fn highlight_fragments(
+    config: &TextIndexConfig,
+    text: &str,
+    terms: &[String],
+    highlight: &Highlight,
+) -> Vec<String> {
+    if text.is_empty() || terms.is_empty() {
+        return Vec::new();
+    }
+    let Ok(spans) = token_spans(config, text) else {
+        return Vec::new();
+    };
+    let mut matched: Vec<(usize, usize)> = spans
+        .iter()
+        .filter(|span| terms.iter().any(|term| term == &span.text))
+        .map(|span| (span.start, span.end))
+        .collect();
+    if matched.is_empty() {
+        return Vec::new();
+    }
+    matched.sort_unstable();
+    // Merge touching or overlapping tokens into one highlighted span.
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in matched {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+
+    let (pre, post) = (highlight.pre_tag(), highlight.post_tag());
+    let half = highlight.fragment_size / 2;
+    let mut fragments = Vec::new();
+    let mut cursor = 0usize;
+    for (start, end) in &merged {
+        if fragments.len() >= highlight.number_of_fragments {
+            break;
+        }
+        if *start < cursor {
+            continue;
+        }
+        let before = char_window_start(text, *start, half);
+        let after = char_window_end(text, *end, highlight.fragment_size - half);
+        let mut fragment = String::new();
+        let mut position = before;
+        for (match_start, match_end) in &merged {
+            if *match_start < before || *match_end > after || *match_start < position {
+                continue;
+            }
+            fragment.push_str(&text[position..*match_start]);
+            fragment.push_str(pre);
+            fragment.push_str(&text[*match_start..*match_end]);
+            fragment.push_str(post);
+            position = *match_end;
+        }
+        fragment.push_str(&text[position..after]);
+        fragments.push(fragment);
+        cursor = after;
+    }
+    fragments
+}
+
+/// Byte offset of the char `max_chars` before `offset` (or the start).
+fn char_window_start(text: &str, offset: usize, max_chars: usize) -> usize {
+    let mut start = offset;
+    for (index, _) in text[..offset].char_indices().rev().take(max_chars) {
+        start = index;
+    }
+    start
+}
+
+/// Byte offset after up to `max_chars` chars starting at `offset`.
+fn char_window_end(text: &str, offset: usize, max_chars: usize) -> usize {
+    let mut end = offset;
+    for (index, character) in text[offset..].char_indices().take(max_chars) {
+        end = offset + index + character.len_utf8();
+    }
+    end
 }
