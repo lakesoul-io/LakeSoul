@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Grafana + Prometheus + Tempo stack for LakeSoul.
+#
+#   - Tempo receives OTLP traces on 4317 (gRPC) / 4318 (HTTP) and generates
+#     span metrics / service graphs, remote-written into Prometheus.
+#   - Prometheus scrapes every LakeSoul process' /metrics endpoint on the host
+#     and receives Tempo's generated metrics.
+#   - Grafana is provisioned with both datasources and the LakeSoul dashboard.
+#
+# See README.md for how to run LakeSoul against it.
+#
+# All three services use host networking (Linux): the LakeSoul processes run on
+# the host, so Prometheus can scrape 127.0.0.1 straight away and Tempo can
+# remote-write back to it without any host-gateway guessing.
+#
+# Every listener is pinned to 127.0.0.1 for that reason: host networking
+# bypasses Docker's port isolation, so a default 0.0.0.0 bind would expose the
+# unauthenticated Grafana session, Prometheus' remote-write receiver and
+# Tempo's OTLP ingest to the LAN/VPN/cloud interfaces of the development host.
+name: lakesoul-observability
+
+services:
+  tempo:
+    image: grafana/tempo:2.7.2
+    command: ["-config.file=/etc/tempo.yml"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo.yml:ro
+      - tempo-data:/var/tempo
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Host networking + Prometheus' default bind of 0.0.0.0 would serve the
+      # query API and the unauthenticated remote-write receiver on every host
+      # interface (LAN, VPN, cloud public IP). Keep this stack loopback-only;
+      # Grafana and Tempo reach it on 127.0.0.1 anyway.
+      - --web.listen-address=127.0.0.1:9090
+      # Tempo's metrics generator remote-writes span metrics here.
+      - --web.enable-remote-write-receiver
+      # Exemplars let Grafana jump from a metric sample to its trace.
+      - --enable-feature=exemplar-storage
+    network_mode: host
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:12.2.5
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_PORT: "3000"
+      # Host networking + Grafana's default bind of 0.0.0.0 would serve the
+      # anonymous Editor session and the fixed admin/admin login on every host
+      # interface (LAN, VPN, cloud public IP). Keep this stack loopback-only.
+      GF_SERVER_HTTP_ADDR: "127.0.0.1"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Anonymous access, so a fresh checkout needs no login. The role must be
+      # Editor: Grafana's Viewer role does not include `datasources:explore`,
+      # which makes /explore redirect back to the home page.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      # Traces Drilldown is not bundled with the OSS image; the container
+      # installs it on startup. `traces` (the panel plugin) is a different
+      # plugin and cannot replace it.
+      GF_INSTALL_PLUGINS: grafana-exploretraces-app
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  tempo-data:
+  prometheus-data:
+  grafana-data:

@@ -110,7 +110,8 @@ linked-hash-map = "0.5.6"
 itertools = { workspace = true }
 # time
 chrono = { workspace = true }
-# logging
+# observability
+metrics = { workspace = true }
 tracing = { workspace = true }
 # error
 rootcause = { workspace = true }
@@ -137,6 +138,7 @@ jemalloc = [
 test-utils = []
 
 [dev-dependencies]
+metrics-exporter-prometheus = { workspace = true }
 tokio-test = "0.4.4"
 test-log = { workspace = true, features = ["trace"] }
 rand_distr = { workspace = true }

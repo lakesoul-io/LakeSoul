@@ -76,7 +76,16 @@ impl PooledClient {
         })
     }
 
+    /// Refreshes pool occupancy gauges before checking out a connection.
+    fn record_pool_metrics(&self) {
+        crate::metrics::record_pool_metrics("primary", &self.pool.state());
+        if let Some(pool) = &self.secondary_pool {
+            crate::metrics::record_pool_metrics("secondary", &pool.state());
+        }
+    }
+
     pub async fn get(&self, query_type: QueryType) -> Result<PgConnection<'_>> {
+        self.record_pool_metrics();
         match query_type {
             QueryType::RW => self.pool.get().await.map_err(Into::into),
             QueryType::RO => match self.secondary_pool {

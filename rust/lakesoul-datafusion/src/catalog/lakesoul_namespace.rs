@@ -142,15 +142,20 @@ impl SchemaProvider for LakeSoulNamespace {
         {
             Ok(t) => t,
             Err(e) => {
-                debug!("table {}.{} not found: {:?}", self.namespace, name, e);
+                debug!("table {}.{} not found: {}", self.namespace, name, e);
                 return Ok(None);
             }
         };
-        info!("found table: {}::{}", &self.namespace, table);
+        info!(
+            "found table: {}.{} table_id: {}",
+            &self.namespace,
+            table,
+            table.table_info().table_id
+        );
 
         Ok(Some(
             table
-                .as_sink_provider(self.provider_options.clone())
+                .as_provider_without_session(self.provider_options.clone())
                 .await
                 .map_err(|e| DataFusionError::External(e.into_boxed_error()))?,
         ))

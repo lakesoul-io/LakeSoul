@@ -425,7 +425,9 @@ impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
     /// If the stream at the given index is not exhausted, and the last batch range for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
     /// batch range for the stream from the returned result
-    #[instrument(skip(self, cx))]
+    // Per-poll diagnostic: one span per stream poll is far too much for
+    // `info`, where a single merge query would emit thousands of them.
+    #[instrument(level = "debug", skip(self, cx))]
     fn maybe_poll_stream(
         &mut self,
         cx: &mut Context<'_>,

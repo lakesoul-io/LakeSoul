@@ -44,8 +44,14 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
         cmd: &CreateExternalTable,
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
         debug!(
-            "LakeSoulTableProviderFactory::create: {}, {:#?}, {}, {}, {:#?}",
-            cmd.name, cmd.locations, cmd.schema, cmd.constraints, cmd.options
+            table_name = %cmd.name.table(),
+            namespace = %cmd.name.schema().unwrap_or("default"),
+            location_count = cmd.locations.len(),
+            schema_field_count = cmd.schema.fields().len(),
+            constraint_count = cmd.constraints.len(),
+            option_count = cmd.options.len(),
+            warehouse_location_applied = self.warehouse_prefix.is_some(),
+            "creating LakeSoul table provider"
         );
 
         let mut cmd = cmd.clone();

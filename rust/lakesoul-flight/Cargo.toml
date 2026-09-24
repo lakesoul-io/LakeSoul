@@ -15,6 +15,7 @@ edition.workspace = true
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-io = { path = "../lakesoul-io" }
+lakesoul-observability = { path = "../lakesoul-observability" }
 # datafusion
 datafusion = { workspace = true }
 # arrow
@@ -35,7 +36,6 @@ tower = { workspace = true }
 tower-http = { version = "0.4", features = ["trace"] }
 jsonwebtoken = { workspace = true }
 metrics = { workspace = true }
-metrics-exporter-prometheus = "0.16"
 # serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -47,7 +47,6 @@ clap = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 bytes = { workspace = true }
-regex = { workspace = true }
 dashmap = { workspace = true }
 # rand
 rand = { workspace = true }

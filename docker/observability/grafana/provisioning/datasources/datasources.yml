@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Datasources are linked both ways: metrics carry trace ids as exemplars and
+# Tempo exposes span metrics through the Prometheus datasource.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      # A sample carrying a `trace_id` exemplar jumps to the trace.
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://127.0.0.1:3200
+    jsonData:
+      # "Metrics" tab on a trace, backed by the metrics generator output.
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      # Link a span's service to that service's logs once a log backend is
+      # added; left out on purpose while LakeSoul only exports traces.
+      search:
+        hide: false

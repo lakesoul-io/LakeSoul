@@ -81,6 +81,54 @@ use lakesoul_common::ser::arrow_java::{
 
 use super::file_format::LakeSoulMetaDataFormat;
 
+const SCAN_STRATEGY_TOTAL: &str = "lakesoul_table_scan_strategy_total";
+const INDEX_PLANNING_TOTAL: &str = "lakesoul_index_planning_total";
+const INDEX_FALLBACKS_TOTAL: &str = "lakesoul_index_fallbacks_total";
+
+static DESCRIBE_METRICS: std::sync::Once = std::sync::Once::new();
+
+fn describe_metrics() {
+    DESCRIBE_METRICS.call_once(|| {
+        metrics::describe_counter!(
+            SCAN_STRATEGY_TOTAL,
+            "Table scans grouped by the physical strategy chosen at planning time"
+        );
+        metrics::describe_counter!(
+            INDEX_PLANNING_TOTAL,
+            "Index pushdown planning outcomes grouped by index type"
+        );
+        metrics::describe_counter!(
+            INDEX_FALLBACKS_TOTAL,
+            "Index pushdown fallbacks grouped by index type and reason"
+        );
+    });
+}
+
+fn record_scan_strategy(strategy: &'static str) {
+    describe_metrics();
+    metrics::counter!(SCAN_STRATEGY_TOTAL, "strategy" => strategy).increment(1);
+}
+
+fn record_index_selected(index_type: &'static str) {
+    describe_metrics();
+    metrics::counter!(
+        INDEX_PLANNING_TOTAL,
+        "index_type" => index_type,
+        "outcome" => "selected",
+    )
+    .increment(1);
+}
+
+fn record_index_fallback(index_type: &'static str, reason: &'static str) {
+    describe_metrics();
+    metrics::counter!(
+        INDEX_FALLBACKS_TOTAL,
+        "index_type" => index_type,
+        "reason" => reason,
+    )
+    .increment(1);
+}
+
 struct FormatScanGroup {
     object_store_url: ObjectStoreUrl,
     physical_format: PhysicalFormat,
@@ -218,8 +266,9 @@ impl LakeSoulTableProvider {
         .await
     }
 
-    /// Build a sink provider without retaining or requiring a session.
-    pub async fn try_new_as_sink(
+    /// Build a table provider without requiring a session. Object-store access
+    /// is deferred until DataFusion supplies a session to `scan` or `insert_into`.
+    pub async fn try_new_without_session(
         provider_options: LakeSoulProviderOptions,
         client: MetaDataClientRef,
         lakesoul_io_config: LakeSoulIOConfig,
@@ -235,6 +284,17 @@ impl LakeSoulTableProvider {
         .await
     }
 
+    #[instrument(
+        name = "table_provider_init",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %table_info.table_id.as_str(),
+            table_name = %table_info.table_name.as_str(),
+            session_available = source_session.is_some(),
+        ),
+        err
+    )]
     async fn try_new_inner(
         source_session: Option<&dyn Session>,
         provider_options: LakeSoulProviderOptions,
@@ -309,6 +369,18 @@ impl LakeSoulTableProvider {
         })
     }
 
+    #[instrument(
+        name = "create_external_table_provider",
+        level = "info",
+        skip_all,
+        fields(
+            table_name = %cmd.name.table(),
+            namespace = %cmd.name.schema().unwrap_or("default"),
+            location_count = cmd.locations.len(),
+            option_count = cmd.options.len(),
+        ),
+        err
+    )]
     pub async fn new_from_create_external_table(
         session_state: &dyn Session,
         client: MetaDataClientRef,
@@ -329,8 +401,10 @@ impl LakeSoulTableProvider {
         let range_partitions = cmd.table_partition_cols.clone();
 
         debug!(
-            "LakeSoulTableProvider::new_from_create_external_table cmd.options: {:#?}",
-            cmd.options
+            schema_field_count = cmd.schema.fields().len(),
+            primary_key_count = primary_keys.len(),
+            range_partition_count = range_partitions.len(),
+            "building external table provider"
         );
 
         let mut schema_builder = SchemaBuilder::new();
@@ -622,6 +696,17 @@ impl LakeSoulTableProvider {
     /// any file is opened. Row-level pushdown is a separate decision
     /// ([`ClassifiedFilters::pre_merge_pushdown`]); a predicate reaching this
     /// function is not thereby allowed below the merge.
+    #[instrument(
+        name = "list_files_for_scan",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %self.table_id(),
+            table_name = %self._table_name(),
+            partition_filter_count = partition_filters.len(),
+            limit = ?_limit,
+        )
+    )]
     pub(crate) async fn list_files_for_scan<'a>(
         &'a self,
         ctx: &'a SessionState,
@@ -633,6 +718,7 @@ impl LakeSoulTableProvider {
                 .object_store(url)
                 .attach(format!("{:?}", ctx.runtime_env().object_store_registry))?
         } else {
+            debug!("table has no listing path; returning an empty file set");
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
@@ -641,6 +727,7 @@ impl LakeSoulTableProvider {
             .get_all_partition_info(self.table_id())
             .await
             .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let total_partition_count = all_partition_info.len();
         let prune_partition_info = prune_partitions(
             all_partition_info,
             partition_filters,
@@ -648,8 +735,14 @@ impl LakeSoulTableProvider {
         )
         .await
         .map_err(|report| report.attach(self.table_info().table_name.clone()))?;
-
-        info!("prune_partition_info: {:?}", prune_partition_info);
+        let selected_partition_count = prune_partition_info.len();
+        debug!(
+            total_partition_count,
+            selected_partition_count,
+            pruned_partition_count =
+                total_partition_count.saturating_sub(selected_partition_count),
+            "partition pruning completed"
+        );
 
         let mut futures = FuturesUnordered::new();
         for partition in prune_partition_info {
@@ -685,7 +778,11 @@ impl LakeSoulTableProvider {
                 .collect::<Vec<_>>();
             file_groups.push(files)
         }
-        debug!("file_groups: {:#?}", file_groups);
+        let file_count = file_groups.iter().map(Vec::len).sum::<usize>();
+        debug!(
+            listed_partition_count = file_groups.len(),
+            file_count, "object metadata listing completed"
+        );
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
@@ -696,6 +793,22 @@ impl LakeSoulTableProvider {
     /// key, no `vector_index_columns` table property declaring the searched
     /// column, an unsupported metric, a non-vector column, or an empty
     /// scan — in which case the caller runs the regular full scan instead.
+    #[instrument(
+        name = "vector_index_plan",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %self.table_id(),
+            column = %request.vec_column.as_str(),
+            metric = %request.metric.as_str(),
+            top_k = request.top_k,
+            partition_filter_count = partition_filters.len(),
+            outcome = tracing::field::Empty,
+            fallback_reason = tracing::field::Empty,
+            bucket_group_count = tracing::field::Empty,
+        ),
+        err
+    )]
     async fn try_build_vector_search_exec(
         &self,
         session_state: &SessionState,
@@ -703,10 +816,20 @@ impl LakeSoulTableProvider {
         partition_filters: &[Expr],
         limit: Option<usize>,
     ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
+        let record_fallback = |reason: &'static str| {
+            let span = tracing::Span::current();
+            span.record("outcome", "fallback");
+            span.record("fallback_reason", reason);
+            record_index_fallback("vector", reason);
+            debug!(reason, "vector index unavailable; using regular scan");
+        };
+
         if self.primary_keys.is_empty() {
+            record_fallback("missing_primary_key");
             return Ok(None);
         }
         if !matches!(request.metric.as_str(), "L2" | "IP") {
+            record_fallback("unsupported_metric");
             return Ok(None);
         }
         // The table must declare the searched column in its
@@ -716,18 +839,22 @@ impl LakeSoulTableProvider {
             .iter()
             .find(|c| c.column == request.vec_column)
         else {
+            record_fallback("index_not_declared");
             return Ok(None);
         };
         if declared.params.metric.to_uppercase().as_str() != request.metric {
+            record_fallback("metric_mismatch");
             return Ok(None);
         }
         let vec_field = match self.file_schema.field_with_name(&request.vec_column) {
             Ok(field) => field,
             Err(_) => {
+                record_fallback("column_not_found");
                 return Ok(None);
             }
         };
         if !is_vector_type(vec_field.data_type()) {
+            record_fallback("invalid_column_type");
             return Ok(None);
         }
         let (partitioned_file_lists, _) = self
@@ -735,6 +862,7 @@ impl LakeSoulTableProvider {
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
         if partitioned_file_lists.is_empty() {
+            record_fallback("no_files");
             return Ok(None);
         }
 
@@ -762,6 +890,12 @@ impl LakeSoulTableProvider {
             }
         }
 
+        let bucket_group_count = groups.len();
+        let span = tracing::Span::current();
+        span.record("outcome", "selected");
+        span.record("bucket_group_count", bucket_group_count as u64);
+        record_index_selected("vector");
+
         let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
             self.scan_schema.clone(),
             self.file_schema.clone(),
@@ -784,6 +918,23 @@ impl LakeSoulTableProvider {
     /// key, no `text_index_columns` entry for the column, a non-text column,
     /// or an empty scan — in which case the caller runs the regular full
     /// scan and the exact `text_match` predicate filters it.
+    #[instrument(
+        name = "text_index_plan",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %self.table_id(),
+            column = %request.column.as_str(),
+            top_k = request.top_k,
+            order_by = request.order_by,
+            expose_score = request.expose_score,
+            partition_filter_count = partition_filters.len(),
+            outcome = tracing::field::Empty,
+            fallback_reason = tracing::field::Empty,
+            bucket_group_count = tracing::field::Empty,
+        ),
+        err
+    )]
     async fn try_build_text_search_exec(
         &self,
         session_state: &SessionState,
@@ -791,7 +942,16 @@ impl LakeSoulTableProvider {
         partition_filters: &[Expr],
         limit: Option<usize>,
     ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
+        let record_fallback = |reason: &'static str| {
+            let span = tracing::Span::current();
+            span.record("outcome", "fallback");
+            span.record("fallback_reason", reason);
+            record_index_fallback("text", reason);
+            debug!(reason, "text index unavailable; using regular scan");
+        };
+
         if self.primary_keys.is_empty() {
+            record_fallback("missing_primary_key");
             return Ok(None);
         }
         let Some(declared) = self
@@ -799,9 +959,11 @@ impl LakeSoulTableProvider {
             .iter()
             .find(|c| c.column == request.column)
         else {
+            record_fallback("index_not_declared");
             return Ok(None);
         };
         let Ok(field) = self.file_schema.field_with_name(&request.column) else {
+            record_fallback("column_not_found");
             return Ok(None);
         };
         if !matches!(
@@ -810,6 +972,7 @@ impl LakeSoulTableProvider {
                 | arrow::datatypes::DataType::LargeUtf8
                 | arrow::datatypes::DataType::Utf8View
         ) {
+            record_fallback("invalid_column_type");
             return Ok(None);
         }
         let (partitioned_file_lists, _) = self
@@ -817,6 +980,7 @@ impl LakeSoulTableProvider {
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
         if partitioned_file_lists.is_empty() {
+            record_fallback("no_files");
             return Ok(None);
         }
 
@@ -841,6 +1005,12 @@ impl LakeSoulTableProvider {
                 partition_values.push(values);
             }
         }
+
+        let bucket_group_count = groups.len();
+        let span = tracing::Span::current();
+        span.record("outcome", "selected");
+        span.record("bucket_group_count", bucket_group_count as u64);
+        record_index_selected("text");
 
         let catalog = self.client.index_catalog::<lakesoul_text::TextSplitEntry>(
             lakesoul_common::IndexKind::Text,
@@ -1171,6 +1341,19 @@ impl TableProvider for LakeSoulTableProvider {
         TableType::Base
     }
 
+    #[instrument(
+        name = "table_scan",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %self.table_id(),
+            table_name = %self._table_name(),
+            filter_count = filters.len(),
+            projection = ?projection,
+            limit = ?limit,
+        ),
+        err
+    )]
     async fn scan(
         &self,
         session_state: &dyn Session,
@@ -1212,6 +1395,14 @@ impl TableProvider for LakeSoulTableProvider {
             &self.primary_keys,
             &self.range_partitions,
         );
+        debug!(
+            partition_pruning_filter_count = classified.partition_pruning.len(),
+            pre_merge_filter_count = classified.pre_merge_pushdown.len(),
+            pk_candidate_filter_count = classified.pk_candidates.len(),
+            vector_search = vector_search.is_some(),
+            text_search = text_search.is_some(),
+            "classified scan filters"
+        );
 
         // Vector search pushdown: when the optimizer annotated the scan
         // with the vector-search marker, read only the index candidates
@@ -1227,6 +1418,8 @@ impl TableProvider for LakeSoulTableProvider {
                 )
                 .await?
         {
+            record_scan_strategy("vector_index");
+            debug!(strategy = "vector_index", "selected scan strategy");
             return Ok(exec);
         }
 
@@ -1243,6 +1436,8 @@ impl TableProvider for LakeSoulTableProvider {
                 )
                 .await?
         {
+            record_scan_strategy("text_index");
+            debug!(strategy = "text_index", "selected scan strategy");
             return Ok(exec);
         }
 
@@ -1261,6 +1456,12 @@ impl TableProvider for LakeSoulTableProvider {
         } else {
             None
         };
+        if let Some(candidates) = &pk_candidates {
+            debug!(
+                candidate_count = candidates.len(),
+                "extracted primary-key candidates"
+            );
+        }
 
         let (partitioned_file_lists, statistics) = self
             .list_files_for_scan(session_state, &classified.partition_pruning, limit)
@@ -1269,6 +1470,8 @@ impl TableProvider for LakeSoulTableProvider {
 
         // if no files need to be read, return an `EmptyExec`
         if partitioned_file_lists.is_empty() {
+            record_scan_strategy("empty");
+            debug!(strategy = "empty", "selected scan strategy");
             let schema = self.schema();
             let projected_schema = project_schema(&schema, projection)?;
             return Ok(Arc::new(EmptyExec::new(projected_schema)));
@@ -1286,7 +1489,6 @@ impl TableProvider for LakeSoulTableProvider {
                 ))
             })
             .collect::<Result<Vec<_>, ArrowError>>()?;
-        // TODO change logic when datafusion 52
         let table_schema =
             TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
         let statistics = Arc::new(statistics);
@@ -1356,6 +1558,7 @@ impl TableProvider for LakeSoulTableProvider {
         )
         .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
+        let format_group_count = format_groups.len();
         let mut flatten_configs = vec![];
         for group in format_groups {
             let file_format = self.format_registry.file_format(group.physical_format);
@@ -1404,16 +1607,28 @@ impl TableProvider for LakeSoulTableProvider {
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
             flatten_configs.extend(group_flatten_configs);
         }
+        debug!(
+            format_group_count,
+            file_scan_config_count = flatten_configs.len(),
+            "built file scan configurations"
+        );
 
         let candidate_inputs = match pk_candidates {
             Some(candidates) if !candidates.is_empty() => {
-                lakesoul_io::pk_locator::try_build_pk_inputs(
+                let candidate_count = candidates.len();
+                let inputs = lakesoul_io::pk_locator::try_build_pk_inputs(
                     session_state,
                     &self.io_config,
                     &flatten_configs,
                     &candidates,
                 )
-                .await
+                .await;
+                debug!(
+                    candidate_count,
+                    locator_applied = inputs.is_some(),
+                    "evaluated primary-key locator"
+                );
+                inputs
             }
             _ => None,
         };
@@ -1513,10 +1728,12 @@ impl TableProvider for LakeSoulTableProvider {
             scan_schema.clone(),
             merged_schema.clone(),
         );
+        let work_unit_count = partitioned_execs.len();
         let exec = Self::build_partitioned_exec(partitioned_execs, empty_exec_schema)?;
 
         let cdc_column = self.io_config.cdc_column();
-        let exec = if !cdc_column.is_empty() {
+        let cdc_filter_enabled = !cdc_column.is_empty();
+        let exec = if cdc_filter_enabled {
             let dfschema = DFSchema::try_from(exec.schema().as_ref().clone())?;
             let cdc_filter = ident(cdc_column).not_eq(lit("delete"));
             let expr = create_physical_expr(
@@ -1531,7 +1748,27 @@ impl TableProvider for LakeSoulTableProvider {
             exec
         };
 
-        if Self::needs_output_projection(&scan_schema, &merged_schema) {
+        let scan_strategy = if candidate_inputs.is_some() {
+            "pk_locator"
+        } else if self.primary_keys.is_empty() {
+            "append_only"
+        } else {
+            "merge_on_read"
+        };
+        record_scan_strategy(scan_strategy);
+
+        let needs_output_projection =
+            Self::needs_output_projection(&scan_schema, &merged_schema);
+        debug!(
+            strategy = scan_strategy,
+            work_unit_count,
+            input_count = all_inputs.len(),
+            cdc_filter = cdc_filter_enabled,
+            needs_output_projection,
+            "built table scan physical plan"
+        );
+
+        if needs_output_projection {
             let mut projection_expr = vec![];
             for field in scan_schema.fields() {
                 projection_expr.push((
@@ -1552,8 +1789,7 @@ impl TableProvider for LakeSoulTableProvider {
         &self,
         filters: &[&Expr],
     ) -> DFResult<Vec<TableProviderFilterPushDown>> {
-        info!("supports_filters_pushdown: {:?}", filters);
-        Ok(filters
+        let verdicts = filters
             .iter()
             .map(|filter| {
                 filter_pushdown_verdict(
@@ -1563,10 +1799,27 @@ impl TableProvider for LakeSoulTableProvider {
                     filter,
                 )
             })
-            .collect())
+            .collect::<Vec<_>>();
+        trace!(
+            filter_count = filters.len(),
+            ?filters,
+            ?verdicts,
+            "evaluated filter pushdown"
+        );
+        Ok(verdicts)
     }
 
-    #[instrument(skip(self, state))]
+    #[instrument(
+        name = "table_insert_plan",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %self.table_id(),
+            table_name = %self._table_name(),
+            insert_op = ?insert_op,
+        ),
+        err
+    )]
     async fn insert_into(
         &self,
         state: &dyn Session,

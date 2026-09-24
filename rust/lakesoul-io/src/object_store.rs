@@ -17,6 +17,7 @@ use crate::{
     Result,
     cache::{ReadThroughCache, disk_cache::DiskCache, get_lakesoul_cache},
     config::LakeSoulIOConfig,
+    object_store_metrics::MonitoredObjectStore,
 };
 
 fn create_s3_store(config: &LakeSoulIOConfig) -> Result<AmazonS3> {
@@ -119,6 +120,9 @@ pub fn register_s3_object_store_with_cache(
     disk_cache: Arc<DiskCache>,
 ) -> Result<()> {
     let s3_store = Arc::new(create_s3_store(config)?);
+    // Metrics cover the inner store so cache hits are not counted as remote
+    // requests; cache-level counters live in `ReadThroughCache`.
+    let s3_store = Arc::new(MonitoredObjectStore::new(s3_store, "s3"));
     // cache size in bytes, default to 1GB
     let cache_s3_store = Arc::new(ReadThroughCache::new(s3_store, disk_cache));
     runtime.register_object_store(url, cache_s3_store);
@@ -136,6 +140,7 @@ pub fn register_s3_object_store(
     runtime: &RuntimeEnv,
 ) -> Result<()> {
     let s3_store = Arc::new(create_s3_store(config)?);
+    let s3_store = Arc::new(MonitoredObjectStore::new(s3_store, "s3"));
     runtime.register_object_store(url, s3_store);
     Ok(())
 }
@@ -161,8 +166,9 @@ pub fn register_hdfs_object_store(
     #[cfg(feature = "hdfs")]
     {
         let hdfs = crate::hdfs::Hdfs::try_new(_host, _config.clone())?;
+        let hdfs = Arc::new(MonitoredObjectStore::new(Arc::new(hdfs), "hdfs"));
 
-        _runtime.register_object_store(_url, Arc::new(hdfs));
+        _runtime.register_object_store(_url, hdfs);
         Ok(())
     }
 }

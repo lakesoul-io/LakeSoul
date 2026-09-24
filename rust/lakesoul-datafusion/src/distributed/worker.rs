@@ -28,6 +28,9 @@ use datafusion_distributed::{
 use crate::cli::CoreArgs;
 use crate::distributed::DISTRIBUTED_PROTOCOL_VERSION;
 use crate::distributed::codec::LakeSoulCodec;
+use crate::distributed::headers::{query_id_from_headers, whitelisted_headers};
+use crate::distributed::trace_context::TraceContextLayer;
+use tracing::info;
 
 /// Session builder executed for every task the worker receives.
 ///
@@ -43,8 +46,12 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
         &self,
         ctx: WorkerQueryContext,
     ) -> DFResult<SessionState> {
+        if let Some(query_id) = query_id_from_headers(&ctx.headers) {
+            info!(query_id, "running a task for a statement");
+        }
         let mut state = ctx
             .builder
+            .with_distributed_passthrough_headers(whitelisted_headers(&ctx.headers))?
             .with_distributed_user_codec(LakeSoulCodec)
             .build();
 
@@ -83,6 +90,10 @@ pub async fn spawn_lakesoul_worker(
     let worker = lakesoul_worker(options)?;
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     tonic::transport::Server::builder()
+        // Parents each task that arrives with a `traceparent` to the
+        // coordinator's statement span, so the whole distributed query is one
+        // trace.
+        .layer(TraceContextLayer)
         .add_service(worker.into_worker_server())
         .serve_with_incoming(incoming)
         .await?;

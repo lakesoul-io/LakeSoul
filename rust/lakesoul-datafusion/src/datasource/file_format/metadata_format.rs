@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -43,6 +43,7 @@ use datafusion_common::TableReference;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use futures::StreamExt;
 use lakesoul_io::config::LakeSoulIOConfig;
+use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::file_format::{
     LakeSoulFormatRegistry, PhysicalFormat, merge_schema_refs,
 };
@@ -59,12 +60,119 @@ use rand::distr::SampleString;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use crate::Result;
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
 type PartitionedFile = HashMap<String, (Vec<String>, u64)>;
+
+const WRITE_FILES_TOTAL: &str = "lakesoul_write_files_total";
+const WRITE_BYTES_TOTAL: &str = "lakesoul_write_bytes_total";
+const WRITE_ROWS_TOTAL: &str = "lakesoul_write_rows_total";
+const COMMIT_DURATION_SECONDS: &str = "lakesoul_commit_duration_seconds";
+const COMMIT_PARTITIONS_TOTAL: &str = "lakesoul_commit_partitions_total";
+const INDEX_BUILD_DURATION_SECONDS: &str = "lakesoul_index_build_duration_seconds";
+const INDEX_BUILT_SHARDS_TOTAL: &str = "lakesoul_index_built_shards_total";
+
+static DESCRIBE_METRICS: Once = Once::new();
+
+fn describe_metrics() {
+    DESCRIBE_METRICS.call_once(|| {
+        metrics::describe_counter!(
+            WRITE_FILES_TOTAL,
+            "Data files written by LakeSoul sinks"
+        );
+        metrics::describe_counter!(WRITE_BYTES_TOTAL, "Bytes written by LakeSoul sinks");
+        metrics::describe_counter!(WRITE_ROWS_TOTAL, "Rows written by LakeSoul sinks");
+        metrics::describe_histogram!(
+            COMMIT_DURATION_SECONDS,
+            metrics::Unit::Seconds,
+            "Duration of LakeSoul metadata commits grouped by outcome"
+        );
+        metrics::describe_counter!(
+            COMMIT_PARTITIONS_TOTAL,
+            "Partitions committed by LakeSoul metadata commits"
+        );
+        metrics::describe_histogram!(
+            INDEX_BUILD_DURATION_SECONDS,
+            metrics::Unit::Seconds,
+            "Index maintenance duration grouped by index type and outcome"
+        );
+        metrics::describe_counter!(
+            INDEX_BUILT_SHARDS_TOTAL,
+            "Index shards built by index maintenance grouped by index type"
+        );
+    });
+}
+
+fn record_index_build(
+    index_type: &'static str,
+    started: std::time::Instant,
+    result: &DFResult<usize>,
+) {
+    let outcome = if result.is_ok() { "success" } else { "error" };
+    metrics::histogram!(
+        INDEX_BUILD_DURATION_SECONDS,
+        "index_type" => index_type,
+        "outcome" => outcome,
+    )
+    .record(started.elapsed().as_secs_f64());
+    if let Ok(built) = result {
+        metrics::counter!(INDEX_BUILT_SHARDS_TOTAL, "index_type" => index_type)
+            .increment(*built as u64);
+    }
+}
+
+/// Records *metadata* commit latency and partitions, marking the commit
+/// failed when it is dropped without [`WriteCommitMetrics::success`].
+///
+/// Only the `commit_data` calls belong inside: writing files before and
+/// building indexes after are separate phases with their own metrics, and
+/// their failures must not be reported as metadata-commit failures.
+struct WriteCommitMetrics {
+    started: std::time::Instant,
+    partitions: u64,
+    finished: bool,
+}
+
+impl WriteCommitMetrics {
+    fn start() -> Self {
+        describe_metrics();
+        Self {
+            started: std::time::Instant::now(),
+            partitions: 0,
+            finished: false,
+        }
+    }
+
+    fn record_partitions(&mut self, partitions: u64) {
+        self.partitions = partitions;
+    }
+
+    fn success(mut self) {
+        self.finish("success");
+    }
+
+    fn finish(&mut self, outcome: &'static str) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        metrics::histogram!(COMMIT_DURATION_SECONDS, "outcome" => outcome)
+            .record(self.started.elapsed().as_secs_f64());
+        if outcome == "success" {
+            metrics::counter!(COMMIT_PARTITIONS_TOTAL).increment(self.partitions);
+        }
+    }
+}
+
+impl Drop for WriteCommitMetrics {
+    fn drop(&mut self) {
+        self.finish("error");
+    }
+}
 
 /// The LakeSoul metadata [`FileFormat`]: it presents a LakeSoul table to
 /// DataFusion's listing machinery and owns the LakeSoul write path.
@@ -368,7 +476,18 @@ impl LakeSoulHashSinkExec {
         self.metadata_client.clone()
     }
 
-    #[instrument(skip(context, input, table_info, partitioned_file_path_and_row_count))]
+    #[instrument(
+        name = "table_write_partition",
+        level = "info",
+        skip_all,
+        fields(
+            table_id = %table_info.table_id,
+            table_name = %table_info.table_name,
+            partition,
+            range_partition_count = range_partitions.len(),
+        ),
+        err
+    )]
     async fn pull_and_sink(
         input: Arc<dyn ExecutionPlan>,
         partition: usize,
@@ -395,6 +514,7 @@ impl LakeSoulHashSinkExec {
             .collect::<Vec<_>>();
 
         let mut row_count = 0;
+        let physical_format = crate::catalog::table_file_format(&table_info.properties)?;
         // One writer (and one data file) per input partition; the writer is
         // chosen by the table's physical format (parquet / vortex).
         let mut partitioned_writer =
@@ -406,8 +526,6 @@ impl LakeSoulHashSinkExec {
             debug!("{partition_desc}");
             let batch_excluding_range =
                 batch.project(&schema_projection_excluding_range)?;
-            let physical_format =
-                crate::catalog::table_file_format(&table_info.properties)?;
             let file_absolute_path = format!(
                 "{}{}part-{}_{:0>4}.{}",
                 table_info.table_path,
@@ -457,6 +575,10 @@ impl LakeSoulHashSinkExec {
                     .entry(partition_desc.clone())
                     .or_insert_with(|| (Vec::new(), 0u64));
                 for output in outputs {
+                    metrics::counter!(WRITE_FILES_TOTAL, "format" => physical_format.extension())
+                        .increment(1);
+                    metrics::counter!(WRITE_BYTES_TOTAL, "format" => physical_format.extension())
+                        .increment(output.object_meta.size);
                     entry.0.push(output.file_path);
                     entry.1 += output.row_count as u64;
                 }
@@ -464,9 +586,22 @@ impl LakeSoulHashSinkExec {
             }
         }
 
+        metrics::counter!(WRITE_ROWS_TOTAL, "format" => physical_format.extension())
+            .increment(row_count as u64);
         Ok(row_count as u64)
     }
 
+    #[instrument(
+        name = "table_write_commit",
+        level = "info",
+        skip_all,
+        fields(
+            table_name = %table_name,
+            input_partition_count = join_handles.len(),
+            primary_key_count = primary_keys.len(),
+        ),
+        err
+    )]
     async fn wait_for_commit(
         join_handles: Vec<JoinHandle<Result<u64>>>,
         client: MetaDataClientRef,
@@ -486,6 +621,13 @@ impl LakeSoulHashSinkExec {
         let partitioned_file_path_and_row_count =
             partitioned_file_path_and_row_count.lock().await;
 
+        // Timed and finalized around the `commit_data` loop alone: the file
+        // writers above and the index maintenance below are not part of the
+        // metadata commit, and index outcomes have their own metrics.
+        let mut commit_metrics = WriteCommitMetrics::start();
+        commit_metrics
+            .record_partitions(partitioned_file_path_and_row_count.len() as u64);
+
         let commit_started = std::time::Instant::now();
         for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
             commit_data(client.clone(), &table_name, partition_desc.clone(), files)
@@ -500,6 +642,7 @@ impl LakeSoulHashSinkExec {
             elapsed_ms = commit_started.elapsed().as_secs_f64() * 1000.0,
             "committed metadata for {}", &table_name
         );
+        commit_metrics.success();
 
         // Auto-build / incrementally update the vector index from the newly
         // committed files, driven by the table's `vector_index_columns`
@@ -582,6 +725,7 @@ impl LakeSoulHashSinkExec {
         let text_catalog = client.index_catalog::<lakesoul_text::TextSplitEntry>(
             lakesoul_common::IndexKind::Text,
         );
+        let vector_config_count = vector_configs.len();
         let vector_build = async {
             if vector_configs.is_empty() || vector_primary_keys.is_empty() {
                 return Ok(0usize);
@@ -592,7 +736,9 @@ impl LakeSoulHashSinkExec {
                 None
             };
             let started = std::time::Instant::now();
+            let span = tracing::Span::current();
             let built = tokio::task::spawn_blocking(move || {
+                let _entered = span.enter();
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                     crate::vector_index::auto_build_vector_index(
                         &vector_configs,
@@ -609,14 +755,28 @@ impl LakeSoulHashSinkExec {
                 DataFusionError::Execution(format!(
                     "vector index auto build task failed: {error}"
                 ))
-            })?
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            })
+            .and_then(|built| {
+                built.map_err(|report| {
+                    DataFusionError::External(report.into_boxed_error())
+                })
+            });
+            record_index_build("vector", started, &built);
+            let built = built?;
             debug!(
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                 "auto-built {built} vector index shard(s) for {}", &table_name
             );
+            tracing::Span::current().record("built_shard_count", built as u64);
             Ok::<usize, DataFusionError>(built)
-        };
+        }
+        .instrument(info_span!(
+            "vector_index_maintenance",
+            config_count = vector_config_count,
+            rebuild = wants_vector_rebuild,
+            built_shard_count = tracing::field::Empty,
+        ));
+        let text_config_count = text_configs.len();
         let text_build = async {
             if text_configs.is_empty() || text_primary_keys.is_empty() {
                 return Ok(0usize);
@@ -627,7 +787,9 @@ impl LakeSoulHashSinkExec {
                 None
             };
             let started = std::time::Instant::now();
+            let span = tracing::Span::current();
             let built = tokio::task::spawn_blocking(move || {
+                let _entered = span.enter();
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                     crate::text_index::auto_build_text_index(
                         &text_configs,
@@ -644,14 +806,27 @@ impl LakeSoulHashSinkExec {
                 DataFusionError::Execution(format!(
                     "text index auto build task failed: {error}"
                 ))
-            })?
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            })
+            .and_then(|built| {
+                built.map_err(|report| {
+                    DataFusionError::External(report.into_boxed_error())
+                })
+            });
+            record_index_build("text", started, &built);
+            let built = built?;
             debug!(
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                 "auto-built {built} text index shard(s) for {}", &table_name
             );
+            tracing::Span::current().record("built_shard_count", built as u64);
             Ok::<usize, DataFusionError>(built)
-        };
+        }
+        .instrument(info_span!(
+            "text_index_maintenance",
+            config_count = text_config_count,
+            rebuild = wants_text_rebuild,
+            built_shard_count = tracing::field::Empty,
+        ));
         let (vector_built, text_built) = tokio::join!(vector_build, text_build);
         vector_built?;
         text_built?;
@@ -767,19 +942,32 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
     /// Execute the plan and return a stream of `RecordBatch`es for
     /// the specified partition.
-    #[instrument(skip(self, context))]
     fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        let span = info_span!(
+            "hash_sink_execute",
+            table_id = %self.table_info.table_id,
+            table_name = %self.table_info.table_name,
+            partition,
+            input_partition_count = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            output_batches = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let entered = span.enter();
+
         if partition != 0 {
             return Err(DataFusionError::NotImplemented(
                 "FileSinkExec can only be called on partition 0!".to_string(),
             ));
         }
         let num_input_partitions = self.input.output_partitioning().partition_count();
-        debug!("num_input_partitions {}", num_input_partitions);
+        span.record("input_partition_count", num_input_partitions as u64);
+        debug!(num_input_partitions, "starting table sink");
         // launch one async task per *input* partition
         let mut join_handles = vec![];
 
@@ -788,15 +976,23 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let partitioned_file_path_and_row_count =
             Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         for i in 0..num_input_partitions {
-            let sink_task = tokio::spawn(Self::pull_and_sink(
-                self.input().clone(),
-                i,
-                context.clone(),
-                self.table_info(),
-                self.range_partitions.clone(),
-                write_id.clone(),
-                partitioned_file_path_and_row_count.clone(),
-            ));
+            // The spawned futures are instrumented explicitly: an
+            // `#[instrument]` async fn creates its span on the first poll,
+            // which happens inside the spawned task where `execute`'s span is
+            // no longer current, and a plain `tokio::spawn` would therefore
+            // start a separate trace.
+            let sink_task = tokio::spawn(
+                Self::pull_and_sink(
+                    self.input().clone(),
+                    i,
+                    context.clone(),
+                    self.table_info(),
+                    self.range_partitions.clone(),
+                    write_id.clone(),
+                    partitioned_file_path_and_row_count.clone(),
+                )
+                .instrument(span.clone()),
+            );
             // In a separate task, wait for each input to be done
             // (and pass along any errors, including panic!s)
             join_handles.push(sink_task);
@@ -806,14 +1002,17 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             schema: self.table_info().table_namespace.clone().into(),
             table: self.table_info().table_name.clone().into(),
         };
-        let join_handle = tokio::spawn(Self::wait_for_commit(
-            join_handles,
-            self.metadata_client(),
-            table_ref.to_string(),
-            self.primary_keys.clone(),
-            self.object_store_options.clone(),
-            partitioned_file_path_and_row_count,
-        ));
+        let join_handle = tokio::spawn(
+            Self::wait_for_commit(
+                join_handles,
+                self.metadata_client(),
+                table_ref.to_string(),
+                self.primary_keys.clone(),
+                self.object_store_options.clone(),
+                partitioned_file_path_and_row_count,
+            )
+            .instrument(span.clone()),
+        );
 
         let sink_schema = self.sink_schema.clone();
 
@@ -832,7 +1031,10 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         })
         .boxed();
 
-        Ok(Box::pin(RecordBatchStreamAdapter::new(sink_schema, stream)))
+        let stream = Box::pin(RecordBatchStreamAdapter::new(sink_schema, stream))
+            as SendableRecordBatchStream;
+        drop(entered);
+        Ok(instrument_record_batch_stream(stream, span, "hash_sink"))
     }
 }
 
@@ -905,5 +1107,308 @@ mod tests {
         )
         .expect("a table without a file_format property follows the default format");
         assert_eq!(format.get_ext(), "vortex");
+    }
+}
+
+/// The sink spawns its write and commit tasks with `tokio::spawn`. An
+/// `#[instrument]` async fn builds its span on the first poll, which happens
+/// inside the spawned task where `execute`'s span is no longer current, so an
+/// uninstrumented spawn detaches `table_write_partition` and
+/// `table_write_commit` -- and the index maintenance nested under it -- from
+/// the statement trace.
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use lakesoul_metadata::MetaDataClient;
+    use std::sync::Mutex as StdMutex;
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+    use tracing_subscriber::registry::LookupSpan;
+
+    /// `(span name, parent span name)` of every span created on this thread.
+    type CreatedSpans = Arc<StdMutex<Vec<(String, Option<String>)>>>;
+
+    #[derive(Clone, Default)]
+    struct CapturedSpans(CreatedSpans);
+
+    impl CapturedSpans {
+        fn parent_of(&self, name: &str) -> Option<Option<String>> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(span, _)| span == name)
+                .map(|(_, parent)| parent.clone())
+        }
+    }
+
+    impl<S> Layer<S> for CapturedSpans
+    where
+        S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            id: &tracing::span::Id,
+            ctx: LayerContext<'_, S>,
+        ) {
+            let parent = ctx
+                .span(id)
+                .and_then(|span| span.parent().map(|parent| parent.name().to_string()));
+            self.0
+                .lock()
+                .unwrap()
+                .push((attrs.metadata().name().to_string(), parent));
+        }
+    }
+
+    /// Both spawned tasks must be instrumented with the sink's span before
+    /// they are spawned, so that the whole write -- metadata commit and index
+    /// maintenance included -- stays in the statement trace.
+    #[test]
+    fn spawned_write_and_commit_tasks_join_the_sink_span() {
+        let captured = CapturedSpans::default();
+        let subscriber = Registry::default().with(captured.clone());
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        with_default(subscriber, || {
+            runtime.block_on(async {
+                let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+                let input: Arc<dyn ExecutionPlan> =
+                    Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+                let sink = LakeSoulHashSinkExec::new(
+                    input,
+                    None,
+                    Arc::new(TableInfo {
+                        partitions: ";".to_string(),
+                        ..Default::default()
+                    }),
+                    client,
+                    HashMap::new(),
+                )
+                .await
+                .unwrap();
+
+                let statement = info_span!("statement_execute");
+                let stream = {
+                    let _entered = statement.enter();
+                    sink.execute(0, Arc::new(TaskContext::default())).unwrap()
+                };
+                // The sink stream completes once the commit task has joined the
+                // per-partition write tasks, so both spawned spans exist by then.
+                let _ = stream.collect::<Vec<_>>().await;
+            });
+        });
+
+        assert_eq!(
+            captured.parent_of("hash_sink_execute"),
+            Some(Some("statement_execute".to_string())),
+            "the sink span must hang off the statement span"
+        );
+        assert_eq!(
+            captured.parent_of("table_write_partition"),
+            Some(Some("hash_sink_execute".to_string())),
+            "the production write spawn must join the sink trace"
+        );
+        assert_eq!(
+            captured.parent_of("table_write_commit"),
+            Some(Some("hash_sink_execute".to_string())),
+            "the production commit spawn must join the sink trace"
+        );
+    }
+}
+
+/// The commit metric covers the metadata commit alone. Writing the files
+/// before it and maintaining the indexes after it are separate phases with
+/// their own metrics, so neither a slow file writer nor a failed index build
+/// may show up as commit latency or as a failed commit.
+#[cfg(test)]
+mod commit_metrics_tests {
+    use super::*;
+    use crate::tests::create_table_with_vector_index;
+    use crate::vector_index::{VectorIndexParams, VectorIndexTableConfig};
+    use lakesoul_io::config::LakeSoulIOConfigBuilder;
+    use lakesoul_metadata::MetaDataClient;
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    /// Value of the `prefix{labels}` sample in Prometheus text exposition.
+    fn sample(text: &str, prefix: &str, labels: &[&str]) -> Option<f64> {
+        text.lines()
+            .find(|line| {
+                line.starts_with(prefix)
+                    && labels.iter().all(|label| line.contains(label))
+            })
+            .and_then(|line| line.rsplit(' ').next()?.parse().ok())
+    }
+
+    /// The recorder is thread-local, so the commit has to run on this thread.
+    fn current_thread_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime")
+    }
+
+    fn client(runtime: &tokio::runtime::Runtime) -> MetaDataClientRef {
+        runtime.block_on(async { Arc::new(MetaDataClient::from_env().await.unwrap()) })
+    }
+
+    #[test]
+    fn commit_latency_excludes_the_file_writers() {
+        let runtime = current_thread_runtime();
+        let client = client(&runtime);
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        let count = metrics::with_local_recorder(&recorder, || {
+            runtime.block_on(async {
+                let writer: JoinHandle<Result<u64>> = tokio::spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    Ok(3u64)
+                });
+                LakeSoulHashSinkExec::wait_for_commit(
+                    vec![writer],
+                    client.clone(),
+                    "default.tmp_commit_metrics_absent".to_string(),
+                    Vec::new(),
+                    HashMap::new(),
+                    Arc::new(Mutex::new(PartitionedFile::new())),
+                )
+                .await
+            })
+        })
+        .expect("committing without partitions succeeds");
+        assert_eq!(count, 3, "the writers' row count is still returned");
+
+        let rendered = handle.render();
+        let latency = sample(
+            &rendered,
+            &format!("{COMMIT_DURATION_SECONDS}_sum"),
+            &["outcome=\"success\""],
+        )
+        .expect("a successful commit is recorded");
+        assert!(
+            latency < 0.5,
+            "commit latency {latency}s must not include the 1s file writer \
+             wait:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn index_failure_is_not_reported_as_a_commit_failure() {
+        let runtime = current_thread_runtime();
+        let client = client(&runtime);
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        let table = "tmp_commit_metrics_index_failure";
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("pk", DataType::Int64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    4,
+                ),
+                true,
+            ),
+        ]));
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_schema(schema)
+            .with_primary_keys(vec!["pk".to_string()])
+            .build();
+        // Stored index metadata parses, but the build it describes must fail:
+        // the native builder rejects this metric.
+        let vector_index_configs = vec![VectorIndexTableConfig {
+            column: "vec".to_string(),
+            params: VectorIndexParams {
+                dim: 4,
+                nlist: 4,
+                total_bits: 7,
+                metric: "not-a-metric".to_string(),
+                rotator_type: "FhtKac".to_string(),
+                seed: 42,
+                use_faster_config: true,
+            },
+            management: Default::default(),
+        }];
+
+        let result = metrics::with_local_recorder(&recorder, || {
+            runtime.block_on(async {
+                create_table_with_vector_index(
+                    client.clone(),
+                    table,
+                    config,
+                    &vector_index_configs,
+                )
+                .await
+                .expect("create the table");
+                let mut partitions = PartitionedFile::new();
+                partitions.insert(
+                    "hash=0".to_string(),
+                    (
+                        vec![
+                            "file:///tmp/tmp_commit_metrics_index_failure.parquet"
+                                .to_string(),
+                        ],
+                        1,
+                    ),
+                );
+                LakeSoulHashSinkExec::wait_for_commit(
+                    Vec::new(),
+                    client.clone(),
+                    format!("default.{table}"),
+                    vec!["pk".to_string()],
+                    HashMap::new(),
+                    Arc::new(Mutex::new(partitions)),
+                )
+                .await
+            })
+        });
+        assert!(
+            result.is_err(),
+            "the index maintenance failure must still fail the write: \
+             {result:?}"
+        );
+
+        let rendered = handle.render();
+        let commit_outcomes = |outcome: &str| {
+            sample(
+                &rendered,
+                &format!("{COMMIT_DURATION_SECONDS}_count"),
+                &[&format!("outcome=\"{outcome}\"")],
+            )
+        };
+        assert_eq!(
+            commit_outcomes("success"),
+            Some(1.0),
+            "the metadata commit succeeded:\n{rendered}"
+        );
+        assert_eq!(
+            commit_outcomes("error"),
+            None,
+            "a failed index build is not a failed commit:\n{rendered}"
+        );
+        assert_eq!(
+            sample(&rendered, COMMIT_PARTITIONS_TOTAL, &[]),
+            Some(1.0),
+            "the committed partition is counted:\n{rendered}"
+        );
+        assert_eq!(
+            sample(
+                &rendered,
+                &format!("{INDEX_BUILD_DURATION_SECONDS}_count"),
+                &["index_type=\"vector\"", "outcome=\"error\""],
+            ),
+            Some(1.0),
+            "the index outcome is recorded by the index metric:\n{rendered}"
+        );
     }
 }

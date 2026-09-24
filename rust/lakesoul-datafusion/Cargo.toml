@@ -14,6 +14,7 @@ edition = { workspace = true }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-common = { path = "../lakesoul-common" }
+lakesoul-observability = { path = "../lakesoul-observability" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-vector = { path = "../lakesoul-vector" }
 lakesoul-text = { path = "../lakesoul-text" }
@@ -23,6 +24,7 @@ datafusion-expr = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-datasource = { workspace = true }
+http = { workspace = true }
 datafusion-distributed = { workspace = true }
 # arrow
 arrow = { workspace = true }
@@ -65,6 +67,13 @@ tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "4
 # adbc
 adbc_core = { version = "0.23.0", optional = true }
 adbc_driver_manager = { version = "0.23.0", optional = true }
+# observability
+metrics = { workspace = true }
+opentelemetry = { version = "0.32.0", default-features = false, features = [
+  "trace",
+] }
+tower = "0.5"
+tracing-opentelemetry = "0.33.0"
 # logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -75,6 +84,13 @@ downcast-rs = "2"
 
 [dev-dependencies]
 ctor = "0.4"
+# Captures the write-path metrics in the unit tests.
+metrics-exporter-prometheus = { workspace = true }
+# The W3C propagator used by the global text-map propagator normally installed
+# by `lakesoul-observability::init_tracing`; tests install it themselves.
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
+  "trace",
+] }
 test-log = { workspace = true }
 rand = { workspace = true }
 # Enables `Worker::tasks_running`, which the cancellation test observes.

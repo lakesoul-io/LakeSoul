@@ -3,16 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use std::sync::{Arc, Once};
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use clap::Parser;
 use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
+use lakesoul_common::misc::JiffTime;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::DistributedOptions;
 use lakesoul_metadata::MetaDataClient;
+use lakesoul_observability::{
+    LogFormat, PrometheusMetricsConfig, TracingConfig, TracingGuard, init_tracing,
+    install_prometheus_metrics, spawn_reload_on_sighup,
+};
 use tokio::runtime::{self};
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
 
 use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
@@ -21,7 +26,6 @@ use crate::session::PgSessionFactory;
 mod cancel;
 mod catalog;
 mod limits;
-mod misc;
 mod pg_compat;
 mod read_only;
 mod server;
@@ -30,19 +34,14 @@ use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
 
-fn init_logger() {
-    static TRACING: Once = Once::new();
-    TRACING.call_once(|| {
-        let timer = misc::JiffTime::beijing("%m-%d %T%.3f %Z");
-        tracing_subscriber::fmt()
-            .with_level(true)
-            .with_target(true)
-            .with_timer(timer)
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_file(false)
-            .with_ansi(true)
-            .init();
-    });
+fn init_logger() -> Result<TracingGuard> {
+    Ok(init_tracing(
+        TracingConfig::new("postgres-lakesoul"),
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        LogFormat::new().with_target(false).with_file(false),
+        JiffTime::beijing("%m-%d %T%.3f %Z"),
+    )?)
 }
 
 #[derive(Parser)]
@@ -52,6 +51,10 @@ struct Cli {
     /// Port the server listens to, default to 5432
     #[clap(short, long, default_value_t = 5432)]
     port: u16,
+    /// Address serving Prometheus metrics.
+    #[clap(long, default_value = "127.0.0.1:19090")]
+    metrics_addr: SocketAddr,
+
     /// Distributed workers to plan against, comma separated; empty keeps every
     /// session single-node
     #[clap(long, value_delimiter = ',')]
@@ -63,6 +66,13 @@ struct Cli {
     /// it on the coordinator.
     #[clap(long)]
     distributed_fallback_local: bool,
+
+    /// Overrides the distributed planner's bytes-per-partition scan estimate.
+    /// Lower values fan a scan out over more tasks (and therefore workers);
+    /// scans whose estimated size stays below the default (16 MiB) per
+    /// partition are kept on the coordinator.
+    #[clap(long)]
+    distributed_bytes_per_partition: Option<usize>,
 
     /// Maximum number of concurrent connections, 0 for unlimited
     #[clap(long, default_value_t = 0)]
@@ -89,7 +99,18 @@ async fn main_inner(cli: Cli) -> Result<()> {
         &cli.core,
         Arc::clone(&auth_manager),
     )?;
-    init_logger();
+    let tracing = Arc::new(init_logger()?);
+    // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
+    // `kill -HUP <pid>`.
+    spawn_reload_on_sighup(tracing.filter_handle());
+    install_prometheus_metrics(PrometheusMetricsConfig::new(
+        "postgres-lakesoul",
+        cli.metrics_addr,
+    ))?;
+    if let Some(endpoint) = tracing.otlp_endpoint() {
+        info!(endpoint, "OTLP trace exporter enabled");
+    }
+    info!(metrics_addr = %cli.metrics_addr, "Prometheus metrics endpoint started");
     // Warm the shared catalog view once: every connection lists from it, so
     // the first one must not pay for the initial metadata load.
     if let Err(err) = session_factory.catalog_snapshot().load().await {
@@ -103,9 +124,12 @@ async fn main_inner(cli: Cli) -> Result<()> {
         let mut options =
             DistributedOptions::static_workers(cli.distributed_workers.clone());
         options.fallback_to_local = cli.distributed_fallback_local;
+        options.bytes_per_partition = cli.distributed_bytes_per_partition;
         info!(
-            "distributed planning enabled against {:?} (fallback_to_local={} )",
-            cli.distributed_workers, options.fallback_to_local,
+            "distributed planning enabled against {:?} (fallback_to_local={}, bytes_per_partition={:?})",
+            cli.distributed_workers,
+            options.fallback_to_local,
+            cli.distributed_bytes_per_partition,
         );
         Some(options)
     };

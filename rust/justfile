@@ -32,10 +32,20 @@ console-s3 level=log_level:
       --s3-secret-key "rustfsadmin"
 
 # Start these two workers in separate terminals before running console-distributed-s3.
+#
+# The distributed protocol has no worker id, so each replica declares its own
+# identity here (option A: explicit injection):
+#   * OTEL_RESOURCE_ATTRIBUTES -> trace resource `service.instance.id`
+#   * --metrics-addr           -> a distinct Prometheus target (worker-1/2 label
+#     comes from docker/observability/prometheus/prometheus.yml)
 worker-s3-1 level=log_level:
+    OTEL_SERVICE_NAME=lakesoul-worker \
+    OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-1 \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
     RUST_LOG={{level}} cargo run --bin lakesoul-worker -- \
       --bind "127.0.0.1" \
       --port 50051 \
+      --metrics-addr "127.0.0.1:19091" \
       --worker-threads 16 \
       --warehouse-prefix "s3://lakesoul-test-bucket" \
       --endpoint "http://localhost:9000" \
@@ -44,9 +54,13 @@ worker-s3-1 level=log_level:
       --s3-secret-key "rustfsadmin"
 
 worker-s3-2 level=log_level:
+    OTEL_SERVICE_NAME=lakesoul-worker \
+    OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-2 \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
     RUST_LOG={{level}} cargo run --bin lakesoul-worker -- \
       --bind "127.0.0.1" \
       --port 50052 \
+      --metrics-addr "127.0.0.1:19092" \
       --worker-threads 16 \
       --warehouse-prefix "s3://lakesoul-test-bucket" \
       --endpoint "http://localhost:9000" \

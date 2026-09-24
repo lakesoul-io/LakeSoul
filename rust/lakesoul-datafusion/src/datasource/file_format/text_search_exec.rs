@@ -42,6 +42,7 @@ use lakesoul_io::config::{
     OPTION_KEY_TEXT_SEARCH_SCORES, OPTION_KEY_TEXT_SEARCH_TOP_K,
     OPTION_KEY_TEXT_SEARCH_VERIFY,
 };
+use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
@@ -408,6 +409,21 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
                 "LakeSoulTextSearchExec only supports 1 partition, got {partition}"
             )));
         }
+        let span = info_span!(
+            "text_search_execute",
+            partition,
+            column = %self.text_search.column,
+            top_k = self.text_search.top_k,
+            order_by = self.text_search.order_by,
+            expose_score = self.text_search.expose_score,
+            bucket_group_count = self.file_groups.len(),
+            outcome = tracing::field::Empty,
+            output_batches = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let entered = span.enter();
+
         let store = context
             .runtime_env()
             .object_store(self.object_store_url.clone())
@@ -454,7 +470,13 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
             std::thread::scope(|scope| {
                 let handles: Vec<_> = configs
                     .into_iter()
-                    .map(|config| scope.spawn(move || read_bucket(config)))
+                    .map(|config| {
+                        let span = span.clone();
+                        scope.spawn(move || {
+                            let _entered = span.enter();
+                            read_bucket(config)
+                        })
+                    })
                     .collect();
                 let mut batches: Vec<arrow::record_batch::RecordBatch> = Vec::new();
                 for handle in handles {
@@ -474,8 +496,10 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
             batches
         };
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream))
-            as SendableRecordBatchStream)
+        let stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream))
+            as SendableRecordBatchStream;
+        drop(entered);
+        Ok(instrument_record_batch_stream(stream, span, "text_search"))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

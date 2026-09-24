@@ -42,7 +42,7 @@ use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_distributed::{DistributedLeafExec, NetworkBoundaryExt};
+use datafusion_distributed::{DistributedLeafExec, NetworkBoundaryExt, WorkerResolver};
 use lakesoul_io::file_format::PhysicalFormat;
 
 use crate::planner::LakeSoulQueryPlanner;
@@ -54,6 +54,7 @@ pub struct LakeSoulDistributedQueryPlanner {
     /// The distributed planner to delegate to when workers are available.
     distributed: Arc<dyn QueryPlanner + Send + Sync>,
     local: Arc<dyn QueryPlanner + Send + Sync>,
+    resolver: Option<Arc<dyn WorkerResolver>>,
     /// Whether a query the distributed planner cannot plan - or plans with a
     /// worker stage that has no wire form - is planned locally instead of
     /// failing.
@@ -74,10 +75,12 @@ impl LakeSoulDistributedQueryPlanner {
     pub fn new(
         distributed: Arc<dyn QueryPlanner + Send + Sync>,
         fallback_to_local: bool,
+        resolver: Option<Arc<dyn WorkerResolver>>,
     ) -> Self {
         Self {
             distributed,
             local: LakeSoulQueryPlanner::new_ref(),
+            resolver,
             fallback_to_local,
         }
     }
@@ -198,6 +201,14 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
         logical_plan: &LogicalPlan,
         session: &dyn Session,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if let Some(resolver) = &self.resolver {
+            let available_workers = resolver.get_urls()?;
+            info!(
+                available_workers = available_workers.len(),
+                ?available_workers,
+                "distributed planning worker availability snapshot"
+            );
+        }
         let plan = match self
             .distributed
             .create_physical_plan(logical_plan, session)
@@ -291,7 +302,7 @@ mod tests {
         let ctx = SessionContext::new();
         let frame = ctx.sql("SELECT 1 AS one").await?;
         let planner =
-            LakeSoulDistributedQueryPlanner::new(distributed, fallback_to_local);
+            LakeSoulDistributedQueryPlanner::new(distributed, fallback_to_local, None);
         planner
             .create_physical_plan(frame.logical_plan(), &ctx.state())
             .await

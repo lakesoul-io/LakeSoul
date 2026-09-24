@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scrapes the /metrics endpoint every LakeSoul process exposes
+# (see `lakesoul-observability`), and receives the span metrics / service
+# graphs Tempo's metrics generator remote-writes.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: lakesoul
+    static_configs:
+      # The stack shares the host network, so the LakeSoul processes' metrics
+      # endpoints are on localhost. One entry per role: a role that is not
+      # running simply shows up as a down target.
+      - targets:
+          - 127.0.0.1:19090 # postgres-lakesoul
+        labels:
+          role: postgres-lakesoul
+      - targets:
+          - 127.0.0.1:19091 # lakesoul-worker (worker-1)
+        labels:
+          role: lakesoul-worker
+          # Explicit replica identity; the trace side uses
+          # `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-1`.
+          worker: worker-1
+      - targets:
+          - 127.0.0.1:19092 # lakesoul-worker (worker-2)
+        labels:
+          role: lakesoul-worker
+          worker: worker-2
+      - targets:
+          - 127.0.0.1:19000 # lakesoul-flight
+        labels:
+          role: lakesoul-flight

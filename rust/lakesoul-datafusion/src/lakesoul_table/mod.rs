@@ -277,7 +277,7 @@ impl LakeSoulTable {
         Ok(context.read_table(provider)?)
     }
 
-    pub async fn as_sink_provider(
+    pub async fn as_provider_without_session(
         &self,
         provider_options: LakeSoulProviderOptions,
     ) -> Result<Arc<dyn TableProvider>> {
@@ -292,7 +292,7 @@ impl LakeSoulTable {
         .await?
         .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
-            LakeSoulTableProvider::try_new_as_sink(
+            LakeSoulTableProvider::try_new_without_session(
                 provider_options,
                 self.client(),
                 config_builder.build(),

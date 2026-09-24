@@ -5271,10 +5271,12 @@ version = "4.0.0"
 dependencies = [
  "arrow-ipc",
  "arrow-schema 59.3.0",
+ "jiff",
  "md5 0.7.0",
  "serde",
  "serde_json",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5319,15 +5321,21 @@ dependencies = [
  "datafusion-proto",
  "downcast-rs",
  "futures",
+ "http 1.5.0",
  "json",
  "lakesoul-common",
  "lakesoul-io",
  "lakesoul-metadata",
  "lakesoul-metadata-proto",
+ "lakesoul-observability",
  "lakesoul-text",
  "lakesoul-vector",
  "log",
+ "metrics",
+ "metrics-exporter-prometheus",
  "object_store",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "parking_lot",
  "parquet",
  "prost",
@@ -5341,9 +5349,11 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tower 0.5.3",
  "tpchgen",
  "tpchgen-arrow",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "uuid",
@@ -5403,12 +5413,11 @@ dependencies = [
  "lakesoul-datafusion",
  "lakesoul-io",
  "lakesoul-metadata",
+ "lakesoul-observability",
  "metrics",
- "metrics-exporter-prometheus",
  "object_store",
  "prost",
  "rand 0.9.5",
- "regex",
  "rootcause",
  "serde",
  "serde_json",
@@ -5473,6 +5482,8 @@ dependencies = [
  "lakesoul-vector",
  "lazy_static",
  "linked-hash-map",
+ "metrics",
+ "metrics-exporter-prometheus",
  "mimalloc",
  "moka",
  "ndarray",
@@ -5570,6 +5581,8 @@ dependencies = [
  "lakesoul-common",
  "lakesoul-metadata-proto",
  "md5 0.7.0",
+ "metrics",
+ "metrics-exporter-prometheus",
  "num_enum 0.5.11",
  "postgres",
  "postgres-types",
@@ -5609,6 +5622,21 @@ dependencies = [
  "bytes",
  "prost",
  "prost-build",
+]
+
+[[package]]
+name = "lakesoul-observability"
+version = "4.0.0"
+dependencies = [
+ "metrics",
+ "metrics-exporter-prometheus",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6878,6 +6906,67 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "opentelemetry"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "opentelemetry-otlp"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
+dependencies = [
+ "http 1.5.0",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "thiserror 2.0.20",
+ "tokio",
+ "tonic",
+ "tonic-types",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prost",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "portable-atomic",
+ "rand 0.9.5",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7716,9 +7805,12 @@ dependencies = [
  "datafusion",
  "datafusion-postgres",
  "futures",
- "jiff",
+ "lakesoul-common",
  "lakesoul-datafusion",
  "lakesoul-metadata",
+ "lakesoul-observability",
+ "metrics",
+ "metrics-exporter-prometheus",
  "parking_lot",
  "rootcause",
  "rustls-pki-types",
@@ -10238,9 +10330,9 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.6.11"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+checksum = "7cda73e2f1397b1262d6dfdcef8aafae14d1de7748d66822d3bfeeb6d03e5e4b"
 
 [[package]]
 name = "toml_datetime"
@@ -10267,7 +10359,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5bb770da30e5cbfde35a2d7b9b8a2c4b8ef89548a7a6aeab5c9a576e3e7421"
 dependencies = [
  "indexmap 2.14.2",
- "toml_datetime 0.6.11",
+ "toml_datetime 0.6.3",
  "winnow 0.5.40",
 ]
 
@@ -10317,9 +10409,11 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "rustls-native-certs 0.8.4",
  "socket2",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tower 0.5.3",
  "tower-layer",
@@ -10347,6 +10441,17 @@ checksum = "50849f68853be452acf590cde0b146665b8d507b3b8af17261df47e02c209ea0"
 dependencies = [
  "bytes",
  "prost",
+ "tonic",
+]
+
+[[package]]
+name = "tonic-types"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73ab1b02061f83d519bba3caa167f88f261ef05720ab8ebc954ade70de3348e8"
+dependencies = [
+ "prost",
+ "prost-types",
  "tonic",
 ]
 
@@ -10498,6 +10603,22 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-opentelemetry"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
+dependencies = [
+ "js-sys",
+ "opentelemetry",
+ "smallvec",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "web-time",
 ]
 
 [[package]]

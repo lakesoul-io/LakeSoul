@@ -49,13 +49,15 @@ uuid = { workspace = true }
 url = { workspace = true }
 regex = { workspace = true }
 md5 = "0.7.0"
-# logging
+# observability
+metrics = { workspace = true }
 tracing = { workspace = true }
 # error
 rootcause = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+metrics-exporter-prometheus = { workspace = true }
 test-log = { workspace = true, features = ["trace"] }
 tracing-subscriber = { workspace = true }
 
