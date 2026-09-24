@@ -178,13 +178,57 @@ writers need more parallelism.  Other knobs:
   (`parse`, `upsert`) and search (`files`, `resolve`, `lease`,
   `shard_search`, `fetch`, `verify`) phase timings per request.
 
+## Sorting and aggregations
+
+`_search` accepts an Elasticsearch `sort` on document fields, `_score` and
+`_id`:
+
+```json
+{"query":{"match_all":{}},
+ "sort":[{"source_type":"desc"},{"chunk_id":{"order":"asc"}}],
+ "size":10}
+```
+
+A bare field name or `{"field":"asc"}` is shorthand for ascending order, while
+`_score` defaults to descending.  Ties fall back to the primary key, and
+documents missing the sort field are returned last in either direction
+(`missing: _last`).  Sorting happens after the exact verification pass, so it
+uses the current row values and is independent of the `_source` projection.
+
+The `aggs` (or `aggregations`) object supports `terms` buckets plus the `avg`,
+`sum`, `min`, `max`, `value_count`, `cardinality` and `stats` metrics,
+including nested aggregations under a `terms` bucket:
+
+```json
+{"query":{"match_all":{}},"size":0,
+ "aggs":{
+   "by_kb":{"terms":{"field":"knowledge_base_id","size":10,
+                     "order":{"_count":"desc"}},
+            "aggs":{"avg_type":{"avg":{"field":"source_type"}}}},
+   "chunks":{"value_count":{"field":"chunk_id"}}}}
+```
+
+`terms` buckets default to ten buckets ordered by `_count` descending (with
+`_key` ascending as the tie-break), carry `doc_count_error_upper_bound: 0` and
+`sum_other_doc_count`, and use Elasticsearch's `1`/`0` plus `key_as_string`
+form for boolean keys.  Aggregations run over the verified merge-on-read match
+set before `from`/`size` cuts the page, so `size: 0` returns only
+aggregations.  On the keyword and vector paths that set is the candidate
+budget the shard search returned — the same bound that applies to the returned
+hits — while the filter-only path scans every matching row.
+
 ## Limitations
 
 - Delete/update resolve their filters with a table scan; only primary keys
   have a fast path.
 - `number_of_shards`/`number_of_replicas` are ignored at index creation; the
   bucket count and `nprobe` come from the gateway configuration.
-- Authentication, RBAC, aggregations and `sort` are not implemented.
+- Authentication and RBAC are not implemented.
+- `sort` and aggregations cover the subset above: sorting allows `_score`,
+  `_id` and document fields, aggregations allow `terms` and the listed
+  metrics.  `histogram`, `date_histogram`, `range`, `filters` and pipeline
+  aggregations are not implemented, and terms buckets skip documents missing
+  the field.
 - Highlighting supports `fields` (the content column or `*`), `pre_tags`,
   `post_tags`, `fragment_size` and `number_of_fragments`; the other ES
   highlight options (`encoder`, `fragmenter`, `require_field_match`, custom

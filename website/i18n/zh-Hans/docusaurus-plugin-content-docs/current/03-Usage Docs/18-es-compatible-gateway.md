@@ -122,11 +122,37 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 - **`index_build`**——`inline`（默认）在写入返回前完成索引增量构建；`deferred` 只提交数据，由后台任务按 `index_build_interval_secs`（默认 15 秒）构建未入索引的 shard。存在积压期间，检索会精确扫描尚未入索引的数据文件，因此写入立即可检索，代价是读取积压数据；在 20K 文档、1 bucket、每批 500 条的实测中，deferred 写入约 12,900 docs/s（inline 约 3,100 docs/s），recall@100 完全一致；存在积压时检索 p50 约 160 ms，后台追平后约 46 ms。该模式是 provision 时写入的表属性；已有表保持 inline，配置不一致时网关会输出警告。
 - **分阶段计时**——启动网关时设置 `LAKESOUL_ES_GATEWAY_TIMING=1` 与 `RUST_LOG=lakesoul_es_gateway::timing=info`，即可按请求打印写（`parse`、`upsert`）与检索（`files`、`resolve`、`lease`、`shard_search`、`fetch`、`verify`）各阶段耗时。
 
+## 排序与聚合
+
+`_search` 支持 Elasticsearch 的 `sort`，可对文档字段、`_score` 与 `_id` 排序：
+
+```json
+{"query":{"match_all":{}},
+ "sort":[{"source_type":"desc"},{"chunk_id":{"order":"asc"}}],
+ "size":10}
+```
+
+字段名简写与 `{"field":"asc"}` 表示升序，`_score` 默认降序。排序键相同时回退到主键，缺失排序字段的文档在升序/降序下都排在最后（`missing: _last`）。排序在精确校验之后执行，使用当前行值，且与 `_source` 投影无关。
+
+`aggs`（或 `aggregations`）支持 `terms` 桶，以及 `avg`、`sum`、`min`、`max`、`value_count`、`cardinality` 与 `stats` 指标，`terms` 桶内还可以嵌套子聚合：
+
+```json
+{"query":{"match_all":{}},"size":0,
+ "aggs":{
+   "by_kb":{"terms":{"field":"knowledge_base_id","size":10,
+                     "order":{"_count":"desc"}},
+            "aggs":{"avg_type":{"avg":{"field":"source_type"}}}},
+   "chunks":{"value_count":{"field":"chunk_id"}}}}
+```
+
+`terms` 桶默认取 10 个、按 `_count` 降序（`_key` 升序作为并列时的次序），响应包含 `doc_count_error_upper_bound: 0` 与 `sum_other_doc_count`；布尔键使用 Elasticsearch 的 `1`/`0` 加 `key_as_string` 形式。聚合在 merge-on-read 校验后的匹配集上、分页（`from`/`size`）之前执行，因此 `size: 0` 只返回聚合。关键词与向量路径的匹配集是 shard 检索返回的候选预算（与返回命中受同一约束），filter-only 路径则扫描全部匹配行。
+
 ## 限制
 
 - delete/update 通过表扫描解析过滤条件；只有主键有快速路径。
 - 建索引时忽略 `number_of_shards`/`number_of_replicas`；分桶数与 `nprobe` 来自网关配置。
-- 未实现鉴权、RBAC、聚合与 `sort`。
+- 未实现鉴权与 RBAC。
+- `sort` 与聚合仅支持上述子集：排序支持 `_score`、`_id` 与文档字段，聚合支持 `terms` 及列出的指标；未实现 `histogram`、`date_histogram`、`range`、`filters` 与 pipeline 聚合，`terms` 桶会跳过缺失该字段的文档。
 - 高亮支持 `fields`（内容列或 `*`）、`pre_tags`、`post_tags`、`fragment_size` 与 `number_of_fragments`；其余 ES 高亮选项（`encoder`、`fragmenter`、`require_field_match`、自定义每字段片段数）会被忽略。片段边界来自索引分词器，原文不做转义。
 - `_search` 支持的查询子集为 `match`、`terms`、`term`、`bool.filter/must/must_not` 以及带 `cosineSimilarity` 的 `script_score`。
 
