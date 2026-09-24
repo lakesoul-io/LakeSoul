@@ -109,6 +109,19 @@ tokenizers (`jieba`, `default`, `en_stem`, `whitespace`, `raw`); an unknown
 analyzer, or an override combined with query syntax, is rejected with a 400.
 An override equal to the index-time analyzer is ignored.
 
+A `match` query can request ES highlighting; the response then carries a
+`highlight` object per hit with fragments around the analyzed query terms:
+
+```json
+{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},
+ "highlight":{"fields":{"content":{}},"pre_tags":["<em>"],"post_tags":["</em>"]},
+ "size":10}
+```
+
+The fragments are cut from the current row text (after merge-on-read), so
+highlighting works without `stored=true`; the exact verification pass already
+fetches that text.
+
 Vector search uses the `script_score` form the clients send:
 
 ```json
@@ -171,8 +184,12 @@ writers need more parallelism.  Other knobs:
   have a fast path.
 - `number_of_shards`/`number_of_replicas` are ignored at index creation; the
   bucket count and `nprobe` come from the gateway configuration.
-- Authentication, RBAC, highlighting, aggregations and `sort` are not
-  implemented.
+- Authentication, RBAC, aggregations and `sort` are not implemented.
+- Highlighting supports `fields` (the content column or `*`), `pre_tags`,
+  `post_tags`, `fragment_size` and `number_of_fragments`; the other ES
+  highlight options (`encoder`, `fragmenter`, `require_field_match`, custom
+  number of fragments per field) are ignored.  Spans come from the index
+  analyzer and the source text is returned unescaped.
 - The `_search` query subset is `match`, `terms`, `term`,
   `bool.filter/must/must_not` and `script_score` with `cosineSimilarity`.
 

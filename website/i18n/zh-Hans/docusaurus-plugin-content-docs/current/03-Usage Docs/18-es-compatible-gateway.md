@@ -83,6 +83,16 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 ```
 
 文档仍按索引期分词器分析；覆盖只作用于**查询文本**，用于候选检索、精确校验与 BM25 打分。因此 `whitespace` 可以用空格分词去匹配 jieba 索引的中文语料。可选名称即索引分词器（`jieba`、`default`、`en_stem`、`whitespace`、`raw`）；未知分词器或与查询语法组合使用会返回 400；与索引期分词器相同的覆盖会被忽略。
+
+`match` 查询可以请求 ES 高亮，响应中每个命中会带 `highlight` 对象，包含围绕查询词项的片段：
+
+```json
+{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},
+ "highlight":{"fields":{"content":{}},"pre_tags":["<em>"],"post_tags":["</em>"]},
+ "size":10}
+```
+
+片段取自 merge-on-read 之后的当前行文本，因此无需 `stored=true` 即可高亮——精确校验本就会读取该文本。
 向量检索支持客户端发送的 `script_score` 形式：
 
 ```json
@@ -116,7 +126,8 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 - delete/update 通过表扫描解析过滤条件；只有主键有快速路径。
 - 建索引时忽略 `number_of_shards`/`number_of_replicas`；分桶数与 `nprobe` 来自网关配置。
-- 未实现鉴权、RBAC、高亮、聚合与 `sort`。
+- 未实现鉴权、RBAC、聚合与 `sort`。
+- 高亮支持 `fields`（内容列或 `*`）、`pre_tags`、`post_tags`、`fragment_size` 与 `number_of_fragments`；其余 ES 高亮选项（`encoder`、`fragmenter`、`require_field_match`、自定义每字段片段数）会被忽略。片段边界来自索引分词器，原文不做转义。
 - `_search` 支持的查询子集为 `match`、`terms`、`term`、`bool.filter/must/must_not` 以及带 `cosineSimilarity` 的 `script_score`。
 
 ## 对接 WeKnora

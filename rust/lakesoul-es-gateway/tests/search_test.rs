@@ -334,3 +334,95 @@ async fn gateway_match_analyzer_override() {
 
     cleanup(&state, &table).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_highlight_contract() {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let table = format!("es_gw_highlight_{}", &suffix[..10]);
+    let index = format!("esgwhl{}", &suffix[..10]);
+    let state = build_state(test_config(&index, &table, None, 1))
+        .await
+        .unwrap();
+    let app = build_router(Arc::clone(&state));
+    let search_path = format!("/{index}/_search");
+
+    let bulk = [
+        r#"{"create":{}}"#,
+        r#"{"content":"apple apple apple","source_id":"s1","chunk_id":"c1","knowledge_base_id":"kb1","is_enabled":true}"#,
+        r#"{"create":{}}"#,
+        r#"{"content":"apple banana","source_id":"s2","chunk_id":"c2","knowledge_base_id":"kb1","is_enabled":true}"#,
+        r#"{"create":{}}"#,
+        r#"{"content":"机器学习与向量检索","source_id":"s3","chunk_id":"c3","knowledge_base_id":"kb1","is_enabled":true}"#,
+        "",
+    ]
+    .join("\n");
+    let (status, _, body) =
+        call(&app, "POST", &format!("/{index}/_bulk"), Some(&bulk)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], false);
+
+    // Default tags wrap every matched term in the fragment.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"highlight":{"fields":{"content":{}}},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let first = &body["hits"]["hits"][0];
+    assert!(first["_id"].is_string(), "{body}");
+    let fragment = first["highlight"]["content"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing highlight: {body}"));
+    assert!(
+        fragment.contains("<em>apple</em>"),
+        "fragment must wrap the term: {fragment}"
+    );
+
+    // Custom tags are honored.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"highlight":{"fields":{"content":{}},"pre_tags":["<b>"],"post_tags":["</b>"]},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let fragment = body["hits"]["hits"][0]["highlight"]["content"][0]
+        .as_str()
+        .unwrap();
+    assert!(fragment.contains("<b>apple</b>"), "{fragment}");
+
+    // Chinese sentences highlight the segmented words.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":"机器学习"}}]}},"highlight":{"fields":{"content":{}}},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let fragment = body["hits"]["hits"][0]["highlight"]["content"][0]
+        .as_str()
+        .unwrap();
+    assert!(fragment.contains("<em>机器学习</em>"), "{fragment}");
+
+    // Without a highlight request the response shape is unchanged.
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"size":10}"#),
+    )
+    .await;
+    assert!(body["hits"]["hits"][0].get("highlight").is_none(), "{body}");
+
+    cleanup(&state, &table).await;
+}

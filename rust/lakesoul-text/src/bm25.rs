@@ -74,6 +74,32 @@ pub fn is_plain_query(query: &str) -> bool {
     !has_query_syntax(query)
 }
 
+/// One analyzed token with its byte offsets in the source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenSpan {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Tokenize `text` with the analyzer of `config`, keeping byte offsets.
+pub fn token_spans(config: &TextIndexConfig, text: &str) -> Result<Vec<TokenSpan>> {
+    let mut analyzer = analyzer_for(config)?;
+    let mut stream = analyzer.token_stream(text);
+    let mut spans = Vec::new();
+    while stream.advance() {
+        let token = stream.token();
+        if !token.text.is_empty() {
+            spans.push(TokenSpan {
+                text: token.text.clone(),
+                start: token.offset_from,
+                end: token.offset_to,
+            });
+        }
+    }
+    Ok(spans)
+}
+
 /// Tokenize `text` with the analyzer of `config`.
 pub fn tokenize(config: &TextIndexConfig, text: &str) -> Result<Vec<String>> {
     let mut analyzer = analyzer_for(config)?;
