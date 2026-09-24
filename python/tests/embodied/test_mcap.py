@@ -457,6 +457,46 @@ def test_import_mcap_gop_layout(tmp_path: Path) -> None:
         catalog.drop_table(table_name, if_exists=True)
 
 
+def test_import_mcap_gop_blob_external(tmp_path: Path) -> None:
+    frames = _h264_annexb_frames(tmp_path)
+    source = tmp_path / "ep_gop_blob.mcap"
+    _write_h264_mcap(source, frames)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("gop_blob")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_mcap(
+            source,
+            table=table_name,
+            path=table_path,
+            columns={"reward": "control_tick:reward"},
+            cameras={"cam_high": "camera_high"},
+            row_topic="control_tick",
+            video_layout="gop",
+            physical_format="parquet",
+            properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
+        )
+
+        gops_dir = tmp_path / "lake" / f"{table_name}_gops"
+        assert list(gops_dir.rglob("_blob/data/*.blob")), "gop packs"
+        assert list(gops_dir.rglob("*.blobref")), "gop sidecars"
+        assert catalog.table(f"{table_name}_gops").properties["blob_columns"] == (
+            json.dumps({"data": {"mode": "external"}})
+        )
+
+        video = GopVideo(
+            catalog.table(f"{table_name}_gops"),
+            catalog.table(f"{table_name}_frames"),
+        )
+        decoded = video.for_episode(source.stem).frames(0, 4)
+        assert decoded["cam_high"].shape == (4, 8, 8, 3)
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)
+
+
 def test_import_mcap_gop_rejects_jpeg(tmp_path: Path) -> None:
     source = tmp_path / "ep01.mcap"
     _write_mcap(source)

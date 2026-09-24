@@ -33,7 +33,13 @@ import pyarrow.parquet as pq
 
 from lakesoul.catalog import LakeSoulCatalog
 
-from .importer import ImportSummary, prepare_table, sanitize, sibling_path
+from .importer import (
+    ImportSummary,
+    filter_properties,
+    prepare_table,
+    sanitize,
+    sibling_path,
+)
 from .video import (
     FRAMES_SCHEMA,
     GOPS_SCHEMA,
@@ -172,7 +178,7 @@ def import_lerobot(
         schema=schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
-        properties=_filter_properties(properties, schema),
+        properties=filter_properties(properties, schema),
     )
     gops_handle = frames_handle = None
     if gop_layout:
@@ -182,7 +188,7 @@ def import_lerobot(
             schema=GOPS_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
-            properties=_filter_properties(properties, GOPS_SCHEMA),
+            properties=filter_properties(properties, GOPS_SCHEMA),
         )
         frames_handle = catalog.create_table(
             frames_table,
@@ -190,7 +196,7 @@ def import_lerobot(
             schema=FRAMES_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
-            properties=_filter_properties(properties, FRAMES_SCHEMA),
+            properties=filter_properties(properties, FRAMES_SCHEMA),
         )
 
     table_path = table_handle.path
@@ -233,28 +239,6 @@ def import_lerobot(
         columns=tuple(schema.names),
         tables=tables,
     )
-
-
-def _filter_properties(
-    properties: Mapping[str, str] | None, schema: pa.Schema
-) -> dict[str, str] | None:
-    """Keep ``blob_columns`` entries whose column exists in ``schema``."""
-    if not properties:
-        return dict(properties) if properties is not None else None
-    filtered = dict(properties)
-    raw = filtered.get("blob_columns")
-    if raw:
-        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        parsed = {
-            column: policy
-            for column, policy in parsed.items()
-            if column in schema.names
-        }
-        if parsed:
-            filtered["blob_columns"] = json.dumps(parsed)
-        else:
-            filtered.pop("blob_columns")
-    return filtered
 
 
 def _load_info(root: Path) -> dict[str, Any]:

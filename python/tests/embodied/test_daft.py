@@ -445,3 +445,128 @@ def test_import_mcap_daft_gop(tmp_path: Path) -> None:
         catalog.drop_table(f"{table_name}_frames", if_exists=True)
         catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_lerobot_daft_frames_blob_external(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_frames_blob")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_lerobot_daft(
+            root,
+            table=table_name,
+            path=table_path,
+            episodes=[0, 1],
+            cameras=["cam"],
+            physical_format="parquet",
+            properties={"blob_columns": json.dumps({"cam": {"mode": "external"}})},
+        )
+        assert summary.rows == 9
+
+        table_dir = tmp_path / "lake" / table_name
+        assert list(table_dir.rglob("_blob/cam/*.blob")), "cam packs"
+        assert list(table_dir.rglob("*.blobref")), "sidecars"
+        assert catalog.table(table_name).properties["blob_columns"] == json.dumps(
+            {"cam": {"mode": "external"}}
+        )
+
+        images = (
+            catalog.table(table_name).scan().to_arrow_table().column("cam").to_pylist()
+        )
+        assert images and all(image.startswith(b"\xff\xd8") for image in images)
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_lerobot_gop_daft_blob_external(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root, with_video=True)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_gop_blob")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        summary = import_lerobot_gop(
+            root,
+            table=table_name,
+            path=table_path,
+            episodes=[0, 1],
+            cameras=["cam"],
+            physical_format="parquet",
+            properties={
+                "blob_columns": json.dumps(
+                    {"data": {"mode": "external"}, "cam": {"mode": "external"}}
+                )
+            },
+        )
+        assert summary.rows == 9
+
+        gops_dir = tmp_path / "lake" / f"{table_name}_gops"
+        assert list(gops_dir.rglob("_blob/data/*.blob")), "gop packs"
+        assert list(gops_dir.rglob("*.blobref")), "gop sidecars"
+        # The ticks table has neither ``data`` nor ``cam``: the property is filtered away.
+        assert "blob_columns" not in dict(catalog.table(table_name).properties)
+        assert catalog.table(f"{table_name}_gops").properties["blob_columns"] == (
+            json.dumps({"data": {"mode": "external"}})
+        )
+
+        decoded = (
+            read_gop_frames(
+                catalog.table(f"{table_name}_gops").scan(),
+                catalog.table(f"{table_name}_frames").scan(),
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert decoded and decoded[0]["image"]
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_import_mcap_daft_gop_blob_external(tmp_path: Path) -> None:
+    pytest.importorskip("av")
+    from embodied.test_mcap import _h264_annexb_frames, _write_h264_mcap
+
+    frames = _h264_annexb_frames(tmp_path)
+    source = tmp_path / "ep_gop_blob.mcap"
+    _write_h264_mcap(source, frames)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_mcap_blob")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_mcap_daft(
+            source,
+            table=table_name,
+            path=table_path,
+            columns={"reward": "control_tick:reward"},
+            cameras={"cam_high": "camera_high"},
+            row_topic="control_tick",
+            video_layout="gop",
+            physical_format="parquet",
+            properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
+        )
+
+        gops_dir = tmp_path / "lake" / f"{table_name}_gops"
+        assert list(gops_dir.rglob("_blob/data/*.blob")), "gop packs"
+        assert catalog.table(f"{table_name}_gops").properties["blob_columns"] == (
+            json.dumps({"data": {"mode": "external"}})
+        )
+        decoded = (
+            read_gop_frames(
+                catalog.table(f"{table_name}_gops").scan(),
+                catalog.table(f"{table_name}_frames").scan(),
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert decoded and decoded[0]["image"]
+    finally:
+        catalog.drop_table(f"{table_name}_frames", if_exists=True)
+        catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)
