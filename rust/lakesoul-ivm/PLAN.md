@@ -28,14 +28,16 @@
 | ROW_NUMBER / RANK / DENSE_RANK / SUM / COUNT OVER | keyed（需主键）+ 未分区；partition 列任意可排序类型、可多列；ranking 需 order 列，聚合可整体（无 order）或按 SQL 默认 frame running | 分区级重算，刷新按受影响分区裁剪源读取 |
 | INNER JOIN | 两侧 append-only 或两侧 keyed + 未分区；join key 可多列、任意相等比较类型，payload 任意 | append-only 源用 inclusion-exclusion；keyed 源输出按左右行身份键控，受影响 pair delete+insert |
 | SEMI / ANTI | 左 keyed，右 append-only/keyed；等值 join key 可多列，另可加任意 `= <> < <= > >=` 左右列条件（含纯非等值）；输出左列可投影 | 受影响左行 delete+insert；源读取按需投影 |
-| 投影/Filter/Union ALL、join upsert、非等值 join、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK、聚合窗口函数 | — | **未支持** |
+| 投影/Filter（`RowView`） | 源 keyed 或 append-only；输出列可投影，过滤条件 `= <> < <= > >=`（含 NULL 判断） | keyed 源按受影响主键 delete+insert（通过过滤才插入）；append-only 只追加 |
+| UNION ALL（`UnionAllView`） | 多源同 schema 且全 keyed 或全 append-only | keyed 输出按 `(__ivm_source, PK)` 键控、delete+insert；append-only 追加 |
+| join upsert、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK 之外的窗口算子 | — | **未支持** |
 
 ### 路线图
 
 - **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~、
   ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~、
-  ~~SEMI/ANTI 扩展（非等值、投影下推）~~（已完成）
-  → 投影/Filter/Union ALL 视图与 TOP-K
+  ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~（已完成）
+  → TOP-K
 - **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
   `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
@@ -639,6 +641,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/semi_anti_ext.rs`：非等值（含条件翻转、右表等值键更新、删除）、纯
   非等值 ANTI、投影输出与 `read_current_projected`、校验负例；均与 SQL
   `EXISTS/NOT EXISTS` 对照并覆盖 rebuild。
+
+**投影/Filter/Union ALL 实施记录（已完成）**
+
+- 新增 `RowView`（单源投影 + 过滤）与 `UnionAllView`（多源 UNION ALL）、
+  `LiteralValue`/`FilterCondition`（列与字面量比较，NULL 用 `=`/`<>` 判断）、
+  `row_mv_schema_for`、`union_all_mv_schema_for` 与 `IVM_SOURCE_COLUMN`。
+- `RowView`：keyed 源按受影响主键 delete+insert（只有通过过滤的行才插入，旧行总
+  先收回），append-only 源只追加通过过滤的 delta；两种源都支持 rebuild。
+- `UnionAllView`：要求所有源 schema 一致且同为 keyed 或同为 append-only；keyed
+  输出按 `(__ivm_source, 主键)` 键控，逐源 delete+insert，epoch 幂等；append-only
+  输出直接追加。`__ivm_source` 记录源序号。
+- `ivm.states` 注册表覆盖两种新视图（mv 角色）；`ViewSpec` 新增 `Row`/`UnionAll`
+  并带 serde 默认；`ViewSpec` 去掉了 `Eq`（新增的浮点字面量不满足）。
+- 测试 `tests/row_union_views.rs`：投影+过滤（更新双向穿越过滤、删除、插入、
+  rebuild、SQL 对照）、append-only 源的字符串/NULL 过滤、keyed union-all 的
+  更新/删除/重建、append-only union-all、以及校验负例。
 
 ## 9. 风险与开放问题
 
