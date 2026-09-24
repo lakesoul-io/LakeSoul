@@ -95,7 +95,7 @@ fn detect(plan: &LogicalPlan) -> Option<Detected> {
             let top_k = fetch_value(limit.fetch.as_deref())?;
             (top_k, Arc::clone(&limit.input))
         }
-        LogicalPlan::Sort(sort) => (sort.fetch? as usize, Arc::new(plan.clone())),
+        LogicalPlan::Sort(sort) => (sort.fetch?, Arc::new(plan.clone())),
         _ => return None,
     };
     if top_k == 0 {
