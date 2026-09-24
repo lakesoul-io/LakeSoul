@@ -2,7 +2,7 @@
 
 - 版本：v1.2（用户功能驱动版，M1 重排）
 - 日期：2026-09-18
-- 状态：M1 完成；M2 进行中（M2-4 导入器 + GOP 布局/读取已完成；blob 外置待设计评审）；M4-1a Daft 分布式导入（LeRobot frames）已完成
+- 状态：M1/M2/M4 主体完成；Blob R1 与快照/标签保留已实现（PR #925、#936）。最新总览见 [embodied.md](./embodied.md)。
 - 修订点（相对 v1.1）：
   - 从"低层 RowSelection / 全局行号"改为从**用户训练闭环**倒推功能；
   - 确认：episode 内"顺序消费 + 窗口随机起点"，不做全局行随机访问；
@@ -136,14 +136,15 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   （LeRobot/MCAP GOP 导入 → 直接进窗口样本）。
 - GOP blob + 帧索引待 M2-1~3 blob 外置落地后接入。
 
-### M2-1 ~ M2-3 Blob 外置（实施中）
+### M2-1 ~ M2-3 Blob 外置（已完成，Blob R1 引用模型）
 
-- 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/threshold/pack_target`）→ IOConfig options；
-  tagged binary 行内表示；pack 跟随数据文件（`<data_file>.<column>.blob`，删数据文件即清理）；
-  仅 Python/native 路径；阈值 16KiB inline / 2MiB external / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
+- 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/inline_threshold/pack_target_bytes`）→ IOConfig options；
+  tagged binary 行内表示；R1 pack 布局 `<table>/_blob/<column>/<uuid>.blob` + `<data_file>.blobref`
+  sidecar（设计见 [embodied-snapshot-tag-design.md](./embodied-snapshot-tag-design.md) §5）；
+  仅 Python/native 路径；默认 auto / 16KiB inline / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
 - 已完成（端到端）：
   - Rust codec（`blob.rs`）与 writer 接线（`write_record_batch` 编码、`flush` 落
-    `<data_file>.<column>.blob`）；
+    shared pack 并写 `<data_file>.blobref`）；
   - reader 物化（`BlobMaterializer`：object store range 读 + CRC/length 校验 + moka 缓存）；
   - Python 透传（`create_table` 校验 `blob_columns`；`write_arrow`/Ray/Daft 注入写选项；
     scan 注入 reader 选项）；
@@ -154,7 +155,7 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   tagged 值；`lakesoul.BlobRef.parse(value)` 解码 inline/引用两种形态，`read(offset, size)`
   只做 pack range 读（整读校验 CRC32），`materialize_blob(value)` 为便捷物化；pack
   寻址走 `pyarrow.fs.FileSystem.from_uri`（本地与对象存储通用）；
-- 待办：pack GC/vacuum、SQL 引擎 glue；
+- 已完成：pack GC/vacuum（`vacuum_blobs`、`blob_vacuum_interval` 自动触发）；待办：SQL 引擎 glue；
 - 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；
@@ -291,7 +292,7 @@ Ray runner 只要求接口兼容（gated 测试）。
     缺失语义；以及显式 `align(left_scan, right_scan, into=...)` 物化 API（默认返回
     `pa.Table`，`into=<LakeSoulTable>` 才写表）；
 - 样本视图/manifest（跨快照稳定的行地址，才需要持久化）；
-- Python 快照/版本参数（目前仅 Spark/Flink）；文档与示例收尾。
+- 已完成：Python 快照/标签/时间戳参数（`scan.options`，PR #925）；文档与示例见 [embodied.md](./embodied.md)；
 
 ## 7. 验收指标
 

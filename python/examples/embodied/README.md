@@ -4,6 +4,9 @@ Synthetic embodied episodes with `state` / `action` vectors and per-frame
 `image` bytes, laid out with one partition per episode (the M1 hard
 constraint) so episode selection prunes files at metadata level.
 
+The full guide lives in the website docs:
+`website/docs/03-Usage Docs/20-embodied-data.md`.
+
 ## Setup
 
 ```sh

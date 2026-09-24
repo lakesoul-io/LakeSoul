@@ -99,7 +99,8 @@ The above cleaning tasks are effective for all LakeSoul tables.
 Tables with `blob_columns` store external values in shared, immutable pack files under
 `<table_path>/_blob/<column>/<uuid>.blob`. Every data file records the packs it references in a
 `<data_file>.blobref` sidecar. Retired data files are removed by the cleanup job and compaction,
-but the packs they referenced are only reclaimed by the blob vacuum.
+but the packs they referenced are only reclaimed by the blob vacuum. See
+[Embodied Data](./20-embodied-data.md) for the full reference model.
 
 Blob tables vacuum automatically after a successful write, once every `blob_vacuum_interval`
 partition versions (default `20`, set the table property to `0` to disable it). Only packs that no
