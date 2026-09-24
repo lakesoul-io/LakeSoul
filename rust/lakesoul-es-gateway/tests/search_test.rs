@@ -442,7 +442,7 @@ async fn gateway_sort_and_aggregations_contract() {
     // terms buckets are exercised too.
     let bulk = [
         r#"{"create":{}}"#,
-        r#"{"content":"apple","source_id":"s1","source_type":3,"chunk_id":"c1","knowledge_base_id":"kb2","is_enabled":true}"#,
+        r#"{"content":"apple apple apple","source_id":"s1","source_type":3,"chunk_id":"c1","knowledge_base_id":"kb2","is_enabled":true}"#,
         r#"{"create":{}}"#,
         r#"{"content":"apple banana","source_id":"s2","source_type":1,"chunk_id":"c2","knowledge_base_id":"kb1","is_enabled":false}"#,
         r#"{"create":{}}"#,
@@ -475,6 +475,12 @@ async fn gateway_sort_and_aggregations_contract() {
             .get("source_type")
             .is_none()
     );
+    // Each hit reports the resolved sort values, `null` for the missing one.
+    let hits = body["hits"]["hits"].as_array().unwrap();
+    assert_eq!(hits[0]["sort"][0], 1);
+    assert_eq!(hits[2]["sort"][0], 3);
+    assert_eq!(hits[3]["sort"][0], Value::Null);
+    assert_eq!(hits[3]["sort"].as_array().unwrap().len(), 1);
 
     // Descending order keeps missing values last.
     let (_, _, body) = call(
@@ -487,6 +493,18 @@ async fn gateway_sort_and_aggregations_contract() {
     )
     .await;
     assert_eq!(hit_chunk_ids(&body), vec!["c1", "c3", "c2", "c4"], "{body}");
+
+    // `missing: _first` puts the document without the field first.
+    let (_, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"sort":[{"source_type":{"order":"asc","missing":"_first"}}],"_source":{"includes":["chunk_id"]},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(hit_chunk_ids(&body), vec!["c4", "c2", "c3", "c1"], "{body}");
 
     // The string shorthand sorts ascending; `_id` pagination happens after
     // sorting.
@@ -521,18 +539,38 @@ async fn gateway_sort_and_aggregations_contract() {
     .await;
     assert_eq!(hit_chunk_ids(&body), vec!["c2", "c3"], "{body}");
 
-    // Keyword search honours an explicit sort instead of the relevance order
-    // (c1 outranks c2 by BM25, the sort reverses that).
-    let (_, _, body) = call(
+    // A match query only serves its relevance candidate budget, so a sort
+    // that would need the complete match set is rejected instead of
+    // returning an incomplete order.
+    for sort in [
+        r#"[{"chunk_id":"desc"}]"#,
+        r#"["_id"]"#,
+        r#"[{"_score":"asc"}]"#,
+    ] {
+        let body = format!(
+            r#"{{"query":{{"bool":{{"must":[{{"match":{{"content":"apple"}}}}]}},"sort":{sort},"size":10}}"#
+        );
+        let (status, _, response) = call(&app, "POST", &search_path, Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {response}");
+    }
+
+    // The default relevance order (an explicit `_score` descending sort)
+    // still works.
+    let (status, _, body) = call(
         &app,
         "POST",
         &search_path,
         Some(
-            r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"sort":[{"chunk_id":"desc"}],"size":10}"#,
+            r#"{"query":{"bool":{"must":[{"match":{"content":"apple"}}]}},"sort":[{"_score":"desc"}],"size":10}"#,
         ),
     )
     .await;
-    assert_eq!(hit_chunk_ids(&body), vec!["c2", "c1"], "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(hit_chunk_ids(&body), vec!["c1", "c2"], "{body}");
+    assert_eq!(
+        body["hits"]["hits"][0]["sort"][0],
+        body["hits"]["hits"][0]["_score"]
+    );
 
     // Unsupported sort keys and orders are rejected.
     let (status, _, body) = call(
@@ -551,6 +589,16 @@ async fn gateway_sort_and_aggregations_contract() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Unsupported sort options and missing values are rejected instead of
+    // being silently ignored.
+    for body in [
+        r#"{"query":{"match_all":{}},"sort":[{"source_type":{"order":"asc","mode":"min"}}]}"#,
+        r#"{"query":{"match_all":{}},"sort":[{"source_type":{"missing":"-1"}}]}"#,
+    ] {
+        let (status, _, response) = call(&app, "POST", &search_path, Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {response}");
+    }
 
     // Aggregations run over the full verified match set, independent of the
     // page (size 0) and of the sort.
@@ -637,6 +685,39 @@ async fn gateway_sort_and_aggregations_contract() {
     assert_eq!(buckets[0]["doc_count"], 1);
     assert_eq!(buckets[1]["key"], "kb2");
     assert_eq!(buckets[1]["doc_count"], 1);
+
+    // Numeric metrics reject non-numeric fields; value_count and cardinality
+    // accept any field.
+    for metric in ["avg", "sum", "min", "max", "stats"] {
+        let body = format!(
+            r#"{{"query":{{"match_all":{{}}}},"size":0,"aggs":{{"m":{{"{metric}":{{"field":"knowledge_base_id"}}}}}}}}"#
+        );
+        let (status, _, response) = call(&app, "POST", &search_path, Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{metric}: {response}");
+    }
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"match_all":{}},"size":0,"aggs":{"kbs":{"value_count":{"field":"knowledge_base_id"}}}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["aggregations"]["kbs"]["value"], 4);
+
+    // Malformed terms options are rejected instead of silently defaulting.
+    for body in [
+        r#"{"query":{"match_all":{}},"size":0,"aggs":{"t":{"terms":{"field":"source_type","size":"2"}}}}"#,
+        r#"{"query":{"match_all":{}},"size":0,"aggs":{"t":{"terms":{"field":"source_type","size":-1}}}}"#,
+        r#"{"query":{"match_all":{}},"size":0,"aggs":{"t":{"terms":{"field":"source_type","size":0}}}}"#,
+        r#"{"query":{"match_all":{}},"size":0,"aggs":{"t":{"terms":{"field":"source_type","size":10001}}}}"#,
+        r#"{"query":{"match_all":{}},"size":0,"aggs":{"t":{"terms":{"field":"source_type","min_doc_count":-1}}}}"#,
+    ] {
+        let (status, _, response) = call(&app, "POST", &search_path, Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {response}");
+    }
 
     // Unknown aggregation types and fields are rejected.
     let (status, _, body) = call(
