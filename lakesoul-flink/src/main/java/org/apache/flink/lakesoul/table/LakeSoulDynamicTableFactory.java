@@ -120,8 +120,15 @@ public class LakeSoulDynamicTableFactory
             }
         }
 
+        // The lookup reader only needs the blob options; copying every catalog
+        // option would change the lookup-source codegen path.
         Configuration conf = new Configuration();
-        catalogTable.getOptions().forEach(conf::setString);
+        for (String key : new String[] {"blob_columns", "blob_materialize"}) {
+            String value = catalogTable.getOptions().get(key);
+            if (value != null) {
+                conf.setString(key, value);
+            }
+        }
         return new LakeSoulLookupTableSource(
                 new TableId(
                         io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
