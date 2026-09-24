@@ -76,6 +76,13 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 当精确校验导致结果少于请求的 `size`（陈旧候选占满每 shard 预算）时，检索会以 4 倍候选预算重试，避免返回不足。RRF 融合由客户端完成。
 
+`match` 查询还可以携带查询期分词器覆盖：
+
+```json
+{"query":{"bool":{"must":[{"match":{"content":{"query":"机器 学习","analyzer":"whitespace"}}}]}}}
+```
+
+文档仍按索引期分词器分析；覆盖只作用于**查询文本**，用于候选检索、精确校验与 BM25 打分。因此 `whitespace` 可以用空格分词去匹配 jieba 索引的中文语料。可选名称即索引分词器（`jieba`、`default`、`en_stem`、`whitespace`、`raw`）；未知分词器或与查询语法组合使用会返回 400；与索引期分词器相同的覆盖会被忽略。
 向量检索支持客户端发送的 `script_score` 形式：
 
 ```json

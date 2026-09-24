@@ -95,6 +95,20 @@ the per-shard budget), the search retries with a four-times larger candidate
 budget before returning fewer hits. Rank fusion (RRF) stays on the client
 side.
 
+A `match` query can also carry a query-time analyzer override:
+
+```json
+{"query":{"bool":{"must":[{"match":{"content":{"query":"机器 学习","analyzer":"whitespace"}}}]}}}
+```
+
+Documents stay analyzed by the index-time tokenizer; the override only
+analyzes the **query text** for candidate selection, exact verification and
+BM25 scoring, so `whitespace` can match a `jieba`-indexed Chinese corpus whose
+words are separated by spaces in the query.  Supported names are the index
+tokenizers (`jieba`, `default`, `en_stem`, `whitespace`, `raw`); an unknown
+analyzer, or an override combined with query syntax, is rejected with a 400.
+An override equal to the index-time analyzer is ignored.
+
 Vector search uses the `script_score` form the clients send:
 
 ```json

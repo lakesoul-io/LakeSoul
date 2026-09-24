@@ -261,3 +261,76 @@ async fn keyword_search_refills_when_candidates_are_deleted() {
 
     cleanup(&state, &table).await;
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_match_analyzer_override() {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let table = format!("es_gw_analyzer_{}", &suffix[..10]);
+    let index = format!("esgwana{}", &suffix[..10]);
+    // The default (index-time) analyzer is jieba.
+    let state = build_state(test_config(&index, &table, None, 1))
+        .await
+        .unwrap();
+    let app = build_router(Arc::clone(&state));
+    let search_path = format!("/{index}/_search");
+
+    let bulk = [
+        r#"{"create":{}}"#,
+        r#"{"content":"机器学习与向量检索","source_id":"s1","chunk_id":"c1","knowledge_base_id":"kb1","is_enabled":true}"#,
+        "",
+    ]
+    .join("\n");
+    let (status, _, body) =
+        call(&app, "POST", &format!("/{index}/_bulk"), Some(&bulk)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // `whitespace` analyzes the query into the jieba index tokens.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":{"query":"机器 学习","analyzer":"whitespace"}}}]}},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(hit_chunk_ids(&body), vec!["c1"], "{body}");
+
+    // An override equal to the index-time analyzer keeps the normal path.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":{"query":"机器学习","analyzer":"jieba"}}}]}},"size":10}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(hit_chunk_ids(&body), vec!["c1"], "{body}");
+
+    // Unknown analyzers and syntax queries with an override are rejected.
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":{"query":"machine","analyzer":"nope"}}}]}}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        &search_path,
+        Some(
+            r#"{"query":{"bool":{"must":[{"match":{"content":{"query":"\"machine learning\"","analyzer":"whitespace"}}}]}}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    cleanup(&state, &table).await;
+}

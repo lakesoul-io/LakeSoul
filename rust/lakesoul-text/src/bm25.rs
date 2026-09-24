@@ -158,12 +158,24 @@ pub fn bm25_scores(
     query: &str,
     stats: &CorpusStats,
 ) -> Result<HashMap<u64, f32>> {
-    let mut scores = HashMap::new();
-    if rows.is_empty() || stats.is_empty() || !is_plain_query(query) {
-        return Ok(scores);
+    if !is_plain_query(query) {
+        return Ok(HashMap::new());
     }
     let terms = query_terms(config, query)?;
-    if terms.is_empty() {
+    bm25_scores_with_terms(config, rows, &terms, stats)
+}
+
+/// Like [`bm25_scores`], with query terms already analyzed (a query-time
+/// analyzer override analyzes the query text differently from the rows,
+/// which keep the index-time analyzer).
+pub fn bm25_scores_with_terms(
+    config: &TextIndexConfig,
+    rows: &[(u64, Option<String>)],
+    terms: &[String],
+    stats: &CorpusStats,
+) -> Result<HashMap<u64, f32>> {
+    let mut scores = HashMap::new();
+    if rows.is_empty() || stats.is_empty() || terms.is_empty() {
         return Ok(scores);
     }
     let average_len = stats.average_doc_len();
@@ -183,7 +195,7 @@ pub fn bm25_scores(
         }
         let mut score = 0.0f64;
         let mut matched = false;
-        for term in &terms {
+        for term in terms {
             let Some(frequency) = frequencies.get(term.as_str()).copied() else {
                 continue;
             };

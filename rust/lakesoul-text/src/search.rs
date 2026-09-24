@@ -46,7 +46,15 @@ pub(crate) fn has_query_syntax(query: &str) -> bool {
 /// required for Chinese, where [`QueryParser`] turns a whitespace-free
 /// sequence of tokens into an exact phrase query and loses nearly all
 /// recall.
-fn analyzed_query(index: &Index, field: Field, query: &str) -> Box<dyn Query> {
+/// Build an OR query over the terms the field analyzer produces, with an
+/// optional query-time analyzer that overrides the field's index-time
+/// analyzer for the query text only.
+fn analyzed_query_with(
+    index: &Index,
+    field: Field,
+    query: &str,
+    analyzer: Option<&str>,
+) -> Box<dyn Query> {
     let schema = index.schema();
     let entry = schema.get_field_entry(field);
     let FieldType::Str(text_options) = entry.field_type() else {
@@ -55,7 +63,8 @@ fn analyzed_query(index: &Index, field: Field, query: &str) -> Box<dyn Query> {
     let Some(indexing) = text_options.get_indexing_options() else {
         return Box::new(EmptyQuery);
     };
-    let Some(mut analyzer) = index.tokenizers().get(indexing.tokenizer()) else {
+    let analyzer = analyzer.unwrap_or_else(|| indexing.tokenizer());
+    let Some(mut analyzer) = index.tokenizers().get(analyzer) else {
         return Box::new(EmptyQuery);
     };
     let mut stream = analyzer.token_stream(query);
@@ -88,14 +97,18 @@ fn analyzed_query(index: &Index, field: Field, query: &str) -> Box<dyn Query> {
 /// field prefixes) goes through Tantivy's parser; clauses that are malformed
 /// are dropped instead of failing the whole query.  Everything else is
 /// treated as natural-language text and analyzed into OR-combined terms.
-pub(crate) fn parse_user_query(
+/// Parse a search query, with an optional query-time analyzer override for
+/// plain query text.  Explicit-syntax queries keep the field analyzer.
+pub(crate) fn parse_user_query_with(
     index: &Index,
     text_field: Field,
     query: &str,
+    analyzer: Option<&str>,
 ) -> Box<dyn Query> {
     if !has_query_syntax(query) {
-        return analyzed_query(index, text_field, query);
+        return analyzed_query_with(index, text_field, query, analyzer);
     }
+    let _ = analyzer;
     let parser = QueryParser::for_index(index, vec![text_field]);
     let (parsed, errors) = parser.parse_query_lenient(query);
     if !errors.is_empty() {
@@ -110,12 +123,22 @@ pub(crate) fn parse_user_query(
 
 /// Search one split and return its top `top_k` hits by BM25 score.
 pub fn search_index(index: &Index, query: &str, top_k: usize) -> Result<Vec<TextHit>> {
+    search_index_with(index, query, top_k, None)
+}
+
+/// Like [`search_index`], with an optional query-time analyzer override.
+pub fn search_index_with(
+    index: &Index,
+    query: &str,
+    top_k: usize,
+    analyzer: Option<&str>,
+) -> Result<Vec<TextHit>> {
     if top_k == 0 {
         return Ok(Vec::new());
     }
     let text_schema = TextSchema::resolve(&index.schema())?;
     let reader = index.reader()?.searcher();
-    let parsed = parse_user_query(index, text_schema.text_field, query);
+    let parsed = parse_user_query_with(index, text_schema.text_field, query, analyzer);
     let top_docs =
         reader.search(&parsed, &TopDocs::with_limit(top_k).order_by_score())?;
 

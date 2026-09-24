@@ -41,7 +41,21 @@ pub fn matching_ids(
     rows: &[(u64, Option<String>)],
     query: &str,
 ) -> Result<HashSet<u64>> {
-    Ok(matching_scores(config, rows, query)?.into_keys().collect())
+    matching_ids_with(config, rows, query, None)
+}
+
+/// Like [`matching_ids`], with an optional query-time analyzer override: the
+/// rows stay analyzed by the index-time analyzer of `config`, while the
+/// query text is analyzed by `analyzer`.
+pub fn matching_ids_with(
+    config: &TextIndexConfig,
+    rows: &[(u64, Option<String>)],
+    query: &str,
+    analyzer: Option<&str>,
+) -> Result<HashSet<u64>> {
+    Ok(matching_scores_with(config, rows, query, analyzer)?
+        .into_keys()
+        .collect())
 }
 
 /// Like [`matching_ids`], but also returns the row's BM25 score inside the
@@ -54,6 +68,16 @@ pub fn matching_scores(
     config: &TextIndexConfig,
     rows: &[(u64, Option<String>)],
     query: &str,
+) -> Result<HashMap<u64, f32>> {
+    matching_scores_with(config, rows, query, None)
+}
+
+/// Like [`matching_scores`], with an optional query-time analyzer override.
+pub fn matching_scores_with(
+    config: &TextIndexConfig,
+    rows: &[(u64, Option<String>)],
+    query: &str,
+    analyzer: Option<&str>,
 ) -> Result<HashMap<u64, f32>> {
     let mut matched = HashMap::new();
     if rows.is_empty() {
@@ -77,7 +101,12 @@ pub fn matching_scores(
     writer.commit()?;
 
     let searcher = index.reader()?.searcher();
-    let parsed = crate::search::parse_user_query(&index, text_schema.text_field, query);
+    let parsed = crate::search::parse_user_query_with(
+        &index,
+        text_schema.text_field,
+        query,
+        analyzer,
+    );
     let top_docs =
         searcher.search(&parsed, &TopDocs::with_limit(rows.len()).order_by_score())?;
     for (score, address) in top_docs {
