@@ -112,6 +112,18 @@ jobs:
             touch /tmp/images-ready
           ) > /tmp/image-pull.log 2>&1 &
           echo "image prefetch started in background"
+      - name: Point the linker at the current JDK
+        # hdfs-sys records the libjvm.so search path of the JDK present when
+        # its build script ran; a restored rust-cache can therefore pin a JDK
+        # directory the runner no longer has.  Add the current one explicitly.
+        run: |
+          jvm_dir="$(dirname "$(find "$JAVA_HOME" -name libjvm.so -print -quit)")"
+          if [ -z "$jvm_dir" ] || [ ! -d "$jvm_dir" ]; then
+            echo "libjvm.so not found under JAVA_HOME=$JAVA_HOME" >&2
+            exit 1
+          fi
+          echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-L $jvm_dir" >> "$GITHUB_ENV"
+
       - name: Build Rust libraries
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
