@@ -132,7 +132,9 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
  "size":10}
 ```
 
-字段名简写与 `{"field":"asc"}` 表示升序，`_score` 默认降序。排序键相同时回退到主键，缺失排序字段的文档在升序/降序下都排在最后（`missing: _last`）。排序在精确校验之后执行，使用当前行值，且与 `_source` 投影无关。
+字段名简写与 `{"field":"asc"}` 表示升序，`_score` 默认降序。排序键相同时回退到主键；`missing: "_first"` / `"_last"`（默认）决定缺失该字段的文档排在前面还是后面，其余排序选项会被拒绝，避免响应与请求矛盾。排序使用当前行值、与 `_source` 投影无关，显式排序的每个命中都会带上解析后的 `sort` 值数组。
+
+filter-only 路径会扫描全部匹配行，排序精确。`match` 或 `script_score` 只检索其相关性/ANN 候选预算，因此任何需要完整匹配集的排序（`_id`、文档字段、`_score` 升序）都会返回 400，而不是静默丢掉真正的 top 结果；`_score` 降序（即默认顺序）仍然可用。
 
 `aggs`（或 `aggregations`）支持 `terms` 桶，以及 `avg`、`sum`、`min`、`max`、`value_count`、`cardinality` 与 `stats` 指标，`terms` 桶内还可以嵌套子聚合：
 
@@ -145,14 +147,14 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
    "chunks":{"value_count":{"field":"chunk_id"}}}}
 ```
 
-`terms` 桶默认取 10 个、按 `_count` 降序（`_key` 升序作为并列时的次序），响应包含 `doc_count_error_upper_bound: 0` 与 `sum_other_doc_count`；布尔键使用 Elasticsearch 的 `1`/`0` 加 `key_as_string` 形式。聚合在 merge-on-read 校验后的匹配集上、分页（`from`/`size`）之前执行，因此 `size: 0` 只返回聚合。关键词与向量路径的匹配集是 shard 检索返回的候选预算（与返回命中受同一约束），filter-only 路径则扫描全部匹配行。
+`terms` 桶默认取 10 个、按 `_count` 降序（`_key` 升序作为并列时的次序），响应包含 `doc_count_error_upper_bound: 0` 与 `sum_other_doc_count`；布尔键使用 Elasticsearch 的 `1`/`0` 加 `key_as_string` 形式。`terms.size` 必须是 1..=10000 的整数、`min_doc_count` 必须是非负整数，否则请求被拒绝；`avg`、`sum`、`min`、`max`、`stats` 要求数值字段，其他字段会被拒绝；`value_count`、`cardinality` 与 `terms` 对任意字段可用。聚合在 merge-on-read 校验后的匹配集上、分页（`from`/`size`）之前执行，因此 `size: 0` 只返回聚合。关键词与向量路径的匹配集是 shard 检索返回的候选预算（与返回命中受同一约束），filter-only 路径则扫描全部匹配行。
 
 ## 限制
 
 - delete/update 通过表扫描解析过滤条件；只有主键有快速路径。
 - 建索引时忽略 `number_of_shards`/`number_of_replicas`；分桶数与 `nprobe` 来自网关配置。
 - 未实现鉴权与 RBAC。
-- `sort` 与聚合仅支持上述子集：排序支持 `_score`、`_id` 与文档字段，聚合支持 `terms` 及列出的指标；未实现 `histogram`、`date_histogram`、`range`、`filters` 与 pipeline 聚合，`terms` 桶会跳过缺失该字段的文档。
+- `sort` 与聚合仅支持上述子集：filter-only 查询可按 `_score`、`_id` 与文档字段排序，`match`/`script_score` 查询只接受 `_score` 降序（即默认顺序）；聚合支持 `terms` 及列出的指标。未实现自定义 `missing` 值、`search_after`、`histogram`、`date_histogram`、`range`、`filters` 与 pipeline 聚合，`terms` 桶会跳过缺失该字段的文档。
 - 高亮支持 `fields`（内容列或 `*`）、`pre_tags`、`post_tags`、`fragment_size` 与 `number_of_fragments`；其余 ES 高亮选项（`encoder`、`fragmenter`、`require_field_match`、自定义每字段片段数）会被忽略。片段边界来自索引分词器，原文不做转义。
 - `_search` 支持的查询子集为 `match`、`terms`、`term`、`bool.filter/must/must_not` 以及带 `cosineSimilarity` 的 `script_score`。
 

@@ -20,8 +20,9 @@ use std::time::{Duration, Instant};
 
 use arrow_array::cast::AsArray;
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
-    Int64Array, LargeStringArray, RecordBatch, StringArray, StringViewArray, UInt64Array,
+    Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Float64Array,
+    Int8Array, Int16Array, Int32Array, Int64Array, LargeStringArray, RecordBatch,
+    StringArray, StringViewArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::DataType;
 use axum::Json;
@@ -320,11 +321,15 @@ enum SortKey {
 struct SortField {
     key: SortKey,
     order: SortOrder,
+    /// Documents missing the sort field sort last (`missing: _last`, the ES
+    /// default) or first (`missing: _first`).
+    missing_last: bool,
 }
 
 impl SortField {
     /// Parse the ES `sort` value: a field name, `{field: order}`,
-    /// `{field: {"order": order}}` or an array of those.
+    /// `{field: {"order": order, "missing": "_first"|"_last"}}` or an array
+    /// of those.
     fn parse_list(
         value: Option<&Value>,
         runtime: &IndexRuntime,
@@ -346,31 +351,66 @@ impl SortField {
 
     fn parse(value: &Value, runtime: &IndexRuntime) -> Result<Vec<Self>, EsError> {
         match value {
-            Value::String(field) => Ok(vec![Self::from_field(field, None, runtime)?]),
+            Value::String(field) => {
+                Ok(vec![Self::from_field(field, None, true, runtime)?])
+            }
             Value::Object(map) if !map.is_empty() => map
                 .iter()
                 .map(|(field, spec)| {
-                    let order = match spec {
-                        Value::String(_) => Some(SortOrder::parse(spec)?),
-                        Value::Object(options) => {
-                            options.get("order").map(SortOrder::parse).transpose()?
-                        }
-                        _ => {
-                            return Err(EsError::bad_request(format!(
-                                "invalid sort options for '{field}'"
-                            )));
-                        }
-                    };
-                    Self::from_field(field, order, runtime)
+                    let (order, missing_last) = Self::parse_options(field, spec)?;
+                    Self::from_field(field, order, missing_last, runtime)
                 })
                 .collect(),
             _ => Err(EsError::bad_request("invalid sort")),
         }
     }
 
+    /// Parse `{field: order}` / `{field: {"order": ..., "missing": ...}}`.
+    /// Options the gateway does not implement are rejected instead of being
+    /// silently ignored, so the response cannot contradict the request.
+    fn parse_options(
+        field: &str,
+        spec: &Value,
+    ) -> Result<(Option<SortOrder>, bool), EsError> {
+        match spec {
+            Value::String(_) => Ok((Some(SortOrder::parse(spec)?), true)),
+            Value::Object(options) => {
+                let mut order = None;
+                let mut missing_last = true;
+                for (option, value) in options {
+                    match option.as_str() {
+                        "order" => order = Some(SortOrder::parse(value)?),
+                        "missing" => {
+                            missing_last = match value.as_str() {
+                                Some("_last") => true,
+                                Some("_first") => false,
+                                _ => {
+                                    return Err(EsError::unsupported(format!(
+                                        "unsupported missing value for sort \
+                                         '{field}': use _first or _last"
+                                    )));
+                                }
+                            };
+                        }
+                        other => {
+                            return Err(EsError::unsupported(format!(
+                                "unsupported sort option '{other}' for '{field}'"
+                            )));
+                        }
+                    }
+                }
+                Ok((order, missing_last))
+            }
+            _ => Err(EsError::bad_request(format!(
+                "invalid sort options for '{field}'"
+            ))),
+        }
+    }
+
     fn from_field(
         field: &str,
         order: Option<SortOrder>,
+        missing_last: bool,
         runtime: &IndexRuntime,
     ) -> Result<Self, EsError> {
         // `_score` defaults to descending; every other key to ascending.
@@ -385,22 +425,45 @@ impl SortField {
         Ok(Self {
             key,
             order: order.unwrap_or(default_order),
+            missing_last,
         })
     }
+}
+
+/// Whether the sort needs the complete match set to be correct.  An index
+/// search only returns its top relevance/ANN candidate budget, so on the
+/// keyword and vector paths any key other than the default order
+/// (`_score` descending) could drop the true top hits and is rejected.
+fn sort_requires_complete_set(sort: &[SortField]) -> bool {
+    sort.iter().any(|field| {
+        !matches!((&field.key, field.order), (SortKey::Score, SortOrder::Desc))
+    })
 }
 
 /// Total order across the JSON values the schema produces.  Cross-type
 /// comparisons only order by type, which a single column cannot mix.
 fn compare_json(left: &Value, right: &Value) -> Ordering {
     match (left, right) {
-        (Value::Number(left), Value::Number(right)) => left
-            .as_f64()
-            .partial_cmp(&right.as_f64())
-            .unwrap_or(Ordering::Equal),
+        (Value::Number(left), Value::Number(right)) => compare_numbers(left, right),
         (Value::String(left), Value::String(right)) => left.cmp(right),
         (Value::Bool(left), Value::Bool(right)) => left.cmp(right),
         _ => json_type_rank(left).cmp(&json_type_rank(right)),
     }
+}
+
+/// Order JSON numbers without the precision loss of an `f64` round-trip:
+/// integer representations compare exactly, and only genuinely fractional or
+/// mixed-range pairs fall back to floats.
+fn compare_numbers(left: &serde_json::Number, right: &serde_json::Number) -> Ordering {
+    if let (Some(left), Some(right)) = (left.as_i64(), right.as_i64()) {
+        return left.cmp(&right);
+    }
+    if let (Some(left), Some(right)) = (left.as_u64(), right.as_u64()) {
+        return left.cmp(&right);
+    }
+    left.as_f64()
+        .partial_cmp(&right.as_f64())
+        .unwrap_or(Ordering::Equal)
 }
 
 fn json_type_rank(value: &Value) -> u8 {
@@ -434,8 +497,22 @@ fn compare_hits(left: &Hit, right: &Hit, sort: &[SortField]) -> Ordering {
                 let right_value = right.computed.get(name);
                 match (is_missing(left_value), is_missing(right_value)) {
                     (true, true) => Ordering::Equal,
-                    (true, false) => return Ordering::Greater,
-                    (false, true) => return Ordering::Less,
+                    // `missing: _last` (the default) keeps missing documents
+                    // last in either direction; `_first` puts them first.
+                    (true, false) => {
+                        return if field.missing_last {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        };
+                    }
+                    (false, true) => {
+                        return if field.missing_last {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        };
+                    }
                     (false, false) => compare_json(
                         left_value.expect("checked above"),
                         right_value.expect("checked above"),
@@ -452,6 +529,16 @@ fn compare_hits(left: &Hit, right: &Hit, sort: &[SortField]) -> Ordering {
         }
     }
     left.id.cmp(&right.id)
+}
+
+/// The value Elasticsearch reports for this hit and sort key.
+fn sort_value(hit: &Hit, field: &SortField) -> Value {
+    match &field.key {
+        SortKey::Score => json!(hit.score),
+        // `_id` is a string in responses, so the sort value is too.
+        SortKey::Id => Value::String(hit.id.to_string()),
+        SortKey::Field(name) => hit.computed.get(name).cloned().unwrap_or(Value::Null),
+    }
 }
 
 /// A named aggregation in the request order.
@@ -499,6 +586,14 @@ enum MetricKind {
     Stats,
 }
 
+impl MetricKind {
+    /// Metrics that read numbers out of the field and therefore need a
+    /// numeric column; `value_count` and `cardinality` accept any type.
+    fn is_numeric(self) -> bool {
+        !matches!(self, Self::ValueCount | Self::Cardinality)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MetricAgg {
     kind: MetricKind,
@@ -541,15 +636,26 @@ fn parse_aggregation(
             ))
         })?;
         let field = aggregation_field(name, terms.get("field"), runtime)?;
-        let size = terms
-            .get("size")
-            .and_then(Value::as_u64)
-            .unwrap_or(10)
-            .clamp(1, MAX_TERMS_SIZE) as usize;
-        let min_doc_count = terms
-            .get("min_doc_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(1);
+        let size = match terms.get("size") {
+            None => 10,
+            Some(value) => value
+                .as_u64()
+                .filter(|size| (1..=MAX_TERMS_SIZE).contains(size))
+                .ok_or_else(|| {
+                    EsError::bad_request(format!(
+                        "'terms.size' must be an integer between 1 and \
+                         {MAX_TERMS_SIZE}"
+                    ))
+                })? as usize,
+        };
+        let min_doc_count = match terms.get("min_doc_count") {
+            None => 1,
+            Some(value) => value.as_u64().ok_or_else(|| {
+                EsError::bad_request(
+                    "'terms.min_doc_count' must be a non-negative integer",
+                )
+            })?,
+        };
         let order = parse_terms_order(terms.get("order"))?;
         return Ok(Aggregation {
             name: name.to_string(),
@@ -578,6 +684,13 @@ fn parse_aggregation(
                 ))
             })?;
             let field = aggregation_field(name, spec.get("field"), runtime)?;
+            let data_type = field_type(runtime, &field);
+            if kind.is_numeric() && !is_numeric_type(&data_type) {
+                return Err(EsError::bad_request(format!(
+                    "'{key}' aggregation '{name}' requires a numeric field, \
+                     but '{field}' is {data_type}"
+                )));
+            }
             return Ok(Aggregation {
                 name: name.to_string(),
                 agg: Agg::Metric(MetricAgg { kind, field }),
@@ -1114,6 +1227,24 @@ fn field_type(runtime: &IndexRuntime, field: &str) -> DataType {
         .clone()
 }
 
+/// Numeric types that `value_at` can materialize; metric aggregations accept
+/// exactly these so the type check matches what evaluation can read.
+fn is_numeric_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64
+    )
+}
+
 fn and(combined: Option<Expr>, expr: Expr) -> Expr {
     match combined {
         Some(previous) => datafusion::logical_expr::Expr::BinaryExpr(
@@ -1163,6 +1294,18 @@ async fn search_impl(
     if parsed.vector_query.is_some() && parsed.match_query.is_some() {
         return Err(EsError::bad_request(
             "a query cannot combine match and script_score",
+        ));
+    }
+    // Keyword/vector queries only search their relevance candidate budget, so
+    // an explicit sort that needs the complete match set would silently drop
+    // the true top hits; reject it instead of returning a wrong order.
+    if (parsed.match_query.is_some() || parsed.vector_query.is_some())
+        && sort_requires_complete_set(&body.sort_fields)
+    {
+        return Err(EsError::unsupported(
+            "only '_score' descending can be sorted on a match/script_score \
+             query: its candidate budget cannot provide a complete sort set; \
+             use a filter-only query for field sorting",
         ));
     }
 
@@ -1225,16 +1368,27 @@ async fn search_impl(
         .skip(body.from)
         .take(body.size)
         .map(|hit| {
+            // Elasticsearch reports the resolved sort values per hit when an
+            // explicit sort was requested.
+            let sort_values = (!body.sort_fields.is_empty()).then(|| {
+                body.sort_fields
+                    .iter()
+                    .map(|field| sort_value(&hit, field))
+                    .collect::<Vec<Value>>()
+            });
             let mut object = json!({
                 "_index": index,
                 "_id": hit.id.to_string(),
                 "_score": hit.score,
                 "_source": hit.source
             });
-            if let Some(highlight) = hit.highlight
-                && let Some(object) = object.as_object_mut()
-            {
-                object.insert("highlight".to_string(), highlight);
+            if let Some(object) = object.as_object_mut() {
+                if let Some(sort_values) = sort_values {
+                    object.insert("sort".to_string(), Value::Array(sort_values));
+                }
+                if let Some(highlight) = hit.highlight {
+                    object.insert("highlight".to_string(), highlight);
+                }
             }
             object
         })
@@ -2265,6 +2419,22 @@ fn value_at(array: &ArrayRef, row: usize) -> Value {
                 Value::String(values.value(row).to_string())
             }
         }
+        DataType::Int8 => {
+            let values = array.as_any().downcast_ref::<Int8Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
+        DataType::Int16 => {
+            let values = array.as_any().downcast_ref::<Int16Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
         DataType::Int32 => {
             let values = array.as_any().downcast_ref::<Int32Array>().unwrap();
             if values.is_null(row) {
@@ -2281,8 +2451,48 @@ fn value_at(array: &ArrayRef, row: usize) -> Value {
                 json!(values.value(row))
             }
         }
+        DataType::UInt8 => {
+            let values = array.as_any().downcast_ref::<UInt8Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
+        DataType::UInt16 => {
+            let values = array.as_any().downcast_ref::<UInt16Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
+        DataType::UInt32 => {
+            let values = array.as_any().downcast_ref::<UInt32Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
         DataType::UInt64 => {
             let values = array.as_any().downcast_ref::<UInt64Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
+        DataType::Float32 => {
+            let values = array.as_any().downcast_ref::<Float32Array>().unwrap();
+            if values.is_null(row) {
+                Value::Null
+            } else {
+                json!(values.value(row))
+            }
+        }
+        DataType::Float64 => {
+            let values = array.as_any().downcast_ref::<Float64Array>().unwrap();
             if values.is_null(row) {
                 Value::Null
             } else {
@@ -2416,4 +2626,55 @@ fn char_window_end(text: &str, offset: usize, max_chars: usize) -> usize {
         end = offset + index + character.len_utf8();
     }
     end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compare_json_keeps_u64_precision() {
+        // 2^53 is where f64 can no longer represent every integer.
+        let low = json!(9_007_199_254_740_992_u64);
+        let mid = json!(9_007_199_254_740_993_u64);
+        let high = json!(9_007_199_254_740_994_u64);
+        assert_eq!(compare_json(&mid, &high), Ordering::Less);
+        assert_eq!(compare_json(&high, &mid), Ordering::Greater);
+        assert_eq!(compare_json(&low, &mid), Ordering::Less);
+        assert_eq!(compare_json(&mid, &mid), Ordering::Equal);
+        // Mixed sign and fractional pairs still order.
+        assert_eq!(compare_json(&json!(-1), &json!(u64::MAX)), Ordering::Less);
+        assert_eq!(compare_json(&json!(1.5), &json!(2)), Ordering::Less);
+    }
+
+    #[test]
+    fn sort_requires_complete_set_only_accepts_default_score_order() {
+        let score_desc = SortField {
+            key: SortKey::Score,
+            order: SortOrder::Desc,
+            missing_last: true,
+        };
+        assert!(!sort_requires_complete_set(&[]));
+        assert!(!sort_requires_complete_set(&[score_desc]));
+        let cases = [
+            SortField {
+                key: SortKey::Score,
+                order: SortOrder::Asc,
+                missing_last: true,
+            },
+            SortField {
+                key: SortKey::Id,
+                order: SortOrder::Asc,
+                missing_last: true,
+            },
+            SortField {
+                key: SortKey::Field("chunk_id".to_string()),
+                order: SortOrder::Desc,
+                missing_last: true,
+            },
+        ];
+        for field in cases {
+            assert!(sort_requires_complete_set(&[field]));
+        }
+    }
 }

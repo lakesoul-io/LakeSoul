@@ -191,9 +191,18 @@ writers need more parallelism.  Other knobs:
 
 A bare field name or `{"field":"asc"}` is shorthand for ascending order, while
 `_score` defaults to descending.  Ties fall back to the primary key, and
-documents missing the sort field are returned last in either direction
-(`missing: _last`).  Sorting happens after the exact verification pass, so it
-uses the current row values and is independent of the `_source` projection.
+`missing: "_first"` / `"_last"` (the default) controls where documents without
+the field go; other sort options are rejected so the response cannot
+contradict the request.  Sorting uses the current row values independently of
+the `_source` projection, and every hit of an explicitly sorted response
+carries its resolved `sort` values.
+
+Sorting is exact on the filter-only path, which scans every matching row.  A
+`match` or `script_score` query only searches its relevance/ANN candidate
+budget, so any sort that needs the complete match set (`_id`, a document
+field, `_score` ascending) is rejected with a 400 instead of silently
+dropping the true top hits; `_score` descending — the default order — is
+accepted.
 
 The `aggs` (or `aggregations`) object supports `terms` buckets plus the `avg`,
 `sum`, `min`, `max`, `value_count`, `cardinality` and `stats` metrics,
@@ -211,11 +220,15 @@ including nested aggregations under a `terms` bucket:
 `terms` buckets default to ten buckets ordered by `_count` descending (with
 `_key` ascending as the tie-break), carry `doc_count_error_upper_bound: 0` and
 `sum_other_doc_count`, and use Elasticsearch's `1`/`0` plus `key_as_string`
-form for boolean keys.  Aggregations run over the verified merge-on-read match
-set before `from`/`size` cuts the page, so `size: 0` returns only
-aggregations.  On the keyword and vector paths that set is the candidate
-budget the shard search returned — the same bound that applies to the returned
-hits — while the filter-only path scans every matching row.
+form for boolean keys.  `terms.size` must be an integer between 1 and 10000
+and `min_doc_count` a non-negative integer, otherwise the request is rejected.
+The `avg`, `sum`, `min`, `max` and `stats` metrics require a numeric field and
+reject others; `value_count`, `cardinality` and `terms` accept any field.
+Aggregations run over the verified merge-on-read match set before
+`from`/`size` cuts the page, so `size: 0` returns only aggregations.  On the
+keyword and vector paths that set is the candidate budget the shard search
+returned — the same bound that applies to the returned hits — while the
+filter-only path scans every matching row.
 
 ## Limitations
 
@@ -225,10 +238,12 @@ hits — while the filter-only path scans every matching row.
   bucket count and `nprobe` come from the gateway configuration.
 - Authentication and RBAC are not implemented.
 - `sort` and aggregations cover the subset above: sorting allows `_score`,
-  `_id` and document fields, aggregations allow `terms` and the listed
-  metrics.  `histogram`, `date_histogram`, `range`, `filters` and pipeline
-  aggregations are not implemented, and terms buckets skip documents missing
-  the field.
+  `_id` and document fields on filter-only queries, while a `match` or
+  `script_score` query accepts `_score` descending (the default order) only.
+  Aggregations allow `terms` and the listed metrics.  Custom `missing`
+  values, `search_after`, `histogram`, `date_histogram`, `range`, `filters`
+  and pipeline aggregations are not implemented, and terms buckets skip
+  documents missing the field.
 - Highlighting supports `fields` (the content column or `*`), `pre_tags`,
   `post_tags`, `fragment_size` and `number_of_fragments`; the other ES
   highlight options (`encoder`, `fragmenter`, `require_field_match`, custom
