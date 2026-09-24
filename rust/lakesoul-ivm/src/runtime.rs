@@ -18,7 +18,7 @@ use arrow::record_batch::RecordBatch;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::ScalarValue;
-use datafusion::prelude::{DataFrame, JoinType, SessionContext, col, lit};
+use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use rootcause::report;
@@ -244,6 +244,12 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The equi-join key, present in both sources.
         join_keys: Vec<String>,
+        /// Extra comparison conditions between a left and a right column.
+        #[serde(default)]
+        conditions: Vec<SemiAntiCondition>,
+        /// The left columns materialized in the view; empty means all of them.
+        #[serde(default)]
+        output_columns: Vec<String>,
         /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
         anti: bool,
     },
@@ -905,6 +911,36 @@ impl WindowView {
     }
 }
 
+/// A comparison operator of a [`SemiAntiCondition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareOp {
+    /// `=`
+    Eq,
+    /// `<>`
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+}
+
+/// One condition of a [`SemiAntiView`]:
+/// `left.{left_column} {op} right.{right_column}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemiAntiCondition {
+    /// The left column.
+    pub left_column: String,
+    /// The right column.
+    pub right_column: String,
+    /// The comparison operator.
+    pub op: CompareOp,
+}
+
 /// A `SEMI`/`ANTI` join view.
 ///
 /// The materialized view holds the left rows that have (SEMI) or do not have
@@ -925,6 +961,11 @@ pub struct SemiAntiView {
     pub mv: IvmTable,
     /// The equi-join key, present in both sources.
     pub join_keys: Vec<String>,
+    /// Extra comparison conditions between a left and a right column.
+    pub conditions: Vec<SemiAntiCondition>,
+    /// The left columns materialized in the view; empty means all of them.
+    /// The left primary keys are always contained.
+    pub output_columns: Vec<String>,
     /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
     pub anti: bool,
     /// The refresh interval hint persisted with the view.
@@ -941,15 +982,37 @@ impl SemiAntiView {
         join_keys: Vec<String>,
         anti: bool,
     ) -> Self {
+        Self::new_with_conditions(view_id, left, right, mv, join_keys, Vec::new(), anti)
+    }
+
+    /// A `SEMI`/`ANTI` view with additional comparison conditions.
+    pub fn new_with_conditions(
+        view_id: impl Into<String>,
+        left: IvmTable,
+        right: IvmTable,
+        mv: IvmTable,
+        join_keys: Vec<String>,
+        conditions: Vec<SemiAntiCondition>,
+        anti: bool,
+    ) -> Self {
         Self {
             view_id: view_id.into(),
             left,
             right,
             mv,
             join_keys,
+            conditions,
+            output_columns: Vec::new(),
             anti,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Materialize only `output_columns` of the left source (the left primary
+    /// keys are added automatically).
+    pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
+        self.output_columns = output_columns;
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -959,6 +1022,8 @@ impl SemiAntiView {
             right_table_id: self.right.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             join_keys: self.join_keys.clone(),
+            conditions: self.conditions.clone(),
+            output_columns: self.output_columns.clone(),
             anti: self.anti,
         }
     }
@@ -1102,7 +1167,33 @@ pub fn window_aggregate_mv_schema_for(
 /// The schema of a [`SemiAntiView`] materialized view: the left columns plus
 /// the row kind and the epoch.
 pub fn semi_anti_mv_schema(left_schema: &Schema) -> SchemaRef {
-    let mut fields = left_schema.fields().iter().cloned().collect::<Vec<_>>();
+    semi_anti_mv_schema_for(left_schema, &[]).expect("all left columns exist")
+}
+
+/// The schema of a [`SemiAntiView`] materialized view projected to
+/// `output_columns` (empty means all left columns): the projected left columns
+/// plus the row kind and the epoch.
+pub fn semi_anti_mv_schema_for(
+    left_schema: &Schema,
+    output_columns: &[String],
+) -> Result<SchemaRef> {
+    let mut fields = if output_columns.is_empty() {
+        left_schema.fields().iter().cloned().collect::<Vec<_>>()
+    } else {
+        output_columns
+            .iter()
+            .map(|column| {
+                left_schema
+                    .field_with_name(column)
+                    .map(|field| Arc::new(field.clone()))
+                    .map_err(|_| {
+                        rootcause::report!(
+                            "output column {column} is not in the left schema"
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
         DataType::Utf8,
@@ -1113,7 +1204,7 @@ pub fn semi_anti_mv_schema(left_schema: &Schema) -> SchemaRef {
         DataType::Int64,
         false,
     )));
-    Arc::new(Schema::new(fields))
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 /// The schema of a value-count state table: `(group, value) -> count`.
@@ -2025,35 +2116,71 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
 
-        let delta_left = view.left.read_files(left_window.added_files).await?;
-        let delta_right = view.right.read_files(right_window.added_files).await?;
+        // Project both sides to the columns the view actually needs.
+        let left_projection =
+            project_schema(&view.left.schema, &semi_anti_left_columns(view))?;
+        let right_projection =
+            project_schema(&view.right.schema, &semi_anti_right_columns(view))?;
+
+        let delta_left = view
+            .left
+            .read_files_projected(left_window.added_files, Some(&left_projection))
+            .await?;
+        let delta_right = view
+            .right
+            .read_files_projected(right_window.added_files, Some(&right_projection))
+            .await?;
         let left_before = view
             .left
-            .read_as_of(&self.client, left_window.before_timestamp)
+            .read_as_of_projected(
+                &self.client,
+                left_window.before_timestamp,
+                Some(&left_projection),
+            )
             .await?;
-        let left_now = view.left.read_current(&self.client).await?;
-        let right_now = view.right.read_current(&self.client).await?;
+        let right_changed = !delta_right.is_empty();
+        let right_before = if !right_changed {
+            Vec::new()
+        } else {
+            view.right
+                .read_as_of_projected(
+                    &self.client,
+                    right_window.before_timestamp,
+                    Some(&right_projection),
+                )
+                .await?
+        };
+        let left_now = view
+            .left
+            .read_current_projected(&self.client, Some(&left_projection))
+            .await?;
+        let right_now = view
+            .right
+            .read_current_projected(&self.client, Some(&right_projection))
+            .await?;
         let mv_batches = view.mv.read_current(&self.client).await?;
 
         let context = SessionContext::new();
-        let delta_left = dataframe(&context, delta_left, &view.left.schema)?;
-        let delta_right = dataframe(&context, delta_right, &view.right.schema)?;
-        let left_before = dataframe(&context, left_before, &view.left.schema)?;
+        let delta_left = dataframe(&context, delta_left, &left_projection)?;
+        let delta_right = dataframe(&context, delta_right, &right_projection)?;
+        let left_before = filter_deletes(
+            dataframe(&context, left_before, &left_projection)?,
+            change_column(&view.left),
+        )?;
+        let right_before = filter_deletes(
+            dataframe(&context, right_before, &right_projection)?,
+            change_column(&view.right),
+        )?;
         let left_now = filter_deletes(
-            dataframe(&context, left_now, &view.left.schema)?,
+            dataframe(&context, left_now, &left_projection)?,
             change_column(&view.left),
         )?;
         let right_now = filter_deletes(
-            dataframe(&context, right_now, &view.right.schema)?,
+            dataframe(&context, right_now, &right_projection)?,
             change_column(&view.right),
         )?;
         let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
 
-        let join_keys = view
-            .join_keys
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
         let left_key_names = view
             .left
             .primary_keys
@@ -2066,39 +2193,61 @@ impl IvmRuntime {
             .iter()
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
-
-        let affected_from_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
-        let affected_from_right = left_before
-            .clone()
-            .join(
-                delta_right,
-                JoinType::LeftSemi,
-                &join_keys,
-                &join_keys,
-                None,
-            )?
-            .select(left_key_exprs.clone())?
-            .distinct()?;
-        let affected = affected_from_left.union(affected_from_right)?.distinct()?;
-
-        let matched_now = left_now
-            .clone()
-            .join(right_now, JoinType::LeftSemi, &join_keys, &join_keys, None)?
-            .select(left_key_exprs.clone())?
-            .distinct()?;
-
-        let output_columns = view
-            .left
-            .schema
-            .fields()
+        let right_key_names = view
+            .right
+            .primary_keys
             .iter()
-            .map(|field| col(field.name().as_str()))
+            .map(String::as_str)
             .collect::<Vec<_>>();
+
+        // Left rows in the delta are always affected.
+        let affected_from_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
+        // A right change affects the left rows matching the previous or the
+        // current version of the changed right rows: the predicate can flip on
+        // an update and a changed equality key can drop an old match.
+        let affected = if !right_changed {
+            affected_from_left
+        } else {
+            let changed_pks = delta_right
+                .clone()
+                .select(
+                    view.right
+                        .primary_keys
+                        .iter()
+                        .map(|column| col(column.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
+            let changed_before = right_before.join(
+                changed_pks,
+                JoinType::LeftSemi,
+                &right_key_names,
+                &right_key_names,
+                None,
+            )?;
+            let changed = changed_before.union(delta_right)?.distinct()?;
+            let affected_from_right =
+                semi_anti_join(left_before, changed, view, JoinType::LeftSemi)?
+                    .select(left_key_exprs.clone())?
+                    .distinct()?;
+            affected_from_left.union(affected_from_right)?.distinct()?
+        };
+
         let join_type = if view.anti {
             JoinType::LeftAnti
         } else {
             JoinType::LeftSemi
         };
+        // Rows that match right now; the ANTI insert takes the difference.
+        let matched_now =
+            semi_anti_join(left_now.clone(), right_now, view, JoinType::LeftSemi)?
+                .select(left_key_exprs.clone())?
+                .distinct()?;
+
+        let output_columns = semi_anti_output_columns(view)
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>();
         let insert_base = left_now
             .join(
                 affected.clone(),
@@ -2544,25 +2693,16 @@ impl IvmRuntime {
             dataframe(&context, right_baseline.batches, &view.right.schema)?,
             change_column(&view.right),
         )?;
-        let join_keys = view
-            .join_keys
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
         let join_type = if view.anti {
             JoinType::LeftAnti
         } else {
             JoinType::LeftSemi
         };
-        let output_columns = view
-            .left
-            .schema
-            .fields()
+        let output_columns = semi_anti_output_columns(view)
             .iter()
-            .map(|field| col(field.name().as_str()))
+            .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
-        let rows = left
-            .join(right, join_type, &join_keys, &join_keys, None)?
+        let rows = semi_anti_join(left, right, view, join_type)?
             .select(output_columns)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
@@ -3889,9 +4029,9 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             ));
         }
     }
-    if view.join_keys.is_empty() {
+    if view.join_keys.is_empty() && view.conditions.is_empty() {
         return Err(report!(
-            "semi/anti view {} needs at least one join key",
+            "semi/anti view {} needs at least one join key or condition",
             view.view_id
         ));
     }
@@ -3909,5 +4049,192 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             )
         })?;
     }
+    for condition in &view.conditions {
+        view.left
+            .schema
+            .field_with_name(&condition.left_column)
+            .map_err(|_| {
+                report!(
+                    "semi/anti view {}: condition column {} is not in the left source",
+                    view.view_id,
+                    condition.left_column
+                )
+            })?;
+        view.right
+            .schema
+            .field_with_name(&condition.right_column)
+            .map_err(|_| {
+                report!(
+                    "semi/anti view {}: condition column {} is not in the right source",
+                    view.view_id,
+                    condition.right_column
+                )
+            })?;
+    }
+    for column in &view.output_columns {
+        view.left.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "semi/anti view {}: output column {column} is not in the left source",
+                view.view_id
+            )
+        })?;
+    }
+    if !view.output_columns.is_empty() {
+        for key in &view.left.primary_keys {
+            if !view.output_columns.contains(key) {
+                return Err(report!(
+                    "semi/anti view {}: output columns must contain the left key {key}",
+                    view.view_id
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+/// The left columns materialized by a semi/anti view.
+fn semi_anti_output_columns(view: &SemiAntiView) -> Vec<String> {
+    if view.output_columns.is_empty() {
+        view.left
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect()
+    } else {
+        view.output_columns.clone()
+    }
+}
+
+/// The left columns a semi/anti refresh must read: the output, the left
+/// primary keys, the condition columns and the change column.
+fn semi_anti_left_columns(view: &SemiAntiView) -> Vec<String> {
+    let mut columns = semi_anti_output_columns(view);
+    for column in view.left.primary_keys.iter().chain(
+        view.conditions
+            .iter()
+            .map(|condition| &condition.left_column),
+    ) {
+        if !columns.contains(column) {
+            columns.push(column.clone());
+        }
+    }
+    if let Some(change) = change_column(&view.left)
+        && !columns.iter().any(|column| column == change)
+    {
+        columns.push(change.to_string());
+    }
+    columns
+}
+
+/// The right columns a semi/anti refresh must read: the equality keys, the
+/// condition columns, the right primary keys and the change column.
+fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
+    let mut columns = Vec::new();
+    for column in view
+        .join_keys
+        .iter()
+        .chain(
+            view.conditions
+                .iter()
+                .map(|condition| &condition.right_column),
+        )
+        .chain(view.right.primary_keys.iter())
+    {
+        if !columns.contains(column) {
+            columns.push(column.clone());
+        }
+    }
+    if let Some(change) = change_column(&view.right)
+        && !columns.iter().any(|column| column == change)
+    {
+        columns.push(change.to_string());
+    }
+    columns
+}
+
+/// An Arrow schema with `columns` in the given order.
+fn project_schema(schema: &Schema, columns: &[String]) -> Result<SchemaRef> {
+    let fields = columns
+        .iter()
+        .map(|column| {
+            schema
+                .field_with_name(column)
+                .map(|field| Arc::new(field.clone()))
+                .map_err(|_| report!("column {column} is not part of the schema"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The alias of a right column in a semi/anti join, so conditions can name
+/// both sides unambiguously.
+fn semi_anti_right_alias(column: &str) -> String {
+    format!("__ivm_right_{column}")
+}
+
+/// The comparison expression of one semi/anti condition.
+fn semi_anti_compare(left: Expr, right: Expr, op: CompareOp) -> Expr {
+    match op {
+        CompareOp::Eq => left.eq(right),
+        CompareOp::Ne => left.not_eq(right),
+        CompareOp::Lt => left.lt(right),
+        CompareOp::Le => left.lt_eq(right),
+        CompareOp::Gt => left.gt(right),
+        CompareOp::Ge => left.gt_eq(right),
+    }
+}
+
+/// Join `left` against `right` with a semi/anti view's predicate.
+///
+/// `right` is projected to the referenced columns with `__ivm_right_*` aliases
+/// so the conditions can reference both sides; equality conditions become join
+/// keys (so DataFusion can hash them) and the rest a join filter.
+fn semi_anti_join(
+    left: DataFrame,
+    right: DataFrame,
+    view: &SemiAntiView,
+    join_type: JoinType,
+) -> Result<DataFrame> {
+    let right_columns = semi_anti_right_columns(view);
+    let right = right.select(
+        right_columns
+            .iter()
+            .map(|column| col(column.as_str()).alias(semi_anti_right_alias(column)))
+            .collect::<Vec<_>>(),
+    )?;
+    let mut on_pairs: Vec<(String, String)> = view
+        .join_keys
+        .iter()
+        .map(|key| (key.clone(), semi_anti_right_alias(key)))
+        .collect();
+    let mut filter: Option<Expr> = None;
+    for condition in &view.conditions {
+        let alias = semi_anti_right_alias(&condition.right_column);
+        if condition.op == CompareOp::Eq {
+            let pair = (condition.left_column.clone(), alias);
+            if !on_pairs.contains(&pair) {
+                on_pairs.push(pair);
+            }
+        } else {
+            let expr = semi_anti_compare(
+                col(condition.left_column.as_str()),
+                col(alias.as_str()),
+                condition.op,
+            );
+            filter = Some(match filter {
+                Some(filter) => filter.and(expr),
+                None => expr,
+            });
+        }
+    }
+    let left_on = on_pairs
+        .iter()
+        .map(|(left, _)| left.as_str())
+        .collect::<Vec<_>>();
+    let right_on = on_pairs
+        .iter()
+        .map(|(_, right)| right.as_str())
+        .collect::<Vec<_>>();
+    Ok(left.join(right, join_type, &left_on, &right_on, filter)?)
 }

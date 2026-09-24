@@ -27,14 +27,14 @@
 | COUNT / SUM(DISTINCT) | 同上；value 任意可比较/可哈希类型 | 值计数状态表 |
 | ROW_NUMBER / RANK / DENSE_RANK / SUM / COUNT OVER | keyed（需主键）+ 未分区；partition 列任意可排序类型、可多列；ranking 需 order 列，聚合可整体（无 order）或按 SQL 默认 frame running | 分区级重算，刷新按受影响分区裁剪源读取 |
 | INNER JOIN | 两侧 append-only 或两侧 keyed + 未分区；join key 可多列、任意相等比较类型，payload 任意 | append-only 源用 inclusion-exclusion；keyed 源输出按左右行身份键控，受影响 pair delete+insert |
-| SEMI / ANTI | 左 keyed，右 append-only/keyed；join key 可多列、任意相等比较类型 | 受影响左行 delete+insert |
+| SEMI / ANTI | 左 keyed，右 append-only/keyed；等值 join key 可多列，另可加任意 `= <> < <= > >=` 左右列条件（含纯非等值）；输出左列可投影 | 受影响左行 delete+insert；源读取按需投影 |
 | 投影/Filter/Union ALL、join upsert、非等值 join、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK、聚合窗口函数 | — | **未支持** |
 
 ### 路线图
 
 - **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~、
-  ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~
-  （已完成）→ SEMI/ANTI 扩展（非等值、投影下推）
+  ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~、
+  ~~SEMI/ANTI 扩展（非等值、投影下推）~~（已完成）
   → 投影/Filter/Union ALL 视图与 TOP-K
 - **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
   `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
@@ -621,6 +621,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/window_aggregate.rs`：SUM/COUNT 的 running（含并列）与整分区、
   NULL 值/全 NULL 分区、更新/跨分区迁移/删除、rebuild、与 SQL 对照；以及
   `read_current_filtered` 的等值/IN/false 过滤读数验证。
+
+**SEMI/ANTI 扩展实施记录（已完成）**
+
+- 新增 `CompareOp`/`SemiAntiCondition`（`left_column op right_column`，`= <> < <= > >=`）
+  与 `SemiAntiView::new_with_conditions`；`join_keys` 仍是等值键，条件里 `=` 合并
+  进 join key（可哈希），其余作为 join filter。纯非等值（无 join key）也可用。
+- 匹配由 `semi_anti_join` 统一：右表投影为 `__ivm_right_*` 别名，避免两侧同名列
+  歧义；`= ` 条件进 `on`，其他进 filter。
+- 受影响集合修正：右表变化时，除 delta 自身外，还按窗口起始 as-of 读出变化主键的
+  **旧版本**，与 delta 版本合并后再 semi-match 左旧行。这样右表 join key 原地更新
+  （旧键匹配消失）与比较条件翻转（如 `v < w` 中 w 变小）都能正确回收。
+- 投影下推：`SemiAntiView::output_columns`（默认全部左列，必须含左主键）+
+  `semi_anti_mv_schema_for`；刷新时左/右两侧都读成所需列（reader 级投影，
+  `IvmTable::{read_current_projected, read_files_projected, read_as_of_projected}`），
+  右侧只读 join key/条件列/主键/CDC 列，左侧只读输出列 + 条件列 + 主键 + CDC。
+- 测试 `tests/semi_anti_ext.rs`：非等值（含条件翻转、右表等值键更新、删除）、纯
+  非等值 ANTI、投影输出与 `read_current_projected`、校验负例；均与 SQL
+  `EXISTS/NOT EXISTS` 对照并覆盖 rebuild。
 
 ## 9. 风险与开放问题
 
