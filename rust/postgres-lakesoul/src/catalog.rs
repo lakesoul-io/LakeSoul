@@ -299,12 +299,7 @@ mod tests {
         names.iter().map(|name| name.to_string()).collect()
     }
 
-    /// Constructs the real catalog backed by live metadata; skipped without
-    /// a PostgreSQL instance (`LAKESOUL_PG_URL` / `lakesoul_home`).
-    fn meta_available() -> bool {
-        std::env::var("LAKESOUL_PG_URL").is_ok() || std::env::var("lakesoul_home").is_ok()
-    }
-
+    /// Constructs the real catalog backed by live metadata.
     fn real_catalog(namespace: &str) -> Arc<PgLakeSoulCatalog> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -327,9 +322,6 @@ mod tests {
 
     #[test]
     fn catalog_lists_from_the_given_snapshot() {
-        if !meta_available() {
-            return;
-        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -419,9 +411,6 @@ mod tests {
 
     #[test]
     fn pg_lakesoul_catalog_pins_public_schema_and_rejects_others() {
-        if !meta_available() {
-            return;
-        }
         let catalog = real_catalog("sales");
 
         assert_eq!(catalog.schema_names(), vec![PUBLIC_SCHEMA.to_string()]);
@@ -438,9 +427,6 @@ mod tests {
 
     #[test]
     fn pg_catalog_registers_as_virtual_schema() {
-        if !meta_available() {
-            return;
-        }
         let catalog = real_catalog("sales");
         catalog
             .register_schema("pg_catalog", fake_schema())

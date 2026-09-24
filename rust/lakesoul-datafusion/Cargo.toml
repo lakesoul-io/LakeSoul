@@ -77,6 +77,8 @@ downcast-rs = "2"
 ctor = "0.4"
 test-log = { workspace = true }
 rand = { workspace = true }
+# Enables `Worker::tasks_running`, which the cancellation test observes.
+datafusion-distributed = { workspace = true, features = ["integration"] }
 
 [[bench]]
 name = "vector_rebuild_bench"
