@@ -37,6 +37,7 @@ import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.sql.vectorized.NativeIOUtils
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -53,8 +54,16 @@ case class LakeSoulScanBuilder(
   lazy val hadoopConf: Configuration = {
     val caseSensitiveMap = options.asCaseSensitiveMap.asScala.toMap
       .filter(!_._1.startsWith(LakeSoulUtils.MERGE_OP_COL))
+    // Forward the table's blob configuration to the native reader; explicit
+    // scan options (caseSensitiveMap) win over the table properties.
+    val blobOptions = tableInfo.configuration.filter { case (key, _) =>
+      key == NativeIOUtils.BLOB_COLUMNS_KEY ||
+      key == NativeIOUtils.BLOB_MATERIALIZE_KEY
+    }
     // Hadoop Configurations are case sensitive.
-    sparkSession.sessionState.newHadoopConfWithOptions(caseSensitiveMap)
+    sparkSession.sessionState.newHadoopConfWithOptions(
+      blobOptions ++ caseSensitiveMap
+    )
   }
 
   lazy val pushedParquetFilters: Array[Filter] = {

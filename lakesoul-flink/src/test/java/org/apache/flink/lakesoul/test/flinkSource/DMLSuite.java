@@ -664,4 +664,52 @@ public class DMLSuite extends AbstractTestBase {
         TestUtils.checkEqualInAnyOrder(
                 results1, new String[] {"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
     }
+
+    @Test
+    public void testBlobColumns() throws Exception {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String tableName = "test_blob_columns";
+        String path = getTempDirUri("/lakeSource/test_blob_columns");
+        tEnv.executeSql("DROP TABLE if exists " + tableName);
+        tEnv.executeSql(
+                "create table "
+                        + tableName
+                        + " ("
+                        + "    id INT,"
+                        + "    payload BYTES"
+                        + ")"
+                        + " WITH ("
+                        + "    'connector'='lakesoul',"
+                        + "    'path'='"
+                        + path
+                        + "',"
+                        + "    'blob_columns'='{\"payload\":{\"mode\":\"external\"}}'"
+                        + " )");
+        tEnv.executeSql(
+                        "INSERT INTO "
+                                + tableName
+                                + " VALUES (1, CAST(REPEAT('a', 20000) AS BYTES))")
+                .await();
+
+        TableImpl flinkTable = (TableImpl) tEnv.sqlQuery("select payload from " + tableName);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        org.junit.Assert.assertEquals(1, results.size());
+        byte[] value = (byte[]) results.get(0).getField(0);
+        org.junit.Assert.assertEquals(20000, value.length);
+        for (byte b : value) {
+            org.junit.Assert.assertEquals('a', b);
+        }
+
+        org.apache.hadoop.fs.Path tablePath = new org.apache.hadoop.fs.Path(path);
+        org.apache.hadoop.fs.FileSystem fs =
+                tablePath.getFileSystem(new org.apache.hadoop.conf.Configuration());
+        org.apache.hadoop.fs.FileStatus[] packs =
+                fs.globStatus(new org.apache.hadoop.fs.Path(tablePath, "_blob/payload/*.blob"));
+        org.junit.Assert.assertNotNull(packs);
+        org.junit.Assert.assertTrue("packs must be externalized", packs.length > 0);
+        org.apache.hadoop.fs.FileStatus[] sidecars =
+                fs.globStatus(new org.apache.hadoop.fs.Path(tablePath, "*.blobref"));
+        org.junit.Assert.assertNotNull(sidecars);
+        org.junit.Assert.assertTrue("sidecars must be written", sidecars.length > 0);
+    }
 }

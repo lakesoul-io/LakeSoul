@@ -216,6 +216,9 @@ pack；vacuum 会递归扫描表下所有 `_blob/` 目录，因此分区表的 p
 tagged 引用、不重写 blob 字节，并为输出重建 sidecar（输入 sidecar 的保守并集）；文件移动时
 sidecar 随数据文件一起搬移，保证引用始终有效。clean job 删除数据文件时会一并删除 sidecar。
 
+Spark SQL 与 Flink SQL 也走 native reader/writer：向 blob 表写入会自动 tag 并外置，扫描默认物化 payload；传入 reader 选项
+`blob_materialize = 'false'`（例如 `spark.read.option("blob_materialize", "false")`）可保留 tagged 引用并延迟读取 pack。旧 Spark Parquet writer 路径不支持 blob 表。
+
 ### `blob_columns`
 
 ```python

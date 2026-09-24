@@ -142,7 +142,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         }
         this.nativeIOOptions =
                 NativeIOUtils.getNativeIOOptions(
-                        conf, new Path(this.fileInfo.get(0).getFilePath()));
+                        conf, new Path(this.fileInfo.get(0).getFilePath()), false);
 
         this.maxRowGroupRows =
                 conf.getInt(

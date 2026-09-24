@@ -269,14 +269,29 @@ impl FileSinkWriter {
     /// Strip the scheme (and, for object stores, the bucket) from a URL so the
     /// result is an object-store path. Local paths keep their leading slash.
     fn url_to_object_path(url: &str) -> String {
-        match url.split_once("://") {
-            Some(("file", rest)) => rest.to_string(),
-            Some((_, rest)) => rest
+        if let Some((scheme, rest)) = url.split_once("://") {
+            return if scheme == "file" {
+                rest.to_string()
+            } else {
+                rest.split_once('/')
+                    .map(|(_, path)| path.to_string())
+                    .unwrap_or_default()
+            };
+        }
+        // Hadoop-style single-slash URLs such as ``file:/tmp/x`` or
+        // ``s3a:/bucket/key``.
+        if let Some((scheme, rest)) = url.split_once(":/") {
+            if scheme == "file" {
+                // ``split_once(":/")`` consumes the separating slash.
+                return format!("/{rest}");
+            }
+            let rest = rest.trim_start_matches('/');
+            return rest
                 .split_once('/')
                 .map(|(_, path)| path.to_string())
-                .unwrap_or_default(),
-            None => url.to_string(),
+                .unwrap_or_default();
         }
+        url.to_string()
     }
 
     /// Serialize the `.blobref` sidecar payload.
@@ -519,5 +534,25 @@ mod tests {
         assert_eq!(value["version"], 1);
         assert_eq!(value["packs"][0], packs[0]);
         assert_eq!(value["packs"][1], packs[1]);
+    }
+
+    #[test]
+    fn url_to_object_path_handles_hadoop_urls() {
+        assert_eq!(
+            FileSinkWriter::url_to_object_path("file:/tmp/a/b.blob"),
+            "/tmp/a/b.blob"
+        );
+        assert_eq!(
+            FileSinkWriter::url_to_object_path("file:///tmp/a/b.blob"),
+            "/tmp/a/b.blob"
+        );
+        assert_eq!(
+            FileSinkWriter::url_to_object_path("s3://bucket/a/b.blob"),
+            "a/b.blob"
+        );
+        assert_eq!(
+            FileSinkWriter::url_to_object_path("s3a:/bucket/a/b.blob"),
+            "a/b.blob"
+        );
     }
 }

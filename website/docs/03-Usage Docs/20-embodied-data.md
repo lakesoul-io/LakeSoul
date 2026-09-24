@@ -228,6 +228,12 @@ rewriting blob bytes and regenerates the sidecars (a conservative union of the i
 moves copy the sidecar together with the data file, so references stay valid. The cleanup job
 deletes a sidecar when it deletes its data file.
 
+Spark SQL and Flink SQL also use the native reader/writer: inserts into a blob table tag and
+externalize values automatically, and scans materialize the payloads by default. Pass the reader
+option `blob_materialize = 'false'` (for example
+`spark.read.option("blob_materialize", "false")`) to keep the tagged references and read packs
+lazily. The legacy Spark Parquet writer path is not supported for blob tables.
+
 ### `blob_columns`
 
 ```python

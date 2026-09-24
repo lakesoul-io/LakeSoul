@@ -131,7 +131,7 @@ public class LakeSoulDynamicTableFactory
                 partitionColumns,
                 catalogTable.getResolvedSchema().toPhysicalRowDataType(),
                 catalogTable.getPartitionKeys(),
-                new Configuration(),
+                conf,
                 options.toMap());
     }
 }
