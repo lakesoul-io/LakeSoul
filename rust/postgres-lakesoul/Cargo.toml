@@ -28,5 +28,8 @@ futures.workspace = true
 async-trait.workspace = true
 
 
+[dev-dependencies]
+rustls-pki-types = "1"
+
 [lints]
 workspace = true

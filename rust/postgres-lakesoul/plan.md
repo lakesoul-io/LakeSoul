@@ -2,28 +2,6 @@
 
 建议按 **“单机 PG 兼容 → 分布式只读 → LakeSoul merge-on-read 分布式正确性 → 生产化 → 写入”** 的顺序推进。
 
-不要一开始同时解决完整 PostgreSQL 语义、分布式执行和分布式写入。第一版目标应明确为：
-
-> 通过 PostgreSQL wire protocol 暴露 LakeSoul 表，支持 psql/JDBC/BI 工具进行分布式分析查询；DDL/DML 暂不开放。
-
-最关键的技术约束：
-
-1. 当前 LakeSoul 使用 **DataFusion 54 / Arrow 58**：`../Cargo.toml:46-75`。
-2. `datafusion-postgres 0.18.x` 正好是 **DataFusion 54 / Arrow 58**。
-3. `datafusion-distributed v3.0.0` 也是 **DataFusion 54 / Arrow 58**。
-4. `datafusion-distributed v4.0.0` 已升级到 **DataFusion 55 / Arrow 59**，目前不能直接接入。
-5. LakeSoul 的 `MergeParquetExec` 是自定义物理节点，不能仅打开 distributed planner 就认为 merge-on-read 可以正确分布式执行。
-
-因此第一版依赖应固定为：
-
-```toml
-datafusion-postgres = "=0.18.0"
-datafusion-distributed = "=3.0.0"
-```
-
-不要跟随两个仓库的 `main/master` 分支。
-
----
 
 # 一、目标架构
 
@@ -652,4 +630,3 @@ LakeSoul 已有 DataFusion INSERT/sink，但不能因此直接宣称具备 Postg
 - [Worker 定制](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/docs/source/user-guide/03-worker.md)
 - [Passthrough headers](https://github.com/datafusion-contrib/datafusion-distributed/blob/v3.0.0/docs/source/advanced/01-passthrough-headers.md)
 - [Distributed metrics](https://github.com/datafusion-contrib/datafusion-distributed/blob/v3.0.0/docs/source/user-guide/05-metrics.md)
-

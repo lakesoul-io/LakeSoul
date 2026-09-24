@@ -18,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
+mod cancel;
 mod catalog;
 mod misc;
 mod pg_compat;

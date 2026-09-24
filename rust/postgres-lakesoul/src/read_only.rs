@@ -44,7 +44,8 @@ use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    Expr, ObjectName, Set, Statement, TransactionIsolationLevel, TransactionMode,
+    CloseCursor, Expr, ObjectName, Set, Statement, TransactionIsolationLevel,
+    TransactionMode,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
@@ -55,6 +56,8 @@ use datafusion_postgres::pgwire;
 use pgwire::api::ClientInfo;
 use pgwire::api::results::Response;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
+
+use crate::server::ConnectionSession;
 
 /// SQLSTATE for rejected statements (read-only error mapping).
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
@@ -67,12 +70,73 @@ const FEATURE_NOT_SUPPORTED: &str = "0A000";
 /// hook answers them.
 pub(crate) fn statement_hooks() -> Vec<Arc<dyn QueryHook>> {
     vec![
-        Arc::new(ReadCommittedOnlyGuard), // new
+        Arc::new(ReadCommittedOnlyGuard),   // new
+        Arc::new(UncancellableCursorGuard), // new
+        Arc::new(PortalCloseCleanup),       // new
         Arc::new(CursorStatementHook),
         Arc::new(SetShowHook),
         Arc::new(TransactionStatementHook),
         Arc::new(ReadOnlyStatementGuard), // new
     ]
+}
+
+/// Removes the cancellation state of portals closed through SQL.
+///
+/// SQL `CLOSE name` and `CLOSE ALL` are answered by the upstream cursor hook,
+/// which only removes the portal from pgwire's store: a portal that the
+/// extended protocol created (and whose statement the cancellation map keeps
+/// for cancel requests) would then stay registered forever. This hook runs
+/// before it and forgets what the closed portal kept; it never claims the
+/// statement, so the upstream close keeps answering it.
+struct PortalCloseCleanup;
+
+fn forget_closed_portal(statement: &Statement, client: &dyn HookClient) {
+    let Statement::Close { cursor } = statement else {
+        return;
+    };
+    let Some(session) = client.session_extensions().get::<ConnectionSession>() else {
+        return;
+    };
+    match cursor {
+        CloseCursor::Specific { name } => session.cancellation.forget_portal(&name.value),
+        CloseCursor::All => session.cancellation.forget_all_portals(),
+    }
+}
+
+#[async_trait]
+impl QueryHook for PortalCloseCleanup {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        forget_closed_portal(statement, client);
+        None
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        _statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        // A portal's statement is registered when it executes, so parse time
+        // has nothing to forget.
+        None
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &ParamValues,
+        _session_context: &SessionContext,
+        client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        forget_closed_portal(statement, client);
+        None
+    }
 }
 
 /// Rejects transaction isolation levels the server cannot honor.
@@ -227,6 +291,72 @@ fn libpq_option(name: &str, options: &str) -> Option<String> {
     None
 }
 
+/// Rejects SQL cursors (`DECLARE`/`FETCH`).
+///
+/// The upstream cursor hook stores the statement's row stream in the portal and
+/// polls it from `do_query`, so no cancellation token or deadline reaches the
+/// execution, and cancelling a `FETCH` would only drop the fetch while the
+/// portal kept the distributed stream alive — the workers would keep reading.
+/// Until cursors can be made cancellation-aware, they are refused like any
+/// other statement the server cannot honour.
+struct UncancellableCursorGuard;
+
+fn cursor_error(verb: &str) -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        FEATURE_NOT_SUPPORTED.to_string(),
+        format!(
+            "{verb} is not supported: a cursor's rows are produced outside the \
+             statement's cancellation and statement_timeout, so it cannot be \
+             interrupted"
+        ),
+    )))
+}
+
+#[async_trait]
+impl QueryHook for UncancellableCursorGuard {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        match statement {
+            Statement::Declare { .. } => Some(Err(cursor_error("DECLARE"))),
+            Statement::Fetch { .. } => Some(Err(cursor_error("FETCH"))),
+            _ => None,
+        }
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        match statement {
+            Statement::Declare { .. } => Some(Err(cursor_error("DECLARE"))),
+            Statement::Fetch { .. } => Some(Err(cursor_error("FETCH"))),
+            _ => None,
+        }
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        match statement {
+            Statement::Declare { .. } => Some(Err(cursor_error("DECLARE"))),
+            Statement::Fetch { .. } => Some(Err(cursor_error("FETCH"))),
+            _ => None,
+        }
+    }
+}
+
 #[async_trait]
 impl QueryHook for ReadCommittedOnlyGuard {
     async fn handle_simple_query(
@@ -264,9 +394,9 @@ struct ReadOnlyStatementGuard;
 
 impl ReadOnlyStatementGuard {
     /// Statements the server accepts: queries, `DESCRIBE <table>`,
-    /// session-local `SET`/`SHOW`, transaction control, and cursor
-    /// statements (which the upstream hooks handle as reads). `EXPLAIN` is
-    /// allowed only for a query, so `EXPLAIN INSERT` is rejected like the
+    /// session-local `SET`/`SHOW` and transaction control. Cursors are refused
+    /// by [`UncancellableCursorGuard`]; `EXPLAIN` is allowed only for a query,
+    /// so `EXPLAIN INSERT` is rejected like the
     /// statement it wraps.
     fn allow(statement: &Statement) -> bool {
         match statement {
@@ -291,8 +421,6 @@ impl ReadOnlyStatementGuard {
             | Statement::StartTransaction { .. }
             | Statement::Commit { .. }
             | Statement::Rollback { .. }
-            | Statement::Declare { .. }
-            | Statement::Fetch { .. }
             | Statement::Close { .. } => true,
             Statement::Explain {
                 statement: inner, ..
@@ -491,10 +619,37 @@ mod tests {
         "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
         "COMMIT",
         "ROLLBACK",
-        "DECLARE c CURSOR FOR SELECT 1",
-        "FETCH 1 FROM c",
+        // `CLOSE` stays allowed: with `DECLARE` refused there is no cursor to
+        // close, and the statement itself is harmless.
         "CLOSE c",
     ];
+
+    /// Cursors are refused until their execution can be cancelled: the upstream
+    /// cursor hook stores the row stream in the portal, so no token or deadline
+    /// reaches it.
+    #[tokio::test]
+    async fn cursors_are_rejected_as_uncancellable() {
+        let service = service();
+        for sql in ["DECLARE c CURSOR FOR SELECT 1", "FETCH 1 FROM c"] {
+            let error = parse(&service, sql).await.expect_err(sql);
+            assert_eq!(sql_state(&error), Some("0A000"), "sql: {sql}");
+            let message = match error {
+                PgWireError::UserError(info) => info.message,
+                other => panic!("unexpected error: {other:?}"),
+            };
+            assert!(message.contains("cursor"), "{message}");
+
+            let mut client = MockClient::new();
+            let error = <DfSessionService as SimpleQueryHandler>::do_query(
+                &service,
+                &mut client,
+                sql,
+            )
+            .await
+            .expect_err(sql);
+            assert_eq!(sql_state(&error), Some("0A000"), "sql: {sql}");
+        }
+    }
 
     #[tokio::test]
     async fn extended_parse_rejects_writes_and_ddl() {
