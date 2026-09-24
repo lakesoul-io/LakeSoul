@@ -88,17 +88,22 @@ One MCAP file becomes one episode partition; tabular values are nearest-anchored
 ### Distributed import with Daft
 
 ```python
+import json
+
 from lakesoul.embodied.daft import import_lerobot_gop
 
 import_lerobot_gop(
     "/data/lerobot/pusht",
     table="pusht_daft",
     path="s3://bucket/lakesoul/pusht_daft",
+    properties={"blob_columns": json.dumps({"data": {"mode": "external"}})},
 )
 ```
 
 `lakesoul.embodied.daft` also provides `import_lerobot` (frames layout), `import_mcap`,
-`read_samples` and `read_gop_frames`.
+`read_samples` and `read_gop_frames`. All importers — single-process and Daft, LeRobot and
+MCAP — accept `properties` such as `blob_columns`; entries are filtered to the columns each
+created table has.
 
 ## Reading training samples
 
@@ -326,8 +331,6 @@ for the blob section of the cleanup guide.
 
 - Manifests (a `<table>__manifests` sibling table and an `EmbodiedDataset.from_manifest` API for
   durable sample addresses across snapshots) are designed but **not implemented** yet;
-- Daft importers do not accept `properties`; blob externalization at import time is currently
-  available through the single-process `import_lerobot(properties=...)`;
 - The legacy Spark Parquet writer path does not support blob tables (native writer required); it
   is planned for removal rather than guarded;
 - `read_samples` / `read_gop_frames` live in `lakesoul.embodied.daft` and require the `daft`

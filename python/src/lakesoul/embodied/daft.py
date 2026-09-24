@@ -24,7 +24,12 @@ import pyarrow as pa
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan
 
 from .dataset import BOUNDARY_CLAMP, BOUNDARY_SKIP, Window
-from .importer import ImportSummary, prepare_table, sibling_path
+from .importer import (
+    ImportSummary,
+    filter_properties,
+    prepare_table,
+    sibling_path,
+)
 from .lerobot import (
     NON_FEATURE_COLUMNS,
     _build_schema,
@@ -61,6 +66,7 @@ def import_lerobot(
     image_format: str = "JPEG",
     physical_format: str = "vortex",
     sort_rows: bool = True,
+    properties: Mapping[str, str] | None = None,
     overwrite: bool = False,
 ) -> ImportSummary:
     """Import a local LeRobot v3.0 dataset through Daft.
@@ -77,6 +83,8 @@ def import_lerobot(
         include_video: set ``False`` to skip video decoding entirely.
         image_format: ``JPEG`` or ``PNG`` for per-frame image bytes.
         physical_format: LakeSoul physical format for the written files.
+        properties: extra table properties, e.g. ``blob_columns`` to externalize
+            binary columns; entries are filtered per created table.
         sort_rows: sort each episode's rows by frame before writing so window
             row offsets match ``frame_index``; disable to skip the shuffle.
         overwrite: drop and recreate the table when it already exists.
@@ -144,6 +152,7 @@ def import_lerobot(
         schema=schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, schema),
     )
     result = table_handle.write_daft(dataframe, format=physical_format)
     rows = result.row_count
@@ -171,6 +180,7 @@ def import_lerobot_gop(
     episodes: Sequence[int] | None = None,
     cameras: Sequence[str] | None = None,
     physical_format: str = "vortex",
+    properties: Mapping[str, str] | None = None,
     overwrite: bool = False,
 ) -> ImportSummary:
     """Import a local LeRobot v3.0 dataset as GOP video tables through Daft.
@@ -180,6 +190,9 @@ def import_lerobot_gop(
     Daft class UDF that demuxes each video shard once per worker and groups the
     episode's frames into self-contained Annex-B GOPs, mirroring the
     single-machine ``video_layout="gop"`` layout.
+
+    ``properties`` accepts extra table properties such as ``blob_columns`` to
+    externalize binary columns; entries are filtered per created table.
     """
     import daft
     from daft import col, functions, lit
@@ -222,6 +235,7 @@ def import_lerobot_gop(
         schema=tick_schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, tick_schema),
     )
     ticks_result = ticks_handle.write_daft(
         _ticks_frame(lerobot, root, data_features, episodes),
@@ -296,6 +310,7 @@ def import_lerobot_gop(
         schema=GOPS_SCHEMA,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, GOPS_SCHEMA),
     )
     frames_handle = catalog.create_table(
         frames_table,
@@ -303,6 +318,7 @@ def import_lerobot_gop(
         schema=FRAMES_SCHEMA,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, FRAMES_SCHEMA),
     )
     gops_handle.write_daft(gops_frame, format=physical_format)
     frames_result = frames_handle.write_daft(frames_frame, format=physical_format)
@@ -687,6 +703,7 @@ def import_mcap(
     catalog: LakeSoulCatalog | None = None,
     namespace: str | None = None,
     physical_format: str = "vortex",
+    properties: Mapping[str, str] | None = None,
     overwrite: bool = False,
 ) -> ImportSummary:
     """Import MCAP files (frames layout) through Daft, one file per task.
@@ -697,6 +714,9 @@ def import_mcap(
     rows are written together with a single Daft sink commit. With
     ``video_layout="gop"`` the camera access units are grouped into
     ``<table>_gops`` / ``<table>_frames`` like the single-machine importer.
+
+    ``properties`` accepts extra table properties such as ``blob_columns`` to
+    externalize binary columns; entries are filtered per created table.
     """
     import daft
     from daft import col, func, functions
@@ -733,6 +753,7 @@ def import_mcap(
             catalog=catalog,
             namespace=namespace or catalog.namespace,
             physical_format=physical_format,
+            properties=properties,
             overwrite=overwrite,
         )
 
@@ -774,6 +795,7 @@ def import_mcap(
         schema=schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, schema),
     )
     result = table_handle.write_daft(dataframe, format=physical_format)
     return ImportSummary(
@@ -804,6 +826,7 @@ def _import_mcap_gop(
     catalog: LakeSoulCatalog,
     namespace: str,
     physical_format: str,
+    properties: Mapping[str, str] | None,
     overwrite: bool,
 ) -> ImportSummary:
     from .mcap import build_frame_episode, build_gop_rows
@@ -893,6 +916,7 @@ def _import_mcap_gop(
         schema=tick_schema,
         namespace=namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, tick_schema),
     )
     ticks_result = tick_handle.write_daft(tick_frame, format=physical_format)
     gops_handle = catalog.create_table(
@@ -901,6 +925,7 @@ def _import_mcap_gop(
         schema=GOPS_SCHEMA,
         namespace=namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, GOPS_SCHEMA),
     )
     gops_handle.write_daft(gops_frame, format=physical_format)
     frames_handle = catalog.create_table(
@@ -909,6 +934,7 @@ def _import_mcap_gop(
         schema=FRAMES_SCHEMA,
         namespace=namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, FRAMES_SCHEMA),
     )
     frames_result = frames_handle.write_daft(frames_frame, format=physical_format)
     return ImportSummary(

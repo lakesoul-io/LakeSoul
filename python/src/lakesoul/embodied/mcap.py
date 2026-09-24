@@ -50,7 +50,13 @@ from google.protobuf.message import DecodeError
 
 from lakesoul.catalog import LakeSoulCatalog
 
-from .importer import ImportSummary, prepare_table, resolve_names, sibling_path
+from .importer import (
+    ImportSummary,
+    filter_properties,
+    prepare_table,
+    resolve_names,
+    sibling_path,
+)
 from .video import (
     FRAMES_SCHEMA,
     GOPS_SCHEMA,
@@ -88,6 +94,7 @@ def import_mcap(
     tolerance: float = 0.02,
     video_layout: str = "frames",
     physical_format: str = "vortex",
+    properties: Mapping[str, str] | None = None,
     overwrite: bool = False,
     _build_only: bool = False,
 ) -> ImportSummary | pa.Table:
@@ -113,6 +120,8 @@ def import_mcap(
             ``<table>_gops`` / ``<table>_frames`` tables that
             ``lakesoul.embodied.GopVideo`` can decode.
         physical_format: LakeSoul physical format for the written files.
+        properties: extra table properties, e.g. ``blob_columns`` to externalize
+            binary columns; entries are filtered per created table.
         overwrite: drop and recreate the table when it already exists.
 
     ``_build_only`` is used by the distributed importer: it returns the
@@ -250,6 +259,7 @@ def import_mcap(
         schema=schema,
         namespace=resolved_namespace,
         partition_by=(EPISODE_COLUMN,),
+        properties=filter_properties(properties, schema),
     )
     table_handle.write_arrow(episode_table, format=physical_format)
     tables = (table_handle.name,)
@@ -260,6 +270,7 @@ def import_mcap(
             schema=GOPS_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
+            properties=filter_properties(properties, GOPS_SCHEMA),
         )
         frames_handle = catalog.create_table(
             frames_table,
@@ -267,6 +278,7 @@ def import_mcap(
             schema=FRAMES_SCHEMA,
             namespace=resolved_namespace,
             partition_by=(EPISODE_COLUMN,),
+            properties=filter_properties(properties, FRAMES_SCHEMA),
         )
         video_frames = _write_gop_tables(
             gops_handle,

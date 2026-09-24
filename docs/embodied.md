@@ -119,7 +119,7 @@ from lakesoul.vacuum import vacuum_blobs, VacuumResult
 ```
 
 - 依赖 extras：`embodied`（`av`/`pillow`/`mcap`）、`daft`、`torch`、`ray`；完整安装 `lakesoul[all]`。
-- 导入器签名（单机）：`import_lerobot(source, *, table, path, catalog=None, namespace=None, episodes=None, cameras=None, include_video=True, video_layout="frames"|"gop", image_format="JPEG", image_quality=90, physical_format="vortex", properties=None, overwrite=False)`；`properties` 是单机导入外置 blob 的唯一入口（Daft 导入器不接受）。
+- 导入器签名（单机）：`import_lerobot(source, *, table, path, catalog=None, namespace=None, episodes=None, cameras=None, include_video=True, video_layout="frames"|"gop", image_format="JPEG", image_quality=90, physical_format="vortex", properties=None, overwrite=False)`；`properties`（如 `blob_columns`）在单机与 Daft 导入器（LeRobot/MCAP）均支持，按各建表列过滤。
 - `import_mcap(source, *, table, path, ..., columns=None, cameras=None, row_topic=None, tolerance=0.02, video_layout=...)`；一个 MCAP 文件 = 一个 episode 分区。
 - 采样：`EmbodiedDataset(scan, window={...}, stride=1, episodes=None, boundary="skip", seed=0, time_column=None, streams=(), video=GopVideo(...), video_window=None)`、`iter_epoch(epoch=None, rank=None, world_size=None)`。
 
@@ -133,12 +133,11 @@ from lakesoul.vacuum import vacuum_blobs, VacuumResult
 ## 7. 限制与注意事项
 
 1. **Phase D manifest 未实现**：没有 `<table>__manifests` sibling 表与 `from_manifest`，跨快照的样本行地址持久化暂不可用；
-2. **Daft 导入器不接受 `properties`**：分布式导入需要外置 blob 时，目前只能用单机 `import_lerobot(properties=...)`，或导入后用其他写路径补；
-3. **旧 Spark Parquet writer 路径不支持 blob**：blob 表依赖 native writer；该遗留路径计划移除，不做拦截；
-4. `read_samples`/`read_gop_frames` 位于 `lakesoul.embodied.daft` 子模块，不在 `lakesoul.embodied` 顶层导出；
-5. 单机 LeRobot 导入仅支持 v3.0；MCAP 支持 JSON 与 protobuf（FileDescriptorSet）；
-6. `align()` 物化 API 为 P1，读时副流对齐推荐直接用 `EmbodiedDataset(streams=...)`；
-7. blob GC 依赖 sidecar 完整性：live 文件缺 `.blobref` 时 vacuum 整体跳过（安全优先）。
+2. **旧 Spark Parquet writer 路径不支持 blob**：blob 表依赖 native writer；该遗留路径计划移除，不做拦截；
+3. `read_samples`/`read_gop_frames` 位于 `lakesoul.embodied.daft` 子模块，不在 `lakesoul.embodied` 顶层导出；
+4. 单机 LeRobot 导入仅支持 v3.0；MCAP 支持 JSON 与 protobuf（FileDescriptorSet）；
+5. `align()` 物化 API 为 P1，读时副流对齐推荐直接用 `EmbodiedDataset(streams=...)`；
+6. blob GC 依赖 sidecar 完整性：live 文件缺 `.blobref` 时 vacuum 整体跳过（安全优先）。
 
 ## 8. 相关文档
 
