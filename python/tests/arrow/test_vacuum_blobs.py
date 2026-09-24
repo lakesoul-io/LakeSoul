@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import types
+from pathlib import Path
 
 import pyarrow.fs as pafs
 import pytest
@@ -36,6 +37,37 @@ def test_aborts_when_live_set_changes(monkeypatch):
     monkeypatch.setattr(vacuum, "_collect", lambda c, t, f: next(calls))
     result = vacuum_blobs(_catalog(), _table())
     assert result.aborted
+
+
+def test_collect_aborts_on_corrupt_sidecar(monkeypatch):
+    monkeypatch.setattr(vacuum, "_live_data_files", lambda c, t: {"file"})
+
+    def boom(path, filesystem):
+        raise ValueError("invalid blobref")
+
+    monkeypatch.setattr(vacuum, "read_blobref", boom)
+    files, used, missing = vacuum._collect(object(), object(), None)
+    assert files == ("file",)
+    assert used == set()
+    assert missing
+
+
+def test_list_packs_scans_partition_dirs(tmp_path) -> None:
+    table_path = tmp_path / "table"
+    (table_path / "_blob" / "frame").mkdir(parents=True)
+    (table_path / "_blob" / "frame" / "root.blob").write_bytes(b"r")
+    (table_path / "_blob" / "frame" / "root.blobref").write_bytes(b"{}")
+    partition_blob_dir = table_path / "episode_id=ep000000" / "_blob" / "data"
+    partition_blob_dir.mkdir(parents=True)
+    (partition_blob_dir / "part.blob").write_bytes(b"p")
+    (table_path / "episode_id=ep000000" / "part-0.parquet").write_bytes(b"d")
+
+    table = types.SimpleNamespace(path=table_path.as_uri())
+    _filesystem, _base, infos = vacuum._list_packs(table, {})
+    assert sorted(Path(info.path).name for info in infos) == [
+        "part.blob",
+        "root.blob",
+    ]
 
 
 def _info(path: str, mtime_ns: int, size: int = 10):

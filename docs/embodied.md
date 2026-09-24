@@ -22,7 +22,7 @@
                  │ <table>          逐 tick 行（状态/动作/…） │
                  │ <table>_gops     GOP 包 + 帧索引           │
                  │ <table>_frames   帧 → GOP 位置映射         │
-                 │ <table>/_blob/<column>/<uuid>.blob  外置 pack
+                 │ <data_file_dir>/_blob/<column>/<uuid>.blob 外置 pack
                  │ <data_file>.blobref                 pack 引用
                  └──────────────┬─────────────────────────────┘
                                 │
@@ -81,7 +81,7 @@
 
 ### 4.1 Blob R1（引用模型）
 
-- pack 不可变共享：`<table_path>/_blob/<column>/<uuid>.blob`；
+- pack 不可变共享：数据文件所在目录下的 `_blob/<column>/<uuid>.blob`（分区表每个分区目录一份 `_blob` 树，vacuum 递归扫描表下全部 `_blob`）；
 - 每个数据文件写 `<data_file>.blobref`（JSON：`{"version":1,"packs":[...]}`），路径约定归属数据文件，不改 `file_ops`；
 - tagged 行内表示：inline `0x00 || raw`；external `0x01 || crc32(u32 LE) || length(u32 LE) || offset(u64 LE) || pack_path`；
 - 表属性：`blob_columns = {"<col>": {"mode": "auto|inline|external", "inline_threshold": 16384, "pack_target_bytes": 268435456}}`（默认 auto / 16 KiB / 256 MiB；`pack_target_bytes` 目前仅记录）；
@@ -93,6 +93,7 @@
 - **数据文件/元数据**：旧版本文件、`data_commit_info`、discard 文件由 compaction + Flink Clean Job（TTL、pin-aware）负责；快照/标签 pin 住的数据不会被清理。
 - **pack GC**：`vacuum_blobs(catalog, table, older_than=1d, dry_run=True)` 收集"最新分区版本 + 所有 snapshot/tag"引用的数据文件 → 读 sidecar 得 used pack 集合 → 删除无引用且 mtime 早于 grace 的 pack；两次收集、live 集合变化或缺 sidecar 则整体中止。宽限期默认 1 天。
 - **自动 vacuum**：blob 表在提交后按分区版本计数触发，`blob_vacuum_interval`（默认 20，`0` 关闭）为倍数时执行一次真实 vacuum；失败只告警不影响写。**pack GC 不依赖 Flink Clean Job**。
+- **安全宽限**：写入方先上传 pack、后 commit 数据文件，因此非 dry-run 且 grace < 1 小时会被拒绝（除非显式 `allow_short_grace=True`）；默认宽限期 1 天。
 - 手动 `purge(older_than=..., dry_run=True)` 仍可用于删除未 pin 的旧版本与文件。
 
 ### 4.3 时间语义与可复现

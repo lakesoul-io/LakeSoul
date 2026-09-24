@@ -4,6 +4,7 @@
 import types
 
 import pyarrow.fs as pafs
+import pytest
 
 from lakesoul import vacuum
 from lakesoul.vacuum import (
@@ -26,12 +27,16 @@ def _table(*, interval=None, blob=True):
     )
 
 
-def _catalog(versions):
+def _catalog(versions, descs=None):
+    descs = descs or [f"p{i}" for i in range(len(versions))]
     calls = []
 
     def get_all_partition_info(table_id):
         calls.append(table_id)
-        return [types.SimpleNamespace(version=version) for version in versions]
+        return [
+            types.SimpleNamespace(version=version, partition_desc=desc)
+            for version, desc in zip(versions, descs)
+        ]
 
     catalog = types.SimpleNamespace(
         _client=types.SimpleNamespace(get_all_partition_info=get_all_partition_info),
@@ -106,6 +111,34 @@ def test_uses_max_version_across_partitions(monkeypatch):
     catalog, _ = _catalog([3, 20, 7])
     assert maybe_vacuum_after_commit(catalog, _table()) is not None
     assert calls
+
+
+def test_uses_only_committed_partitions(monkeypatch):
+    calls = _capture(monkeypatch)
+    catalog, _ = _catalog([40, 3], ["p0", "p1"])
+    # p0 rests on a multiple, but the commit touched p1: no trigger.
+    assert maybe_vacuum_after_commit(catalog, _table(), {"p1"}) is None
+    assert calls == []
+    # a commit on p0 itself triggers.
+    assert maybe_vacuum_after_commit(catalog, _table(), {"p0"}) is not None
+    assert calls
+
+
+def test_unknown_partition_falls_back_to_all(monkeypatch):
+    calls = _capture(monkeypatch)
+    catalog, _ = _catalog([40, 3], ["p0", "p1"])
+    assert maybe_vacuum_after_commit(catalog, _table(), {"missing"}) is not None
+    assert calls
+
+
+def test_short_grace_requires_override():
+    with pytest.raises(ValueError, match="allow_short_grace"):
+        vacuum.vacuum_blobs(
+            types.SimpleNamespace(object_store_options={}),
+            _table(),
+            older_than=0,
+            dry_run=False,
+        )
 
 
 def test_failure_never_propagates(monkeypatch):

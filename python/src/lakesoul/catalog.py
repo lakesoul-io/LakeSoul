@@ -459,7 +459,7 @@ class LakeSoulCatalog:
         ]
         if files:
             self._client.commit_data_files(table.name, table.namespace, files)
-            maybe_vacuum_after_commit(self, table)
+            maybe_vacuum_after_commit(self, table, {item[0] for item in files})
 
 
 class LakeSoulTable:

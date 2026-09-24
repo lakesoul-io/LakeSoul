@@ -116,7 +116,7 @@ pin 维护：创建 snapshot/tag 后对涉及的 commit/version `SET pinned = tr
 
 ## 5. Blob R1（引用模型）
 
-- pack 命名改为不可变共享：`<table_path>/_blob/<column>/<uuid>.blob`（tagged 引用格式不变：
+- pack 命名改为不可变共享：`<table_path>/_blob/<column>/<uuid>.blob`（实现：pack 位于数据文件所在目录的 `_blob/` 下，分区表为分区级目录；vacuum 递归扫描表下全部 `_blob`）（tagged 引用格式不变：
   `0x01 || crc32 || length || offset || pack_path`）；
 - native writer 落数据文件时写 `<data_file>.blobref`（JSON：pack 路径列表 + size），路径约定
   归属数据文件，无需改 `file_ops`；
