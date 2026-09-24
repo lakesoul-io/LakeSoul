@@ -254,9 +254,15 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         try {
             FileSystem fileSystem = sidecar.getFileSystem(conf);
             if (!fileSystem.exists(sidecar)) {
-                // Files written before the blob R1 layout have no sidecar; their packs cannot be
-                // recovered, so only the sidecars that exist contribute to the union.
-                return;
+                // Blob tables always get a sidecar (even a sidecar with an empty pack list), so a
+                // missing one means the file predates the blob R1 layout or was written by a
+                // writer that does not record references. Compacting it would silently drop the
+                // packs its rows reference.
+                throw new IllegalStateException(
+                        "missing blobref sidecar "
+                                + sidecar
+                                + "; the data file may predate the blob R1 layout or was written"
+                                + " by a non-native writer, refusing to compact it");
             }
             try (InputStream in = fileSystem.open(sidecar)) {
                 JsonNode root = OBJECT_MAPPER.readTree(in);
@@ -500,7 +506,18 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         Path blobrefSource = new Path(fileInfo.getFilePath() + ".blobref");
         if (fileSystem.exists(blobrefSource)) {
             Path blobrefTarget = new Path(targetPath + ".blobref");
-            fileSystem.rename(blobrefSource, blobrefTarget);
+            if (!fileSystem.rename(blobrefSource, blobrefTarget)) {
+                boolean rolledBack =
+                        fileSystem.rename(new Path(targetPath), new Path(fileInfo.getFilePath()));
+                throw new IOException(
+                        "failed to move blobref "
+                                + blobrefSource
+                                + " to "
+                                + blobrefTarget
+                                + (rolledBack
+                                        ? " (data file move rolled back)"
+                                        : " (rollback failed)"));
+            }
             LOG.info("Task {}, MOVE blobref {} to {}", taskId, blobrefSource, blobrefTarget);
         }
         FileStatus fileStatus = fileSystem.getFileStatus(new Path(targetPath));

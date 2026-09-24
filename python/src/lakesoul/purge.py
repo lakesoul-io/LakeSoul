@@ -79,14 +79,17 @@ def _filesystem(uri: str, options: dict[str, str]):
     return filesystem, path
 
 
-def _delete(uri: str, options: dict[str, str], stats: dict[str, int]) -> None:
+def _delete(
+    uri: str, options: dict[str, str], stats: dict[str, int] | None = None
+) -> None:
     filesystem, path = _filesystem(uri, options)
     try:
         info = filesystem.get_file_info(path)
         if info.type != info.type.File:
             return
-        stats["files"] += 1
-        stats["bytes"] += info.size
+        if stats is not None:
+            stats["files"] += 1
+            stats["bytes"] += info.size
         filesystem.delete_file(path)
     except FileNotFoundError:
         return
@@ -177,6 +180,7 @@ def purge_table(
                     stats["bytes"] += info.size
             else:
                 _delete(path, options, stats)
+                _delete(f"{path}.blobref", options)
                 for column in blob_columns:
                     stats["packs"] += 1
                     _delete(f"{path}.{column}.blob", options, stats)

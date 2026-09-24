@@ -212,17 +212,21 @@ for epoch in range(args.epochs):
 
 ### Shared packs and `.blobref` sidecars
 
-Externalized values are stored in immutable packs shared by the table:
+Externalized values are stored in immutable packs next to the data files:
 
 ```
-<table>/_blob/<column>/<uuid>.blob     # immutable pack
-<data_file>.blobref                    # JSON {"version":1,"packs":[...]}
+<data_file_dir>/_blob/<column>/<uuid>.blob     # immutable pack
+<data_file>.blobref                            # JSON {"version":1,"packs":[...]}
 ```
 
-Every data file records the packs it references in its own sidecar. Compaction passes tagged
-references through without rewriting blob bytes and regenerates the sidecars (a conservative
-union of the inputs), and file moves copy the sidecar together with the data file, so references
-stay valid. The cleanup job deletes a sidecar when it deletes its data file.
+Packs live in the `_blob/` directory of the data file's own directory, so a partitioned table
+keeps one `_blob/` tree per partition directory (for example
+`<table>/episode_id=ep000001/_blob/data/...`). Every data file records the packs it references in
+its own sidecar; the vacuum scans every `_blob/` directory below the table, so packs are
+reclaimed for partitioned tables as well. Compaction passes tagged references through without
+rewriting blob bytes and regenerates the sidecars (a conservative union of the inputs), and file
+moves copy the sidecar together with the data file, so references stay valid. The cleanup job
+deletes a sidecar when it deletes its data file.
 
 ### `blob_columns`
 
@@ -296,8 +300,10 @@ properties={"blob_columns": json.dumps({"data": {"mode": "external"}}),
 ```
 
 The vacuum collects the live set twice and aborts without deleting anything if it changed or a
-live file is missing its sidecar, so it is safe with concurrent writers. It can also be run
-manually (dry run by default):
+live file is missing its sidecar, so it is safe with concurrent writers. Writers upload packs
+before committing the data files that reference them, so a real deletion with a grace period
+shorter than one hour is rejected unless `allow_short_grace=True` is passed explicitly. It can
+also be run manually (dry run by default):
 
 ```python
 from lakesoul.vacuum import vacuum_blobs

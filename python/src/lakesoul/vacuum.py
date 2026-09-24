@@ -36,6 +36,11 @@ __all__ = ["VacuumResult", "maybe_vacuum_after_commit", "vacuum_blobs"]
 BLOB_VACUUM_INTERVAL_KEY = "blob_vacuum_interval"
 DEFAULT_BLOB_VACUUM_INTERVAL = 20
 
+#: Deletions require at least this much grace: packs are uploaded before the
+#: data files that reference them are committed, so a shorter grace can race
+#: with an in-flight write.
+MIN_SAFE_GRACE = dt.timedelta(hours=1)
+
 
 @dataclass(frozen=True)
 class VacuumResult:
@@ -95,7 +100,12 @@ def _collect(
     used: set[str] = set()
     missing = False
     for path in sorted(live):
-        packs = read_blobref(path, filesystem)
+        try:
+            packs = read_blobref(path, filesystem)
+        except ValueError:
+            # A corrupt sidecar is as unsafe as a missing one: abort without deleting.
+            missing = True
+            continue
         if packs is None:
             missing = True
             continue
@@ -110,7 +120,8 @@ def _pack_key(path: str) -> str:
 def _list_packs(
     table: LakeSoulTable, options: dict[str, str]
 ) -> tuple[pafs.FileSystem | None, str, list[Any]]:
-    root = f"{table.path.rstrip('/')}/{BLOB_DIR}"
+    """List every pack below the table, including partition-local ``_blob`` dirs."""
+    root = table.path.rstrip("/")
     filesystem, base = _filesystem(root, options)
     try:
         infos = filesystem.get_file_info(
@@ -118,13 +129,16 @@ def _list_packs(
         )
     except FileNotFoundError:
         return filesystem, base, []
+    marker = f"/{BLOB_DIR}/"
     return (
         filesystem,
         base,
         [
             info
             for info in infos
-            if info.type == pafs.FileType.File and info.path.endswith(".blob")
+            if info.type == pafs.FileType.File
+            and info.path.endswith(".blob")
+            and marker in info.path
         ],
     )
 
@@ -147,16 +161,33 @@ def vacuum_blobs(
     *,
     older_than: dt.timedelta | int = DEFAULT_OLDER_THAN,
     dry_run: bool = True,
+    allow_short_grace: bool = False,
 ) -> VacuumResult:
     """Delete blob packs that no live data file references.
 
     ``older_than`` is a grace period (``timedelta`` or milliseconds); packs
     younger than it are never removed. With ``dry_run`` nothing is deleted
     and the result only reports what would happen.
+
+    Writers upload packs before committing the data files that reference
+    them, so a real deletion with a grace period shorter than
+    :data:`MIN_SAFE_GRACE` is rejected unless ``allow_short_grace`` is set.
     """
     blob_option = table._blob_columns_option()
     if not blob_option:
         return VacuumResult(dry_run)
+
+    if (
+        not dry_run
+        and not allow_short_grace
+        and _grace_ms(older_than) < int(MIN_SAFE_GRACE.total_seconds() * 1000)
+    ):
+        raise ValueError(
+            "vacuum_blobs with a grace period shorter than "
+            f"{MIN_SAFE_GRACE} cannot delete safely: packs are uploaded before their"
+            " data files are committed and a concurrent write could lose them; pass"
+            " allow_short_grace=True to override"
+        )
 
     options = dict(catalog.object_store_options or {})
     filesystem, _ = _filesystem(table.path, options)
@@ -225,14 +256,19 @@ def _vacuum_interval(table: LakeSoulTable) -> int:
 
 
 def maybe_vacuum_after_commit(
-    catalog: LakeSoulCatalog, table: LakeSoulTable
+    catalog: LakeSoulCatalog,
+    table: LakeSoulTable,
+    partition_descs: set[str] | None = None,
 ) -> VacuumResult | None:
     """Reclaim blob packs after a commit when the table asks for it.
 
     Blob tables vacuum every ``blob_vacuum_interval`` partition versions
-    (default 20, ``0`` disables it). The cleanup never propagates failures:
-    the data is already committed and the next write that crosses an interval
-    retries it.
+    (default 20, ``0`` disables it). ``partition_descs`` are the partitions
+    touched by the commit; only their versions are checked so a partition
+    that rests on a multiple of the interval does not trigger a vacuum on
+    every write to other partitions. The cleanup never propagates failures:
+    the data is already committed and the next write that crosses an
+    interval retries it.
     """
     try:
         if not table._blob_columns_option():
@@ -241,6 +277,12 @@ def maybe_vacuum_after_commit(
         if interval <= 0:
             return None
         partitions = list(catalog._client.get_all_partition_info(table.id))
+        if partition_descs:
+            committed = [
+                info for info in partitions if info.partition_desc in partition_descs
+            ]
+            if committed:
+                partitions = committed
         version = max((int(info.version) for info in partitions), default=0)
         if version <= 0 or version % interval != 0:
             return None
