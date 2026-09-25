@@ -49,6 +49,8 @@ pub const IVM_VALUE_COUNT_COLUMN: &str = "value_count";
 pub const IVM_ROW_NUMBER_COLUMN: &str = "row_number";
 /// The source index column of a [`UnionAllView`] materialized view.
 pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
+/// The internal rank column of a [`TopKView`] computation (not materialized).
+const IVM_TOP_K_RANK_COLUMN: &str = "__ivm_rank";
 /// The rank column of a `RANK()` [`WindowView`] materialized view.
 pub const IVM_RANK_COLUMN: &str = "rank";
 /// The rank column of a `DENSE_RANK()` [`WindowView`] materialized view.
@@ -278,6 +280,24 @@ pub enum ViewSpec {
         source_table_ids: Vec<String>,
         /// The materialized view table id.
         mv_table_id: String,
+    },
+    /// The top `limit` rows of every group, ordered by `order_keys`.
+    TopK {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group (`PARTITION BY`) columns.
+        group_keys: Vec<String>,
+        /// The `ORDER BY` columns.
+        order_keys: Vec<String>,
+        /// The projected source columns; empty means all of them.
+        #[serde(default)]
+        output_columns: Vec<String>,
+        /// How many rows to keep per group.
+        limit: i64,
     },
 }
 
@@ -1181,6 +1201,75 @@ impl UnionAllView {
     }
 }
 
+/// The top `limit` rows of every group, ordered by `order_keys`.
+///
+/// Ties are broken by the source primary keys, so the result is deterministic
+/// and exactly `limit` rows are kept per group (when the group has enough
+/// rows). A refresh recomputes the affected groups only.
+#[derive(Debug, Clone)]
+pub struct TopKView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table; it must have a primary key.
+    pub source: IvmTable,
+    /// The materialized view table: the projected columns plus the row kind
+    /// and the epoch.
+    pub mv: IvmTable,
+    /// The group (`PARTITION BY`) columns.
+    pub group_keys: Vec<String>,
+    /// The `ORDER BY` columns.
+    pub order_keys: Vec<String>,
+    /// The projected source columns; empty means all of them. Must contain the
+    /// group keys and the source primary keys.
+    pub output_columns: Vec<String>,
+    /// How many rows to keep per group.
+    pub limit: i64,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl TopKView {
+    /// A new top-k view.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        order_keys: Vec<String>,
+        limit: i64,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            order_keys,
+            output_columns: Vec::new(),
+            limit,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Project only `output_columns` (must contain the group keys and the
+    /// source primary keys).
+    pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
+        self.output_columns = output_columns;
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::TopK {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            order_keys: self.order_keys.clone(),
+            output_columns: self.output_columns.clone(),
+            limit: self.limit,
+        }
+    }
+}
+
 /// The schema of a value-count materialized view (MIN/MAX,
 /// COUNT(DISTINCT), SUM(DISTINCT)): one row per group with the aggregated
 /// value.
@@ -1413,6 +1502,15 @@ pub fn union_all_mv_schema_for(source_schema: &Schema) -> Result<SchemaRef> {
         false,
     )));
     Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`TopKView`] materialized view: the projected source
+/// columns plus the row kind and the epoch (the same shape as [`RowView`]).
+pub fn top_k_mv_schema_for(
+    source_schema: &Schema,
+    output_columns: &[String],
+) -> Result<SchemaRef> {
+    row_mv_schema_for(source_schema, output_columns)
 }
 
 /// The schema of a value-count state table: `(group, value) -> count`.
@@ -1809,6 +1907,16 @@ impl IvmRuntime {
 
     /// Persist a union-all view spec (idempotent).
     pub async fn register_union_all_view(&self, view: &UnionAllView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a top-k view spec (idempotent).
+    pub async fn register_top_k_view(&self, view: &TopKView) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
@@ -3423,6 +3531,131 @@ impl IvmRuntime {
         Ok(epoch)
     }
 
+    /// Refresh a top-k view by recomputing its affected groups.
+    pub async fn refresh_top_k(&self, view: &TopKView) -> Result<Option<i64>> {
+        self.register_top_k_view(view).await?;
+        validate_top_k_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "delta",
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "src",
+            view.source.read_current(&self.client).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        for batch in context
+            .sql(&top_k_refresh_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a top-k view from the full source state.
+    pub async fn rebuild_top_k(&self, view: &TopKView) -> Result<i64> {
+        self.register_top_k_view(view).await?;
+        validate_top_k_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        for batch in context
+            .sql(&top_k_rebuild_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                view.mv.append_batch(&self.client, batch).await?;
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
     /// Rebuild a value-count view.
     ///
     /// Both the value-count state table and the MV are truncated and refilled
@@ -4680,6 +4913,84 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     )
 }
 
+/// The `affected` CTE of a top-k refresh: the groups in the delta plus the
+/// groups of the MV rows whose primary keys changed.
+fn top_k_affected_cte(view: &TopKView) -> String {
+    let groups = quoted_list(&view.group_keys);
+    let pks = quoted_list(&view.source.primary_keys);
+    let pk_match = key_join_condition("m", "d", &view.source.primary_keys);
+    format!(
+        "delta_groups as (select distinct {groups} from delta), \
+         delta_rows as (select distinct {pks} from delta), \
+         old_groups as (select distinct {groups} from mv m \
+                        join delta_rows d on {pk_match}), \
+         affected as (select * from delta_groups union select * from old_groups)"
+    )
+}
+
+/// The `computed` CTE of a top-k view: the projected rows with their row
+/// number inside the group (ties broken by the source primary keys).
+fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
+    let groups = quoted_list(&view.group_keys);
+    let mut order = view.order_keys.clone();
+    order.extend(view.source.primary_keys.iter().cloned());
+    let orders = quoted_list(&order);
+    let output = quoted_list(&top_k_output_columns(view));
+    let filter = source_delete_filter(source_alias, change_column(&view.source));
+    let rank = quote_ident(IVM_TOP_K_RANK_COLUMN);
+    format!(
+        "computed as (select {output}, \
+         cast(row_number() over (partition by {groups} order by {orders}) as bigint) \
+             as {rank} \
+         from {source_alias} where {filter})"
+    )
+}
+
+/// SQL for one top-k refresh window: recompute the affected groups and rewrite
+/// their MV rows (`delete` then `insert`).
+fn top_k_refresh_sql(view: &TopKView, epoch: i64) -> String {
+    let output = quoted_list(&top_k_output_columns(view));
+    let pks = quoted_list(&view.source.primary_keys);
+    let rank = quote_ident(IVM_TOP_K_RANK_COLUMN);
+    let group_match_computed = key_join_condition_null_safe("c", "a", &view.group_keys);
+    let pk_match_computed = key_join_condition("c", "a", &view.source.primary_keys);
+    let group_match_active =
+        key_join_condition_null_safe("active", "a", &view.group_keys);
+    format!(
+        "with {affected}, {computed}, \
+         already as (select distinct {pks} from mv \
+                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+         active as (select * from mv \
+                    where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         inserts as (select {output}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from computed c \
+                     where c.{rank} <= {limit} \
+                       and exists (select 1 from affected a where {group_match_computed}) \
+                       and not exists (select 1 from already a where {pk_match_computed})), \
+         deletes as (select {output}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from active \
+                     where exists (select 1 from affected a where {group_match_active})) \
+         select * from deletes union all select * from inserts \
+         order by {pks}, \"rowKinds\"",
+        affected = top_k_affected_cte(view),
+        computed = top_k_computed_cte(view, "src"),
+        limit = view.limit,
+    )
+}
+
+/// SQL for a full top-k rebuild.
+fn top_k_rebuild_sql(view: &TopKView, epoch: i64) -> String {
+    let output = quoted_list(&top_k_output_columns(view));
+    let rank = quote_ident(IVM_TOP_K_RANK_COLUMN);
+    format!(
+        "with {computed} \
+         select {output}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from computed where {rank} <= {limit}",
+        computed = top_k_computed_cte(view, "src"),
+        limit = view.limit,
+    )
+}
+
 /// SQL for a full `ROW_NUMBER()` rebuild.
 fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
     let parts = quoted_list(&view.partition_keys);
@@ -5097,4 +5408,78 @@ fn union_frames(mut frames: Vec<DataFrame>) -> Result<DataFrame> {
         combined = combined.union(frame)?;
     }
     Ok(combined)
+}
+
+/// The source columns a [`TopKView`] materializes.
+fn top_k_output_columns(view: &TopKView) -> Vec<String> {
+    if view.output_columns.is_empty() {
+        view.source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect()
+    } else {
+        view.output_columns.clone()
+    }
+}
+
+/// Validate that a top-k view can be maintained.
+fn validate_top_k_view(view: &TopKView) -> Result<()> {
+    if view.limit <= 0 {
+        return Err(report!(
+            "top-k view {} needs a positive limit",
+            view.view_id
+        ));
+    }
+    if view.group_keys.is_empty() || view.order_keys.is_empty() {
+        return Err(report!(
+            "top-k view {} needs group and order keys",
+            view.view_id
+        ));
+    }
+    if view.source.primary_keys.is_empty() {
+        return Err(report!(
+            "top-k view {} needs a source with a primary key",
+            view.view_id
+        ));
+    }
+    for key in &view.source.primary_keys {
+        let field = view.source.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "top-k view {}: key column {key} is not in the source",
+                view.view_id
+            )
+        })?;
+        if field.is_nullable() {
+            return Err(report!(
+                "top-k view {}: key column {key} must be non-nullable",
+                view.view_id
+            ));
+        }
+    }
+    for column in view.group_keys.iter().chain(view.order_keys.iter()) {
+        view.source.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "top-k view {}: column {column} is not in the source",
+                view.view_id
+            )
+        })?;
+    }
+    let output = top_k_output_columns(view);
+    project_schema(&view.source.schema, &output)?;
+    for column in view
+        .source
+        .primary_keys
+        .iter()
+        .chain(view.group_keys.iter())
+    {
+        if !output.contains(column) {
+            return Err(report!(
+                "top-k view {}: output columns must contain {column}",
+                view.view_id
+            ));
+        }
+    }
+    Ok(())
 }

@@ -30,14 +30,15 @@
 | SEMI / ANTI | 左 keyed，右 append-only/keyed；等值 join key 可多列，另可加任意 `= <> < <= > >=` 左右列条件（含纯非等值）；输出左列可投影 | 受影响左行 delete+insert；源读取按需投影 |
 | 投影/Filter（`RowView`） | 源 keyed 或 append-only；输出列可投影，过滤条件 `= <> < <= > >=`（含 NULL 判断） | keyed 源按受影响主键 delete+insert（通过过滤才插入）；append-only 只追加 |
 | UNION ALL（`UnionAllView`） | 多源同 schema 且全 keyed 或全 append-only | keyed 输出按 `(__ivm_source, PK)` 键控、delete+insert；append-only 追加 |
-| join upsert、SELECT DISTINCT、TOP-K、RANK/DENSE_RANK 之外的窗口算子 | — | **未支持** |
+| TOP-K（`TopKView`） | keyed（需主键）+ 未分区；group/order 列任意可排序类型；输出列可投影（须含 group 与主键） | 受影响 group 内 `row_number() <= k` 重算，按 `(group, PK)` delete+insert；并列用源主键确定 |
+| join upsert、SELECT DISTINCT、NTILE/LAG/LEAD 等窗口算子 | — | **未支持** |
 
 ### 路线图
 
 - **P1**：~~通用类型（多列、非 Int64）group key 与 value~~、~~JOIN 支持 keyed 源~~、
   ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~、
-  ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~（已完成）
-  → TOP-K
+  ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~、
+  ~~TOP-K~~（P1 已完成）→ P2 见下
 - **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
   `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
@@ -657,6 +658,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/row_union_views.rs`：投影+过滤（更新双向穿越过滤、删除、插入、
   rebuild、SQL 对照）、append-only 源的字符串/NULL 过滤、keyed union-all 的
   更新/删除/重建、append-only union-all、以及校验负例。
+
+**TOP-K 实施记录（已完成）**
+
+- 新增 `TopKView`（group_keys/order_keys/limit/output_columns）与
+  `top_k_mv_schema_for`；输出 schema = 投影列 + rowKinds + epoch，MV 主键为源主键。
+- 语义：每 group 取 `row_number() over (partition by group order by order_keys,
+  源主键) <= limit`，并列由主键确定性打散；输出列必须包含 group 与源主键。
+- 刷新沿用 window 的受影响分区思路：affected = delta 的 group ∪ 变化主键在 MV 中
+  的旧 group；受影响 group 内重算并 delete+insert，epoch 幂等；rebuild 全量重算。
+- 测试 `tests/top_k.rs`：新行挤入/挤出、排序更新导致掉出、删除后递补、并列按主键
+  打散、投影列（去掉 payload）、跨 group 迁移、rebuild、与 SQL `row_number()` 对照、
+  校验负例（limit<=0、缺 group/order、非 keyed 源、输出缺列）。
 
 ## 9. 风险与开放问题
 
