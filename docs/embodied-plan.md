@@ -155,7 +155,7 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
   tagged 值；`lakesoul.BlobRef.parse(value)` 解码 inline/引用两种形态，`read(offset, size)`
   只做 pack range 读（整读校验 CRC32），`materialize_blob(value)` 为便捷物化；pack
   寻址走 `pyarrow.fs.FileSystem.from_uri`（本地与对象存储通用）；
-- 已完成：pack GC/vacuum（`vacuum_blobs`、`blob_vacuum_interval` 自动触发）；待办：SQL 引擎 glue；
+- 已完成：pack GC/vacuum（`vacuum_blobs`、`blob_vacuum_interval` 自动触发）、SQL 引擎 glue（Spark/Flink native 读写透传 `blob_columns`）；
 - 原 Blob 语义：`lakesoul.blob=auto|inline|external`；16KiB 内联 / 2MiB 外置 / pack 256MiB；`(uri, offset, len, crc)`；快照引用 + vacuum（专设计评审）；
 - 透明读：默认批量物化 bytes（disk cache）；`BlobFile.read(offset, size)` 惰性路径；
 - 自定义 Vortex BlobLayout（`file_format/vortex/layouts/blob.rs`，扩展注册）；

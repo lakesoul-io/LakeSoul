@@ -41,6 +41,13 @@ class NativeIOOptions(
 
 object NativeIOUtils extends Logging {
 
+  /** Table property / reader option carrying the blob column policies. */
+  val BLOB_COLUMNS_KEY = "blob_columns"
+
+  /** Reader option that keeps tagged blob values instead of materializing them.
+    */
+  val BLOB_MATERIALIZE_KEY = "blob_materialize"
+
   def asArrayColumnVector(
       vectorSchemaRoot: VectorSchemaRoot
   ): Array[ColumnVector] = {
@@ -69,12 +76,24 @@ object NativeIOUtils extends Logging {
       taskAttemptContext: TaskAttemptContext,
       file: Path
   ): NativeIOOptions = {
-    getNativeIOOptions(taskAttemptContext.getConfiguration, file)
+    getNativeIOOptions(
+      taskAttemptContext.getConfiguration,
+      file,
+      blobOptions = true
+    )
   }
 
   def getNativeIOOptions(
       configuration: Configuration,
       file: Path
+  ): NativeIOOptions = {
+    getNativeIOOptions(configuration, file, blobOptions = true)
+  }
+
+  def getNativeIOOptions(
+      configuration: Configuration,
+      file: Path,
+      blobOptions: Boolean
   ): NativeIOOptions = {
     var user: String = null
     val userConf = configuration.get("fs.hdfs.user")
@@ -85,6 +104,14 @@ object NativeIOUtils extends Logging {
     var otherOptions = Map[String, String]()
     if (configuration.get(MAX_FILE_SIZE_KEY, "").nonEmpty) {
       otherOptions += MAX_FILE_SIZE_KEY -> configuration.get(MAX_FILE_SIZE_KEY)
+    }
+    if (blobOptions) {
+      Seq(BLOB_COLUMNS_KEY, BLOB_MATERIALIZE_KEY).foreach { key =>
+        val value = configuration.get(key)
+        if (value != null && value.nonEmpty) {
+          otherOptions += key -> value
+        }
+      }
     }
     if (hasS3AFileSystemClass) {
       fileSystem match {

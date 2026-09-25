@@ -479,6 +479,13 @@ public class FlinkUtil {
                 io.setOption(key, value);
             }
         }
+        // blob table properties / reader options
+        for (String key : new String[] {"blob_columns", "blob_materialize"}) {
+            String value = conf.getString(key, "");
+            if (!value.isEmpty()) {
+                io.setOption(key, value);
+            }
+        }
         String tmpDir =
                 conf.getOptional(SPILL_MEM_POOL_DIR)
                         .orElseGet(
