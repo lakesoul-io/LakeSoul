@@ -1,7 +1,7 @@
 # IVM Epoch 幂等设计
 
 > 状态：步骤 1–5 已实现（`ivm.epochs` 协议、generation/rebuild、消费者快照读取 API）；
-> 仅剩 consumer 水位 GC（§9）。
+> consumer 水位 GC（§9）已落地。
 > 相关代码：`rust/lakesoul-ivm/src/runtime.rs`、`rust/lakesoul-ivm/src/metadata.rs`、
 > `rust/lakesoul-ivm/src/table.rs`。
 
@@ -191,9 +191,14 @@ create unique index if not exists ivm_epochs_window_key
 
 ## 9. GC
 
-- v1 保留全部 committed epoch 行（行数与窗口数同阶，成本可忽略）。
-- 后续引入 `ivm.consumers`（消费者水位）后，可按
-  `epoch < min(consumer.epoch) - grace` 清理；pending 行超过 TTL 视为异常并告警。
+- `ivm.consumers(view_id, consumer_id, last_epoch, updated_at)` 记录消费者的最老
+  所需 epoch；`IvmMetadata::{upsert_consumer, list_consumers, delete_consumer,
+  consumer_watermark}` 维护它（`IvmRuntime` 有同名包装）。
+- `gc_epochs(view_id, grace)` 删除
+  `status='committed' and epoch < min(last_epoch) - grace` 的 epoch 行：没有消费者
+  时不删除（保留全部，v1 行为）；pending 行永不删除（仍需恢复/排查）。
+- 只清理元数据 epoch 行；MV 的旧分区版本由 LakeSoul retention/compaction 决定，
+  cursor-aware retention（按消费者水位限制 MV 版本保留）仍待做。
 
 ## 10. 测试计划
 
@@ -217,4 +222,4 @@ create unique index if not exists ivm_epochs_window_key
 4. ✅ generation 与重建流程（`views.status='rebuilding'`、generation 自增、
    `rebuild:<generation>` epoch、空 compaction snapshot 清表、cursor 重置）。
 5. ✅ 消费者读取 API：`latest_epoch` / `view_state_at_epoch`；
-   ✅ `ivm.states` 状态表注册；⏳ consumer 水位 GC（§9）。
+   ✅ `ivm.states` 状态表注册；✅ consumer 水位 GC（§9）。

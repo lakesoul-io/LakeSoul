@@ -132,6 +132,33 @@ const DEFAULT_PG_PASSWORD: &str = "lakesoul_test";
 /// partition (mirrors `DBConfig.MAX_COMMIT_ATTEMPTS`).
 const MAX_COMMIT_ATTEMPTS: usize = 5;
 
+/// Whether a PostgreSQL error is a retryable concurrency conflict
+/// (`serialization failure` / `deadlock detected`). The docker-compose test
+/// environment runs `serializable`, where concurrent commits abort each
+/// other's statements.
+fn is_retryable_conflict(error: &LakeSoulMetaDataError) -> bool {
+    let code = match error {
+        LakeSoulMetaDataError::PostgresError(error) => error.code(),
+        _ => None,
+    };
+    matches!(
+        code,
+        Some(&tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE)
+            | Some(&tokio_postgres::error::SqlState::T_R_DEADLOCK_DETECTED)
+    )
+}
+
+/// Exponential backoff with jitter for one commit retry attempt.
+async fn commit_backoff(attempt: usize) {
+    let base = 1u64 << (attempt as u32).min(5);
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos() as u64)
+        .unwrap_or_default()
+        % (base + 1);
+    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+}
+
 fn secondary_url_not_found() -> LakeSoulMetaDataError {
     LakeSoulMetaDataError::NotFound("Secondary url not found".to_string())
 }
@@ -654,10 +681,20 @@ impl MetaDataClient {
         // is retried with a fresh version. Mirrors `DBManager.commitData`.
         let mut planned = HashMap::<String, PartitionInfo>::new();
         for attempt in 1..=MAX_COMMIT_ATTEMPTS {
-            let cur_map = self
+            let cur_map = match self
                 .get_cur_partition_map(&table_info.table_id, &partition_desc_list)
-                .await?;
-            let new_partition_list = self
+                .await
+            {
+                Ok(cur_map) => cur_map,
+                Err(error)
+                    if is_retryable_conflict(&error) && attempt < MAX_COMMIT_ATTEMPTS =>
+                {
+                    commit_backoff(attempt).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let new_partition_list = match self
                 .plan_partition_commit(
                     &table_info,
                     &domain,
@@ -667,7 +704,17 @@ impl MetaDataClient {
                     &cur_map,
                     &mut planned,
                 )
-                .await?;
+                .await
+            {
+                Ok(new_partition_list) => new_partition_list,
+                Err(error)
+                    if is_retryable_conflict(&error) && attempt < MAX_COMMIT_ATTEMPTS =>
+                {
+                    commit_backoff(attempt).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
 
             if new_partition_list.is_empty() {
                 return Ok(());
@@ -676,9 +723,19 @@ impl MetaDataClient {
             let expected = new_partition_list.len();
             let mut partition_info_list = new_partition_list;
             partition_info_list.push(PartitionInfo::default());
-            let inserted = self
+            let inserted = match self
                 .transaction_insert_partition_info(partition_info_list)
-                .await?;
+                .await
+            {
+                Ok(inserted) => inserted,
+                Err(error)
+                    if is_retryable_conflict(&error) && attempt < MAX_COMMIT_ATTEMPTS =>
+                {
+                    commit_backoff(attempt).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if inserted as usize == expected {
                 return Ok(());
             }
@@ -686,6 +743,9 @@ impl MetaDataClient {
                 "commit of {:?} conflicted on attempt {} (expected {} partition rows, inserted {})",
                 commit_op, attempt, expected, inserted
             );
+            if attempt < MAX_COMMIT_ATTEMPTS {
+                commit_backoff(attempt).await;
+            }
         }
 
         Err(LakeSoulMetaDataError::Internal(format!(
@@ -1101,7 +1161,11 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) => Ok(wrapper.table_name_id[0].clone()),
+            Ok(wrapper) => wrapper.table_name_id.into_iter().next().ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_id} has no domain row"
+                ))
+            }),
             Err(err) => Err(err),
         }
     }
