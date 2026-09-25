@@ -1068,14 +1068,16 @@ impl MetaDataClient {
     }
 
     /// Commit data files for one table and publish all affected partitions together.
+    /// Commit the given files and return the LakeSoul commit ids that were
+    /// created (one per partition).
     pub async fn commit_data_files(
         &self,
         table_name: &str,
         namespace: &str,
         files: Vec<DataFileInfo>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         if files.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let table_info = self
@@ -1097,15 +1099,17 @@ impl MetaDataClient {
     }
 
     /// Commit data files for one table using an explicit commit operation.
+    /// Commit the given files with an explicit commit op and return the
+    /// LakeSoul commit ids that were created (one per partition).
     pub async fn commit_data_files_with_commit_op(
         &self,
         table_name: &str,
         namespace: &str,
         files: Vec<DataFileInfo>,
         commit_op: CommitOp,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         if files.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let table_info = self
@@ -1129,6 +1133,11 @@ impl MetaDataClient {
             timestamp,
             &domain,
         );
+        let commit_ids = data_commit_info_list
+            .iter()
+            .filter_map(|info| info.commit_id)
+            .map(|id| uuid::Uuid::from_u64_pair(id.high, id.low).to_string())
+            .collect::<Vec<_>>();
 
         self.transaction_insert_data_commit_info(data_commit_info_list.clone())
             .await?;
@@ -1150,7 +1159,8 @@ impl MetaDataClient {
             },
             commit_op,
         )
-        .await
+        .await?;
+        Ok(commit_ids)
     }
 
     pub async fn get_table_domain(&self, table_id: &str) -> Result<TableNameId> {

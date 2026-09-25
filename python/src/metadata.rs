@@ -210,7 +210,8 @@ impl NativeMetadataClient {
                 CommitOp::AppendCommit,
             ))
         })
-        .map_err(|error| metadata_error_to_py(error, MissingObject::Table))
+        .map_err(|error| metadata_error_to_py(error, MissingObject::Table))?;
+        Ok(())
     }
 
     fn get_data_files_of_single_partition(
