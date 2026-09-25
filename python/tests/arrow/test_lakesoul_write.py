@@ -455,9 +455,7 @@ def test_blob_pack_target_rolls_packs(tmp_path: Path) -> None:
             batch = pa.table(
                 {
                     "id": pa.array(range(start, start + 3), type=pa.int64()),
-                    "frame": pa.array(
-                        payloads[start : start + 3], type=pa.binary()
-                    ),
+                    "frame": pa.array(payloads[start : start + 3], type=pa.binary()),
                 },
                 schema=schema,
             )
