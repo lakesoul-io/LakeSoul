@@ -267,6 +267,36 @@ ids = catalog.scan("pusht").options(
 - `catalog.drop_tag(...)` / `catalog.drop_snapshot(...)` 解除 pin（有标签指向时 `drop_snapshot` 会拒绝）；
 - `catalog.purge(table, older_than=..., dry_run=True)` 删除超过宽限期且未被 pin 的旧版本与文件。
 
+## 样本 manifest
+
+manifest 保存一份可复现的样本清单：每行一个样本，包含 episode、锚点（`order_by` 列值）、全局
+`rank` 和 JSON 格式的 `params`。它存放在 sibling 表 `<table>__manifests` 中，并绑定数据表的一个
+快照，因此 compaction 与后续写入之后仍能复现同样的样本。
+
+```python
+import pyarrow as pa
+
+samples = pa.table({
+    "episode_id": ["ep000001", "ep000000"],
+    "anchor": [2, 4],                      # frame_index 取值
+    "rank": [0, 1],                        # 可选的全局顺序
+})
+info = catalog.create_manifest(
+    "pusht", "eval-v1", samples,
+    params={"window": {"state": [0, 2]}, "stride": 2, "seed": 3},
+)
+
+dataset = EmbodiedDataset.from_manifest("pusht", "eval-v1")  # 固定到 info.snapshot_id
+for sample in dataset:                 # 默认按 rank 顺序；训练可用 shuffle=True
+    ...
+
+catalog.list_manifests("pusht")        # ManifestInfo(manifest, snapshot_id, rows, created_at)
+catalog.drop_manifest("pusht", "eval-v1")
+```
+
+`create_manifest` 在未提供 snapshot 时自动创建；有 manifest 引用时 `drop_snapshot` 会拒绝；
+删除基表会级联删除 `<table>__manifests`。锚点缺失或 manifest 不存在会直接报错，不会静默跳过样本。
+
 ## 维护
 
 ### Compaction
@@ -312,7 +342,7 @@ blob pack 回收**不依赖** Flink clean job；clean job 仍负责清理过期�
 
 ## 限制与路线
 
-- manifest（`<table>__manifests` sibling 表与 `EmbodiedDataset.from_manifest`，用于跨快照的持久样本地址）已设计但**尚未实现**；
+- Daft 的 `read_samples(..., manifest=...)` 尚未提供，暂用 `EmbodiedDataset.from_manifest`；
 - 旧 Spark Parquet writer 路径不支持 blob 表（需要 native writer）；该路径计划移除而不是加拦截；
 - `read_samples` / `read_gop_frames` 位于 `lakesoul.embodied.daft`，需要 `daft` extra；
 - 单进程 LeRobot 导入支持 v3.0 数据集；MCAP 支持 JSON 与 protobuf。

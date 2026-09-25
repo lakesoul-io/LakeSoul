@@ -141,6 +141,11 @@ pin 维护：创建 snapshot/tag 后对涉及的 commit/version `SET pinned = tr
 - `EmbodiedDataset.from_manifest(...)` 按 `snapshot_id` 打开数据表复现样本；测试断言
   compaction/新版本后逐字节一致。
 
+实现状态（D1）：sibling 表按 `manifest` 分区，`anchor` 为 `order_by` 列值（int64），`params`
+记录 window/stride/boundary/seed 等读配置；`catalog.create_manifest/list_manifests/read_manifest/drop_manifest`
+与 `EmbodiedDataset.from_manifest` 已实现，`drop_snapshot` 引用检查、`drop_table` 级联删除已接入；
+Daft `read_samples(manifest=...)` 待补。
+
 ## 7. 阶段
 
 - **Phase A+B（同版本发布）**：DDL/迁移、Rust DAO/proto、Python API 与读取、Flink pin 化、

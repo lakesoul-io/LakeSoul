@@ -291,7 +291,7 @@ Ray runner 只要求接口兼容（gated 测试）。
     missing, suffix)]`——按 episode 读副表一次、内存最近邻/前向/后向对齐、null/skip
     缺失语义；以及显式 `align(left_scan, right_scan, into=...)` 物化 API（默认返回
     `pa.Table`，`into=<LakeSoulTable>` 才写表）；
-- 样本视图/manifest（跨快照稳定的行地址，才需要持久化）；
+- 已完成：样本 manifest（`<table>__manifests` + `create_manifest`/`from_manifest`，snapshot 绑定、rank 顺序、drop/cascade 治理；Daft 读取待补）；
 - 已完成：Python 快照/标签/时间戳参数（`scan.options`，PR #925）；文档与示例见 [embodied.md](./embodied.md)；
 
 ## 7. 验收指标

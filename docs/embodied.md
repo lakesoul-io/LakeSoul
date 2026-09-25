@@ -1,12 +1,12 @@
 # LakeSoul 具身数据支持 · 总体文档
 
-- 状态：M1/M2/M4 主体完成；P0（snapshot/tag/pin）已合并（PR #925）；Blob R1（pack/`.blobref`/vacuum）已实现（PR #936）；Phase D（manifest）未实现。
+- 状态：M1/M2/M4 主体完成；P0（snapshot/tag/pin）已合并（PR #925）；Blob R1（pack/`.blobref`/vacuum）已实现（PR #936）；Phase D manifest 已实现 D1（catalog API + `from_manifest` + 治理，Daft 读取待补）。
 - 面向读者：使用/维护具身数据能力的开发者。用户向教程见 website 的 [Embodied Data](../website/docs/03-Usage%20Docs/20-embodied-data.md)（英文），设计细节见 [embodied-snapshot-tag-design.md](./embodied-snapshot-tag-design.md) 与 [embodied-plan.md](./embodied-plan.md)。
 
 ## 0. 目标与非目标
 
 - **目标**：以"episode 内顺序 + 窗口随机起点"的方式支持视频+状态的多模态训练数据；视频与状态透明地存进 LakeSoul 表，Python 侧提供导入、采样、解码、对齐、训练闭环；读取可复现（快照/标签/时间戳）。
-- **非目标**：全局行级随机访问、分支（branch）、跨引擎血缘；Phase D 的 manifest 仅设计未实现。
+- **非目标**：全局行级随机访问、分支（branch）、跨引擎血缘。
 
 ## 1. 总体架构
 
@@ -75,7 +75,7 @@
 | 时间语义（timestamp/snapshot/tag、时区规则） | `scan.options(...)` | 完成（Python） |
 | 快照/标签与 pin-aware 保留 | `catalog.create_snapshot/create_tag/...` | 完成（PR #925） |
 | 自动/手动 pack GC | `blob_vacuum_interval`、`vacuum_blobs` | 完成（PR #936） |
-| manifest（sibling 表 + `from_manifest` + 逐字节复现测试） | — | **未实现（Phase D）** |
+| sample manifest（sibling 表 + `from_manifest` + 复现测试） | `catalog.create_manifest` / `EmbodiedDataset.from_manifest` | 完成 D1（Daft 读取待补） |
 
 ## 4. 关键机制
 
@@ -103,6 +103,14 @@
 - `timestamp` 接受毫秒整数、`datetime`、ISO-8601 字符串、`date`；带时区的值忽略 `time_zone`，naive 值必须显式传 IANA `time_zone`，否则报错；
 - `tag > snapshot > timestamp` 的优先级仅作为设计意图记录；当前实现要求显式区分，不自动挑选；
 - `EmbodiedDataset` 可 pickle，反序列化后固定同一版本配置；配合 `set_epoch(epoch)` 保证洗牌可复现。
+
+### 4.4 Sample manifest（Phase D）
+
+- sibling 表 `<table>__manifests`（按 `manifest` 分区）：`manifest, snapshot_id, episode_id, anchor(order_by 列值, int64), rank, params(JSON), created_at`；
+- `catalog.create_manifest(table, manifest, samples, ...)`：`samples` 至少含 `episode_id, anchor`，`rank` 缺省自动编号；未给 snapshot 时自动创建快照；`params` 记录 `window/stride/boundary/seed/time_column/streams/video` 等读配置；
+- `EmbodiedDataset.from_manifest(table, manifest, ...)`：按 `snapshot_id` 固定读取，显式锚点（值→行号映射），默认 `rank` 顺序、`shuffle=True` 可选，支持 `iter_epoch(rank, world_size)` 分片与 pickle 序列化；
+- 治理：`drop_snapshot` 拒绝删除被 manifest 引用的快照；`drop_table` 级联删除 sibling 表；锚点缺失/未知 manifest 直接报错不静默跳过；`create_manifest(overwrite=True)` 通过重写 sibling 表实现；
+- 未完成：Daft 的 `read_samples(..., manifest=...)`。
 
 ## 5. Python API 索引
 
@@ -134,7 +142,7 @@ from lakesoul.vacuum import vacuum_blobs, VacuumResult
 
 ## 7. 限制与注意事项
 
-1. **Phase D manifest 未实现**：没有 `<table>__manifests` sibling 表与 `from_manifest`，跨快照的样本行地址持久化暂不可用；
+1. Daft 的 manifest 读取（`read_samples(..., manifest=...)`）尚未提供，暂用 `EmbodiedDataset.from_manifest`；
 2. **旧 Spark Parquet writer 路径不支持 blob**：blob 表依赖 native writer；该遗留路径计划移除，不做拦截；
 3. `read_samples`/`read_gop_frames` 位于 `lakesoul.embodied.daft` 子模块，不在 `lakesoul.embodied` 顶层导出；
 4. 单机 LeRobot 导入仅支持 v3.0；MCAP 支持 JSON 与 protobuf（FileDescriptorSet）；

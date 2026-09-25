@@ -286,6 +286,38 @@ ids = catalog.scan("pusht").options(
 - `catalog.purge(table, older_than=..., dry_run=True)` removes unpinned versions and files older
   than the grace period.
 
+## Sample manifests
+
+A manifest stores a reproducible sample list: one row per sample with the episode, the anchor
+(`order_by` column value), a global `rank` and a JSON `params` blob. It lives in a sibling table
+`<table>__manifests` and is bound to a snapshot of the data table, so it keeps replaying the same
+samples after compaction and later writes.
+
+```python
+import pyarrow as pa
+
+samples = pa.table({
+    "episode_id": ["ep000001", "ep000000"],
+    "anchor": [2, 4],                      # frame_index values
+    "rank": [0, 1],                        # optional global order
+})
+info = catalog.create_manifest(
+    "pusht", "eval-v1", samples,
+    params={"window": {"state": [0, 2]}, "stride": 2, "seed": 3},
+)
+
+dataset = EmbodiedDataset.from_manifest("pusht", "eval-v1")  # pinned to info.snapshot_id
+for sample in dataset:                 # rank order by default; shuffle=True for training
+    ...
+
+catalog.list_manifests("pusht")        # ManifestInfo(manifest, snapshot_id, rows, created_at)
+catalog.drop_manifest("pusht", "eval-v1")
+```
+
+`create_manifest` creates a snapshot when none is given; `drop_snapshot` refuses while a manifest
+references it, and dropping the base table drops `<table>__manifests` with it. Missing anchors or
+unknown manifests raise instead of silently skipping samples.
+
 ## Maintenance
 
 ### Compaction
@@ -342,8 +374,7 @@ for the blob section of the cleanup guide.
 
 ## Limitations and roadmap
 
-- Manifests (a `<table>__manifests` sibling table and an `EmbodiedDataset.from_manifest` API for
-  durable sample addresses across snapshots) are designed but **not implemented** yet;
+- `read_samples(..., manifest=...)` for Daft is not available yet; use `EmbodiedDataset.from_manifest`;
 - The legacy Spark Parquet writer path does not support blob tables (native writer required); it
   is planned for removal rather than guarded;
 - `read_samples` / `read_gop_frames` live in `lakesoul.embodied.daft` and require the `daft`
