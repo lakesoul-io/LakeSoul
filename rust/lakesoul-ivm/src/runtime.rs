@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::metadata::{
-    BeginEpoch, Cursor, EpochRecord, IvmMetadata, PartitionVersion, SourceVersionRange,
-    StateRole, StateTable,
+    BeginEpoch, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
+    SourceVersionRange, StateRole, StateTable,
 };
 use crate::table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
@@ -1753,6 +1753,38 @@ impl IvmRuntime {
     /// The internal tables registered for a view (see `ivm.states`).
     pub async fn list_states(&self, view_id: &str) -> Result<Vec<StateTable>> {
         self.metadata.list_states(view_id).await
+    }
+
+    /// Register or update a consumer watermark (see `EPOCH.md` §9).
+    pub async fn register_consumer(
+        &self,
+        view_id: &str,
+        consumer_id: &str,
+        last_epoch: i64,
+    ) -> Result<()> {
+        self.metadata
+            .upsert_consumer(view_id, consumer_id, last_epoch)
+            .await
+    }
+
+    /// Remove a consumer.
+    pub async fn delete_consumer(&self, view_id: &str, consumer_id: &str) -> Result<()> {
+        self.metadata.delete_consumer(view_id, consumer_id).await
+    }
+
+    /// The consumers of a view.
+    pub async fn list_consumers(&self, view_id: &str) -> Result<Vec<Consumer>> {
+        self.metadata.list_consumers(view_id).await
+    }
+
+    /// The oldest epoch the view's consumers still need.
+    pub async fn consumer_watermark(&self, view_id: &str) -> Result<Option<i64>> {
+        self.metadata.consumer_watermark(view_id).await
+    }
+
+    /// Garbage collect committed epochs below the watermark minus `grace`.
+    pub async fn gc_epochs(&self, view_id: &str, grace: i64) -> Result<u64> {
+        self.metadata.gc_epochs(view_id, grace).await
     }
 
     /// Bind the view's internal tables in `ivm.states` before persisting the

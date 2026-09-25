@@ -71,8 +71,8 @@ pub mod table;
 
 pub use error::Result;
 pub use metadata::{
-    BeginEpoch, Cursor, EpochRecord, EpochStatus, IvmMetadata, PartitionVersion,
-    SourceVersionRange, StateRole, StateTable,
+    BeginEpoch, Consumer, Cursor, EpochRecord, EpochStatus, IvmMetadata,
+    PartitionVersion, SourceVersionRange, StateRole, StateTable,
 };
 pub use runtime::{
     CompareOp, DistinctAggKind, DistinctAggView, FilterCondition, IVM_COUNT_COLUMN,

@@ -39,7 +39,7 @@
   ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~、
   ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~、
   ~~TOP-K~~（P1 已完成）→ P2 见下
-- **P2**：consumer 水位 GC（`ivm.consumers`）与 cursor-aware retention → JVM
+- **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→ JVM
   `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
@@ -671,6 +671,36 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   打散、投影列（去掉 payload）、跨 group 迁移、rebuild、与 SQL `row_number()` 对照、
   校验负例（limit<=0、缺 group/order、非 keyed 源、输出缺列）。
 
+**Consumer 水位 GC 实施记录（已完成）**
+
+- 新增 PG 表 `ivm.consumers(view_id, consumer_id, last_epoch, updated_at)` 与
+  `Consumer` 类型；`IvmMetadata::{upsert_consumer, list_consumers, delete_consumer,
+  consumer_watermark}`，`IvmRuntime` 提供同名包装；`delete_view` 一并清理。
+- `gc_epochs(view_id, grace)` 删除
+  `status='committed' and epoch < min(last_epoch) - grace` 的 epoch 行；无消费者时
+  返回 0（保留全部），pending 行永不删除。
+- 测试 `tests/consumers_gc.rs`：水位的注册/前移/删除、GC 只删水位以下的 committed
+  行、GC 后新窗口仍能刷新且 MV 与 SQL 一致、被 pin 的 epoch 保留、pending 行不被
+  删除、grace 延迟删除、无消费者不删、`delete_view` 清理消费者。
+- 说明：本地全并发测试偶发 PG SERIALIZABLE（40001）冲突，属既有元数据提交重试
+  问题；`--test-threads<=2` 稳定，CI 低并发同样适用。
+
+**并发冲突重试实施记录（已完成）**
+
+- 背景：docker-compose 测试环境把 PostgreSQL 设为 `serializable`
+  （`default_transaction_isolation=serializable`），并发 refresh/commit 之间会产生
+  SQLSTATE 40001（serialization failure）与 40P01（deadlock），此前默认高并发下
+  每轮全量测试有 2–3 个偶发失败。
+- `IvmMetadata`：新增 `execute_rw`/`query_opt_rw`/`batch_execute_rw`，对
+  40001/40P01 做最多 10 次指数退避 + 抖动重试；所有 IVM 元数据写入
+  （views/cursors/epochs/states/consumers 与 DDL）都改走这些入口。
+- `lakesoul-metadata::commit_data`：OCC 重试循环把 40001/40P01 也视为可重试
+  （退避后进入下一轮），而不仅是 `inserted != expected`；`get_table_domain`
+  空结果从 panic 改为 `NotFound` 错误。
+- 测试 `tests/concurrency.rs`：8 路并发 refresh 各自与 SQL 结果一致；全量套件在
+  默认高并发下 legacy 连跑 2 次、V2 跑 1 次均 25 个二进制全绿（修复前默认并发
+  每轮有 2–3 个偶发失败）。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
@@ -679,7 +709,8 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
    写清楚，避免两套实现漂移。
 3. `partition_info.timestamp` 是 DB 时钟，多实例时钟一致性影响水位 W；版本消费
    可消除正确性依赖，但 W 仍用于调度。
-4. OCC 重试与 PG 事务隔离（当前 READ COMMITTED）需并发测试覆盖。
+4. ~~OCC 重试与 PG 事务隔离需并发测试覆盖~~（已完成：40001/40P01 退避重试 +
+   `tests/concurrency.rs`；serializable 测试环境稳定）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

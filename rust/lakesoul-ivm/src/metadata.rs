@@ -20,12 +20,19 @@
 //! * `ivm.states` binds every `(view, role)` to the internal LakeSoul table
 //!   that holds the state (`mv` for the output, `state` for the value-count
 //!   table), so internal tables are discoverable and a view id cannot silently
-//!   switch to a different state table.
+//!   switch to a different state table;
+//! * `ivm.consumers` tracks the epoch each consumer still needs, so committed
+//!   epoch rows below `min(last_epoch) - grace` can be garbage collected
+//!   without stranding a consumer.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::{PooledClient, QueryType, create_connection, pg_config_from_env};
 use serde::{Deserialize, Serialize};
+use tokio_postgres::error::SqlState;
+use tokio_postgres::types::ToSql;
 
 use crate::error::Result;
 
@@ -106,6 +113,17 @@ do $$ begin
         table_path text   not null,
         created_at bigint not null,
         primary key (view_id, role)
+    );
+exception when duplicate_table or unique_violation then null;
+end $$;
+
+do $$ begin
+    create table if not exists ivm.consumers (
+        view_id     text   not null,
+        consumer_id text   not null,
+        last_epoch  bigint not null,
+        updated_at  bigint not null,
+        primary key (view_id, consumer_id)
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
@@ -221,6 +239,19 @@ pub struct StateTable {
     pub created_at: i64,
 }
 
+/// One row of `ivm.consumers`: a consumer watermark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Consumer {
+    /// The view the consumer reads.
+    pub view_id: String,
+    /// The consumer identity.
+    pub consumer_id: String,
+    /// The oldest epoch the consumer still needs.
+    pub last_epoch: i64,
+    /// The last update time (unix milliseconds).
+    pub updated_at: i64,
+}
+
 /// One row of `ivm.epochs`: a refresh window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpochRecord {
@@ -293,10 +324,93 @@ impl IvmMetadata {
 
     /// Create the `ivm` schema and tables if they do not exist.
     pub async fn init_schema(&self) -> Result<()> {
-        self.client
-            .batch_execute(IVM_SCHEMA_DDL, QueryType::RW)
-            .await?;
+        self.batch_execute_rw(IVM_SCHEMA_DDL).await?;
         Ok(())
+    }
+
+    /// How many times a statement is retried on serialization failures and
+    /// deadlocks. The docker-compose test environment runs PostgreSQL at
+    /// `serializable`, where concurrent refreshes abort each other's
+    /// statements; retrying with backoff makes the metadata writes robust
+    /// there and at the default `read committed` everywhere else.
+    const MAX_RETRY_ATTEMPTS: u32 = 10;
+
+    /// Whether a PostgreSQL error is a retryable concurrency conflict.
+    fn is_retryable(error: &LakeSoulMetaDataError) -> bool {
+        let code = match error {
+            LakeSoulMetaDataError::PostgresError(error) => error.code(),
+            _ => None,
+        };
+        matches!(
+            code,
+            Some(&SqlState::T_R_SERIALIZATION_FAILURE)
+                | Some(&SqlState::T_R_DEADLOCK_DETECTED)
+        )
+    }
+
+    /// Exponential backoff with jitter for one retry attempt.
+    async fn retry_backoff(attempt: u32) {
+        let base = 1u64 << attempt.min(5);
+        let jitter = crate::now_ms().unsigned_abs() % (base + 1);
+        tokio::time::sleep(Duration::from_millis(base + jitter)).await;
+    }
+
+    /// Run a read/write statement, retrying concurrency conflicts.
+    async fn execute_rw(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Result<u64> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.client.execute(sql, QueryType::RW, params).await {
+                Ok(rows) => return Ok(rows),
+                Err(error)
+                    if attempt < Self::MAX_RETRY_ATTEMPTS
+                        && Self::is_retryable(&error) =>
+                {
+                    Self::retry_backoff(attempt).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// Run a read/write `query_opt`, retrying concurrency conflicts.
+    async fn query_opt_rw(
+        &self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<tokio_postgres::Row>> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.client.query_opt(sql, QueryType::RW, params).await {
+                Ok(row) => return Ok(row),
+                Err(error)
+                    if attempt < Self::MAX_RETRY_ATTEMPTS
+                        && Self::is_retryable(&error) =>
+                {
+                    Self::retry_backoff(attempt).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// Run a DDL batch, retrying concurrency conflicts (idempotent DDL).
+    async fn batch_execute_rw(&self, sql: &str) -> Result<()> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.client.batch_execute(sql, QueryType::RW).await {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt < Self::MAX_RETRY_ATTEMPTS
+                        && Self::is_retryable(&error) =>
+                {
+                    Self::retry_backoff(attempt).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// Insert or update a registered view.
@@ -306,19 +420,12 @@ impl IvmMetadata {
         spec: &serde_json::Value,
         refresh_interval_ms: i64,
     ) -> Result<()> {
-        let (conn, statement) = self
-            .client
-            .prepare_cached(
-                "insert into ivm.views(view_id, spec, refresh_interval_ms, created_at)
+        self.execute_rw(
+            "insert into ivm.views(view_id, spec, refresh_interval_ms, created_at)
                  values ($1::TEXT, $2::JSONB, $3::BIGINT, $4::BIGINT)
                  on conflict (view_id) do update
                  set spec = excluded.spec,
                      refresh_interval_ms = excluded.refresh_interval_ms",
-                QueryType::RW,
-            )
-            .await?;
-        conn.execute(
-            &statement,
             &[&view_id, spec, &refresh_interval_ms, &crate::now_ms()],
         )
         .await?;
@@ -350,20 +457,13 @@ impl IvmMetadata {
         last_version: i64,
         last_timestamp: i64,
     ) -> Result<()> {
-        let (conn, statement) = self
-            .client
-            .prepare_cached(
+        self.execute_rw(
                 "insert into ivm.cursors(
                      view_id, source_table_id, partition_desc, last_version, last_timestamp)
                  values ($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT, $5::BIGINT)
                  on conflict (view_id, source_table_id, partition_desc) do update
                  set last_version = excluded.last_version,
                      last_timestamp = excluded.last_timestamp",
-                QueryType::RW,
-            )
-            .await?;
-        conn.execute(
-            &statement,
             &[
                 &view_id,
                 &source_table_id,
@@ -414,13 +514,11 @@ impl IvmMetadata {
 
     /// Set the lifecycle status of a view (`active` / `rebuilding`).
     pub async fn set_view_status(&self, view_id: &str, status: &str) -> Result<()> {
-        self.client
-            .execute(
-                "update ivm.views set status = $2::TEXT where view_id = $1::TEXT",
-                QueryType::RW,
-                &[&view_id, &status],
-            )
-            .await?;
+        self.execute_rw(
+            "update ivm.views set status = $2::TEXT where view_id = $1::TEXT",
+            &[&view_id, &status],
+        )
+        .await?;
         Ok(())
     }
 
@@ -441,11 +539,9 @@ impl IvmMetadata {
     /// generations stay for auditing but can no longer be matched.
     pub async fn bump_generation(&self, view_id: &str) -> Result<i64> {
         let row = self
-            .client
-            .query_opt(
+            .query_opt_rw(
                 "update ivm.views set generation = generation + 1
                  where view_id = $1::TEXT returning generation",
-                QueryType::RW,
                 &[&view_id],
             )
             .await?;
@@ -455,13 +551,11 @@ impl IvmMetadata {
 
     /// Delete every cursor of a view (a rebuild re-baselines them).
     pub async fn delete_cursors(&self, view_id: &str) -> Result<()> {
-        self.client
-            .execute(
-                "delete from ivm.cursors where view_id = $1::TEXT",
-                QueryType::RW,
-                &[&view_id],
-            )
-            .await?;
+        self.execute_rw(
+            "delete from ivm.cursors where view_id = $1::TEXT",
+            &[&view_id],
+        )
+        .await?;
         Ok(())
     }
 
@@ -531,34 +625,23 @@ impl IvmMetadata {
             });
         }
 
-        let (conn, statement) = self
-            .client
-            .prepare_cached(
+        let epoch: i64 = self
+            .query_opt_rw(
                 "update ivm.views set last_epoch = last_epoch + 1
                  where view_id = $1::TEXT returning last_epoch",
-                QueryType::RW,
+                &[&view_id],
             )
-            .await?;
-        let epoch: i64 = conn
-            .query_opt(&statement, &[&view_id])
             .await?
             .ok_or_else(|| rootcause::report!("view {view_id} is not registered"))?
             .get(0);
 
-        let (conn, statement) = self
-            .client
-            .prepare_cached(
-                "insert into ivm.epochs(
+        self.execute_rw(
+            "insert into ivm.epochs(
                      view_id, generation, epoch, window_key, status,
                      to_versions, mv_versions_before, mv_versions, created_at)
                  values ($1::TEXT, $2::BIGINT, $3::BIGINT, $4::TEXT, 'pending',
                      $5::JSONB, $6::JSONB, '[]'::jsonb, $7::BIGINT)
                  on conflict (view_id, generation, window_key) do nothing",
-                QueryType::RW,
-            )
-            .await?;
-        conn.execute(
-            &statement,
             &[
                 &view_id,
                 &generation,
@@ -591,17 +674,10 @@ impl IvmMetadata {
         record: &EpochRecord,
         mv_versions: &[PartitionVersion],
     ) -> Result<()> {
-        let (conn, statement) = self
-            .client
-            .prepare_cached(
+        self.execute_rw(
                 "update ivm.epochs
                  set status = 'committed', mv_versions = $4::JSONB, committed_at = $5::BIGINT
                  where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
-                QueryType::RW,
-            )
-            .await?;
-        conn.execute(
-            &statement,
             &[
                 &record.view_id,
                 &record.generation,
@@ -663,14 +739,12 @@ impl IvmMetadata {
         generation: i64,
         epoch: i64,
     ) -> Result<()> {
-        self.client
-            .execute(
+        self.execute_rw(
                 "update ivm.epochs set status = $4::TEXT, committed_at = null
                  where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
-                QueryType::RW,
                 &[&view_id, &generation, &epoch, &EpochStatus::Pending.as_str()],
-            )
-            .await?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -685,18 +759,11 @@ impl IvmMetadata {
         role: StateRole,
         table: &crate::table::IvmTable,
     ) -> Result<()> {
-        let (conn, statement) = self
-            .client
-            .prepare_cached(
+        self.execute_rw(
                 "insert into ivm.states(
                      view_id, role, table_id, table_name, namespace, table_path, created_at)
                  values ($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::TEXT, $6::TEXT, $7::BIGINT)
                  on conflict (view_id, role) do nothing",
-                QueryType::RW,
-            )
-            .await?;
-        conn.execute(
-            &statement,
             &[
                 &view_id,
                 &role.as_str(),
@@ -753,36 +820,120 @@ impl IvmMetadata {
         rows.iter().map(state_table_from_row).collect()
     }
 
+    /// Insert or update a consumer watermark.
+    ///
+    /// `last_epoch` is the oldest epoch the consumer still needs; it may move
+    /// backwards when a consumer resets its state.
+    pub async fn upsert_consumer(
+        &self,
+        view_id: &str,
+        consumer_id: &str,
+        last_epoch: i64,
+    ) -> Result<()> {
+        self.execute_rw(
+            "insert into ivm.consumers(view_id, consumer_id, last_epoch, updated_at)
+                 values ($1::TEXT, $2::TEXT, $3::BIGINT, $4::BIGINT)
+                 on conflict (view_id, consumer_id) do update
+                 set last_epoch = excluded.last_epoch,
+                     updated_at = excluded.updated_at",
+            &[&view_id, &consumer_id, &last_epoch, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The consumers of a view.
+    pub async fn list_consumers(&self, view_id: &str) -> Result<Vec<Consumer>> {
+        let rows = self
+            .client
+            .query(
+                "select view_id, consumer_id, last_epoch, updated_at
+                 from ivm.consumers where view_id = $1::TEXT order by consumer_id",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| Consumer {
+                view_id: row.get(0),
+                consumer_id: row.get(1),
+                last_epoch: row.get(2),
+                updated_at: row.get(3),
+            })
+            .collect())
+    }
+
+    /// Remove a consumer.
+    pub async fn delete_consumer(&self, view_id: &str, consumer_id: &str) -> Result<()> {
+        self.execute_rw(
+                "delete from ivm.consumers where view_id = $1::TEXT and consumer_id = $2::TEXT",
+                &[&view_id, &consumer_id],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The oldest epoch any consumer of the view still needs, if any.
+    pub async fn consumer_watermark(&self, view_id: &str) -> Result<Option<i64>> {
+        let row = self
+            .client
+            .query_opt(
+                "select min(last_epoch) from ivm.consumers where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(row.and_then(|row| row.get(0)))
+    }
+
+    /// Delete committed epochs below the consumer watermark minus `grace`.
+    ///
+    /// Nothing is deleted while the view has no consumers, so a consumer can
+    /// always catch up from the retained history. Pending epochs are never
+    /// deleted: they still have to be recovered or inspected.
+    pub async fn gc_epochs(&self, view_id: &str, grace: i64) -> Result<u64> {
+        let Some(watermark) = self.consumer_watermark(view_id).await? else {
+            return Ok(0);
+        };
+        let before = watermark.saturating_sub(grace);
+        let deleted = self
+            .execute_rw(
+                "delete from ivm.epochs
+                 where view_id = $1::TEXT and status = 'committed' and epoch < $2::BIGINT",
+                &[&view_id, &before],
+            )
+            .await?;
+        Ok(deleted)
+    }
+
     /// Delete a view and its cursors.
     pub async fn delete_view(&self, view_id: &str) -> Result<()> {
-        self.client
-            .execute(
-                "delete from ivm.states where view_id = $1::TEXT",
-                QueryType::RW,
-                &[&view_id],
-            )
-            .await?;
-        self.client
-            .execute(
-                "delete from ivm.epochs where view_id = $1::TEXT",
-                QueryType::RW,
-                &[&view_id],
-            )
-            .await?;
-        self.client
-            .execute(
-                "delete from ivm.cursors where view_id = $1::TEXT",
-                QueryType::RW,
-                &[&view_id],
-            )
-            .await?;
-        self.client
-            .execute(
-                "delete from ivm.views where view_id = $1::TEXT",
-                QueryType::RW,
-                &[&view_id],
-            )
-            .await?;
+        self.execute_rw(
+            "delete from ivm.consumers where view_id = $1::TEXT",
+            &[&view_id],
+        )
+        .await?;
+        self.execute_rw(
+            "delete from ivm.states where view_id = $1::TEXT",
+            &[&view_id],
+        )
+        .await?;
+        self.execute_rw(
+            "delete from ivm.epochs where view_id = $1::TEXT",
+            &[&view_id],
+        )
+        .await?;
+        self.execute_rw(
+            "delete from ivm.cursors where view_id = $1::TEXT",
+            &[&view_id],
+        )
+        .await?;
+        self.execute_rw(
+            "delete from ivm.views where view_id = $1::TEXT",
+            &[&view_id],
+        )
+        .await?;
         Ok(())
     }
 }
