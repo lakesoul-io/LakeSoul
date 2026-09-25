@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -23,7 +24,7 @@ import numpy as np
 import pyarrow as pa
 
 from lakesoul.arrow import LakeSoulScanConfig, lakesoul_dataset
-from lakesoul.catalog import LakeSoulScan
+from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan, LakeSoulTable
 from lakesoul.metadata import LakeSoulScanPlanPartition
 
 from .align import SecondaryStream, aligned_columns, load_stream_unit
@@ -32,6 +33,19 @@ from .video import GopVideo
 BOUNDARY_SKIP = "skip"
 BOUNDARY_CLAMP = "clamp"
 _BOUNDARIES = (BOUNDARY_SKIP, BOUNDARY_CLAMP)
+
+
+@dataclass(frozen=True)
+class ManifestSelection:
+    """Explicit sample anchors of one manifest, ordered by ``rank``.
+
+    ``rows`` holds ``(episode_id, anchor, rank)`` where ``anchor`` is the
+    ``order_by`` column value of the anchor row.
+    """
+
+    order_by: str
+    episode_column: str
+    rows: tuple[tuple[str, int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -194,6 +208,117 @@ class EmbodiedDataset:
         self._validate_video_window()
 
         self._units = self._resolve_units(scan, episodes, episode_column)
+        self._selection: ManifestSelection | None = None
+        self._shuffle = False
+
+    @classmethod
+    def from_manifest(
+        cls,
+        table: LakeSoulTable | str,
+        manifest: str,
+        *,
+        catalog: LakeSoulCatalog | None = None,
+        namespace: str | None = None,
+        window: Mapping[str, Window | tuple[int, int]] | None = None,
+        stride: int | None = None,
+        boundary: str | None = None,
+        seed: int | None = None,
+        time_column: str | None = None,
+        streams: Sequence[SecondaryStream] | None = None,
+        video: GopVideo | None = None,
+        video_window: str | tuple[int, int] | None = None,
+        shuffle: bool = False,
+    ) -> EmbodiedDataset:
+        """Open the samples of a manifest, pinned to the manifest's snapshot.
+
+        Manifest ``params`` supply the window/stride/boundary/seed (and video
+        or secondary-stream specs) written by :meth:`LakeSoulCatalog.create_manifest`;
+        explicit arguments override them. Samples are yielded in ``rank`` order
+        unless ``shuffle`` is set.
+        """
+        if isinstance(table, LakeSoulTable):
+            handle = table
+            catalog = handle.catalog
+        else:
+            catalog = catalog or LakeSoulCatalog.from_env()
+            handle = catalog.table(str(table), namespace=namespace)
+        rows = catalog.read_manifest(handle, manifest)
+        snapshot_ids = set(rows.column("snapshot_id").to_pylist())
+        if len(snapshot_ids) != 1:
+            raise ValueError(
+                f"manifest {manifest!r} rows disagree on snapshot_id: {snapshot_ids}"
+            )
+        snapshot_id = int(snapshot_ids.pop())
+        params = json.loads(rows.column("params")[0].as_py())
+        if window is None:
+            raw = params.get("window") or {}
+            window = {name: tuple(value) for name, value in raw.items()}
+            if not window:
+                raise ValueError(
+                    "manifest has no window params; pass window= explicitly"
+                )
+        if stride is None:
+            stride = int(params.get("stride", 1))
+        if boundary is None:
+            boundary = str(params.get("boundary", BOUNDARY_SKIP))
+        if seed is None:
+            seed = int(params.get("seed", 0))
+        if time_column is None:
+            time_column = params.get("time_column")
+        if video is None and params.get("video"):
+            spec = params["video"]
+            video = GopVideo(
+                catalog.table(spec["gops"], namespace=handle.namespace),
+                catalog.table(spec["frames"], namespace=handle.namespace),
+                cameras=tuple(spec.get("cameras") or ()) or None,
+                episode_column=spec.get("episode_column", "episode_id"),
+            )
+            if video_window is None and spec.get("video_window") is not None:
+                video_window = tuple(spec["video_window"])
+        if streams is None and params.get("streams"):
+            streams = tuple(
+                SecondaryStream(
+                    catalog.table(spec["table"], namespace=handle.namespace).scan(),
+                    on=spec.get("on", "timestamp"),
+                    by=spec.get("by", "episode_id"),
+                    columns=spec.get("columns"),
+                    tolerance=spec.get("tolerance", 0.02),
+                    direction=spec.get("direction", "nearest"),
+                    missing=spec.get("missing", "null"),
+                    suffix=spec.get("suffix", ""),
+                )
+                for spec in params["streams"]
+            )
+        scan = handle.scan().options(snapshot=snapshot_id)
+        dataset = cls(
+            scan,
+            window=window,
+            stride=int(stride),
+            boundary=str(boundary),
+            seed=int(seed),
+            time_column=time_column,
+            streams=tuple(streams or ()),
+            video=video,
+            video_window=video_window,
+        )
+        ordered = sorted(
+            zip(
+                rows.column("episode_id").to_pylist(),
+                rows.column("anchor").to_pylist(),
+                rows.column("rank").to_pylist(),
+            ),
+            key=lambda item: int(item[2]),
+        )
+        dataset._selection = ManifestSelection(
+            order_by=str(params.get("order_by", "frame_index")),
+            episode_column=str(params.get("episode_column", "episode_id")),
+            rows=tuple(
+                (str(episode), int(anchor), int(rank))
+                for episode, anchor, rank in ordered
+            ),
+        )
+        dataset._shuffle = bool(shuffle)
+        return dataset
 
     @property
     def scan(self) -> LakeSoulScan | None:
@@ -230,6 +355,8 @@ class EmbodiedDataset:
                 self._time_window,
                 self._time_column,
                 self._streams,
+                self._selection,
+                self._shuffle,
             ),
         )
 
@@ -246,10 +373,41 @@ class EmbodiedDataset:
         if epoch is None:
             epoch = self._epoch
         rank, world_size = _normalize_shard(rank, world_size)
+        if self._selection is not None:
+            yield from self._iter_manifest(epoch, rank, world_size)
+            return
         order = np.random.default_rng([self._seed, epoch]).permutation(len(self._units))
         for index in order[rank::world_size]:
             unit = self._units[int(index)]
             yield from self._iter_unit(unit, epoch)
+
+    def _iter_manifest(
+        self, epoch: int, rank: int, world_size: int
+    ) -> Iterator[dict[str, np.ndarray]]:
+        selection = self._selection
+        assert selection is not None
+        rows = list(selection.rows)
+        if self._shuffle:
+            order = np.random.default_rng([self._seed, epoch]).permutation(len(rows))
+            rows = [rows[int(index)] for index in order]
+        rows = rows[rank::world_size]
+        grouped: dict[str, list[int]] = {}
+        first_rank: dict[str, int] = {}
+        for episode, anchor, sample_rank in rows:
+            grouped.setdefault(episode, []).append(anchor)
+            first_rank.setdefault(episode, sample_rank)
+        units = {
+            _unit_partition_map(unit).get(selection.episode_column): unit
+            for unit in self._units
+        }
+        for episode in sorted(grouped, key=lambda item: first_rank[item]):
+            unit = units.get(episode)
+            if unit is None:
+                raise ValueError(
+                    f"manifest episode {episode!r} not found in partition column "
+                    f"{selection.episode_column!r}"
+                )
+            yield from self._iter_unit(unit, epoch, anchors=grouped[episode])
 
     def _validate_video_window(self) -> None:
         if isinstance(self._video_window, str):
@@ -287,7 +445,10 @@ class EmbodiedDataset:
         return window.start, window.end
 
     def _iter_unit(
-        self, unit: LakeSoulScanPlanPartition, epoch: int
+        self,
+        unit: LakeSoulScanPlanPartition,
+        epoch: int,
+        anchors: list[int] | None = None,
     ) -> Iterator[dict[str, np.ndarray]]:
         table = self._read_unit(unit)
         rows = table.num_rows
@@ -311,15 +472,18 @@ class EmbodiedDataset:
                     f"partitioned by {stream.by!r}"
                 )
             stream_tables.append(load_stream_unit(stream, episode_id))
-        anchors = plan_anchor_order(
-            rows=rows,
-            stride=self._stride,
-            seed=self._seed,
-            epoch=epoch,
-            unit_seed=_unit_seed(unit),
-            windows=self._window,
-            boundary=self._boundary,
-        )
+        if anchors is None:
+            anchor_rows = plan_anchor_order(
+                rows=rows,
+                stride=self._stride,
+                seed=self._seed,
+                epoch=epoch,
+                unit_seed=_unit_seed(unit),
+                windows=self._window,
+                boundary=self._boundary,
+            ).tolist()
+        else:
+            anchor_rows = self._resolve_manifest_anchors(table, anchors)
         needed = set(self._window) | set(self._time_window)
         columns = {name: table[name].combine_chunks() for name in needed}
         times = (
@@ -327,7 +491,7 @@ class EmbodiedDataset:
             if self._time_window or self._streams
             else None
         )
-        for anchor in anchors.tolist():
+        for anchor in anchor_rows:
             ranges: dict[str, tuple[int, int]] = {}
             if times is not None:
                 for name, (start_seconds, end_seconds) in self._time_window.items():
@@ -395,12 +559,46 @@ class EmbodiedDataset:
                         sample[camera] = frames
             yield sample
 
+    def _resolve_manifest_anchors(
+        self, table: pa.Table, anchors: list[int]
+    ) -> list[int]:
+        selection = self._selection
+        assert selection is not None
+        column = selection.order_by
+        if column not in table.column_names:
+            raise ValueError(
+                f"manifest order_by column {column!r} is missing from the scan"
+            )
+        values = table[column].combine_chunks()
+        lookup: dict[int, int] = {}
+        for index, value in enumerate(values.to_pylist()):
+            if value is None:
+                continue
+            key = int(value)
+            if key in lookup:
+                raise ValueError(
+                    f"order_by column {column!r} has duplicate value {key} in one "
+                    "episode; manifest anchors must be unique"
+                )
+            lookup[key] = index
+        missing = [anchor for anchor in anchors if anchor not in lookup]
+        if missing:
+            preview = missing[:5]
+            raise ValueError(
+                f"manifest anchors not found in order_by column {column!r}: "
+                f"{preview}{'...' if len(missing) > len(preview) else ''}"
+            )
+        return [lookup[anchor] for anchor in anchors]
+
     def _read_unit(self, unit: LakeSoulScanPlanPartition) -> pa.Table:
         config = dataclasses.replace(self._config, scan_partitions=(unit,))
         dataset = lakesoul_dataset(config)
         columns = list(self._window) + list(self._time_window)
         if self._time_window or self._streams:
             columns.append(self._time_column)
+        if self._selection is not None:
+            columns.append(self._selection.order_by)
+        columns = list(dict.fromkeys(columns))
         return dataset.to_table(columns=columns)
 
     def _resolve_units(
@@ -471,6 +669,8 @@ def _dataset_from_state(
     time_window: dict[str, tuple[float, float]],
     time_column: str,
     streams: tuple[SecondaryStream, ...],
+    selection: ManifestSelection | None,
+    shuffle: bool,
 ) -> EmbodiedDataset:
     dataset = object.__new__(EmbodiedDataset)
     dataset._scan = None
@@ -486,6 +686,8 @@ def _dataset_from_state(
     dataset._time_window = dict(time_window)
     dataset._time_column = time_column
     dataset._streams = tuple(streams)
+    dataset._selection = selection
+    dataset._shuffle = shuffle
     return dataset
 
 
