@@ -40,7 +40,7 @@
   ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~、
   ~~TOP-K~~（P1 已完成）→ P2 见下
 - **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→ JVM
-  `list tables` 过滤 internal 表 → epoch 发布 commit_id → as-of 下沉 TableProvider /
+  `list tables` 过滤 internal 表 → ~~epoch 发布 commit_id~~（已完成）→ as-of 下沉 TableProvider /
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
 - **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
@@ -700,6 +700,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/concurrency.rs`：8 路并发 refresh 各自与 SQL 结果一致；全量套件在
   默认高并发下 legacy 连跑 2 次、V2 跑 1 次均 25 个二进制全绿（修复前默认并发
   每轮有 2–3 个偶发失败）。
+
+**Epoch 发布 commit_id 实施记录（已完成）**
+
+- `ivm.epochs` 增加 `commit_ids jsonb not null default '[]'`（建表 + `alter table ...
+  add column if not exists` 升级），`EpochRecord.commit_ids` 暴露。
+- `lakesoul-metadata::commit_data_files{,_with_commit_op}` 返回本次提交产生的
+  commit id 列表（每个 partition 一个，标准 UUID 字符串）；`IvmTable::append_batch`
+  返回该列表。
+- 各 refresh/rebuild 窗口内收集 MV 输出表的 commit id 并随 `mark_epoch_committed`
+  写入；`begin_window` 的 pending 恢复沿用记录里的 ids；pending epoch 初始为空。
+- 测试 `tests/epoch_commit_ids.rs`：每个 epoch 的 ids 非空且为 UUID、跨 epoch 不复用、
+  rebuild（新 generation）同样发布、pending 初始为空。
+- 说明：消费者可用 `commit_ids` + `mv_versions` 双重定位快照；按 commit id 读取的
+  下沉 API（`view_state_at_commit`）留待后续。
 
 ## 9. 风险与开放问题
 
