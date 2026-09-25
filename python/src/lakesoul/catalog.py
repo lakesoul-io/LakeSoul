@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +13,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from lakesoul._lib._utils import _schema_from_metadata_str
+from lakesoul.exceptions import AlreadyExistsError
 from lakesoul.io import IOConfig, Writer, WriteResult, merge_blob_option
 from lakesoul.metadata import (
     NativeMetadataClient,
@@ -51,6 +54,113 @@ class TableWriteConfig:
     format: PhysicalFormat
     vector_columns: tuple[str, ...] = ()
     blob_columns: str | None = None
+
+
+#: Sibling table suffix and schema for sample manifests.
+MANIFEST_TABLE_SUFFIX = "__manifests"
+MANIFEST_SCHEMA = pa.schema(
+    [
+        pa.field("manifest", pa.string(), nullable=False),
+        pa.field("snapshot_id", pa.int64(), nullable=False),
+        pa.field("episode_id", pa.string(), nullable=False),
+        pa.field("anchor", pa.int64(), nullable=False),
+        pa.field("rank", pa.int64(), nullable=False),
+        pa.field("params", pa.string(), nullable=False),
+        pa.field("created_at", pa.int64(), nullable=False),
+    ]
+)
+_MANIFEST_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestInfo:
+    """Summary of one sample manifest."""
+
+    manifest: str
+    snapshot_id: int
+    rows: int
+    created_at: int
+
+
+def _validate_manifest_name(manifest: str) -> str:
+    if not manifest or not _MANIFEST_NAME.match(manifest):
+        raise ValueError(
+            "manifest names may only contain letters, digits, '_', '-' and '.', "
+            f"got {manifest!r}"
+        )
+    return manifest
+
+
+def _manifest_rows(
+    manifest: str,
+    samples: pa.Table,
+    snapshot_id: int,
+    *,
+    order_by: str,
+    episode_column: str,
+    params: Mapping[str, Any] | None,
+) -> pa.Table:
+    """Normalize the caller's sample table into ``MANIFEST_SCHEMA`` rows."""
+    if not isinstance(samples, pa.Table):
+        raise TypeError(
+            f"samples must be a pyarrow.Table, got {type(samples).__name__}"
+        )
+    missing = [
+        column
+        for column in (episode_column, "anchor")
+        if column not in samples.column_names
+    ]
+    if missing:
+        raise ValueError(
+            f"samples must contain {episode_column!r} and 'anchor', missing {missing}"
+        )
+    anchor = samples.column("anchor")
+    if not (pa.types.is_integer(anchor.type)):
+        raise ValueError(
+            f"anchor must be an integer column ({order_by!r} values), got {anchor.type}"
+        )
+    anchor = pc.cast(anchor, pa.int64())
+    episode = pc.cast(samples.column(episode_column), pa.string())
+    if samples.num_rows == 0:
+        raise ValueError("samples must not be empty")
+    if "rank" in samples.column_names:
+        rank = samples.column("rank")
+        if not pa.types.is_integer(rank.type):
+            raise ValueError(f"rank must be an integer column, got {rank.type}")
+        rank = pc.cast(rank, pa.int64())
+    else:
+        rank = pa.array(range(samples.num_rows), type=pa.int64())
+    if len(set(rank.to_pylist())) != samples.num_rows:
+        raise ValueError("rank values must be unique")
+    pairs = list(zip(episode.to_pylist(), anchor.to_pylist()))
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("samples contain duplicate (episode_id, anchor) pairs")
+
+    merged = {
+        "schema_version": 1,
+        "order_by": order_by,
+        "episode_column": episode_column,
+        "description": manifest,
+    }
+    for key, value in (params or {}).items():
+        if key != "schema_version":
+            merged[key] = value
+    now = int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+    rows = samples.num_rows
+    return pa.table(
+        {
+            "manifest": pa.array([manifest] * rows, type=pa.string()),
+            "snapshot_id": pa.array([snapshot_id] * rows, type=pa.int64()),
+            "episode_id": episode,
+            "anchor": anchor,
+            "rank": rank,
+            "params": pa.array(
+                [json.dumps(merged, separators=(",", ":"))] * rows, type=pa.string()
+            ),
+            "created_at": pa.array([now] * rows, type=pa.int64()),
+        },
+        schema=MANIFEST_SCHEMA,
+    )
 
 
 class LakeSoulCatalog:
@@ -363,7 +473,7 @@ class LakeSoulCatalog:
         )
 
     def drop_snapshot(self, table: str | LakeSoulTable, snapshot: int) -> bool:
-        """Drop a snapshot; refuses while any tag still points at it."""
+        """Drop a snapshot; refuses while a tag or manifest still points at it."""
         handle = self._resolve_table(table)
         for tag_info in self.list_tags(handle):
             if tag_info.snapshot_id == int(snapshot):
@@ -371,11 +481,161 @@ class LakeSoulCatalog:
                     f"snapshot {snapshot} is tagged as {tag_info.tag!r}; "
                     "drop the tag first"
                 )
+        manifests = self._manifest_refs(handle, int(snapshot))
+        if manifests:
+            raise ValueError(
+                f"snapshot {snapshot} is referenced by manifest(s) {manifests}; "
+                "drop them first"
+            )
         return self._client.drop_snapshot(
             handle.name,
             snapshot,
             namespace=handle.namespace,
         )
+
+    def create_manifest(
+        self,
+        table: str | LakeSoulTable,
+        manifest: str,
+        samples: pa.Table,
+        *,
+        snapshot: int | None = None,
+        params: Mapping[str, Any] | None = None,
+        order_by: str = "frame_index",
+        episode_column: str = "episode_id",
+        overwrite: bool = False,
+    ) -> ManifestInfo:
+        """Persist a sample manifest bound to a snapshot of ``table``.
+
+        ``samples`` contains ``episode_id`` and ``anchor`` (the ``order_by``
+        column value) columns, optionally ``rank``; a snapshot is created when
+        none is given so the manifest stays reproducible across later writes.
+        """
+        handle = self._resolve_table(table)
+        manifest = _validate_manifest_name(manifest)
+        if overwrite:
+            self.drop_manifest(handle, manifest)
+        if snapshot is None:
+            snapshot_id = self.create_snapshot(handle, f"manifest:{manifest}")
+        else:
+            snapshot_id = int(snapshot)
+            if not list(self._client.list_snapshot_commits(handle.id, snapshot_id)):
+                raise ValueError(
+                    f"unknown snapshot {snapshot_id} on table {handle.name!r}"
+                )
+        manifest_table = self._manifest_table(handle, create=True)
+        rows = _manifest_rows(
+            manifest,
+            samples,
+            snapshot_id,
+            order_by=order_by,
+            episode_column=episode_column,
+            params=params,
+        )
+        manifest_table.write_arrow(rows, format="parquet")
+        return ManifestInfo(
+            manifest=manifest,
+            snapshot_id=snapshot_id,
+            rows=rows.num_rows,
+            created_at=int(rows.column("created_at")[0].as_py()),
+        )
+
+    def list_manifests(self, table: str | LakeSoulTable) -> list[ManifestInfo]:
+        """Summarize the manifests of a table (name, snapshot, rows, created_at)."""
+        handle = self._resolve_table(table)
+        data = self._manifest_rows_of(handle)
+        if data is None or data.num_rows == 0:
+            return []
+        summaries: dict[str, tuple[int, int, int]] = {}
+        for manifest, snapshot_id, created_at in zip(
+            data.column("manifest").to_pylist(),
+            data.column("snapshot_id").to_pylist(),
+            data.column("created_at").to_pylist(),
+        ):
+            rows, current_snapshot, current_created = summaries.get(
+                manifest, (0, int(snapshot_id), 0)
+            )
+            summaries[manifest] = (
+                rows + 1,
+                current_snapshot,
+                max(current_created, int(created_at)),
+            )
+        return [
+            ManifestInfo(name, snapshot_id, rows, created_at)
+            for name, (rows, snapshot_id, created_at) in sorted(summaries.items())
+        ]
+
+    def read_manifest(self, table: str | LakeSoulTable, manifest: str) -> pa.Table:
+        """Return the rows of one manifest."""
+        handle = self._resolve_table(table)
+        manifest = _validate_manifest_name(manifest)
+        data = self._manifest_rows_of(handle)
+        if data is None:
+            raise ValueError(f"table {handle.name!r} has no manifests")
+        selected = data.filter(pc.equal(data.column("manifest"), manifest))
+        if selected.num_rows == 0:
+            raise ValueError(f"unknown manifest {manifest!r} on table {handle.name!r}")
+        return selected
+
+    def drop_manifest(self, table: str | LakeSoulTable, manifest: str) -> bool:
+        """Remove one manifest and rewrite the sibling table without it."""
+        handle = self._resolve_table(table)
+        manifest = _validate_manifest_name(manifest)
+        data = self._manifest_rows_of(handle)
+        if data is None or data.num_rows == 0:
+            return False
+        keep = data.filter(pc.not_equal(data.column("manifest"), manifest))
+        if keep.num_rows == data.num_rows:
+            return False
+        manifest_name = f"{handle.name}{MANIFEST_TABLE_SUFFIX}"
+        path = self._manifest_path(handle)
+        self.drop_table(manifest_name, namespace=handle.namespace, if_exists=True)
+        manifest_table = self.create_table(
+            manifest_name,
+            path=path,
+            schema=MANIFEST_SCHEMA,
+            namespace=handle.namespace,
+            partition_by=("manifest",),
+        )
+        if keep.num_rows:
+            manifest_table.write_arrow(keep, format="parquet")
+        return True
+
+    def _manifest_path(self, handle: LakeSoulTable) -> str:
+        return f"{handle.path.rstrip('/')}{MANIFEST_TABLE_SUFFIX}"
+
+    def _manifest_table(
+        self, handle: LakeSoulTable, *, create: bool
+    ) -> LakeSoulTable | None:
+        name = f"{handle.name}{MANIFEST_TABLE_SUFFIX}"
+        try:
+            return self.table(name, namespace=handle.namespace)
+        except TableNotFoundError:
+            if not create:
+                return None
+        try:
+            return self.create_table(
+                name,
+                path=self._manifest_path(handle),
+                schema=MANIFEST_SCHEMA,
+                namespace=handle.namespace,
+                partition_by=("manifest",),
+            )
+        except AlreadyExistsError:
+            return self.table(name, namespace=handle.namespace)
+
+    def _manifest_rows_of(self, handle: LakeSoulTable) -> pa.Table | None:
+        manifest_table = self._manifest_table(handle, create=False)
+        if manifest_table is None:
+            return None
+        return manifest_table.scan().to_arrow_table()
+
+    def _manifest_refs(self, handle: LakeSoulTable, snapshot: int) -> list[str]:
+        data = self._manifest_rows_of(handle)
+        if data is None or data.num_rows == 0:
+            return []
+        mask = pc.equal(data.column("snapshot_id"), pa.scalar(snapshot))
+        return sorted(set(data.filter(mask).column("manifest").to_pylist()))
 
     def purge(
         self,
@@ -430,6 +690,11 @@ class LakeSoulCatalog:
             if if_exists:
                 return
             raise
+        # Sample manifests live in a sibling table and go with the base table.
+        try:
+            self._client.drop_table(f"{name}{MANIFEST_TABLE_SUFFIX}", namespace)
+        except TableNotFoundError:
+            pass
 
     def _resolve_namespace(self, namespace: str | None) -> str:
         resolved = self._namespace if namespace is None else namespace
