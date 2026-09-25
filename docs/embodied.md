@@ -1,6 +1,6 @@
 # LakeSoul 具身数据支持 · 总体文档
 
-- 状态：M1/M2/M4 主体完成；P0（snapshot/tag/pin）已合并（PR #925）；Blob R1（pack/`.blobref`/vacuum）已实现（PR #936）；Phase D manifest 已实现 D1（catalog API + `from_manifest` + 治理，Daft 读取待补）。
+- 状态：M1/M2/M4 主体完成；P0（snapshot/tag/pin）已合并（PR #925）；Blob R1（pack/`.blobref`/vacuum）已实现（PR #936）；Phase D manifest 已实现（catalog API + `from_manifest` + Daft `read_samples` + 治理）。
 - 面向读者：使用/维护具身数据能力的开发者。用户向教程见 website 的 [Embodied Data](../website/docs/03-Usage%20Docs/20-embodied-data.md)（英文），设计细节见 [embodied-snapshot-tag-design.md](./embodied-snapshot-tag-design.md) 与 [embodied-plan.md](./embodied-plan.md)。
 
 ## 0. 目标与非目标
@@ -75,7 +75,7 @@
 | 时间语义（timestamp/snapshot/tag、时区规则） | `scan.options(...)` | 完成（Python） |
 | 快照/标签与 pin-aware 保留 | `catalog.create_snapshot/create_tag/...` | 完成（PR #925） |
 | 自动/手动 pack GC | `blob_vacuum_interval`、`vacuum_blobs` | 完成（PR #936） |
-| sample manifest（sibling 表 + `from_manifest` + 复现测试） | `catalog.create_manifest` / `EmbodiedDataset.from_manifest` | 完成 D1（Daft 读取待补） |
+| sample manifest（sibling 表 + `from_manifest` + Daft `read_samples` + 复现测试） | `catalog.create_manifest` / `EmbodiedDataset.from_manifest` / `read_samples(manifest=...)` | 完成 |
 
 ## 4. 关键机制
 
@@ -110,7 +110,7 @@
 - `catalog.create_manifest(table, manifest, samples, ...)`：`samples` 至少含 `episode_id, anchor`，`rank` 缺省自动编号；未给 snapshot 时自动创建快照；`params` 记录 `window/stride/boundary/seed/time_column/streams/video` 等读配置；
 - `EmbodiedDataset.from_manifest(table, manifest, ...)`：按 `snapshot_id` 固定读取，显式锚点（值→行号映射），默认 `rank` 顺序、`shuffle=True` 可选，支持 `iter_epoch(rank, world_size)` 分片与 pickle 序列化；
 - 治理：`drop_snapshot` 拒绝删除被 manifest 引用的快照；`drop_table` 级联删除 sibling 表；锚点缺失/未知 manifest 直接报错不静默跳过；`create_manifest(overwrite=True)` 通过重写 sibling 表实现；
-- 未完成：Daft 的 `read_samples(..., manifest=...)`。
+- Daft：`read_samples(scan, manifest="eval")` 或 `read_samples(manifest="eval", table=..., catalog=...)`，输出含 `rank`；分布式输出顺序不保证，需要时按 `rank` 排序；
 
 ## 5. Python API 索引
 
@@ -142,12 +142,11 @@ from lakesoul.vacuum import vacuum_blobs, VacuumResult
 
 ## 7. 限制与注意事项
 
-1. Daft 的 manifest 读取（`read_samples(..., manifest=...)`）尚未提供，暂用 `EmbodiedDataset.from_manifest`；
-2. **旧 Spark Parquet writer 路径不支持 blob**：blob 表依赖 native writer；该遗留路径计划移除，不做拦截；
-3. `read_samples`/`read_gop_frames` 位于 `lakesoul.embodied.daft` 子模块，不在 `lakesoul.embodied` 顶层导出；
-4. 单机 LeRobot 导入仅支持 v3.0；MCAP 支持 JSON 与 protobuf（FileDescriptorSet）；
-5. `align()` 物化 API 为 P1，读时副流对齐推荐直接用 `EmbodiedDataset(streams=...)`；
-6. blob GC 依赖 sidecar 完整性：live 文件缺 `.blobref` 时 vacuum 整体跳过（安全优先）。
+1. **旧 Spark Parquet writer 路径不支持 blob**：blob 表依赖 native writer；该遗留路径计划移除，不做拦截；
+2. `read_samples`/`read_gop_frames` 位于 `lakesoul.embodied.daft` 子模块，不在 `lakesoul.embodied` 顶层导出；
+3. 单机 LeRobot 导入仅支持 v3.0；MCAP 支持 JSON 与 protobuf（FileDescriptorSet）；
+4. `align()` 物化 API 为 P1，读时副流对齐推荐直接用 `EmbodiedDataset(streams=...)`；
+5. blob GC 依赖 sidecar 完整性：live 文件缺 `.blobref` 时 vacuum 整体跳过（安全优先）。
 
 ## 8. 相关文档
 

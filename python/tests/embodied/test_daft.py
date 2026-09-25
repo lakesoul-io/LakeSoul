@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 pytest.importorskip("daft")
@@ -525,6 +526,64 @@ def test_import_lerobot_gop_daft_blob_external(tmp_path: Path) -> None:
     finally:
         catalog.drop_table(f"{table_name}_frames", if_exists=True)
         catalog.drop_table(f"{table_name}_gops", if_exists=True)
+        catalog.drop_table(table_name, if_exists=True)
+
+
+def test_read_samples_from_manifest(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _write_dataset(root)
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_manifest")
+    table_path = (tmp_path / "lake" / table_name).as_uri()
+
+    try:
+        import_lerobot(
+            root, table=table_name, path=table_path, physical_format="parquet"
+        )
+        table = catalog.table(table_name)
+        baseline = (
+            read_samples(table.scan(), window=WINDOW, stride=1).collect().to_pylist()
+        )
+        assert baseline
+        selected = sorted(baseline, key=lambda row: (row["episode_id"], row["anchor"]))[
+            :3
+        ]
+        samples = pa.table(
+            {
+                "episode_id": pa.array(
+                    [row["episode_id"] for row in selected], type=pa.string()
+                ),
+                "anchor": pa.array(
+                    [row["anchor"] for row in selected], type=pa.int64()
+                ),
+                "rank": pa.array(list(reversed(range(len(selected)))), type=pa.int64()),
+            }
+        )
+        catalog.create_manifest(
+            table,
+            "eval",
+            samples,
+            params={"window": {name: list(bounds) for name, bounds in WINDOW.items()}},
+        )
+
+        rows = read_samples(table.scan(), manifest="eval").collect().to_pylist()
+        by_key = {(row["episode_id"], row["anchor"]): row for row in rows}
+        assert set(by_key) == {(row["episode_id"], row["anchor"]) for row in selected}
+        for row in selected:
+            actual = by_key[(row["episode_id"], row["anchor"])]
+            assert actual["observation_state"] == row["observation_state"]
+            assert actual["action"] == row["action"]
+        assert {
+            by_key[(row["episode_id"], row["anchor"])]["rank"] for row in selected
+        } == set(range(len(selected)))
+
+        rows2 = (
+            read_samples(manifest="eval", table=table_name, catalog=catalog)
+            .collect()
+            .to_pylist()
+        )
+        assert {(row["episode_id"], row["anchor"]) for row in rows2} == set(by_key)
+    finally:
         catalog.drop_table(table_name, if_exists=True)
 
 
