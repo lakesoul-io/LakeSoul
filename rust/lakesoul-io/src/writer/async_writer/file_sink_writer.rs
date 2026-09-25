@@ -45,10 +45,79 @@ pub struct FileSinkWriter {
     flush_results: Option<Vec<FlushOutput>>,
     /// Blob columns of this leaf file, keyed by column name.
     blob_columns: HashMap<String, BlobPolicy>,
-    /// Pack file URL per blob column (`<table_path>/_blob/<column>/<uuid>.blob`).
-    pack_paths: HashMap<String, String>,
-    /// Buffered external values per blob column, flushed on `flush`.
-    pack_buffers: HashMap<String, PackBuffer>,
+    /// Pack sinks per blob column; each rolls to a new pack once the policy's
+    /// ``pack_target_bytes`` is reached.
+    pack_sinks: HashMap<String, PackSinkState>,
+}
+
+/// Pack sink for one blob column.
+///
+/// Values are appended to the current pack; once the next value would push it
+/// over ``pack_target_bytes`` the current pack is finished and a new one is
+/// started (``target_bytes == 0`` keeps a single pack).
+struct PackSinkState {
+    column: String,
+    table_dir: String,
+    target_bytes: u64,
+    current_path: String,
+    current: PackBuffer,
+    finished: Vec<(String, Vec<u8>)>,
+}
+
+impl PackSinkState {
+    fn new(column: &str, table_dir: &str, target_bytes: u64) -> Self {
+        Self {
+            column: column.to_string(),
+            table_dir: table_dir.to_string(),
+            target_bytes,
+            current_path: Self::next_path(table_dir, column),
+            current: PackBuffer::default(),
+            finished: Vec::new(),
+        }
+    }
+
+    fn next_path(table_dir: &str, column: &str) -> String {
+        format!(
+            "{table_dir}/_blob/{column}/{}.blob",
+            uuid::Uuid::new_v4().simple()
+        )
+    }
+
+    /// Finished packs plus the in-progress one, in write order.
+    fn take_packs(&mut self) -> Vec<(String, Vec<u8>)> {
+        let mut packs = std::mem::take(&mut self.finished);
+        if !self.current.is_empty() {
+            let path = std::mem::replace(
+                &mut self.current_path,
+                Self::next_path(&self.table_dir, &self.column),
+            );
+            packs.push((path, std::mem::take(&mut self.current).into_data()));
+        }
+        packs
+    }
+}
+
+impl blob::BlobPackSink for PackSinkState {
+    fn append(&mut self, value: &[u8]) -> Result<blob::PackLocation> {
+        if self.target_bytes > 0
+            && !self.current.is_empty()
+            && self.current.len() as u64 + value.len() as u64 > self.target_bytes
+        {
+            let path = std::mem::replace(
+                &mut self.current_path,
+                Self::next_path(&self.table_dir, &self.column),
+            );
+            self.finished
+                .push((path, std::mem::take(&mut self.current).into_data()));
+        }
+        let (offset, length, crc) = self.current.append(value)?;
+        Ok(blob::PackLocation {
+            pack_path: self.current_path.clone(),
+            offset,
+            length,
+            crc,
+        })
+    }
 }
 
 impl FileSinkWriter {
@@ -77,7 +146,7 @@ impl FileSinkWriter {
         });
 
         let blob_columns = blob::parse_blob_policies(io_session.io_config().options())?;
-        let pack_paths = if blob_columns.is_empty() {
+        let pack_sinks = if blob_columns.is_empty() {
             HashMap::new()
         } else {
             let file_url = (sink.config().table_paths.len() == 1)
@@ -91,14 +160,11 @@ impl FileSinkWriter {
                 .map(|(dir, _)| dir)
                 .unwrap_or_default();
             blob_columns
-                .keys()
-                .map(|column| {
+                .iter()
+                .map(|(column, policy)| {
                     (
                         column.clone(),
-                        format!(
-                            "{table_dir}/_blob/{column}/{}.blob",
-                            uuid::Uuid::new_v4().simple()
-                        ),
+                        PackSinkState::new(column, table_dir, policy.pack_target_bytes),
                     )
                 })
                 .collect()
@@ -115,8 +181,7 @@ impl FileSinkWriter {
             buffered_size: 0,
             flush_results: None,
             blob_columns,
-            pack_paths,
-            pack_buffers: HashMap::new(),
+            pack_sinks,
         })
     }
 
@@ -318,12 +383,11 @@ impl FileSinkWriter {
             let Ok(index) = batch.schema().index_of(&column) else {
                 continue;
             };
-            let Some(pack_path) = self.pack_paths.get(&column).cloned() else {
+            let Some(sink) = self.pack_sinks.get_mut(&column) else {
                 continue;
             };
-            let pack = self.pack_buffers.entry(column).or_default();
             let array = batch.column(index).clone();
-            let encoded = blob::encode_column(array.as_ref(), &policy, pack, &pack_path)?;
+            let encoded = blob::encode_column_with_sink(array.as_ref(), &policy, sink)?;
             let mut columns: Vec<arrow_array::ArrayRef> = batch.columns().to_vec();
             columns[index] = encoded;
             batch = RecordBatch::try_new(batch.schema(), columns)
@@ -351,23 +415,19 @@ impl FileSinkWriter {
             .task_ctx()
             .runtime_env()
             .object_store(&self.sink.config().object_store_url)?;
-        let buffers = std::mem::take(&mut self.pack_buffers);
+        let sinks = std::mem::take(&mut self.pack_sinks);
         let mut written: Vec<String> = Vec::new();
-        for (column, buffer) in buffers {
-            if buffer.is_empty() {
-                continue;
+        for (_column, mut sink) in sinks {
+            for (pack_path, data) in sink.take_packs() {
+                object_store
+                    .put(
+                        &Path::from(Self::url_to_object_path(&pack_path)),
+                        data.into(),
+                    )
+                    .await?;
+                debug!("wrote blob pack {}", pack_path);
+                written.push(pack_path);
             }
-            let Some(pack_path) = self.pack_paths.get(&column).cloned() else {
-                continue;
-            };
-            object_store
-                .put(
-                    &Path::from(Self::url_to_object_path(&pack_path)),
-                    buffer.into_data().into(),
-                )
-                .await?;
-            debug!("wrote blob pack {}", pack_path);
-            written.push(pack_path);
         }
         written.sort();
         written.dedup();
@@ -522,6 +582,7 @@ impl AsyncBatchWriter for FileSinkWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::BlobPackSink;
 
     #[test]
     fn blobref_payload_escapes_paths() {
@@ -554,5 +615,41 @@ mod tests {
             FileSinkWriter::url_to_object_path("s3a:/bucket/a/b.blob"),
             "a/b.blob"
         );
+    }
+
+    #[test]
+    fn pack_sink_rolls_at_the_target() {
+        let mut sink = PackSinkState::new("frame", "s3://bucket/table", 10);
+        let first = sink.append(b"aaaa").unwrap();
+        let second = sink.append(b"bbbb").unwrap();
+        let third = sink.append(b"cccc").unwrap();
+
+        assert_eq!(first.offset, 0);
+        assert_eq!(second.offset, 4);
+        assert_eq!(first.pack_path, second.pack_path);
+        assert_ne!(third.pack_path, second.pack_path);
+        assert_eq!(third.offset, 0);
+        assert!(
+            first
+                .pack_path
+                .starts_with("s3://bucket/table/_blob/frame/")
+        );
+
+        let packs = sink.take_packs();
+        assert_eq!(packs.len(), 2);
+        assert_eq!(packs[0].1, b"aaaabbbb");
+        assert_eq!(packs[1].1, b"cccc");
+    }
+
+    #[test]
+    fn pack_sink_without_target_keeps_one_pack() {
+        let mut sink = PackSinkState::new("frame", "s3://bucket/table", 0);
+        sink.append(b"aaaa").unwrap();
+        sink.append(b"bbbb").unwrap();
+        sink.append(b"cccc").unwrap();
+
+        let packs = sink.take_packs();
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].1, b"aaaabbbbcccc");
     }
 }

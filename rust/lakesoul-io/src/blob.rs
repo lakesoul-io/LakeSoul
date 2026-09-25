@@ -36,7 +36,8 @@ pub const BLOB_TAG_INLINE: u8 = 0x00;
 pub const BLOB_TAG_EXTERNAL: u8 = 0x01;
 /// Default inline threshold: values up to 16 KiB stay in the data file.
 pub const DEFAULT_INLINE_THRESHOLD: usize = 16 * 1024;
-/// Default pack target size (256 MiB); informational for now.
+/// Default pack target size (256 MiB); a column starts a new pack once the
+/// next value would push the current one over this size.
 pub const DEFAULT_PACK_TARGET_BYTES: u64 = 256 * 1024 * 1024;
 /// Option key that keeps tagged blob values in scanned batches.
 pub const OPTION_KEY_BLOB_MATERIALIZE: &str = "blob_materialize";
@@ -204,6 +205,41 @@ pub enum EncodedValue {
     External { offset: u64, length: u32, crc: u32 },
 }
 
+/// Where an externalized value was appended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackLocation {
+    pub pack_path: String,
+    pub offset: u64,
+    pub length: u32,
+    pub crc: u32,
+}
+
+/// Sink receiving externalized values.
+///
+/// Implementations may roll to a new pack once the policy's
+/// ``pack_target_bytes`` is reached, so a single column can span several packs.
+pub trait BlobPackSink {
+    fn append(&mut self, value: &[u8]) -> Result<PackLocation>;
+}
+
+/// Sink that keeps every value in one pack (small columns and tests).
+struct SinglePackSink<'a> {
+    pack: &'a mut PackBuffer,
+    path: &'a str,
+}
+
+impl BlobPackSink for SinglePackSink<'_> {
+    fn append(&mut self, value: &[u8]) -> Result<PackLocation> {
+        let (offset, length, crc) = self.pack.append(value)?;
+        Ok(PackLocation {
+            pack_path: self.path.to_string(),
+            offset,
+            length,
+            crc,
+        })
+    }
+}
+
 /// Encode one value, spilling to `pack` when the policy says external.
 pub fn encode_value(
     value: &[u8],
@@ -222,27 +258,27 @@ pub fn encode_value(
 }
 
 /// Encode one binary array into tagged bytes, appending external values to
-/// `pack`. Nulls are preserved; non-binary columns are rejected.
-pub fn encode_column(
+/// `sink`. Nulls are preserved; non-binary columns are rejected.
+pub fn encode_column_with_sink(
     array: &dyn Array,
     policy: &BlobPolicy,
-    pack: &mut PackBuffer,
-    pack_path: &str,
+    sink: &mut dyn BlobPackSink,
 ) -> Result<ArrayRef> {
     fn encode(
         value: &[u8],
         policy: &BlobPolicy,
-        pack: &mut PackBuffer,
-        pack_path: &str,
+        sink: &mut dyn BlobPackSink,
     ) -> Result<Vec<u8>> {
-        match encode_value(value, policy, pack)? {
-            EncodedValue::Inline => Ok(tagged_inline(value)),
-            EncodedValue::External {
-                offset,
-                length,
-                crc,
-            } => Ok(tagged_external(pack_path, offset, length, crc)),
+        if !policy.externalizes(value.len()) {
+            return Ok(tagged_inline(value));
         }
+        let location = sink.append(value)?;
+        Ok(tagged_external(
+            &location.pack_path,
+            location.offset,
+            location.length,
+            location.crc,
+        ))
     }
 
     match array.data_type() {
@@ -254,7 +290,7 @@ pub fn encode_column(
                     out.push(None);
                     continue;
                 }
-                out.push(Some(encode(values.value(index), policy, pack, pack_path)?));
+                out.push(Some(encode(values.value(index), policy, sink)?));
             }
             Ok(Arc::new(BinaryArray::from_iter(out)))
         }
@@ -266,7 +302,7 @@ pub fn encode_column(
                     out.push(None);
                     continue;
                 }
-                out.push(Some(encode(values.value(index), policy, pack, pack_path)?));
+                out.push(Some(encode(values.value(index), policy, sink)?));
             }
             Ok(Arc::new(LargeBinaryArray::from_iter(out)))
         }
@@ -274,6 +310,21 @@ pub fn encode_column(
             "blob column must be Binary or LargeBinary, got {other}"
         )),
     }
+}
+
+/// Encode one binary array into tagged bytes, appending external values to
+/// `pack`. Nulls are preserved; non-binary columns are rejected.
+pub fn encode_column(
+    array: &dyn Array,
+    policy: &BlobPolicy,
+    pack: &mut PackBuffer,
+    pack_path: &str,
+) -> Result<ArrayRef> {
+    let mut sink = SinglePackSink {
+        pack,
+        path: pack_path,
+    };
+    encode_column_with_sink(array, policy, &mut sink)
 }
 
 /// Tagged bytes for an inline value.
@@ -526,5 +577,45 @@ mod tests {
         verify_external(value, 7, crc).unwrap();
         assert!(verify_external(value, 6, crc).is_err());
         assert!(verify_external(value, 7, crc ^ 1).is_err());
+    }
+
+    #[test]
+    fn encode_column_uses_sink_locations() {
+        struct FixedSink;
+        impl BlobPackSink for FixedSink {
+            fn append(&mut self, value: &[u8]) -> Result<PackLocation> {
+                Ok(PackLocation {
+                    pack_path: "s3://bucket/table/_blob/frame/pack.blob".to_string(),
+                    offset: 3,
+                    length: value.len() as u32,
+                    crc: crc32(value),
+                })
+            }
+        }
+
+        let policy = BlobPolicy {
+            mode: BlobMode::External,
+            ..BlobPolicy::default()
+        };
+        let array: ArrayRef =
+            Arc::new(BinaryArray::from_iter_values([b"abc".as_slice()]));
+        let mut sink = FixedSink;
+        let encoded =
+            encode_column_with_sink(array.as_ref(), &policy, &mut sink).unwrap();
+        let bytes = encoded.as_binary::<i32>().value(0).to_vec();
+        match parse_tagged(&bytes).unwrap() {
+            TaggedValue::External {
+                crc,
+                length,
+                offset,
+                pack_path,
+            } => {
+                assert_eq!(offset, 3);
+                assert_eq!(length, 3);
+                assert_eq!(crc, crc32(b"abc"));
+                assert_eq!(pack_path, "s3://bucket/table/_blob/frame/pack.blob");
+            }
+            other => panic!("expected external, got {other:?}"),
+        }
     }
 }

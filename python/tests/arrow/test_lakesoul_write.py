@@ -428,3 +428,55 @@ def test_create_table_rejects_invalid_blob_columns(tmp_path: Path) -> None:
             schema=schema,
             properties={"blob_columns": json.dumps({"id": {"mode": "sometimes"}})},
         )
+
+
+def test_blob_pack_target_rolls_packs(tmp_path: Path) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("blob_pack_target")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("frame", pa.binary()),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=schema,
+        properties={
+            "blob_columns": json.dumps(
+                {"frame": {"mode": "external", "pack_target_bytes": 4096}}
+            )
+        },
+    )
+    try:
+        payloads = [bytes([index]) * 2000 for index in range(6)]
+        for start in (0, 3):
+            batch = pa.table(
+                {
+                    "id": pa.array(range(start, start + 3), type=pa.int64()),
+                    "frame": pa.array(payloads[start : start + 3], type=pa.binary()),
+                },
+                schema=schema,
+            )
+            table.write_arrow(batch, format="parquet")
+
+        scanned = catalog.scan(table_name).to_arrow_table()
+        values = dict(
+            zip(
+                scanned.column("id").to_pylist(),
+                scanned.column("frame").to_pylist(),
+            )
+        )
+        assert values == {index: payloads[index] for index in range(6)}
+
+        packs = sorted((tmp_path / table_name).rglob("_blob/frame/*.blob"))
+        assert len(packs) >= 2, "a small pack_target_bytes must roll packs"
+        assert max(pack.stat().st_size for pack in packs) <= 4096 + 2000
+
+        listed: set[str] = set()
+        for sidecar in (tmp_path / table_name).rglob("*.blobref"):
+            listed.update(json.loads(sidecar.read_text())["packs"])
+        assert len(listed) == len(packs)
+    finally:
+        catalog.drop_table(table_name, if_exists=True)

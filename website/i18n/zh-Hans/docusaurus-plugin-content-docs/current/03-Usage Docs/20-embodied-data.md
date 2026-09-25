@@ -228,7 +228,8 @@ properties={"blob_columns": json.dumps({
 })}
 ```
 
-默认值：`mode="auto"`（大于 `inline_threshold` 时外置）、`inline_threshold` 16 KiB、`pack_target_bytes` 256 MiB（目前仅记录）。
+默认值：`mode="auto"`（大于 `inline_threshold` 时外置）、`inline_threshold` 16 KiB、`pack_target_bytes` 256 MiB。
+当下一个值会使当前 pack 超过 `pack_target_bytes` 时会开始新 pack（`0` 表示每次写入只用单个 pack）。
 
 ### 用 `BlobRef` 做延迟读取
 

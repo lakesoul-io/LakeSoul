@@ -84,7 +84,7 @@
 - pack 不可变共享：数据文件所在目录下的 `_blob/<column>/<uuid>.blob`（分区表每个分区目录一份 `_blob` 树，vacuum 递归扫描表下全部 `_blob`）；
 - 每个数据文件写 `<data_file>.blobref`（JSON：`{"version":1,"packs":[...]}`），路径约定归属数据文件，不改 `file_ops`；
 - tagged 行内表示：inline `0x00 || raw`；external `0x01 || crc32(u32 LE) || length(u32 LE) || offset(u64 LE) || pack_path`；
-- 表属性：`blob_columns = {"<col>": {"mode": "auto|inline|external", "inline_threshold": 16384, "pack_target_bytes": 268435456}}`（默认 auto / 16 KiB / 256 MiB；`pack_target_bytes` 目前仅记录）；
+- 表属性：`blob_columns = {"<col>": {"mode": "auto|inline|external", "inline_threshold": 16384, "pack_target_bytes": 268435456}}`（默认 auto / 16 KiB / 256 MiB；超过 `pack_target_bytes` 时开始新 pack，`0` 表示不滚动）；
 - 默认读会物化 blob；`reader_options={"blob_materialize": "false"}` 保留 tagged 值，用 `BlobRef.parse(value).read(offset, size)` 做范围读（整读校验 CRC32）；
 - SQL 引擎 glue：Spark/Flink 的 native 读写自动透传表属性 `blob_columns`（Spark 读侧由 `LakeSoulScanBuilder` 注入、`NativeIOUtils` 转发；Flink 由 `FlinkUtil.setIOConfigs` 转发），写入即 tag/外置、读取默认物化，`blob_materialize=false` 保留 tagged；CompactBucketIO 显式排除该选项，避免 compaction 二次编码；
 - compaction 透传：读侧不物化、写侧把输入 sidecar 的 pack 并集写到每个输出文件的 `.blobref`（保守并集，不拷贝 payload）；`moveFileToLevel`/`DelayedCopyCommitProtocol` 搬数据文件时同步搬 sidecar。
