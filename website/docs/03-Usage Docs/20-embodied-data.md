@@ -244,7 +244,8 @@ properties={"blob_columns": json.dumps({
 ```
 
 Defaults: `mode="auto"` (externalize when larger than `inline_threshold`), `inline_threshold`
-16 KiB, `pack_target_bytes` 256 MiB (currently informational).
+16 KiB, `pack_target_bytes` 256 MiB. A column starts a new pack once the next
+value would push the current pack past `pack_target_bytes` (`0` keeps a single pack per write).
 
 ### Deferred reads with `BlobRef`
 

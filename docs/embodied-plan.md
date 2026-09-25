@@ -141,7 +141,7 @@ blob 外置（M2-1~3）因涉及跨引擎可见性与 pack GC/快照引用语义
 - 已定决策：opt-in 表属性 `blob_columns`（列 → `mode/inline_threshold/pack_target_bytes`）→ IOConfig options；
   tagged binary 行内表示；R1 pack 布局：数据文件所在目录下的 `_blob/<column>/<uuid>.blob` + `<data_file>.blobref`
   sidecar（分区表为分区级 `_blob`，vacuum 递归扫描；设计见 [embodied-snapshot-tag-design.md](./embodied-snapshot-tag-design.md) §5）；
-  仅 Python/native 路径；默认 auto / 16KiB inline / pack 目标 256MiB；`LAKESOUL_BLOB_DISABLE` 逃生；
+  仅 Python/native 路径；默认 auto / 16KiB inline / pack 目标 256MiB（超过目标滚动新 pack，`0` 关闭滚动）；`LAKESOUL_BLOB_DISABLE` 逃生；
 - 已完成（端到端）：
   - Rust codec（`blob.rs`）与 writer 接线（`write_record_batch` 编码、`flush` 落
     shared pack 并写 `<data_file>.blobref`）；
