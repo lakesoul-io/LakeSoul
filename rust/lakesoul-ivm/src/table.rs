@@ -371,6 +371,28 @@ impl IvmTable {
         as_of_ms: i64,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
+        self.read_as_of_with_options(client, as_of_ms, Vec::new(), projection)
+            .await
+    }
+
+    /// Read the state as of `as_of_ms` restricted to `filters`.
+    pub async fn read_as_of_filtered(
+        &self,
+        client: &MetaDataClient,
+        as_of_ms: i64,
+        filters: Vec<Expr>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_as_of_with_options(client, as_of_ms, filters, None)
+            .await
+    }
+
+    async fn read_as_of_with_options(
+        &self,
+        client: &MetaDataClient,
+        as_of_ms: i64,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
         let mut files = Vec::new();
         for partition in client
             .get_all_partition_info_as_of(&self.table_id, as_of_ms)
@@ -382,7 +404,7 @@ impl IvmTable {
                     .await?,
             );
         }
-        self.read_files_with_options(files, Vec::new(), projection)
+        self.read_files_with_options(files, filters, projection)
             .await
     }
 
