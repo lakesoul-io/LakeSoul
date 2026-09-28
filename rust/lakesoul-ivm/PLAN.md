@@ -785,6 +785,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   单独 `update_before` 撤回、`update_after` 恢复、rebuild。
 - 范围说明：无主键的 row/union 视图仍无法按行撤回（无行身份），保持文档现状。
 
+**聚合状态按 key/桶裁剪实施记录（已完成）**
+
+- 刷新窗口先算出候选受影响分组（`affected_groups_sql`）：delta 的分组 ∪ keyed 源中
+  变更主键的旧分组（旧值按 live 过滤）。
+- 据此对读取做 key 过滤（`key_filters`：`IN` + `IS NULL`，NULL 分组也可用）：
+  - SUM/COUNT：`old` 按 delta 主键过滤（新增 `IvmTable::read_as_of_filtered`）、
+    MV 按候选分组过滤（`read_current_filtered`）；
+  - MIN/MAX/DISTINCT：`old` 同样按主键过滤，值状态表与 MV 都按候选分组过滤
+    （写 delta 用第一次裁剪读，`state_now`/MV 用同一 filters 重读）。
+- 过滤下推到 LakeSoul reader：行级过滤 + 桶裁剪（状态表 bucket=group 前缀、单桶列
+  命中时生效）。`partition_filters` 泛化为 `key_filters`，窗口分区裁剪沿用。
+- 测试 `tests/state_pruning.rs`：60 个分组、更新/删除少量分组后 SUM 与 MIN 的
+  全部分组仍与 SQL 一致、rebuild 正常；全量 29 个二进制 legacy/V2 全绿。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要

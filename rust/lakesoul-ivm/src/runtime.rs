@@ -1878,27 +1878,44 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let keyed = !view.source.primary_keys.is_empty();
+        // The window only touches the delta groups (plus the previous groups
+        // of the changed rows), so the old state and the MV are read pruned to
+        // those keys; the reader also prunes their buckets.
+        let delta_context = SessionContext::new();
         register_table(
-            &context,
+            &delta_context,
             "delta",
-            view.source.read_files(window.added_files).await?,
+            delta_batches.clone(),
             &view.source.schema,
         )?;
-        let keyed = !view.source.primary_keys.is_empty();
+        let old_batches = if keyed {
+            let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
+            let batches = view
+                .source
+                .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
+                .await?;
+            register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
+            batches
+        } else {
+            Vec::new()
+        };
+        let groups = delta_context
+            .sql(&affected_groups_sql(&view.source, &view.group_keys, keyed))
+            .await?
+            .collect()
+            .await?;
+        let filters = key_filters(&view.group_keys, &groups)?;
+
+        register_table(&context, "delta", delta_batches, &view.source.schema)?;
         if keyed {
-            register_table(
-                &context,
-                "old",
-                view.source
-                    .read_as_of(&self.client, window.before_timestamp)
-                    .await?,
-                &view.source.schema,
-            )?;
+            register_table(&context, "old", old_batches, &view.source.schema)?;
         }
         register_table(
             &context,
             "mv",
-            view.mv.read_current(&self.client).await?,
+            view.mv.read_current_filtered(&self.client, filters).await?,
             &view.mv.schema,
         )?;
         let sql = sum_count_refresh_sql(view, keyed, epoch);
@@ -2442,7 +2459,7 @@ impl IvmRuntime {
                 affected_batches.push(batch);
             }
         }
-        let filters = partition_filters(&view.partition_keys, &affected_batches)?;
+        let filters = key_filters(&view.partition_keys, &affected_batches)?;
         let src_batches = view
             .source
             .read_current_filtered(&self.client, filters)
@@ -2761,27 +2778,46 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let keyed = !view.source.primary_keys.is_empty();
+        // As in the SUM/COUNT path, only the delta groups (and the previous
+        // groups of the changed rows) can change, so the old state, the value
+        // state and the MV are read pruned to them (buckets included).
+        let delta_context = SessionContext::new();
         register_table(
-            &context,
+            &delta_context,
             "delta",
-            view.source.read_files(window.added_files).await?,
+            delta_batches.clone(),
             &view.source.schema,
         )?;
-        let keyed = !view.source.primary_keys.is_empty();
+        let old_batches = if keyed {
+            let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
+            let batches = view
+                .source
+                .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
+                .await?;
+            register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
+            batches
+        } else {
+            Vec::new()
+        };
+        let groups = delta_context
+            .sql(&affected_groups_sql(view.source, view.group_keys, keyed))
+            .await?
+            .collect()
+            .await?;
+        let filters = key_filters(view.group_keys, &groups)?;
+
+        register_table(&context, "delta", delta_batches, &view.source.schema)?;
         if keyed {
-            register_table(
-                &context,
-                "old",
-                view.source
-                    .read_as_of(&self.client, window.before_timestamp)
-                    .await?,
-                &view.source.schema,
-            )?;
+            register_table(&context, "old", old_batches, &view.source.schema)?;
         }
         register_table(
             &context,
             "state",
-            view.state.read_current(&self.client).await?,
+            view.state
+                .read_current_filtered(&self.client, filters.clone())
+                .await?,
             &view.state.schema,
         )?;
 
@@ -2825,13 +2861,15 @@ impl IvmRuntime {
         register_table(
             &context,
             "state_now",
-            view.state.read_current(&self.client).await?,
+            view.state
+                .read_current_filtered(&self.client, filters.clone())
+                .await?,
             &view.state.schema,
         )?;
         register_table(
             &context,
             "mv",
-            view.mv.read_current(&self.client).await?,
+            view.mv.read_current_filtered(&self.client, filters).await?,
             &view.mv.schema,
         )?;
         for batch in context
@@ -5019,9 +5057,30 @@ fn window_affected_sql(view: &WindowView) -> String {
     format!("with {} select * from affected", window_affected_cte(view))
 }
 
-/// Equality/`IN` filters over the partition keys of the affected rows, used
-/// to read only those partitions of the source.
-fn partition_filters(
+/// The groups a refresh window can touch: the groups in the delta plus, for a
+/// keyed source, the previous groups of the rows that changed.
+fn affected_groups_sql(source: &IvmTable, group_keys: &[String], keyed: bool) -> String {
+    let keys = quoted_list(group_keys);
+    if !keyed {
+        return format!("select distinct {keys} from delta");
+    }
+    let pks = quoted_list(&source.primary_keys);
+    let old_filter = source_delete_filter("o", change_column(source));
+    let pk_match = key_join_condition("o", "p", &source.primary_keys);
+    format!(
+        "with delta_groups as (select distinct {keys} from delta), \
+         delta_pks as (select distinct {pks} from delta), \
+         old_groups as (select distinct {keys} from old o \
+                        where {old_filter} \
+                          and exists (select 1 from delta_pks p where {pk_match})) \
+         select * from delta_groups union select * from old_groups"
+    )
+}
+
+/// Equality/`IN` filters over `keys` of the given rows, used to prune the
+/// source / state reads (and the reader's bucket pruning) to the affected
+/// partitions or groups.
+fn key_filters(
     partition_keys: &[String],
     batches: &[RecordBatch],
 ) -> Result<Vec<datafusion::prelude::Expr>> {
