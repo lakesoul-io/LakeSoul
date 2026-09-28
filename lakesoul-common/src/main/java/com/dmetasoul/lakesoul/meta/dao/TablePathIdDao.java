@@ -110,7 +110,11 @@ public class TablePathIdDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = "select table_path from table_path_id";
+        String sql =
+                "select tp.table_path from table_path_id tp "
+                        + "where not exists (select 1 from table_info ti "
+                        + "where ti.table_id = tp.table_id "
+                        + "and ti.properties::text like '%lakesoul.ivm.internal%')";
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -143,7 +147,11 @@ public class TablePathIdDao {
         ResultSet rs = null;
         String sql =
                 String.format(
-                        "select table_path from table_path_id where table_namespace = '%s'",
+                        "select tp.table_path from table_path_id tp "
+                                + "where tp.table_namespace = '%s' "
+                                + "and not exists (select 1 from table_info ti "
+                                + "where ti.table_id = tp.table_id "
+                                + "and ti.properties::text like '%%lakesoul.ivm.internal%%')",
                         tableNamespace);
         List<String> list = new ArrayList<>();
         try {

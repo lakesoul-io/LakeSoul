@@ -76,7 +76,11 @@ public class TableNameIdDao {
         ResultSet rs = null;
         String sql =
                 String.format(
-                        "select table_name from table_name_id where table_namespace = '%s'",
+                        "select tn.table_name from table_name_id tn "
+                                + "where tn.table_namespace = '%s' "
+                                + "and not exists (select 1 from table_info ti "
+                                + "where ti.table_id = tn.table_id "
+                                + "and ti.properties::text like '%%lakesoul.ivm.internal%%')",
                         tableNamespace);
         List<String> list = new ArrayList<>();
         try {
@@ -116,7 +120,11 @@ public class TableNameIdDao {
         ResultSet rs = null;
         String sql =
                 String.format(
-                        "select table_name, table_namespace from table_name_id where domain = '%s'",
+                        "select tn.table_name, tn.table_namespace from table_name_id tn "
+                                + "where tn.domain = '%s' "
+                                + "and not exists (select 1 from table_info ti "
+                                + "where ti.table_id = tn.table_id "
+                                + "and ti.properties::text like '%%lakesoul.ivm.internal%%')",
                         domain);
         List<NamespaceTableName> list = new ArrayList<>();
         try {

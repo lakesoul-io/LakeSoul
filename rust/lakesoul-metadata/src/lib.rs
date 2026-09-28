@@ -362,12 +362,20 @@ async fn get_prepared_statement<'a>(
             from table_path_id
             where table_path = $1::TEXT",
         DaoType::ListAllTablePath =>
-            "select table_path, table_id, table_namespace, domain
-            from table_path_id",
+            "select tp.table_path, tp.table_id, tp.table_namespace, tp.domain
+            from table_path_id tp
+            where not exists (
+                select 1 from table_info ti
+                where ti.table_id = tp.table_id
+                  and ti.properties::text like '%lakesoul.ivm.internal%')",
         DaoType::ListAllPathTablePathByNamespace =>
-            "select table_path
-            from table_path_id
-            where table_namespace = $1::TEXT ",
+            "select tp.table_path
+            from table_path_id tp
+            where tp.table_namespace = $1::TEXT
+              and not exists (
+                  select 1 from table_info ti
+                  where ti.table_id = tp.table_id
+                    and ti.properties::text like '%lakesoul.ivm.internal%')",
 
         // Select TableNameId
         DaoType::SelectTableNameIdByTableName =>
@@ -375,13 +383,21 @@ async fn get_prepared_statement<'a>(
             from table_name_id
             where table_name = $1::TEXT and table_namespace = $2::TEXT",
         DaoType::ListTableNameByNamespace =>
-            "select table_name, table_id, table_namespace, domain
-            from table_name_id
-            where table_namespace = $1::TEXT",
+            "select tn.table_name, tn.table_id, tn.table_namespace, tn.domain
+            from table_name_id tn
+            where tn.table_namespace = $1::TEXT
+              and not exists (
+                  select 1 from table_info ti
+                  where ti.table_id = tn.table_id
+                    and ti.properties::text like '%lakesoul.ivm.internal%')",
         DaoType::ListTableNamesByDomain =>
-            "select table_name, table_id, table_namespace, domain
-            from table_name_id
-            where domain = $1::TEXT",
+            "select tn.table_name, tn.table_id, tn.table_namespace, tn.domain
+            from table_name_id tn
+            where tn.domain = $1::TEXT
+              and not exists (
+                  select 1 from table_info ti
+                  where ti.table_id = tn.table_id
+                    and ti.properties::text like '%lakesoul.ivm.internal%')",
 
         // Select TableInfo
         DaoType::SelectTableInfoByTableId =>
