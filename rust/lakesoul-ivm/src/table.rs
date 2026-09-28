@@ -185,13 +185,15 @@ impl IvmTable {
     /// Keyed tables write through the partitioning writer with stable sort, so
     /// rows with the same key keep their input order (a `delete` written before
     /// an `insert` still wins in merge-on-read).
+    /// Returns the LakeSoul commit ids created by the write (empty when the
+    /// batch has no rows or the writer produced no files).
     pub async fn append_batch(
         &self,
         client: &MetaDataClient,
         batch: RecordBatch,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         if batch.num_rows() == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let mut builder = LakeSoulIOConfig::builder()
@@ -225,12 +227,12 @@ impl IvmTable {
             })
             .collect::<Vec<_>>();
         if files.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
-        client
+        let commit_ids = client
             .commit_data_files(&self.table_name, &self.namespace, files)
             .await?;
-        Ok(())
+        Ok(commit_ids)
     }
 
     /// Read the given data files with this table's schema and merge key.

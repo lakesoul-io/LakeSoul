@@ -90,11 +90,17 @@ do $$ begin
         to_versions        jsonb  not null,
         mv_versions_before jsonb  not null default '[]'::jsonb,
         mv_versions        jsonb  not null default '[]'::jsonb,
+        commit_ids         jsonb  not null default '[]'::jsonb,
         created_at         bigint not null,
         committed_at       bigint,
         primary key (view_id, generation, epoch)
     );
 exception when duplicate_table or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.epochs add column if not exists commit_ids jsonb not null default '[]'::jsonb;
+exception when duplicate_column or unique_violation then null;
 end $$;
 
 do $$ begin
@@ -271,6 +277,8 @@ pub struct EpochRecord {
     pub mv_versions_before: Vec<PartitionVersion>,
     /// The MV partition versions after the window was applied.
     pub mv_versions: Vec<PartitionVersion>,
+    /// The LakeSoul commit ids the window wrote to the MV.
+    pub commit_ids: Vec<String>,
     /// The allocation time (unix milliseconds).
     pub created_at: i64,
     /// The commit time (unix milliseconds).
@@ -303,7 +311,7 @@ impl BeginEpoch {
 }
 
 const EPOCH_COLUMNS: &str = "view_id, generation, epoch, window_key, status, \
-     to_versions, mv_versions_before, mv_versions, created_at, committed_at";
+     to_versions, mv_versions_before, mv_versions, commit_ids, created_at, committed_at";
 
 /// The `ivm` schema access layer.
 pub struct IvmMetadata {
@@ -669,14 +677,18 @@ impl IvmMetadata {
     }
 
     /// Mark an epoch committed and record the MV versions it produced.
+    /// Mark an epoch committed and record the MV versions and LakeSoul commit
+    /// ids it produced.
     pub async fn mark_epoch_committed(
         &self,
         record: &EpochRecord,
         mv_versions: &[PartitionVersion],
+        commit_ids: &[String],
     ) -> Result<()> {
         self.execute_rw(
-                "update ivm.epochs
-                 set status = 'committed', mv_versions = $4::JSONB, committed_at = $5::BIGINT
+            "update ivm.epochs
+                 set status = 'committed', mv_versions = $4::JSONB,
+                     commit_ids = $6::JSONB, committed_at = $5::BIGINT
                  where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
             &[
                 &record.view_id,
@@ -684,6 +696,7 @@ impl IvmMetadata {
                 &record.epoch,
                 &serde_json::to_value(mv_versions)?,
                 &crate::now_ms(),
+                &serde_json::to_value(commit_ids)?,
             ],
         )
         .await?;
@@ -960,7 +973,8 @@ fn epoch_record_from_row(row: &tokio_postgres::Row) -> Result<EpochRecord> {
         to_versions: serde_json::from_value(row.get(5))?,
         mv_versions_before: serde_json::from_value(row.get(6))?,
         mv_versions: serde_json::from_value(row.get(7))?,
-        created_at: row.get(8),
-        committed_at: row.get(9),
+        commit_ids: serde_json::from_value(row.get(8))?,
+        created_at: row.get(9),
+        committed_at: row.get(10),
     })
 }
