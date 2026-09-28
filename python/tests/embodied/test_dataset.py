@@ -611,3 +611,25 @@ def test_align_materializes_joined_table(monkeypatch) -> None:
 
     assert table.num_rows == 6
     assert table.column("grip_r").to_pylist() == [10.0, 10.0, 20.0, 20.0, 30.0, 30.0]
+
+
+def test_align_skips_only_unmatched_rows(monkeypatch) -> None:
+    primary = _timed_table(6)
+    secondary = pa.table(
+        {
+            "timestamp": pa.array([0.0, 2.0], type=pa.float64()),
+            "grip": pa.array([10.0, 20.0], type=pa.float64()),
+        }
+    )
+    _install_reader(monkeypatch, {"file-a": primary, "file-b": secondary})
+
+    table = align(
+        _FakeScan([_unit("a", "file-a")], schema=primary.schema),
+        _FakeScan([_unit("a", "file-b")], schema=secondary.schema),
+        columns=("grip",),
+        tolerance=1.0,
+        missing="skip",
+    )
+
+    assert table.column("state").to_pylist() == [0, 1, 2, 3]
+    assert table.column("grip_r").to_pylist() == [10.0, 20.0, 20.0, 20.0]
