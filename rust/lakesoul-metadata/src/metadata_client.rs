@@ -1716,6 +1716,206 @@ impl MetaDataClient {
         Ok(IncrementalWindow::from_partitions(changelogs))
     }
 
+    /// The changelog of every changed partition of a table, from per-partition
+    /// cursors, in one table-level scan.
+    ///
+    /// One query fetches the partition versions of every changed partition
+    /// (including the version each cursor sits on) and one fetches the data
+    /// commits they reference, instead of one pair of queries per partition.
+    /// `from_versions` maps a partition description to the exclusive cursor
+    /// version (`-1` when the partition starts at the window); partitions with
+    /// no entry are read from the beginning and partitions whose current
+    /// version is not newer than their cursor are skipped.
+    pub async fn get_table_changelog(
+        &self,
+        table_id: &str,
+        from_versions: &HashMap<String, i64>,
+    ) -> Result<IncrementalWindow> {
+        let partitions = self.get_all_partition_info(table_id).await?;
+        let changed = partitions
+            .iter()
+            .filter(|partition| {
+                i64::from(partition.version)
+                    > from_versions
+                        .get(&partition.partition_desc)
+                        .copied()
+                        .unwrap_or(-1)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            return Ok(IncrementalWindow::default());
+        }
+
+        let min_from = changed
+            .iter()
+            .map(|partition| {
+                from_versions
+                    .get(&partition.partition_desc)
+                    .copied()
+                    .unwrap_or(-1)
+            })
+            .min()
+            .unwrap_or(-1);
+        let rows = self
+            .execute_query(
+                DaoType::ListPartitionVersionsByTableIdAndMinVersion as i32,
+                [table_id, &min_from.to_string()].join(PARAM_DELIM),
+            )
+            .await?
+            .partition_info;
+        let mut rows_by_partition: HashMap<String, Vec<PartitionInfo>> = HashMap::new();
+        for row in rows {
+            rows_by_partition
+                .entry(row.partition_desc.clone())
+                .or_default()
+                .push(row);
+        }
+
+        let mut changelogs = Vec::with_capacity(changed.len());
+        // `(changelog index, commit ids)` of the partitions that need files.
+        let mut pending: Vec<(usize, Vec<entity::Uuid>)> = Vec::new();
+        for partition in &changed {
+            let from_version = from_versions
+                .get(&partition.partition_desc)
+                .copied()
+                .unwrap_or(-1);
+            let mut changelog = PartitionChangelog {
+                partition_desc: partition.partition_desc.clone(),
+                to_version: from_version,
+                ..Default::default()
+            };
+            let empty = Vec::new();
+            let partition_rows = rows_by_partition
+                .get(&partition.partition_desc)
+                .unwrap_or(&empty);
+            let baseline = if from_version >= 0 {
+                partition_rows
+                    .iter()
+                    .find(|row| i64::from(row.version) == from_version)
+                    .cloned()
+            } else {
+                None
+            };
+            if let Some(baseline) = &baseline {
+                changelog.to_timestamp = baseline.timestamp;
+            }
+            let window = partition_rows
+                .iter()
+                .filter(|row| {
+                    i64::from(row.version) > from_version
+                        && row.version <= partition.version
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if window.is_empty() {
+                if baseline.is_none() && from_version >= 0 {
+                    // History below the cursor is gone: the diff cannot be
+                    // trusted, so report the bound and ask for a rebuild.
+                    changelog.requires_rebuild = true;
+                    changelog.to_timestamp = partition.timestamp;
+                }
+                changelogs.push(changelog);
+                continue;
+            }
+            if baseline.is_none() && from_version >= 0 {
+                let last = window.last().expect("window is not empty");
+                changelog.to_version = i64::from(last.version);
+                changelog.to_timestamp = last.timestamp;
+                changelog.requires_rebuild = true;
+                changelogs.push(changelog);
+                continue;
+            }
+
+            let mut added_ids: Vec<entity::Uuid> = Vec::new();
+            let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+            for row in &window {
+                let commit_op = row.commit_op();
+                if commit_op == CommitOp::UpdateCommit {
+                    changelog.requires_rebuild = true;
+                }
+                if commit_op == CommitOp::DeleteCommit && row.snapshot.is_empty() {
+                    changelog.partition_deleted = true;
+                }
+                let snapshot_ids = if commit_op == CommitOp::CompactionCommit {
+                    // snapshot[0] is the compaction output, everything after it
+                    // is a concurrently appended commit that must stay.
+                    row.snapshot.get(1..).unwrap_or_default()
+                } else {
+                    row.snapshot.as_slice()
+                };
+                for id in snapshot_ids {
+                    push_unique_uuid(&mut added_ids, &mut seen_ids, id);
+                }
+                changelog.to_version = i64::from(row.version);
+                changelog.to_timestamp = row.timestamp;
+            }
+
+            if changelog.requires_rebuild || changelog.partition_deleted {
+                changelogs.push(changelog);
+                continue;
+            }
+
+            if let Some(baseline) = &baseline {
+                let baseline_ids = baseline
+                    .snapshot
+                    .iter()
+                    .map(|id| (id.high, id.low))
+                    .collect::<HashSet<_>>();
+                added_ids.retain(|id| !baseline_ids.contains(&(id.high, id.low)));
+            }
+            if !added_ids.is_empty() {
+                pending.push((changelogs.len(), added_ids));
+            }
+            changelogs.push(changelog);
+        }
+
+        if !pending.is_empty() {
+            let mut all_ids: Vec<entity::Uuid> = Vec::new();
+            let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+            for (_, ids) in &pending {
+                for id in ids {
+                    push_unique_uuid(&mut all_ids, &mut seen_ids, id);
+                }
+            }
+            let joined_commit_id = all_ids
+                .iter()
+                .map(|commit_id| {
+                    format!("{:0>16x}{:0>16x}", commit_id.high, commit_id.low)
+                })
+                .collect::<Vec<String>>()
+                .join("");
+            let commits = self
+                .execute_query(
+                    DaoType::ListDataCommitInfoByTableIdAndCommitIds as i32,
+                    [table_id, joined_commit_id.as_str()].join(PARAM_DELIM),
+                )
+                .await?
+                .data_commit_info;
+            for (index, ids) in pending {
+                let wanted = ids
+                    .iter()
+                    .map(|id| (id.high, id.low))
+                    .collect::<HashSet<_>>();
+                let partition_desc = &changelogs[index].partition_desc;
+                let commits = commits
+                    .iter()
+                    .filter(|commit| {
+                        commit.partition_desc == *partition_desc
+                            && commit.commit_id.is_some_and(|commit_id| {
+                                wanted.contains(&(commit_id.high, commit_id.low))
+                            })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                changelogs[index].added_files = active_added_files(&commits);
+            }
+        }
+
+        Ok(IncrementalWindow::from_partitions(changelogs))
+    }
+
     pub async fn get_single_data_commit_info(
         &self,
         table_id: &str,

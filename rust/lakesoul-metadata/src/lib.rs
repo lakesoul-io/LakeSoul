@@ -197,6 +197,13 @@ pub enum DaoType {
     ListDiscardCompressedFileInfoBeforeTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 12,
     /// The coded type for the Data Access Object for list discard compressed file by filter condition.
     ListDiscardCompressedFileByFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 13,
+    /// The coded type for the Data Access Object for list every partition version at or above a
+    /// minimum version of one table (table-level changelog scan). Reserved values outside the
+    /// coded JNI ranges: these queries are only issued by the Rust runtime.
+    ListPartitionVersionsByTableIdAndMinVersion = DAO_TYPE_QUERY_LIST_OFFSET + 30,
+    /// The coded type for the Data Access Object for list data commit info by table id and commit
+    /// id list (table-level changelog scan). Reserved value, see above.
+    ListDataCommitInfoByTableIdAndCommitIds = DAO_TYPE_QUERY_LIST_OFFSET + 31,
 
     /// The coded type for the Data Access Object for list namespaces by domain.
     ListNamespacesByDomain = DAO_TYPE_QUERY_LIST_OFFSET + 14,
@@ -496,6 +503,11 @@ async fn get_prepared_statement<'a>(
              from partition_info
              where table_id = $1::TEXT and timestamp <= $2::BIGINT
              ORDER BY table_id DESC, partition_desc DESC, version DESC",
+        DaoType::ListPartitionVersionsByTableIdAndMinVersion =>
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain, pinned
+             from partition_info
+             where table_id = $1::TEXT and version >= $2::INT
+             order by partition_desc, version",
 
         // Snapshots and tags
         DaoType::ListSnapshotsByTableId =>
@@ -791,6 +803,7 @@ async fn get_prepared_statement<'a>(
         DaoType::TransactionInsertPartitionInfo |
         DaoType::TransactionInsertDiscardCompressedFile |
         DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList |
+        DaoType::ListDataCommitInfoByTableIdAndCommitIds |
         DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList |
         DaoType::ListPartitionDescByTableIdAndParList => "",
 
@@ -1108,6 +1121,43 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::ListPartitionVersionsByTableIdAndMinVersion if params.len() == 2 => {
+            let min_version = params[1].parse::<i32>()?;
+            let result = conn.query(&statement, &[&params[0], &min_version]).await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
+        DaoType::ListDataCommitInfoByTableIdAndCommitIds if params.len() == 2 => {
+            let concated_uuid = &params[1];
+            if !concated_uuid.len().is_multiple_of(32) {
+                eprintln!(
+                    "Invalid params of query_type={:?}, params={:?}",
+                    query_type, params
+                );
+                return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
+            }
+            let uuid_list = separate_uuid(concated_uuid)?;
+            let uuid_str_list = "'".to_owned() + &uuid_list.join("','") + "'";
+            let uuid_list_str = uuid_list.join("");
+            let statement = format!(
+                "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain, pinned
+                from data_commit_info
+                where table_id = $1::TEXT
+                and commit_id in ({})
+                order by position(commit_id::text in '{}')",
+                uuid_str_list, uuid_list_str
+            );
+            let result = {
+                let statement = conn.prepare(&statement).await?;
+                conn.query(&statement, &[&params[0]]).await
+            };
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList
             if params.len() == 3 =>
         {
@@ -1181,7 +1231,10 @@ pub async fn execute_query(
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
         | DaoType::ListPartitionByTableIdAndTimestamp
-        | DaoType::ListPartitionByTableIdAndFilterCondition => ResultType::PartitionInfo,
+        | DaoType::ListPartitionByTableIdAndFilterCondition
+        | DaoType::ListPartitionVersionsByTableIdAndMinVersion => {
+            ResultType::PartitionInfo
+        }
 
         DaoType::ListSnapshotsByTableId
         | DaoType::CreateSnapshot
@@ -1195,9 +1248,8 @@ pub async fn execute_query(
         | DaoType::DropTagByTableIdAndTag => ResultType::SnapshotTagInfo,
 
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
-        | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList => {
-            ResultType::DataCommitInfo
-        }
+        | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList
+        | DaoType::ListDataCommitInfoByTableIdAndCommitIds => ResultType::DataCommitInfo,
 
         DaoType::ListAllPathTablePathByNamespace => ResultType::TablePathIdWithOnlyPath,
 

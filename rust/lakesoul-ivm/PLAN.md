@@ -41,7 +41,7 @@
   ~~TOP-K~~（P1 已完成）→ P2 见下
 - **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→
   ~~JVM `list tables` 过滤 internal 表~~、~~epoch 发布 commit_id~~、
-  ~~as-of 下沉 TableProvider~~（已完成）与 changelog 表级单扫描 →
+  ~~as-of 下沉 TableProvider~~、~~changelog 表级单扫描~~（已完成）→
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
 - **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
@@ -751,6 +751,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/table_provider.rs`：当前态/指定 epoch/as-of 与 `view_state_at_epoch`
   对照、投影与过滤、CDC tombstone 隐藏；全套 27 个二进制 legacy/V2 全绿。
 - 未完成：changelog 表级单扫描（`collect_source_window` 仍按分区增量读取）。
+
+**changelog 表级单扫描实施记录（已完成）**
+
+- metadata 侧新增两个表级查询（DAO 编码取列表区间内的保留值，不占用 JNI
+  已用偏移）：`ListPartitionVersionsByTableIdAndMinVersion` 一次取回所有变化分区
+  （含各自 cursor 所在版本）的全部 `partition_info` 行；
+  `ListDataCommitInfoByTableIdAndCommitIds` 一次取回所有引用的 data commit。
+- `MetaDataClient::get_table_changelog(table_id, from_versions)` 在内存中按分区
+  切分版本行、定位 baseline、处理 update/delete/compaction 语义、收集 commit id，
+  再按请求顺序分组计算 `active_added_files`。
+- `collect_source_window` 改用它：每条源窗口由 O(分区) 次元数据往返降为固定 2 次
+  （分区版本 + commit 文件）；`requires_rebuild`/`partition_deleted`/identity/cursor
+  推进等语义保持不变。
+- 测试 `rust/lakesoul-metadata/tests/table_changelog.rs` 与逐分区 API 对照：
+  多分区全量、按 cursor 增量、删除分区、update 触发 rebuild；IVM 全量 27 个二进制
+  legacy/V2 全绿。
 
 ## 9. 风险与开放问题
 
