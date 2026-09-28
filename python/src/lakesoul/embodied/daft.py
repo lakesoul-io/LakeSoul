@@ -24,6 +24,13 @@ import pyarrow as pa
 
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan, LakeSoulTable
 
+from .align import (
+    SecondaryStream,
+    StreamTable,
+    align_timestamps,
+    stream_scan,
+    stream_table_from_rows,
+)
 from .dataset import BOUNDARY_CLAMP, BOUNDARY_SKIP, Window
 from .importer import (
     ImportSummary,
@@ -465,6 +472,22 @@ class _GopBuilder:
         return {"gops": gop_rows, "frames": frame_rows}
 
 
+def _resolve_windows(
+    window: Mapping[str, Window | tuple[int, int]],
+) -> dict[str, Window]:
+    windows: dict[str, Window] = {}
+    for name, spec in window.items():
+        start = spec.start if isinstance(spec, Window) else spec[0]
+        end = spec.end if isinstance(spec, Window) else spec[1]
+        if isinstance(start, float) or isinstance(end, float):
+            raise TypeError(
+                "read_samples only supports row windows; got a seconds window "
+                f"for column {name!r}"
+            )
+        windows[name] = Window(int(start), int(end))
+    return windows
+
+
 def read_samples(
     scan: LakeSoulScan | None = None,
     *,
@@ -475,6 +498,8 @@ def read_samples(
     seed: int = 0,
     epoch: int = 0,
     boundary: str | None = None,
+    time_column: str = "timestamp",
+    streams: Sequence[SecondaryStream] = (),
     manifest: str | None = None,
     table: LakeSoulTable | str | None = None,
     catalog: LakeSoulCatalog | None = None,
@@ -488,22 +513,26 @@ def read_samples(
     packs the windows in a Daft UDF and explodes the samples, so both the
     ordering and the memory footprint stay per episode.
 
+    ``streams`` attaches :class:`lakesoul.embodied.SecondaryStream` tables:
+    each sample's window (the first window column's range) is aligned against
+    the stream's rows by timestamp with the stream's direction/tolerance, and
+    unmatched rows yield nulls or drop the sample for ``missing="skip"`` (the
+    same semantics as ``EmbodiedDataset(streams=...)``). The primary time
+    column is ``time_column``; streams are pinned by their own
+    ``snapshot``/``tag`` when set.
+
     Returns a DataFrame with ``episode_id``, ``anchor`` (the anchor's
-    ``order_by`` value) and one list column per window key. With
-    ``boundary="skip"`` anchors whose window leaves the episode are dropped;
-    with ``boundary="clamp"`` windows are clipped to the episode and only
-    anchors with a non-empty window survive.
+    ``order_by`` value), one list column per window key and one column per
+    aligned stream column (``suffix`` applied). With ``boundary="skip"``
+    anchors whose window leaves the episode are dropped; with
+    ``boundary="clamp"`` windows are clipped and only non-empty ones survive.
 
     With ``manifest=`` the samples come from a manifest
     (:meth:`LakeSoulCatalog.create_manifest`): the scan is pinned to the
     manifest snapshot, the explicit anchors are resolved by ``order_by`` value
     and the output carries the manifest ``rank`` (sort by it when order
-    matters). Pass the base ``scan`` or ``table`` (name or handle) together
-    with the manifest name.
+    matters). Pass the base ``scan`` or ``table`` together with the manifest.
     """
-    import daft
-    from daft import col, func, functions
-
     from lakesoul.daft import read_lakesoul
 
     if manifest is not None:
@@ -515,6 +544,8 @@ def read_samples(
             order_by=order_by,
             episode_column=episode_column,
             boundary=boundary,
+            time_column=time_column,
+            streams=streams,
             table=table,
             catalog=catalog,
             namespace=namespace,
@@ -532,80 +563,19 @@ def read_samples(
     if not window:
         raise ValueError("window must define at least one column")
 
-    windows: dict[str, Window] = {}
-    for name, spec in window.items():
-        resolved = (
-            spec if isinstance(spec, Window) else Window(int(spec[0]), int(spec[1]))
-        )
-        windows[name] = resolved
-
     dataframe = read_lakesoul(scan)
-    schema = dataframe.schema()
-    names = list(windows)
-    for name in names:
-        if name not in schema.column_names():
-            raise ValueError(f"window column {name!r} is not in the scan schema")
-    if order_by not in schema.column_names():
-        raise ValueError(f"order_by column {order_by!r} is not in the scan schema")
-
-    sample_type = daft.DataType.struct(
-        {
-            "anchor": schema[order_by].dtype,
-            **{name: daft.DataType.list(schema[name].dtype) for name in names},
-        }
-    )
-    payload_type = daft.DataType.list(sample_type)
-
-    def sampler(order_values: list, *window_values: list) -> list[dict[str, Any]]:
-        import numpy as np
-
-        count = len(order_values)
-        anchors = np.arange(0, count, stride, dtype=np.int64)
-        lower = min(item.start for item in windows.values())
-        upper = max(item.end for item in windows.values())
-        if boundary == BOUNDARY_SKIP and (lower < 0 or upper > 0):
-            keep = (anchors + lower >= 0) & (anchors + upper <= count)
-            anchors = anchors[keep]
-        if anchors.size > 1:
-            anchors = np.random.default_rng([seed, epoch]).permutation(anchors)
-        samples = []
-        for anchor in anchors.tolist():
-            sample: dict[str, Any] = {"anchor": order_values[anchor]}
-            for name, values in zip(names, window_values):
-                item = windows[name]
-                start = anchor + item.start
-                end = anchor + item.end
-                if boundary == BOUNDARY_CLAMP:
-                    start = max(start, 0)
-                    end = min(end, count)
-                if end <= start:
-                    sample = {}
-                    break
-                sample[name] = values[start:end]
-            if sample:
-                samples.append(sample)
-        return samples
-
-    aggregated = (
-        dataframe.sort([episode_column, order_by])
-        .groupby(episode_column)
-        .agg(
-            functions.list_agg(col(order_by)).alias(order_by),
-            *[functions.list_agg(col(name)).alias(name) for name in names],
-        )
-    )
-    sampler_udf = func(return_dtype=payload_type)(sampler)
-    exploded = aggregated.with_column(
-        "samples",
-        sampler_udf(col(order_by), *[col(name) for name in names]),
-    ).select(
-        episode_column,
-        functions.explode(col("samples")).alias("sample"),
-    )
-    return exploded.select(
-        episode_column,
-        col("sample")["anchor"].alias("anchor"),
-        *[col("sample")[name].alias(name) for name in names],
+    return _sample_pipeline(
+        dataframe,
+        episode_column=episode_column,
+        order_by=order_by,
+        time_column=time_column,
+        boundary=boundary,
+        windows=_resolve_windows(window),
+        streams=tuple(streams),
+        stride=stride,
+        seed=seed,
+        epoch=epoch,
+        anchors=None,
     )
 
 
@@ -618,13 +588,14 @@ def _read_manifest_samples(
     order_by: str | None,
     episode_column: str | None,
     boundary: str | None,
+    time_column: str,
+    streams: Sequence[SecondaryStream],
     table: LakeSoulTable | str | None,
     catalog: LakeSoulCatalog | None,
     namespace: str | None,
 ) -> Any:
     """Distributed samples for the explicit anchors of a manifest."""
-    import daft
-    from daft import col, func, functions
+    from daft import col
 
     from lakesoul.daft import read_lakesoul
 
@@ -664,121 +635,317 @@ def _read_manifest_samples(
             raise ValueError("manifest has no window params; pass window= explicitly")
         window = {name: tuple(value) for name, value in raw.items()}
 
-    windows: dict[str, Window] = {}
-    for name, spec in window.items():
-        start = spec.start if isinstance(spec, Window) else spec[0]
-        end = spec.end if isinstance(spec, Window) else spec[1]
-        if isinstance(start, float) or isinstance(end, float):
-            raise TypeError(
-                "read_samples only supports row windows; got a seconds window "
-                f"for column {name!r}"
+    resolved_streams = tuple(streams or ())
+    if not resolved_streams and params.get("streams"):
+        resolved_streams = tuple(
+            SecondaryStream(
+                catalog.table(spec["table"], namespace=handle.namespace).scan(),
+                on=spec.get("on", "timestamp"),
+                by=spec.get("by", "episode_id"),
+                columns=spec.get("columns"),
+                tolerance=spec.get("tolerance", 0.02),
+                direction=spec.get("direction", "nearest"),
+                missing=spec.get("missing", "null"),
+                suffix=spec.get("suffix", ""),
+                snapshot=spec.get("snapshot"),
+                tag=spec.get("tag"),
             )
-        windows[name] = Window(int(start), int(end))
+            for spec in params["streams"]
+        )
 
     pinned = (scan or handle.scan()).options(snapshot=snapshot_id)
     dataframe = read_lakesoul(pinned)
+    anchors_table = pa.table(
+        {
+            "__episode": rows.column("episode_id").cast(pa.string()),
+            "__anchor": rows.column("anchor").cast(pa.int64()),
+            "__rank": rows.column("rank").cast(pa.int64()),
+        }
+    )
+    episodes = sorted(set(anchors_table.column("__episode").to_pylist()))
+    dataframe = dataframe.where(col(resolved_episode_column).is_in(episodes))
+    return _sample_pipeline(
+        dataframe,
+        episode_column=resolved_episode_column,
+        order_by=resolved_order_by,
+        time_column=time_column,
+        boundary=resolved_boundary,
+        windows=_resolve_windows(window),
+        streams=resolved_streams,
+        stride=1,
+        seed=0,
+        epoch=0,
+        anchors=anchors_table,
+    )
+
+
+def _sample_pipeline(
+    dataframe: Any,
+    *,
+    episode_column: str,
+    order_by: str,
+    time_column: str,
+    boundary: str,
+    windows: Mapping[str, Window],
+    streams: Sequence[SecondaryStream],
+    stride: int,
+    seed: int,
+    epoch: int,
+    anchors: pa.Table | None,
+) -> Any:
+    """Aggregate per episode, align secondary streams and explode samples."""
+    import daft
+    from daft import col, func, functions
+
+    from lakesoul.daft import read_lakesoul
+
     schema = dataframe.schema()
     names = list(windows)
     for name in names:
         if name not in schema.column_names():
             raise ValueError(f"window column {name!r} is not in the scan schema")
-    for name in (resolved_order_by, resolved_episode_column):
+    for name in (order_by, episode_column):
         if name not in schema.column_names():
             raise ValueError(f"column {name!r} is not in the scan schema")
+    if streams and time_column not in schema.column_names():
+        raise ValueError(
+            f"secondary streams need the primary time column {time_column!r}"
+        )
 
-    anchors_table = pa.table(
-        {
-            "episode_id": rows.column("episode_id").cast(pa.string()),
-            "anchor": rows.column("anchor").cast(pa.int64()),
-            "rank": rows.column("rank").cast(pa.int64()),
-        }
-    )
-    episodes = sorted(set(anchors_table.column("episode_id").to_pylist()))
-    dataframe = dataframe.where(col(resolved_episode_column).is_in(episodes))
-    anchors_frame = daft.from_arrow(anchors_table)
-
-    sample_type = daft.DataType.struct(
-        {
-            "anchor": schema[resolved_order_by].dtype,
-            "rank": daft.DataType.int64(),
-            **{name: daft.DataType.list(schema[name].dtype) for name in names},
-        }
-    )
-    payload_type = daft.DataType.list(sample_type)
-
-    def sampler(
-        order_values: list,
-        anchors: list,
-        ranks: list,
-        *window_values: list,
-    ) -> list[dict[str, Any]]:
-        lookup: dict[int, int] = {}
-        for index, value in enumerate(order_values):
-            if value is None:
-                continue
-            key = int(value)
-            if key in lookup:
+    stream_frames = []
+    stream_specs: list[dict[str, Any]] = []
+    stream_dtypes: list[dict[str, Any]] = []
+    for index, stream in enumerate(streams):
+        if stream.by != episode_column:
+            raise ValueError(
+                f"secondary stream 'by' column must match the episode column "
+                f"{episode_column!r}, got {stream.by!r}"
+            )
+        stream_df = read_lakesoul(stream_scan(stream))
+        stream_schema = stream_df.schema()
+        columns = (
+            list(stream.columns)
+            if stream.columns is not None
+            else [
+                column
+                for column in stream_schema.column_names()
+                if column not in (stream.on, stream.by)
+            ]
+        )
+        for required in (stream.on, stream.by, *columns):
+            if required not in stream_schema.column_names():
                 raise ValueError(
-                    f"order_by column has duplicate value {key} in one episode; "
-                    "manifest anchors must be unique"
+                    f"secondary stream column {required!r} is not in its schema"
                 )
-            lookup[key] = index
-        samples = []
-        for anchor, sample_rank in zip(anchors, ranks):
-            index = lookup.get(int(anchor))
-            if index is None:
-                raise ValueError(f"manifest anchor {anchor} not found in episode")
-            sample: dict[str, Any] = {
-                "anchor": order_values[index],
-                "rank": int(sample_rank),
+        stream_frames.append(
+            stream_df.sort([stream.by, stream.on])
+            .groupby(stream.by)
+            .agg(
+                functions.list_agg(col(stream.on)).alias(f"__stream_{index}_on"),
+                *[
+                    functions.list_agg(col(column)).alias(f"__stream_{index}_{column}")
+                    for column in columns
+                ],
+            )
+        )
+        stream_specs.append(
+            {
+                "on": stream.on,
+                "columns": list(columns),
+                "suffix": stream.suffix,
+                "direction": stream.direction,
+                "tolerance": float(stream.tolerance),
+                "missing": stream.missing,
             }
-            for name, values in zip(names, window_values):
-                item = windows[name]
-                start = index + item.start
-                end = index + item.end
-                if resolved_boundary == BOUNDARY_CLAMP:
-                    start = max(start, 0)
-                    end = min(end, len(order_values))
-                if end <= start:
-                    sample = {}
-                    break
-                sample[name] = values[start:end]
-            if sample:
-                samples.append(sample)
-        return samples
+        )
+        stream_dtypes.append(
+            {column: stream_schema[column].dtype for column in columns}
+        )
+
+    sample_fields: dict[str, Any] = {"anchor": schema[order_by].dtype}
+    if anchors is not None:
+        sample_fields["rank"] = daft.DataType.int64()
+    for name in names:
+        sample_fields[name] = daft.DataType.list(schema[name].dtype)
+    stream_output_names: list[str] = []
+    for spec, dtypes in zip(stream_specs, stream_dtypes):
+        for column, dtype in dtypes.items():
+            output = f"{column}{spec['suffix']}"
+            if output in sample_fields or output in ("anchor", "rank"):
+                raise ValueError(f"aligned stream column {output!r} collides")
+            sample_fields[output] = daft.DataType.list(dtype)
+            stream_output_names.append(output)
 
     aggregated = (
-        dataframe.sort([resolved_episode_column, resolved_order_by])
-        .groupby(resolved_episode_column)
+        dataframe.sort([episode_column, order_by])
+        .groupby(episode_column)
         .agg(
-            functions.list_agg(col(resolved_order_by)).alias(resolved_order_by),
-            *[functions.list_agg(col(name)).alias(name) for name in names],
+            functions.list_agg(col(order_by)).alias("__order"),
+            *([functions.list_agg(col(time_column)).alias("__on")] if streams else []),
+            *[functions.list_agg(col(name)).alias(f"__w_{name}") for name in names],
         )
     )
-    anchor_agg = anchors_frame.groupby("episode_id").agg(
-        functions.list_agg(col("anchor")).alias("anchors"),
-        functions.list_agg(col("rank")).alias("ranks"),
-    )
-    joined = aggregated.join(anchor_agg, on=resolved_episode_column)
-    sampler_udf = func(return_dtype=payload_type)(sampler)
-    exploded = joined.with_column(
-        "samples",
-        sampler_udf(
-            col(resolved_order_by),
-            col("anchors"),
-            col("ranks"),
-            *[col(name) for name in names],
-        ),
-    ).select(
-        resolved_episode_column,
+    joined = aggregated
+    for frame in stream_frames:
+        joined = joined.join(frame, on=episode_column)
+    if anchors is not None:
+        anchor_frame = (
+            daft.from_arrow(
+                anchors.select(["__episode", "__anchor", "__rank"]).rename_columns(
+                    [episode_column, "__anchor", "__rank"]
+                )
+            )
+            .groupby(episode_column)
+            .agg(
+                functions.list_agg(col("__anchor")).alias("__anchors"),
+                functions.list_agg(col("__rank")).alias("__ranks"),
+            )
+        )
+        joined = joined.join(anchor_frame, on=episode_column)
+
+    manifest_mode = anchors is not None
+    window_specs = {name: (item.start, item.end) for name, item in windows.items()}
+    window_index = {name: index for index, name in enumerate(names)}
+    stream_chunk_sizes = [1 + len(spec["columns"]) for spec in stream_specs]
+
+    def sampler(*args: Any) -> list[dict[str, Any]]:
+        import numpy as np
+
+        cursor = 0
+        order_values = args[cursor]
+        cursor += 1
+        anchor_values = rank_values = None
+        if manifest_mode:
+            anchor_values = [int(value) for value in args[cursor]]
+            rank_values = [int(value) for value in args[cursor + 1]]
+            cursor += 2
+        on_values = None
+        if stream_specs:
+            on_values = args[cursor]
+            cursor += 1
+        window_values = args[cursor : cursor + len(names)]
+        cursor += len(names)
+        stream_values = args[cursor:]
+        chunks: list[tuple[Any, ...]] = []
+        offset = 0
+        for size in stream_chunk_sizes:
+            chunks.append(tuple(stream_values[offset : offset + size]))
+            offset += size
+
+        right_tables: list[StreamTable] = []
+        for spec, chunk in zip(stream_specs, chunks):
+            on_list = chunk[0]
+            right_tables.append(
+                stream_table_from_rows(
+                    [
+                        {
+                            spec["on"]: on_list[row],
+                            **{
+                                column: chunk[1 + index][row]
+                                for index, column in enumerate(spec["columns"])
+                            },
+                        }
+                        for row in range(len(on_list))
+                    ],
+                    on=spec["on"],
+                    columns=spec["columns"],
+                )
+            )
+
+        count = len(order_values)
+        if manifest_mode:
+            lookup: dict[int, int] = {}
+            for index, value in enumerate(order_values):
+                if value is None:
+                    continue
+                key = int(value)
+                if key in lookup:
+                    raise ValueError(
+                        f"order_by column has duplicate value {key} in one "
+                        "episode; manifest anchors must be unique"
+                    )
+                lookup[key] = index
+            anchor_rows = []
+            for anchor, sample_rank in zip(anchor_values, rank_values):
+                index = lookup.get(int(anchor))
+                if index is None:
+                    raise ValueError(f"manifest anchor {anchor} not found in episode")
+                anchor_rows.append((index, sample_rank))
+        else:
+            rows = np.arange(0, count, stride, dtype=np.int64)
+            lower = min(spec[0] for spec in window_specs.values())
+            upper = max(spec[1] for spec in window_specs.values())
+            if boundary == BOUNDARY_SKIP and (lower < 0 or upper > 0):
+                keep = (rows + lower >= 0) & (rows + upper <= count)
+                rows = rows[keep]
+            if rows.size > 1:
+                rows = np.random.default_rng([seed, epoch]).permutation(rows)
+            anchor_rows = [(int(index), None) for index in rows.tolist()]
+
+        samples: list[dict[str, Any]] = []
+        for anchor, sample_rank in anchor_rows:
+            sample: dict[str, Any] = {"anchor": order_values[anchor]}
+            if sample_rank is not None:
+                sample["rank"] = int(sample_rank)
+            ranges: dict[str, tuple[int, int]] = {}
+            for name in names:
+                start_offset, end_offset = window_specs[name]
+                start = anchor + start_offset
+                end = anchor + end_offset
+                if boundary == BOUNDARY_CLAMP:
+                    start = max(start, 0)
+                    end = min(end, count)
+                if end <= start:
+                    ranges = {}
+                    break
+                ranges[name] = (start, end)
+            if not ranges:
+                continue
+            for name, (start, end) in ranges.items():
+                sample[name] = window_values[window_index[name]][start:end]
+            if stream_specs:
+                start, end = next(iter(ranges.values()))
+                for spec, right in zip(stream_specs, right_tables):
+                    aligned, matched = align_timestamps(
+                        on_values[start:end],
+                        right,
+                        direction=spec["direction"],
+                        tolerance=spec["tolerance"],
+                    )
+                    if spec["missing"] == "skip" and not matched.all():
+                        sample = {}
+                        break
+                    for name, values in aligned.items():
+                        sample[f"{name}{spec['suffix']}"] = values.tolist()
+                if not sample:
+                    continue
+            samples.append(sample)
+        return samples
+
+    sampler_udf = func(
+        return_dtype=daft.DataType.list(daft.DataType.struct(sample_fields))
+    )(sampler)
+    sampler_args = [col("__order")]
+    if manifest_mode:
+        sampler_args.extend([col("__anchors"), col("__ranks")])
+    if stream_specs:
+        sampler_args.append(col("__on"))
+    sampler_args.extend(col(f"__w_{name}") for name in names)
+    for index, spec in enumerate(stream_specs):
+        sampler_args.append(col(f"__stream_{index}_on"))
+        sampler_args.extend(
+            col(f"__stream_{index}_{column}") for column in spec["columns"]
+        )
+    exploded = joined.with_column("samples", sampler_udf(*sampler_args)).select(
+        episode_column,
         functions.explode(col("samples")).alias("sample"),
     )
-    return exploded.select(
-        resolved_episode_column,
-        col("sample")["anchor"].alias("anchor"),
-        col("sample")["rank"].alias("rank"),
-        *[col("sample")[name].alias(name) for name in names],
-    )
+    selection = [episode_column, col("sample")["anchor"].alias("anchor")]
+    if manifest_mode:
+        selection.append(col("sample")["rank"].alias("rank"))
+    selection.extend(col("sample")[name].alias(name) for name in names)
+    selection.extend(col("sample")[name].alias(name) for name in stream_output_names)
+    return exploded.select(*selection)
 
 
 def read_gop_frames(
