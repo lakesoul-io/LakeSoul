@@ -187,6 +187,8 @@ create unique index if not exists ivm_epochs_window_key
   `get_data_files_of_single_partition` → MOR 读）。
 - 增量消费：`to_versions` 给出每个源读到的区间；MV 行上的 `__ivm_epoch` 可用于
   逐行过滤/审计。
+- epoch 行同时发布 `commit_ids`（该窗口写 MV 产生的 LakeSoul commit id，按 partition
+  一个），可与 `mv_versions` 一起用于定位/核对快照。
 - epoch 断档（generation 变化/`rebuild:` 行）表示视图被重建，消费者需重置状态。
 
 ## 9. GC

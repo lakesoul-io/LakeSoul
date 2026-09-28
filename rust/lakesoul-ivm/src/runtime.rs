@@ -1841,6 +1841,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(
@@ -1869,13 +1870,13 @@ impl IvmRuntime {
         let sql = sum_count_refresh_sql(view, keyed, epoch);
         for batch in context.sql(&sql).await?.collect().await? {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2005,6 +2006,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         if keyed {
@@ -2177,7 +2179,8 @@ impl IvmRuntime {
                 .await?
             {
                 if batch.num_rows() > 0 {
-                    view.output.append_batch(&self.client, batch).await?;
+                    commit_ids
+                        .extend(view.output.append_batch(&self.client, batch).await?);
                 }
             }
         } else {
@@ -2231,7 +2234,8 @@ impl IvmRuntime {
                     .await?
                 {
                     if batch.num_rows() > 0 {
-                        view.output.append_batch(&self.client, batch).await?;
+                        commit_ids
+                            .extend(view.output.append_batch(&self.client, batch).await?);
                     }
                 }
             }
@@ -2239,7 +2243,7 @@ impl IvmRuntime {
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -2287,6 +2291,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
@@ -2297,13 +2302,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -2376,6 +2381,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let delta_batches = view.source.read_files(window.added_files).await?;
         let mv_batches = view.mv.read_current(&self.client).await?;
@@ -2420,13 +2426,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2483,6 +2489,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         // Project both sides to the columns the view actually needs.
         let left_projection =
@@ -2676,13 +2683,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -2716,6 +2723,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(
@@ -2798,13 +2806,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2866,6 +2874,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         if !left_baseline.batches.is_empty() && !right_baseline.batches.is_empty() {
@@ -2891,14 +2900,15 @@ impl IvmRuntime {
             };
             for batch in joined.collect().await? {
                 if batch.num_rows() > 0 {
-                    view.output.append_batch(&self.client, batch).await?;
+                    commit_ids
+                        .extend(view.output.append_batch(&self.client, batch).await?);
                 }
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
@@ -2977,6 +2987,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
@@ -2987,13 +2998,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -3051,6 +3062,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         let left = filter_deletes(
@@ -3076,13 +3088,13 @@ impl IvmRuntime {
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         for batch in rows.collect().await? {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
@@ -3121,6 +3133,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
         let keyed = !view.source.primary_keys.is_empty();
 
         let context = SessionContext::new();
@@ -3203,7 +3216,7 @@ impl IvmRuntime {
                 .await?
             {
                 if batch.num_rows() > 0 {
-                    view.mv.append_batch(&self.client, batch).await?;
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
                 }
             }
         } else {
@@ -3219,14 +3232,14 @@ impl IvmRuntime {
                 .await?
             {
                 if batch.num_rows() > 0 {
-                    view.mv.append_batch(&self.client, batch).await?;
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
                 }
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -3269,6 +3282,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         let mut rows = filter_deletes(
@@ -3290,13 +3304,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -3339,6 +3353,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
         let keyed = !view.sources[0].primary_keys.is_empty();
 
         let context = SessionContext::new();
@@ -3444,7 +3459,7 @@ impl IvmRuntime {
                 .await?
             {
                 if batch.num_rows() > 0 {
-                    view.mv.append_batch(&self.client, batch).await?;
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
                 }
             }
         } else {
@@ -3456,14 +3471,14 @@ impl IvmRuntime {
                 .await?
             {
                 if batch.num_rows() > 0 {
-                    view.mv.append_batch(&self.client, batch).await?;
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
                 }
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for window in &windows {
             self.advance_cursors(&view.view_id, window.cursors.clone())
@@ -3520,6 +3535,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         let mut frames = Vec::new();
@@ -3545,13 +3561,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in &baselines {
             self.advance_cursors(&view.view_id, baseline.cursors.clone())
@@ -3586,6 +3602,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(
@@ -3613,13 +3630,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -3662,6 +3679,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
@@ -3672,13 +3690,13 @@ impl IvmRuntime {
             .await?
         {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -3727,6 +3745,7 @@ impl IvmRuntime {
             BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
         };
         let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
@@ -3764,13 +3783,13 @@ impl IvmRuntime {
         );
         for batch in context.sql(&mv_sql).await?.collect().await? {
             if batch.num_rows() > 0 {
-                view.mv.append_batch(&self.client, batch).await?;
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
         self.metadata
-            .mark_epoch_committed(&record, &mv_versions)
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(view.view_id, baseline.cursors).await?;
         self.metadata
@@ -3953,7 +3972,7 @@ impl IvmRuntime {
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
                     self.metadata
-                        .mark_epoch_committed(&record, &current)
+                        .mark_epoch_committed(&record, &current, &record.commit_ids)
                         .await?;
                     return Ok(WindowStart::AlreadyApplied(record.epoch));
                 }
