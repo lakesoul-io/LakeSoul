@@ -679,6 +679,157 @@ def _read_manifest_samples(
     )
 
 
+def align_daft(
+    left_scan: LakeSoulScan,
+    right_scan: LakeSoulScan,
+    *,
+    on: str = "timestamp",
+    by: str = "episode_id",
+    columns: Sequence[str] | None = None,
+    tolerance: float = 0.02,
+    direction: str = "nearest",
+    missing: str = "null",
+    suffix: str = "_r",
+    left_columns: Sequence[str] | None = None,
+    into: Any | None = None,
+) -> Any:
+    """Distributed row-level alignment of ``right_scan`` to ``left_scan``.
+
+    Each episode is aggregated once on a worker and every left row is matched
+    to the nearest/backward/forward right row within ``tolerance`` on ``on``.
+    ``missing="null"`` fills unmatched rows with nulls, ``"skip"`` drops them.
+    Pass ``into=<LakeSoulTable>`` to write the result with ``write_daft``.
+    """
+    import daft
+    from daft import col, func, functions
+
+    from lakesoul.daft import read_lakesoul
+
+    stream = SecondaryStream(
+        scan=right_scan,
+        on=on,
+        by=by,
+        columns=columns,
+        tolerance=tolerance,
+        direction=direction,
+        missing=missing,
+        suffix=suffix,
+    )
+    left_df = read_lakesoul(left_scan)
+    left_schema = left_df.schema()
+    for name in (on, by):
+        if name not in left_schema.column_names():
+            raise ValueError(f"column {name!r} is not in the left schema")
+    left_names = (
+        list(left_columns)
+        if left_columns is not None
+        else list(left_schema.column_names())
+    )
+    if on not in left_names:
+        left_names.append(on)
+    for name in left_names:
+        if name not in left_schema.column_names():
+            raise ValueError(f"left column {name!r} is not in the left schema")
+
+    right_df = read_lakesoul(stream_scan(stream))
+    right_schema = right_df.schema()
+    right_columns = (
+        list(columns)
+        if columns is not None
+        else [
+            column for column in right_schema.column_names() if column not in (on, by)
+        ]
+    )
+    for name in (on, by, *right_columns):
+        if name not in right_schema.column_names():
+            raise ValueError(f"right column {name!r} is not in the right schema")
+
+    left_agg = (
+        left_df.sort([by, on])
+        .groupby(by)
+        .agg(
+            *[
+                functions.list_agg(col(name)).alias(f"__left_{name}")
+                for name in left_names
+            ]
+        )
+    )
+    right_agg = (
+        right_df.sort([by, on])
+        .groupby(by)
+        .agg(
+            functions.list_agg(col(on)).alias("__right_on"),
+            *[
+                functions.list_agg(col(name)).alias(f"__right_{name}")
+                for name in right_columns
+            ],
+        )
+    )
+    joined = left_agg.join(right_agg, on=by)
+
+    fields: dict[str, Any] = {name: left_schema[name].dtype for name in left_names}
+    output_names: list[str] = []
+    for name in right_columns:
+        output = f"{name}{suffix}"
+        if output in fields:
+            raise ValueError(f"aligned column {output!r} collides")
+        fields[output] = right_schema[name].dtype
+        output_names.append(output)
+    payload_type = daft.DataType.list(daft.DataType.struct(fields))
+
+    right_count = len(right_columns)
+
+    def sampler(*args: Any) -> list[dict[str, Any]]:
+        left_lists = args[: len(left_names)]
+        right_lists = args[len(left_names) :]
+        right_on = right_lists[0]
+        right_values = right_lists[1 : 1 + right_count]
+        right_table = stream_table_from_rows(
+            [
+                {
+                    on: right_on[row],
+                    **{
+                        name: right_values[index][row]
+                        for index, name in enumerate(right_columns)
+                    },
+                }
+                for row in range(len(right_on))
+            ],
+            on=on,
+            columns=right_columns,
+        )
+        times = left_lists[left_names.index(on)]
+        aligned, matched = align_timestamps(
+            times, right_table, direction=direction, tolerance=tolerance
+        )
+        rows: list[dict[str, Any]] = []
+        for row in range(len(times)):
+            if missing == "skip" and not matched[row]:
+                continue
+            record = {
+                name: left_lists[index][row] for index, name in enumerate(left_names)
+            }
+            for name in right_columns:
+                record[f"{name}{suffix}"] = aligned[name][row]
+            rows.append(record)
+        return rows
+
+    sampler_udf = func(return_dtype=payload_type)(sampler)
+    sampler_args = [col(f"__left_{name}") for name in left_names]
+    sampler_args.append(col("__right_on"))
+    sampler_args.extend(col(f"__right_{name}") for name in right_columns)
+    exploded = joined.with_column("rows", sampler_udf(*sampler_args)).select(
+        by, functions.explode(col("rows")).alias("row")
+    )
+    selection = [col(by)]
+    selection.extend(col("row")[name].alias(name) for name in left_names if name != by)
+    selection.extend(col("row")[name].alias(name) for name in output_names)
+    result = exploded.select(*selection)
+    if into is not None:
+        into.write_daft(result)
+    return result
+
+
 def _sample_pipeline(
     dataframe: Any,
     *,
@@ -1361,6 +1512,7 @@ def _arrow_to_daft(dtype: pa.DataType) -> Any:
 
 
 __all__ = [
+    "align_daft",
     "import_lerobot",
     "import_lerobot_gop",
     "import_mcap",
