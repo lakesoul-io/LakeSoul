@@ -312,7 +312,15 @@ for sample in dataset:                 # rank order by default; shuffle=True for
 
 catalog.list_manifests("pusht")        # ManifestInfo(manifest, snapshot_id, rows, created_at)
 catalog.drop_manifest("pusht", "eval-v1")
+
+# distributed (Daft): one row per sample carrying the manifest rank
+from lakesoul.embodied.daft import read_samples
+rows = read_samples(pusht.scan(), manifest="eval-v1")   # sort by "rank" if order matters
 ```
+
+`read_samples(..., manifest=...)` returns the same windows distributed (`episode_id`, `anchor`, `rank`
+plus one list column per window key); Daft output order is not guaranteed, so sort by `rank` when
+needed.
 
 `create_manifest` creates a snapshot when none is given; `drop_snapshot` refuses while a manifest
 references it, and dropping the base table drops `<table>__manifests` with it. Missing anchors or
@@ -374,7 +382,6 @@ for the blob section of the cleanup guide.
 
 ## Limitations and roadmap
 
-- `read_samples(..., manifest=...)` for Daft is not available yet; use `EmbodiedDataset.from_manifest`;
 - The legacy Spark Parquet writer path does not support blob tables (native writer required); it
   is planned for removal rather than guarded;
 - `read_samples` / `read_gop_frames` live in `lakesoul.embodied.daft` and require the `daft`

@@ -292,7 +292,14 @@ for sample in dataset:                 # 默认按 rank 顺序；训练可用 sh
 
 catalog.list_manifests("pusht")        # ManifestInfo(manifest, snapshot_id, rows, created_at)
 catalog.drop_manifest("pusht", "eval-v1")
+
+# 分布式（Daft）：每行一个样本，带 manifest rank
+from lakesoul.embodied.daft import read_samples
+rows = read_samples(pusht.scan(), manifest="eval-v1")   # 需要顺序时按 "rank" 排序
 ```
+
+`read_samples(..., manifest=...)` 分布式返回同样的窗口（`episode_id`、`anchor`、`rank` 加每个窗口一列
+list）；Daft 输出顺序不保证，需要顺序时按 `rank` 排序。
 
 `create_manifest` 在未提供 snapshot 时自动创建；有 manifest 引用时 `drop_snapshot` 会拒绝；
 删除基表会级联删除 `<table>__manifests`。锚点缺失或 manifest 不存在会直接报错，不会静默跳过样本。
@@ -342,7 +349,6 @@ blob pack 回收**不依赖** Flink clean job；clean job 仍负责清理过期�
 
 ## 限制与路线
 
-- Daft 的 `read_samples(..., manifest=...)` 尚未提供，暂用 `EmbodiedDataset.from_manifest`；
 - 旧 Spark Parquet writer 路径不支持 blob 表（需要 native writer）；该路径计划移除而不是加拦截；
 - `read_samples` / `read_gop_frames` 位于 `lakesoul.embodied.daft`，需要 `daft` extra；
 - 单进程 LeRobot 导入支持 v3.0 数据集；MCAP 支持 JSON 与 protobuf。

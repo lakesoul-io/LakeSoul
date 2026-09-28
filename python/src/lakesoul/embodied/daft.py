@@ -15,13 +15,14 @@ correct but single-process; Ray (or another distributed runner) makes the scan,
 decode and writes parallel without code changes.
 """
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 
-from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan
+from lakesoul.catalog import LakeSoulCatalog, LakeSoulScan, LakeSoulTable
 
 from .dataset import BOUNDARY_CLAMP, BOUNDARY_SKIP, Window
 from .importer import (
@@ -465,15 +466,19 @@ class _GopBuilder:
 
 
 def read_samples(
-    scan: LakeSoulScan,
+    scan: LakeSoulScan | None = None,
     *,
-    window: Mapping[str, Window | tuple[int, int]],
+    window: Mapping[str, Window | tuple[int, int]] | None = None,
     stride: int = 1,
-    order_by: str = "frame_index",
-    episode_column: str = EPISODE_COLUMN,
+    order_by: str | None = None,
+    episode_column: str | None = None,
     seed: int = 0,
     epoch: int = 0,
-    boundary: str = BOUNDARY_SKIP,
+    boundary: str | None = None,
+    manifest: str | None = None,
+    table: LakeSoulTable | str | None = None,
+    catalog: LakeSoulCatalog | None = None,
+    namespace: str | None = None,
 ) -> Any:
     """Distributed anchor-window samples as a lazy Daft DataFrame.
 
@@ -488,12 +493,38 @@ def read_samples(
     ``boundary="skip"`` anchors whose window leaves the episode are dropped;
     with ``boundary="clamp"`` windows are clipped to the episode and only
     anchors with a non-empty window survive.
+
+    With ``manifest=`` the samples come from a manifest
+    (:meth:`LakeSoulCatalog.create_manifest`): the scan is pinned to the
+    manifest snapshot, the explicit anchors are resolved by ``order_by`` value
+    and the output carries the manifest ``rank`` (sort by it when order
+    matters). Pass the base ``scan`` or ``table`` (name or handle) together
+    with the manifest name.
     """
     import daft
     from daft import col, func, functions
 
     from lakesoul.daft import read_lakesoul
 
+    if manifest is not None:
+        return _read_manifest_samples(
+            scan,
+            manifest,
+            window=window,
+            stride=stride,
+            order_by=order_by,
+            episode_column=episode_column,
+            boundary=boundary,
+            table=table,
+            catalog=catalog,
+            namespace=namespace,
+        )
+
+    if scan is None:
+        raise ValueError("scan is required unless manifest= is given")
+    order_by = order_by or "frame_index"
+    episode_column = episode_column or EPISODE_COLUMN
+    boundary = boundary or BOUNDARY_SKIP
     if boundary not in (BOUNDARY_SKIP, BOUNDARY_CLAMP):
         raise ValueError(f"boundary must be one of {(BOUNDARY_SKIP, BOUNDARY_CLAMP)}")
     if stride < 1:
@@ -574,6 +605,178 @@ def read_samples(
     return exploded.select(
         episode_column,
         col("sample")["anchor"].alias("anchor"),
+        *[col("sample")[name].alias(name) for name in names],
+    )
+
+
+def _read_manifest_samples(
+    scan: LakeSoulScan | None,
+    manifest: str,
+    *,
+    window: Mapping[str, Window | tuple[int, int]] | None,
+    stride: int,
+    order_by: str | None,
+    episode_column: str | None,
+    boundary: str | None,
+    table: LakeSoulTable | str | None,
+    catalog: LakeSoulCatalog | None,
+    namespace: str | None,
+) -> Any:
+    """Distributed samples for the explicit anchors of a manifest."""
+    import daft
+    from daft import col, func, functions
+
+    from lakesoul.daft import read_lakesoul
+
+    if scan is not None:
+        handle = scan.table
+        catalog = handle.catalog
+    elif table is not None:
+        if isinstance(table, LakeSoulTable):
+            handle = table
+            catalog = handle.catalog
+        else:
+            catalog = catalog or LakeSoulCatalog.from_env()
+            handle = catalog.table(str(table), namespace=namespace)
+    else:
+        raise ValueError("manifest= requires scan= (the base table scan) or table=")
+    assert catalog is not None
+
+    rows = catalog.read_manifest(handle, manifest)
+    snapshot_ids = set(rows.column("snapshot_id").to_pylist())
+    if len(snapshot_ids) != 1:
+        raise ValueError(
+            f"manifest {manifest!r} rows disagree on snapshot_id: {snapshot_ids}"
+        )
+    snapshot_id = int(snapshot_ids.pop())
+    params = json.loads(rows.column("params")[0].as_py())
+
+    resolved_order_by = order_by or str(params.get("order_by", "frame_index"))
+    resolved_episode_column = episode_column or str(
+        params.get("episode_column", EPISODE_COLUMN)
+    )
+    resolved_boundary = boundary or str(params.get("boundary", BOUNDARY_SKIP))
+    if resolved_boundary not in (BOUNDARY_SKIP, BOUNDARY_CLAMP):
+        raise ValueError(f"boundary must be one of {(BOUNDARY_SKIP, BOUNDARY_CLAMP)}")
+    if window is None:
+        raw = params.get("window") or {}
+        if not raw:
+            raise ValueError("manifest has no window params; pass window= explicitly")
+        window = {name: tuple(value) for name, value in raw.items()}
+
+    windows: dict[str, Window] = {}
+    for name, spec in window.items():
+        start = spec.start if isinstance(spec, Window) else spec[0]
+        end = spec.end if isinstance(spec, Window) else spec[1]
+        if isinstance(start, float) or isinstance(end, float):
+            raise TypeError(
+                "read_samples only supports row windows; got a seconds window "
+                f"for column {name!r}"
+            )
+        windows[name] = Window(int(start), int(end))
+
+    pinned = (scan or handle.scan()).options(snapshot=snapshot_id)
+    dataframe = read_lakesoul(pinned)
+    schema = dataframe.schema()
+    names = list(windows)
+    for name in names:
+        if name not in schema.column_names():
+            raise ValueError(f"window column {name!r} is not in the scan schema")
+    for name in (resolved_order_by, resolved_episode_column):
+        if name not in schema.column_names():
+            raise ValueError(f"column {name!r} is not in the scan schema")
+
+    anchors_table = pa.table(
+        {
+            "episode_id": rows.column("episode_id").cast(pa.string()),
+            "anchor": rows.column("anchor").cast(pa.int64()),
+            "rank": rows.column("rank").cast(pa.int64()),
+        }
+    )
+    episodes = sorted(set(anchors_table.column("episode_id").to_pylist()))
+    dataframe = dataframe.where(col(resolved_episode_column).is_in(episodes))
+    anchors_frame = daft.from_arrow(anchors_table)
+
+    sample_type = daft.DataType.struct(
+        {
+            "anchor": schema[resolved_order_by].dtype,
+            "rank": daft.DataType.int64(),
+            **{name: daft.DataType.list(schema[name].dtype) for name in names},
+        }
+    )
+    payload_type = daft.DataType.list(sample_type)
+
+    def sampler(
+        order_values: list,
+        anchors: list,
+        ranks: list,
+        *window_values: list,
+    ) -> list[dict[str, Any]]:
+        lookup: dict[int, int] = {}
+        for index, value in enumerate(order_values):
+            if value is None:
+                continue
+            key = int(value)
+            if key in lookup:
+                raise ValueError(
+                    f"order_by column has duplicate value {key} in one episode; "
+                    "manifest anchors must be unique"
+                )
+            lookup[key] = index
+        samples = []
+        for anchor, sample_rank in zip(anchors, ranks):
+            index = lookup.get(int(anchor))
+            if index is None:
+                raise ValueError(f"manifest anchor {anchor} not found in episode")
+            sample: dict[str, Any] = {
+                "anchor": order_values[index],
+                "rank": int(sample_rank),
+            }
+            for name, values in zip(names, window_values):
+                item = windows[name]
+                start = index + item.start
+                end = index + item.end
+                if resolved_boundary == BOUNDARY_CLAMP:
+                    start = max(start, 0)
+                    end = min(end, len(order_values))
+                if end <= start:
+                    sample = {}
+                    break
+                sample[name] = values[start:end]
+            if sample:
+                samples.append(sample)
+        return samples
+
+    aggregated = (
+        dataframe.sort([resolved_episode_column, resolved_order_by])
+        .groupby(resolved_episode_column)
+        .agg(
+            functions.list_agg(col(resolved_order_by)).alias(resolved_order_by),
+            *[functions.list_agg(col(name)).alias(name) for name in names],
+        )
+    )
+    anchor_agg = anchors_frame.groupby("episode_id").agg(
+        functions.list_agg(col("anchor")).alias("anchors"),
+        functions.list_agg(col("rank")).alias("ranks"),
+    )
+    joined = aggregated.join(anchor_agg, on=resolved_episode_column)
+    sampler_udf = func(return_dtype=payload_type)(sampler)
+    exploded = joined.with_column(
+        "samples",
+        sampler_udf(
+            col(resolved_order_by),
+            col("anchors"),
+            col("ranks"),
+            *[col(name) for name in names],
+        ),
+    ).select(
+        resolved_episode_column,
+        functions.explode(col("samples")).alias("sample"),
+    )
+    return exploded.select(
+        resolved_episode_column,
+        col("sample")["anchor"].alias("anchor"),
+        col("sample")["rank"].alias("rank"),
         *[col("sample")[name].alias(name) for name in names],
     )
 

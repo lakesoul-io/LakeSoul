@@ -144,7 +144,7 @@ pin 维护：创建 snapshot/tag 后对涉及的 commit/version `SET pinned = tr
 实现状态（D1）：sibling 表按 `manifest` 分区，`anchor` 为 `order_by` 列值（int64），`params`
 记录 window/stride/boundary/seed 等读配置；`catalog.create_manifest/list_manifests/read_manifest/drop_manifest`
 与 `EmbodiedDataset.from_manifest` 已实现，`drop_snapshot` 引用检查、`drop_table` 级联删除已接入；
-Daft `read_samples(manifest=...)` 待补。
+Daft 的 `read_samples(scan, manifest=...)` 已支持（输出含 `rank`）。
 
 ## 7. 阶段
 
