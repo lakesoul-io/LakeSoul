@@ -13,7 +13,7 @@ LakeSoul table.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +45,8 @@ class SecondaryStream:
     direction: str = "nearest"
     missing: str = "null"
     suffix: str = ""
+    snapshot: int | None = None
+    tag: str | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in DIRECTIONS:
@@ -57,6 +59,15 @@ class SecondaryStream:
             )
         if self.tolerance < 0:
             raise ValueError(f"tolerance must be non-negative, got {self.tolerance}")
+        if self.snapshot is not None and self.tag is not None:
+            raise ValueError("snapshot and tag are mutually exclusive")
+
+
+def stream_scan(stream: SecondaryStream) -> LakeSoulScan:
+    """The stream's scan pinned to ``snapshot``/``tag`` when set."""
+    if stream.snapshot is None and stream.tag is None:
+        return stream.scan
+    return stream.scan.options(snapshot=stream.snapshot, tag=stream.tag)
 
 
 @dataclass(frozen=True)
@@ -95,10 +106,11 @@ def aligned_index(
 
 def load_stream_unit(stream: SecondaryStream, episode_id: str) -> StreamTable:
     """Read one episode of a secondary stream, sorted by its timestamp."""
-    config = stream.scan.to_scan_config()
+    scan = stream_scan(stream)
+    config = scan.to_scan_config()
     units = [
         unit
-        for unit in stream.scan.scan_plan()
+        for unit in scan.scan_plan()
         if dict(unit.partition_info).get(stream.by) == str(episode_id)
     ]
     if not units:
@@ -136,6 +148,38 @@ def load_stream_unit(stream: SecondaryStream, episode_id: str) -> StreamTable:
     return StreamTable(timestamps=timestamps, columns=values)
 
 
+def align_timestamps(
+    timestamps: Sequence[float] | np.ndarray,
+    right: StreamTable,
+    *,
+    direction: str = "nearest",
+    tolerance: float = 0.02,
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Aligned arrays for every right column at ``timestamps``.
+
+    Returns the aligned columns (with ``None`` entries for unmatched
+    timestamps) and a boolean mask of which timestamps matched.
+    """
+    targets = list(timestamps)
+    aligned: dict[str, list[Any]] = {name: [] for name in right.columns}
+    matched = np.zeros(len(targets), dtype=bool)
+    for index, target in enumerate(targets):
+        candidate = aligned_index(
+            right.timestamps,
+            float(target),
+            direction=direction,
+            tolerance=tolerance,
+        )
+        if candidate is None:
+            for values in aligned.values():
+                values.append(None)
+            continue
+        matched[index] = True
+        for name, values in right.columns.items():
+            aligned[name].append(values[candidate])
+    return {name: np.asarray(values) for name, values in aligned.items()}, matched
+
+
 def aligned_columns(
     stream: SecondaryStream,
     right: StreamTable,
@@ -148,26 +192,37 @@ def aligned_columns(
     Returns ``None`` when ``missing="skip"`` and any timestamp has no match.
     """
     mode = missing or stream.missing
-    aligned: dict[str, np.ndarray] = {}
-    for name, values in right.columns.items():
-        selected: list[Any] = []
-        any_missing = False
-        for target in timestamps:
-            index = aligned_index(
-                right.timestamps,
-                float(target),
-                direction=stream.direction,
-                tolerance=stream.tolerance,
-            )
-            if index is None:
-                any_missing = True
-                selected.append(None)
-            else:
-                selected.append(values[index])
-        if any_missing and mode == "skip":
-            return None
-        aligned[f"{name}{stream.suffix}"] = np.asarray(selected)
-    return aligned
+    aligned, matched = align_timestamps(
+        timestamps,
+        right,
+        direction=stream.direction,
+        tolerance=stream.tolerance,
+    )
+    if mode == "skip" and not matched.all():
+        return None
+    return {f"{name}{stream.suffix}": values for name, values in aligned.items()}
+
+
+def stream_table_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    on: str,
+    columns: Sequence[str],
+) -> StreamTable:
+    """Build a sorted :class:`StreamTable` from decoded stream rows."""
+    if not rows:
+        return StreamTable(
+            timestamps=np.asarray([], dtype=np.float64),
+            columns={name: np.asarray([], dtype=object) for name in columns},
+        )
+    timestamps = np.asarray([float(row[on]) for row in rows], dtype=np.float64)
+    order = np.argsort(timestamps, kind="stable")
+    return StreamTable(
+        timestamps=timestamps[order],
+        columns={
+            name: np.asarray([row[name] for row in rows])[order] for name in columns
+        },
+    )
 
 
 def align(
@@ -212,14 +267,22 @@ def align(
         left_times = np.asarray(
             left_table[on].to_numpy(zero_copy_only=False), dtype=np.float64
         )
-        aligned = aligned_columns(stream, right, left_times, missing=missing)
-        if aligned is None:
-            continue
+        aligned, matched = align_timestamps(
+            left_times,
+            right,
+            direction=stream.direction,
+            tolerance=stream.tolerance,
+        )
+        if missing == "skip":
+            if not matched.any():
+                continue
+            left_table = left_table.filter(pa.array(matched))
+            aligned = {name: values[matched] for name, values in aligned.items()}
         arrays = list(left_table.columns)
         names = list(left_table.column_names)
         for name, array in aligned.items():
             arrays.append(pa.array(array))
-            names.append(name)
+            names.append(f"{name}{stream.suffix}")
         results.append(pa.Table.from_arrays(arrays, names=names))
     if not results:
         return left_table.schema.empty_table()
@@ -235,7 +298,10 @@ __all__ = [
     "SecondaryStream",
     "StreamTable",
     "align",
+    "align_timestamps",
     "aligned_columns",
     "aligned_index",
     "load_stream_unit",
+    "stream_scan",
+    "stream_table_from_rows",
 ]

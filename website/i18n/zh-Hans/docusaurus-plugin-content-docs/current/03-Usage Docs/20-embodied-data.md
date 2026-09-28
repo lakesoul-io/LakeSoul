@@ -175,12 +175,27 @@ dataset = EmbodiedDataset(
             tolerance=0.02,
             direction="nearest",           # nearest | backward | forward
             missing="null",                # null | skip
+            snapshot=None,                 # 固定副流版本（或 tag=）
         )
     ],
 )
 ```
 
-`lakesoul.embodied.align` 还提供显式的 `align(left_scan, right_scan, into=...)`，用于物化对齐后的表。
+`missing="skip"` 只丢弃未匹配的行/样本；传 `snapshot=`/`tag=` 时副流读取固定版本。
+
+同样的对齐也可以用 Daft 分布式执行：
+
+```python
+from lakesoul.embodied.daft import align_daft, read_samples
+
+# 带对齐副流列的窗口样本（语义与上面一致）
+df = read_samples(table.scan(), window={"state": (-2, 0)}, streams=[stream])
+
+# 行级对齐，可选写回表
+aligned = align_daft(table.scan(), rewards.scan(), columns=["reward"], into=target)
+```
+
+`lakesoul.embodied.align` 还提供单机的显式物化 API `align(left_scan, right_scan, into=...)`。
 
 ### PyTorch 训练循环
 

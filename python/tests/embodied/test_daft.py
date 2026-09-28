@@ -15,9 +15,20 @@ pytest.importorskip("daft")
 
 from embodied.test_lerobot import STATE_DIM, _table_name, _write_dataset
 from lakesoul import LakeSoulCatalog
-from lakesoul.embodied import EmbodiedDataset, GopVideo, import_lerobot
+from lakesoul.embodied import (
+    EmbodiedDataset,
+    GopVideo,
+    SecondaryStream,
+    align,
+    import_lerobot,
+)
+from lakesoul.embodied.daft import (
+    align_daft,
+    import_lerobot_gop,
+    read_gop_frames,
+    read_samples,
+)
 from lakesoul.embodied.daft import import_lerobot as import_lerobot_daft
-from lakesoul.embodied.daft import import_lerobot_gop, read_gop_frames, read_samples
 from lakesoul.embodied.daft import import_mcap as import_mcap_daft
 
 
@@ -629,3 +640,209 @@ def test_import_mcap_daft_gop_blob_external(tmp_path: Path) -> None:
         catalog.drop_table(f"{table_name}_frames", if_exists=True)
         catalog.drop_table(f"{table_name}_gops", if_exists=True)
         catalog.drop_table(table_name, if_exists=True)
+
+
+def test_read_samples_with_streams(tmp_path: Path) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    primary_name = _table_name("daft_stream_p")
+    secondary_name = _table_name("daft_stream_s")
+    from embodied.test_align import PRIMARY_SCHEMA, STREAM_SCHEMA, _primary, _stream
+
+    primary = catalog.create_table(
+        primary_name,
+        path=(tmp_path / primary_name).as_uri(),
+        schema=PRIMARY_SCHEMA,
+        partition_by=("episode_id",),
+    )
+    secondary = catalog.create_table(
+        secondary_name,
+        path=(tmp_path / secondary_name).as_uri(),
+        schema=STREAM_SCHEMA,
+        partition_by=("episode_id",),
+    )
+    sparse_name = _table_name("daft_stream_sparse")
+
+    def _normalize(row: dict, key: str) -> list:
+        return [None if value is None else float(value) for value in row[key]]
+
+    try:
+        primary.write_arrow(_primary(), format="parquet")
+        secondary.write_arrow(
+            _stream([0.5, 2.5, 4.5], [10.0, 20.0, 30.0]), format="parquet"
+        )
+        stream = SecondaryStream(secondary.scan(), columns=("grip",), tolerance=0.6)
+
+        dataset = EmbodiedDataset(
+            primary.scan(), window={"state": (0, 2)}, streams=[stream]
+        )
+        expected = {
+            int(sample["state"][0]): (
+                sample["state"].tolist(),
+                _normalize(sample, "grip"),
+            )
+            for sample in dataset.iter_epoch(0)
+        }
+        rows = (
+            read_samples(primary.scan(), window={"state": (0, 2)}, streams=[stream])
+            .collect()
+            .to_pylist()
+        )
+        actual = {
+            int(row["anchor"]): (row["state"], _normalize(row, "grip")) for row in rows
+        }
+        assert actual == expected
+
+        sparse = catalog.create_table(
+            sparse_name,
+            path=(tmp_path / sparse_name).as_uri(),
+            schema=STREAM_SCHEMA,
+            partition_by=("episode_id",),
+        )
+        sparse.write_arrow(_stream([0.0, 2.0], [10.0, 20.0]), format="parquet")
+        skip_stream = SecondaryStream(
+            sparse.scan(), columns=("grip",), tolerance=1.0, missing="skip"
+        )
+        skip_expected = {
+            int(sample["state"][0])
+            for sample in EmbodiedDataset(
+                primary.scan(), window={"state": (0, 2)}, streams=[skip_stream]
+            ).iter_epoch(0)
+        }
+        skip_rows = (
+            read_samples(
+                primary.scan(), window={"state": (0, 2)}, streams=[skip_stream]
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert {int(row["anchor"]) for row in skip_rows} == skip_expected
+
+        snapshot_id = catalog.create_snapshot(secondary)
+        secondary.write_arrow(_stream([1.0], [99.0]), format="parquet")
+        pinned_rows = (
+            read_samples(
+                primary.scan(),
+                window={"state": (0, 2)},
+                streams=[
+                    SecondaryStream(
+                        secondary.scan(),
+                        columns=("grip",),
+                        tolerance=0.6,
+                        snapshot=snapshot_id,
+                    )
+                ],
+            )
+            .collect()
+            .to_pylist()
+        )
+        live_rows = (
+            read_samples(primary.scan(), window={"state": (0, 2)}, streams=[stream])
+            .collect()
+            .to_pylist()
+        )
+        assert any(99.0 in _normalize(row, "grip") for row in live_rows)
+        assert all(99.0 not in _normalize(row, "grip") for row in pinned_rows)
+    finally:
+        catalog.drop_table(sparse_name, if_exists=True)
+        catalog.drop_table(primary_name, if_exists=True)
+        catalog.drop_table(secondary_name, if_exists=True)
+
+
+def test_align_daft_matches_single_machine(tmp_path: Path) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    primary_name = _table_name("daft_align_p")
+    secondary_name = _table_name("daft_align_s")
+    sparse_name = _table_name("daft_align_sparse")
+    output_name = _table_name("daft_align_out")
+    from embodied.test_align import PRIMARY_SCHEMA, STREAM_SCHEMA, _primary, _stream
+
+    primary = catalog.create_table(
+        primary_name,
+        path=(tmp_path / primary_name).as_uri(),
+        schema=PRIMARY_SCHEMA,
+        partition_by=("episode_id",),
+    )
+    secondary = catalog.create_table(
+        secondary_name,
+        path=(tmp_path / secondary_name).as_uri(),
+        schema=STREAM_SCHEMA,
+        partition_by=("episode_id",),
+    )
+    sparse = catalog.create_table(
+        sparse_name,
+        path=(tmp_path / sparse_name).as_uri(),
+        schema=STREAM_SCHEMA,
+        partition_by=("episode_id",),
+    )
+
+    def _sort(rows: list[dict]) -> list[dict]:
+        return sorted(rows, key=lambda row: row["state"])
+
+    try:
+        primary.write_arrow(_primary(), format="parquet")
+        secondary.write_arrow(
+            _stream([0.5, 2.5, 4.5], [10.0, 20.0, 30.0]), format="parquet"
+        )
+        sparse.write_arrow(_stream([0.0, 2.0], [10.0, 20.0]), format="parquet")
+
+        expected = align(
+            primary.scan(), secondary.scan(), columns=("grip",), tolerance=0.6
+        )
+        rows = _sort(
+            align_daft(
+                primary.scan(), secondary.scan(), columns=("grip",), tolerance=0.6
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert [row["state"] for row in rows] == expected.column("state").to_pylist()
+        assert [float(row["grip_r"]) for row in rows] == expected.column(
+            "grip_r"
+        ).to_pylist()
+
+        expected_skip = align(
+            primary.scan(),
+            sparse.scan(),
+            columns=("grip",),
+            tolerance=1.0,
+            missing="skip",
+        )
+        rows_skip = _sort(
+            align_daft(
+                primary.scan(),
+                sparse.scan(),
+                columns=("grip",),
+                tolerance=1.0,
+                missing="skip",
+            )
+            .collect()
+            .to_pylist()
+        )
+        assert [row["state"] for row in rows_skip] == expected_skip.column(
+            "state"
+        ).to_pylist()
+
+        output_schema = pa.schema([*PRIMARY_SCHEMA, pa.field("grip_r", pa.float64())])
+        target = catalog.create_table(
+            output_name,
+            path=(tmp_path / output_name).as_uri(),
+            schema=output_schema,
+            partition_by=("episode_id",),
+        )
+        align_daft(
+            primary.scan(),
+            secondary.scan(),
+            columns=("grip",),
+            tolerance=0.6,
+            into=target,
+        )
+        written = target.scan().to_arrow_table()
+        assert written.num_rows == 6
+        assert sorted(written.column("grip_r").to_pylist()) == sorted(
+            expected.column("grip_r").to_pylist()
+        )
+    finally:
+        catalog.drop_table(output_name, if_exists=True)
+        catalog.drop_table(sparse_name, if_exists=True)
+        catalog.drop_table(primary_name, if_exists=True)
+        catalog.drop_table(secondary_name, if_exists=True)

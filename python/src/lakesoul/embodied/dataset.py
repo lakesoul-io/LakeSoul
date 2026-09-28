@@ -286,6 +286,8 @@ class EmbodiedDataset:
                     direction=spec.get("direction", "nearest"),
                     missing=spec.get("missing", "null"),
                     suffix=spec.get("suffix", ""),
+                    snapshot=spec.get("snapshot"),
+                    tag=spec.get("tag"),
                 )
                 for spec in params["streams"]
             )

@@ -284,13 +284,15 @@ Ray runner 只要求接口兼容（gated 测试）。
     带 `FixedSizeList` 列的表上 pyarrow filter 会因 substrait 不支持该类型报错
     （既有问题，已记入风险），因此时间过滤验证走标量 schema；
   - 若未来 native 线引入 compaction，需重新验证行序保持；
-- `align()/join_asof()`（导入未预对齐时的读时对齐）；P1 进行中：
+- 已完成：`align()/join_asof()`（导入未预对齐时的读时对齐）：
   - 已完成：`EmbodiedDataset(window={"col": (-1.0, 0.0)}, time_column="timestamp")`
     秒级窗口（按锚点时间 + searchsorted 切行，clip 语义；与行窗口等价性测试）；
   - 已完成：`streams=[SecondaryStream(scan, on, by, columns, tolerance, direction,
-    missing, suffix)]`——按 episode 读副表一次、内存最近邻/前向/后向对齐、null/skip
-    缺失语义；以及显式 `align(left_scan, right_scan, into=...)` 物化 API（默认返回
-    `pa.Table`，`into=<LakeSoulTable>` 才写表）；
+    missing, suffix, snapshot, tag)]`——按 episode 读副表一次、内存最近邻/前向/后向对齐、null/skip
+    缺失语义（skip 统一为逐行/逐样本丢弃）、`snapshot`/`tag` 固定副流版本；以及显式
+    `align(left_scan, right_scan, into=...)` 物化 API（默认返回 `pa.Table`，`into=<LakeSoulTable>` 才写表）；
+  - 已完成：Daft 分布式——`read_samples(..., streams=[...])` 输出带副流列的窗口样本、
+    `align_daft(left_scan, right_scan, into=...)` 行级分布式对齐，二者与单机逐值一致；
 - 已完成：样本 manifest（`<table>__manifests` + `create_manifest`/`from_manifest`，snapshot 绑定、rank 顺序、drop/cascade 治理；Daft `read_samples(manifest=...)` 已支持）；
 - 已完成：Python 快照/标签/时间戳参数（`scan.options`，PR #925）；文档与示例见 [embodied.md](./embodied.md)；
 
