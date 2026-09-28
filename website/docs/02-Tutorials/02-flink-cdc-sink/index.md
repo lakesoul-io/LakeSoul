@@ -67,12 +67,12 @@ You can see that there is currently only one `default` database in LakeSoul, and
 ## 2. Start the sync job
 
 ### 2.1 Start a local Flink Cluster
-You can download from the Flink download page: [Flink 1.20](https://www.apache.org/dyn/closer.lua/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz)
+You can download from the Flink download page: [Flink 1.20](https://www.apache.org/dyn/closer.lua/flink/flink-1.20.5/flink-1.20.5-bin-scala_2.12.tgz)
 
 Unzip the downloaded Flink installation package:
 ```bash
-tar xf flink-1.20.1-bin-scala_2.12.tgz
-export FLINK_HOME=${PWD}/flink-1.20.1
+tar xf flink-1.20.5-bin-scala_2.12.tgz
+export FLINK_HOME=${PWD}/flink-1.20.5
 ````
 
 Then start a local Flink Cluster:
