@@ -40,6 +40,11 @@
 //! keyed sources keeps a retractable output keyed by both row identities, so
 //! upserts, deletes and join-key changes on either side are reflected.
 //!
+//! Internal tables can also be exposed to DataFusion directly: a
+//! [`runtime::IvmRuntime::table_provider`] (or its as-of / pinned-epoch
+//! variants) scans the table on demand with projection pushdown and hides CDC
+//! tombstones.
+//!
 //! A keyed source may declare a CDC change column through
 //! [`table::IvmTableOptions::with_cdc_column`] (persisted as the LakeSoul
 //! `lakesoul_cdc_change_column` property): `delete` values retract a row, and
@@ -66,6 +71,7 @@
 
 pub mod error;
 pub mod metadata;
+mod provider;
 pub mod runtime;
 pub mod table;
 
@@ -74,6 +80,7 @@ pub use metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, EpochStatus, IvmMetadata,
     PartitionVersion, SourceVersionRange, StateRole, StateTable,
 };
+pub use provider::{IvmReadMode, IvmTableProvider};
 pub use runtime::{
     CompareOp, DistinctAggKind, DistinctAggView, FilterCondition, IVM_COUNT_COLUMN,
     IVM_DENSE_RANK_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_RANK_COLUMN,

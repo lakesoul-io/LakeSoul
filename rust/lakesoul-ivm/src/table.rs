@@ -395,6 +395,17 @@ impl IvmTable {
         client: &MetaDataClient,
         versions: &[PartitionVersion],
     ) -> Result<Vec<RecordBatch>> {
+        self.read_at_versions_projected(client, versions, None)
+            .await
+    }
+
+    /// Read the given partition versions projected to `projection`.
+    pub async fn read_at_versions_projected(
+        &self,
+        client: &MetaDataClient,
+        versions: &[PartitionVersion],
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
         let mut files = Vec::new();
         for version in versions {
             let version_i32 = version
@@ -416,7 +427,8 @@ impl IvmTable {
                 );
             }
         }
-        self.read_files(files).await
+        self.read_files_with_options(files, Vec::new(), projection)
+            .await
     }
 
     /// Clear every partition snapshot of the table, starting a rebuild from an

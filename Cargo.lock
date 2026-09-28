@@ -5539,6 +5539,7 @@ dependencies = [
  "arrow",
  "arrow-array 59.3.0",
  "arrow-schema 59.3.0",
+ "async-trait",
  "datafusion",
  "lakesoul-common",
  "lakesoul-io",
