@@ -93,7 +93,7 @@ spark.sql.defaultCatalog | lakesoul | set default catalog for spark
 ### 1.5 Setup Flink environment
 Download LakeSoul Flink jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20_2.12-VAR::VERSION.jar
 
-Download Flink: https://dlcdn.apache.org/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz
+Download Flink: https://dlcdn.apache.org/flink/flink-1.20.5/flink-1.20.5-bin-scala_2.12.tgz
 
 #### 1.5.1 Start Flink SQL shell
 After creating the pg database and `lakesoul_home` configuration file, place the LakeSoul Flink jars in the FLink directory.
@@ -118,7 +118,7 @@ s3.path.style.access: true
 
 And place flink-s3-fs-hadoop.jar and flink-shaded-hadoop-2-uber-2.6.5-10.0.jar under Flink/lib
 
-Download flink-s3-fs-hadoop.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar
+Download flink-s3-fs-hadoop.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar
 
 Download flink-shaded-hadoop-2-uber-2.6.5-10.0.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
@@ -155,7 +155,7 @@ In the above configurations, LakeSoul's PG URL connection address, user name, an
 
 ### 2.3 Configuration Hadoop Environment
 Configure global environment variable information on the client machine. Here you need to write the variable information into an env.sh file. 
-Here the Hadoop version is 3.1.4.0-315, the Spark version is spark-3.5.8, and the Flink version is flink-1.20.1. Change Hadoop environment variables according to your Hadoop deployment. If your environment has been pre-configured with Hadoop, you can omit those Hadoop related envs.
+Here the Hadoop version is 3.1.4.0-315, the Spark version is spark-3.5.8, and the Flink version is flink-1.20.5. Change Hadoop environment variables according to your Hadoop deployment. If your environment has been pre-configured with Hadoop, you can omit those Hadoop related envs.
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
@@ -169,8 +169,8 @@ export HADOOP_CONF_DIR="/usr/hdp/3.1.4.0-315/hadoop/conf"
 export SPARK_HOME=/usr/hdp/spark-3.5.8-bin-without-hadoop
 export SPARK_CONF_DIR=/home/lakesoul/lakesoul_hadoop_ci/LakeSoul-main/LakeSoul/script/benchmark/hadoop/spark-conf
 
-export FLINK_HOME=/opt/flink-1.20.1
-export FLINK_CONF_DIR=/opt/flink-1.20.1/conf
+export FLINK_HOME=/opt/flink-1.20.5
+export FLINK_CONF_DIR=/opt/flink-1.20.5/conf
 export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$FLINK_HOME/bin:$JAVA_HOME/bin:$PATH
 export HADOOP_CLASSPATH=$(hadoop classpath)
 export SPARK_DIST_CLASSPATH=$HADOOP_CLASSPATH

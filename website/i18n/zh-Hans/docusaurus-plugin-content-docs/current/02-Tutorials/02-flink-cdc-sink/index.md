@@ -67,12 +67,12 @@ SHOW TABLES IN default;
 ## 2. 启动同步作业
 
 ### 2.1 启动一个本地的 Flink Cluster
-可以从 Flink 下载页面下载 [Flink 1.20](https://www.apache.org/dyn/closer.lua/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz)。
+可以从 Flink 下载页面下载 [Flink 1.20](https://www.apache.org/dyn/closer.lua/flink/flink-1.20.5/flink-1.20.5-bin-scala_2.12.tgz)。
 
 解压下载的 Flink 安装包：
 ```bash
-tar xf flink-1.20.1-bin-scala_2.12.tgz
-export FLINK_HOME=${PWD}/flink-1.20.1
+tar xf flink-1.20.5-bin-scala_2.12.tgz
+export FLINK_HOME=${PWD}/flink-1.20.5
 ```
 
 然后启动一个本地的 Flink Cluster：

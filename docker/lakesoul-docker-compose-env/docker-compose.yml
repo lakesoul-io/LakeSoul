@@ -85,7 +85,7 @@ services:
     profiles: ["s3"]
 
   jobmanager:
-    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/flink:1.20.5-scala_2.12-java11
     ports:
       - "8081:8081"
     command: jobmanager
@@ -112,13 +112,13 @@ services:
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
       - "$HADOOP_HOME:/opt/hadoop"
-      - "$HOME/flink-s3-fs-hadoop-1.20.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.1.jar"
-      - "$HOME/flink-parquet-1.20.1.jar:/opt/flink/lib/flink-parquet-1.20.1.jar"
+      - "$HOME/flink-s3-fs-hadoop-1.20.5.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.5.jar"
+      - "$HOME/flink-parquet-1.20.5.jar:/opt/flink/lib/flink-parquet-1.20.5.jar"
       - "$HOME/mysql-connector-j-8.0.33.jar:/opt/flink/lib/mysql-connector-j-8.0.33.jar"
       - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
   taskmanager:
-    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
+    image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/flink:1.20.5-scala_2.12-java11
     depends_on:
       - jobmanager
     command: taskmanager
@@ -151,8 +151,8 @@ services:
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
       - "$HADOOP_HOME:/opt/hadoop"
-      - "$HOME/flink-s3-fs-hadoop-1.20.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.1.jar"
-      - "$HOME/flink-parquet-1.20.1.jar:/opt/flink/lib/flink-parquet-1.20.1.jar"
+      - "$HOME/flink-s3-fs-hadoop-1.20.5.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.5.jar"
+      - "$HOME/flink-parquet-1.20.5.jar:/opt/flink/lib/flink-parquet-1.20.5.jar"
       - "$HOME/mysql-connector-j-8.0.33.jar:/opt/flink/lib/mysql-connector-j-8.0.33.jar"
       - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
