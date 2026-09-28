@@ -41,6 +41,16 @@ pub struct MetaDataClient {
     secret: String,
 }
 
+impl Clone for MetaDataClient {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            max_retry: self.max_retry,
+            secret: self.secret.clone(),
+        }
+    }
+}
+
 impl Debug for MetaDataClient {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MetaDataClient")

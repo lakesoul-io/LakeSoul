@@ -40,7 +40,8 @@
   ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~、
   ~~TOP-K~~（P1 已完成）→ P2 见下
 - **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→
-  ~~JVM `list tables` 过滤 internal 表~~、~~epoch 发布 commit_id~~（已完成）→ as-of 下沉 TableProvider /
+  ~~JVM `list tables` 过滤 internal 表~~、~~epoch 发布 commit_id~~、
+  ~~as-of 下沉 TableProvider~~（已完成）与 changelog 表级单扫描 →
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
 - **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
@@ -731,6 +732,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试：Rust `rust/lakesoul-metadata/tests/list_tables_filter.rs`（覆盖四个 JNI
   查询）与 Java `ListTablesFilterTest`（JDBC 四个列表方法）；`lakesoul-common`
   模块测试与 `lakesoul-metadata` 串行测试全绿。
+
+**as-of 下沉 TableProvider 实施记录（已完成）**
+
+- 新增 `IvmTableProvider`（DataFusion `TableProvider`）与
+  `IvmReadMode::{Current, AsOf(ms), AtVersions(versions)}`；
+  `IvmRuntime::{table_provider, table_provider_as_of, table_provider_at_versions,
+  table_provider_at_epoch}` 提供便捷构造（共享连接池）。
+- `scan` 把查询投影下推到 `IvmTable::{read_current_projected, read_as_of_projected,
+  read_at_versions_projected}`（自动补 merge key 与 CDC 列），读回后过滤 CDC
+  tombstone 并按请求列投影，返回 `MemorySourceConfig` 计划；过滤条件交给 DataFusion
+  在上层执行（默认不支持 pushdown）。
+- `LakeSoulReader` 非 `Sync`，读取 future 不是 `Send`；`scan` 在 blocking 池中用独立
+  current-thread runtime 执行读取，避免非 Send 类型跨线程（reader 变 Send/Sync 后可
+  内联）。
+- `IvmTable` 增加 `read_at_versions_projected`；`MetaDataClient` 增加 `Clone`
+  （内部 Arc 池共享）。
+- 测试 `tests/table_provider.rs`：当前态/指定 epoch/as-of 与 `view_state_at_epoch`
+  对照、投影与过滤、CDC tombstone 隐藏；全套 27 个二进制 legacy/V2 全绿。
+- 未完成：changelog 表级单扫描（`collect_source_window` 仍按分区增量读取）。
 
 ## 9. 风险与开放问题
 
