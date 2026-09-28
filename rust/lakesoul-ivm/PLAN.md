@@ -39,8 +39,8 @@
   ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~、
   ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~、
   ~~TOP-K~~（P1 已完成）→ P2 见下
-- **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→ JVM
-  `list tables` 过滤 internal 表 → ~~epoch 发布 commit_id~~（已完成）→ as-of 下沉 TableProvider /
+- **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→
+  ~~JVM `list tables` 过滤 internal 表~~、~~epoch 发布 commit_id~~（已完成）→ as-of 下沉 TableProvider /
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
 - **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
@@ -714,6 +714,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   rebuild（新 generation）同样发布、pending 初始为空。
 - 说明：消费者可用 `commit_ids` + `mv_versions` 双重定位快照；按 commit id 读取的
   下沉 API（`view_state_at_commit`）留待后续。
+
+**JVM `list tables` 过滤 internal 表实施记录（已完成）**
+
+- 所有列表路径不再返回内部 IVM 表（`table_info.properties` 含
+  `lakesoul.ivm.internal`）：
+  - Rust JNI DAO（`rust/lakesoul-metadata/src/lib.rs`）：`ListAllTablePath`、
+    `ListAllPathTablePathByNamespace`、`ListTableNameByNamespace`、
+    `ListTableNamesByDomain` 加 `not exists (select 1 from table_info ... properties::text
+    like '%lakesoul.ivm.internal%')`；
+  - Java JDBC（`TablePathIdDao.listAllPath`/`listAllPathByNamespace`、
+    `TableNameIdDao.listAllNameByNamespace`/`listAllNamesByDomain`）同样加
+    `not exists` 过滤。
+- 不新增 DAO 类型/偏移（Java `CodedDaoType` 不变）；内部表仍可被逐表查询、
+  compaction 等按 id 访问，只是不再出现在列表里。
+- 测试：Rust `rust/lakesoul-metadata/tests/list_tables_filter.rs`（覆盖四个 JNI
+  查询）与 Java `ListTablesFilterTest`（JDBC 四个列表方法）；`lakesoul-common`
+  模块测试与 `lakesoul-metadata` 串行测试全绿。
 
 ## 9. 风险与开放问题
 
