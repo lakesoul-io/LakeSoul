@@ -2329,8 +2329,9 @@ impl IvmRuntime {
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let rebuild_keyed = !view.source.primary_keys.is_empty();
         for batch in context
-            .sql(&sum_count_rebuild_sql(view, epoch))
+            .sql(&sum_count_rebuild_sql(view, rebuild_keyed, epoch))
             .await?
             .collect()
             .await?
@@ -3783,17 +3784,34 @@ impl IvmRuntime {
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
-        let state_sql = format!(
-            "select {}, {} as {}, count(1) as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-             from src where {} group by {}, {}",
-            quoted_list(view.group_keys),
-            quote_ident(view.value_column),
-            quote_ident(IVM_VALUE_COLUMN),
-            quote_ident(IVM_VALUE_COUNT_COLUMN),
-            source_delete_filter("src", change_column(view.source)),
-            quoted_list(view.group_keys),
-            quote_ident(view.value_column),
-        );
+        let state_sql = if view.source.primary_keys.is_empty() {
+            let retract = source_retract_condition("src", change_column(view.source));
+            format!(
+                "select {}, {} as {}, \
+                        sum(case when {retract} then -1 else 1 end) as {}, \
+                        'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                 from src group by {}, {} \
+                 having sum(case when {retract} then -1 else 1 end) > 0",
+                quoted_list(view.group_keys),
+                quote_ident(view.value_column),
+                quote_ident(IVM_VALUE_COLUMN),
+                quote_ident(IVM_VALUE_COUNT_COLUMN),
+                quoted_list(view.group_keys),
+                quote_ident(view.value_column),
+            )
+        } else {
+            format!(
+                "select {}, {} as {}, count(1) as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                 from src where {} group by {}, {}",
+                quoted_list(view.group_keys),
+                quote_ident(view.value_column),
+                quote_ident(IVM_VALUE_COLUMN),
+                quote_ident(IVM_VALUE_COUNT_COLUMN),
+                source_delete_filter("src", change_column(view.source)),
+                quoted_list(view.group_keys),
+                quote_ident(view.value_column),
+            )
+        };
         for batch in context.sql(&state_sql).await?.collect().await? {
             if batch.num_rows() > 0 {
                 view.state.append_batch(&self.client, batch).await?;
@@ -4402,9 +4420,14 @@ fn change_column(source: &IvmTable) -> Option<&str> {
 }
 
 /// Drop `delete` rows from a source frame when the source has a change column.
+/// Drop the rows retracted by their change marker (`delete` / `update_before`).
 fn filter_deletes(frame: DataFrame, change_column: Option<&str>) -> Result<DataFrame> {
     match change_column {
-        Some(column) => Ok(frame.filter(column_expr(column).not_eq(lit("delete")))?),
+        Some(column) => Ok(frame.filter(
+            column_expr(column)
+                .not_eq(lit("delete"))
+                .and(column_expr(column).not_eq(lit("update_before"))),
+        )?),
         None => Ok(frame),
     }
 }
@@ -4494,8 +4517,48 @@ fn register_table(
 /// `alias.column <> 'delete'` when the source has a change column.
 fn source_delete_filter(alias: &str, change_column: Option<&str>) -> String {
     match change_column {
-        Some(column) => format!("{alias}.{} <> 'delete'", quote_ident(column)),
+        Some(column) => format!(
+            "{alias}.{} not in ('delete', 'update_before')",
+            quote_ident(column)
+        ),
         None => "true".to_string(),
+    }
+}
+
+/// The SQL predicate matching rows whose marker retracts them: `delete` for a
+/// removal and `update_before` for the old version of an update (which is
+/// superseded by the `update_after` of the same change, or leaves the row
+/// retracted until it arrives).
+fn source_retract_condition(alias: &str, change_column: Option<&str>) -> String {
+    match change_column {
+        Some(column) => format!(
+            "{alias}.{} in ('delete', 'update_before')",
+            quote_ident(column)
+        ),
+        None => "false".to_string(),
+    }
+}
+
+/// The signed aggregate expressions of an append-only CDC delta: rows with a
+/// retraction marker subtract their contribution, the others add it.
+fn signed_delta_exprs(
+    alias: &str,
+    value_column: Option<&str>,
+    change_column: Option<&str>,
+) -> (String, String, String) {
+    let retract = source_retract_condition(alias, change_column);
+    let count = format!("sum(case when {retract} then -1 else 1 end)");
+    match value_column {
+        Some(column) => {
+            let value = quote_ident(column);
+            let sum =
+                format!("sum(case when {retract} then -({value}) else ({value}) end)");
+            let nonnull = format!(
+                "sum(case when {value} is null then 0 when {retract} then -1 else 1 end)"
+            );
+            (sum, count, nonnull)
+        }
+        None => ("sum(0)".to_string(), count.clone(), count),
     }
 }
 
@@ -4537,11 +4600,28 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
     let delta_filter = source_delete_filter("delta", change_column(&view.source));
     let old_filter = source_delete_filter("o", change_column(&view.source));
     let pk_match = key_join_condition("o", "p", &view.source.primary_keys);
-    let delta_part = format!(
-        "new_agg as (select {keys}, {sum_expr} as dsum, count(1) as dcount, \
+    let delta_part = if keyed {
+        // The delta is merged per primary key, so only the surviving version
+        // contributes; the previous value is retracted through the as-of read.
+        format!(
+            "new_agg as (select {keys}, {sum_expr} as dsum, count(1) as dcount, \
                             {nonnull_expr} as dnonnull \
                      from delta where {delta_filter} group by {keys})"
-    );
+        )
+    } else {
+        // Without a merge key the delta keeps every marker, so retractions
+        // (delete / update_before) subtract their contribution.
+        let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
+            "delta",
+            view.value_column.as_deref(),
+            change_column(&view.source),
+        );
+        format!(
+            "new_agg as (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
+                            {signed_nonnull} as dnonnull \
+                     from delta group by {keys})"
+        )
+    };
     let d2 = if keyed {
         format!(
             "old_changed as (select o.* from old o where {old_filter} \
@@ -4616,8 +4696,28 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
 }
 
 /// SQL for a full `SUM`/`COUNT` rebuild.
-fn sum_count_rebuild_sql(view: &SumCountView, epoch: i64) -> String {
+fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String {
     let keys = quoted_list(&view.group_keys);
+    if !keyed {
+        // Append-only CDC sources keep every marker in `src`, so the rebuild
+        // aggregates them with their sign and keeps the net-positive groups.
+        let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
+            "src",
+            view.value_column.as_deref(),
+            change_column(&view.source),
+        );
+        return format!(
+            "select {keys}, case when nonnull > 0 then dsum else null end as {}, \
+                    dcount as {}, nonnull as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+             from (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
+                          {signed_nonnull} as nonnull \
+                   from src group by {keys}) \
+             where dcount > 0",
+            quote_ident(IVM_SUM_COLUMN),
+            quote_ident(IVM_COUNT_COLUMN),
+            quote_ident(IVM_NONNULL_COUNT_COLUMN),
+        );
+    }
     let sum_expr = match &view.value_column {
         Some(column) => format!("sum({})", quote_ident(column)),
         None => "sum(0)".to_string(),
@@ -4679,6 +4779,21 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
     } else {
         format!("counts as (select {state_list}, dcount from new_agg where dcount <> 0)")
     };
+    // The append-only new_agg must sign its rows instead of filtering the
+    // retractions out, so update pairs and deletes move the counts.
+    let new_agg = if keyed {
+        format!(
+            "new_agg as (select {new_select}, count(1) as dcount from delta \
+                          where {delta_filter} group by {new_group})"
+        )
+    } else {
+        let retract = source_retract_condition("delta", change_column(view.source));
+        format!(
+            "new_agg as (select {new_select}, \
+                                sum(case when {retract} then -1 else 1 end) as dcount \
+                         from delta group by {new_group})"
+        )
+    };
     let merged_match = key_join_condition_null_safe("s", "c", &state_value_keys);
     let coalesced = state_value_keys
         .iter()
@@ -4691,8 +4806,7 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
         .collect::<Vec<_>>()
         .join(" and ");
     format!(
-        "with new_agg as (select {new_select}, count(1) as dcount from delta \
-                          where {delta_filter} group by {new_group}), \
+        "with {new_agg}, \
          {counts}, \
          already as (select distinct {state_list} from state \
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \

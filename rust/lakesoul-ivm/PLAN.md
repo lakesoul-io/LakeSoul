@@ -768,6 +768,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   多分区全量、按 cursor 增量、删除分区、update 触发 rebuild；IVM 全量 27 个二进制
   legacy/V2 全绿。
 
+**CDC `update_before`/`update_after` 实施记录（已完成）**
+
+- 语义：`insert`/`update_after` 是生效版本，`delete`/`update_before` 是撤回；
+  `update_before` 撤回旧版本，直到同一变更的 `update_after` 生效。
+- keyed 源：`source_delete_filter`（SQL）与 `filter_deletes`（DataFrame）同时排除
+  `delete` 与 `update_before`。MOR 折叠同一提交的 before+after 对；单独的
+  `update_before` 通过 as-of 旧值回收把行收回，`update_after` 到达后再插入新版本。
+- append-only CDC 源（无合并键、不折叠）：SUM/COUNT 的 delta/重建与值计数状态改为
+  **带符号聚合**（`source_retract_condition` + `signed_delta_exprs`）：
+  `insert`/`update_after` 计入 +value/+1，`delete`/`update_before` 计入
+  -value/-1；重建时净计数 ≤ 0 的组不写入，`sum_v` 在无非空值时保持 NULL。
+- window/top-k 等按状态计算同样使用不含 `update_before` 的 live 过滤。
+- 测试 `tests/cdc_update_markers.rs`：append-only 的 update 对（含同窗口
+  delete+update 与带符号 SQL 对照）、MIN 值状态、rebuild；keyed 的 MOR 折叠、
+  单独 `update_before` 撤回、`update_after` 恢复、rebuild。
+- 范围说明：无主键的 row/union 视图仍无法按行撤回（无行身份），保持文档现状。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
