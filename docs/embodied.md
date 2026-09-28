@@ -55,7 +55,7 @@
 - **episode**：一段连续采集（`episode_id` 分区），窗口不跨 episode；
 - **anchor / window**：样本以锚点行 + 相对行区间 `Window(start, end)` 定义，`start` 含、`end` 不含，负值指向锚点之前；也支持秒窗口（`time_column`，默认 `timestamp`）；
 - **stride**：锚点步长；`boundary=skip|clamp` 处理 episode 边界窗口；
-- **副流对齐**：`SecondaryStream` 按时间戳把另一张表对齐到主表行（`nearest/backward/forward`，`null/skip` 缺失语义）；
+- **副流对齐**：`SecondaryStream` 按时间戳把另一张表对齐到主表行（`nearest/backward/forward`，`null/skip` 缺失语义；`snapshot`/`tag` 可固定副流版本），单机与 Daft 共用同一对齐核心；
 - **GOP**：一段关键帧开头的压缩视频；帧解码只解所需 GOP，并在 `EpisodeGopVideo` 内按 `(camera, gop_index)` 缓存。
 
 ## 3. 功能矩阵与实现状态
@@ -71,6 +71,7 @@
 | MCAP 导入（JSON + protobuf，多 topic 对齐） | `import_mcap`、`build_*` | 完成 |
 | GOP 布局与读取 | `_gops`/`_frames`、`GopVideo`、`decode_gop` | 完成 |
 | Daft 分布式（导入/窗口采样/GOP 解码、Ray runner） | `lakesoul.embodied.daft` | 完成 |
+| 副流对齐（单机 + Daft、`snapshot`/`tag` 固定） | `SecondaryStream`、`align`、`align_daft`、`read_samples(streams=...)` | 完成 |
 | Ray 写入（`LakeSoulDatasink`，含自动 vacuum 钩子） | `lakesoul.ray` | 完成 |
 | 时间语义（timestamp/snapshot/tag、时区规则） | `scan.options(...)` | 完成（Python） |
 | 快照/标签与 pin-aware 保留 | `catalog.create_snapshot/create_tag/...` | 完成（PR #925） |
@@ -122,6 +123,7 @@ from lakesoul.embodied import (
 )
 from lakesoul.embodied.daft import (          # 需 lakesoul[daft]
     import_lerobot, import_lerobot_gop, import_mcap, read_samples, read_gop_frames,
+    align_daft,
 )
 from lakesoul.embodied.torch import Dataset as EmbodiedTorchDataset  # 需 lakesoul[torch]
 from lakesoul import BlobRef, materialize_blob
@@ -145,7 +147,7 @@ from lakesoul.vacuum import vacuum_blobs, VacuumResult
 1. **旧 Spark Parquet writer 路径不支持 blob**：blob 表依赖 native writer；该遗留路径计划移除，不做拦截；
 2. `read_samples`/`read_gop_frames` 位于 `lakesoul.embodied.daft` 子模块，不在 `lakesoul.embodied` 顶层导出；
 3. 单机 LeRobot 导入仅支持 v3.0；MCAP 支持 JSON 与 protobuf（FileDescriptorSet）；
-4. `align()` 物化 API 为 P1，读时副流对齐推荐直接用 `EmbodiedDataset(streams=...)`；
+4. 副流对齐单机（`EmbodiedDataset(streams=...)`/`align()`）与 Daft（`read_samples(streams=...)`/`align_daft()`）均支持；`SecondaryStream` 可带 `snapshot`/`tag` 固定副流版本；`missing="skip"` 统一为逐行/逐样本丢弃；
 5. blob GC 依赖 sidecar 完整性：live 文件缺 `.blobref` 时 vacuum 整体跳过（安全优先）。
 
 ## 8. 相关文档

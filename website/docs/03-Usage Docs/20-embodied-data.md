@@ -182,13 +182,29 @@ dataset = EmbodiedDataset(
             tolerance=0.02,
             direction="nearest",           # nearest | backward | forward
             missing="null",                # null | skip
+            snapshot=None,                 # freeze the stream version (or use tag=)
         )
     ],
 )
 ```
 
-`lakesoul.embodied.align` also exposes an explicit `align(left_scan, right_scan, into=...)` API
-to materialize an aligned table.
+`missing="skip"` drops the individual rows/samples without a match; with
+`snapshot=`/`tag=` the stream reads a frozen version.
+
+The same alignment is available distributed through Daft:
+
+```python
+from lakesoul.embodied.daft import align_daft, read_samples
+
+# window samples with the aligned stream columns (same semantics as above)
+df = read_samples(table.scan(), window={"state": (-2, 0)}, streams=[stream])
+
+# row-level alignment, optionally written back to a table
+aligned = align_daft(table.scan(), rewards.scan(), columns=["reward"], into=target)
+```
+
+`lakesoul.embodied.align` also exposes the explicit single-machine
+`align(left_scan, right_scan, into=...)` materialization API.
 
 ### PyTorch training loop
 
