@@ -3905,49 +3905,48 @@ impl IvmRuntime {
             .max()
             .unwrap_or(0);
 
+        let from_versions = cursors
+            .iter()
+            .map(|(desc, cursor)| (desc.clone(), cursor.last_version))
+            .collect::<HashMap<String, i64>>();
+        let window = self
+            .client
+            .get_table_changelog(&source.table_id, &from_versions)
+            .await?;
+
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
-        for partition in self.client.get_all_partition_info(&source.table_id).await? {
+        for partition in window.partitions {
             let last_version = cursors
                 .get(&partition.partition_desc)
                 .map(|cursor| cursor.last_version)
                 .unwrap_or(-1);
-            if i64::from(partition.version) <= last_version {
-                continue;
-            }
-
-            let window = self
-                .client
-                .get_partition_changelog(
-                    &source.table_id,
-                    &partition.partition_desc,
-                    last_version,
-                    i64::from(partition.version),
-                )
-                .await?;
-            if window.requires_rebuild {
+            if partition.requires_rebuild {
                 return Err(report!(
                     "view {view_id} source partition {} requires a rebuild",
                     partition.partition_desc
                 ));
             }
-            if window.partition_deleted {
+            // A deleted partition keeps its old cursor; it no longer exists in
+            // the table so it will not be scanned again.
+            if partition.partition_deleted || partition.to_version <= last_version {
                 continue;
             }
 
-            added_files.extend(window.added_files.iter().map(|file| file.path.clone()));
+            added_files
+                .extend(partition.added_files.iter().map(|file| file.path.clone()));
             identity.push((
                 source.table_id.clone(),
                 partition.partition_desc.clone(),
                 last_version,
-                window.to_version,
+                partition.to_version,
             ));
             new_cursors.push(Cursor {
                 source_table_id: source.table_id.clone(),
                 partition_desc: partition.partition_desc.clone(),
-                last_version: window.to_version,
-                last_timestamp: window.to_timestamp,
+                last_version: partition.to_version,
+                last_timestamp: partition.to_timestamp,
             });
         }
 
