@@ -29,6 +29,7 @@ use crate::metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
     SourceVersionRange, StateRole, StateTable,
 };
+use crate::provider::IvmTableProvider;
 use crate::table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
 };
@@ -1753,6 +1754,39 @@ impl IvmRuntime {
     /// The internal tables registered for a view (see `ivm.states`).
     pub async fn list_states(&self, view_id: &str) -> Result<Vec<StateTable>> {
         self.metadata.list_states(view_id).await
+    }
+
+    /// A DataFusion provider over the current state of an internal table.
+    pub fn table_provider(&self, table: &IvmTable) -> IvmTableProvider {
+        IvmTableProvider::current(table.clone(), self.client.clone())
+    }
+
+    /// A DataFusion provider over the state of an internal table as of
+    /// `as_of_ms`.
+    pub fn table_provider_as_of(
+        &self,
+        table: &IvmTable,
+        as_of_ms: i64,
+    ) -> IvmTableProvider {
+        IvmTableProvider::as_of(table.clone(), self.client.clone(), as_of_ms)
+    }
+
+    /// A DataFusion provider pinned to the partition versions of an epoch.
+    pub fn table_provider_at_versions(
+        &self,
+        table: &IvmTable,
+        versions: Vec<PartitionVersion>,
+    ) -> IvmTableProvider {
+        IvmTableProvider::at_versions(table.clone(), self.client.clone(), versions)
+    }
+
+    /// A DataFusion provider pinned to a committed epoch.
+    pub fn table_provider_at_epoch(
+        &self,
+        table: &IvmTable,
+        record: &EpochRecord,
+    ) -> IvmTableProvider {
+        self.table_provider_at_versions(table, record.mv_versions.clone())
     }
 
     /// Register or update a consumer watermark (see `EPOCH.md` §9).
