@@ -231,13 +231,16 @@ pub(crate) fn format_table_info_partitions(
     format!("{};{}", range_keys.join(","), hash_keys.join(","))
 }
 
-/// Commit the data files to the LakeSoul metadata.
+/// Commit the data files to the LakeSoul metadata and return the commit id.
+///
+/// The timestamp is milliseconds since the epoch, like `partition_info`,
+/// `commit_data_files` and the JVM writers (`System.currentTimeMillis`).
 pub(crate) async fn commit_data(
     client: MetaDataClientRef,
     table_name: &str,
     partition_desc: String,
     files: &[String],
-) -> Result<()> {
+) -> Result<String> {
     let table_ref = TableReference::from(table_name);
     let table_name_id = client
         .get_table_name_id_by_table_name(
@@ -246,6 +249,12 @@ pub(crate) async fn commit_data(
         )
         .await?
         .ok_or(report!("table not found"))?;
+    let commit_id = {
+        let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+        Uuid { high, low }
+    };
+    let commit_id_string =
+        uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
     client
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,
@@ -262,14 +271,11 @@ pub(crate) async fn commit_data(
             commit_op: CommitOp::AppendCommit as i32,
             timestamp: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)?
-                .as_secs() as i64,
-            commit_id: {
-                let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
-                Some(Uuid { high, low })
-            },
+                .as_millis() as i64,
+            commit_id: Some(commit_id),
             committed: false,
             domain: "public".to_string(),
         })
         .await?;
-    Ok(())
+    Ok(commit_id_string)
 }
