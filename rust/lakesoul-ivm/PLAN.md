@@ -838,6 +838,34 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
     全绿；`concurrent_refreshes_converge` 本身在基线上也偶发 PG 40001
     （8 路 serializable 写、5 次重试耗尽），与本次改动无因果。
 
+**pk_locator mmap/磁盘缓存实施记录（Phase A，已完成）**
+
+- 索引格式：`MmapIndex`（本地文件只读 `mmap`）——header（magic/版本/行数/blob 长度/键布局指纹）
+  + arrow-Row 编码的键字节 blob + `u32` offsets。条目位置即行号（写侧保证主键有序，构建时复检），
+  前缀查找返回连续区间，非唯一键天然覆盖；键编码与写侧排序一致（`RowConverter` + 默认
+  `SortOptions`），复合键是各列编码的拼接，故"列前缀 = 字节前缀"。
+- 容量共享：不新增开关/预算。索引作为"整文件条目"存入进程唯一的 object store `DiskCache`
+  （`crate::cache::get_lakesoul_cache()`），与页缓存共用 moka 实例、目录
+  （`LAKESOUL_CACHE_PATH`，默认 `lakesoul_cache_dir`）与容量（`LAKESOUL_CACHE_SIZE`），
+  统一 LRU 淘汰，由 `LAKESOUL_CACHE` 开关控制。`DiskCache` 新增
+  `get_file_entry`/`insert_file_entry`/`temporary_path` 等整文件 API；淘汰 unlink 不影响
+  已映射页（open fd/inode），启动清目录只导致重建。原 `LAKESOUL_PK_CACHE_BYTES` 与堆内索引
+  缓存已移除。
+- 读取路径：`get_or_load_file` 先查磁盘条目（命中则校验并 mmap），未命中才扫描 vortex 键列、
+  用 `RowConverter` 编码并流式写临时文件后插入；`try_build_key_inputs` 用同一 converter 一次性
+  编码候选再二分。vortex 文件句柄仍用小型堆缓存（1024 项）摊销 footer 读取。
+- 阈值与回退：`MIN_INDEX_ROWS=4096`（低于 writer 常见的 ~8k 行/文件）。决策覆盖整次查询：
+  所有候选文件都小于阈值才回退全扫，混合的小 upsert 文件不再拖累大文件的点取。单条索引上限为
+  共享容量的 1/8；键序不符/类型不符/超限/损坏文件进入负缓存并回退扫描。
+- 收益（spike benchmark，见下）：每 100 万行不可回收 anon 内存 96–119 MiB → 0.1–4 MiB，
+  索引主体转为可回收的 page cache（13–23 B/行）；点查不降反升（Int64 2.2×、复合 3.6×，
+  前缀 1.9×，构建也略快）。
+- 测试：`pk_locator.rs` 单测（前缀/重复键、乱序拒绝、损坏 header、候选编码）；`disk_cache.rs`
+  单测（整文件条目、命名空间、共享容量淘汰、`invalidate` 连带清理）；datafusion e2e 三个用例
+  统一打开 `LAKESOUL_CACHE`，首个数据文件 6 万行（writer 切成 ~8.5k 行/文件，验证混合文件与
+  缓存命中），`LAKESOUL_PK_PROFILE` 显示首次构建 ~10ms、随后 ~100µs；IVM legacy/V2 全量 +
+  `vortex_tables` 开缓存全绿。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
