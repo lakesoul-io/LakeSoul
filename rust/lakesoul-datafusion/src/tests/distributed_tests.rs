@@ -1956,24 +1956,30 @@ fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let mut urls = Vec::new();
         let mut workers = JoinSet::new();
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-        urls.push(format!("http://{}", listener.local_addr()?));
-        let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
-        let worker = datafusion_distributed::Worker::from_session_builder(
-            RecordingQueryIdBuilder {
-                seen: Arc::clone(&seen),
-            },
-        )
-        .with_runtime_env(runtime)
-        .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
-        workers.spawn(async move {
-            let _ = tonic::transport::Server::builder()
-                .add_service(worker.into_worker_server())
-                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
-                    listener,
-                ))
-                .await;
-        });
+        // A single available worker makes the distributed planner elide every
+        // network boundary and run the plan on the coordinator. Start the same
+        // worker count as the distributed session so requests actually reach
+        // the recording builders.
+        for _ in 0..WORKER_COUNT {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            urls.push(format!("http://{}", listener.local_addr()?));
+            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            let worker = datafusion_distributed::Worker::from_session_builder(
+                RecordingQueryIdBuilder {
+                    seen: Arc::clone(&seen),
+                },
+            )
+            .with_runtime_env(runtime)
+            .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+            workers.spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(worker.into_worker_server())
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
+                    .await;
+            });
+        }
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let context =
             Arc::new(factory.create_session(&LakeSoulSessionOptions::default())?);

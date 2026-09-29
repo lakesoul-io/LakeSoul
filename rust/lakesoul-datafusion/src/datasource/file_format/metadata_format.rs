@@ -61,6 +61,7 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 
 use crate::Result;
 use crate::catalog::{commit_data, parse_table_info_partitions};
@@ -591,17 +592,6 @@ impl LakeSoulHashSinkExec {
         Ok(row_count as u64)
     }
 
-    #[instrument(
-        name = "table_write_commit",
-        level = "info",
-        skip_all,
-        fields(
-            table_name = %table_name,
-            input_partition_count = join_handles.len(),
-            primary_key_count = primary_keys.len(),
-        ),
-        err
-    )]
     async fn wait_for_commit(
         join_handles: Vec<JoinHandle<Result<u64>>>,
         client: MetaDataClientRef,
@@ -947,6 +937,10 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        // Preserve scoped subscribers as well as the current span across the
+        // spawned write tasks. A Tokio task may be polled after moving away
+        // from the thread where `execute` was called.
+        let dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
         let span = info_span!(
             "hash_sink_execute",
             table_id = %self.table_info.table_id,
@@ -976,11 +970,9 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let partitioned_file_path_and_row_count =
             Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         for i in 0..num_input_partitions {
-            // The spawned futures are instrumented explicitly: an
-            // `#[instrument]` async fn creates its span on the first poll,
-            // which happens inside the spawned task where `execute`'s span is
-            // no longer current, and a plain `tokio::spawn` would therefore
-            // start a separate trace.
+            // `#[instrument]` creates its span on the first poll. Carry both
+            // the parent span and its dispatcher into the spawned task so the
+            // child span remains attached even with a scoped subscriber.
             let sink_task = tokio::spawn(
                 Self::pull_and_sink(
                     self.input().clone(),
@@ -991,7 +983,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                     write_id.clone(),
                     partitioned_file_path_and_row_count.clone(),
                 )
-                .instrument(span.clone()),
+                .instrument(span.clone())
+                .with_subscriber(dispatch.clone()),
             );
             // In a separate task, wait for each input to be done
             // (and pass along any errors, including panic!s)
@@ -1002,16 +995,50 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             schema: self.table_info().table_namespace.clone().into(),
             table: self.table_info().table_name.clone().into(),
         };
+        let table_name = table_ref.to_string();
+        // Create the commit span before spawning. Besides assigning its parent
+        // deterministically, this avoids making span creation depend on which
+        // executor thread first polls the commit future.
+        let commit_span = info_span!(
+            parent: &span,
+            "table_write_commit",
+            table_name = %table_name,
+            input_partition_count = join_handles.len(),
+            primary_key_count = self.primary_keys.len(),
+            outcome = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let commit_result_span = commit_span.clone();
+        let commit_future = Self::wait_for_commit(
+            join_handles,
+            self.metadata_client(),
+            table_name,
+            self.primary_keys.clone(),
+            self.object_store_options.clone(),
+            partitioned_file_path_and_row_count,
+        );
         let join_handle = tokio::spawn(
-            Self::wait_for_commit(
-                join_handles,
-                self.metadata_client(),
-                table_ref.to_string(),
-                self.primary_keys.clone(),
-                self.object_store_options.clone(),
-                partitioned_file_path_and_row_count,
-            )
-            .instrument(span.clone()),
+            async move {
+                let result = commit_future.await;
+                match &result {
+                    Ok(_) => {
+                        commit_result_span.record("outcome", "success");
+                    }
+                    Err(error) => {
+                        commit_result_span.record("outcome", "error");
+                        commit_result_span
+                            .record("error", tracing::field::display(error));
+                        tracing::error!(
+                            parent: &commit_result_span,
+                            error = %error,
+                            "table write commit failed"
+                        );
+                    }
+                }
+                result
+            }
+            .instrument(commit_span)
+            .with_subscriber(dispatch),
         );
 
         let sink_schema = self.sink_schema.clone();
@@ -1110,16 +1137,16 @@ mod tests {
     }
 }
 
-/// The sink spawns its write and commit tasks with `tokio::spawn`. An
-/// `#[instrument]` async fn builds its span on the first poll, which happens
-/// inside the spawned task where `execute`'s span is no longer current, so an
-/// uninstrumented spawn detaches `table_write_partition` and
-/// `table_write_commit` -- and the index maintenance nested under it -- from
-/// the statement trace.
+/// The sink spawns its write and commit tasks with `tokio::spawn`. A spawned
+/// future does not inherit a scoped subscriber, and an `#[instrument]` async fn
+/// builds its span on the first poll. The sink must therefore carry its span
+/// and dispatcher into both tasks so the write, metadata commit, and nested
+/// index maintenance stay in the statement trace.
 #[cfg(test)]
 mod span_tests {
     use super::*;
     use datafusion::physical_plan::empty::EmptyExec;
+    use futures::TryStreamExt;
     use lakesoul_metadata::MetaDataClient;
     use std::sync::Mutex as StdMutex;
     use tracing::subscriber::with_default;
@@ -1188,6 +1215,7 @@ mod span_tests {
                     None,
                     Arc::new(TableInfo {
                         partitions: ";".to_string(),
+                        properties: "{}".to_string(),
                         ..Default::default()
                     }),
                     client,
@@ -1203,10 +1231,9 @@ mod span_tests {
                 };
                 // The sink stream completes once the commit task has joined the
                 // per-partition write tasks, so both spawned spans exist by then.
-                let _ = stream.collect::<Vec<_>>().await;
+                let _: Vec<RecordBatch> = stream.try_collect().await.unwrap();
             });
         });
-
         assert_eq!(
             captured.parent_of("hash_sink_execute"),
             Some(Some("statement_execute".to_string())),
