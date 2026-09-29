@@ -5482,6 +5482,7 @@ dependencies = [
  "lakesoul-vector",
  "lazy_static",
  "linked-hash-map",
+ "memmap2",
  "metrics",
  "metrics-exporter-prometheus",
  "mimalloc",

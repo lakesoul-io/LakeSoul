@@ -35,6 +35,28 @@ fn parse_location_id(key: &str) -> Option<u64> {
     key.split_once('_').and_then(|(id, _)| id.parse().ok())
 }
 
+/// Key of a whole-file cache entry.  `kind` is a non-numeric tag, so file
+/// entries never collide with the numeric page ids of the page cache, while
+/// still sharing its moka instance, capacity and eviction policy.
+fn make_file_key(location_id: u64, kind: &str) -> String {
+    format!("{location_id}_{kind}")
+}
+
+/// Suffix of whole-file entries inside the cache directory.
+const FILE_ENTRY_SUFFIX: &str = "entry";
+
+/// Deterministic backing file name for a whole-file entry.  Building the same
+/// entry twice (in this or another process) maps to one file; content is
+/// deterministic, so a re-run overwrites it with identical bytes.
+fn file_entry_name(location: &Path, kind: &str) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    location.as_ref().hash(&mut hasher);
+    kind.hash(&mut hasher);
+    format!("{:016x}.{FILE_ENTRY_SUFFIX}", hasher.finish())
+}
+
 fn entry_weight(size: u64) -> u32 {
     size.div_ceil(1024).min(u32::MAX as u64) as u32
 }
@@ -478,6 +500,137 @@ impl PageCache for DiskCache {
     }
 }
 
+/// Whole-file entries of the [`DiskCache`].
+///
+/// The page cache stores fixed-size pages and serves them as [`Bytes`]; some
+/// callers (e.g. the mmapped pk index) need a complete local file they can map
+/// into memory.  These entries share the page cache's directory, moka instance,
+/// capacity budget and LRU eviction.
+impl DiskCache {
+    /// Whether the cache can hold anything at all.
+    pub fn is_enabled(&self) -> bool {
+        self.max_capacity_bytes > 0
+    }
+
+    /// Total cache capacity in bytes.
+    pub fn capacity_bytes(&self) -> u64 {
+        self.max_capacity_bytes
+    }
+
+    /// A unique temporary path inside the cache root.  Callers build the file
+    /// there and hand it to [`Self::insert_file_entry`].
+    pub fn temporary_path(&self) -> PathBuf {
+        self.root.join(format!("{}.tmp", Uuid::new_v4()))
+    }
+
+    /// The whole-file entry stored for `(location, kind)`, if any.
+    pub async fn get_file_entry(
+        &self,
+        location: &Path,
+        kind: &str,
+    ) -> Option<(Arc<std::fs::File>, u64)> {
+        let location_id = self.get_location_id(location);
+        let key = make_file_key(location_id, kind);
+        let entry = self.cache.get(&key).await?;
+        Some((entry.file.clone(), entry.size))
+    }
+
+    /// Insert a whole local file as a cache entry.
+    ///
+    /// `temp` must be a complete file written by the caller (see
+    /// [`Self::temporary_path`]); it is renamed into the cache directory and
+    /// accounted for like any other entry.  Returns the entry that owns the
+    /// key, its size, and whether this call built it (`false` when a concurrent
+    /// caller won the race).
+    pub async fn insert_file_entry(
+        &self,
+        location: &Path,
+        kind: &str,
+        temp: PathBuf,
+        size: u64,
+    ) -> Result<(Arc<std::fs::File>, u64, bool)> {
+        let location_id = self.get_location_id(location);
+        let key = make_file_key(location_id, kind);
+
+        if let Some(entry) = self.cache.get(&key).await {
+            let _ = std::fs::remove_file(&temp);
+            return Ok((entry.file.clone(), entry.size, false));
+        }
+
+        // Deterministic name: concurrent builders of the same entry (in this
+        // or another process) end up with a single backing file.
+        let filename = file_entry_name(location, kind);
+        let final_path = self.root.join(&filename);
+        let renamed = {
+            let temp = temp.clone();
+            let final_path = final_path.clone();
+            tokio::task::spawn_blocking(move || std::fs::rename(&temp, &final_path)).await
+        };
+        match renamed {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(Error::Generic {
+                    store: "DiskCache",
+                    source: Box::new(error),
+                });
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(Error::Generic {
+                    store: "DiskCache",
+                    source: Box::new(error),
+                });
+            }
+        }
+
+        let file = {
+            let path = final_path.clone();
+            tokio::task::spawn_blocking(move || std::fs::File::open(&path)).await
+        }
+        .map_err(|error| Error::Generic {
+            store: "DiskCache",
+            source: Box::new(error),
+        })?
+        .map_err(|error| Error::Generic {
+            store: "DiskCache",
+            source: Box::new(error),
+        })?;
+        let file = Arc::new(file);
+
+        let inserted = self
+            .cache
+            .entry(key.clone())
+            .and_try_compute_with({
+                let file = file.clone();
+                let filename = filename.clone();
+                move |entry| async move {
+                    if entry.is_some() {
+                        return Ok::<compute::Op<CacheEntry>, Error>(compute::Op::Nop);
+                    }
+                    Ok(compute::Op::Put(CacheEntry {
+                        size,
+                        file,
+                        filename,
+                    }))
+                }
+            })
+            .await?;
+        let inserted = matches!(inserted, compute::CompResult::Inserted(_));
+        if inserted {
+            self.approximate_size
+                .fetch_add(to_kb(size), Ordering::Relaxed);
+            self.register_key(location_id, &key);
+        }
+
+        // Any entry that won the race points at the same deterministic path.
+        match self.cache.get(&key).await {
+            Some(entry) => Ok((entry.file.clone(), entry.size, inserted)),
+            None => Ok((file, size, inserted)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,6 +895,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(meta.size, 9);
+    }
+
+    #[tokio::test]
+    async fn test_file_entry_roundtrip_and_namespace() {
+        let tmp_dir = tempdir().unwrap();
+        let cache = Arc::new(DiskCache::with_path(
+            1024 * 1024,
+            DEFAULT_PAGE_SIZE,
+            tmp_dir.path().to_path_buf(),
+        ));
+        let location = Path::from("data/file.vortex");
+
+        let temp = cache.temporary_path();
+        std::fs::write(&temp, vec![7u8; 8 * 1024]).unwrap();
+        let (file, size, built) = cache
+            .insert_file_entry(&location, "pkabc", temp, 8 * 1024)
+            .await
+            .unwrap();
+        assert!(built);
+        assert_eq!(size, 8 * 1024);
+        assert_eq!(file.metadata().unwrap().len(), 8 * 1024);
+        assert_eq!(count_files(tmp_dir.path()), 1);
+
+        // A second insert does not rebuild and cleans up the unused temp file.
+        let temp = cache.temporary_path();
+        std::fs::write(&temp, b"unused").unwrap();
+        let (_, _, built) = cache
+            .insert_file_entry(&location, "pkabc", temp.clone(), 6)
+            .await
+            .unwrap();
+        assert!(!built);
+        assert!(!temp.exists());
+        assert_eq!(count_files(tmp_dir.path()), 1);
+
+        // File entries and page ids share the cache without colliding.
+        cache
+            .put(&location, 0, Bytes::from_static(b"page"))
+            .await
+            .unwrap();
+        assert!(cache.get(&location, 0).await.unwrap().is_some());
+        assert!(cache.get_file_entry(&location, "pkabc").await.is_some());
+
+        // invalidate drops the whole location, file entries included.
+        cache.invalidate(&location).await.unwrap();
+        assert!(cache.get_file_entry(&location, "pkabc").await.is_none());
+        assert!(cache.get(&location, 0).await.unwrap().is_none());
+        assert_eq!(cache.size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_file_entry_shares_capacity_and_evicts() {
+        let tmp_dir = tempdir().unwrap();
+        let cache = Arc::new(DiskCache::with_path(
+            32 * 1024,
+            DEFAULT_PAGE_SIZE,
+            tmp_dir.path().to_path_buf(),
+        ));
+        let location = Path::from("data/big.vortex");
+
+        for index in 0..4 {
+            let temp = cache.temporary_path();
+            std::fs::write(&temp, vec![index as u8; 16 * 1024]).unwrap();
+            let (_, size, built) = cache
+                .insert_file_entry(&location, &format!("pk{index}"), temp, 16 * 1024)
+                .await
+                .unwrap();
+            assert!(built);
+            assert_eq!(size, 16 * 1024);
+        }
+
+        // Moka evicts entries asynchronously; once maintenance ran, the shared
+        // budget (and its accounting) must hold.
+        cache.cache.run_pending_tasks().await;
+        assert!(
+            cache.size() <= cache.capacity(),
+            "cache size {} exceeds capacity {}",
+            cache.size(),
+            cache.capacity()
+        );
     }
 
     #[tokio::test]

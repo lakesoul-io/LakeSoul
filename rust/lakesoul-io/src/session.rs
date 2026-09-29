@@ -820,21 +820,26 @@ impl LakeSoulIOSession {
         let table_schema = self.io_table_schema().await?;
         let statistics = Statistics::new_unknown(table_schema.table_schema());
 
-        // Row-level primary-key candidates (`pk = v` / `pk IN (...)`) let the
-        // scan fetch only the matching rows instead of reading the id column
-        // of every file.  The set is a superset of the matching rows; the
-        // filters above the scan still run for correctness.
-        let pk_candidates = {
+        // Row-level key candidates (`pk = v` / `pk IN (...)`, or a finite
+        // prefix of a composite key) let the scan fetch only the matching rows
+        // instead of reading the key columns of every file.  The set is a
+        // superset of the matching rows; the filters above the scan still run
+        // for correctness.  Only key prefixes are used: payload predicates
+        // cannot be pushed into a merge-on-read scan.
+        let key_constraint = {
             let primary_keys = self.io_config.primary_keys_slice();
-            if primary_keys.len() == 1 {
-                let pk = &primary_keys[0];
-                table_schema
-                    .file_schema()
-                    .field_with_name(pk)
-                    .ok()
-                    .and_then(|field| {
-                        pk_locator::extract_pk_candidates(&filters, pk, field.data_type())
-                    })
+            let fields = primary_keys
+                .iter()
+                .filter_map(|pk| {
+                    table_schema
+                        .file_schema()
+                        .field_with_name(pk)
+                        .ok()
+                        .map(|field| (pk.clone(), field.data_type().clone()))
+                })
+                .collect::<Vec<_>>();
+            if fields.len() == primary_keys.len() {
+                pk_locator::extract_key_constraints(&filters, &fields)
             } else {
                 None
             }
@@ -978,20 +983,20 @@ impl LakeSoulIOSession {
         }
 
         // 6. Merge all format-specific scan inputs with one LakeSoul merge path.
-        // When a finite pk filter is present, replace the per-file scans with
-        // row-level candidate inputs (vortex + integer pk only; otherwise the
-        // regular scan path is kept).
-        let candidate_inputs = match pk_candidates {
-            Some(candidates) if !candidates.is_empty() => {
-                pk_locator::try_build_pk_inputs(
+        // When a finite key constraint is present, replace the per-file scans
+        // with row-level candidate inputs (vortex only; otherwise the regular
+        // scan path is kept).
+        let candidate_inputs = match &key_constraint {
+            Some(constraint) => {
+                pk_locator::try_build_key_inputs(
                     self,
                     &self.io_config,
                     &flatten_configs,
-                    &candidates,
+                    constraint,
                 )
                 .await
             }
-            _ => None,
+            None => None,
         };
         let merge_exec = Arc::new(match candidate_inputs {
             Some(inputs) => MergeParquetExec::new_with_inputs(
