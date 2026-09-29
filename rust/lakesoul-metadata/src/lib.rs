@@ -127,6 +127,10 @@ impl DataFileOp {
 }
 
 /// The coded type for the Data Access Object.
+///
+/// The discriminants are the wire codes used by the JNI clients and must stay
+/// in sync with the Java `CodedDaoType` enum in
+/// `lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/jnr/NativeUtils.java`.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, num_enum::TryFromPrimitive,
 )]
@@ -162,6 +166,8 @@ pub enum DaoType {
     /// The coded type for the Data Access Object for select the latest partition version by table id, partition description and timestamp (inclusive).
     SelectOnePartitionVersionByTableIdAndDescAndTimestamp =
         DAO_TYPE_QUERY_ONE_OFFSET + 12,
+    /// The coded type for the Data Access Object for select the latest data commit info by table id.
+    SelectOneDataCommitInfoByTableId = DAO_TYPE_QUERY_ONE_OFFSET + 13,
 
     // ==== Coded Table List ====
     /// The coded type for the Data Access Object for list namespaces.
@@ -472,6 +478,12 @@ async fn get_prepared_statement<'a>(
             "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain, pinned
             from data_commit_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
+        DaoType::SelectOneDataCommitInfoByTableId =>
+            "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain, pinned
+            from data_commit_info
+            where table_id = $1::TEXT
+            order by timestamp desc
+            limit 1",
 
         // Select DiscardCompressedFileInfo
         DaoType::SelectDiscardCompressedFileInfoByFilePath =>
@@ -1052,6 +1064,13 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::SelectOneDataCommitInfoByTableId if params.len() == 1 => {
+            let result = conn.query(&statement, &[&params[0]]).await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::SelectPartitionVersionByTableIdAndDescAndVersion
             if params.len() == 3 =>
         {
@@ -1271,6 +1290,7 @@ pub async fn execute_query(
         | DaoType::DropTagByTableIdAndTag => ResultType::SnapshotTagInfo,
 
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
+        | DaoType::SelectOneDataCommitInfoByTableId
         | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList
         | DaoType::ListDataCommitInfoByTableIdAndCommitIds => ResultType::DataCommitInfo,
 

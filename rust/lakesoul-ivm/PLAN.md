@@ -46,6 +46,7 @@
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
 - **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
   dirty 自动重建）→ PG `CREATE/REFRESH MATERIALIZED VIEW` 表面（postgres-lakesoul）
+  （P2 已全部收尾）
 
 ## 0. 背景与边界
 
@@ -307,12 +308,13 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - ~~`pk_locator` 泛化（任意列/字符串/parquet/非唯一键）~~：已按 vortex 路线完成类型化
   泛化（见下方 Step 1 记录）；parquet 明确不在范围内（v1 join 用"桶裁剪 +
   row-group min/max + sort-merge"，不依赖点查）。
-- `data_commit_info.timestamp` 索引、`DataCommitInfo.timestamp` 秒/毫秒不一致
-  （`rust/lakesoul-datafusion/src/catalog/mod.rs:309` vs
-  `metadata_client.rs:798`）归一化。
-- JNI DAO offset 错位（`lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/jnr/NativeUtils.java:57`
-  `+10` 实际命中 `SelectTableDomainById`）——Java "按表查最新 commit" 路径失效，
-  独立小 fix。
+- ~~`DataCommitInfo.timestamp` 秒/毫秒不一致~~（已完成：hash sink 提交路径改为毫秒并加
+  回归测试；`data_commit_info.timestamp` 索引未做——目前只有 JVM 列表的
+  `order by timestamp` 使用，需要时再走迁移补）。
+- ~~JNI DAO offset 错位~~（已完成：补齐 Rust `SelectOneDataCommitInfoByTableId`
+  （query-one +13）并让 Java 枚举指向同一 code、`paramsNum=1`；顺带把
+  `DAO_TYPE_*_OFFSET` 常量改为 final，消除"先引用枚举类型"时的循环 `<clinit>`；
+  Java 侧加了 code/参数一致性测试）。
 - as-of 参数下沉到 `TableProvider::scan` / provider options。
 
 ## 8. 里程碑
