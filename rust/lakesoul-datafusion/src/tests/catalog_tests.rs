@@ -755,3 +755,63 @@ fn test_catalog_sql_projection_keeps_partition_values_aligned() {
         );
     });
 }
+
+/// A committed `data_commit_info` row carries a milliseconds timestamp, like
+/// `partition_info` and the JVM writers (`System.currentTimeMillis`).  A
+/// seconds value is ~1000x too small and breaks time-based watermarks.
+#[test]
+fn data_commit_timestamp_is_in_milliseconds() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let table_name = "data_commit_timestamp_ms";
+        let _ = client.drop_table(table_name, "default").await;
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let config = LakeSoulIOConfigBuilder::new().with_schema(schema).build();
+        super::create_table(client.clone(), table_name, config)
+            .await
+            .unwrap();
+        let table_id = client
+            .get_table_name_id_by_table_name(table_name, "default")
+            .await
+            .unwrap()
+            .unwrap()
+            .table_id;
+
+        let file = format!(
+            "file://{}/commit-timestamp-ms.parquet",
+            std::env::temp_dir().display()
+        );
+        let commit_id = crate::catalog::commit_data(
+            client.clone(),
+            table_name,
+            String::new(),
+            std::slice::from_ref(&file),
+        )
+        .await
+        .unwrap();
+
+        let info = client
+            .get_single_data_commit_info(&table_id, "", &commit_id)
+            .await
+            .unwrap()
+            .expect("committed data info");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(
+            info.timestamp > 1_600_000_000_000,
+            "timestamp {} is not in milliseconds",
+            info.timestamp
+        );
+        assert!(
+            (now_ms - info.timestamp).abs() < 120_000,
+            "timestamp {} should be close to {now_ms}",
+            info.timestamp
+        );
+
+        let _ = client.drop_table(table_name, "default").await;
+    });
+}
