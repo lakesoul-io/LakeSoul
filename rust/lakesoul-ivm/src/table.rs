@@ -58,6 +58,8 @@ pub struct IvmTable {
     /// The CDC change column of the table (`insert` / `delete` values), when
     /// the table carries one.
     pub cdc_column: Option<String>,
+    /// The physical file format of the table.
+    pub file_format: PhysicalFormat,
 }
 
 /// Options for [`create_ivm_table`].
@@ -80,6 +82,9 @@ pub struct IvmTableOptions {
     /// The CDC change column of the table, persisted as the
     /// `lakesoul_cdc_change_column` table property.
     pub cdc_column: Option<String>,
+    /// The physical file format of the table (parquet by default; vortex
+    /// enables the row-level primary-key locator).
+    pub file_format: PhysicalFormat,
 }
 
 impl IvmTableOptions {
@@ -98,6 +103,7 @@ impl IvmTableOptions {
             bucket_columns: Vec::new(),
             hash_bucket_num: "4".to_string(),
             cdc_column: None,
+            file_format: PhysicalFormat::Parquet,
         }
     }
 
@@ -124,6 +130,12 @@ impl IvmTableOptions {
         self.cdc_column = Some(cdc_column.into());
         self
     }
+
+    /// Set the physical file format (parquet by default).
+    pub fn with_file_format(mut self, file_format: PhysicalFormat) -> Self {
+        self.file_format = file_format;
+        self
+    }
 }
 
 /// Create an internal LakeSoul table.
@@ -133,7 +145,7 @@ pub async fn create_ivm_table(
 ) -> Result<IvmTable> {
     let mut properties = serde_json::json!({
         "hashBucketNum": options.hash_bucket_num,
-        "file_format": "parquet",
+        "file_format": options.file_format.name(),
         "lakesoul.ivm.internal": "true",
     });
     if !options.bucket_columns.is_empty() {
@@ -176,6 +188,7 @@ pub async fn create_ivm_table(
         bucket_columns: options.bucket_columns,
         hash_bucket_num: options.hash_bucket_num,
         cdc_column: options.cdc_column,
+        file_format: options.file_format,
     })
 }
 
@@ -202,7 +215,7 @@ impl IvmTable {
             .with_primary_keys(self.primary_keys.clone())
             .with_hash_partitioning_columns(self.bucket_columns.clone())
             .with_hash_bucket_num(self.hash_bucket_num.clone())
-            .with_physical_format(PhysicalFormat::Parquet);
+            .with_physical_format(self.file_format);
         if !self.primary_keys.is_empty() {
             builder = builder
                 .set_dynamic_partition(true)
@@ -263,7 +276,7 @@ impl IvmTable {
             .with_files(files)
             .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
             .with_primary_keys(self.primary_keys.clone())
-            .with_physical_format(PhysicalFormat::Parquet);
+            .with_physical_format(self.file_format);
         if !filters.is_empty() {
             // `with_filters` is deprecated in favour of the string/proto
             // variants, but it is the only API that keeps the filters as typed
