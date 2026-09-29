@@ -1441,24 +1441,33 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(exec);
         }
 
-        // Finite primary-key predicates let the scan fetch only the matching
-        // rows (vortex + integer pk only); the optimizer keeps re-applying
-        // the filter above the scan, so a superset candidate set is safe.
-        let pk_candidates = if self.primary_keys.len() == 1 {
-            let pk = &self.primary_keys[0];
-            self.file_schema.field_with_name(pk).ok().and_then(|field| {
-                lakesoul_io::pk_locator::extract_pk_candidates(
+        // Finite primary-key predicates (or a finite prefix of a composite
+        // key) let the scan fetch only the matching rows (vortex only); the
+        // optimizer keeps re-applying the filter above the scan, so a
+        // superset candidate set is safe.
+        let key_constraint = {
+            let fields = self
+                .primary_keys
+                .iter()
+                .filter_map(|pk| {
+                    self.file_schema
+                        .field_with_name(pk)
+                        .ok()
+                        .map(|field| (pk.clone(), field.data_type().clone()))
+                })
+                .collect::<Vec<_>>();
+            if fields.len() == self.primary_keys.len() {
+                lakesoul_io::pk_locator::extract_key_constraints(
                     &classified.pk_candidates,
-                    pk,
-                    field.data_type(),
+                    &fields,
                 )
-            })
-        } else {
-            None
+            } else {
+                None
+            }
         };
-        if let Some(candidates) = &pk_candidates {
+        if let Some(constraint) = &key_constraint {
             debug!(
-                candidate_count = candidates.len(),
+                candidate_count = constraint.values.len(),
                 "extracted primary-key candidates"
             );
         }
@@ -1613,14 +1622,14 @@ impl TableProvider for LakeSoulTableProvider {
             "built file scan configurations"
         );
 
-        let candidate_inputs = match pk_candidates {
-            Some(candidates) if !candidates.is_empty() => {
-                let candidate_count = candidates.len();
-                let inputs = lakesoul_io::pk_locator::try_build_pk_inputs(
+        let candidate_inputs = match &key_constraint {
+            Some(constraint) => {
+                let candidate_count = constraint.values.len();
+                let inputs = lakesoul_io::pk_locator::try_build_key_inputs(
                     session_state,
                     &self.io_config,
                     &flatten_configs,
-                    &candidates,
+                    constraint,
                 )
                 .await;
                 debug!(
@@ -1630,7 +1639,7 @@ impl TableProvider for LakeSoulTableProvider {
                 );
                 inputs
             }
-            _ => None,
+            None => None,
         };
 
         let mut inputs_map: HashMap<

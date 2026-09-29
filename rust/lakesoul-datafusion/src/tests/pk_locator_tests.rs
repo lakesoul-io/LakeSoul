@@ -181,3 +181,211 @@ async fn sql_pk_filters_use_the_row_locator() {
     );
     assert!(misses_after > 0, "the pk map should have been built");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_string_pk_filters_use_the_row_locator() {
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "pk_locator_string_e2e";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
+            k VARCHAR NOT NULL PRIMARY KEY,
+            v BIGINT NOT NULL
+         ) STORED AS LAKESOUL \
+         LOCATION '{location}' \
+         OPTIONS ('file_format' 'vortex')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    // File 1: keys k000..k099.
+    let rows = (0..100)
+        .map(|value| format!("('k{value:03}', {value})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.sql(&format!(
+        "INSERT INTO \"lakesoul\".default.{table_name} VALUES {rows}"
+    ))
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    // File 2: update k005.
+    ctx.sql(&format!(
+        "INSERT INTO \"lakesoul\".default.{table_name} VALUES ('k005', 1005)"
+    ))
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!("select v from \"lakesoul\".default.{table_name} where k = 'k005'")
+        )
+        .await,
+        vec![1005]
+    );
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select v from \"lakesoul\".default.{table_name} \
+                 where k in ('k001', 'k005', 'missing')"
+            )
+        )
+        .await,
+        vec![1, 1005]
+    );
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select v from \"lakesoul\".default.{table_name} where k = 'missing'"
+            )
+        )
+        .await,
+        Vec::<i64>::new()
+    );
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select v from \"lakesoul\".default.{table_name} \
+                 where k in ('k005', 'k006') and v > 1000"
+            )
+        )
+        .await,
+        vec![1005]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_composite_pk_prefix_uses_the_row_locator() {
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "pk_locator_composite_e2e";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
+            g VARCHAR NOT NULL,
+            v BIGINT NOT NULL,
+            payload BIGINT NOT NULL,
+            PRIMARY KEY (g, v)
+         ) STORED AS LAKESOUL \
+         LOCATION '{location}' \
+         OPTIONS ('file_format' 'vortex')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    // File 1: groups g0..g2, five versions each.
+    let rows = (0..3i64)
+        .flat_map(|group| {
+            (0..5i64).map(move |version| {
+                format!("('g{group}', {version}, {})", group * 100 + version)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.sql(&format!(
+        "INSERT INTO \"lakesoul\".default.{table_name} VALUES {rows}"
+    ))
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    // File 2: update (g1, v2).
+    ctx.sql(&format!(
+        "INSERT INTO \"lakesoul\".default.{table_name} VALUES ('g1', 2, 999)"
+    ))
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    // Full composite key.
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select payload from \"lakesoul\".default.{table_name} \
+                 where g = 'g1' and v = 2"
+            )
+        )
+        .await,
+        vec![999]
+    );
+
+    // A prefix of the composite key alone is enough to locate rows.
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select payload from \"lakesoul\".default.{table_name} where g = 'g1'"
+            )
+        )
+        .await,
+        vec![100, 101, 103, 104, 999]
+    );
+
+    // Full keys in one IN list.
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select payload from \"lakesoul\".default.{table_name} \
+                 where g in ('g0', 'g2') and v in (1, 3)"
+            )
+        )
+        .await,
+        vec![1, 3, 201, 203]
+    );
+
+    // Residual predicates on payload columns still apply above the scan.
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select payload from \"lakesoul\".default.{table_name} \
+                 where g = 'g2' and payload > 200"
+            )
+        )
+        .await,
+        vec![201, 202, 203, 204]
+    );
+
+    // A missing group reads nothing.
+    assert_eq!(
+        query_ids(
+            &ctx,
+            &format!(
+                "select payload from \"lakesoul\".default.{table_name} where g = 'g9'"
+            )
+        )
+        .await,
+        Vec::<i64>::new()
+    );
+}
