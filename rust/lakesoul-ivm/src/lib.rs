@@ -76,6 +76,7 @@ pub mod runtime;
 pub mod table;
 
 pub use error::Result;
+pub use lakesoul_io::file_format::PhysicalFormat;
 pub use metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, EpochStatus, IvmMetadata,
     PartitionVersion, SourceVersionRange, StateRole, StateTable,
