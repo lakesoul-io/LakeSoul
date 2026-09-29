@@ -100,7 +100,10 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
 
                 let provider_options =
                     LakeSoulProviderOptions::from_session(session_state);
-                match lakesoul_table.as_sink_provider(provider_options).await {
+                match lakesoul_table
+                    .as_provider_without_session(provider_options)
+                    .await
+                {
                     Ok(provider) => {
                         let physical_input =
                             self.create_physical_plan(input, session_state).await?;

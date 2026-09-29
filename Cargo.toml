@@ -16,6 +16,7 @@ members = [
   "rust/lakesoul-s3-proxy",
   "rust/lakesoul-console",
   "rust/lakesoul-common",
+  "rust/lakesoul-observability",
   "rust/lakesoul-vector",
   "rust/lakesoul-ivm",
   "rust/lakesoul-text",
@@ -107,6 +108,7 @@ http = "1"
 axum = "0.8"
 toml = "0.9"
 metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 # cache
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 # cli

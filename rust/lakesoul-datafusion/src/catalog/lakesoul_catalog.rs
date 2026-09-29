@@ -435,7 +435,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let provider = lakehouse_table.as_sink_provider(options).await.unwrap();
+        let provider = lakehouse_table
+            .as_provider_without_session(options)
+            .await
+            .unwrap();
 
         let existing = schema
             .register_table(table_name.clone(), provider)

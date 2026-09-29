@@ -36,6 +36,7 @@ use self::sorted::merge_operator::MergeOperator;
 use self::sorted::sorted_stream_merger::{SortedStream, build_sorted_stream_merger};
 use crate::Result;
 use crate::config::LakeSoulIOConfig;
+use crate::execution_trace::instrument_record_batch_stream;
 use crate::filter::parser::{FilterContainer, Parser as FilterParser};
 use crate::stream::default_column::DefaultColumnStream;
 use crate::stream::empty_schema::EmptySchemaStream;
@@ -339,6 +340,18 @@ impl ExecutionPlan for MergeParquetExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        let span = info_span!(
+            "merge_parquet_execute",
+            partition,
+            input_count = self.inputs.len(),
+            primary_key_count = self.primary_keys.len(),
+            outcome = tracing::field::Empty,
+            output_batches = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let entered = span.enter();
+
         if partition != 0 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid requested partition {partition}. InsertExec requires a single input partition."
@@ -357,7 +370,12 @@ impl ExecutionPlan for MergeParquetExec {
                 )));
             }
             let stream = input.execute(partition, context.clone())?;
-            info!("Input[{}], schema {}", i, stream.schema());
+            debug!(
+                input_index = i,
+                input_plan = input.name(),
+                schema = %stream.schema(),
+                "created merge input stream"
+            );
             stream_init_futs.push(stream);
         }
 
@@ -380,7 +398,12 @@ impl ExecutionPlan for MergeParquetExec {
             e.into_boxed_error()
         })?;
 
-        Ok(merged_stream)
+        drop(entered);
+        Ok(instrument_record_batch_stream(
+            merged_stream,
+            span,
+            "merge_parquet",
+        ))
     }
 }
 

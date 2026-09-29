@@ -37,7 +37,7 @@
 //!   files that lack it — by `catalog`/`merge` unit tests instead.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arrow::array::{ArrayRef, Int32Array, Int64Array};
@@ -46,7 +46,9 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed::{DistributedExec, Worker, display_plan_ascii};
+use datafusion_distributed::{
+    DistributedExec, DistributedExt, Worker, display_plan_ascii,
+};
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::file_format::PhysicalFormat;
@@ -1771,4 +1773,265 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
 
     workers.abort_all();
     Ok(())
+}
+/// A worker store that serves one read and then fails subsequent reads.
+#[derive(Debug)]
+struct FailAfterFirstRead {
+    inner: Arc<dyn object_store::ObjectStore>,
+    first_served: tokio::sync::Mutex<bool>,
+    served: Arc<AtomicUsize>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::fmt::Display for FailAfterFirstRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fail-after-first-read")
+    }
+}
+
+#[async_trait::async_trait]
+impl object_store::ObjectStore for FailAfterFirstRead {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        options: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.inner.put_opts(location, payload, options).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, options).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        let mut first_served = self.first_served.lock().await;
+        if *first_served {
+            self.failed.store(true, Ordering::SeqCst);
+            return Err(object_store::Error::Generic {
+                store: "fail-after-first-read",
+                source: "injected failure after successful read".into(),
+            });
+        }
+        let result = self.inner.get_opts(location, options).await;
+        if result.is_ok() {
+            *first_served = true;
+            self.served.fetch_add(1, Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+#[test]
+fn test_a_read_failing_after_progress_fails_distributed_query() {
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let (table, _) = seed_large_table(Arc::clone(&client), 4, 32).await?;
+        let served = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut fault_workers = JoinSet::new();
+        let mut urls = Vec::new();
+        for _ in 0..WORKER_COUNT {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            urls.push(format!("http://{}", listener.local_addr()?));
+            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            runtime.register_object_store(
+                &url::Url::parse("file://")?,
+                Arc::new(FailAfterFirstRead {
+                    inner: Arc::new(object_store::local::LocalFileSystem::new()),
+                    first_served: tokio::sync::Mutex::new(false),
+                    served: Arc::clone(&served),
+                    failed: Arc::clone(&failed),
+                }),
+            );
+            let worker = crate::distributed::lakesoul_worker(
+                &crate::distributed::LakeSoulWorkerOptions {
+                    core_args: CoreArgs::default(),
+                },
+            )?
+            .with_runtime_env(runtime);
+            fault_workers.spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(worker.into_worker_server())
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
+                    .await;
+            });
+        }
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(60),
+            ctx.sql(&format!("select count(*) from {table}"))
+                .await?
+                .collect(),
+        )
+        .await
+        .expect("injected store failure must not hang");
+        assert!(
+            served.load(Ordering::SeqCst) > 0,
+            "a read must succeed first"
+        );
+        assert!(
+            failed.load(Ordering::SeqCst),
+            "the injected failure must occur"
+        );
+        assert!(outcome.is_err(), "partial results must not be returned");
+        fault_workers.abort_all();
+        Ok(())
+    });
+}
+
+struct RecordingQueryIdBuilder {
+    seen: Arc<parking_lot::Mutex<Vec<Option<u64>>>>,
+}
+
+#[async_trait::async_trait]
+impl datafusion_distributed::WorkerSessionBuilder for RecordingQueryIdBuilder {
+    async fn build_session_state(
+        &self,
+        ctx: datafusion_distributed::WorkerQueryContext,
+    ) -> datafusion::common::Result<datafusion::execution::SessionState> {
+        self.seen
+            .lock()
+            .push(crate::distributed::headers::query_id_from_headers(
+                &ctx.headers,
+            ));
+        Ok(ctx
+            .builder
+            .with_distributed_user_codec(crate::distributed::LakeSoulCodec)
+            .build())
+    }
+}
+
+#[test]
+fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let (table, _) = seed_large_table(Arc::clone(&client), 8, 8).await?;
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut urls = Vec::new();
+        let mut workers = JoinSet::new();
+        // A single available worker makes the distributed planner elide every
+        // network boundary and run the plan on the coordinator. Start the same
+        // worker count as the distributed session so requests actually reach
+        // the recording builders.
+        for _ in 0..WORKER_COUNT {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            urls.push(format!("http://{}", listener.local_addr()?));
+            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            let worker = datafusion_distributed::Worker::from_session_builder(
+                RecordingQueryIdBuilder {
+                    seen: Arc::clone(&seen),
+                },
+            )
+            .with_runtime_env(runtime)
+            .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+            workers.spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(worker.into_worker_server())
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
+                    .await;
+            });
+        }
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let context =
+            Arc::new(factory.create_session(&LakeSoulSessionOptions::default())?);
+        let actor =
+            crate::distributed::headers::SessionActor::new("alice", "", "default");
+
+        for query_id in [501_u64, 502] {
+            seen.lock().clear();
+            let context_for_query = Arc::clone(&context);
+            let sql = format!("select count(*) from {table}");
+            crate::distributed::headers::with_query_id(
+                &context,
+                &actor,
+                query_id,
+                async move { context_for_query.sql(&sql).await?.collect().await },
+            )
+            .await?;
+            let delivered = seen.lock().clone();
+            assert!(!delivered.is_empty(), "query {query_id} reached no worker");
+            assert!(
+                delivered.iter().all(|id| *id == Some(query_id)),
+                "worker task headers did not carry {query_id}: {delivered:?}"
+            );
+        }
+        // Poll a labelled statement and cancel it while it is pending. Dropping
+        // the future must restore identity-only headers before the next query.
+        tokio::select! {
+            biased;
+            _ = crate::distributed::headers::with_query_id(
+                &context,
+                &actor,
+                503,
+                std::future::pending::<()>(),
+            ) => panic!("pending statement unexpectedly completed"),
+            _ = tokio::task::yield_now() => {}
+        }
+        seen.lock().clear();
+        context
+            .sql(&format!("select count(*) from {table}"))
+            .await?
+            .collect()
+            .await?;
+        let after_cancel = seen.lock().clone();
+        assert!(
+            !after_cancel.is_empty(),
+            "the query after cancellation reached no worker"
+        );
+        assert!(
+            after_cancel.iter().all(Option::is_none),
+            "cancelled statement ID leaked into subsequent worker tasks: {after_cancel:?}"
+        );
+        workers.abort_all();
+        Ok(())
+    });
 }

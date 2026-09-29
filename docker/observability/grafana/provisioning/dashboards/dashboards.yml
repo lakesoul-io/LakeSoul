@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: 1
+
+providers:
+  - name: LakeSoul
+    orgId: 1
+    folder: LakeSoul
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

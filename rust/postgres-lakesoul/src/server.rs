@@ -45,7 +45,7 @@ use pgwire::messages::response::{EmptyQueryResponse, TransactionStatus};
 use pgwire::messages::simplequery::Query;
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use rootcause::Report;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::cancel::{
     CancelRegistration, CancelRegistry, ExecutionState, LakeSoulCancelHandler,
@@ -212,6 +212,17 @@ impl LakeSoulQueryRouter {
                         .cancellation
                         .begin_statement(statement_timeout(client), None)?,
                 };
+                let _statement = state
+                    .session
+                    .label_statement(execution.query_id(), &execution.span());
+                // The SQL text is only known here: `RUST_LOG=info,lakesoul_sql=debug`
+                // turns it on without enabling debug for every target.
+                debug!(
+                    target: "lakesoul_sql",
+                    query_id = execution.query_id(),
+                    sql = %statement,
+                    "executing SQL (simple query)"
+                );
                 let planned = run_under_limit(
                     &execution,
                     <DfSessionService as SimpleQueryHandler>::do_query(
@@ -308,6 +319,7 @@ async fn run_under_limit<T, F>(
 where
     F: Future<Output = PgWireResult<T>>,
 {
+    let future = tracing::Instrument::instrument(future, execution.span());
     match with_cancellation(execution, future).await {
         Ok(result) => result,
         Err(interruption) => {
@@ -622,6 +634,15 @@ impl SimpleQueryHandler for LakeSoulQueryRouter {
         let execution = state
             .cancellation
             .begin_statement(statement_timeout(client), None)?;
+        let _statement = state
+            .session
+            .label_statement(execution.query_id(), &execution.span());
+        debug!(
+            target: "lakesoul_sql",
+            query_id = execution.query_id(),
+            sql = %query,
+            "executing SQL (simple query)"
+        );
         let responses = match run_under_limit(
             &execution,
             <DfSessionService as SimpleQueryHandler>::do_query(
@@ -678,6 +699,19 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             .clone()
             .unwrap_or_else(|| DEFAULT_NAME.to_string());
         let execution = state.cancellation.begin_parse(statement_timeout(client))?;
+        let _statement = state
+            .session
+            .label_statement(execution.query_id(), &execution.span());
+        // The extended protocol keeps no SQL text past the parse: the portal
+        // only holds the parsed statement, so this is the only place the text
+        // can be logged.
+        debug!(
+            target: "lakesoul_sql",
+            query_id = execution.query_id(),
+            statement_name = %name,
+            sql = %message.query,
+            "planning SQL (extended query)"
+        );
         let result = run_under_limit(
             &execution,
             <DfSessionService as ExtendedQueryHandler>::on_parse(
@@ -800,12 +834,11 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         // socket write. When the limit ends it, the portal must not keep the
         // response it borrows - dropping that response is what releases the
         // execution behind its rows.
-        let result = match with_cancellation(
-            &execution,
+        let execute = tracing::Instrument::instrument(
             self._on_execute(client, message),
-        )
-        .await
-        {
+            execution.span(),
+        );
+        let result = match with_cancellation(&execution, execute).await {
             Ok(result) => result,
             Err(interruption) => {
                 execution.end(interruption.outcome());
@@ -928,6 +961,9 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
                 .cancellation
                 .begin_statement(statement_timeout(client), Some(&portal.name))?,
         };
+        let _statement = state
+            .session
+            .label_statement(execution.query_id(), &execution.span());
         let response = match run_under_limit(
             &execution,
             <DfSessionService as ExtendedQueryHandler>::do_query(

@@ -8,30 +8,26 @@ use clap::{Parser, builder::TypedValueParser};
 
 #[derive(Parser, Debug, Default, Clone)]
 pub struct CoreArgs {
-    /// LakeSoul 数据仓库前缀路径
+    /// Prefix of LakeSoul datawarehouse
     #[arg(long)]
     pub warehouse_prefix: Option<String>,
 
-    /// S3 端点
     #[arg(long)]
     pub endpoint: Option<String>,
 
-    /// S3 桶名
     #[arg(long)]
     pub s3_bucket: Option<String>,
 
-    /// S3 访问密钥
     #[arg(long)]
     pub s3_access_key: Option<String>,
 
-    /// S3 密钥
     #[arg(long)]
     pub s3_secret_key: Option<String>,
 
     #[arg(long)]
     pub s3_virtual_host_style: bool,
 
-    /// 设置 tokio runtime 的工作线程数
+    /// tokio worker threads
     #[clap(long, default_value = "2",  value_parser = clap::value_parser!(u32).range(2..).map(|n| {
         n as usize
         }))]

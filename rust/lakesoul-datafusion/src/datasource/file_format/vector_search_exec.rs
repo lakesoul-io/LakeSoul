@@ -43,6 +43,7 @@ use lakesoul_io::config::{
     OPTION_KEY_VECTOR_SEARCH_METRIC, OPTION_KEY_VECTOR_SEARCH_NPROBE,
     OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
 };
+use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
@@ -383,6 +384,20 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             .get_extension::<LakeSoulVectorSearchOptions>()
             .map(|o| o.nprobe)
             .unwrap_or(64);
+        let span = info_span!(
+            "vector_search_execute",
+            partition,
+            column = %self.vector_search.vec_column,
+            metric = %self.vector_search.metric,
+            top_k = self.vector_search.top_k,
+            nprobe,
+            bucket_group_count = self.file_groups.len(),
+            outcome = tracing::field::Empty,
+            output_batches = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let entered = span.enter();
 
         let store = context
             .runtime_env()
@@ -434,9 +449,12 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                 batches.push(batch);
             }
             if profile {
-                eprintln!(
-                    "vector_search_exec: create={create:?} start(index+plan)={start:?}                          scan={:?} rows={rows}",
-                    t_scan.elapsed()
+                debug!(
+                    create_ms = create.as_secs_f64() * 1000.0,
+                    start_ms = start.as_secs_f64() * 1000.0,
+                    scan_ms = t_scan.elapsed().as_secs_f64() * 1000.0,
+                    rows,
+                    "profiled vector search bucket"
                 );
             }
             Ok(batches)
@@ -451,7 +469,13 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             std::thread::scope(|scope| {
                 let handles: Vec<_> = configs
                     .into_iter()
-                    .map(|config| scope.spawn(move || read_bucket(config, profile)))
+                    .map(|config| {
+                        let span = span.clone();
+                        scope.spawn(move || {
+                            let _entered = span.enter();
+                            read_bucket(config, profile)
+                        })
+                    })
                     .collect();
                 let mut batches: Vec<arrow::record_batch::RecordBatch> = Vec::new();
                 for handle in handles {
@@ -466,8 +490,14 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             })
         })?;
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream))
-            as SendableRecordBatchStream)
+        let stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream))
+            as SendableRecordBatchStream;
+        drop(entered);
+        Ok(instrument_record_batch_stream(
+            stream,
+            span,
+            "vector_search",
+        ))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

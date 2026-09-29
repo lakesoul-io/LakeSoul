@@ -34,11 +34,13 @@ pub mod transfusion;
 pub mod error;
 mod jwt;
 use crate::DaoType::SelectOnePartitionVersionByTableIdAndDesc;
+use crate::metrics::MetadataRequestMetrics;
 use crate::pooled_client::QueryType::{RO, RW};
 pub use jwt::{Claims, JwtServer};
 
 pub mod index_catalog;
 mod metadata_client;
+mod metrics;
 mod pooled_client;
 pub mod rbac;
 pub mod utils;
@@ -839,21 +841,37 @@ fn separate_uuid(concatenated_uuid: &str) -> Result<Vec<String>> {
 }
 
 /// Execute the query for the coded Data Access Object.
-#[instrument(level = "debug")]
+#[instrument(
+    name = "metadata_query",
+    level = "info",
+    skip_all,
+    fields(
+        query_type,
+        dao_type = tracing::field::Empty,
+        param_count = tracing::field::Empty,
+        row_count = tracing::field::Empty,
+    ),
+    err
+)]
 pub async fn execute_query(
     client: &PooledClient,
     query_type: i32,
     joined_string: String,
 ) -> Result<Vec<u8>> {
     if query_type >= DAO_TYPE_INSERT_ONE_OFFSET {
-        eprintln!("Invalid query_type_index: {:?}", query_type);
+        error!(query_type, "invalid metadata query type");
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let query_type = DaoType::try_from(query_type)
         .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let dao_type_name = format!("{query_type:?}");
+    let span = tracing::Span::current();
+    span.record("dao_type", dao_type_name.as_str());
+    let mut request = MetadataRequestMetrics::start("query", dao_type_name);
     let (conn, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
+    span.record("param_count", params.len() as u64);
 
     let rows = match query_type {
         DaoType::ListNamespaces
@@ -1163,9 +1181,10 @@ pub async fn execute_query(
         {
             let concated_uuid = &params[2];
             if !concated_uuid.len().is_multiple_of(32) {
-                eprintln!(
-                    "Invalid params of query_type={:?}, params={:?}",
-                    query_type, params
+                error!(
+                    dao_type = ?query_type,
+                    param_count = params.len(),
+                    "invalid metadata query parameters"
                 );
                 return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
             }
@@ -1195,13 +1214,17 @@ pub async fn execute_query(
             }
         }
         _ => {
-            eprintln!(
-                "Invalid params num of query_type={:?}, params={:?}",
-                query_type, params
+            error!(
+                dao_type = ?query_type,
+                param_count = params.len(),
+                "invalid metadata query parameter count"
             );
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
+
+    span.record("row_count", rows.len() as u64);
+    request.record_rows(rows.len() as u64);
 
     let result_type = match query_type {
         DaoType::SelectNamespaceByNamespace
@@ -1264,10 +1287,7 @@ pub async fn execute_query(
             ResultType::DiscardCompressedFileInfo
         }
         _ => {
-            eprintln!(
-                "Invalid query_type={:?} when parsing query result type",
-                query_type
-            );
+            error!(dao_type = ?query_type, "invalid metadata query result type");
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
@@ -1500,11 +1520,22 @@ pub async fn execute_query(
             }
         }
     };
+    request.success();
     Ok(wrapper.encode_to_vec())
 }
 
 /// Execute the insert for the coded Data Access Object.
-#[instrument(level = "debug")]
+#[instrument(
+    name = "metadata_insert",
+    level = "info",
+    skip_all,
+    fields(
+        insert_type,
+        dao_type = tracing::field::Empty,
+        affected_rows = tracing::field::Empty,
+    ),
+    err
+)]
 pub async fn execute_insert(
     client: &mut PooledClient,
     insert_type: i32,
@@ -1517,6 +1548,10 @@ pub async fn execute_insert(
     }
     let insert_type = DaoType::try_from(insert_type)
         .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let dao_type_name = format!("{insert_type:?}");
+    let span = tracing::Span::current();
+    span.record("dao_type", dao_type_name.as_str());
+    let mut request = MetadataRequestMetrics::start("insert", dao_type_name);
     let (mut client, statement) = get_prepared_statement(client, &insert_type).await?;
 
     let result = match insert_type {
@@ -1702,7 +1737,7 @@ pub async fn execute_insert(
                         .await;
 
                     if let Some(e) = result.err() {
-                        eprintln!("transaction insert error, err = {:?}", e);
+                        error!(error = %e, "partition metadata transaction insert failed");
                         return match transaction.rollback().await {
                             Ok(()) => Ok(0i32),
                             Err(e) => Err(LakeSoulMetaDataError::from(e)),
@@ -1713,7 +1748,7 @@ pub async fn execute_insert(
                     let uid = uuid::Uuid::from_u64_pair(_uuid.high, _uuid.low);
                     let result = transaction.execute(&update_statement, &[&uid]).await;
                     if let Some(e) = result.err() {
-                        eprintln!("update committed error, err = {:?}", e);
+                        error!(error = %e, "metadata commit update failed");
                         return match transaction.rollback().await {
                             Ok(()) => Ok(0i32),
                             Err(e) => Err(LakeSoulMetaDataError::from(e)),
@@ -1781,7 +1816,7 @@ pub async fn execute_insert(
                         )
                         .await;
                     if let Some(e) = result.err() {
-                        eprintln!("transaction insert error, err = {:?}", e);
+                        error!(error = %e, "data commit metadata transaction insert failed");
                         return match transaction.rollback().await {
                             Ok(()) => Ok(0i32),
                             Err(e) => Err(LakeSoulMetaDataError::from(e)),
@@ -1858,7 +1893,7 @@ pub async fn execute_insert(
                         .await;
 
                     if let Some(e) = result.err() {
-                        eprintln!("transaction insert error, err = {:?}", e);
+                        error!(error = %e, "discard file metadata transaction insert failed");
                         return match transaction.rollback().await {
                             Ok(()) => Ok(0i32),
                             Err(e) => Err(LakeSoulMetaDataError::from(e)),
@@ -1876,12 +1911,17 @@ pub async fn execute_insert(
             }
         }
         _ => {
-            eprintln!("InvalidInput of type={:?}: {:?}", insert_type, wrapper);
+            error!(dao_type = ?insert_type, "invalid metadata insert payload");
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
     match result {
-        Ok(count) => Ok(count as i32),
+        Ok(count) => {
+            span.record("affected_rows", count);
+            request.record_rows(count);
+            request.success();
+            Ok(count as i32)
+        }
         Err(e) => Err(LakeSoulMetaDataError::from(e)),
     }
 }
@@ -1898,7 +1938,18 @@ fn log_index_cleanup(result: Result<()>) {
 }
 
 /// Execute the update for the coded Data Access Object.
-#[instrument(level = "debug")]
+#[instrument(
+    name = "metadata_update",
+    level = "info",
+    skip_all,
+    fields(
+        update_type,
+        dao_type = tracing::field::Empty,
+        param_count = tracing::field::Empty,
+        affected_rows = tracing::field::Empty,
+    ),
+    err
+)]
 pub async fn execute_update(
     client: &mut PooledClient,
     update_type: i32,
@@ -1910,6 +1961,10 @@ pub async fn execute_update(
     }
     let update_type = DaoType::try_from(update_type)
         .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let dao_type_name = format!("{update_type:?}");
+    let span = tracing::Span::current();
+    span.record("dao_type", dao_type_name.as_str());
+    let mut request = MetadataRequestMetrics::start("update", dao_type_name);
     let (client, statement) = get_prepared_statement(client, &update_type).await?;
 
     let params = joined_string
@@ -1918,6 +1973,7 @@ pub async fn execute_update(
         .iter()
         .map(|str| str.to_string())
         .collect::<Vec<String>>();
+    span.record("param_count", params.len() as u64);
 
     let result = match update_type {
         DaoType::DeleteNamespaceByNamespace
@@ -2059,9 +2115,10 @@ pub async fn execute_update(
         {
             let concated_uuid = &params[2];
             if concated_uuid.len() % 32 != 0 {
-                eprintln!(
-                    "Invalid params of update_type={:?}, params={:?}",
-                    update_type, params
+                error!(
+                    dao_type = ?update_type,
+                    param_count = params.len(),
+                    "invalid metadata update parameters"
                 );
                 return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
             }
@@ -2081,12 +2138,21 @@ pub async fn execute_update(
             client.execute(&statement, &[&params[0], &params[1]]).await
         }
         _ => {
-            eprintln!("InvalidInput of type={:?}: {:?}", update_type, params);
+            error!(
+                dao_type = ?update_type,
+                param_count = params.len(),
+                "invalid metadata update parameter count"
+            );
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
     match result {
-        Ok(count) => Ok(count as i32),
+        Ok(count) => {
+            span.record("affected_rows", count);
+            request.record_rows(count);
+            request.success();
+            Ok(count as i32)
+        }
         Err(e) => Err(LakeSoulMetaDataError::from(e)),
     }
 }
@@ -2107,7 +2173,17 @@ fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
 }
 
 /// Execute the query scalar for the coded Data Access Object.
-#[instrument(level = "debug")]
+#[instrument(
+    name = "metadata_query_scalar",
+    level = "info",
+    skip_all,
+    fields(
+        query_type,
+        dao_type = tracing::field::Empty,
+        param_count = tracing::field::Empty,
+    ),
+    err
+)]
 pub async fn execute_query_scalar(
     client: &mut PooledClient,
     query_type: i32,
@@ -2119,11 +2195,16 @@ pub async fn execute_query_scalar(
     }
     let query_type = DaoType::try_from(query_type)
         .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let dao_type_name = format!("{query_type:?}");
+    let span = tracing::Span::current();
+    span.record("dao_type", dao_type_name.as_str());
+    let mut request = MetadataRequestMetrics::start("query_scalar", dao_type_name);
     let (client, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
+    span.record("param_count", params.len() as u64);
 
-    match query_type {
+    let result = match query_type {
         DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc
             if params.len() == 1 =>
         {
@@ -2172,10 +2253,19 @@ pub async fn execute_query_scalar(
         }
 
         _ => {
-            eprintln!("InvalidInput of type={:?}: {:?}", query_type, params);
+            error!(
+                dao_type = ?query_type,
+                param_count = params.len(),
+                "invalid metadata scalar query parameters"
+            );
             Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
         }
+    };
+    if let Ok(value) = &result {
+        request.record_rows(u64::from(value.is_some()));
+        request.success();
     }
+    result
 }
 
 pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {

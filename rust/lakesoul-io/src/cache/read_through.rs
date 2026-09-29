@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::thread;
 use std::{ops::Range, time::Instant};
 
@@ -17,6 +17,34 @@ use object_store::{
 
 use super::{paging::PageCache, stats::CacheStats};
 use object_store::Result;
+
+const PAGE_READS_TOTAL: &str = "lakesoul_cache_page_reads_total";
+const PAGE_MISSES_TOTAL: &str = "lakesoul_cache_page_misses_total";
+const CAPACITY_BYTES: &str = "lakesoul_cache_capacity_bytes";
+const USAGE_BYTES: &str = "lakesoul_cache_usage_bytes";
+
+static DESCRIBE_METRICS: Once = Once::new();
+
+fn describe_metrics() {
+    DESCRIBE_METRICS.call_once(|| {
+        metrics::describe_counter!(
+            PAGE_READS_TOTAL,
+            "Page lookups served by the read-through cache"
+        );
+        metrics::describe_counter!(
+            PAGE_MISSES_TOTAL,
+            "Page lookups that missed and fetched from the object store"
+        );
+        metrics::describe_gauge!(
+            CAPACITY_BYTES,
+            "Configured read-through cache capacity"
+        );
+        metrics::describe_gauge!(
+            USAGE_BYTES,
+            "Read-through cache bytes currently in use"
+        );
+    });
+}
 
 /// Read-through Page Cache.
 #[derive(Debug, Clone)]
@@ -53,6 +81,7 @@ impl<C: PageCache> ReadThroughCache<C> {
         cache: Arc<C>,
         stats: Arc<dyn CacheStats>,
     ) -> Self {
+        describe_metrics();
         Self {
             inner,
             cache,
@@ -67,6 +96,19 @@ impl<C: PageCache> ReadThroughCache<C> {
 }
 
 /// Get a range of bytes from the DiskCache
+#[instrument(
+    name = "object_store_read_range",
+    level = "info",
+    skip_all,
+    fields(
+        range_start = range.start,
+        range_end = range.end,
+        requested_bytes = range.len(),
+        page_count = tracing::field::Empty,
+        output_bytes = tracing::field::Empty,
+    ),
+    err
+)]
 async fn get_range<C: PageCache>(
     store: Arc<dyn ObjectStore>,
     cache: Arc<C>,
@@ -78,6 +120,13 @@ async fn get_range<C: PageCache>(
     let current_time = Instant::now();
     let page_size = cache.page_size();
     let start = (range.start / page_size) * page_size;
+    let page_count = range.end.saturating_sub(start).div_ceil(page_size);
+    let span = tracing::Span::current();
+    span.record("page_count", page_count as u64);
+    // Cheap atomic loads: refreshing gauges here keeps them current without a
+    // background task.
+    metrics::gauge!(CAPACITY_BYTES).set(stats.max_capacity() as f64);
+    metrics::gauge!(USAGE_BYTES).set(stats.usage() as f64);
     let meta = cache.head(location, store.head(location)).await?;
 
     let pages = stream::iter((start..range.end).step_by(page_size))
@@ -92,12 +141,14 @@ async fn get_range<C: PageCache>(
             let stats = stats.clone();
 
             stats.inc_total_reads();
+            metrics::counter!(PAGE_READS_TOTAL).increment(1);
 
             async move {
                 // Actual range in the file.
                 page_cache
                     .get_range_with(location, page_id as u32, range_in_page, async {
                         stats.inc_total_misses();
+                        metrics::counter!(PAGE_MISSES_TOTAL).increment(1);
                         store
                             .get_range(location, offset as u64..page_end as u64)
                             .await
@@ -110,7 +161,9 @@ async fn get_range<C: PageCache>(
         .await?;
 
     if pages.len() == 1 {
-        return Ok(pages.into_iter().next().unwrap());
+        let bytes = pages.into_iter().next().unwrap();
+        span.record("output_bytes", bytes.len() as u64);
+        return Ok(bytes);
     }
 
     // stick all bytes together.
@@ -121,6 +174,7 @@ async fn get_range<C: PageCache>(
     let duration = Instant::now() - current_time;
     stats.inc_total_query_time(duration.as_millis() as u64);
     stats.inc_total_data_size(buf.len() as u64);
+    span.record("output_bytes", buf.len() as u64);
     let _current_thread = thread::current();
     // info!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
     // println!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());

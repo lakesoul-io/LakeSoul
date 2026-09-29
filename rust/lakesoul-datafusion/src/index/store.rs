@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lakesoul_io::object_store_metrics::MonitoredObjectStore;
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 
@@ -17,12 +18,14 @@ pub fn store_for_files(
     object_store_options: &HashMap<String, String>,
 ) -> Result<Arc<dyn ObjectStore>> {
     if first_file.starts_with("s3://") || first_file.starts_with("s3a://") {
-        Ok(Arc::new(
-            lakesoul_io::object_store::create_s3_store_from_options(
-                object_store_options,
-            )?,
-        ))
+        let store = lakesoul_io::object_store::create_s3_store_from_options(
+            object_store_options,
+        )?;
+        Ok(Arc::new(MonitoredObjectStore::new(Arc::new(store), "s3")))
     } else {
-        Ok(Arc::new(LocalFileSystem::new()))
+        Ok(Arc::new(MonitoredObjectStore::new(
+            Arc::new(LocalFileSystem::new()),
+            "local",
+        )))
     }
 }

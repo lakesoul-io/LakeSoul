@@ -51,6 +51,7 @@ use object_store::ObjectStoreExt;
 use rootcause::{bail, compat::boxed_error::IntoBoxedError, report};
 use tokio::{runtime::Runtime, sync::Mutex, task::JoinHandle};
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 
 use crate::blob::{self, TaggedValue};
 
@@ -230,6 +231,7 @@ impl BlobMaterializer {
                 let store = self.runtime_env.object_store(table_url.object_store())?;
                 let bytes = store
                     .get_range(table_url.prefix(), offset..offset + u64::from(length))
+                    .instrument(info_span!("object_store_blob_read", offset, length,))
                     .await
                     .map_err(|error| {
                         report!("failed to read blob pack {pack_path}: {error}")
@@ -256,13 +258,16 @@ fn maybe_prefetch(
     let schema = stream.schema();
     let (tx, rx) = tokio::sync::mpsc::channel(prefetch_size);
     let mut source = stream;
-    tokio::spawn(async move {
-        while let Some(item) = source.next().await {
-            if tx.send(item).await.is_err() {
-                break;
+    tokio::spawn(
+        async move {
+            while let Some(item) = source.next().await {
+                if tx.send(item).await.is_err() {
+                    break;
+                }
             }
         }
-    });
+        .in_current_span(),
+    );
     Box::pin(RecordBatchStreamAdapter::new(
         schema,
         ReceiverStream::new(rx),

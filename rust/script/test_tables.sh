@@ -141,6 +141,26 @@ SELECT g.value + $((ROWS / 2)) AS id, CAST(g.value % $PARTITIONS AS INT) AS part
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
 --
+-- 4a. Range partitioned with the Parquet format explicitly selected.
+--
+DROP TABLE IF EXISTS test_tables.range_partitioned_parquet;
+CREATE EXTERNAL TABLE test_tables.range_partitioned_parquet (
+    id BIGINT NOT NULL,
+    part INT NOT NULL,
+    v DOUBLE
+)
+STORED AS LAKESOUL
+PARTITIONED BY (part)
+OPTIONS ('file_format' 'parquet')
+LOCATION '$LOC/range_partitioned_parquet';
+INSERT INTO test_tables.range_partitioned_parquet
+SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, g.value * 1.5 AS v
+FROM generate_series(0, $((ROWS - 1))) AS g(value);
+INSERT INTO test_tables.range_partitioned_parquet
+SELECT g.value + $((ROWS / 2)) AS id, CAST(g.value % $PARTITIONS AS INT) AS part, g.value * 2.5 AS v
+FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
+
+--
 -- 5. Hash primary key + range partition (merge/bucket key = partition + pk).
 --
 DROP TABLE IF EXISTS test_tables.pk_partitioned;
@@ -158,6 +178,27 @@ INSERT INTO test_tables.pk_partitioned
 SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, g.value * 2.0 AS v
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
 INSERT INTO test_tables.pk_partitioned
+SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, 999.0 AS v
+FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
+
+--
+-- 5a. Hash primary key + range partition with the Parquet format explicitly selected.
+--
+DROP TABLE IF EXISTS test_tables.pk_partitioned_parquet;
+CREATE EXTERNAL TABLE test_tables.pk_partitioned_parquet (
+    id BIGINT NOT NULL,
+    part INT NOT NULL,
+    v DOUBLE,
+    PRIMARY KEY (id)
+)
+STORED AS LAKESOUL
+PARTITIONED BY (part)
+OPTIONS ('file_format' 'parquet', 'hashBucketNum' '$BUCKETS')
+LOCATION '$LOC/pk_partitioned_parquet';
+INSERT INTO test_tables.pk_partitioned_parquet
+SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, g.value * 2.0 AS v
+FROM generate_series(0, $((ROWS - 1))) AS g(value);
+INSERT INTO test_tables.pk_partitioned_parquet
 SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, 999.0 AS v
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
@@ -361,7 +402,9 @@ SELECT COUNT(*) AS append_only FROM test_tables.append_only;
 SELECT COUNT(*) AS pk_single FROM test_tables.pk_single;
 SELECT COUNT(*) AS pk_composite FROM test_tables.pk_composite;
 SELECT COUNT(*) AS range_partitioned FROM test_tables.range_partitioned;
+SELECT COUNT(*) AS range_partitioned_parquet FROM test_tables.range_partitioned_parquet;
 SELECT COUNT(*) AS pk_partitioned FROM test_tables.pk_partitioned;
+SELECT COUNT(*) AS pk_partitioned_parquet FROM test_tables.pk_partitioned_parquet;
 SELECT COUNT(*) AS cdc_visible FROM test_tables.cdc_table;
 SELECT COUNT(*) AS vector_rows FROM test_tables.vector_table;
 SELECT COUNT(*) AS vortex_rows FROM test_tables.vortex_table;

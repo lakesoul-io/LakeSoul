@@ -22,6 +22,7 @@ use datafusion_distributed::{
 };
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::object_store::{register_hdfs_object_store, register_s3_object_store};
+use lakesoul_io::object_store_metrics::MonitoredObjectStore;
 use lakesoul_io::physical_plan::MergeParquetExec;
 use object_store::local::LocalFileSystem;
 use rootcause::{bail, report};
@@ -278,6 +279,7 @@ impl LakeSoulSessionFactory {
                 LakeSoulDistributedQueryPlanner::new(
                     distributed_planner,
                     dist.fallback_to_local,
+                    Some(Arc::clone(resolver)),
                 ),
             ));
         }
@@ -389,7 +391,10 @@ fn register_warehouse_object_store(
         WarehouseConfig::Local => {
             runtime.register_object_store(
                 &Url::parse("file://").expect("file:// is a valid URL"),
-                Arc::new(LocalFileSystem::new()),
+                Arc::new(MonitoredObjectStore::new(
+                    Arc::new(LocalFileSystem::new()),
+                    "local",
+                )),
             );
         }
     }

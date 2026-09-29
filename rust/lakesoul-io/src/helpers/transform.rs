@@ -236,7 +236,7 @@ pub fn transform_schema(
 /// 1. Column reordering/alignment with the target schema.
 /// 2. Filling missing columns with default values or Nulls.
 /// 3. Recursive type casting for nested structures (e.g., Structs).
-#[instrument(skip(batch))]
+#[instrument(level = "debug", skip(batch))]
 pub fn transform_record_batch(
     merged_schema: SchemaRef,
     batch: RecordBatch,

@@ -65,6 +65,30 @@ use crate::limits::{ServerLimits, StatementOutcome, StatementPermit};
 /// statement it describes.
 static NEXT_STATEMENT_ID: AtomicU64 = AtomicU64::new(1);
 
+const QUERY_REQUESTS_TOTAL: &str = "lakesoul_query_requests_total";
+const QUERY_DURATION_SECONDS: &str = "lakesoul_query_duration_seconds";
+const QUERY_ROWS_TOTAL: &str = "lakesoul_query_rows_total";
+
+static DESCRIBE_METRICS: std::sync::Once = std::sync::Once::new();
+
+fn describe_metrics() {
+    DESCRIBE_METRICS.call_once(|| {
+        metrics::describe_counter!(
+            QUERY_REQUESTS_TOTAL,
+            "Statements executed by the PostgreSQL server grouped by outcome"
+        );
+        metrics::describe_histogram!(
+            QUERY_DURATION_SECONDS,
+            metrics::Unit::Seconds,
+            "Statement execution duration grouped by outcome"
+        );
+        metrics::describe_counter!(
+            QUERY_ROWS_TOTAL,
+            "Rows delivered to clients grouped by statement outcome"
+        );
+    });
+}
+
 /// `57014 query_canceled`, the SQLSTATE PostgreSQL reports for both a
 /// cancelled statement and an expired `statement_timeout`.
 const QUERY_CANCELED: &str = "57014";
@@ -137,14 +161,19 @@ pub struct StatementIdentity {
     id: u64,
     user: String,
     started: Instant,
+    span: tracing::Span,
 }
 
 impl StatementIdentity {
     fn new(user: &str) -> Arc<Self> {
+        let id = NEXT_STATEMENT_ID.fetch_add(1, Ordering::Relaxed);
+        let user = user.to_string();
+        let span = tracing::info_span!("statement", query_id = id, user = user.as_str());
         Arc::new(Self {
-            id: NEXT_STATEMENT_ID.fetch_add(1, Ordering::Relaxed),
-            user: user.to_string(),
+            id,
+            user,
             started: Instant::now(),
+            span,
         })
     }
 }
@@ -255,17 +284,25 @@ impl StatementReport {
             return;
         }
         self.note_outcome(outcome);
-        info!(
-            query_id = self.identity.id,
-            user = %self.identity.user,
-            rows = self.delivered.load(Ordering::Relaxed),
-            // This execution, and the same query since its planning started.
-            elapsed_ms = self.started.elapsed().as_millis() as u64,
-            since_parse_ms =
-                self.started.duration_since(self.identity.started).as_millis() as u64,
-            outcome = outcome.as_str(),
-            "statement finished"
-        );
+        describe_metrics();
+        let outcome_label = outcome.as_str();
+        let rows = self.delivered.load(Ordering::Relaxed);
+        metrics::counter!(QUERY_REQUESTS_TOTAL, "outcome" => outcome_label).increment(1);
+        metrics::histogram!(QUERY_DURATION_SECONDS, "outcome" => outcome_label)
+            .record(self.started.elapsed().as_secs_f64());
+        metrics::counter!(QUERY_ROWS_TOTAL, "outcome" => outcome_label).increment(rows);
+        self.identity.span.in_scope(|| {
+            info!(
+                query_id = self.identity.id,
+                user = %self.identity.user,
+                rows,
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                since_parse_ms =
+                    self.started.duration_since(self.identity.started).as_millis() as u64,
+                outcome = outcome_label,
+                "statement finished"
+            );
+        });
     }
 }
 
@@ -343,7 +380,6 @@ impl ExecutionState {
     }
 
     /// The query id this statement reports under.
-    #[cfg(test)]
     pub fn query_id(&self) -> u64 {
         self.identity.id
     }
@@ -358,6 +394,10 @@ impl ExecutionState {
         self.stream_started.load(Ordering::Relaxed)
     }
 
+    /// The persistent span shared by Parse and portal executions.
+    pub fn span(&self) -> tracing::Span {
+        self.identity.span.clone()
+    }
     /// The identity this statement reports under.
     pub fn identity(&self) -> Arc<StatementIdentity> {
         Arc::clone(&self.identity)
@@ -1098,6 +1138,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
     use super::*;
     use crate::limits::Limits;
     use futures::StreamExt;
@@ -1179,6 +1221,27 @@ mod tests {
     /// read the flag before the flip still resolves through `changed()`, so
     /// the subscribe-before-read window is safe when the cancellation lands
     /// after the first poll.
+    #[test]
+    fn finishing_a_report_records_query_metrics() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let cancellation = cancellation();
+            let state = statement(&cancellation, None);
+            state.note_delivered(3);
+            state.finish(StatementOutcome::Completed);
+        });
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("lakesoul_query_requests_total{outcome=\"completed\"} 1"),
+            "requests metric missing in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("lakesoul_query_rows_total{outcome=\"completed\"} 3"),
+            "rows metric missing in:\n{rendered}"
+        );
+    }
+
     #[test]
     fn cancelled_resolves_through_changed_when_the_flag_flips_later() {
         let token = QueryToken::new();
@@ -1582,6 +1645,21 @@ mod tests {
             first_execution.query_id(),
             "and not the replaced statement's"
         );
+    }
+
+    #[test]
+    fn successive_unnamed_parses_replace_the_statement_identity() {
+        let cancellation =
+            QueryCancellation::new(ServerLimits::new(Limits::default()), "user_a");
+        let first = cancellation.begin_parse(None).expect("first parse");
+        cancellation.commit_parse(pgwire::api::DEFAULT_NAME, &first);
+        let second = cancellation.begin_parse(None).expect("second parse");
+        cancellation.commit_parse(pgwire::api::DEFAULT_NAME, &second);
+        let executed = cancellation
+            .begin_execution("portal", pgwire::api::DEFAULT_NAME, None)
+            .expect("execute latest unnamed statement");
+        assert_ne!(first.query_id(), second.query_id());
+        assert_eq!(executed.query_id(), second.query_id());
     }
 
     /// The result ending is not the send ending: pgwire collects the rows of an

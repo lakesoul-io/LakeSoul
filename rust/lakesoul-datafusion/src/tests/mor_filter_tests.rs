@@ -412,7 +412,9 @@ async fn test_file_source_pushdown_is_gated_by_the_option_inner() -> Result<()> 
         let ctx = session_with_pushdown(client.clone(), pushdown_filters)?;
         let label = format!("pushdown={pushdown_filters}");
         let provider = table
-            .as_sink_provider(LakeSoulProviderOptions::from_session(&ctx.state()))
+            .as_provider_without_session(LakeSoulProviderOptions::from_session(
+                &ctx.state(),
+            ))
             .await?;
 
         let plan = provider
@@ -504,7 +506,9 @@ async fn test_file_source_pushdown_accepts_each_conjunct_separately_inner() -> R
         let ctx = session_with_pushdown(client.clone(), pushdown_filters)?;
         let label = format!("pushdown={pushdown_filters}");
         let provider = table
-            .as_sink_provider(LakeSoulProviderOptions::from_session(&ctx.state()))
+            .as_provider_without_session(LakeSoulProviderOptions::from_session(
+                &ctx.state(),
+            ))
             .await?;
 
         let conjunction = range_filter.clone().and(value_filter.clone());

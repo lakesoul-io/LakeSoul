@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Single-binary Tempo for local development: OTLP ingest, local trace storage
+# and a metrics generator that produces span metrics / service graphs into
+# Prometheus.
+#
+# Every listener binds to loopback, because the container runs with host
+# networking (see docker-compose.yml).
+
+server:
+  # Host networking (see docker-compose.yml): the default bind of 0.0.0.0 would
+  # serve this API -- and the TraceQL results below -- on every host interface.
+  http_listen_address: 127.0.0.1
+  http_listen_port: 3200
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 9095
+
+# Stream TraceQL results (used by Grafana's trace view).
+stream_over_http_enabled: true
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        # Loopback only: OTLP ingest is unauthenticated, so anything that can
+        # reach these ports can write traces and consume the trace volume.
+        grpc:
+          endpoint: 127.0.0.1:4317
+        http:
+          endpoint: 127.0.0.1:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      stack: lakesoul
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      # Prometheus runs with --web.enable-remote-write-receiver on the host
+      # network (see docker-compose.yml).
+      - url: http://127.0.0.1:9090/api/v1/write
+        # Attach the trace id as an exemplar, so Grafana can jump from a span
+        # metric sample to the trace that produced it.
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+overrides:
+  defaults:
+    metrics_generator:
+      # span-metrics: traces_spanmetrics_* by service/span
+      # service-graphs: traces_service_graph_* between services
+      # local-blocks: TraceQL metrics queries over recent data
+      processors: [service-graphs, span-metrics, local-blocks]

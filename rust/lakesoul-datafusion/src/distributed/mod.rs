@@ -17,8 +17,10 @@
 //! plans.
 
 pub mod codec;
+pub mod headers;
 pub mod planner;
 pub mod resolver;
+mod trace_context;
 pub mod worker;
 
 pub use codec::LakeSoulCodec;

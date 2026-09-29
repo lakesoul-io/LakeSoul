@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fmt::Debug;
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{Schema, SchemaRef};
@@ -10,6 +11,7 @@ use datafusion_expr::Expr;
 use datafusion_substrait::substrait::proto::Plan;
 use educe::Educe;
 use itertools::Itertools;
+use lakesoul_common::misc::SecretMap;
 
 use crate::{
     Result,
@@ -51,7 +53,7 @@ pub struct ColumnPolicy {
 ///
 /// This struct contains all the necessary parameters for configuring LakeSoul IO operations,
 /// including file paths, schema information, partitioning settings, and performance tuning options.
-#[derive(Educe, Debug, Clone)]
+#[derive(Educe, Clone)]
 #[educe(Default)]
 pub struct LakeSoulIOConfig {
     /// Root directory path for files, unescaped
@@ -123,7 +125,7 @@ pub struct LakeSoulIOConfig {
     /// Default filesystem URI (compatible with Hadoop's fs.defaultFS)
     pub(crate) default_fs: String,
     /// Additional configuration options
-    pub(super) options: HashMap<String, String>,
+    pub(super) options: SecretMap,
     /// Whether to use dynamic partitioning
     #[educe(Default = false)]
     pub(crate) use_dynamic_partition: bool,
@@ -358,6 +360,61 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_REPARTITION_MEM_RATIO)
             .and_then(|x| x.parse::<f64>().ok())
             .unwrap_or(0.0) // not use
+    }
+}
+
+impl Debug for LakeSoulIOConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("LakeSoulIOConfig");
+        macro_rules! field {
+            ($name:ident) => {
+                debug.field(stringify!($name), &self.$name);
+            };
+        }
+        macro_rules! container {
+            ($name:ident) => {
+                if !self.$name.is_empty() {
+                    debug.field(stringify!($name), &self.$name);
+                }
+            };
+        }
+
+        field!(prefix);
+        container!(files);
+        container!(primary_keys);
+        container!(hash_partitioning_columns);
+        container!(vector_columns);
+        container!(column_policies);
+        container!(resolved_index_shards);
+        container!(index_leases);
+        container!(range_partitions);
+        field!(hash_bucket_num);
+        container!(columns);
+        container!(aux_sort_cols);
+        container!(filter_strs);
+        container!(filters);
+        container!(filter_protos);
+        container!(filter_buf);
+        field!(batch_size);
+        field!(max_row_group_size);
+        field!(max_row_group_num_values);
+        field!(prefetch_size);
+        field!(target_schema);
+        field!(partition_schema);
+        container!(object_store_options);
+        container!(merge_operators);
+        container!(default_column_value);
+        field!(thread_num);
+        field!(default_fs);
+        container!(options);
+        field!(use_dynamic_partition);
+        field!(inferring_schema);
+        field!(max_file_size);
+        field!(seed);
+        field!(memory_buffer_capacity);
+        field!(multipart_chunk_size);
+        field!(receiver_capacity);
+        debug.finish()
     }
 }
 

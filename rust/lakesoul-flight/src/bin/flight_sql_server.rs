@@ -18,9 +18,12 @@ use lakesoul_flight::{
     args::Args,
 };
 use lakesoul_metadata::{Claims, JwtServer, MetaDataClient};
+use lakesoul_observability::{
+    LogFormat, PrometheusMetricsConfig, TracingConfig, init_tracing,
+    install_prometheus_metrics, spawn_reload_on_sighup,
+};
 use metrics::{counter, gauge};
-use metrics_exporter_prometheus::PrometheusBuilder;
-use rootcause::{Report, bail};
+use rootcause::Report;
 use tonic::service::Interceptor;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -162,16 +165,16 @@ fn main() -> Result<(), Report> {
     // 使用 runtime 运行异步代码
     runtime.block_on(async {
         // 设置日志级别
-        let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
-        match tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_timer(timer)
-            .try_init()
-        {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Failed to set logger: {e:}");
-            }
+        let tracing_guard = Arc::new(init_tracing(
+            TracingConfig::new("lakesoul-flight"),
+            EnvFilter::from_default_env(),
+            LogFormat::new(),
+            tracing_subscriber::fmt::time::ChronoLocal::rfc_3339(),
+        )?);
+        // 动态日志级别：修改 LAKESOUL_LOG_FILTER_FILE（或 RUST_LOG）后 kill -HUP <pid>
+        spawn_reload_on_sighup(tracing_guard.filter_handle());
+        if let Some(endpoint) = tracing_guard.otlp_endpoint() {
+            info!(endpoint, "OTLP trace exporter enabled");
         }
 
         let addr = args.addr.parse()?;
@@ -180,25 +183,11 @@ fn main() -> Result<(), Report> {
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
         info!("Metadata server connected");
 
-        // 使用参数中的 metrics_addr
-        let metrics_addr = {
-            let re = regex::Regex::new(r"^([^:]+):(\d+)$").unwrap();
-            let (host, port) = if let Some(caps) = re.captures(&args.metrics_addr) {
-                (
-                    caps.get(1).unwrap().as_str().parse()?,
-                    caps.get(2).unwrap().as_str().parse()?,
-                )
-            } else {
-                bail!("Invalid metrics_addr format");
-            };
-            std::net::SocketAddr::new(host, port)
-        };
-
-        let builder = PrometheusBuilder::new();
-        builder
-            .with_http_listener(metrics_addr)
-            .add_global_label("service", "lakesoul_flight")
-            .install()?;
+        let metrics_addr = args.metrics_addr.parse()?;
+        install_prometheus_metrics(PrometheusMetricsConfig::new(
+            "lakesoul-flight",
+            metrics_addr,
+        ))?;
 
         let service = FlightSqlServiceImpl::new(metadata_client.clone(), args).await?;
         let jwt_server = service.get_jwt_server();

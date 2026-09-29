@@ -18,7 +18,9 @@ serde_json.workspace = true
 arrow-schema = { workspace = true }
 arrow-ipc = { workspace = true }
 tracing.workspace = true
+tracing-subscriber.workspace = true
 md5 = "0.7.0"
+jiff = "0.2.35"
 
 [lints]
 workspace = true

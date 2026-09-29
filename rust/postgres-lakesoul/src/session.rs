@@ -8,17 +8,20 @@ use std::time::Duration;
 
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use jiff::tz::TimeZone;
 use lakesoul_datafusion::distributed::DistributedOptions;
 use parking_lot::RwLock;
-use rootcause::bail;
+use rootcause::{bail, report};
 
 use datafusion_postgres::auth::AuthManager;
 use datafusion_postgres::datafusion_pg_catalog::{
     PgCatalogOptions, setup_pg_catalog_with_options,
 };
+use lakesoul_common::misc::TimeZone;
 use lakesoul_datafusion::catalog::{CatalogSnapshot, LakeSoulProviderOptions};
 use lakesoul_datafusion::cli::CoreArgs;
+use lakesoul_datafusion::distributed::headers::{
+    SessionActor, StatementIdGuard, set_identity_headers,
+};
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
@@ -72,6 +75,8 @@ pub struct PgSession {
     pub identity: SessionIdentity,
     pub context: Arc<SessionContext>,
     pub settings: RwLock<SessionSettings>,
+    pub actor: SessionActor,
+    distributed: bool,
     /// Metadata view this connection lists from: the factory's shared
     /// snapshot, i.e. one refresher per process rather than one per
     /// connection.
@@ -84,18 +89,41 @@ impl PgSession {
         context: Arc<SessionContext>,
         settings: SessionSettings,
         catalog_snapshot: Arc<CatalogSnapshot>,
-    ) -> Self {
-        Self {
+        distributed: bool,
+    ) -> Result<Self> {
+        let actor =
+            SessionActor::new(identity.user.clone(), "", identity.database.clone());
+        if distributed {
+            set_identity_headers(&context, &actor).map_err(|error| {
+                report!("invalid connection identity for distributed headers: {error}")
+            })?;
+        }
+        Ok(Self {
             identity,
             context,
             settings: RwLock::new(settings),
+            actor,
+            distributed,
             catalog_snapshot,
-        }
+        })
     }
 
     /// The metadata view backing this connection's catalog listings.
     pub fn catalog_snapshot(&self) -> &Arc<CatalogSnapshot> {
         &self.catalog_snapshot
+    }
+    pub fn label_statement(
+        &self,
+        query_id: u64,
+        span: &tracing::Span,
+    ) -> Option<StatementIdGuard> {
+        self.distributed.then(|| {
+            // Entering the statement span makes its OTel context current while
+            // the distributed headers are built, so `StatementIdGuard` can
+            // forward `traceparent` to the workers.
+            let _entered = span.enter();
+            StatementIdGuard::set(&self.context, &self.actor, query_id)
+        })
     }
 }
 
@@ -120,6 +148,7 @@ pub struct PgSessionFactory {
     base: LakeSoulSessionFactory,
     auth_manager: Arc<AuthManager>,
     catalog_options: PgCatalogOptions,
+    distributed: bool,
 }
 
 impl PgSessionFactory {
@@ -133,6 +162,7 @@ impl PgSessionFactory {
             meta_client,
             base,
             auth_manager,
+            distributed: false,
             catalog_options: PgCatalogOptions {
                 include_synthetic_postgres_database: false,
             },
@@ -147,6 +177,7 @@ impl PgSessionFactory {
     /// back to single-node execution.
     pub fn with_distributed(mut self, options: DistributedOptions) -> Self {
         self.base = self.base.with_distributed(options);
+        self.distributed = true;
         self
     }
 
@@ -216,13 +247,13 @@ impl PgSessionFactory {
         // After the upstream setup: the registry is keyed by name, so the shims
         // replace the narrower upstream signatures.
         crate::pg_compat::register_pg_catalog_shims(&context);
-
         let session = Arc::new(PgSession::new(
             identity,
             context,
             settings.clone(),
             Arc::clone(self.base.catalog_snapshot()),
-        ));
+            self.distributed,
+        )?);
         {
             let settings = session.settings.read();
             info!(

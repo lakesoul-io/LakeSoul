@@ -16,23 +16,26 @@ use arrow::{
 use arrow_arith::boolean::and;
 use arrow_cast::cast;
 use datafusion::{
-    common::DFSchema, error::DataFusionError, execution::context::ExecutionProps,
-    logical_expr::Expr, logical_expr::physical_planning_context::PhysicalPlanningContext,
+    common::DFSchema, execution::context::ExecutionProps, logical_expr::Expr,
+    logical_expr::physical_planning_context::PhysicalPlanningContext,
     physical_expr::create_physical_expr,
 };
+use futures::{StreamExt, TryStreamExt};
 use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, path::Path};
-use rootcause::report;
+use rootcause::{prelude::ResultExt, report};
 use url::Url;
 
 use crate::Result;
 use lakesoul_common::ser::arrow_java::schema_from_table_info_metadata;
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
+
+const OBJECT_METADATA_FETCH_CONCURRENCY: usize = 8;
 
 /// Create a [`LakeSoulIOConfigBuilder`] from the table info.
 pub(crate) fn create_io_config_builder_from_table_info(
@@ -257,27 +260,36 @@ where
 }
 
 /// Listing the partition info and the files from the metadata client.
+#[tracing::instrument(
+    name = "listing_partition_info",
+    level = "trace",
+    skip_all,
+    fields(
+        partition_desc = %partition_info.partition_desc,
+        version = partition_info.version,
+    )
+)]
 pub async fn listing_partition_info(
     partition_info: PartitionInfo,
     store: &dyn ObjectStore,
     client: MetaDataClientRef,
-) -> datafusion::error::Result<(PartitionInfo, Vec<ObjectMeta>)> {
-    info!("Listing partition {:?}", partition_info);
+) -> Result<(PartitionInfo, Vec<ObjectMeta>)> {
     let paths = client
         .get_data_files_of_single_partition(&partition_info)
         .await
-        .map_err(|_| DataFusionError::External("listing partition info failed".into()))?;
-    let mut files = Vec::new();
-    for path in paths {
-        let result = store
-            .head(&Path::from_url_path(
-                Url::parse(path.as_str())
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?
-                    .path(),
-            )?)
-            .await?;
-        files.push(result);
-    }
+        .context("listing partition")?;
+    let files: Vec<ObjectMeta> = futures::stream::iter(paths)
+        .map(|path| async move {
+            let url = Url::parse(&path)?;
+            let location = Path::from_url_path(url.path())?;
+            Ok::<_, rootcause::Report>(store.head(&location).await?)
+        })
+        // Keep metadata requests bounded while preserving the metadata client's
+        // file order.
+        .buffered(OBJECT_METADATA_FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+    trace!(file_count = files.len(), "listed partition files");
     Ok((partition_info, files))
 }
 

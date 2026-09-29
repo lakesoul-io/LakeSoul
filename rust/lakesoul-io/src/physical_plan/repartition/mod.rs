@@ -41,6 +41,7 @@ use self::distributor_channels::{
     DistributionReceiver, DistributionSender, channels, partition_aware_channels,
 };
 use crate::Result;
+use crate::execution_trace::instrument_record_batch_stream;
 use crate::utils::hash::create_hashes;
 
 mod distributor_channels;
@@ -524,6 +525,16 @@ impl RepartitionByRangeAndHashExec {
     /// output partitions based on the desired partitioning
     ///
     /// txs hold the output sending channels for each output partition
+    #[instrument(
+        name = "range_hash_repartition_input",
+        level = "info",
+        skip_all,
+        fields(
+            input_partition = partition,
+            output_partition_count = output_channels.len(),
+        ),
+        err
+    )]
     async fn pull_from_input(
         input: Arc<dyn ExecutionPlan>,
         partition: usize,
@@ -749,6 +760,18 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        let span = info_span!(
+            "range_hash_repartition_output",
+            output_partition = partition,
+            input_partition_count = self.input.output_partitioning().partition_count(),
+            output_partition_count = self.hash_partitioning.partition_count(),
+            range_expression_count = self.range_partitioning_expr.len(),
+            preserve_order = self.preserve_order,
+            outcome = tracing::field::Empty,
+            output_batches = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
         let params = self.capture_params();
         let paras_captured = Arc::clone(&params);
         let paras_captured_move = Arc::clone(&params);
@@ -842,7 +865,12 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         .try_flatten();
 
         let stream = RecordBatchStreamAdapter::new(Arc::clone(&params.schema), stream);
-        Ok(Box::pin(stream))
+        let stream = Box::pin(stream) as SendableRecordBatchStream;
+        Ok(instrument_record_batch_stream(
+            stream,
+            span,
+            "range_hash_repartition",
+        ))
     }
 
     fn partition_statistics(
