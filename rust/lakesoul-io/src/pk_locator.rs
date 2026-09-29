@@ -80,11 +80,11 @@ use crate::file_format::PhysicalFormat;
 /// is better off scanning.
 pub const MAX_PK_CANDIDATES: usize = 10_000;
 
-/// When every candidate file has fewer rows than this, a plain scan is
-/// cheaper than indexing.  The threshold sits below the ~8k rows per file the
-/// sorted writer typically emits, so ordinary data files are indexed; a small
-/// upsert file mixed into such a table is indexed too (it costs almost
-/// nothing), because the decision spans all files of the query.
+/// When the candidate files of a query hold fewer rows than this in total, a
+/// plain scan is cheaper than building local indexes.  The decision spans all
+/// files of the query: a table of many small files (IVM writes several files
+/// per append, one per writer partition) is still indexed, while a handful of
+/// tiny upsert files is scanned.
 const MIN_INDEX_ROWS: u64 = 4_096;
 
 /// A single index may take at most `1 / MAX_INDEX_CACHE_RATIO` of the shared
@@ -1181,10 +1181,10 @@ pub async fn try_build_key_inputs(
     let mut n_rows = 0usize;
 
     // Indexing costs one key-column read plus a small local file per data
-    // file; when every candidate file is tiny, a plain scan is cheaper.  The
-    // decision spans all files, so a single small upsert file does not disable
-    // the index for the whole table.
-    let mut any_large = false;
+    // file; when the candidate set as a whole is tiny, a plain scan is
+    // cheaper.  The decision spans all files, so neither a single small upsert
+    // file nor the many small files IVM writes per append disable the index.
+    let mut total_rows: u64 = 0;
     for config in configs {
         let location = single_vortex_file(config)?;
         let store = state
@@ -1200,12 +1200,12 @@ pub async fn try_build_key_inputs(
             }
         };
         let file = get_vortex_file(store, &location, &session).await?;
-        if file.row_count() >= MIN_INDEX_ROWS {
-            any_large = true;
+        total_rows = total_rows.saturating_add(file.row_count());
+        if total_rows >= MIN_INDEX_ROWS {
             break;
         }
     }
-    if !any_large {
+    if total_rows < MIN_INDEX_ROWS {
         return None;
     }
 
