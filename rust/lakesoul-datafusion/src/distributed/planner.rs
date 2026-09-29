@@ -37,7 +37,7 @@ use std::sync::Arc;
 use datafusion::catalog::Session;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource};
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
@@ -45,6 +45,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_distributed::{DistributedLeafExec, NetworkBoundaryExt, WorkerResolver};
 use lakesoul_io::file_format::PhysicalFormat;
 
+use crate::distributed::codec::source_has_wire_form;
 use crate::planner::LakeSoulQueryPlanner;
 
 /// Wraps the distributed [`QueryPlanner`] installed by
@@ -97,19 +98,6 @@ impl LakeSoulDistributedQueryPlanner {
     }
 }
 
-/// Whether a file source can be sent to a worker.
-///
-/// A stage travels as protobuf: its [`DataSourceExec`]s serialize themselves
-/// through their data source, a [`FileScanConfig`] through its [`FileSource`],
-/// and a source without a `try_to_proto` hook has no wire form. Parquet is the
-/// only source LakeSoul builds that implements one, so it is the only source a
-/// worker can decode. The check is a whitelist rather than "not a vortex path"
-/// so a leaf of a future format is refused until it gets a codec, instead of
-/// failing at execution time.
-fn wire_encodable_source(source: &dyn FileSource) -> bool {
-    source.is::<ParquetSource>()
-}
-
 /// Describes the first scan leaf of a worker stage that no worker could
 /// receive.
 ///
@@ -157,7 +145,7 @@ fn unshippable_file_scan(stage: &Arc<dyn ExecutionPlan>) -> Option<String> {
         }
         if let Some(exec) = node.downcast_ref::<DataSourceExec>()
             && let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>()
-            && !wire_encodable_source(config.file_source().as_ref())
+            && !source_has_wire_form(config.file_source().as_ref())
         {
             return Some(describe_scan_leaf(config));
         }
@@ -189,8 +177,9 @@ fn unshippable_stage_error(leaf: &str) -> DataFusionError {
     DataFusionError::Execution(format!(
         "distributed execution requires a wire-encodable scan leaf, but a \
          worker stage scans {leaf}: that file source has no plan codec, so a \
-         worker cannot decode it; write the table as parquet (file_format \
-         'parquet') or run without distributed execution"
+         worker cannot decode it; tables written as parquet or vortex do have \
+         one, so check the table's file_format, or run without distributed \
+         execution"
     ))
 }
 
@@ -245,12 +234,16 @@ mod tests {
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder};
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, FileSource,
+    };
     use datafusion::datasource::table_schema::TableSchema;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::physical_expr::Partitioning;
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::NetworkShuffleExec;
@@ -323,6 +316,71 @@ mod tests {
         let config = FileScanConfigBuilder::new(
             ObjectStoreUrl::parse("file://").expect("object store url"),
             source,
+        )
+        .with_file_groups(vec![FileGroup::new(vec![PartitionedFile::new(
+            file.to_string(),
+            1024,
+        )])])
+        .build();
+        DataSourceExec::from_data_source(config)
+    }
+
+    /// A file source of a format no codec knows: a stand-in for a format added
+    /// later, which the gate must refuse until it gets a wire form (see
+    /// `codec::source_has_wire_form`).
+    #[derive(Debug)]
+    struct ForeignSource {
+        table_schema: TableSchema,
+        metrics: ExecutionPlanMetricsSet,
+    }
+
+    impl FileSource for ForeignSource {
+        fn create_file_opener(
+            &self,
+            _object_store: Arc<dyn object_store::ObjectStore>,
+            _base_config: &FileScanConfig,
+            _partition: usize,
+        ) -> DFResult<Arc<dyn datafusion_datasource::file_stream::FileOpener>> {
+            unreachable!("the gate only inspects a foreign source, never opens one")
+        }
+
+        fn table_schema(&self) -> &TableSchema {
+            &self.table_schema
+        }
+
+        fn with_batch_size(&self, _batch_size: usize) -> Arc<dyn FileSource> {
+            Arc::new(ForeignSource {
+                table_schema: self.table_schema.clone(),
+                metrics: self.metrics.clone(),
+            })
+        }
+
+        fn metrics(&self) -> &ExecutionPlanMetricsSet {
+            &self.metrics
+        }
+
+        fn file_type(&self) -> &str {
+            "foreign"
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+        ) -> DFResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+    }
+
+    /// A scan leaf of a source with no wire form, reading `file`.
+    fn foreign_leaf(file: &str) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let source = ForeignSource {
+            table_schema: TableSchema::new(schema, Vec::new()),
+            metrics: ExecutionPlanMetricsSet::default(),
+        };
+        let config = FileScanConfigBuilder::new(
+            ObjectStoreUrl::parse("file://").expect("object store url"),
+            Arc::new(source),
         )
         .with_file_groups(vec![FileGroup::new(vec![PartitionedFile::new(
             file.to_string(),
@@ -411,34 +469,29 @@ mod tests {
         assert!(Arc::ptr_eq(&plan, &leaf), "the gate must keep the plan");
     }
 
-    /// Production: a vortex stage has no wire form, so the query fails while
-    /// planning instead of when the stage is sent to a worker.
+    /// A vortex stage crosses the wire through the registered vortex codec
+    /// (`codec::user_codecs`), so the gate must pass the distributed plan
+    /// through: `codec`'s roundtrip test pins that a vortex leaf really does
+    /// encode and decode.
     #[tokio::test]
-    async fn vortex_stage_is_refused_without_the_fallback() {
-        let leaf = scan_leaf(PhysicalFormat::Vortex, "s3://bucket/t/a.vortex");
-        let err = plan_through_gate(Arc::new(StubPlanner(stage(leaf))), false)
+    async fn vortex_stages_pass_the_gate() {
+        let leaf = stage(scan_leaf(PhysicalFormat::Vortex, "s3://bucket/t/a.vortex"));
+        let plan = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&leaf))), false)
             .await
-            .expect_err("a vortex stage must be refused");
-        let message = err.to_string();
-        assert!(message.contains("wire-encodable scan leaf"), "{message}");
-        assert!(message.contains("a.vortex"), "{message}");
+            .expect("a vortex stage has a wire form");
+        assert!(Arc::ptr_eq(&plan, &leaf), "the gate must keep the plan");
     }
 
     /// The check walks a whole stage: a vortex leaf below the merge node of a
-    /// primary-key work unit is found too.
+    /// primary-key work unit is found - and shipped - too.
     #[tokio::test]
-    async fn vortex_leaf_below_a_merge_node_is_refused() {
+    async fn vortex_leaf_below_a_merge_node_passes_the_gate() {
         let leaf = scan_leaf(PhysicalFormat::VortexCompact, "s3://bucket/t/a.vortex");
-        let err = plan_through_gate(
-            Arc::new(StubPlanner(stage(merge_over(vec![leaf])))),
-            false,
-        )
-        .await
-        .expect_err("a vortex leaf below a merge must be refused");
-        assert!(
-            err.to_string().contains("wire-encodable scan leaf"),
-            "{err}"
-        );
+        let stage = stage(merge_over(vec![leaf]));
+        let plan = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&stage))), false)
+            .await
+            .expect("a vortex leaf below a merge has a wire form");
+        assert!(Arc::ptr_eq(&plan, &stage), "the gate must keep the plan");
     }
 
     /// A distributed stage hides the plan of each task inside a
@@ -447,18 +500,16 @@ mod tests {
     /// coordinator only ever executes the original (the single-task case), and
     /// here it is parquet while the task variants are vortex.
     #[tokio::test]
-    async fn vortex_task_variant_is_refused() {
+    async fn vortex_task_variants_pass_the_gate() {
         let variants = task_variants(vec![
             scan_leaf(PhysicalFormat::Vortex, "s3://bucket/t/a.vortex"),
             scan_leaf(PhysicalFormat::Vortex, "s3://bucket/t/b.vortex"),
         ]);
-        let err = plan_through_gate(Arc::new(StubPlanner(stage(variants))), false)
+        let stage = stage(variants);
+        let plan = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&stage))), false)
             .await
-            .expect_err("a vortex task variant must be refused");
-        assert!(
-            err.to_string().contains("wire-encodable scan leaf"),
-            "{err}"
-        );
+            .expect("vortex task variants have a wire form");
+        assert!(Arc::ptr_eq(&plan, &stage), "the gate must keep the plan");
     }
 
     /// Only stages are checked: a plan the distributed planner kept
@@ -473,11 +524,24 @@ mod tests {
         assert!(Arc::ptr_eq(&plan, &leaf), "the gate must keep the plan");
     }
 
-    /// Development: the same stage is planned with the plain LakeSoul planner,
-    /// so a vortex table still runs on the coordinator.
+    /// Production: a stage scanning a source no codec knows fails the query
+    /// while planning instead of when the stage is sent to a worker.
     #[tokio::test]
-    async fn vortex_stage_falls_back_to_the_local_planner() {
-        let leaf = scan_leaf(PhysicalFormat::Vortex, "s3://bucket/t/a.vortex");
+    async fn unencodable_stage_is_refused_without_the_fallback() {
+        let leaf = foreign_leaf("s3://bucket/t/a.foreign");
+        let err = plan_through_gate(Arc::new(StubPlanner(stage(leaf))), false)
+            .await
+            .expect_err("a stage without a wire form must be refused");
+        let message = err.to_string();
+        assert!(message.contains("wire-encodable scan leaf"), "{message}");
+        assert!(message.contains("a.foreign"), "{message}");
+    }
+
+    /// Development: the same stage is planned with the plain LakeSoul planner,
+    /// so the query still runs on the coordinator.
+    #[tokio::test]
+    async fn unencodable_stage_falls_back_to_the_local_planner() {
+        let leaf = foreign_leaf("s3://bucket/t/a.foreign");
         let plan = plan_through_gate(Arc::new(StubPlanner(stage(leaf))), true)
             .await
             .expect("the fallback must plan the query");

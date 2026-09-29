@@ -13,6 +13,7 @@ version.workspace = true
 publish = false
 
 [dependencies]
+lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-common = { path = "../lakesoul-common" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }

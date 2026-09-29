@@ -25,7 +25,7 @@ use lakesoul_datafusion::distributed::headers::{
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
-use tracing::info;
+use tracing::{info, instrument};
 
 use crate::catalog::{PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog};
 
@@ -189,6 +189,15 @@ impl PgSessionFactory {
         self.base.catalog_snapshot()
     }
 
+    /// One span per connection: the namespace-visibility query below is
+    /// instrumented on its own, and without this parent it opens a root trace
+    /// per connection.
+    #[instrument(
+        name = "create_session",
+        level = "info",
+        skip_all,
+        fields(user = %identity.user, database = %identity.database)
+    )]
     pub async fn create_session(
         &self,
         identity: SessionIdentity,

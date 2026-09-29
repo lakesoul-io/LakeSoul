@@ -1,9 +1,40 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
 copy-to-java ext="so":
   cargo build -p lakesoul-io-c -p lakesoul-metadata-c
   cp target/debug/liblakesoul_io_c.{{ext}} ../lakesoul-common/target/classes/
   cp target/debug/liblakesoul_metadata_c.{{ext}} ../lakesoul-common/target/classes/
 
 log_level := "info"
+
+# Directory the observability stack's Alloy collector tails (see
+# docker/observability/README.md); override with LAKESOUL_LOG_DIR.
+log_dir := env("LAKESOUL_LOG_DIR", "/tmp/lakesoul/logs")
+
+clean-log:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir={{quote(log_dir)}}
+    if [ -z "$dir" ]; then
+        echo "Refusing to clean unsafe LAKESOUL_LOG_DIR: '$dir'" >&2
+        exit 1
+    fi
+    if [ ! -d "$dir" ]; then
+        echo "Nothing to clean: '$dir' is not a directory" >&2
+        exit 0
+    fi
+    # `/.`, `//` and a symlink are different strings for the same directory:
+    # resolve first, or the string check above lets them through and the
+    # cleanup walks up to everything under root.
+    resolved=$(cd -- "$dir" && pwd -P)
+    # `pwd -P` keeps the POSIX `//` spelling, so compare on the slashes alone:
+    # a resolved path that is nothing but slashes is the root directory.
+    if [ -z "${resolved//\//}" ]; then
+        echo "Refusing to clean unsafe LAKESOUL_LOG_DIR: '$dir' resolves to /" >&2
+        exit 1
+    fi
+    # No glob: a metacharacter in the resolved path must not widen the sweep.
+    find "$resolved" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 
 flight-sql level=log_level:
     RUST_LOG=lakesoul_flight={{level}},lakesoul_metadata={{level}} JWT_AUTH_ENABLED=false RBAC_AUTH_ENABLED=true cargo run --bin flight_sql_server
@@ -20,8 +51,6 @@ flight-sql-s3 level=log_level:
 clean-tpch:
    rm -rf /tmp/lakesoul/tpch_data/*
 
-clean-log:
-    rm -rf /tmp/lakesoul/logs/*
 
 console-s3 level=log_level:
     RUST_LOG={{level}}  cargo run --release --bin lakesoul-console -- --worker-threads 16  \
@@ -39,6 +68,7 @@ console-s3 level=log_level:
 #   * --metrics-addr           -> a distinct Prometheus target (worker-1/2 label
 #     comes from docker/observability/prometheus/prometheus.yml)
 worker-s3-1 level=log_level:
+    mkdir -p {{log_dir}}
     OTEL_SERVICE_NAME=lakesoul-worker \
     OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-1 \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
@@ -51,9 +81,10 @@ worker-s3-1 level=log_level:
       --endpoint "http://localhost:9000" \
       --s3-bucket "lakesoul-test-bucket" \
       --s3-access-key "rustfsadmin" \
-      --s3-secret-key "rustfsadmin"
+      --s3-secret-key "rustfsadmin" 2>&1 | tee -a {{log_dir}}/lakesoul-worker.worker-1.log
 
 worker-s3-2 level=log_level:
+    mkdir -p {{log_dir}}
     OTEL_SERVICE_NAME=lakesoul-worker \
     OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-2 \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
@@ -66,7 +97,7 @@ worker-s3-2 level=log_level:
       --endpoint "http://localhost:9000" \
       --s3-bucket "lakesoul-test-bucket" \
       --s3-access-key "rustfsadmin" \
-      --s3-secret-key "rustfsadmin"
+      --s3-secret-key "rustfsadmin" 2>&1 | tee -a {{log_dir}}/lakesoul-worker.worker-2.log
 
 console-distributed-s3 level=log_level:
     RUST_LOG={{level}} cargo run --bin lakesoul-console -- --worker-threads 16 \
@@ -138,10 +169,11 @@ clean-test-tables-s3: clean-meta
     mc rm -r --force dev/lakesoul-test-bucket/test-tables
 
 pg:
+    mkdir -p {{log_dir}}
     RUST_LOG=info cargo run -p postgres-lakesoul -- -p 6543 \
      --warehouse-prefix "s3://lakesoul-test-bucket" \
      --endpoint "http://localhost:9000" \
      --s3-bucket "lakesoul-test-bucket" \
      --s3-access-key "rustfsadmin" \
      --s3-secret-key "rustfsadmin" \
-     --distributed-workers http://127.0.0.1:50051,http://127.0.0.1:50052
+     --distributed-workers http://127.0.0.1:50051,http://127.0.0.1:50052 2>&1 | tee -a {{log_dir}}/postgres-lakesoul.pg.log

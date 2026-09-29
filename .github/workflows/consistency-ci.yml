@@ -99,6 +99,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-flatc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"

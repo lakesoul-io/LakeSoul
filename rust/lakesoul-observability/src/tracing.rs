@@ -360,6 +360,13 @@ where
             "service.version",
             config.service_version.clone(),
         ))
+        // Which commit this replica was built from. One Tempo service spans
+        // several restarts and rolled-out builds; this is what tells the
+        // spans apart when a worker runs stale code.
+        .with_attribute(KeyValue::new(
+            "build.commit",
+            lakesoul_build_info::GIT_COMMIT,
+        ))
         .build();
 
     let tracer_provider = SdkTracerProvider::builder()

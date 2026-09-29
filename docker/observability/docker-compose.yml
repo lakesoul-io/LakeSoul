@@ -2,13 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Grafana + Prometheus + Tempo stack for LakeSoul.
+# Grafana + Prometheus + Tempo + Loki stack for LakeSoul.
 #
 #   - Tempo receives OTLP traces on 4317 (gRPC) / 4318 (HTTP) and generates
 #     span metrics / service graphs, remote-written into Prometheus.
 #   - Prometheus scrapes every LakeSoul process' /metrics endpoint on the host
 #     and receives Tempo's generated metrics.
-#   - Grafana is provisioned with both datasources and the LakeSoul dashboard.
+#   - Loki stores the processes' stdout logs, pushed by Alloy from the
+#     directory the justfile recipes tee into (`LAKESOUL_LOG_DIR`).
+#   - Grafana is provisioned with all three datasources and the LakeSoul
+#     dashboard.
 #
 # See README.md for how to run LakeSoul against it.
 #
@@ -31,6 +34,33 @@ services:
     volumes:
       - ./tempo/tempo.yml:/etc/tempo.yml:ro
       - tempo-data:/var/tempo
+
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    network_mode: host
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+
+  # Reads the host processes' logs. Their stdout is a terminal, which Alloy
+  # cannot read from its container: the justfile recipes tee into
+  # LAKESOUL_LOG_DIR and that directory is mounted here read-only.
+  alloy:
+    image: grafana/alloy:v1.20.1
+    restart: unless-stopped
+    # Loopback only: the Alloy UI (and its debug endpoints) are unauthenticated.
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    network_mode: host
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ${LAKESOUL_LOG_DIR:-/tmp/lakesoul/logs}:/var/log/lakesoul:ro
+      - alloy-data:/var/lib/alloy
 
   prometheus:
     image: prom/prometheus:v3.2.1
@@ -82,3 +112,5 @@ volumes:
   tempo-data:
   prometheus-data:
   grafana-data:
+  loki-data:
+  alloy-data:

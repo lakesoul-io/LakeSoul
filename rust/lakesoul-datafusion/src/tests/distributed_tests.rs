@@ -43,11 +43,13 @@ use std::time::Duration;
 use arrow::array::{ArrayRef, Int32Array, Int64Array};
 use arrow::record_batch::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    DistributedExec, DistributedExt, Worker, display_plan_ascii,
+    DistributedExec, DistributedExt, DistributedLeafExec, Worker, display_plan_ascii,
 };
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
@@ -57,6 +59,7 @@ use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::TcpListenerStream;
+use vortex_datafusion::VortexSource;
 
 use crate::distributed::{DistributedOptions, LakeSoulWorkerOptions, WorkerDiscovery};
 use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
@@ -88,14 +91,10 @@ where
 
 /// Creates a table pinned to Parquet.
 ///
-/// The distributed codec ships Parquet scan leaves to workers; a vortex scan
-/// leaf has no wire form yet (`VortexSource` has no `try_to_proto` and the
-/// encoding context `datafusion-proto` would need is not reachable from a
-/// `PhysicalExtensionCodec`), so distributed execution currently runs on
-/// Parquet tables only. A query over a vortex table that would use the workers
-/// is refused while planning (the gate in `distributed::planner`); one that
-/// stays on the coordinator still runs (see the vortex tests at the end of this
-/// module).
+/// Parquet scan leaves are serialized by `datafusion-proto` itself, which is
+/// what the general distributed tests below exercise; the vortex tests at the
+/// end of this module cover the scan leaf that needs the registered vortex
+/// codec instead.
 async fn create_distributed_table(
     client: MetaDataClientRef,
     table_name: &str,
@@ -1374,7 +1373,116 @@ async fn test_single_worker_plans_every_shape_on_the_coordinator_inner() -> Resu
     Ok(())
 }
 
-/// Creates the append-only table the vortex wire tests read: no primary key,
+/// Whether any distributed stage hands a worker a plan that scans a vortex
+/// file.
+///
+/// This is the part of the plan a worker must decode: the task variants live
+/// inside a `DistributedLeafExec`, which exposes them through `variants()`
+/// rather than as children.
+fn worker_variants_scan_vortex(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let mut found = false;
+    plan.apply(|node| {
+        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
+            for variant in leaf.variants() {
+                if contains_vortex_scan(variant) {
+                    found = true;
+                    return Ok(TreeNodeRecursion::Stop);
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("walking a physical plan cannot fail");
+    found
+}
+
+/// Whether `plan` reads through a [`VortexSource`] anywhere.
+fn contains_vortex_scan(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let mut found = false;
+    plan.apply(|node| {
+        if let Some(exec) = node.downcast_ref::<DataSourceExec>()
+            && let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>()
+            && config.file_source().is::<VortexSource>()
+        {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("walking a physical plan cannot fail");
+    found
+}
+
+/// A distributed query over vortex tables runs on the workers.
+///
+/// A vortex scan leaf has no `try_to_proto` hook, so it crosses the wire
+/// through the vortex codec that `user_codecs` registers on the coordinator
+/// *and* every worker. Both shapes that send a scan to a worker are covered:
+/// an append-only table whose scan fans out over the stage's tasks, and a
+/// primary-key table whose three merge work units merge in the workers.
+///
+/// The results are asserted against a single-node session, the plan against
+/// `DistributedExec`, and the worker-side task variants against a vortex scan
+/// leaf — with `fallback_to_local = false`, so a coordinator-only fallback
+/// cannot make this pass.
+#[test]
+fn test_vortex_tables_run_on_the_workers() {
+    run_distributed_test(test_vortex_tables_run_on_the_workers_inner());
+}
+
+async fn test_vortex_tables_run_on_the_workers_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let append = seed_vortex_append_table(client.clone()).await?;
+    let partitioned_pk = seed_vortex_pk_table(client.clone()).await?;
+
+    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+    let single_node = single_node_factory(client.clone())?;
+
+    #[rustfmt::skip]
+    let queries: Vec<(String, Vec<&str>)> = vec![
+        (
+            format!(
+                "SELECT part, count(*) AS cnt FROM {append} GROUP BY part ORDER BY part"
+            ),
+            VORTEX_APPEND_COUNTS.to_vec(),
+        ),
+        // Three range partitions, three keys each, two file versions per key:
+        // only a real merge-on-read yields 3 rows per partition.
+        (
+            format!(
+                "SELECT part, count(*) AS cnt FROM {partitioned_pk} \
+                 GROUP BY part ORDER BY part"
+            ),
+            vec![
+                "+------+-----+",
+                "| part | cnt |",
+                "+------+-----+",
+                "| 0    | 3   |",
+                "| 1    | 3   |",
+                "| 2    | 3   |",
+                "+------+-----+",
+            ],
+        ),
+    ];
+    assert_matches_single_node(&distributed, &single_node, &queries).await?;
+
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    for (sql, _) in &queries {
+        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+        let explain = display_plan_ascii(plan.as_ref(), false);
+        assert!(plan.is::<DistributedExec>(), "not distributed:\n{explain}");
+        assert!(
+            worker_variants_scan_vortex(&plan),
+            "no worker task was handed a vortex scan:\n{explain}"
+        );
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Creates the append-only table the vortex tests read: no primary key,
 /// no range partition, two files of `t1_schema()` rows.
 async fn seed_vortex_append_table(client: MetaDataClientRef) -> Result<String> {
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
@@ -1441,122 +1549,20 @@ async fn seed_vortex_pk_table(client: MetaDataClientRef) -> Result<String> {
     Ok(name)
 }
 
-/// A vortex scan that a query would send to a worker is refused while
-/// planning.
-///
-/// No worker can decode a vortex file source, and the coordinator only notices
-/// while sending the stage — its encoding error surfaces as a worker-side
-/// failure (the worker waits for a plan that never arrives) long after planning
-/// has returned. The gate therefore fails the query at planning time, where
-/// `fallback_to_local` can still act on it (see the next test).
-///
-/// Both shapes that send a scan to a worker are covered: an append-only table
-/// whose scan fans out over the stage's tasks, and a primary-key table whose
-/// three merge work units merge in the workers.
-#[test]
-fn test_vortex_table_is_refused_by_the_distributed_planner() {
-    run_distributed_test(test_vortex_table_is_refused_by_the_distributed_planner_inner());
-}
-
-async fn test_vortex_table_is_refused_by_the_distributed_planner_inner() -> Result<()> {
-    let client = Arc::new(MetaDataClient::from_env().await?);
-    let append = seed_vortex_append_table(client.clone()).await?;
-    let partitioned_pk = seed_vortex_pk_table(client.clone()).await?;
-
-    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
-    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
-    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
-
-    for (shape, sql) in [
-        (
-            "append-only scan",
-            format!(
-                "SELECT part, count(*) AS cnt FROM {append} GROUP BY part ORDER BY part"
-            ),
-        ),
-        (
-            "primary-key work units",
-            format!("SELECT id, count(*) AS c FROM {partitioned_pk} GROUP BY id"),
-        ),
-    ] {
-        let err = ctx
-            .sql(&sql)
-            .await?
-            .collect()
-            .await
-            .expect_err("a vortex stage cannot be sent to a worker");
-        let message = err.find_root().to_string();
-        assert!(
-            message.contains("wire-encodable scan leaf"),
-            "{shape}: expected the gate to refuse the plan while planning: {message}"
-        );
-        assert!(message.contains(".vortex"), "{shape}: {message}");
-    }
-
-    workers.abort_all();
-    Ok(())
-}
-
-/// The development fallback turns the same refusal into a coordinator-only
-/// query: the gate plans it with the plain LakeSoul planner, which reads vortex
-/// files in place.
-#[test]
-fn test_vortex_table_runs_on_the_coordinator_with_the_fallback() {
-    run_distributed_test(
-        test_vortex_table_runs_on_the_coordinator_with_the_fallback_inner(),
-    );
-}
-
-async fn test_vortex_table_runs_on_the_coordinator_with_the_fallback_inner() -> Result<()>
-{
-    let client = Arc::new(MetaDataClient::from_env().await?);
-    let name = seed_vortex_append_table(client.clone()).await?;
-
-    let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
-    let distributed = distributed_factory(client.clone(), worker_urls, true)?;
-    let single_node = single_node_factory(client.clone())?;
-    let sql =
-        format!("SELECT part, count(*) AS cnt FROM {name} GROUP BY part ORDER BY part");
-    let queries = vec![(sql.clone(), VORTEX_APPEND_COUNTS.to_vec())];
-    assert_matches_single_node(&distributed, &single_node, &queries).await?;
-
-    // The plan is the local planner's: no stage is sent, so nothing about it
-    // depends on a worker.
-    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
-    let plan = ctx
-        .sql(&format!("EXPLAIN ANALYZE {sql}"))
-        .await?
-        .collect()
-        .await?;
-    let explain = datafusion::arrow::util::pretty::pretty_format_batches(&plan)
-        .unwrap()
-        .to_string();
-    assert!(
-        !explain.contains("DistributedExec"),
-        "the fallback must run the query on the coordinator:\n{explain}"
-    );
-
-    workers.abort_all();
-    Ok(())
-}
-
-/// Only stages are checked, so a vortex table whose plan the distributed
-/// planner keeps single-node runs without the fallback.
+/// A vortex table whose plan the distributed planner keeps single-node still
+/// runs.
 ///
 /// A primary-key table without range partitions has one merge work unit, which
 /// is pinned to one task, and the boundary above it is elided
 /// (`test_distribution_matrix_by_table_shape`), so the merge operator reads
-/// vortex files on the coordinator. Refusing that plan would fail a query no
-/// worker was ever asked to run.
+/// vortex files on the coordinator. The gate checks worker stages only, so such
+/// a plan is never refused for the file format it reads.
 #[test]
-fn test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent() {
-    run_distributed_test(
-        test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent_inner(),
-    );
+fn test_vortex_table_runs_when_no_stage_is_sent() {
+    run_distributed_test(test_vortex_table_runs_when_no_stage_is_sent_inner());
 }
 
-async fn test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent_inner()
--> Result<()> {
+async fn test_vortex_table_runs_when_no_stage_is_sent_inner() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
     let name = format!("distributed_vortex_local_{suffix}");
@@ -1588,8 +1594,7 @@ async fn test_vortex_table_runs_without_the_fallback_when_no_stage_is_sent_inner
         .to_string();
     assert!(
         !explain.contains("DistributedExec"),
-        "this shape must stay on the coordinator, or the gate would refuse \
-         it:\n{explain}"
+        "this shape must stay on the coordinator:\n{explain}"
     );
 
     let batches = ctx.sql(&sql).await?.collect().await?;
@@ -1941,13 +1946,19 @@ impl datafusion_distributed::WorkerSessionBuilder for RecordingQueryIdBuilder {
             .push(crate::distributed::headers::query_id_from_headers(
                 &ctx.headers,
             ));
-        Ok(ctx
-            .builder
-            .with_distributed_user_codec(crate::distributed::LakeSoulCodec)
-            .build())
+        let mut builder = ctx.builder;
+        builder = builder.with_distributed_user_codec(crate::distributed::LakeSoulCodec);
+        Ok(builder.build())
     }
 }
 
+/// The statement ID of one statement must not leak into the next one's worker
+/// tasks, and every worker task must carry its own statement's ID.
+///
+/// The workers are the point of the test, so it needs `WORKER_COUNT` of them:
+/// with a single worker the distributed planner caps every stage at one task,
+/// no network boundary survives, and the statement runs on the coordinator
+/// without a worker session ever being built.
 #[test]
 fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
     run_distributed_test(async {

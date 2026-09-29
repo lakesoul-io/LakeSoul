@@ -37,7 +37,6 @@ use crate::catalog::{
 use crate::cli::CoreArgs;
 use crate::datasource::table_factory::LakeSoulTableProviderFactory;
 use crate::distributed::DistributedOptions;
-use crate::distributed::codec::LakeSoulCodec;
 use crate::distributed::planner::LakeSoulDistributedQueryPlanner;
 use crate::distributed::resolver::{
     KubernetesWorkerResolver, StaticWorkerResolver, WorkerDiscovery,
@@ -250,11 +249,15 @@ impl LakeSoulSessionFactory {
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
             builder = builder
                 .with_distributed_worker_resolver(Arc::clone(resolver))
-                .with_distributed_user_codec(LakeSoulCodec)
                 .with_distributed_metrics_collection(true)?
                 .with_distributed_desired_task_count_handler(
                     merge_parquet_exec_single_task,
                 );
+            // The codec list is position-addressed on the wire, so it comes
+            // from one function the workers call too; see `codec::user_codecs`.
+            for codec in crate::distributed::codec::user_codecs() {
+                builder = builder.with_distributed_user_codec_arc(codec);
+            }
             // Merge-work-unit atomicity: a merge-on-read work unit (one
             // partition's complete file set) is one `MergeParquetExec`, i.e. one
             // child of the scan's union. The children-isolator union runs each

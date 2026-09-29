@@ -12,11 +12,16 @@
 //!
 //! - the [`RuntimeEnv`] with the S3/HDFS/local warehouse object store
 //!   registered (same URL prefix and options as the coordinator);
-//! - the LakeSoul [`LakeSoulCodec`] so [`MergeParquetExec`] stages decode;
+//! - the same user codecs as the coordinator ([`user_codecs`]): LakeSoul's own
+//!   node codec for [`MergeParquetExec`] stages and the vortex scan codec, so
+//!   both parquet and vortex stages decode;
 //! - the LakeSoul UDFs, so pushed-down physical expressions resolve.
 //!
 //! The advertised protocol version pins coordinator↔worker compatibility:
 //! see [`crate::distributed::DISTRIBUTED_PROTOCOL_VERSION`].
+//!
+//! [`user_codecs`]: crate::distributed::codec::user_codecs
+//! [`MergeParquetExec`]: lakesoul_io::physical_plan::MergeParquetExec
 
 use datafusion::common::Result as DFResult;
 use datafusion::execution::FunctionRegistry;
@@ -27,7 +32,6 @@ use datafusion_distributed::{
 
 use crate::cli::CoreArgs;
 use crate::distributed::DISTRIBUTED_PROTOCOL_VERSION;
-use crate::distributed::codec::LakeSoulCodec;
 use crate::distributed::headers::{query_id_from_headers, whitelisted_headers};
 use crate::distributed::trace_context::TraceContextLayer;
 use tracing::info;
@@ -49,11 +53,17 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
         if let Some(query_id) = query_id_from_headers(&ctx.headers) {
             info!(query_id, "running a task for a statement");
         }
-        let mut state = ctx
+        let mut builder = ctx
             .builder
-            .with_distributed_passthrough_headers(whitelisted_headers(&ctx.headers))?
-            .with_distributed_user_codec(LakeSoulCodec)
-            .build();
+            .with_distributed_passthrough_headers(whitelisted_headers(&ctx.headers))?;
+        // Same codecs, in the same order, as the coordinator session: a plan
+        // payload names the position of the codec that wrote it, so a worker
+        // must resolve every position the coordinator can stamp. See
+        // `codec::user_codecs`.
+        for codec in crate::distributed::codec::user_codecs() {
+            builder = builder.with_distributed_user_codec_arc(codec);
+        }
+        let mut state = builder.build();
 
         // Parity with the coordinator session: physical expressions may
         // reference LakeSoul UDFs, which datafusion-proto resolves through the

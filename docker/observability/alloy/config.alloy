@@ -1,0 +1,66 @@
+// SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+// Ships the LakeSoul host processes' stdout into Loki.
+//
+// The processes run on the host, not in Docker, so nothing here can read their
+// stdout directly: the `rust/justfile` recipes tee each process into
+// `LAKESOUL_LOG_DIR` (default `/tmp/lakesoul/logs`) and this directory is
+// mounted read-only into the Alloy container at `/var/log/lakesoul`.
+//
+// File names carry the identity, `<service>.<instance>.log`, which becomes the
+// Loki stream labels:
+//
+//   lakesoul-worker.worker-1.log  -> {service="lakesoul-worker", worker="worker-1"}
+//   postgres-lakesoul.pg.log      -> {service="postgres-lakesoul", worker="pg"}
+//
+// Keeping `service` at the role (not the replica) mirrors the OTLP
+// `service.name` and the Prometheus `service` label, so one Grafana query works
+// across Grafana's three datasources. See README.md.
+
+local.file_match "lakesoul" {
+	path_targets = [{ __path__ = "/var/log/lakesoul/*.log" }]
+}
+
+loki.relabel "identity" {
+	forward_to = [loki.write.lakesoul.receiver]
+
+	// The tailer rewrites `__path__` to `filename` before entries reach this
+	// stage, so the rules match on `filename` (matching on `__path__` silently
+	// does nothing: a non-matching rule leaves the entry alone).
+
+	// service := the part before the first dot
+	rule {
+		source_labels = ["filename"]
+		regex         = ".*/(?P<service>[^.]+)\\.[^.]+\\.[^.]+$"
+		target_label  = "service"
+	}
+
+	// worker := the part after the first dot
+	rule {
+		source_labels = ["filename"]
+		regex         = ".*/[^.]+\\.(?P<worker>[^.]+)\\.[^.]+$"
+		target_label  = "worker"
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "lakesoul"
+	}
+}
+
+loki.source.file "lakesoul" {
+	targets = local.file_match.lakesoul.targets
+	// Read a file from its start: the interesting line is the startup banner
+	// (build identity, listener addresses), and positions are persisted on the
+	// alloy-data volume so a restart does not duplicate what was already sent.
+	tail_from_end = false
+	forward_to    = [loki.relabel.identity.receiver]
+}
+
+loki.write "lakesoul" {
+	endpoint {
+		url = "http://127.0.0.1:3100/loki/api/v1/push"
+	}
+}

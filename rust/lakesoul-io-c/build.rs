@@ -9,6 +9,13 @@ use std::env;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
 
+    // The bindings depend on this crate's sources only. Declare them explicitly: without any
+    // `rerun-if-changed` cargo falls back to watching the whole package directory, which
+    // includes the header written below -- so this script, this crate and every consumer of
+    // it would be rebuilt on every single cargo invocation.
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+
     let bindings = cbindgen::Builder::new()
         .with_crate(&crate_dir)
         .with_include_guard("LAKESOUL_C_BINDINGS_H")
@@ -57,7 +64,11 @@ struct CStatus {
     );
 
     let header_path = format!("{}/lakesoul_c_bindings.h", crate_dir);
-    std::fs::write(&header_path, header)?;
+    // Only rewrite when the contents actually change, so the mtime does not churn and the
+    // generated file stays quiet for editors, diffs and the tooling watching this tree.
+    if std::fs::read_to_string(&header_path).unwrap_or_default() != header {
+        std::fs::write(&header_path, &header)?;
+    }
 
     // Smoke test: verify the generated header compiles as C++
     match std::process::Command::new("c++")

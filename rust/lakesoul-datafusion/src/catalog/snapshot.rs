@@ -195,6 +195,10 @@ impl CatalogSnapshot {
         self.fetch_and_publish().await
     }
 
+    /// One span for the whole scan: the namespace query plus one query per
+    /// namespace are instrumented individually, and without this parent each
+    /// of them opens its own root trace.
+    #[instrument(name = "catalog_snapshot_refresh", level = "info", skip_all)]
     async fn fetch_and_publish(&self) -> Result<()> {
         let namespaces = self.client.get_all_namespace().await?;
         let mut tables = HashMap::with_capacity(namespaces.len());

@@ -37,6 +37,7 @@ use self::sorted::sorted_stream_merger::{SortedStream, build_sorted_stream_merge
 use crate::Result;
 use crate::config::LakeSoulIOConfig;
 use crate::execution_trace::instrument_record_batch_stream;
+use crate::file_format::PhysicalFormat;
 use crate::filter::parser::{FilterContainer, Parser as FilterParser};
 use crate::stream::default_column::DefaultColumnStream;
 use crate::stream::empty_schema::EmptySchemaStream;
@@ -345,6 +346,7 @@ impl ExecutionPlan for MergeParquetExec {
             partition,
             input_count = self.inputs.len(),
             primary_key_count = self.primary_keys.len(),
+            file_format = tracing::field::Empty,
             outcome = tracing::field::Empty,
             output_batches = tracing::field::Empty,
             output_rows = tracing::field::Empty,
@@ -358,6 +360,8 @@ impl ExecutionPlan for MergeParquetExec {
             )));
         }
 
+        let mut work_unit_format = None;
+        let mut mixed_formats = false;
         let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
         for i in 0..self.inputs.len() {
             debug!("inputs[{i}]: {} -> stream", self.inputs[i].name());
@@ -376,7 +380,46 @@ impl ExecutionPlan for MergeParquetExec {
                 schema = %stream.schema(),
                 "created merge input stream"
             );
-            stream_init_futs.push(stream);
+            // The merge reads whatever physical format the table is stored
+            // in, so without a span of its own a vortex scan is
+            // indistinguishable from a parquet one inside the merge.
+            match input_files(input) {
+                Some(files) => {
+                    match work_unit_format {
+                        None => work_unit_format = Some(files.format),
+                        Some(format) if format.name() != files.format.name() => {
+                            mixed_formats = true;
+                        }
+                        Some(_) => {}
+                    }
+                    stream_init_futs.push(instrument_record_batch_stream(
+                        stream,
+                        info_span!(
+                            "file_scan",
+                            file = files.first,
+                            file_format = files.format.name(),
+                            file_count = files.count,
+                            outcome = tracing::field::Empty,
+                            output_batches = tracing::field::Empty,
+                            output_rows = tracing::field::Empty,
+                            error = tracing::field::Empty,
+                        ),
+                        "file_scan",
+                    ));
+                }
+                None => stream_init_futs.push(stream),
+            }
+        }
+
+        if let Some(format) = work_unit_format {
+            span.record(
+                "file_format",
+                if mixed_formats {
+                    "mixed"
+                } else {
+                    format.name()
+                },
+            );
         }
 
         let reservation = MemoryConsumer::new(format!("LakeSoulMerge[{partition}]"))
@@ -405,6 +448,35 @@ impl ExecutionPlan for MergeParquetExec {
             "merge_parquet",
         ))
     }
+}
+
+/// The files one merge input reads.
+struct InputFiles<'a> {
+    /// Store-relative path of the input's first file.
+    first: &'a str,
+    /// How many files the input reads.
+    count: usize,
+    /// Physical format the input's files are stored in.
+    format: PhysicalFormat,
+}
+
+/// Describes `input` when it is a plain DataFusion file scan.
+///
+/// Merge inputs are not always scans — a primary-key locator or an
+/// already-distributed stage feeds the merge too — so `None` only means the
+/// files are unknown, never that the input is broken.
+fn input_files(input: &Arc<dyn ExecutionPlan>) -> Option<InputFiles<'_>> {
+    let config = input
+        .downcast_ref::<DataSourceExec>()?
+        .data_source()
+        .downcast_ref::<FileScanConfig>()?;
+    let mut files = config.file_groups.iter().flat_map(|group| group.files());
+    let first = files.next()?.path().as_ref();
+    Some(InputFiles {
+        first,
+        count: 1 + files.count(),
+        format: PhysicalFormat::from_extension(first).ok()?,
+    })
 }
 
 /// Merge the streams into a single stream.

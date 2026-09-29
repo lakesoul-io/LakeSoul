@@ -10,6 +10,14 @@ use std::fmt;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Source commit supplied through `LAKESOUL_GIT_COMMIT` or detected by `git`.
 pub const GIT_COMMIT: &str = env!("LAKESOUL_GIT_COMMIT");
+/// LakeSoul Core version inherited from the Cargo workspace.
+pub const VERSION_WITH_COMMIT: &str = concat!(
+    "version=",
+    env!("CARGO_PKG_VERSION"),
+    ",",
+    "commit=",
+    env!("LAKESOUL_GIT_COMMIT")
+);
 /// Rust target triple used for this build.
 pub const TARGET: &str = env!("LAKESOUL_BUILD_TARGET");
 /// Cargo build profile used for this build.

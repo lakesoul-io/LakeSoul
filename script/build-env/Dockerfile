@@ -101,3 +101,15 @@ RUN curl -LO ${PROTOC_URL} && \
     unzip -o ${PROTOC_ZIP} -d /usr/local bin/protoc && \
     unzip -o ${PROTOC_ZIP} -d /usr/local 'include/*' && \
     rm ${PROTOC_ZIP}
+
+# flatc: the `vortex` git dependency's build script generates its FlatBuffers bindings with
+# it. The version has to match the pin the dependency's own CI uses, and Ubuntu's package is
+# far older, so take the (static) release binary.
+ENV FLATC_VERSION=25.12.19
+ENV FLATC_ASSET=Linux.flatc.binary.clang++-18.zip
+ENV FLATC_URL=https://github.com/google/flatbuffers/releases/download/v${FLATC_VERSION}/${FLATC_ASSET}
+RUN curl -fsSL -o flatc.zip ${FLATC_URL} && \
+    unzip -o flatc.zip -d /usr/local/bin flatc && \
+    chmod +x /usr/local/bin/flatc && \
+    rm flatc.zip && \
+    flatc --version

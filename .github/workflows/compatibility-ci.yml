@@ -114,6 +114,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -268,6 +269,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -39,12 +40,22 @@ fn init_logger() -> Result<TracingGuard> {
         TracingConfig::new("postgres-lakesoul"),
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        LogFormat::new().with_target(false).with_file(false),
+        LogFormat::new()
+            .with_target(false)
+            .with_file(false)
+            // Tee'd into LAKESOUL_LOG_DIR for Loki: escape codes would end up
+            // in the log store, so color only a real terminal.
+            .with_ansi(std::io::stdout().is_terminal()),
         JiffTime::beijing("%m-%d %T%.3f %Z"),
     )?)
 }
 
 #[derive(Parser)]
+#[command(
+    name = "postgres-lakesoul",
+    about = "LakeSoul PostgreSQL wire server",
+    version = lakesoul_build_info::VERSION_WITH_COMMIT
+)]
 struct Cli {
     #[command(flatten)]
     pub core: CoreArgs,
@@ -92,6 +103,13 @@ struct Cli {
 }
 
 async fn main_inner(cli: Cli) -> Result<()> {
+    // Installed first: constructing the session factory below starts the
+    // catalog refresher, whose first refresh would otherwise run without a
+    // subscriber and export its queries as parentless root traces.
+    let tracing = Arc::new(init_logger()?);
+    // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
+    // `kill -HUP <pid>`.
+    spawn_reload_on_sighup(tracing.filter_handle());
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     let auth_manager = Arc::new(AuthManager::new());
     let session_factory = PgSessionFactory::new(
@@ -99,10 +117,13 @@ async fn main_inner(cli: Cli) -> Result<()> {
         &cli.core,
         Arc::clone(&auth_manager),
     )?;
-    let tracing = Arc::new(init_logger()?);
-    // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
-    // `kill -HUP <pid>`.
-    spawn_reload_on_sighup(tracing.filter_handle());
+    info!(
+        version = lakesoul_build_info::VERSION,
+        commit = lakesoul_build_info::GIT_COMMIT,
+        target = lakesoul_build_info::TARGET,
+        profile = lakesoul_build_info::PROFILE,
+        "postgres-lakesoul build identity"
+    );
     install_prometheus_metrics(PrometheusMetricsConfig::new(
         "postgres-lakesoul",
         cli.metrics_addr,

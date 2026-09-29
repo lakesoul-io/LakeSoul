@@ -15,6 +15,7 @@
 //! the coordinator must observe identical S3/HDFS/warehouse configuration so
 //! serialized stage plans resolve their object stores.
 
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -31,7 +32,11 @@ use lakesoul_observability::{
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(name = "lakesoul-worker", about = "LakeSoul distributed worker")]
+#[command(
+    name = "lakesoul-worker",
+    about = "LakeSoul distributed worker",
+    version = lakesoul_build_info::VERSION_WITH_COMMIT,
+)]
 struct Args {
     /// Bind address.
     #[arg(long, default_value = "0.0.0.0")]
@@ -69,7 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 TracingConfig::new("lakesoul-worker"),
                 tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-                LogFormat::new().with_target(false).with_file(false),
+                LogFormat::new()
+                    .with_target(false)
+                    .with_file(false)
+                    // Tee'd into LAKESOUL_LOG_DIR for Loki: escape codes would
+                    // end up in the log store, so color only a real terminal.
+                    .with_ansi(std::io::stdout().is_terminal()),
                 JiffTime::beijing("%m-%d %T%.3f %Z"),
             )?);
             // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG)
@@ -83,6 +93,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 info!(endpoint, "OTLP trace exporter enabled");
             }
             info!(
+                version = lakesoul_build_info::VERSION,
+                commit = lakesoul_build_info::GIT_COMMIT,
+                target = lakesoul_build_info::TARGET,
+                profile = lakesoul_build_info::PROFILE,
                 metrics_addr = %metrics_addr,
                 "starting LakeSoul worker (protocol {DISTRIBUTED_PROTOCOL_VERSION}) on {bind}:{port}"
             );
