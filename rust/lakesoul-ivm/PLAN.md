@@ -866,6 +866,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   缓存命中），`LAKESOUL_PK_PROFILE` 显示首次构建 ~10ms、随后 ~100µs；IVM legacy/V2 全量 +
   `vortex_tables` 开缓存全绿。
 
+**pk_locator Step 2：IVM 刷新端到端量化与阈值修正（已完成）**
+
+- 场景：`tests/pk_locator_refresh.rs`（新增，ignored，大小/模式由 env 控制）——全 vortex
+  源/MV/值状态表，32 次 append × 8192 行 = 26.2 万行、128 个源文件，10 轮"改 8 个 key"的
+  增量刷新；对比开/关 locator（`LAKESOUL_CACHE`）。
+- 稳态增量刷新耗时（中位数）：SUM **110ms vs 179ms（1.6×）**，MIN **162ms vs 237ms（1.5×）**；
+  读量（`LAKESOUL_PK_PROFILE`）：PK 点取 `rows=8`（只取受影响行），值状态前缀
+  `rows≈1024`（每桶一行），其余候选文件被统计裁剪；索引缓存 458 hits / 42 builds。
+- 首窗全量刷新两模式相当（85–92s，固定开销主导；该窗口候选 key 数超过
+  `MAX_PK_CANDIDATES`，源 `old` 读本就回退全扫）。冷全量不是 locator 的目标场景；该固定
+  开销（大窗口下刷新本身的耗时）另列为观察项。
+- **阈值修正**：IVM writer 每次 append 按写线程分区写出多个文件（实测 8192 行 → 约 5 个
+  ~1.6k 行文件）。原"单文件行数 ≥ `MIN_INDEX_ROWS`"的判据会把所有 IVM 文件排除（实测
+  locator 完全未启用、hits=misses=0）。已改为"候选文件**总行数** ≥ 4096 才启用，否则全扫"，
+  达标后小 upsert 文件也一并索引；提前退出使大表判据开销为 O(1) 次 footer 读。
+- 结论：收益集中在稳态增量刷新；`MIN_INDEX_ROWS`/`MAX_INDEX_CACHE_RATIO` 暂无需再调，
+  写时预计算（Phase B）仍无必要。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
