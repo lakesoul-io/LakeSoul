@@ -799,6 +799,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/state_pruning.rs`：60 个分组、更新/删除少量分组后 SUM 与 MIN 的
   全部分组仍与 SQL 一致、rebuild 正常；全量 29 个二进制 legacy/V2 全绿。
 
+**Vortex 内部表支持实施记录（pk_locator Step 0，已完成）**
+
+- `IvmTableOptions::with_file_format(PhysicalFormat)`（默认 parquet）+ `IvmTable.file_format`；
+  建表属性 `file_format` 同步写入，`append_batch` 与 `read_files_with_options` 使用表格式
+  （`truncate`/rebuild 等元数据路径与格式无关），`lakesoul_ivm` 重导出 `PhysicalFormat`。
+- 测试 `tests/vortex_tables.rs`：parquet 源 + vortex MV/状态表（SUM/COUNT、MIN/MAX、
+  ROW_NUMBER），覆盖插入/upsert/删除（MOR）、`read_current_filtered` 的 group 过滤
+  （含 `(g,value)` 状态表的键前缀过滤）、rebuild，并校验写侧文件扩展名为 `.vortex`。
+- 结论：vortex 内部表在 IVM 全链路可用，是后续 pk_locator 泛化（类型/复合键/前缀）
+  的前提；当前 locator 仍只支持单列 Int32/64 且过滤需精确命中 PK 列，点取收益待
+  Step 1 泛化后生效。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
