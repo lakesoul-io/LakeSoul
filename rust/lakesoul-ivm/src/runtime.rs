@@ -302,6 +302,23 @@ pub enum ViewSpec {
     },
 }
 
+impl ViewSpec {
+    /// The view id this spec is registered under.
+    pub fn view_id(&self) -> &str {
+        match self {
+            ViewSpec::SumCount { view_id, .. }
+            | ViewSpec::Join { view_id, .. }
+            | ViewSpec::MinMax { view_id, .. }
+            | ViewSpec::DistinctAgg { view_id, .. }
+            | ViewSpec::Window { view_id, .. }
+            | ViewSpec::SemiAnti { view_id, .. }
+            | ViewSpec::Row { view_id, .. }
+            | ViewSpec::UnionAll { view_id, .. }
+            | ViewSpec::TopK { view_id, .. } => view_id,
+        }
+    }
+}
+
 /// A `SUM`/`COUNT` view over a source table.
 #[derive(Debug, Clone)]
 pub struct SumCountView {
@@ -1739,6 +1756,224 @@ impl IvmRuntime {
     /// Create an internal LakeSoul table managed by the runtime.
     pub async fn create_table(&self, options: IvmTableOptions) -> Result<IvmTable> {
         create_ivm_table(&self.client, options).await
+    }
+
+    /// Open an existing table by name.
+    pub async fn open_table(
+        &self,
+        table_name: &str,
+        namespace: &str,
+    ) -> Result<IvmTable> {
+        let info = self
+            .client
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                rootcause::report!("table {namespace}.{table_name} not found")
+            })?;
+        IvmTable::from_table_info(&info)
+    }
+
+    /// Open an existing table by id.
+    pub async fn open_table_by_id(&self, table_id: &str) -> Result<IvmTable> {
+        let info = self
+            .client
+            .get_table_info_by_table_id(table_id)
+            .await?
+            .ok_or_else(|| rootcause::report!("table {table_id} not found"))?;
+        IvmTable::from_table_info(&info)
+    }
+
+    /// Refresh a view from its persisted [`ViewSpec`], opening every table by
+    /// id.  The spec is the only state needed to drive a refresh from any
+    /// process; the registered refresh interval is preserved.
+    pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
+        let refresh_interval_ms = self
+            .metadata
+            .view_refresh_interval_ms(spec.view_id())
+            .await?
+            .unwrap_or(0);
+        match spec {
+            ViewSpec::SumCount {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                value_column,
+            } => {
+                let view = SumCountView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    group_keys: group_keys.clone(),
+                    value_column: value_column.clone(),
+                    refresh_interval_ms,
+                };
+                self.refresh_sum_count(&view).await
+            }
+            ViewSpec::Join {
+                view_id,
+                left_table_id,
+                right_table_id,
+                output_table_id,
+                join_keys,
+                left_value,
+                right_value,
+            } => {
+                let view = JoinView {
+                    view_id: view_id.clone(),
+                    left: self.open_table_by_id(left_table_id).await?,
+                    right: self.open_table_by_id(right_table_id).await?,
+                    output: self.open_table_by_id(output_table_id).await?,
+                    join_keys: join_keys.clone(),
+                    left_value: left_value.clone(),
+                    right_value: right_value.clone(),
+                    refresh_interval_ms,
+                };
+                self.refresh_join(&view).await
+            }
+            ViewSpec::MinMax {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                state_table_id,
+                group_keys,
+                value_column,
+                min_max,
+            } => {
+                let view = MinMaxView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    state: self.open_table_by_id(state_table_id).await?,
+                    group_keys: group_keys.clone(),
+                    value_column: value_column.clone(),
+                    min_max: *min_max,
+                    refresh_interval_ms,
+                };
+                self.refresh_min_max(&view).await
+            }
+            ViewSpec::DistinctAgg {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                state_table_id,
+                group_keys,
+                value_column,
+                agg,
+            } => {
+                let view = DistinctAggView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    state: self.open_table_by_id(state_table_id).await?,
+                    group_keys: group_keys.clone(),
+                    value_column: value_column.clone(),
+                    agg: *agg,
+                    refresh_interval_ms,
+                };
+                self.refresh_distinct_agg(&view).await
+            }
+            ViewSpec::Window {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                partition_keys,
+                order_keys,
+                function,
+                value_column,
+            } => {
+                let view = WindowView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    partition_keys: partition_keys.clone(),
+                    order_keys: order_keys.clone(),
+                    function: *function,
+                    value_column: value_column.clone(),
+                    refresh_interval_ms,
+                };
+                self.refresh_window(&view).await
+            }
+            ViewSpec::SemiAnti {
+                view_id,
+                left_table_id,
+                right_table_id,
+                mv_table_id,
+                join_keys,
+                conditions,
+                output_columns,
+                anti,
+            } => {
+                let view = SemiAntiView {
+                    view_id: view_id.clone(),
+                    left: self.open_table_by_id(left_table_id).await?,
+                    right: self.open_table_by_id(right_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    join_keys: join_keys.clone(),
+                    conditions: conditions.clone(),
+                    output_columns: output_columns.clone(),
+                    anti: *anti,
+                    refresh_interval_ms,
+                };
+                self.refresh_semi_anti(&view).await
+            }
+            ViewSpec::Row {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                output_columns,
+                filters,
+            } => {
+                let view = RowView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    output_columns: output_columns.clone(),
+                    filters: filters.clone(),
+                    refresh_interval_ms,
+                };
+                self.refresh_row(&view).await
+            }
+            ViewSpec::UnionAll {
+                view_id,
+                source_table_ids,
+                mv_table_id,
+            } => {
+                let mut sources = Vec::with_capacity(source_table_ids.len());
+                for table_id in source_table_ids {
+                    sources.push(self.open_table_by_id(table_id).await?);
+                }
+                let view = UnionAllView {
+                    view_id: view_id.clone(),
+                    sources,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    refresh_interval_ms,
+                };
+                self.refresh_union_all(&view).await
+            }
+            ViewSpec::TopK {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                order_keys,
+                output_columns,
+                limit,
+            } => {
+                let view = TopKView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    group_keys: group_keys.clone(),
+                    order_keys: order_keys.clone(),
+                    output_columns: output_columns.clone(),
+                    limit: *limit,
+                    refresh_interval_ms,
+                };
+                self.refresh_top_k(&view).await
+            }
+        }
     }
 
     /// Persist a sum/count view spec (idempotent).

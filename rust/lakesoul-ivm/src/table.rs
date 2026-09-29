@@ -15,10 +15,14 @@
 //! (`lakesoul.ivm.bucket_columns`), which join state tables use to bucket by
 //! the join key while merging on the full row identity.
 
+use std::sync::Arc;
+
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::prelude::Expr;
-use lakesoul_common::ser::arrow_java::schema_to_metadata_str;
+use lakesoul_common::ser::arrow_java::{
+    schema_from_table_info_metadata, schema_to_metadata_str,
+};
 use lakesoul_io::{
     config::{LakeSoulIOConfig, OPTION_KEY_STABLE_SORT},
     file_format::PhysicalFormat,
@@ -193,6 +197,77 @@ pub async fn create_ivm_table(
 }
 
 impl IvmTable {
+    /// Open an existing LakeSoul table (internal or user-created) from its
+    /// metadata.  Missing IVM properties fall back to their defaults, so a
+    /// table created by plain DDL can be opened as well.
+    pub fn from_table_info(info: &TableInfo) -> Result<Self> {
+        let schema = schema_from_table_info_metadata(
+            &info.table_schema,
+            &info.table_schema_arrow_ipc,
+            &info.table_schema_arrow_ipc_json_hash,
+        )
+        .map_err(|error| {
+            rootcause::report!(
+                "parse schema of table {}.{}: {error}",
+                info.table_namespace,
+                info.table_name
+            )
+        })?;
+        let properties: serde_json::Value =
+            serde_json::from_str(&info.properties).unwrap_or(serde_json::Value::Null);
+        let primary_keys = info
+            .partitions
+            .split_once(';')
+            .map(|(_, keys)| {
+                keys.split(',')
+                    .filter(|key| !key.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let bucket_columns = properties
+            .get("lakesoul.ivm.bucket_columns")
+            .and_then(|value| value.as_str())
+            .map(|columns| {
+                columns
+                    .split(',')
+                    .filter(|column| !column.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let hash_bucket_num = properties
+            .get("hashBucketNum")
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| value.as_i64().map(|number| number.to_string()))
+            })
+            .unwrap_or_else(|| "1".to_string());
+        let cdc_column = properties
+            .get("lakesoul_cdc_change_column")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let file_format = properties
+            .get("file_format")
+            .and_then(|value| value.as_str())
+            .and_then(|name| name.parse::<PhysicalFormat>().ok())
+            .unwrap_or_default();
+        Ok(Self {
+            table_id: info.table_id.clone(),
+            table_name: info.table_name.clone(),
+            namespace: info.table_namespace.clone(),
+            table_path: info.table_path.clone(),
+            schema: Arc::new(schema),
+            primary_keys,
+            bucket_columns,
+            hash_bucket_num,
+            cdc_column,
+            file_format,
+        })
+    }
+
     /// Write one batch and commit the produced files.
     ///
     /// Keyed tables write through the partitioning writer with stable sort, so
