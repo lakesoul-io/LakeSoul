@@ -903,6 +903,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试 `tests/spec_dispatch.rs`：open 往返（name/id、各属性）、spec 驱动首跑+增量刷新、
   注册表替换语义、定义 hash/SQL 往返；IVM 全量（`--test-threads=1`）32 个测试二进制全绿。
 
+**SQL 增量执行入口 M2a：聚合类形状分析（已完成）**
+
+- 新增 `rust/lakesoul-ivm/src/sql.rs`：`analyze_select(plan, tables, request) -> AnalyzedView
+  { spec, definition_hash }`，从 SELECT 的逻辑计划推导 `ViewSpec`（`tables` 提供源表的
+  name→IvmTable 解析，支持裸名/`schema.table`）。
+- 覆盖形状：投影/过滤（`Row`，支持 `=`/`<>`/`<`/`<=`/`>`/`>=`、`IS [NOT] NULL`、
+  字面量在左右两侧）、SUM/COUNT（`SUM(v)`、`SUM(v)+COUNT(*)`、纯 `COUNT(*)`、
+  无 GROUP BY 的全局聚合）、MIN/MAX（需 value-count state 表，由执行器创建并传入）、
+  `COUNT(DISTINCT)`/`SUM(DISTINCT)`。
+- 明确报错：AVG、SELECT DISTINCT、聚合上的 WHERE/HAVING、窗口、join、计算列等
+  （M2b/M2c 切片）；不支持形状一律报错，绝不回退成普通 append。
+- `definition_hash`：规范 spec JSON 的 FNV-1a，形状变化触发重建。
+- 单测（不依赖 PG，直接构造逻辑计划）8 例：各聚合形状、过滤/空值/反向比较、
+  不支持形状、hash 稳定性与形状敏感性。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
