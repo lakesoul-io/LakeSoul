@@ -20,11 +20,15 @@ use std::collections::HashMap;
 
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::logical_expr::utils::split_conjunction;
-use datafusion::logical_expr::{Aggregate, Expr, LogicalPlan, Operator, Projection};
+use datafusion::logical_expr::{
+    Aggregate, Expr, Filter, LogicalPlan, Operator, Projection, Window, WindowFrame,
+    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+};
 
 use crate::error::Result;
 use crate::runtime::{
     CompareOp, DistinctAggKind, FilterCondition, LiteralValue, MinMaxKind, ViewSpec,
+    WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -84,9 +88,16 @@ pub fn analyze_select(
                 }
                 analyze_aggregate(aggregate, tables, request)?
             }
-            LogicalPlan::Filter(_) | LogicalPlan::TableScan(_) => {
-                analyze_row(plan, tables, request)?
+            LogicalPlan::Window(window) => {
+                analyze_window(projection, window, tables, request)?
             }
+            LogicalPlan::Filter(filter) => {
+                match try_analyze_top_k(Some(projection), filter, tables, request)? {
+                    Some(spec) => spec,
+                    None => analyze_row(plan, tables, request)?,
+                }
+            }
+            LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
             other => {
                 return Err(unsupported(format!(
                     "projection over {}",
@@ -305,6 +316,221 @@ fn analyze_aggregate(
     Ok(spec)
 }
 
+/// A window view: one window function over one source.
+fn analyze_window(
+    projection: &Projection,
+    window: &Window,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let scan = match peel(&window.input) {
+        LogicalPlan::TableScan(scan) => scan,
+        other => {
+            return Err(unsupported(format!("window over {}", plan_label(other))));
+        }
+    };
+    let source = resolve_table(tables, &scan.table_name)?;
+    // Selecting the window expression itself is fine; computing on top of it
+    // would be silently dropped otherwise.
+    for expr in &projection.expr {
+        if column_name(expr).is_none() && !window.window_expr.contains(expr) {
+            return Err(unsupported(
+                "computed columns above a window function are not supported",
+            ));
+        }
+    }
+    let (function, partition_keys, order_keys, value_column) =
+        window_function_spec(window)?;
+    Ok(ViewSpec::Window {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        partition_keys,
+        order_keys,
+        function,
+        value_column,
+    })
+}
+
+/// The top `k` rows per group: a filter on the `row_number()` column of a
+/// window expression.
+fn try_analyze_top_k(
+    projection: Option<&Projection>,
+    filter: &Filter,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<Option<ViewSpec>> {
+    let mut node = peel(&filter.input);
+    loop {
+        match peel(node) {
+            LogicalPlan::Projection(inner) => node = &inner.input,
+            LogicalPlan::Window(_) => break,
+            _ => return Ok(None),
+        }
+    }
+    let LogicalPlan::Window(window) = peel(node) else {
+        return Ok(None);
+    };
+    let scan = match peel(&window.input) {
+        LogicalPlan::TableScan(scan) => scan,
+        _ => return Ok(None),
+    };
+    let source = resolve_table(tables, &scan.table_name)?;
+    let (function, partition_keys, order_keys, value_column) =
+        window_function_spec(window)?;
+    if function != WindowFunction::RowNumber || value_column.is_some() {
+        return Ok(None);
+    }
+    // The filter references the window column through the subquery scope: it
+    // is the single column the filter's input adds on top of the source.
+    let source_fields = window
+        .input
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect::<std::collections::HashSet<_>>();
+    let rank_columns = filter
+        .input
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .filter(|name| !source_fields.contains(name))
+        .collect::<Vec<_>>();
+    if rank_columns.len() != 1 {
+        return Ok(None);
+    }
+    let rank_column = &rank_columns[0];
+
+    let conjuncts = split_conjunction(&filter.predicate);
+    if conjuncts.len() != 1 {
+        return Ok(None);
+    }
+    let condition = filter_condition(conjuncts[0])?;
+    let limit = match (&condition.column, condition.op, &condition.value) {
+        (column, CompareOp::Le, LiteralValue::Int(limit))
+            if column == rank_column && *limit > 0 =>
+        {
+            *limit
+        }
+        _ => return Ok(None),
+    };
+    if partition_keys.is_empty() || order_keys.is_empty() {
+        return Err(unsupported("top-k needs PARTITION BY and ORDER BY columns"));
+    }
+    let output_columns = match projection {
+        Some(projection) => {
+            let columns = projection
+                .expr
+                .iter()
+                .map(column_name)
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| unsupported("computed columns above a top-k filter"))?;
+            if columns.iter().any(|column| column == rank_column) {
+                return Err(unsupported(
+                    "top-k output may not include the row-number column",
+                ));
+            }
+            columns
+        }
+        None => Vec::new(),
+    };
+    Ok(Some(ViewSpec::TopK {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys: partition_keys,
+        order_keys,
+        output_columns,
+        limit,
+    }))
+}
+
+/// `(function, partition keys, order keys, aggregate column)`.
+type WindowParts = (WindowFunction, Vec<String>, Vec<String>, Option<String>);
+
+/// The single window function of a window node.
+fn window_function_spec(window: &Window) -> Result<WindowParts> {
+    let [expr] = window.window_expr.as_slice() else {
+        return Err(unsupported("multiple window functions in one view"));
+    };
+    let Expr::WindowFunction(function) = expr else {
+        return Err(unsupported("non-window expression in a window node"));
+    };
+    let params = &function.params;
+    if params.filter.is_some() {
+        return Err(unsupported("FILTER on a window function"));
+    }
+    let partition_keys = params
+        .partition_by
+        .iter()
+        .map(column_name)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| unsupported("PARTITION BY expressions must be columns"))?;
+    let order_keys = params
+        .order_by
+        .iter()
+        .map(|sort| column_name(&sort.expr))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
+    let (function, value_column) = match &function.fun {
+        WindowFunctionDefinition::WindowUDF(udf) => match udf.name() {
+            "row_number" => (WindowFunction::RowNumber, None),
+            "rank" => (WindowFunction::Rank, None),
+            "dense_rank" => (WindowFunction::DenseRank, None),
+            other => {
+                return Err(unsupported(format!("window function {other}")));
+            }
+        },
+        WindowFunctionDefinition::AggregateUDF(udf) => match udf.name() {
+            "sum" => (WindowFunction::Sum, Some(single_column_arg(&params.args)?)),
+            "count" => {
+                let counts_all = params.args.is_empty()
+                    || matches!(params.args.as_slice(), [Expr::Literal(..)]);
+                (
+                    WindowFunction::Count,
+                    if counts_all {
+                        None
+                    } else {
+                        Some(single_column_arg(&params.args)?)
+                    },
+                )
+            }
+            other => {
+                return Err(unsupported(format!("window aggregate {other}")));
+            }
+        },
+    };
+    if partition_keys.is_empty() {
+        return Err(unsupported("window views need PARTITION BY columns"));
+    }
+    if function.is_aggregate() {
+        if !frame_supported(&params.window_frame, !order_keys.is_empty()) {
+            return Err(unsupported(
+                "window frame; only the whole partition or the SQL default running frame is maintained",
+            ));
+        }
+    } else if order_keys.is_empty() {
+        return Err(unsupported("ranking window functions need ORDER BY"));
+    }
+    Ok((function, partition_keys, order_keys, value_column))
+}
+
+/// The frames the runtime maintains: the whole partition (no ORDER BY) or the
+/// SQL default running frame (with ORDER BY).
+fn frame_supported(frame: &WindowFrame, has_order: bool) -> bool {
+    if has_order {
+        frame.units == WindowFrameUnits::Range
+            && frame.start_bound.is_unbounded()
+            && matches!(frame.end_bound, WindowFrameBound::CurrentRow)
+    } else {
+        frame.units == WindowFrameUnits::Rows
+            && frame.start_bound.is_unbounded()
+            && frame.end_bound.is_unbounded()
+    }
+}
+
 /// Stable definition identity.  FNV-1a over the canonical spec JSON: a change
 /// in columns, keys or aggregate kind changes the hash and triggers a rebuild.
 fn definition_hash(spec: &ViewSpec) -> Result<String> {
@@ -488,7 +714,7 @@ mod tests {
     use lakesoul_io::file_format::PhysicalFormat;
 
     use super::*;
-    use crate::runtime::{CompareOp, DistinctAggKind, MinMaxKind};
+    use crate::runtime::{CompareOp, DistinctAggKind, MinMaxKind, WindowFunction};
 
     fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![
@@ -710,15 +936,145 @@ mod tests {
                 .await
                 .is_err()
         );
-        // Window, join and computed projections are later slices.
-        assert!(
-            analyze("select k, row_number() over (partition by g order by v) from src")
-                .await
-                .is_err()
-        );
+        // Joins and computed projections are later slices.
         assert!(analyze("select k + 1 from src").await.is_err());
         assert!(
             analyze("select * from src a join src b on a.k = b.k")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_ranking_windows() {
+        for (sql, function) in [
+            (
+                "select k, row_number() over (partition by g order by v) from src",
+                WindowFunction::RowNumber,
+            ),
+            (
+                "select k, rank() over (partition by g order by v) from src",
+                WindowFunction::Rank,
+            ),
+            (
+                "select k, dense_rank() over (partition by g order by v) from src",
+                WindowFunction::DenseRank,
+            ),
+        ] {
+            let analyzed = analyze(sql).await.unwrap();
+            assert_eq!(
+                analyzed.spec,
+                ViewSpec::Window {
+                    view_id: "view_1".to_string(),
+                    source_table_id: "table_src".to_string(),
+                    mv_table_id: "table_mv".to_string(),
+                    partition_keys: vec!["g".to_string()],
+                    order_keys: vec!["v".to_string()],
+                    function,
+                    value_column: None,
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn analyzes_aggregate_windows() {
+        let analyzed = analyze("select k, sum(v) over (partition by g) from src")
+            .await
+            .unwrap();
+        let ViewSpec::Window {
+            function,
+            order_keys,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Sum);
+        assert_eq!(value_column, Some("v".to_string()));
+        assert!(order_keys.is_empty());
+
+        let analyzed =
+            analyze("select k, count(*) over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window {
+            function,
+            order_keys,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Count);
+        assert_eq!(value_column, None);
+        assert_eq!(order_keys, vec!["v".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn analyzes_top_k() {
+        let analyzed = analyze(
+            "select k, v from (select k, g, v, row_number() over (partition by g order by v) as rn from src) t where rn <= 3",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::TopK {
+                view_id: "view_1".to_string(),
+                source_table_id: "table_src".to_string(),
+                mv_table_id: "table_mv".to_string(),
+                group_keys: vec!["g".to_string()],
+                order_keys: vec!["v".to_string()],
+                output_columns: vec!["k".to_string(), "v".to_string()],
+                limit: 3,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_window_shapes() {
+        // A frame the runtime does not maintain.
+        assert!(
+            analyze(
+                "select k, sum(v) over (partition by g order by v rows between 1 preceding and current row) from src"
+            )
+            .await
+            .is_err()
+        );
+        // Ranking needs an ordering.
+        assert!(
+            analyze("select k, row_number() over (partition by g) from src")
+                .await
+                .is_err()
+        );
+        // PARTITION BY is required.
+        assert!(
+            analyze("select k, row_number() over (order by v) from src")
+                .await
+                .is_err()
+        );
+        // Computing on top of the window column is not maintained.
+        assert!(
+            analyze(
+                "select k, row_number() over (partition by g order by v) + 1 from src"
+            )
+            .await
+            .is_err()
+        );
+        // Filtering a rank column is not top-k.
+        assert!(
+            analyze(
+                "select k from (select k, rank() over (partition by g order by v) as rn from src) t where rn <= 3"
+            )
+            .await
+            .is_err()
+        );
+        // Global ORDER BY ... LIMIT is not maintained.
+        assert!(
+            analyze("select k, v from src order by v limit 3")
                 .await
                 .is_err()
         );

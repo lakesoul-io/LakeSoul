@@ -918,6 +918,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 单测（不依赖 PG，直接构造逻辑计划）8 例：各聚合形状、过滤/空值/反向比较、
   不支持形状、hash 稳定性与形状敏感性。
 
+**SQL 增量执行入口 M2b：窗口与 TOP-K 形状分析（已完成）**
+
+- 窗口视图：`Projection -> Window` 单窗口函数（ROW_NUMBER/RANK/DENSE_RANK、
+  `SUM/COUNT OVER`），提取 PARTITION BY / ORDER BY/聚合列；聚合窗口只接受运行时维护的两种
+  frame（无 ORDER BY 的整分区、有 ORDER BY 的 SQL 默认 running frame），其他 frame 明确报错；
+  排序窗口必须有 ORDER BY；窗口之上只允许直接选列或选窗口表达式本身。
+- TOP-K：识别 `WHERE rn <= k`（子查询里 `row_number() OVER (PARTITION BY .. ORDER BY ..)`）
+  形状，rank 列 = filter 输入作用域中源表没有的列；输出列从上层投影提取（不得包含 rank 列）；
+  全局 `ORDER BY ... LIMIT` 暂不支持（运行时要求 group/order 键）。
+- 单测新增 4 例（三种排序窗口、聚合窗口与 frame 校验、TOP-K、窗口不支持形状）；
+  合计 12 例。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
