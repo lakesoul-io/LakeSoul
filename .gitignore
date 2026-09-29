@@ -106,3 +106,4 @@ compatibility-artifacts
 agent_export/
 
 **/.plans/
+/rust/lakesoul-datafusion/lakesoul_cache_dir/
