@@ -15,12 +15,15 @@ public class NativeUtils {
 
     public static int NATIVE_METADATA_MAX_RETRY_ATTEMPTS = 3;
 
-    public static int DAO_TYPE_QUERY_ONE_OFFSET = 0;
-    public static int DAO_TYPE_QUERY_LIST_OFFSET = 100;
-    public static int DAO_TYPE_INSERT_ONE_OFFSET = 200;
-    public static int DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET = 300;
-    public static int DAO_TYPE_QUERY_SCALAR_OFFSET = 400;
-    public static int DAO_TYPE_UPDATE_OFFSET = 500;
+    // Compile-time constants: `CodedDaoType` uses them in its constant list, and
+    // a non-final field would make the enum's initializer depend on this class's
+    // initializer (a circular <clinit> when the enum type is referenced first).
+    public static final int DAO_TYPE_QUERY_ONE_OFFSET = 0;
+    public static final int DAO_TYPE_QUERY_LIST_OFFSET = 100;
+    public static final int DAO_TYPE_INSERT_ONE_OFFSET = 200;
+    public static final int DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET = 300;
+    public static final int DAO_TYPE_QUERY_SCALAR_OFFSET = 400;
+    public static final int DAO_TYPE_UPDATE_OFFSET = 500;
 
     public static final String PARAM_DELIM = "__DELIM__";
 
@@ -39,6 +42,11 @@ public class NativeUtils {
         return (s != null) ? s.name() : null;
     }
 
+    /**
+     * Codes sent to the native metadata client. They must match the discriminants of the Rust
+     * {@code DaoType} enum ({@code rust/lakesoul-metadata/src/lib.rs}): the same operation has to
+     * use the same code on both sides, or the call runs a different DAO.
+     */
     public enum CodedDaoType {
         // ==== Query One ====
         SelectNamespaceByNamespace(DAO_TYPE_QUERY_ONE_OFFSET, 1),
@@ -54,7 +62,7 @@ public class NativeUtils {
 
         SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId(
                 DAO_TYPE_QUERY_ONE_OFFSET + 9, 3),
-        SelectOneDataCommitInfoByTableId(DAO_TYPE_QUERY_ONE_OFFSET + 10, 3),
+        SelectOneDataCommitInfoByTableId(DAO_TYPE_QUERY_ONE_OFFSET + 13, 1),
 
         SelectDiscardCompressedFileInfoByFilePath(DAO_TYPE_QUERY_ONE_OFFSET + 11, 1),
         // ==== Query List ====
