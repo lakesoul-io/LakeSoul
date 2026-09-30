@@ -37,7 +37,7 @@ use crate::runtime::{
     distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_view_schema_for,
     min_max_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
     sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    value_count_state_schema_for, window_aggregate_mv_schema_for,
+    value_count_state_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
@@ -456,6 +456,18 @@ fn expected_mv_schema(
                 )?
             }
         }
+        ViewSpec::Variance {
+            source_table_id,
+            group_keys,
+            value_column,
+            statistic,
+            ..
+        } => variance_mv_schema_for(
+            &find_table(tables, source_table_id)?.schema,
+            group_keys,
+            value_column,
+            *statistic,
+        )?,
         ViewSpec::MinMax {
             source_table_id,
             group_keys,

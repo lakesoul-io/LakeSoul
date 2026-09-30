@@ -57,6 +57,10 @@ pub const IVM_NTILE_COLUMN: &str = "ntile";
 pub const IVM_PERCENT_RANK_COLUMN: &str = "percent_rank";
 /// The column of a `CUME_DIST()` [`WindowView`] materialized view.
 pub const IVM_CUME_DIST_COLUMN: &str = "cume_dist";
+/// The variance column of a [`VarianceView`] materialized view.
+pub const IVM_VARIANCE_COLUMN: &str = "variance_v";
+/// The standard-deviation column of a [`VarianceView`] materialized view.
+pub const IVM_STDDEV_COLUMN: &str = "stddev_v";
 /// The source index column of a [`UnionAllView`] materialized view.
 pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
 /// The internal rank column of a [`TopKView`] computation (not materialized).
@@ -343,6 +347,32 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// `VAR_POP`/`VAR_SAMP`/`STDDEV_POP`/`STDDEV_SAMP` of a value column over
+    /// a group.
+    ///
+    /// DataFusion computes the statistic with Welford's algorithm, which
+    /// cannot be merged from signed deltas, so a refresh recomputes the
+    /// affected groups from their current source rows.
+    Variance {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        group_keys: Vec<String>,
+        /// The value column.
+        value_column: String,
+        /// Which statistic is maintained.
+        statistic: VarianceKind,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// `ROW_NUMBER()` over a source, maintained by recomputing the affected
     /// partitions.
     Window {
@@ -452,6 +482,7 @@ impl ViewSpec {
     pub fn view_id(&self) -> &str {
         match self {
             ViewSpec::SumCount { view_id, .. }
+            | ViewSpec::Variance { view_id, .. }
             | ViewSpec::Join { view_id, .. }
             | ViewSpec::MinMax { view_id, .. }
             | ViewSpec::DistinctAgg { view_id, .. }
@@ -467,6 +498,7 @@ impl ViewSpec {
 /// A typed view reconstructed from a persisted [`ViewSpec`].
 enum SpecView {
     SumCount(SumCountView),
+    Variance(VarianceView),
     Join(JoinView),
     MinMax(MinMaxView),
     DistinctAgg(DistinctAggView),
@@ -1105,6 +1137,181 @@ impl DistinctAggView {
             having: self.having.clone(),
         }
     }
+}
+
+/// The variance a [`VarianceView`] maintains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VarianceKind {
+    /// `VAR_POP(value)`.
+    VarPop,
+    /// `VAR_SAMP(value)` (DataFusion's `var`).
+    VarSamp,
+    /// `STDDEV_POP(value)`.
+    StddevPop,
+    /// `STDDEV_SAMP(value)` (DataFusion's `stddev`).
+    StddevSamp,
+}
+
+impl VarianceKind {
+    /// The SQL aggregate name, as DataFusion normalizes it.
+    pub fn sql_name(self) -> &'static str {
+        match self {
+            VarianceKind::VarPop => "var_pop",
+            VarianceKind::VarSamp => "var",
+            VarianceKind::StddevPop => "stddev_pop",
+            VarianceKind::StddevSamp => "stddev",
+        }
+    }
+
+    /// The materialized view column holding the statistic.
+    pub fn column_name(self) -> &'static str {
+        match self {
+            VarianceKind::VarPop | VarianceKind::VarSamp => IVM_VARIANCE_COLUMN,
+            VarianceKind::StddevPop | VarianceKind::StddevSamp => IVM_STDDEV_COLUMN,
+        }
+    }
+}
+
+/// A `VAR_*`/`STDDEV_*` view over a source table.
+///
+/// The statistic is recomputed from the affected groups' current source rows,
+/// which keeps the result identical to the native aggregate.
+#[derive(Debug, Clone)]
+pub struct VarianceView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the statistic.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The value column.
+    pub value_column: String,
+    /// Which statistic is maintained.
+    pub statistic: VarianceKind,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized column.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl VarianceView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+        kind: VarianceKind,
+    ) -> Self {
+        Self::new_with_group_keys(
+            view_id,
+            source,
+            mv,
+            vec![group_key.into()],
+            value_column,
+            kind,
+        )
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        kind: VarianceKind,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            value_column: value_column.into(),
+            statistic: kind,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::Variance {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            value_column: self.value_column.clone(),
+            statistic: self.statistic,
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+}
+
+/// The schema of a [`VarianceView`] materialized view: the group keys and the
+/// statistic (nullable; a sample needs at least two values).
+pub fn variance_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+    kind: VarianceKind,
+) -> Result<SchemaRef> {
+    variance_result_type(&field_type(source_schema, value_column)?)?;
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(
+        kind.column_name(),
+        DataType::Float64,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The result type of a variance/stddev aggregate.
+fn variance_result_type(value_type: &DataType) -> Result<DataType> {
+    Ok(match value_type {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64
+        | DataType::Float32
+        | DataType::Float64 => DataType::Float64,
+        other => {
+            return Err(report!("variance is not supported for value type {other}"));
+        }
+    })
 }
 
 /// A `ROW_NUMBER()` view over a source table.
@@ -2265,6 +2472,26 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::Variance {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                value_column,
+                statistic,
+                filter,
+                having,
+            } => SpecView::Variance(VarianceView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                statistic: *statistic,
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::Window {
                 view_id,
                 source_table_id,
@@ -2373,6 +2600,7 @@ impl IvmRuntime {
     pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
         match self.spec_view(spec).await? {
             SpecView::SumCount(view) => self.refresh_sum_count(&view).await,
+            SpecView::Variance(view) => self.refresh_variance(&view).await,
             SpecView::Join(view) => self.refresh_join(&view).await,
             SpecView::MinMax(view) => self.refresh_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
@@ -2390,6 +2618,7 @@ impl IvmRuntime {
     pub async fn rebuild_spec(&self, spec: &ViewSpec) -> Result<i64> {
         match self.spec_view(spec).await? {
             SpecView::SumCount(view) => self.rebuild_sum_count(&view).await,
+            SpecView::Variance(view) => self.rebuild_variance(&view).await,
             SpecView::Join(view) => self.rebuild_join(&view).await,
             SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
@@ -2645,6 +2874,177 @@ impl IvmRuntime {
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await
+    }
+
+    /// Persist a variance view spec (idempotent).
+    pub async fn register_variance_view(&self, view: &VarianceView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a variance/stddev view.
+    ///
+    /// Welford's algorithm cannot be merged from signed deltas, so the
+    /// affected groups are recomputed from their current source rows (pruned
+    /// by the group keys, exactly like the value-count refresh).
+    pub async fn refresh_variance(&self, view: &VarianceView) -> Result<Option<i64>> {
+        self.register_variance_view(view).await?;
+        validate_variance_view(view)?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        let delta_batches = view.source.read_files(window.added_files).await?;
+        let keyed = !view.source.primary_keys.is_empty();
+        let delta_context = SessionContext::new();
+        register_table(
+            &delta_context,
+            "delta",
+            delta_batches.clone(),
+            &view.source.schema,
+        )?;
+        let old_batches = if keyed {
+            let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
+            let batches = view
+                .source
+                .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
+                .await?;
+            register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
+            batches
+        } else {
+            Vec::new()
+        };
+        let groups = delta_context
+            .sql(&affected_groups_sql(
+                &view.source,
+                &view.group_keys,
+                keyed,
+                view.filter.as_deref(),
+            ))
+            .await?
+            .collect()
+            .await?;
+        let filters = key_filters(&view.group_keys, &groups)?;
+
+        register_table(&context, "delta", delta_batches, &view.source.schema)?;
+        if keyed {
+            register_table(&context, "old", old_batches, &view.source.schema)?;
+        }
+        register_table(
+            &context,
+            "src",
+            view.source
+                .read_current_filtered(&self.client, filters.clone())
+                .await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current_filtered(&self.client, filters).await?,
+            &view.mv.schema,
+        )?;
+        for batch in context
+            .sql(&variance_refresh_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a variance view from the full source state.
+    pub async fn rebuild_variance(&self, view: &VarianceView) -> Result<i64> {
+        self.register_variance_view(view).await?;
+        validate_variance_view(view)?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        for batch in context
+            .sql(&variance_rebuild_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
     }
 
     /// Persist a window view spec (idempotent).
@@ -5794,6 +6194,99 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
             .map(|having| format!(" and ({having})"))
             .unwrap_or_default(),
     )
+}
+
+/// SQL for one variance refresh window: recompute the affected groups from
+/// their current source rows.
+fn variance_refresh_sql(view: &VarianceView, epoch: i64) -> String {
+    let keys = quoted_list(&view.group_keys);
+    let column = quote_ident(view.statistic.column_name());
+    let agg = format!(
+        "{}({})",
+        view.statistic.sql_name(),
+        quote_ident(&view.value_column)
+    );
+    let keyed = !view.source.primary_keys.is_empty();
+    let src_from = if keyed {
+        format!(
+            "src where {}{}",
+            source_delete_filter("src", change_column(&view.source)),
+            filter_clause(view.filter.as_deref()),
+        )
+    } else {
+        format!("src{}", filter_where(view.filter.as_deref()))
+    };
+    let active_match = key_join_condition_null_safe("a", "s", &view.group_keys);
+    let already_match = key_join_condition_null_safe("a", "p", &view.group_keys);
+    let having = view
+        .having
+        .as_deref()
+        .map(|having| format!(" and ({having})"))
+        .unwrap_or_default();
+    format!(
+        "with affected as ({affected}), \
+         group_now as (select {keys}, {agg} as {column} from {src_from} group by {keys}), \
+         already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+         active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         deletes as (select {keys}, {column}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from active s \
+                     where exists (select 1 from affected a where {active_match})), \
+         inserts as (select {keys}, {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from group_now p \
+                     where not exists (select 1 from already a where {already_match}){having}) \
+         select * from deletes union all select * from inserts \
+         order by {keys}, \"rowKinds\"",
+        affected = affected_groups_sql(
+            &view.source,
+            &view.group_keys,
+            keyed,
+            view.filter.as_deref(),
+        ),
+    )
+}
+
+/// SQL for a full variance rebuild.
+fn variance_rebuild_sql(view: &VarianceView, epoch: i64) -> String {
+    let keys = quoted_list(&view.group_keys);
+    let column = quote_ident(view.statistic.column_name());
+    let agg = format!(
+        "{}({})",
+        view.statistic.sql_name(),
+        quote_ident(&view.value_column)
+    );
+    let keyed = !view.source.primary_keys.is_empty();
+    let src_from = if keyed {
+        format!(
+            "src where {}{}",
+            source_delete_filter("src", change_column(&view.source)),
+            filter_clause(view.filter.as_deref()),
+        )
+    } else {
+        format!("src{}", filter_where(view.filter.as_deref()))
+    };
+    let rebuild = format!(
+        "select {keys}, {agg} as {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from {src_from} group by {keys}"
+    );
+    match &view.having {
+        Some(having) => format!("select * from ({rebuild}) t where {having}"),
+        None => rebuild,
+    }
+}
+
+/// Validate that a variance view can be maintained.
+fn validate_variance_view(view: &VarianceView) -> Result<()> {
+    validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+    variance_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+    if let Some(filter) = &view.filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
+    if let Some(having) = &view.having {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.mv.schema, having)?;
+    }
+    Ok(())
 }
 
 /// Validate that a window view can be maintained.

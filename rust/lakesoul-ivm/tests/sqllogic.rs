@@ -30,10 +30,10 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
-    IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, WindowFunction,
+    IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowFunction,
     avg_mv_schema_for, distinct_agg_mv_schema_for, min_max_mv_schema_for,
     row_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, window_aggregate_mv_schema_for,
+    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -799,6 +799,38 @@ fn sqllogic_distinct_sum() {
             &group_keys(&["g"]),
             "v",
             DistinctAggKind::Sum,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_variance() {
+    run_script_for_mv(
+        "variance",
+        include_str!("slt/variance.slt"),
+        variance_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            "v",
+            VarianceKind::VarSamp,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_stddev() {
+    run_script_for_mv(
+        "stddev",
+        include_str!("slt/stddev.slt"),
+        variance_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            "v",
+            VarianceKind::StddevSamp,
         )
         .unwrap(),
         group_keys(&["g"]),

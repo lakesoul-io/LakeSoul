@@ -35,7 +35,7 @@ use crate::error::Result;
 use crate::runtime::{
     CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
-    SemiAntiCondition, UnionSourceSpec, ViewSpec, WindowFunction,
+    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -284,7 +284,10 @@ fn collect_filtered_source(
 ) -> Result<(IvmTable, Option<String>)> {
     match peel(plan) {
         LogicalPlan::Projection(projection) => {
-            if !is_plain_projection(projection) {
+            // The optimizer hoists a variance argument into a projection
+            // (`CAST(value AS Float64) AS __common_expr_1`), so cast-only
+            // projections are allowed next to plain ones.
+            if !is_plain_projection(projection) && !is_cast_projection(projection) {
                 return Err(unsupported(format!(
                     "computed columns below {shape} are not supported"
                 )));
@@ -334,6 +337,8 @@ enum HavingColumns<'a> {
         /// The placeholder column of a split distinct aggregate (`alias1`).
         alias: Option<&'a str>,
     },
+    /// `variance_v` / `stddev_v` for a variance view.
+    Variance { statistic: VarianceKind },
 }
 
 /// Rewrite the `HAVING` predicates over the materialized MV columns and render
@@ -491,6 +496,16 @@ fn having_column(
                 Err(not_materialized(name))
             }
         }
+        HavingColumns::Variance { statistic } => {
+            if name == statistic.sql_name()
+                && !function.params.distinct
+                && function.params.args.len() == 1
+            {
+                Ok(statistic.column_name())
+            } else {
+                Err(not_materialized(name))
+            }
+        }
         HavingColumns::Distinct {
             kind,
             value_column,
@@ -611,12 +626,42 @@ fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, S
 }
 
 /// The aggregate family: SUM/COUNT, MIN/MAX and COUNT(DISTINCT)/SUM(DISTINCT).
+/// A projection of plain columns and `CAST(column)` aliases.
+fn is_cast_projection(projection: &Projection) -> bool {
+    projection.expr.iter().all(|expr| match expr {
+        Expr::Column(_) => true,
+        Expr::Alias(alias) => matches!(
+            alias.expr.as_ref(),
+            Expr::Cast(cast) if matches!(cast.expr.as_ref(), Expr::Column(_))
+        ),
+        _ => false,
+    })
+}
+
+/// The columns the optimizer hoisted into a projection before an aggregate
+/// (alias -> source column), e.g. the `CAST(value AS Float64)` of a variance.
+fn hoisted_columns(plan: &LogicalPlan) -> HashMap<String, String> {
+    let mut columns = HashMap::new();
+    if let LogicalPlan::Projection(projection) = peel(plan) {
+        for expr in &projection.expr {
+            if let Expr::Alias(alias) = expr
+                && let Expr::Cast(cast) = alias.expr.as_ref()
+                && let Expr::Column(column) = cast.expr.as_ref()
+            {
+                columns.insert(alias.name.clone(), column.name.clone());
+            }
+        }
+    }
+    columns
+}
+
 fn analyze_aggregate(
     aggregate: &Aggregate,
     having_exprs: &[Expr],
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
+    let hoisted = hoisted_columns(&aggregate.input);
     // The optimizer rewrites a single DISTINCT aggregate into an inner
     // grouping over `(group keys, value)` and an outer `count(alias)` /
     // `sum(alias)`.
@@ -662,6 +707,7 @@ fn analyze_aggregate(
     let mut count = false;
     let mut sum: Option<String> = None;
     let mut avg: Option<String> = None;
+    let mut variance: Option<(VarianceKind, String)> = None;
     let mut min_max: Option<(MinMaxKind, String)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     for expr in &aggregate.aggr_expr {
@@ -712,6 +758,7 @@ fn analyze_aggregate(
                 if count
                     || sum.is_some()
                     || avg.is_some()
+                    || variance.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -734,7 +781,7 @@ fn analyze_aggregate(
                         "COUNT(column) is not supported; use COUNT(*)",
                     ));
                 }
-                if min_max.is_some() || distinct.is_some() {
+                if min_max.is_some() || distinct.is_some() || variance.is_some() {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
                 if count {
@@ -744,7 +791,7 @@ fn analyze_aggregate(
                 count = true;
             }
             ("sum", false) => {
-                if min_max.is_some() || distinct.is_some() {
+                if min_max.is_some() || distinct.is_some() || variance.is_some() {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
                 if sum.is_some() {
@@ -759,7 +806,7 @@ fn analyze_aggregate(
                 sum = Some(column);
             }
             ("avg", false) => {
-                if min_max.is_some() || distinct.is_some() {
+                if min_max.is_some() || distinct.is_some() || variance.is_some() {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
                 if avg.is_some() {
@@ -790,6 +837,7 @@ fn analyze_aggregate(
                 if count
                     || sum.is_some()
                     || avg.is_some()
+                    || variance.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -801,6 +849,29 @@ fn analyze_aggregate(
                     MinMaxKind::Max
                 };
                 min_max = Some((kind, single_column_arg(&function.params.args)?));
+            }
+            ("var", false)
+            | ("var_pop", false)
+            | ("stddev", false)
+            | ("stddev_pop", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                let statistic = match name {
+                    "var_pop" => VarianceKind::VarPop,
+                    "stddev" => VarianceKind::StddevSamp,
+                    "stddev_pop" => VarianceKind::StddevPop,
+                    _ => VarianceKind::VarSamp,
+                };
+                let raw = variance_argument(&function.params.args)?;
+                let value = hoisted.get(&raw).cloned().unwrap_or(raw);
+                variance = Some((statistic, value));
             }
             _ => {
                 return Err(unsupported(format!(
@@ -836,6 +907,15 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some((statistic, _)) = &variance {
+        render_having(
+            having_exprs,
+            HavingColumns::Variance {
+                statistic: *statistic,
+            },
+            aggregate,
+            &group_keys,
+        )?
     } else if sum.is_some() || count || avg.is_some() {
         render_having(
             having_exprs,
@@ -853,7 +933,18 @@ fn analyze_aggregate(
     };
     let average = avg.is_some();
     let value_column = sum.or(avg);
-    let spec = if let Some((agg, value_column)) = distinct {
+    let spec = if let Some((statistic, variance_column)) = variance {
+        ViewSpec::Variance {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            value_column: variance_column,
+            statistic,
+            filter,
+            having,
+        }
+    } else if let Some((agg, value_column)) = distinct {
         ViewSpec::DistinctAgg {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
@@ -1204,6 +1295,24 @@ fn positive_integer_arg(args: &[Expr], what: &str) -> Result<String> {
         return Err(unsupported(format!("{what} must be positive")));
     }
     Ok(value.to_string())
+}
+
+/// The value column of a variance aggregate: the optimizer either casts the
+/// column inline (`var(CAST(v AS Float64))`) or hoists the cast into a
+/// projection (`var(__common_expr_1 AS v)`), so both wrappers are unwrapped.
+fn variance_argument(args: &[Expr]) -> Result<String> {
+    let [arg] = args else {
+        return Err(unsupported("aggregates take exactly one column argument"));
+    };
+    let inner = match arg {
+        Expr::Alias(alias) => alias.expr.as_ref(),
+        other => other,
+    };
+    let inner = match inner {
+        Expr::Cast(cast) => cast.expr.as_ref(),
+        other => other,
+    };
+    column_name(inner).ok_or_else(|| unsupported("variance values must be plain columns"))
 }
 
 /// An integer literal of any width.
@@ -2261,6 +2370,67 @@ mod tests {
         // A different aggregate kind for a MIN view.
         assert!(
             analyze("select g, min(v) from src group by g having sum(v) > 5")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_variance_aggregates() {
+        for (sql, statistic) in [
+            (
+                "select g, var_samp(v) from src group by g",
+                VarianceKind::VarSamp,
+            ),
+            (
+                "select g, var_pop(v) from src group by g",
+                VarianceKind::VarPop,
+            ),
+            (
+                "select g, stddev_samp(v) from src group by g",
+                VarianceKind::StddevSamp,
+            ),
+            (
+                "select g, stddev_pop(v) from src group by g",
+                VarianceKind::StddevPop,
+            ),
+        ] {
+            let analyzed = analyze_optimized(sql).await.unwrap();
+            let ViewSpec::Variance {
+                statistic: got,
+                value_column,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("expected a variance spec");
+            };
+            assert_eq!(got, statistic);
+            assert_eq!(value_column, "v");
+        }
+
+        // WHERE and HAVING.
+        let analyzed = analyze_optimized(
+            "select g, var_samp(v) from src where v > 5 group by g having var_samp(v) > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Variance { filter, having, .. } = analyzed.spec else {
+            panic!("expected a variance spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("variance_v > 1.0")
+        );
+
+        // Mixing with other aggregate kinds is rejected.
+        assert!(
+            analyze("select g, var_samp(v), sum(v) from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze("select g, var_samp(v), var_pop(v) from src group by g")
                 .await
                 .is_err()
         );

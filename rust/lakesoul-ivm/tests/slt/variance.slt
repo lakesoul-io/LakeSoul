@@ -1,0 +1,78 @@
+# VAR_SAMP and VAR_POP over groups.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=a,v=30,op=insert; k=4,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_SAMP(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100.0
+b NULL
+
+# A sample needs two values; the second group catches up.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=25,op=insert; k=5,g=b,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_SAMP(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100.0
+b 50.0
+
+# Deleting a value changes the sample variance.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=30,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_SAMP(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 50.0
+b 50.0
+
+# HAVING over the statistic.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_SAMP(v) FROM __SRC__ GROUP BY g HAVING VAR_SAMP(v) > 60
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100.0
+
+# An update inside the HAVING definition.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_SAMP(v) FROM __SRC__ GROUP BY g HAVING VAR_SAMP(v) > 60
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 175.0
