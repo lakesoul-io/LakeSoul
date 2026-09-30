@@ -781,6 +781,26 @@ fn recall_at_k(predicted: &[u64], truth: &[i32], k: usize) -> f64 {
     hits as f64 / k as f64
 }
 
+/// Decode the bench's `UInt64` arrow-Row index keys back to plain ids.
+fn decode_u64_keys(keys: &[lakesoul_vector::IndexKey]) -> Vec<u64> {
+    use arrow::datatypes::DataType;
+    use lakesoul_io::index::key::{KeyCodec, KeyLayout};
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let codec = KeyCodec::new(KeyLayout::new(
+        vec![PK_COLUMN.to_string()],
+        vec![DataType::UInt64],
+    ))
+    .unwrap();
+    let arrays = codec.decode(keys).unwrap();
+    let values = arrays[0]
+        .as_any()
+        .downcast_ref::<arrow::array::UInt64Array>()
+        .unwrap();
+    (0..values.len()).map(|i| values.value(i)).collect()
+}
+
 #[derive(Debug, Clone, Default)]
 struct SearchMetrics {
     nprobe: usize,
@@ -817,7 +837,8 @@ fn measure_index(
     let mut n_ok = 0usize;
     for (i, result) in batch.iter().enumerate() {
         if let Ok(results) = result {
-            let predicted: Vec<u64> = results.iter().map(|r| r.id).collect();
+            let keys: Vec<_> = results.iter().map(|r| r.id.clone()).collect();
+            let predicted: Vec<u64> = decode_u64_keys(&keys);
             recall_sum += recall_at_k(&predicted, gt.row(i), top_k);
             n_ok += 1;
         }
@@ -1272,7 +1293,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         store,
         vector_index_config(args, dim),
         files.clone(),
-        PK_COLUMN.to_string(),
+        vec![PK_COLUMN.to_string()],
         HashMap::new(),
         Some(format!("file://{}", work_dir.display())),
     );
@@ -1367,7 +1388,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             Arc::new(LocalFileSystem::new()),
             vector_index_config(args, dim),
             files.clone(),
-            PK_COLUMN.to_string(),
+            vec![PK_COLUMN.to_string()],
             HashMap::new(),
             Some(format!("file://{}", work_dir.display())),
         )
