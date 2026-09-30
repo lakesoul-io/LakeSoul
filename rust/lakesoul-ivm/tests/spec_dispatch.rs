@@ -159,6 +159,7 @@ async fn refresh_spec_drives_a_registered_view() {
         mv: mv.clone(),
         group_keys: groups.clone(),
         value_column: Some("v".to_string()),
+        filter: None,
         refresh_interval_ms: 7_000,
     };
     runtime.register_view(&view).await.unwrap();
@@ -182,6 +183,7 @@ async fn refresh_spec_drives_a_registered_view() {
         mv_table_id: mv.table_id.clone(),
         group_keys: groups.clone(),
         value_column: Some("v".to_string()),
+        filter: None,
     };
     runtime.refresh_spec(&spec).await.unwrap().unwrap();
     assert_eq!(

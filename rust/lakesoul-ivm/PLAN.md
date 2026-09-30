@@ -1096,6 +1096,30 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 3. 后续单独立项：HAVING、AVG、SELECT DISTINCT、窗口扩展、外连接/多表 join、
    子查询/CTE、M5 文档与指标（复用 #959 观测）。
 
+### 10.7 PR-1 实施记录（W0 + W1 + H1/H2）
+
+- **W0 已落地**：`ViewSpec::Row/SumCount/MinMax/DistinctAgg` 存 `filter: Option<String>`；
+  analyzer 用 `Unparser` 渲染谓词并剥离关系名，回注运行时 `delta/old/src` 别名下都能解析；
+  `FilterCondition`/`LiteralValue` 已删除，`CompareOp` 仅剩 `SemiAntiCondition` 使用。
+  谓词校验拒绝聚合/窗口/子查询；引用不存在的列在 `SessionState::create_logical_expr`
+  解析（`validate_*` 与执行前）时报错。
+- **W1 已落地**：注入点与 §10.3 一致——keyed 的 delta 过滤新行、`old_changed/old_agg`
+  过滤旧行；append-only 的 signed delta 直接 `where`；`sum_count_rebuild_sql` 与
+  value-count 的 state 增量/重建同步过滤；`affected_groups_sql` 对 `delta_groups` 与
+  `old_groups` 分别过滤（`delta_pks` 不过滤，保证被改 key 的旧值能被正确撤回）。
+- **analyzer 形状**：接受 `Aggregate -> (Projection|Filter)* -> TableScan` 链，并读取
+  `TableScan.filters` 与 `scan.projection`（优化器把过滤/投影下推进 scan 的形态）；
+  HAVING、子查询谓词仍明确报错。
+- **H1/H2 已落地**：`/*ivm-expect-action bootstrap|incremental|rebuild|overwrite*/`；
+  `ivm-append` 支持 Float64/Boolean/Date32/Timestamp/Decimal128/NULL 与多列 key fixture；
+  fixture 抽取为 `run_script_for_source`，可传自定义源 schema/主键。
+- **测试**：`sum_count_where.slt`、`min_max_where.slt`、`row_where.slt`、
+  `sum_count_multi_key.slt`；2 个真 WHERE 差分 oracle（SUM/COUNT `v > 30`、
+  MIN `v > 30 AND g <> 'g1'`）；analyzer 优化计划（scan 下推）单测。全量 IVM 套件
+  35 个测试二进制 / 113 个测试通过。
+- **语义变化**：过滤谓词里的 `= NULL` 现在是 SQL 语义（结果为未知）；需要判空请写
+  `IS NULL`。旧 `LiteralValue::Null + Eq` 的"= NULL 即 IS NULL"特例随旧格式一并移除。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

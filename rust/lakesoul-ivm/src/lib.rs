@@ -86,15 +86,14 @@ pub use metadata::{
 };
 pub use provider::{IvmReadMode, IvmTableProvider};
 pub use runtime::{
-    CompareOp, DistinctAggKind, DistinctAggView, FilterCondition, IVM_COUNT_COLUMN,
-    IVM_DENSE_RANK_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_RANK_COLUMN,
-    IVM_ROW_NUMBER_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView, LiteralValue, MinMaxKind, MinMaxView,
-    RowView, SemiAntiCondition, SemiAntiView, SumCountView, TopKView, UnionAllView,
-    ValueResultKind, ViewSpec, WindowFunction, WindowView, distinct_agg_mv_schema,
-    distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_output_primary_keys,
-    keyed_join_view_schema_for, min_max_mv_schema, min_max_mv_schema_for,
-    min_max_state_schema, row_mv_schema_for, semi_anti_mv_schema,
+    CompareOp, DistinctAggKind, DistinctAggView, IVM_COUNT_COLUMN, IVM_DENSE_RANK_COLUMN,
+    IVM_NONNULL_COUNT_COLUMN, IVM_RANK_COLUMN, IVM_ROW_NUMBER_COLUMN, IVM_SOURCE_COLUMN,
+    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinView,
+    MinMaxKind, MinMaxView, RowView, SemiAntiCondition, SemiAntiView, SumCountView,
+    TopKView, UnionAllView, ValueResultKind, ViewSpec, WindowFunction, WindowView,
+    distinct_agg_mv_schema, distinct_agg_mv_schema_for, join_view_schema_for,
+    keyed_join_output_primary_keys, keyed_join_view_schema_for, min_max_mv_schema,
+    min_max_mv_schema_for, min_max_state_schema, row_mv_schema_for, semi_anti_mv_schema,
     semi_anti_mv_schema_for, sum_count_mv_schema, sum_count_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, value_count_mv_schema,
     value_count_mv_schema_for, value_count_state_schema, value_count_state_schema_for,

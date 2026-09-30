@@ -224,3 +224,36 @@ async fn oracle_min_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_sum_count_where_matches_full_recompute() {
+    // Updates crossing the threshold in both directions are the interesting
+    // cases: the old value must be retracted only when it matched.
+    run_oracle(
+        "sumwhere",
+        sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v")).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY g",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_min_where_matches_full_recompute() {
+    run_oracle(
+        "minwhere",
+        min_max_mv_schema_for(&source_schema(), &["g".to_string()], "v", MinMaxKind::Min)
+            .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, MIN(v) AS value FROM __SRC__ \
+         WHERE v > 30 AND g <> 'g1' GROUP BY g",
+        "SELECT g, MIN(v) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 AND g <> 'g1' GROUP BY g",
+        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
