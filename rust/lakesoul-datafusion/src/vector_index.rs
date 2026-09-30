@@ -163,8 +163,9 @@ pub fn parse_vector_index_from_table_properties(
 /// before any metadata is created (mirrors the Python SDK).
 ///
 /// Requires an `UInt64`/`Int64` primary key (the index maps search results
-/// to primary key values) and `FixedSizeList`/`List` of `Float32`/`Float64`
-/// vector columns whose dimension matches the configured `dim`.
+/// to primary key values) and `FixedSizeList`/`List` of
+/// `Float16`/`Float32`/`Float64` vector columns whose dimension matches the
+/// configured `dim`.
 pub fn validate_vector_index_configs(
     configs: &[VectorIndexTableConfig],
     schema: &arrow::datatypes::Schema,
@@ -207,14 +208,15 @@ pub fn validate_vector_index_configs(
             other => {
                 bail!(
                     "vector index column '{column}' must be FixedSizeList or List \
-                     of Float32/Float64, got {other}"
+                     of Float16/Float32/Float64, got {other}"
                 )
             }
         };
         match element_type {
-            DataType::Float32 | DataType::Float64 => {}
+            DataType::Float16 | DataType::Float32 | DataType::Float64 => {}
             other => bail!(
-                "vector index column '{column}' elements must be Float32/Float64, got {other}"
+                "vector index column '{column}' elements must be \
+                 Float16/Float32/Float64, got {other}"
             ),
         }
         if let Some(len) = fixed_len
@@ -696,5 +698,61 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("max_delta_ratio"), "{err}");
+    }
+
+    #[test]
+    fn validate_accepts_float16_vector_columns() {
+        use arrow::datatypes::{DataType, Field};
+        for element in [DataType::Float16, DataType::Float32, DataType::Float64] {
+            let fixed = arrow::datatypes::Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", element.clone(), true)),
+                        8,
+                    ),
+                    false,
+                ),
+            ]);
+            validate_vector_index_configs(
+                &[config("auto", 1.0)],
+                &fixed,
+                &["id".to_string()],
+            )
+            .unwrap_or_else(|e| panic!("FixedSizeList<{element}>: {e}"));
+
+            // The SQL scenario's variable-length `List` column shape.
+            let list = arrow::datatypes::Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new(
+                    "vec",
+                    DataType::List(Arc::new(Field::new("item", element.clone(), true))),
+                    false,
+                ),
+            ]);
+            validate_vector_index_configs(
+                &[config("auto", 1.0)],
+                &list,
+                &["id".to_string()],
+            )
+            .unwrap_or_else(|e| panic!("List<{element}>: {e}"));
+        }
+
+        let boolean = arrow::datatypes::Schema::new(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new(
+                "vec",
+                DataType::List(Arc::new(Field::new("item", DataType::Boolean, true))),
+                false,
+            ),
+        ]);
+        let err = validate_vector_index_configs(
+            &[config("auto", 1.0)],
+            &boolean,
+            &["id".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Float16/Float32/Float64"), "{err}");
     }
 }

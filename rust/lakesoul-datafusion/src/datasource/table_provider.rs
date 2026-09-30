@@ -1868,12 +1868,14 @@ impl TableProvider for LakeSoulTableProvider {
 /// True for list-of-numbers types accepted by the vector index.
 fn is_vector_type(data_type: &DataType) -> bool {
     match data_type {
-        DataType::List(field) | DataType::LargeList(field) => {
-            matches!(field.data_type(), DataType::Float32 | DataType::Float64)
-        }
-        DataType::FixedSizeList(field, _) => {
-            matches!(field.data_type(), DataType::Float32 | DataType::Float64)
-        }
+        DataType::List(field) | DataType::LargeList(field) => matches!(
+            field.data_type(),
+            DataType::Float16 | DataType::Float32 | DataType::Float64
+        ),
+        DataType::FixedSizeList(field, _) => matches!(
+            field.data_type(),
+            DataType::Float16 | DataType::Float32 | DataType::Float64
+        ),
         _ => false,
     }
 }
