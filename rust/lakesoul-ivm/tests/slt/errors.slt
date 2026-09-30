@@ -1,0 +1,32 @@
+# The incremental entry rejects unsupported statements and shapes.
+
+statement error
+INSERT INTO __MV__ VALUES (1, 2, 3)
+
+statement error
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+
+statement error
+INSERT INTO __MV__ SELECT g, SUM(v) FROM __SRC__ WHERE v > 0 GROUP BY g
+
+statement error
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g; SELECT 1
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+# A definition whose result schema does not match the target is rejected.
+statement error
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g
+
+# The previous error left the registered definition untouched.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10

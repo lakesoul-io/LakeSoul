@@ -27,6 +27,8 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+sqllogictest = "0.29"
 tempfile = { workspace = true }
 test-log = { workspace = true, features = ["trace"] }
 tracing-subscriber = { workspace = true }
