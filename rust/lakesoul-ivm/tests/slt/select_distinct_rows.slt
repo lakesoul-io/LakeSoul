@@ -1,0 +1,50 @@
+# SELECT DISTINCT over several columns.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=5,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT k, g FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT k, g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a
+2 a
+3 b
+
+# An update that moves a row to another group replaces its combination.
+statement ok
+/*ivm-append __SRC__: k=1,g=b,v=10,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT k, g FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT k, g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 b
+2 a
+3 b
+
+# Deleting one of two rows with the same combination keeps the combination.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT k, g FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT k, g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 b
+2 a

@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`SELECT DISTINCT`（无 GROUP BY，值计数状态可复用）；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
+| 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | `LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1216,6 +1216,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   analyzer 单测覆盖拆分形态、WHERE、HAVING、raw/优化 spec 等价与混用拒绝。
 - **仍待办**：无 GROUP BY 的 `SELECT DISTINCT`（值计数状态可复用，backlog 单独立项）。
   全量 IVM 套件 35 个测试二进制 / 141 个测试通过。
+
+### 10.12 SELECT DISTINCT 实施记录（PR-6）
+
+- **计划形态**：优化后 `SELECT DISTINCT` 就是一个"无聚合函数的分组"
+  `Aggregate: groupBy=[[cols...]], aggr=[[]]`；raw 计划是 `Distinct::All(Projection ...)`，
+  两条路径都已支持（`DISTINCT ON` 明确报错）。
+- **映射**：直接复用 count-only 的 SumCount 视图——`group_keys = DISTINCT 列`、
+  `value_column=None`、`having=None`。`count_v` 归零即删除分组，恰好等价于"该组合不再有行"，
+  因此**无需任何运行时改动**；`SELECT DISTINCT g` 与 `SELECT g, COUNT(*) GROUP BY g` 产出
+  同一 spec 与 definition_hash（同一份状态）。
+- **限制**：DISTINCT 表达式必须是普通列（计算列报错）；分组键可空性与既有 group-by 视图
+  一致（MV 主键列要求非空）。
+- **顺带补回**：#973 遗漏的 HAVING analyzer 单测（此前只有 slt/oracle 覆盖）在本 PR 补回：
+  `analyzes_having`、`analyzes_having_on_the_optimized_plan`、`rejects_unmaterialized_having`。
+- **测试**：`select_distinct.slt`（单列：bootstrap、值随删除消失、WHERE 变化 rebuild、值回归）、
+  `select_distinct_rows.slt`（多列：组合替换、重复组合删除后仍保留）；oracle 新增
+  `SELECT DISTINCT v`（值列高频变化）10 轮随机场景；analyzer 单测覆盖 raw/优化一致、
+  多列 + WHERE、与显式 count(*) 定义等价、计算列拒绝。
+  全量 IVM 套件 35 个测试二进制 / 148 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
