@@ -25,8 +25,9 @@ use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::logical_expr::expr::AggregateFunction;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
-    Aggregate, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection, Union,
-    Window, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
+    Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
 };
 use datafusion::sql::unparser::Unparser;
 
@@ -143,6 +144,9 @@ pub fn analyze_select(
         }
         LogicalPlan::Join(join) => analyze_join(join, None, tables, request)?,
         LogicalPlan::Union(union) => analyze_union(union, None, tables, request)?,
+        LogicalPlan::Distinct(distinct) => {
+            analyze_distinct_rows(distinct, tables, request)?
+        }
         other => {
             return Err(unsupported(plan_label(other)));
         }
@@ -168,6 +172,38 @@ fn having_aggregate(plan: &LogicalPlan) -> Option<(&Aggregate, Vec<Expr>)> {
         }
         _ => None,
     }
+}
+
+/// Plain `SELECT DISTINCT`: a grouping without aggregate functions, which the
+/// count-only sum/count shape maintains (`count_v = 0` drops the group).
+fn analyze_distinct_rows(
+    distinct: &Distinct,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let Distinct::All(input) = distinct else {
+        return Err(unsupported("DISTINCT ON"));
+    };
+    let (source, filter) = collect_filtered_source(input, tables, "SELECT DISTINCT")?;
+    let group_keys = input
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect::<Vec<_>>();
+    if group_keys.is_empty() {
+        return Err(unsupported("SELECT DISTINCT needs at least one column"));
+    }
+    Ok(ViewSpec::SumCount {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys,
+        value_column: None,
+        filter,
+        having: None,
+        average: false,
+    })
 }
 
 /// A projection (and optional filters) of one source table.
@@ -599,6 +635,28 @@ fn analyze_aggregate(
                 unsupported("GROUP BY expressions must be plain columns")
             })?,
         );
+    }
+
+    // `SELECT DISTINCT` plans as a group-by without aggregate functions; the
+    // count-only sum/count shape drops groups as soon as their count reaches
+    // zero, which is exactly the distinct rows.
+    if aggregate.aggr_expr.is_empty() {
+        if !having_exprs.is_empty() {
+            return Err(unsupported("HAVING with SELECT DISTINCT"));
+        }
+        if group_keys.is_empty() {
+            return Err(unsupported("SELECT DISTINCT needs at least one column"));
+        }
+        return Ok(ViewSpec::SumCount {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            value_column: None,
+            filter,
+            having: None,
+            average: false,
+        });
     }
 
     let mut count = false;
@@ -1858,6 +1916,165 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_select_distinct() {
+        // The raw and the optimized plan describe the same count-only shape.
+        let expected = ViewSpec::SumCount {
+            view_id: "view_1".to_string(),
+            source_table_id: "table_src".to_string(),
+            mv_table_id: "table_mv".to_string(),
+            group_keys: vec!["g".to_string()],
+            value_column: None,
+            filter: None,
+            having: None,
+            average: false,
+        };
+        let raw = analyze("select distinct g from src").await.unwrap();
+        assert_eq!(raw.spec, expected);
+        let optimized = analyze_optimized("select distinct g from src")
+            .await
+            .unwrap();
+        assert_eq!(optimized.spec, expected);
+
+        // Several columns and a WHERE clause.
+        let analyzed = analyze_optimized("select distinct k, g from src where v > 5")
+            .await
+            .unwrap();
+        let ViewSpec::SumCount {
+            group_keys,
+            value_column,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(group_keys, vec!["k".to_string(), "g".to_string()]);
+        assert_eq!(value_column, None);
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+
+        // The definition equals an explicit count-only group by.
+        let counted = analyze_optimized("select g, count(*) from src group by g")
+            .await
+            .unwrap();
+        assert_eq!(optimized.spec, counted.spec);
+        assert_eq!(optimized.definition_hash, counted.definition_hash);
+
+        // Computed distinct expressions are rejected.
+        assert!(
+            analyze_optimized("select distinct v + 1 from src")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_having() {
+        let analyzed =
+            analyze("select g, sum(v), count(*) from src group by g having sum(v) > 10")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount { having, filter, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(filter, None);
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("sum_v > 10"));
+
+        // Aggregates that only appear in HAVING are materialized too.
+        let analyzed = analyze(
+            "select g, sum(v) from src group by g having count(*) >= 2 and sum(v) <= 100",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount { having, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("count_v >= 2 AND sum_v <= 100")
+        );
+
+        // WHERE and HAVING combine, including a group-key predicate.
+        let analyzed = analyze(
+            "select g, count(*) from src where v > 5 group by g having count(*) > 1 and g <> 'x'",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount { having, filter, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("count_v > 1 AND g <> 'x'")
+        );
+
+        // MIN/MAX map to the `value` column.
+        let analyzed = analyze("select g, min(v) from src group by g having min(v) > 3")
+            .await
+            .unwrap();
+        let ViewSpec::MinMax { having, .. } = analyzed.spec else {
+            panic!("expected a min/max spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("value > 3"));
+    }
+
+    #[tokio::test]
+    async fn analyzes_having_on_the_optimized_plan() {
+        let analyzed = analyze_optimized(
+            "select g, sum(v) from src group by g having sum(v) > 10 or g = 'x'",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount { having, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("sum_v > 10 OR g = 'x'")
+        );
+
+        // A pure group-key HAVING is pushed below the aggregate and becomes a
+        // WHERE filter instead.
+        let analyzed =
+            analyze_optimized("select g, sum(v) from src group by g having g <> 'x'")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount { having, filter, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(having, None);
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("g <> 'x'"));
+    }
+
+    #[tokio::test]
+    async fn rejects_unmaterialized_having() {
+        // MAX is not maintained by a SUM/COUNT view.
+        assert!(
+            analyze("select g, sum(v) from src group by g having max(v) > 5")
+                .await
+                .is_err()
+        );
+        // COUNT(column) is not maintained by the SUM/COUNT shape.
+        assert!(
+            analyze("select g, sum(v) from src group by g having count(v) > 1")
+                .await
+                .is_err()
+        );
+        // A second value column would need a second SUM state.
+        assert!(
+            analyze("select g, sum(v) from src group by g having sum(k) > 1")
+                .await
+                .is_err()
+        );
+        // A different aggregate kind for a MIN view.
+        assert!(
+            analyze("select g, min(v) from src group by g having sum(v) > 5")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_avg() {
         let analyzed = analyze("select g, avg(v) from src group by g")
             .await
@@ -2055,8 +2272,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        // SELECT DISTINCT has no view kind.
-        assert!(analyze("select distinct g from src").await.is_err());
+        // DISTINCT ON has no view kind.
+        assert!(
+            analyze("select distinct on (g) k, g from src")
+                .await
+                .is_err()
+        );
         // HAVING mixing aggregate kinds.
         assert!(
             analyze("select g, sum(v) from src group by g having max(v) > 0")
