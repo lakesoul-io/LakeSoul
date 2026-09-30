@@ -1,0 +1,58 @@
+# MIN with HAVING over the maintained value.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g HAVING MIN(v) > 5
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 7
+
+# The minimum crosses the threshold in both directions.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=8,op=insert; k=3,g=b,v=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g HAVING MIN(v) > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 8
+
+# The group re-enters with a new minimum.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=6,op=insert; k=4,g=b,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g HAVING MIN(v) > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 8
+b 6
+
+# Changing the HAVING threshold rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g HAVING MIN(v) <= 6
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 6

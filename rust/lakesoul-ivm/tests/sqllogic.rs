@@ -514,6 +514,19 @@ impl SltSource {
             cdc_column: false,
         }
     }
+
+    /// An append-only changelog with CDC markers but no merge key.
+    fn append_only_cdc(
+        placeholder: &'static str,
+        schema: arrow::datatypes::SchemaRef,
+    ) -> Self {
+        Self {
+            placeholder,
+            schema,
+            primary_keys: Vec::new(),
+            cdc_column: true,
+        }
+    }
 }
 
 /// Create the given source tables plus an MV and run one script against them.
@@ -735,6 +748,45 @@ fn sqllogic_window_where() {
         )
         .unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_having() {
+    run_script_for_mv(
+        "having",
+        include_str!("slt/having.slt"),
+        sum_count_mv_schema_for(&source_schema(), &group_keys(&["g"]), Some("v"))
+            .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_having_append_only() {
+    let source = source_schema();
+    run_script_for_sources(
+        "havingappend",
+        include_str!("slt/having_append.slt"),
+        vec![SltSource::append_only_cdc("__SRC__", source.clone())],
+        sum_count_mv_schema_for(&source, &group_keys(&["g"]), Some("v")).unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_min_max_having() {
+    run_script_for_mv(
+        "minmaxhaving",
+        include_str!("slt/min_max_having.slt"),
+        min_max_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            "v",
+            MinMaxKind::Min,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
     );
 }
 

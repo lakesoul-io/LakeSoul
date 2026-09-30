@@ -1148,6 +1148,34 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   126 个测试通过。
 - 语义变化：UNION ALL 的持久化格式改为 `sources`（旧 spec 不兼容，符合"无旧格式兼容"决策）。
 
+### 10.9 HAVING 实施记录（PR-3）
+
+- **spec**：`ViewSpec::{SumCount, MinMax, DistinctAgg}` 增加 `having: Option<String>`；
+  谓词渲染在 **MV 列** 上（`sum_v`/`count_v`/`__ivm_nonnull_count`/`value` + 分组键），
+  例如 `sum_v > 10 AND g <> 'x'`；typed 视图增加 `having` 与 `with_having`。
+- **analyzer**：识别 `Filter* -> Aggregate`（`HAVING`，可带外层 `Projection`，MIN/MAX 的
+  投影会被优化器去掉）与 top-k 的 rank filter 区分；plan 中 HAVING 以“聚合表达式显示名”
+  的隐藏列（如 `sum(src.v)`）引用聚合，因此按 `Aggregate.aggr_expr` 的显示名建立
+  聚合→MV 列映射后再渲染；未物化的聚合（如 SUM 视图上的 MAX、COUNT(v)）明确报错。
+- **运行时语义**：
+  - MIN/MAX/DISTINCT：value-count **state 本身是完整的**，只在 `mv_ins` 上加 HAVING 条件、
+    rebuild 外层过滤即可，天然支持“之前不达标的分组重新达标”。
+  - SUM/COUNT：MV 中可能缺少不达标的分组，delta 无法推出分组全量，因此 HAVING 视图的
+    增量刷新额外按受影响分组**裁剪读取当前源状态**（`read_current_filtered` + group filters）
+    计算 `group_now`，用“受影响分组列表（delta ∪ old）”删除旧 MV 行、用 `group_now` 过滤
+    HAVING 后插入；append-only 源保留撤回标记并做 signed 聚合。非 HAVING 路径不变。
+- **rebuild**：三种聚合的 rebuild 都在聚合结果外层套 HAVING 过滤。
+- **发现并记录**：`COUNT(DISTINCT)`/`SUM(DISTINCT)` 经 SQL 入口目前会失败——优化器把
+  distinct 聚合改写成
+  `Aggregate(count(alias1)) -> Aggregate(groupBy=[g, alias1])` 的嵌套聚合，analyzer 报
+  "an aggregate over an aggregate"。DISTINCT 的 SQL 入口（及其 HAVING）放入 §10.5 的
+  DISTINCT 批次处理。
+- **测试**：`having.slt`（阈值双向跨越、分组离开/回归、COUNT+分组键、WHERE+HAVING、
+  删除导致失败）、`min_max_having.slt`、`having_append.slt`（append-only 撤回标记与
+  update_before/after）；oracle 新增 SUM/COUNT HAVING 与 MIN HAVING 两个 10 轮随机场景；
+  analyzer 单测覆盖优化计划、聚合仅出现在 HAVING、未物化聚合拒绝。全量 IVM 套件
+  35 个测试二进制 / 131 个测试通过。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

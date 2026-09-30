@@ -1,0 +1,114 @@
+# SUM/COUNT with HAVING: only qualifying groups stay in the view.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=5,op=insert; k=3,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g HAVING SUM(v) > 12
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 15
+
+# The groups cross the threshold in both directions.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=2,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g HAVING SUM(v) > 12
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 20
+
+# A group re-enters the view.
+statement ok
+/*ivm-append __SRC__: k=4,g=a,v=20,op=insert; k=3,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g HAVING SUM(v) > 12
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 32
+
+# HAVING over COUNT plus a group-key predicate.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g HAVING COUNT(*) >= 2 AND g <> 'b'
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 32
+
+# WHERE and HAVING combine.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 4 GROUP BY g HAVING COUNT(*) >= 2
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 30
+
+# The filtered-and-qualifying groups keep incrementing.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=9,op=insert; k=5,g=c,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 4 GROUP BY g HAVING COUNT(*) >= 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 39
+
+# A delete drops the group below its HAVING threshold.
+statement ok
+/*ivm-append __SRC__: k=4,g=a,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 4 GROUP BY g HAVING COUNT(*) >= 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 19
+
+# One group leaves (too few rows) while another qualifies.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=1,op=insert; k=5,g=c,v=8,op=insert; k=6,g=c,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 4 GROUP BY g HAVING COUNT(*) >= 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+c 14

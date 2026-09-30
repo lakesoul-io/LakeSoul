@@ -170,6 +170,11 @@ pub enum ViewSpec {
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized aggregate
+        /// columns (`sum_v`, `count_v`, the non-NULL count and the group
+        /// keys).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
     },
     /// Inner equi-join of the append-only changelogs of two sources, appended
     /// to an append-only output table.
@@ -211,6 +216,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized aggregate
+        /// columns (`value` and the group keys).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
     },
     /// `group_key`, `COUNT(DISTINCT value_column)` or
     /// `SUM(DISTINCT value_column)` over the source changelog, backed by the
@@ -234,6 +243,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized aggregate
+        /// columns (`value` and the group keys).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
     },
     /// `ROW_NUMBER()` over a source, maintained by recomputing the affected
     /// partitions.
@@ -373,6 +386,8 @@ pub struct SumCountView {
     pub value_column: Option<String>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized columns.
+    pub having: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -393,6 +408,7 @@ impl SumCountView {
             group_keys: vec![group_key.into()],
             value_column,
             filter: None,
+            having: None,
             refresh_interval_ms: 0,
         }
     }
@@ -412,6 +428,7 @@ impl SumCountView {
             group_keys,
             value_column,
             filter: None,
+            having: None,
             refresh_interval_ms: 0,
         }
     }
@@ -419,6 +436,12 @@ impl SumCountView {
     /// Only rows matching `filter` contribute to the view.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
         self
     }
 
@@ -430,6 +453,7 @@ impl SumCountView {
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
             filter: self.filter.clone(),
+            having: self.having.clone(),
         }
     }
 }
@@ -748,6 +772,7 @@ struct ValueCountView<'a> {
     value_column: &'a str,
     agg: ValueAgg,
     filter: Option<&'a str>,
+    having: Option<&'a str>,
 }
 
 /// A `MIN`/`MAX` view over a source table.
@@ -775,6 +800,8 @@ pub struct MinMaxView {
     pub min_max: MinMaxKind,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized columns.
+    pub having: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -799,6 +826,7 @@ impl MinMaxView {
             value_column: value_column.into(),
             min_max,
             filter: None,
+            having: None,
             refresh_interval_ms: 0,
         }
     }
@@ -822,6 +850,7 @@ impl MinMaxView {
             value_column: value_column.into(),
             min_max,
             filter: None,
+            having: None,
             refresh_interval_ms: 0,
         }
     }
@@ -829,6 +858,12 @@ impl MinMaxView {
     /// Only rows matching `filter` contribute to the view.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
         self
     }
 
@@ -842,6 +877,7 @@ impl MinMaxView {
             value_column: self.value_column.clone(),
             min_max: self.min_max,
             filter: self.filter.clone(),
+            having: self.having.clone(),
         }
     }
 }
@@ -870,6 +906,8 @@ pub struct DistinctAggView {
     pub agg: DistinctAggKind,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized columns.
+    pub having: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -894,6 +932,7 @@ impl DistinctAggView {
             value_column: value_column.into(),
             agg,
             filter: None,
+            having: None,
             refresh_interval_ms: 0,
         }
     }
@@ -917,6 +956,7 @@ impl DistinctAggView {
             value_column: value_column.into(),
             agg,
             filter: None,
+            having: None,
             refresh_interval_ms: 0,
         }
     }
@@ -924,6 +964,12 @@ impl DistinctAggView {
     /// Only rows matching `filter` contribute to the view.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
         self
     }
 
@@ -937,6 +983,7 @@ impl DistinctAggView {
             value_column: self.value_column.clone(),
             agg: self.agg,
             filter: self.filter.clone(),
+            having: self.having.clone(),
         }
     }
 }
@@ -1897,6 +1944,7 @@ impl IvmRuntime {
                 group_keys,
                 value_column,
                 filter,
+                having,
             } => SpecView::SumCount(SumCountView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1904,6 +1952,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
                 filter: filter.clone(),
+                having: having.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Join {
@@ -1933,6 +1982,7 @@ impl IvmRuntime {
                 value_column,
                 min_max,
                 filter,
+                having,
             } => SpecView::MinMax(MinMaxView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1942,6 +1992,7 @@ impl IvmRuntime {
                 value_column: value_column.clone(),
                 min_max: *min_max,
                 filter: filter.clone(),
+                having: having.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::DistinctAgg {
@@ -1953,6 +2004,7 @@ impl IvmRuntime {
                 value_column,
                 agg,
                 filter,
+                having,
             } => SpecView::DistinctAgg(DistinctAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1962,6 +2014,7 @@ impl IvmRuntime {
                 value_column: value_column.clone(),
                 agg: *agg,
                 filter: filter.clone(),
+                having: having.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Window {
@@ -2207,6 +2260,7 @@ impl IvmRuntime {
     pub async fn refresh_sum_count(&self, view: &SumCountView) -> Result<Option<i64>> {
         self.register_view(view).await?;
         validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+        validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
         if let Some(value_column) = &view.value_column {
             sum_result_type(&field_type(&view.source.schema, value_column)?)?;
         }
@@ -2269,6 +2323,16 @@ impl IvmRuntime {
         register_table(&context, "delta", delta_batches, &view.source.schema)?;
         if keyed {
             register_table(&context, "old", old_batches, &view.source.schema)?;
+        }
+        if view.having.is_some() {
+            register_table(
+                &context,
+                "src",
+                view.source
+                    .read_current_filtered(&self.client, filters.clone())
+                    .await?,
+                &view.source.schema,
+            )?;
         }
         register_table(
             &context,
@@ -2665,6 +2729,7 @@ impl IvmRuntime {
     pub async fn rebuild_sum_count(&self, view: &SumCountView) -> Result<i64> {
         self.register_view(view).await?;
         validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+        validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
         if let Some(value_column) = &view.value_column {
             sum_result_type(&field_type(&view.source.schema, value_column)?)?;
         }
@@ -2739,6 +2804,7 @@ impl IvmRuntime {
             group_keys: &view.group_keys,
             value_column: &view.value_column,
             filter: view.filter.as_deref(),
+            having: view.having.as_deref(),
             agg: ValueAgg::from(view.min_max),
         })
         .await
@@ -2759,6 +2825,7 @@ impl IvmRuntime {
             group_keys: &view.group_keys,
             value_column: &view.value_column,
             filter: view.filter.as_deref(),
+            having: view.having.as_deref(),
             agg: ValueAgg::from(view.agg),
         })
         .await
@@ -3115,6 +3182,7 @@ impl IvmRuntime {
         view: &ValueCountView<'_>,
     ) -> Result<Option<i64>> {
         validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        validate_having(view.view_id, &view.mv.schema, view.having)?;
         let value_type = field_type(&view.source.schema, view.value_column)?;
         view.agg.result_type(&value_type)?;
 
@@ -3369,6 +3437,7 @@ impl IvmRuntime {
             group_keys: &view.group_keys,
             value_column: &view.value_column,
             filter: view.filter.as_deref(),
+            having: view.having.as_deref(),
             agg: ValueAgg::from(view.min_max),
         })
         .await
@@ -3386,6 +3455,7 @@ impl IvmRuntime {
             group_keys: &view.group_keys,
             value_column: &view.value_column,
             filter: view.filter.as_deref(),
+            having: view.having.as_deref(),
             agg: ValueAgg::from(view.agg),
         })
         .await
@@ -4175,6 +4245,7 @@ impl IvmRuntime {
     /// from the current source state, published as `rebuild:<generation>`.
     async fn rebuild_value_count(&self, view: &ValueCountView<'_>) -> Result<i64> {
         validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        validate_having(view.view_id, &view.mv.schema, view.having)?;
         let value_type = field_type(&view.source.schema, view.value_column)?;
         view.agg.result_type(&value_type)?;
 
@@ -4257,7 +4328,7 @@ impl IvmRuntime {
             view.state.read_current(&self.client).await?,
             &view.state.schema,
         )?;
-        let mv_sql = format!(
+        let rebuild = format!(
             "select {}, {} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
              from state_now where \"rowKinds\" = 'insert' and {} > 0 group by {}",
             quoted_list(view.group_keys),
@@ -4266,6 +4337,10 @@ impl IvmRuntime {
             quote_ident(IVM_VALUE_COUNT_COLUMN),
             quoted_list(view.group_keys),
         );
+        let mv_sql = match view.having {
+            Some(having) => format!("select * from ({rebuild}) t where {having}"),
+            None => rebuild,
+        };
         for batch in context.sql(&mv_sql).await?.collect().await? {
             if batch.num_rows() > 0 {
                 commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
@@ -5030,6 +5105,63 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         Some(column) => format!("count({})", quote_ident(column)),
         None => "count(1)".to_string(),
     };
+    if let Some(having) = view.having.as_deref() {
+        // The HAVING predicate may have kept groups out of the MV, so the
+        // delta alone cannot produce their totals: recompute the affected
+        // groups from the (pruned) current source.
+        let (group_sum, group_count, group_nonnull) = if keyed {
+            (
+                sum_expr.clone(),
+                "count(1)".to_string(),
+                nonnull_expr.clone(),
+            )
+        } else {
+            let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
+                "src",
+                view.value_column.as_deref(),
+                change_column(&view.source),
+            );
+            (signed_sum, signed_count, signed_nonnull)
+        };
+        let src_from = if keyed {
+            format!(
+                "src where {}{}",
+                source_delete_filter("src", change_column(&view.source)),
+                filter_clause(view.filter.as_deref()),
+            )
+        } else {
+            // Append-only changelogs keep their markers; the signed
+            // aggregation above turns them into retractions.
+            format!("src{}", filter_where(view.filter.as_deref()))
+        };
+        let active_match = key_join_condition_null_safe("a", "s", &view.group_keys);
+        let already_match = key_join_condition_null_safe("a", "p", &view.group_keys);
+        let sql = format!(
+            "with affected as ({affected}), \
+             group_now as (select {keys}, {group_sum} as sum_v, {group_count} as count_v, \
+                                  {group_nonnull} as {nonnull_c} \
+                           from {src_from} group by {keys}), \
+             already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+             active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+             deletes as (select {keys}, sum_v, count_v, {nonnull_c}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                         from active s \
+                         where exists (select 1 from affected a where {active_match})), \
+             inserts as (select {keys}, sum_v, count_v, {nonnull_c}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                         from group_now p \
+                         where count_v <> 0 and ({having}) \
+                           and not exists (select 1 from already a where {already_match})) \
+             select * from deletes union all select * from inserts \
+             order by {keys}, \"rowKinds\"",
+            affected = affected_groups_sql(
+                &view.source,
+                &view.group_keys,
+                keyed,
+                view.filter.as_deref(),
+            ),
+            nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
+        );
+        return sql;
+    }
     let delta_filter = format!(
         "{}{}",
         source_delete_filter("delta", change_column(&view.source)),
@@ -5110,6 +5242,16 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         .map(|key| format!("(a.{q} IS NOT DISTINCT FROM {q})", q = quote_ident(key)))
         .collect::<Vec<_>>()
         .join(" and ");
+    let passing = view
+        .having
+        .as_deref()
+        .map(|having| format!("passing as (select * from new_values where {having}), "));
+    let passing = passing.as_deref().unwrap_or_default();
+    let insert_source = if view.having.is_some() {
+        "passing"
+    } else {
+        "new_values"
+    };
     format!(
         "with delta_pks as (select distinct {pks} from delta), \
          {delta_part}, {d2}, \
@@ -5119,16 +5261,17 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                            s.\"__ivm_epoch\" as s_epoch, d2.dsum, d2.dcount, d2.dnonnull, \
                            coalesce(s.{nonnull_c} + d2.dnonnull, s.{nonnull_c}, d2.dnonnull) as n_nonnull \
                     from active s full join d2 on {active_match}), \
-         deletes as (select {keys}, sum_v, count_v, s_nonnull as {nonnull_c}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         new_values as (select {keys}, \
+                               case when n_nonnull > 0 then coalesce(sum_v + dsum, sum_v, dsum) else null end as sum_v, \
+                               coalesce(count_v + dcount, count_v, dcount) as count_v, \
+                               n_nonnull as {nonnull_c} \
+                        from merged where dcount is not null), \
+         {passing}deletes as (select {keys}, sum_v, count_v, s_nonnull as {nonnull_c}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from merged where s_epoch is not null and dcount is not null), \
-         inserts as (select {keys}, \
-                            case when n_nonnull > 0 then coalesce(sum_v + dsum, sum_v, dsum) else null end as sum_v, \
-                            coalesce(count_v + dcount, count_v, dcount) as count_v, \
-                            n_nonnull as {nonnull_c}, \
+         inserts as (select {keys}, sum_v, count_v, {nonnull_c}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-                     from merged \
-                     where dcount is not null \
-                       and coalesce(count_v + dcount, count_v, dcount) <> 0 \
+                     from {insert_source} \
+                     where count_v <> 0 \
                        and not exists (select 1 from already a where {already_match})) \
          select * from deletes union all select * from inserts \
          order by {keys}, \"rowKinds\"",
@@ -5149,7 +5292,7 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             change_column(&view.source),
         );
         let plain_where = filter_where(view.filter.as_deref());
-        return format!(
+        let rebuild = format!(
             "select {keys}, case when nonnull > 0 then dsum else null end as {}, \
                     dcount as {}, nonnull as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
              from (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
@@ -5160,6 +5303,10 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             quote_ident(IVM_COUNT_COLUMN),
             quote_ident(IVM_NONNULL_COUNT_COLUMN),
         );
+        return match &view.having {
+            Some(having) => format!("select * from ({rebuild}) t where {having}"),
+            None => rebuild,
+        };
     }
     let sum_expr = match &view.value_column {
         Some(column) => format!("sum({})", quote_ident(column)),
@@ -5174,13 +5321,17 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         source_delete_filter("src", change_column(&view.source)),
         filter_clause(view.filter.as_deref()),
     );
-    format!(
+    let rebuild = format!(
         "select {keys}, {sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from src where {src_where} group by {keys}",
         quote_ident(IVM_SUM_COLUMN),
         quote_ident(IVM_COUNT_COLUMN),
         quote_ident(IVM_NONNULL_COUNT_COLUMN),
-    )
+    );
+    match &view.having {
+        Some(having) => format!("select * from ({rebuild}) t where {having}"),
+        None => rebuild,
+    }
 }
 
 /// The CTE chain of one value-count refresh window. It defines `counts`
@@ -5298,10 +5449,14 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
          mv_del as (select {keys}, {value} as {value}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                     from active where exists (select 1 from affected a where {active_match})), \
          mv_ins as (select {keys}, {value}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-                    from agg where not exists (select 1 from already a where {agg_match})) \
+                    from agg where not exists (select 1 from already a where {agg_match}){having}) \
          select * from mv_del union all select * from mv_ins order by {keys}, \"rowKinds\"",
         agg = view.agg.sql(IVM_VALUE_COLUMN),
         value_count = quote_ident(IVM_VALUE_COUNT_COLUMN),
+        having = view
+            .having
+            .map(|having| format!(" and ({having})"))
+            .unwrap_or_default(),
     )
 }
 
@@ -5956,6 +6111,21 @@ fn parse_filter(
         .state()
         .create_logical_expr(filter, &df_schema)
         .map_err(|error| report!("invalid filter {filter:?}: {error}"))
+}
+
+/// Validate a `HAVING` predicate against the MV columns it references.
+fn validate_having(
+    view_id: &str,
+    mv_schema: &SchemaRef,
+    having: Option<&str>,
+) -> Result<()> {
+    let Some(having) = having else {
+        return Ok(());
+    };
+    let context = SessionContext::new();
+    parse_filter(&context, mv_schema, having)
+        .map_err(|error| report!("view {view_id}: invalid HAVING: {error}"))?;
+    Ok(())
 }
 
 /// The conjunction of a row view's filter, when it has one.
