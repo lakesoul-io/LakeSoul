@@ -22,6 +22,7 @@ The benchmark is a self-contained Rust scenario runner
 | **E3** | Per-cluster vs shard trigger | Does per-cluster drift detection fire earlier and more precisely than the old whole-shard `delta/base` ratio? |
 | **E4** | Search by index state | How do recall and QPS differ between a fresh index, one with accumulated deltas, and one that has just been rebuilt? |
 | **E5** | End-to-end DataFusion SQL | What do QPS and recall look like when the data is written with SQL `INSERT` and searched with `ORDER BY array_distance(...) LIMIT k` (index candidates + exact re-rank)? |
+| **E6** | f32 vs f16 vector storage | How much disk, memory and query latency does storing half-precision vectors buy, and what does it cost in recall? |
 
 ## Test environment
 
@@ -31,6 +32,7 @@ The benchmark is a self-contained Rust scenario runner
 | Build | `cargo bench` release profile, 16 worker threads (`RAYON_NUM_THREADS=16`) |
 | Storage | local filesystem; all scenarios write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`; the SQL scenario selects it through the `file_format` table option) |
 | Distance metric | L2 |
+| Vector storage | `Float32` in every experiment except E6, which compares `Float32` with `Float16` |
 | Index config | `nlist = 256`, `total_bits = 7`, `top_k = 10`, search `nprobe = 64` (E4 sweeps 1–256) |
 | Queries per checkpoint | 100 |
 | Random seed | 42 (fixed; the workload is deterministic) |
@@ -397,6 +399,60 @@ and reads only the candidate rows.
   (also exposed on `LakeSoulTable`) sweeps on demand and removes the
   control-plane rows of dropped partitions.
 
+### E6 — f32 vs f16 vector storage
+
+**Goal.** The exact re-rank above the candidate scan reads the vector column of
+the ~100 candidate rows, so the element type of that column sets how many bytes
+each query fetches.  Half precision (`Float16` instead of `Float32`) halves the
+raw bytes at the cost of rounding every stored vector.  This experiment writes
+the *same* `f32` source vectors in either element type and scores recall against
+the **original `f32`** ground truth, so the only difference is the stored
+precision.
+
+**Method.**
+- The SQL scenario gains `--vector-type f32|f16`.  Because SQL DDL cannot spell
+  half precision, the table is created from an explicit Arrow schema
+  (`List<Float32>` or `List<Float16>`) through the metadata client; the
+  `vector_index_columns` property, the `INSERT ... SELECT` path, the post-commit
+  auto index build and the search SQL are unchanged, and both runs take the same
+  code path.
+- Both runs write the same 100K base + 10 × 10K uniform update rounds (single
+  hash bucket, `nlist = 256`, `nprobe = 64`, top-10, fixed seed), so the stored
+  vectors differ only by the `f32` → `f16` rounding.
+- `script/benchmark/vector/run.sh e6` runs the paired `f32`/`f16` measurements
+  on both datasets.
+
+| Dataset | Type | Data files | Live index | Recall@10 | QPS | Mean / p50 / p99 | Peak RSS |
+|---------|------|-----------:|-----------:|----------:|----:|------------------|---------:|
+| GloVe-200d | `f32` | 140.5 MB | 106.8 MB | 0.899 | 22.8 | 43.9 / 44.9 / 61.0 ms | 1271 MB |
+| GloVe-200d | `f16` | 80.1 MB | 104.1 MB | 0.907 | 21.7 | 46.0 / 45.7 / 59.3 ms | 944 MB |
+| GIST-960d | `f32` | 304.2 MB | 431.4 MB | 0.980 | 17.7 | 56.5 / 55.9 / 74.6 ms | 5522 MB |
+| GIST-960d | `f16` | 289.4 MB | 431.5 MB | 0.976 | 17.6 | 56.9 / 55.3 / 85.7 ms | 4725 MB |
+
+**What it tells us.**
+- **Half precision works end to end.**  `EXPLAIN VERBOSE` still picks
+  `LakeSoulVectorSearchExec`; `array_distance` coerces the `List<Float16>` column
+  to `List<Float64>` for the exact re-rank, and recall stays within run-to-run
+  noise of `f32` (GloVe 0.899 → 0.907, GIST 0.980 → 0.976).
+- **The disk win is data- and format-dependent, not a guaranteed 2×.**  GIST
+  vectors are integer-valued floats, and vortex's float compression already
+  shrinks the `f32` column to about the size of its `f16` encoding
+  (304 MB → 289 MB, −5%); on the unit-normalised GloVe vectors the saving is
+  real (140 MB → 80 MB, −43%).
+- **Query latency does not move.**  The re-rank fetches only the candidate rows,
+  so halving a few hundred KB is invisible next to index probing and planning:
+  QPS, p50 and execution time are the same within noise on both datasets.
+- **The index size is unchanged.**  RaBitQ stores quantised bits derived from
+  the data, not the stored `f32` values, so its footprint does not depend on the
+  column precision.  The lower peak RSS of the `f16` runs is incidental and not
+  a guaranteed memory reduction.
+
+**Takeaway:** half precision is a storage option, useful when disk or scanned
+bytes are the constraint and the vectors do not already compress well (dense
+unit-normalised embeddings such as GloVe).  It is not a retrieval-latency
+optimisation: the candidate-then-rerank path is dominated by index probing and
+planning, not by the precision of the candidate rows.
+
 ## Recommendations
 
 1. Keep the default `rebuild_mode = "auto"` with `max_delta_ratio = 1.0` for
@@ -409,6 +465,10 @@ and reads only the candidate rows.
    sufficient and avoids rebuild cost entirely.
 4. Budget rebuilds from the E2 table (GIST 1M: ~18 s at `nlist=256`, ~14 GB
    peak RSS); make sure the trigger and rebuild run in the background.
+5. Store half-precision vector columns only when disk or scanned bytes are the
+   constraint and the data does not already compress well (E6): recall is
+   unchanged but so is query latency, and vortex's float compression can already
+   match the `f16` size for integer-valued vectors like GIST.
 
 ## Reproducing the benchmark
 
@@ -423,6 +483,7 @@ DATA_DIR=~/program/opensource/rabitq-rs/data \
 
 # Or one experiment at a time
 script/benchmark/vector/run.sh e1 --results /tmp/vector-bench
+script/benchmark/vector/run.sh e6 --results /tmp/vector-bench
 
 # Render the plots (matplotlib is fetched ephemerally by uv)
 uv run --with matplotlib python script/benchmark/vector/plot.py \

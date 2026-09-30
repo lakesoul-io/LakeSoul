@@ -6,15 +6,16 @@
 
 use crate::Result;
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Float64Array, Int64Array, RecordBatch,
-    UInt64Array,
+    Array, FixedSizeListArray, Float16Array, Float32Array, Float64Array, Int64Array,
+    RecordBatch, UInt64Array,
 };
 use arrow_schema::DataType;
 use lakesoul_vector::IdAndVecBatch;
 use rootcause::{bail, report};
 
-/// Casts the values of a Float32/Float64 array into `f32` (SQL `DOUBLE[]`
-/// tables store Float64 and are converted on the way into the index).
+/// Casts the values of a Float16/Float32/Float64 array into `f32` (SQL
+/// `DOUBLE[]` tables store Float64 and are converted on the way into the
+/// index; `Float16` tables store half precision and are widened to `f32`).
 fn float32_values(value_array: &dyn Array) -> Result<Vec<f32>> {
     if let Some(arr) = value_array.as_any().downcast_ref::<Float32Array>() {
         return Ok(arr.values().to_vec());
@@ -22,20 +23,23 @@ fn float32_values(value_array: &dyn Array) -> Result<Vec<f32>> {
     if let Some(arr) = value_array.as_any().downcast_ref::<Float64Array>() {
         return Ok(arr.values().iter().map(|&v| v as f32).collect());
     }
+    if let Some(arr) = value_array.as_any().downcast_ref::<Float16Array>() {
+        return Ok(arr.values().iter().map(|v| v.to_f32()).collect());
+    }
     bail!(
-        "vector column values must be Float32 or Float64, got {:?}",
+        "vector column values must be Float16, Float32 or Float64, got {:?}",
         value_array.data_type()
     )
 }
 
 /// 从 RecordBatch 中提取 PK 列（u64）和向量列（Float32），构造 `IdAndVecBatch`。
 ///
-/// Float64 列表/FixedSizeList 中的值会被转换为 Float32 后写入索引。
+/// Float16/Float64 列表/FixedSizeList 中的值会被转换为 Float32 后写入索引。
 ///
 /// # 参数
 /// - `batch`: Arrow RecordBatch，包含 PK 列和向量列
 /// - `pk_column`: PK 列名，类型必须是 `UInt64` 或 `Int64`
-/// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float32/Float64, dim>` 或等长 `List<Float32/Float64>`
+/// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float16/Float32/Float64, dim>` 或等长 `List<Float16/Float32/Float64>`
 /// - `dim`: 向量的维度
 ///
 /// # 返回
@@ -179,7 +183,7 @@ pub fn extract_vector_batch(
         }
         other => {
             bail!(
-                "vector column '{}' must be FixedSizeList<Float32/Float64> or List<Float32/Float64>, got {:?}",
+                "vector column '{}' must be FixedSizeList<Float16/Float32/Float64> or List<Float16/Float32/Float64>, got {:?}",
                 vector_column,
                 other
             );
@@ -323,6 +327,68 @@ mod tests {
     #[test]
     fn test_extract_f64_var_size_list_converts_to_f32() {
         let batch = make_list_f64_batch(vec![7], vec![vec![1.5, -2.5]]);
+        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
+        assert_eq!(result.ids, vec![7]);
+        assert_eq!(result.vectors, vec![1.5f32, -2.5]);
+    }
+
+    fn make_fixed_size_list_f16_batch(
+        ids: Vec<u64>,
+        vectors: Vec<Vec<half::f16>>,
+        dim: usize,
+    ) -> RecordBatch {
+        let id_array = Arc::new(UInt64Array::from(ids)) as arrow_array::ArrayRef;
+        let flat: Vec<half::f16> = vectors.iter().flatten().copied().collect();
+        let value_array = Float16Array::from(flat);
+        let list_array = FixedSizeListArray::new(
+            Arc::new(arrow_schema::Field::new("item", DataType::Float16, true)),
+            dim as i32,
+            Arc::new(value_array),
+            None,
+        );
+        RecordBatch::try_from_iter(vec![
+            ("id", id_array),
+            ("vec", Arc::new(list_array) as arrow_array::ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_extract_f16_fixed_size_list_converts_to_f32() {
+        let batch = make_fixed_size_list_f16_batch(
+            vec![1, 2],
+            vec![
+                vec![half::f16::from_f32(1.5), half::f16::from_f32(-2.5)],
+                vec![half::f16::from_f32(0.25), half::f16::from_f32(2.0)],
+            ],
+            2,
+        );
+        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
+        assert_eq!(result.ids, vec![1, 2]);
+        // 1.5 / -2.5 / 0.25 / 2.0 are exactly representable in f16.
+        assert_eq!(result.vectors, vec![1.5f32, -2.5, 0.25, 2.0]);
+    }
+
+    #[test]
+    fn test_extract_f16_var_size_list_converts_to_f32() {
+        // The SQL scenario stores vectors as `List<Float16>`.
+        let value_array =
+            Float16Array::from(vec![half::f16::from_f32(1.5), half::f16::from_f32(-2.5)]);
+        let offsets: Vec<i32> = vec![0, 2];
+        let list_array = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", DataType::Float16, true)),
+            arrow_buffer::OffsetBuffer::new(offsets.into()),
+            Arc::new(value_array),
+            None,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(UInt64Array::from(vec![7u64])) as arrow_array::ArrayRef,
+            ),
+            ("vec", Arc::new(list_array) as arrow_array::ArrayRef),
+        ])
+        .unwrap();
         let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
         assert_eq!(result.ids, vec![7]);
         assert_eq!(result.vectors, vec![1.5f32, -2.5]);
