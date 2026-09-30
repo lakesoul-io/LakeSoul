@@ -37,6 +37,7 @@ use lakesoul_common::index::pending_shard_files;
 use lakesoul_io::index::Candidate;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
+use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::index::prefix::shard_index_prefix;
 use lakesoul_io::index::reader::read_shard_batches;
 use lakesoul_io::text::reader::collect_text_values;
@@ -48,7 +49,7 @@ use lakesoul_text::{
     CorpusStats, TextIndexConfig, TextSplitEntry, bm25_scores_with_terms, is_plain_query,
     matching_ids_with, matching_scores_with, query_terms, stats_for_rows, token_spans,
 };
-use lakesoul_vector::SegmentEntry;
+use lakesoul_vector::{IndexKey, SegmentEntry};
 use object_store::ObjectStore;
 use serde_json::{Map, Value, json};
 
@@ -1784,8 +1785,9 @@ async fn text_tail_candidates(
     analyzer: Option<&str>,
 ) -> Result<(Vec<Candidate>, CorpusStats), EsError> {
     let projection = vec![config.column_name.clone()];
+    let pk_columns = [PK_COLUMN.to_string()];
     let batches =
-        read_shard_batches(files, PK_COLUMN, &projection, &HashMap::new(), None)
+        read_shard_batches(files, &pk_columns, &projection, &HashMap::new(), None)
             .await
             .map_err(crate::error::internal)?;
     let mut rows: Vec<(u64, Option<String>)> = Vec::new();
@@ -1817,20 +1819,65 @@ async fn vector_tail_candidates(
     dim: usize,
 ) -> Result<Vec<Candidate>, EsError> {
     let projection = vec![column.to_string()];
+    let pk_columns = [PK_COLUMN.to_string()];
     let batches =
-        read_shard_batches(files, PK_COLUMN, &projection, &HashMap::new(), None)
+        read_shard_batches(files, &pk_columns, &projection, &HashMap::new(), None)
             .await
             .map_err(crate::error::internal)?;
+    let Some(first) = batches.first() else {
+        return Ok(Vec::new());
+    };
+    let codec = index_key_codec(first.schema().as_ref())?;
     let mut hits = Vec::new();
     for batch in &batches {
-        let extracted = extract_vector_batch(batch, PK_COLUMN, column, dim)
+        let extracted = extract_vector_batch(batch, &codec, column, dim)
             .map_err(|error| EsError::internal(format!("vector tail read: {error}")))?;
-        for (index, id) in extracted.ids.iter().enumerate() {
+        let ids = decode_index_keys(&codec, &extracted.ids)?;
+        for (index, id) in ids.iter().enumerate() {
             let stored = &extracted.vectors[index * dim..(index + 1) * dim];
             hits.push(Candidate::scored(*id, cosine(query, stored)));
         }
     }
     Ok(hits)
+}
+
+/// The gateway indexes a single `id: UInt64` primary key; decode index keys
+/// into those document ids.
+fn index_key_codec(schema: &arrow_schema::Schema) -> Result<KeyCodec, EsError> {
+    let layout = KeyLayout::from_schema(schema, &[PK_COLUMN.to_string()])
+        .map_err(crate::error::internal)?;
+    KeyCodec::new(layout).map_err(crate::error::internal)
+}
+
+/// Decode the stored index keys back into u64 document ids.
+fn decode_index_keys(codec: &KeyCodec, keys: &[IndexKey]) -> Result<Vec<u64>, EsError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut arrays = codec
+        .decode(keys)
+        .map_err(crate::error::internal)?
+        .into_iter();
+    let array = arrays
+        .next()
+        .ok_or_else(|| EsError::internal("index key decode returned no column"))?;
+    Ok(match array.data_type() {
+        DataType::UInt64 => array
+            .as_primitive::<arrow_array::types::UInt64Type>()
+            .values()
+            .to_vec(),
+        DataType::Int64 => array
+            .as_primitive::<arrow_array::types::Int64Type>()
+            .values()
+            .iter()
+            .map(|&value| value as u64)
+            .collect(),
+        other => {
+            return Err(EsError::internal(format!(
+                "index key decode: unexpected document id type {other}"
+            )));
+        }
+    })
 }
 
 /// Per-shard slow-path timings, summed over the shards of one request.
@@ -2109,6 +2156,8 @@ async fn collect_vector_candidates(
     let store = index_store(Arc::clone(&state), runtime.clone()).await?;
     let groups = shard_file_groups(&files, IndexKind::Vector, &column);
     let files_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let expected_key_kind = index_key_codec(runtime.schema.as_ref())?.kind_hash();
+    let key_codec = Arc::new(index_key_codec(runtime.schema.as_ref())?);
 
     let catalog = state.client.vector_index_catalog();
     let shards = groups.len();
@@ -2121,6 +2170,7 @@ async fn collect_vector_candidates(
                 let catalog = &catalog;
                 let query = query.as_slice();
                 let column = column.clone();
+                let key_codec = Arc::clone(&key_codec);
                 async move {
                     let resolve_started = Instant::now();
                     let view = catalog
@@ -2132,6 +2182,7 @@ async fn collect_vector_candidates(
                     let mut lease = None;
                     let mut hits = Vec::new();
                     let mut search_ms = 0.0;
+                    let mut index_unusable = false;
                     if let Some(view) = &view {
                         if !lakesoul_io::index::cache::is_loaded(
                             &store,
@@ -2157,17 +2208,42 @@ async fn collect_vector_candidates(
                         }
                         let resolved = vector_resolved(&prefix, view)?;
                         let search_started = Instant::now();
-                        hits =
-                            search_vector_shard(&store, &resolved, query, top_k, nprobe)
-                                .await
-                                .map_err(crate::error::internal)?;
+                        match search_vector_shard(
+                            &store,
+                            &resolved,
+                            query,
+                            top_k,
+                            nprobe,
+                            expected_key_kind,
+                        )
+                        .await
+                        .map_err(crate::error::internal)?
+                        {
+                            Some(vector_hits) => {
+                                let keys: Vec<IndexKey> = vector_hits
+                                    .iter()
+                                    .map(|hit| hit.key.clone())
+                                    .collect();
+                                let ids = decode_index_keys(&key_codec, &keys)?;
+                                hits.extend(
+                                    ids.into_iter().zip(vector_hits.iter()).map(
+                                        |(id, hit)| Candidate::scored(id, hit.score),
+                                    ),
+                                );
+                            }
+                            // The stored index cannot be used for this table;
+                            // score every file of the shard exactly instead.
+                            None => index_unusable = true,
+                        }
                         search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
                     }
                     let lease_ms = lease_started.elapsed().as_secs_f64() * 1000.0;
 
                     let pending = match &view {
-                        Some(view) => pending_shard_files(&shard_files, &view.segments),
-                        None => shard_files.clone(),
+                        Some(view) if !index_unusable => {
+                            pending_shard_files(&shard_files, &view.segments)
+                        }
+                        _ => shard_files.clone(),
                     };
                     let tail_started = Instant::now();
                     let mut tail_hits = Vec::new();
