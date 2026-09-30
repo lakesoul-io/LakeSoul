@@ -73,6 +73,7 @@ pub mod error;
 pub mod metadata;
 mod provider;
 pub mod runtime;
+pub mod sql;
 pub mod table;
 
 pub use error::Result;
@@ -98,6 +99,7 @@ pub use runtime::{
     window_aggregate_mv_schema_for, window_key, window_mv_schema, window_mv_schema_for,
     window_ranking_mv_schema_for,
 };
+pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select};
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
 };
