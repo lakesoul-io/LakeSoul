@@ -92,7 +92,8 @@ def test_create_table_rejects_vector_index_without_primary_key(tmp_path) -> None
         cat.drop_table(name, NAMESPACE, if_exists=True)
 
 
-def test_create_table_rejects_non_integer_primary_key(tmp_path) -> None:
+def test_create_table_accepts_string_primary_key(tmp_path) -> None:
+    """Index keys are arrow-Row encoded, so non-integer keys are valid."""
     cat = _catalog()
     name = "vec_val_str_pk"
     path = str(tmp_path / name)
@@ -104,15 +105,14 @@ def test_create_table_rejects_non_integer_primary_key(tmp_path) -> None:
     )
     try:
         cat.drop_table(name, NAMESPACE, if_exists=True)
-        with pytest.raises(ValueError, match="UInt64 or Int64"):
-            cat.create_table(
-                name,
-                path=f"file://{path}",
-                schema=schema,
-                primary_keys=["id"],
-                vector_index=[{"column": "vec", "dim": DIM}],
-            )
-        _assert_not_created(cat, name)
+        table = cat.create_table(
+            name,
+            path=f"file://{path}",
+            schema=schema,
+            primary_keys=["id"],
+            vector_index=[{"column": "vec", "dim": DIM}],
+        )
+        assert table is not None
     finally:
         cat.drop_table(name, NAMESPACE, if_exists=True)
 

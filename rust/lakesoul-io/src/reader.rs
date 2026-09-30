@@ -328,7 +328,7 @@ impl LakeSoulReader {
                 .get_filter_exprs(table_schema.table_schema().as_ref())
                 .await?
         };
-        let (filters, text_candidate_scores) = self
+        let (filters, text_candidate_scores, key_candidates) = self
             .inject_index_search_filters(filters, &table_schema)
             .await?;
 
@@ -455,7 +455,10 @@ impl LakeSoulReader {
                 futures::stream::once(async move { Ok(empty_batch) }).boxed(),
             )) as SendableRecordBatchStream
         } else {
-            let plan = self.io_session.build_physical_plan(filters).await?;
+            let plan = self
+                .io_session
+                .build_physical_plan(filters, key_candidates.as_deref())
+                .await?;
             if std::env::var("LAKESOUL_READER_PLAN").is_ok() {
                 eprintln!(
                     "reader plan:\n{}",
@@ -503,12 +506,14 @@ impl LakeSoulReader {
         Ok(())
     }
 
-    /// Run the configured index searches and inject their candidate primary
-    /// keys as a filter.
+    /// Run the configured index searches and turn their candidates into a
+    /// scan narrowing.
     ///
-    /// Every index kind selected by the reader options contributes one
-    /// candidate set; the sets are ANDed through the chained `pk IN (...)`
-    /// filters (the framework is ready for a different fusion strategy).
+    /// Vector index results are returned as the keys stored in the index
+    /// (arrow-Row encoded primary keys) for the primary-key locator to look
+    /// up directly — no `pk IN (...)` round trip.  Text results are still
+    /// injected as a `pk IN (...)` filter.  Every index kind selected by the
+    /// reader options contributes one candidate set and the sets are ANDed.
     async fn inject_index_search_filters(
         &self,
         filters: Vec<datafusion_expr::Expr>,
@@ -516,14 +521,16 @@ impl LakeSoulReader {
     ) -> Result<(
         Vec<datafusion_expr::Expr>,
         std::collections::HashMap<u64, f32>,
+        Option<Vec<lakesoul_vector::IndexKey>>,
     )> {
         use lakesoul_common::IndexKind;
 
+        use crate::index::key::{KeyCodec, KeyLayout};
         use crate::index::options::parse_search_requests;
 
         let requests = parse_search_requests(self.io_session.io_config());
         if requests.is_empty() {
-            return Ok((filters, std::collections::HashMap::new()));
+            return Ok((filters, std::collections::HashMap::new(), None));
         }
 
         let io_config = self.io_session.io_config();
@@ -544,14 +551,24 @@ impl LakeSoulReader {
             .first()
             .cloned()
             .unwrap_or_else(|| "id".to_string());
-        // The index stores ids as u64; build the pk filter literal with the
-        // pk column's own type so Int64 primary keys (e.g. SQL BIGINT)
+        // The text index stores ids as u64; build the pk filter literal with
+        // the pk column's own type so Int64 primary keys (e.g. SQL BIGINT)
         // compare correctly instead of failing Int64 == UInt64.
         let pk_data_type = table_schema
             .table_schema()
             .field_with_name(&pk_column)
             .map(|field| field.data_type().clone())
             .unwrap_or(arrow_schema::DataType::UInt64);
+        // Vector keys carry the primary-key columns' arrow-Row encoding; the
+        // layout fingerprint stored in the index must match the table's, or
+        // the bytes cannot be looked up.  The codec also decodes the keys
+        // into a `pk IN (...)` narrowing filter for consumers that read the
+        // candidate rows directly (the Daft search path).
+        let key_codec = KeyCodec::new(KeyLayout::from_schema(
+            table_schema.table_schema().as_ref(),
+            io_config.primary_keys_slice(),
+        )?)?;
+        let expected_key_kind = key_codec.kind_hash();
         tracing::debug!(
             resolved = io_config.resolved_index_shards_slice().len(),
             leases = io_config.index_leases().len(),
@@ -562,46 +579,73 @@ impl LakeSoulReader {
         // BM25 score of every text candidate, keyed by primary key; carried
         // to the verification stream so verified rows can expose it.
         let mut text_candidate_scores = std::collections::HashMap::new();
+        let mut vector_keys: Option<Vec<lakesoul_vector::IndexKey>> = None;
         for request in requests {
-            let candidates = match request.kind {
+            match request.kind {
                 IndexKind::Vector => {
-                    crate::vector::search::search_request(
+                    let hits = crate::vector::search::search_request(
                         self.io_session.io_config(),
                         &store,
                         &request,
                         table_path,
+                        expected_key_kind,
                     )
-                    .await?
+                    .await?;
+                    let Some(hits) = hits else {
+                        tracing::warn!(
+                            "vector index on '{}' cannot be used for this table; \
+                             scanning without index narrowing",
+                            request.column
+                        );
+                        continue;
+                    };
+                    tracing::info!(
+                        "Vector index search on '{}' returned {} candidates",
+                        request.column,
+                        hits.len()
+                    );
+                    let keys: Vec<lakesoul_vector::IndexKey> =
+                        hits.into_iter().map(|hit| hit.key).collect();
+                    // Narrow the file scans to these keys exactly as the
+                    // pre-key-generalization code did; the key locator (when
+                    // available) fetches the rows directly instead.
+                    filters = crate::index::candidate::inject_key_candidates(
+                        filters,
+                        io_config.primary_keys_slice(),
+                        &key_codec,
+                        &keys,
+                    )?;
+                    vector_keys = Some(match vector_keys {
+                        None => keys,
+                        Some(previous) => intersect_keys(previous, keys),
+                    });
                 }
                 IndexKind::Text => {
-                    crate::text::search::search_request(
+                    let candidates = crate::text::search::search_request(
                         self.io_session.io_config(),
                         &store,
                         &request,
                         table_path,
                     )
-                    .await?
+                    .await?;
+                    tracing::info!(
+                        "Text index search on '{}' returned {} candidates",
+                        request.column,
+                        candidates.len()
+                    );
+                    text_candidate_scores.extend(candidates.iter().filter_map(
+                        |candidate| candidate.score.map(|score| (candidate.id, score)),
+                    ));
+                    filters = crate::index::candidate::inject_candidates(
+                        filters,
+                        &pk_column,
+                        &pk_data_type,
+                        &candidates,
+                    );
                 }
-            };
-            tracing::info!(
-                "{} index search on '{}' returned {} candidates",
-                request.kind,
-                request.column,
-                candidates.len()
-            );
-            if request.kind == IndexKind::Text {
-                text_candidate_scores.extend(candidates.iter().filter_map(|candidate| {
-                    candidate.score.map(|score| (candidate.id, score))
-                }));
             }
-            filters = crate::index::candidate::inject_candidates(
-                filters,
-                &pk_column,
-                &pk_data_type,
-                &candidates,
-            );
         }
-        Ok((filters, text_candidate_scores))
+        Ok((filters, text_candidate_scores, vector_keys))
     }
 
     /// Retrieves the next record batch from the reader.
@@ -620,6 +664,18 @@ impl LakeSoulReader {
     pub fn stream(&mut self) -> Option<SendableRecordBatchStream> {
         self.stream.take()
     }
+}
+
+/// Keep only the keys shared by two candidate sets (multi-index AND).
+fn intersect_keys(
+    previous: Vec<lakesoul_vector::IndexKey>,
+    incoming: Vec<lakesoul_vector::IndexKey>,
+) -> Vec<lakesoul_vector::IndexKey> {
+    let set: std::collections::HashSet<_> = previous.into_iter().collect();
+    incoming
+        .into_iter()
+        .filter(|key| set.contains(key))
+        .collect()
 }
 
 /// A thread-safe wrapper for LakeSoulReader that can be used in synchronous contexts.

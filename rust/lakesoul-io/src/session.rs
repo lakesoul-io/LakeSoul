@@ -807,6 +807,7 @@ impl LakeSoulIOSession {
     pub async fn build_physical_plan(
         &mut self,
         filters: Vec<Expr>,
+        key_candidates: Option<&[lakesoul_vector::IndexKey]>,
     ) -> Result<Arc<dyn ExecutionPlan>, Report> {
         let listing_metas = self.io_listing_metas().await?;
 
@@ -819,6 +820,15 @@ impl LakeSoulIOSession {
         let format_groups = self.format_scan_groups(listing_metas, format_registry)?;
         let table_schema = self.io_table_schema().await?;
         let statistics = Statistics::new_unknown(table_schema.table_schema());
+
+        // Fingerprint of the key layout the table's data files use; index
+        // search candidates are only usable when their stored `key_kind`
+        // matches it.
+        let expected_key_kind = crate::index::key::KeyLayout::from_schema(
+            table_schema.table_schema().as_ref(),
+            self.io_config.primary_keys_slice(),
+        )?
+        .kind_hash();
 
         // Row-level key candidates (`pk = v` / `pk IN (...)`, or a finite
         // prefix of a composite key) let the scan fetch only the matching rows
@@ -983,20 +993,39 @@ impl LakeSoulIOSession {
         }
 
         // 6. Merge all format-specific scan inputs with one LakeSoul merge path.
-        // When a finite key constraint is present, replace the per-file scans
+        // Index search candidates (encoded keys) and finite key constraints
+        // from `pk = v` / `pk IN (...)` predicates replace the per-file scans
         // with row-level candidate inputs (vortex only; otherwise the regular
         // scan path is kept).
-        let candidate_inputs = match &key_constraint {
-            Some(constraint) => {
-                pk_locator::try_build_key_inputs(
+        let encoded_inputs = match key_candidates {
+            Some(keys) if !keys.is_empty() => {
+                let primary_keys = self.io_config.primary_keys_slice().to_vec();
+                pk_locator::try_build_key_inputs_encoded(
                     self,
                     &self.io_config,
                     &flatten_configs,
-                    constraint,
+                    &primary_keys,
+                    expected_key_kind,
+                    keys,
                 )
                 .await
             }
-            None => None,
+            _ => None,
+        };
+        let candidate_inputs = match encoded_inputs {
+            Some(inputs) => Some(inputs),
+            None => match &key_constraint {
+                Some(constraint) => {
+                    pk_locator::try_build_key_inputs(
+                        self,
+                        &self.io_config,
+                        &flatten_configs,
+                        constraint,
+                    )
+                    .await
+                }
+                None => None,
+            },
         };
         let merge_exec = Arc::new(match candidate_inputs {
             Some(inputs) => MergeParquetExec::new_with_inputs(

@@ -12,15 +12,15 @@ use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
-use lakesoul_vector::{IvfRabitqIndex, Metric, RabitqError, SearchParams};
+use lakesoul_vector::{IndexKey, IvfRabitqIndex, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::Result as IoResult;
 use crate::config::LakeSoulIOConfig;
-use crate::index::Candidate;
 use crate::index::cache::{self, IndexCacheEntry};
 use crate::index::commit::ResolvedIndex;
+
 use crate::index::options::{SearchRequest, option_key};
 use crate::index::prefix::derive_index_prefixes;
 
@@ -41,24 +41,55 @@ impl IndexCacheEntry for CachedVectorIndex {
     }
 }
 
+/// One search hit: the stored index key and its score.
+#[derive(Debug, Clone)]
+pub struct VectorHit {
+    pub key: IndexKey,
+    pub score: f32,
+}
+
 /// Search one resolved shard (base + deltas of its current commit).
+///
+/// Returns `Ok(None)` when the shard's stored key layout does not match
+/// `expected_key_kind` (or its header cannot be read), i.e. the search
+/// results could not be turned into row lookups; the caller then scans
+/// normally instead of narrowing.
 pub async fn search_resolved_shard(
     store: &Arc<dyn ObjectStore>,
     resolved: &ResolvedIndex,
     query: &[f32],
     top_k: usize,
     nprobe: usize,
-) -> IoResult<Vec<Candidate>> {
+    expected_key_kind: u64,
+) -> IoResult<Option<Vec<VectorHit>>> {
     if !resolved.is_kind(IndexKind::Vector) {
         return Err(rootcause::report!(
             "resolved index '{}' is not a vector index",
             resolved.index_prefix
         ));
     }
+    let header = match IndexHeader::deserialize(&resolved.header) {
+        Ok(header) => header,
+        Err(e) => {
+            warn!(
+                "vector index at '{}' has an unreadable header ({}); scanning \
+                 without the index",
+                resolved.index_prefix, e
+            );
+            return Ok(None);
+        }
+    };
+    if header.key_kind != expected_key_kind {
+        warn!(
+            "vector index at '{}' was built with key kind {:#x} but the table \
+             now uses {:#x}; scanning without the index",
+            resolved.index_prefix, header.key_kind, expected_key_kind
+        );
+        return Ok(None);
+    }
     let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
     let cache_prefix = prefix.clone();
     let commit_id = resolved.commit_id;
-    let header = resolved.header.clone();
     let segments: Vec<SegmentEntry> = resolved.segments_as()?;
     let entry =
         cache::get_or_load(store, IndexKind::Vector, &prefix, commit_id, move || {
@@ -68,7 +99,6 @@ pub async fn search_resolved_shard(
             let segments = segments.clone();
             async move {
                 let istore = IndexStore::new(store, prefix);
-                let header = IndexHeader::deserialize(&header)?;
                 let index =
                     IvfRabitqIndex::load_from_segments(&istore, &header, &segments)
                         .await?;
@@ -89,6 +119,7 @@ pub async fn search_resolved_shard(
             )
         })?;
     search_loaded_index(&entry.index, &resolved.index_prefix, query, top_k, nprobe)
+        .map(Some)
 }
 
 /// Search the vector index matching a single bucket's files.
@@ -97,6 +128,7 @@ pub async fn search_resolved_shard(
 /// first derived prefix selects the shard to search.  `resolved_shards`
 /// carries the commits resolved by the caller; a file group whose index was
 /// not resolved yields an error instead of silently scanning.
+#[allow(clippy::too_many_arguments)]
 pub async fn search_matching_shards(
     store: &Arc<dyn ObjectStore>,
     file_paths: &[String],
@@ -108,12 +140,13 @@ pub async fn search_matching_shards(
     nprobe: usize,
     metric: Metric,
     resolved_shards: &[ResolvedIndex],
-) -> IoResult<Vec<Candidate>> {
+    expected_key_kind: u64,
+) -> IoResult<Option<Vec<VectorHit>>> {
     let _ = (range_partitions, metric);
     let prefixes =
         derive_index_prefixes(file_paths, prefix, IndexKind::Vector, vector_column);
     let Some((index_prefix, _bucket_id)) = prefixes.first() else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let normalized = index_prefix.trim_end_matches('/');
     let Some(resolved) = resolved_shards.iter().find(|shard| {
@@ -126,7 +159,7 @@ pub async fn search_matching_shards(
             normalized
         ));
     };
-    search_resolved_shard(store, resolved, query, top_k, nprobe).await
+    search_resolved_shard(store, resolved, query, top_k, nprobe, expected_key_kind).await
 }
 
 /// Run the vector search selected by a parsed [`SearchRequest`].
@@ -135,7 +168,8 @@ pub async fn search_request(
     store: &Arc<dyn ObjectStore>,
     request: &SearchRequest,
     table_prefix: &str,
-) -> IoResult<Vec<Candidate>> {
+    expected_key_kind: u64,
+) -> IoResult<Option<Vec<VectorHit>>> {
     let nprobe: usize = config
         .option(&option_key(request.kind, "nprobe"))
         .and_then(|s| s.parse().ok())
@@ -161,6 +195,7 @@ pub async fn search_request(
         nprobe,
         metric,
         config.resolved_index_shards_slice(),
+        expected_key_kind,
     )
     .await
 }
@@ -171,22 +206,25 @@ fn search_loaded_index(
     query: &[f32],
     top_k: usize,
     nprobe: usize,
-) -> IoResult<Vec<Candidate>> {
+) -> IoResult<Vec<VectorHit>> {
     let params = SearchParams::new(top_k, nprobe);
     let results = index.search(query, params).map_err(|e| {
         rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
     })?;
-    let candidates: Vec<Candidate> = results
+    let hits: Vec<VectorHit> = results
         .into_iter()
-        .map(|result| Candidate::scored(result.id, result.score))
+        .map(|result| VectorHit {
+            key: result.id,
+            score: result.score,
+        })
         .collect();
     info!(
         "Vector search at '{}': {} results (nprobe={})",
         prefix,
-        candidates.len(),
+        hits.len(),
         nprobe
     );
-    Ok(candidates)
+    Ok(hits)
 }
 
 pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<f32>> {

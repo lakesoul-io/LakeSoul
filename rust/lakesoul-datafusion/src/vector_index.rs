@@ -162,8 +162,10 @@ pub fn parse_vector_index_from_table_properties(
 /// Validate that a table schema can support the configured vector indexes,
 /// before any metadata is created (mirrors the Python SDK).
 ///
-/// Requires an `UInt64`/`Int64` primary key (the index maps search results
-/// to primary key values) and `FixedSizeList`/`List` of
+/// Requires at least one non-null primary key column(s) — the index maps
+/// search results back to primary-key values, and any key type the table can
+/// store is accepted as long as its `arrow-row` encoding is available (also
+/// composite keys) — and `FixedSizeList`/`List` of
 /// `Float16`/`Float32`/`Float64` vector columns whose dimension matches the
 /// configured `dim`.
 pub fn validate_vector_index_configs(
@@ -175,22 +177,19 @@ pub fn validate_vector_index_configs(
     if configs.is_empty() {
         return Ok(());
     }
-    let Some(pk_column) = primary_keys.first() else {
+    if primary_keys.is_empty() {
         bail!(
             "a vector index requires an id column: pass primary_keys=[...] \
              when creating a table with vector_index (the index maps search \
              results to primary key values)"
         );
-    };
-    let Some(pk_index) = schema.index_of(pk_column).ok() else {
-        bail!("vector index primary key '{pk_column}' not found in table schema");
-    };
-    match schema.field(pk_index).data_type() {
-        DataType::UInt64 | DataType::Int64 => {}
-        other => bail!(
-            "vector index primary key '{pk_column}' must be UInt64 or Int64, got {other}"
-        ),
     }
+    // The index stores the arrow-Row encoding of the primary-key columns, so
+    // build the encoder here to reject key types it cannot represent.
+    let layout = lakesoul_io::index::key::KeyLayout::from_schema(schema, primary_keys)
+        .map_err(|e| report!("invalid vector index primary key: {e}"))?;
+    lakesoul_io::index::key::KeyCodec::new(layout)
+        .map_err(|e| report!("invalid vector index primary key: {e}"))?;
     for config in configs {
         let column = &config.column;
         config.management.validate(IndexKind::Vector, column)?;
@@ -308,9 +307,9 @@ pub async fn auto_build_vector_index(
     if configs.is_empty() || partition_files.is_empty() {
         return Ok(0);
     }
-    let Some(pk_column) = primary_keys.first() else {
+    if primary_keys.is_empty() {
         bail!("a vector index requires a table with a primary key");
-    };
+    }
     let Some(first_file) = partition_files
         .values()
         .find_map(|(files, _)| files.first())
@@ -368,7 +367,7 @@ pub async fn auto_build_vector_index(
                 store.clone(),
                 vector_config.clone(),
                 plan.files.clone(),
-                pk_column.clone(),
+                primary_keys.to_vec(),
                 object_store_options.clone(),
                 None,
             );
@@ -397,7 +396,7 @@ pub async fn auto_build_vector_index(
                         store.clone(),
                         vector_config.clone(),
                         plan.files,
-                        pk_column.clone(),
+                        primary_keys.to_vec(),
                         object_store_options.clone(),
                         None,
                     )
@@ -519,9 +518,9 @@ pub async fn rebuild_vector_index(
     if configs.is_empty() {
         return Ok(0);
     }
-    let Some(pk_column) = primary_keys.first() else {
+    if primary_keys.is_empty() {
         bail!("a vector index requires a table with a primary key");
-    };
+    }
     let all_active_files = client
         .get_data_files_by_table_name(table_name, namespace)
         .await?;
@@ -547,7 +546,7 @@ pub async fn rebuild_vector_index(
                 store.clone(),
                 vector_config.clone(),
                 files,
-                pk_column.clone(),
+                primary_keys.to_vec(),
                 object_store_options.clone(),
                 None,
             )

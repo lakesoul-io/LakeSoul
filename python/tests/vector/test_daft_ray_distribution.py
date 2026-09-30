@@ -86,7 +86,7 @@ def test_daft_vector_build_repartition_distribution(tmp_path) -> None:
         configs = [
             {"column": "vec", "dim": 8, "nlist": 2, "total_bits": 7, "metric": "L2"}
         ]
-        rows, n_shards = shard_build_rows("vector", configs, file_infos, "{}", "id")
+        rows, n_shards = shard_build_rows("vector", configs, file_infos, "{}", ["id"])
 
         # One row per (partition, bucket, column) = partition x bucket shards.
         assert n_shards == 2 * 6 * len(configs) == 12
@@ -114,7 +114,7 @@ def test_daft_vector_build_repartition_distribution(tmp_path) -> None:
             udf(str(pid_log_path))(
                 col("file_paths"),
                 col("store_config_json"),
-                col("pk_column"),
+                col("pk_columns"),
                 col("kind"),
                 col("config_json"),
             ),

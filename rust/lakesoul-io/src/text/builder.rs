@@ -151,7 +151,7 @@ impl TextShardIndexBuilder {
     async fn read_documents(&self) -> Result<Vec<(u64, String)>> {
         let batches = read_shard_batches(
             &self.file_paths,
-            &self.pk_column,
+            std::slice::from_ref(&self.pk_column),
             std::slice::from_ref(&self.config.column_name),
             &self.object_store_options,
             self.default_fs.as_deref(),

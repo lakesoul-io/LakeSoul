@@ -50,7 +50,7 @@ __all__ = [
 def _build_shard(
     store_config: Any,
     file_paths: list[str],
-    pk_column: str,
+    pk_columns: list[str],
     config: Any,
     rebuild: bool,
 ) -> str:
@@ -61,7 +61,7 @@ def _build_shard(
     return builder(
         store_config=store_config,
         file_paths=list(file_paths),
-        pk_column=pk_column,
+        pk_column=pk_columns[0],
         text_column=config["column"],
         tokenizer=config.get("tokenizer", "jieba"),
         with_positions=config.get("with_positions", True),

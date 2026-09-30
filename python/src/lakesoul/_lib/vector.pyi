@@ -19,7 +19,7 @@ def parse_vector_index_configs(value: str) -> list[VectorIndexConfig]: ...
 def build_shard_vector_index(
     store_config: Mapping[str, str],
     file_paths: list[str],
-    pk_column: str,
+    pk_columns: list[str],
     vector_column: str,
     dim: int,
     nlist: int = 256,
@@ -32,7 +32,7 @@ def build_shard_vector_index(
 def rebuild_shard_vector_index(
     store_config: Mapping[str, str],
     file_paths: list[str],
-    pk_column: str,
+    pk_columns: list[str],
     vector_column: str,
     dim: int,
     nlist: int = 256,

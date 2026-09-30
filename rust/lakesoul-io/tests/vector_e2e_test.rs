@@ -92,6 +92,25 @@ fn compute_recall(predicted: &[u64], ground_truth: &[i32], k: usize) -> f64 {
     hits as f64 / k as f64
 }
 
+/// Decode the `id: UInt64` arrow-Row index keys these tests build.
+fn decode_u64_ids(keys: &[lakesoul_vector::IndexKey]) -> Vec<u64> {
+    use lakesoul_io::index::key::{KeyCodec, KeyLayout};
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let codec = KeyCodec::new(KeyLayout::new(
+        vec!["id".to_string()],
+        vec![arrow_schema::DataType::UInt64],
+    ))
+    .unwrap();
+    let arrays = codec.decode(keys).unwrap();
+    let values = arrays[0]
+        .as_any()
+        .downcast_ref::<arrow_array::UInt64Array>()
+        .unwrap();
+    (0..values.len()).map(|i| values.value(i)).collect()
+}
+
 /// Test: build index from parquet, search, verify recall.
 ///
 /// Uses a small subset (500 train, 5 test) for speed.
@@ -120,7 +139,7 @@ async fn test_glove_e2e_build_and_search() {
         store.clone(),
         config.clone(),
         vec![format!("file://{}", parquet_path)],
-        "id".to_string(),
+        vec!["id".to_string()],
         HashMap::new(),
         None,
     );
@@ -145,7 +164,8 @@ async fn test_glove_e2e_build_and_search() {
 
     for (i, query) in queries.iter().enumerate() {
         let results = index.search(query, params).unwrap();
-        let pred_ids: Vec<u64> = results.iter().map(|r| r.id).collect();
+        let keys: Vec<_> = results.iter().map(|r| r.id.clone()).collect();
+        let pred_ids: Vec<u64> = decode_u64_ids(&keys);
         let recall10 = compute_recall(&pred_ids, &ground_truth[i], 10);
         println!(
             "Query {}: recall@10={:.2}, top-5 IDs={:?}",
@@ -234,7 +254,7 @@ async fn test_build_and_list_files() {
         store.clone(),
         config,
         vec![format!("file://{}", parquet_path)],
-        "id".to_string(),
+        vec!["id".to_string()],
         HashMap::new(),
         None,
     );
@@ -349,7 +369,7 @@ async fn test_reader_with_vector_search() {
         store.clone(),
         config,
         vec![format!("file://{}", parquet_path)],
-        pk_col.to_string(),
+        vec![pk_col.to_string()],
         HashMap::new(),
         Some(format!("file://{}", tmp_path)),
     );

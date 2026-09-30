@@ -23,6 +23,8 @@ enum BuilderState {
         use_faster_config: bool,
         padded_dim: usize,
         ex_bits: usize,
+        /// Fingerprint of the external key layout (see [`IndexHeader::key_kind`]).
+        key_kind: u64,
         reservoir: Vec<f32>,
         reservoir_capacity: usize,
         reservoir_count: usize,
@@ -70,6 +72,7 @@ impl IvfRabitqBuilder {
         rotator_type: RotatorType,
         seed: u64,
         use_faster_config: bool,
+        key_kind: u64,
     ) -> Self {
         let rotator = DynamicRotator::new(dim, rotator_type, seed);
         let reservoir_capacity = nlist * 64;
@@ -84,6 +87,7 @@ impl IvfRabitqBuilder {
                 use_faster_config,
                 padded_dim: rotator.padded_dim(),
                 ex_bits: total_bits.saturating_sub(1),
+                key_kind,
                 reservoir: Vec::with_capacity(reservoir_capacity * dim),
                 reservoir_capacity,
                 reservoir_count: 0,
@@ -151,6 +155,7 @@ impl IvfRabitqBuilder {
             clusters,
             ex_bits: header.ex_bits,
             ip_func,
+            key_kind: header.key_kind,
         };
         Ok(Self {
             state: BuilderState::Loaded { index, cluster_map },
@@ -229,6 +234,7 @@ impl IvfRabitqBuilder {
                 use_faster_config,
                 padded_dim,
                 ex_bits,
+                key_kind,
                 reservoir,
                 reservoir_count,
                 reservoir_seen,
@@ -383,7 +389,8 @@ impl IvfRabitqBuilder {
 
                         let t0 = Instant::now();
                         for (i, (cid, q)) in ins.into_iter().enumerate() {
-                            clusters[cid].append_vector(batch.ids[sub_start + i], q);
+                            clusters[cid]
+                                .append_vector(batch.ids[sub_start + i].clone(), q);
                         }
                         t_stream_append += t0.elapsed().as_secs_f64();
                         drop(rb);
@@ -421,6 +428,7 @@ impl IvfRabitqBuilder {
                     clusters,
                     ex_bits,
                     ip_func,
+                    key_kind,
                 })
             }
 

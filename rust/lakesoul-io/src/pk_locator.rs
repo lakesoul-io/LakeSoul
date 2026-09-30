@@ -53,6 +53,7 @@ use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_datasource::memory::MemorySourceConfig;
 use datafusion_expr::{Expr, Operator};
 use futures::StreamExt;
+use lakesoul_vector::IndexKey;
 use memmap2::Mmap;
 use moka::future::Cache;
 use object_store::ObjectStore;
@@ -913,16 +914,12 @@ async fn get_vortex_file(
 /// Identifier of one key layout: the pinned columns, their types and the row
 /// encoding version.  Used as the disk-cache `kind` and stored in the index
 /// header, so a name-hash collision is detected instead of misread.
+///
+/// Delegates to [`crate::index::key::key_layout_kind`], which is also what
+/// the secondary indexes store in their headers: keys produced by an index
+/// build can only be looked up here when both sides agree on the layout.
 fn index_kind(columns: &[String], types: &[DataType]) -> String {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    INDEX_VERSION.hash(&mut hasher);
-    for (column, data_type) in columns.iter().zip(types) {
-        column.hash(&mut hasher);
-        format!("{data_type:?}").hash(&mut hasher);
-    }
-    format!("pk{:016x}", hasher.finish())
+    crate::index::key::key_layout_kind(columns, types)
 }
 
 fn index_kind_hash(kind: &str) -> u64 {
@@ -1168,6 +1165,89 @@ pub async fn try_build_key_inputs(
             .collect::<Vec<_>>()
     };
     let int_candidates = constraint.single_column_ints();
+    let encoded_refs: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
+    build_key_inputs(
+        state,
+        configs,
+        &constraint.columns,
+        &types,
+        &encoded_refs,
+        int_candidates.as_deref(),
+        encoded.len(),
+    )
+    .await
+}
+
+/// Row inputs from **already encoded** index keys.
+///
+/// This is the secondary-index candidate path: a vector/text index stores
+/// the same `arrow-row` keys the locator uses, so its search results can be
+/// looked up here directly, without decoding them into values or building a
+/// `pk IN (...)` predicate.
+///
+/// `expected_kind` is the key-layout fingerprint stored in the index header
+/// (see [`crate::index::key::KeyLayout::kind_hash`]); when it does not match
+/// the data files' layout the encoded keys cannot be looked up and `None` is
+/// returned, so the caller scans normally instead of returning no rows.
+pub async fn try_build_key_inputs_encoded(
+    state: &dyn Session,
+    io_config: &LakeSoulIOConfig,
+    configs: &[FileScanConfig],
+    columns: &[String],
+    expected_kind: u64,
+    keys: &[IndexKey],
+) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
+    index_disk_cache()?;
+    if keys.is_empty() || keys.len() > MAX_PK_CANDIDATES || configs.is_empty() {
+        return None;
+    }
+    let primary_keys = io_config.primary_keys_slice();
+    if primary_keys.len() < columns.len() || primary_keys[..columns.len()] != columns[..]
+    {
+        return None;
+    }
+    let file_schema = configs[0].file_schema();
+    let mut types = Vec::with_capacity(columns.len());
+    for column in columns {
+        let field = file_schema.field_with_name(column).ok()?;
+        if !key_type_supported(field.data_type()) {
+            return None;
+        }
+        types.push(field.data_type().clone());
+    }
+    let kind_hash = crate::index::key::key_layout_kind_hash(columns, &types);
+    if kind_hash != expected_kind {
+        warn!(
+            "index key layout changed (index kind {expected_kind:#x}, data kind \
+             {kind_hash:#x}); scanning without the key lookup"
+        );
+        return None;
+    }
+    let encoded_refs: Vec<&[u8]> = keys.iter().map(|key| key.as_bytes()).collect();
+    build_key_inputs(
+        state,
+        configs,
+        columns,
+        &types,
+        &encoded_refs,
+        None,
+        keys.len(),
+    )
+    .await
+}
+
+/// Shared tail of both key-input builders: opens each file's mmapped key
+/// index, looks the encoded keys up and fetches the matching rows.
+#[allow(clippy::too_many_arguments)]
+async fn build_key_inputs(
+    state: &dyn Session,
+    configs: &[FileScanConfig],
+    columns: &[String],
+    types: &[DataType],
+    encoded: &[&[u8]],
+    int_candidates: Option<&[i64]>,
+    key_count: usize,
+) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
     // Built lazily: most callers (parquet tables, payload-only predicates)
     // never reach the vortex code below, and creating a vortex session costs
     // far more than this check.
@@ -1224,7 +1304,7 @@ pub async fn try_build_key_inputs(
         let (projected_schema, projection_names) = projected_file_schema(config)?;
 
         if let Some(ints) = &int_candidates
-            && let Some((min, max)) = pk_min_max(config, &constraint.columns[0])
+            && let Some((min, max)) = pk_min_max(config, &columns[0])
             && !ints.iter().any(|value| *value >= min && *value <= max)
         {
             n_pruned += 1;
@@ -1241,15 +1321,15 @@ pub async fn try_build_key_inputs(
         let entry = get_or_load_file(
             Arc::clone(&store),
             location.clone(),
-            &constraint.columns,
-            &types,
+            columns,
+            types,
             session.clone(),
         )
         .await?;
         t_cache += t.elapsed();
 
         let mut indices: Vec<u64> = Vec::new();
-        for key in &encoded {
+        for key in encoded {
             indices.extend(entry.index.rows_with_prefix(key).map(|row| row as u64));
         }
         if indices.is_empty() {
@@ -1280,7 +1360,7 @@ pub async fn try_build_key_inputs(
     if profile {
         eprintln!(
             "pk_locator: keys={} files={} pruned={} rows={} cache={:?} take={:?} total={:?}",
-            constraint.values.len(),
+            key_count,
             n_files,
             n_pruned,
             n_rows,

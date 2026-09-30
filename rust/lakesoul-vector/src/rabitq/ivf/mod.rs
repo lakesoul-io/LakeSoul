@@ -1,4 +1,4 @@
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -9,8 +9,8 @@ use crc32fast::Hasher;
 
 use rand::prelude::*;
 use rayon::prelude::*;
-use roaring::RoaringBitmap;
 
+use crate::rabitq::key::IndexKey;
 use crate::rabitq::kmeans::{KMeansResult, run_kmeans};
 use crate::rabitq::math::{dot, l2_distance_sqr};
 use crate::rabitq::quantizer::{QuantizedVector, RabitqConfig, quantize_with_centroid};
@@ -40,7 +40,7 @@ impl SearchParams {
 /// Result entry returned by IVF search.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
-    pub id: u64,
+    pub id: IndexKey,
     pub score: f32,
 }
 
@@ -72,6 +72,8 @@ pub struct IvfRabitqIndex {
     /// Function pointer for ex-code inner product on packed data (Phase 3 optimization)
     /// Selected based on ex_bits at index construction time
     ip_func: crate::rabitq::simd::ExIpFunc,
+    /// Fingerprint of the external key layout this index was built with.
+    key_kind: u64,
 }
 
 // ========================================================================
@@ -441,7 +443,10 @@ impl IvfRabitqIndex {
                     })
                     .collect();
                 for (i, (cid, q)) in insertions.into_iter().enumerate() {
-                    clusters[cid].append_vector((global_id + sub_start + i) as u64, q);
+                    clusters[cid].append_vector(
+                        IndexKey::new((global_id + sub_start + i).to_le_bytes()),
+                        q,
+                    );
                 }
                 drop(rotated_chunk);
             }
@@ -469,6 +474,7 @@ impl IvfRabitqIndex {
             clusters,
             ex_bits,
             ip_func,
+            key_kind: 0,
         })
     }
 
@@ -524,7 +530,7 @@ impl IvfRabitqIndex {
         let progress_counter = AtomicUsize::new(0);
         let total_clusters = centroids.len();
 
-        let cluster_data: Vec<(Vec<u64>, Vec<QuantizedVector>)> = centroids
+        let cluster_data: Vec<(Vec<IndexKey>, Vec<QuantizedVector>)> = centroids
             .par_iter()
             .enumerate()
             .map(|(cluster_id, centroid)| {
@@ -553,7 +559,13 @@ impl IvfRabitqIndex {
                     );
                 }
 
-                (indices.to_vec(), quantized_vectors)
+                (
+                    indices
+                        .iter()
+                        .map(|&idx| IndexKey::new(idx.to_le_bytes()))
+                        .collect(),
+                    quantized_vectors,
+                )
             })
             .collect();
         println!("Quantization complete");
@@ -586,6 +598,7 @@ impl IvfRabitqIndex {
             clusters,
             ex_bits,
             ip_func,
+            key_kind: 0,
         })
     }
 
@@ -625,7 +638,11 @@ impl IvfRabitqIndex {
                     .iter()
                     .map(|q| q.heap_size())
                     .sum::<usize>()
-                    + c.pending_ids.len() * std::mem::size_of::<usize>()
+                    + c.pending_ids.len() * std::mem::size_of::<IndexKey>()
+                    + c.pending_ids
+                        .iter()
+                        .map(|key| key.heap_bytes())
+                        .sum::<usize>()
             })
             .sum();
         std::mem::size_of::<Self>() + clusters_mem + pending_mem
@@ -651,10 +668,10 @@ impl IvfRabitqIndex {
     /// # Note
     /// The returned vector is an approximation due to quantization losses.
     /// The accuracy depends on the `total_bits` parameter used during training.
-    pub fn fetch_embedding(&self, vector_id: u64) -> Option<Vec<f32>> {
+    pub fn fetch_embedding(&self, vector_id: &IndexKey) -> Option<Vec<f32>> {
         // Find which cluster contains this vector ID
         for cluster in &self.clusters {
-            if let Some(local_idx) = cluster.ids.iter().position(|&id| id == vector_id) {
+            if let Some(local_idx) = cluster.ids.iter().position(|id| id == vector_id) {
                 // Found the vector, now reconstruct it
 
                 // Step 1: Extract quantized codes
@@ -816,15 +833,12 @@ impl IvfRabitqIndex {
             })?;
             write_u64(&mut writer, entry_count, Some(&mut hasher))?;
 
-            // Save vector IDs
-            for &id in &cluster.ids {
-                #[allow(clippy::useless_conversion)]
-                let encoded = u64::try_from(id).map_err(|_| {
-                    RabitqError::InvalidPersistence(
-                        "vector id exceeds persistence limits",
-                    )
-                })?;
-                write_u64(&mut writer, encoded, Some(&mut hasher))?;
+            // Save vector keys (length-prefixed arrow-Row encoded keys)
+            for id in &cluster.ids {
+                let key = id.as_bytes();
+                write_u64(&mut writer, key.len() as u64, Some(&mut hasher))?;
+                writer.write_all(key)?;
+                hasher.update(key);
             }
 
             // Save batch_data (contiguous memory block)
@@ -991,10 +1005,14 @@ impl IvfRabitqIndex {
                 ));
             }
 
-            // Load vector IDs
+            // Load vector keys
             let mut ids = Vec::with_capacity(num_vectors);
             for _ in 0..num_vectors {
-                ids.push(read_u64(&mut reader, Some(&mut hasher))?);
+                let len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
+                let mut key = vec![0u8; len];
+                reader.read_exact(&mut key)?;
+                hasher.update(&key);
+                ids.push(IndexKey::from(key));
             }
 
             // Load batch_data (contiguous memory block)
@@ -1124,6 +1142,7 @@ impl IvfRabitqIndex {
             clusters,
             ex_bits,
             ip_func,
+            key_kind: 0,
         })
     }
 
@@ -1137,20 +1156,20 @@ impl IvfRabitqIndex {
     }
 
     /// Search for the nearest neighbours of the provided query vector,
-    /// filtering results to only include vector IDs present in the provided bitmap.
+    /// filtering results to only include vector keys present in the provided set.
     ///
     /// # Arguments
     /// * `query` - The query vector
     /// * `params` - Search parameters (top_k, nprobe)
-    /// * `filter` - A RoaringBitmap containing valid candidate vector IDs
+    /// * `filter` - The set of keys allowed in the result
     ///
     /// # Returns
-    /// A vector of search results, sorted by score, containing only IDs present in the filter.
+    /// A vector of search results, sorted by score, containing only keys present in the filter.
     pub fn search_filtered(
         &self,
         query: &[f32],
         params: SearchParams,
-        filter: &RoaringBitmap,
+        filter: &HashSet<IndexKey>,
     ) -> Result<Vec<SearchResult>, RabitqError> {
         self.search_fastscan(query, params, None, Some(filter))
     }
@@ -1182,7 +1201,7 @@ impl IvfRabitqIndex {
         query: &[f32],
         params: SearchParams,
         mut diagnostics: Option<&mut SearchDiagnostics>,
-        filter: Option<&RoaringBitmap>,
+        filter: Option<&HashSet<IndexKey>>,
     ) -> Result<Vec<SearchResult>, RabitqError> {
         if self.is_empty() {
             return Err(RabitqError::EmptyIndex);
@@ -1344,7 +1363,7 @@ impl IvfRabitqIndex {
         g_add: f32,
         g_error: f32,
         dot_query_centroid: f32,
-        filter: Option<&RoaringBitmap>,
+        filter: Option<&HashSet<IndexKey>>,
         heap: &mut BinaryHeap<HeapEntry>,
         top_k: usize,
         diagnostics: &mut Option<&mut SearchDiagnostics>,
@@ -1423,11 +1442,11 @@ impl IvfRabitqIndex {
             // Distances are now pre-computed in vectorized fashion (matching C++ Eigen)
             for i in 0..actual_batch_size {
                 let global_idx = batch_start + i;
-                let vector_id = cluster.ids[global_idx];
+                let vector_id = cluster.ids[global_idx].clone();
 
                 // Apply filter if provided
-                if let Some(filter_bitmap) = filter
-                    && !filter_bitmap.contains(vector_id as u32)
+                if let Some(filter_keys) = filter
+                    && !filter_keys.contains(&vector_id)
                 {
                     continue;
                 }
@@ -1533,7 +1552,7 @@ impl IvfRabitqIndex {
         query_precomp: &QueryPrecomputed,
         g_add: f32,
         _dot_query_centroid: f32,
-        filter: Option<&RoaringBitmap>,
+        filter: Option<&HashSet<IndexKey>>,
         heap: &mut BinaryHeap<HeapEntry>,
         top_k: usize,
         _diagnostics: Option<&mut SearchDiagnostics>,
@@ -1542,13 +1561,13 @@ impl IvfRabitqIndex {
             return;
         }
 
-        for (&vec_id, qvec) in cluster
+        for (vec_id, qvec) in cluster
             .pending_ids
             .iter()
             .zip(cluster.pending_vectors.iter())
         {
-            if let Some(bitmap) = filter
-                && !bitmap.contains(vec_id as u32)
+            if let Some(filter_keys) = filter
+                && !filter_keys.contains(vec_id)
             {
                 continue;
             }
@@ -1592,7 +1611,7 @@ impl IvfRabitqIndex {
 
             heap.push(HeapEntry {
                 candidate: HeapCandidate {
-                    id: vec_id,
+                    id: vec_id.clone(),
                     distance,
                     score,
                 },
@@ -1707,7 +1726,7 @@ impl IvfRabitqIndex {
                     Metric::InnerProduct => -distance,
                 };
                 candidates.push(SearchResult {
-                    id: cluster.ids[vec_idx],
+                    id: cluster.ids[vec_idx].clone(),
                     score,
                 });
             }
@@ -1745,6 +1764,7 @@ impl IvfRabitqIndex {
             rotator_data: self.rotator.serialize(),
             ex_bits: self.ex_bits,
             total_bits: self.ex_bits + 1,
+            key_kind: self.key_kind,
         }
     }
 
@@ -1863,6 +1883,7 @@ impl IvfRabitqIndex {
             clusters,
             ex_bits: header.ex_bits,
             ip_func,
+            key_kind: header.key_kind,
         })
     }
 
@@ -1901,7 +1922,8 @@ impl IvfRabitqIndex {
             &config,
             self.metric,
         );
-        self.clusters[cid].append_vector(vector_id as u64, quantized);
+        self.clusters[cid]
+            .append_vector(IndexKey::new(vector_id.to_le_bytes()), quantized);
         Ok(cid as u32)
     }
 
@@ -2006,7 +2028,7 @@ impl IvfRabitqIndex {
 
         // 5. Append to clusters with external IDs
         for (i, (cid, q)) in results.into_iter().enumerate() {
-            self.clusters[cid].append_vector(batch.ids[i], q);
+            self.clusters[cid].append_vector(batch.ids[i].clone(), q);
         }
 
         Ok(())
@@ -2038,7 +2060,7 @@ impl crate::rabitq::segment::ClusterSegmentData {
         centroid: Vec<f32>,
         padded_dim: usize,
         ex_bits: usize,
-        ids: Vec<u64>,
+        ids: Vec<IndexKey>,
         batch_data: Vec<u8>,
         ex_codes_packed: Vec<Vec<u8>>,
         f_add_ex: Vec<f32>,
@@ -2079,7 +2101,7 @@ impl ClusterData {
 
     /// Append one quantised vector to the pending buffer.
     /// Flushes a batch of 32 into `batch_data` when full.
-    fn append_vector(&mut self, new_id: u64, new_q: QuantizedVector) {
+    fn append_vector(&mut self, new_id: IndexKey, new_q: QuantizedVector) {
         self.pending_ids.push(new_id);
         self.pending_vectors.push(new_q);
         if self.pending_ids.len() >= simd::FASTSCAN_BATCH_SIZE {
@@ -2105,7 +2127,7 @@ impl ClusterData {
                 .pending_vectors
                 .drain(..simd::FASTSCAN_BATCH_SIZE)
                 .collect();
-            let batch_ids: Vec<u64> = self
+            let batch_ids: Vec<IndexKey> = self
                 .pending_ids
                 .drain(..simd::FASTSCAN_BATCH_SIZE)
                 .collect();
@@ -2114,7 +2136,7 @@ impl ClusterData {
             let _batch_idx = self.num_vectors / simd::FASTSCAN_BATCH_SIZE;
 
             // Extend main ID list
-            self.ids.extend(&batch_ids);
+            self.ids.extend(batch_ids);
 
             // Extend batch_data by one batch stride
             let stride = Self::batch_stride(padded_dim);
@@ -2206,14 +2228,14 @@ impl ClusterData {
 
             let mut batch_qvecs: Vec<QuantizedVector> =
                 std::mem::take(&mut self.pending_vectors);
-            let batch_ids: Vec<u64> = std::mem::take(&mut self.pending_ids);
+            let batch_ids: Vec<IndexKey> = std::mem::take(&mut self.pending_ids);
             let actual_count = batch_qvecs.len();
 
             // Pad to 32 with zeros.
             batch_qvecs.resize(simd::FASTSCAN_BATCH_SIZE, zero_qvec);
 
             // Extend ID list (only actual ids, not pads).
-            self.ids.extend(&batch_ids);
+            self.ids.extend(batch_ids);
 
             // Extend batch_data by one batch stride.
             let stride = Self::batch_stride(padded_dim);
@@ -2580,7 +2602,9 @@ mod batch_search_tests {
         // Create cluster with unified memory layout
         let cluster = ClusterData::from_quantized_vectors(
             centroid.clone(),
-            ids.iter().map(|&x| x as u64).collect(),
+            ids.iter()
+                .map(|&x| IndexKey::new((x as u64).to_le_bytes()))
+                .collect(),
             quantized_vectors.clone(),
             padded_dim,
             ex_bits,
@@ -2618,6 +2642,7 @@ mod batch_search_tests {
             clusters: vec![cluster.clone()],
             ex_bits,
             ip_func,
+            key_kind: 0,
         };
 
         // Batch search (unified memory layout)
@@ -2653,7 +2678,7 @@ mod batch_search_tests {
         // Print results for debugging
         println!("\n=== Search Results (top 10) ===");
         for (i, r) in results.iter().take(10).enumerate() {
-            println!("  [{}] ID={}, distance={:.6}", i, r.id, r.distance);
+            println!("  [{}] ID={:?}, distance={:.6}", i, r.id, r.distance);
         }
 
         // Verify all distances are finite and non-negative for L2
@@ -2704,7 +2729,9 @@ mod batch_search_tests {
         // Create unified cluster
         let cluster = ClusterData::from_quantized_vectors(
             centroid.clone(),
-            ids.iter().map(|&x| x as u64).collect(),
+            ids.iter()
+                .map(|&x| IndexKey::new((x as u64).to_le_bytes()))
+                .collect(),
             quantized_vectors,
             padded_dim,
             ex_bits,
@@ -2732,6 +2759,7 @@ mod batch_search_tests {
             clusters: vec![cluster.clone()],
             ex_bits,
             ip_func,
+            key_kind: 0,
         };
 
         // Perform batch search
@@ -2784,11 +2812,11 @@ mod batch_search_tests {
 // Build input
 // ----------------------------------------------------------------------------
 
-/// A batch of vectors with their external IDs.
+/// A batch of vectors with their external keys.
 #[derive(Debug, Clone)]
 pub struct IdAndVecBatch {
-    /// External vector IDs (one per vector, must be globally unique).
-    pub ids: Vec<u64>,
+    /// External vector keys (one per vector).
+    pub ids: Vec<IndexKey>,
     /// Flat row-major vector data: `[batch_n × dim]` f32 values.
     pub vectors: Vec<f32>,
 }

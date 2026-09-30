@@ -93,7 +93,7 @@ fn rotator_type_str(rotator: RotatorType) -> &'static str {
 ///         ``access_key_id``, ``secret_access_key``,
 ///         ``endpoint`` (optional)
 ///     file_paths: list of parquet file paths for this shard
-///     pk_column: name of the u64 primary key column
+///     pk_columns: names of the primary key columns (in key order)
 ///     vector_column: name of the vector column (FixedSizeList<Float32>)
 ///     dim: vector dimension
 ///     nlist: number of IVF clusters (default 256)
@@ -109,7 +109,7 @@ fn rotator_type_str(rotator: RotatorType) -> &'static str {
 #[pyo3(signature = (
     store_config,
     file_paths,
-    pk_column,
+    pk_columns,
     vector_column,
     dim,
     nlist = 256,
@@ -123,7 +123,7 @@ fn rotator_type_str(rotator: RotatorType) -> &'static str {
 fn build_shard_vector_index(
     store_config: HashMap<String, String>,
     file_paths: Vec<String>,
-    pk_column: String,
+    pk_columns: Vec<String>,
     vector_column: String,
     dim: usize,
     nlist: usize,
@@ -136,7 +136,7 @@ fn build_shard_vector_index(
     run_shard_vector_index(
         store_config,
         file_paths,
-        pk_column,
+        pk_columns,
         vector_column,
         dim,
         nlist,
@@ -161,7 +161,7 @@ fn build_shard_vector_index(
 #[pyo3(signature = (
     store_config,
     file_paths,
-    pk_column,
+    pk_columns,
     vector_column,
     dim,
     nlist = 256,
@@ -175,7 +175,7 @@ fn build_shard_vector_index(
 fn rebuild_shard_vector_index(
     store_config: HashMap<String, String>,
     file_paths: Vec<String>,
-    pk_column: String,
+    pk_columns: Vec<String>,
     vector_column: String,
     dim: usize,
     nlist: usize,
@@ -188,7 +188,7 @@ fn rebuild_shard_vector_index(
     run_shard_vector_index(
         store_config,
         file_paths,
-        pk_column,
+        pk_columns,
         vector_column,
         dim,
         nlist,
@@ -205,7 +205,7 @@ fn rebuild_shard_vector_index(
 fn run_shard_vector_index(
     store_config: HashMap<String, String>,
     file_paths: Vec<String>,
-    pk_column: String,
+    pk_columns: Vec<String>,
     vector_column: String,
     dim: usize,
     nlist: usize,
@@ -265,7 +265,7 @@ fn run_shard_vector_index(
         store,
         config,
         file_paths,
-        pk_column,
+        pk_columns,
         object_store_options,
         default_fs,
     );
