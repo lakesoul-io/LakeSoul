@@ -8,7 +8,9 @@
 //! snapshot) in their own `SessionContext` and query it with SQL, without
 //! materializing the batches themselves. The provider pushes the query
 //! projection into the LakeSoul reader (keeping the merge key and the change
-//! column) and hides CDC tombstones, so a scan returns the logical state.
+//! column) and hides CDC tombstones (`delete` / `update_before`), so a scan
+//! returns the logical state by default; [`IvmReadMode::Raw`] exposes the
+//! physical merge-on-read rows instead.
 
 use std::sync::Arc;
 
@@ -29,12 +31,17 @@ use crate::table::IvmTable;
 /// How an [`IvmTableProvider`] reads its table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IvmReadMode {
-    /// The current merge-on-read state.
+    /// The current logical state: merge-on-read with the CDC tombstones
+    /// (`delete` / `update_before`) dropped.
     Current,
     /// The state as of a timestamp in milliseconds (inclusive).
     AsOf(i64),
     /// The state pinned to the partition versions of an epoch.
     AtVersions(Vec<PartitionVersion>),
+    /// The raw merge-on-read state, including the CDC tombstone rows.  Used
+    /// by tools that inspect the changelog protocol; logical queries should
+    /// keep the default [`IvmReadMode::Current`].
+    Raw,
 }
 
 /// A DataFusion table provider over one internal LakeSoul table.
@@ -58,6 +65,11 @@ impl IvmTableProvider {
     /// The current state of the table.
     pub fn current(table: IvmTable, client: MetaDataClient) -> Self {
         Self::new(table, client, IvmReadMode::Current)
+    }
+
+    /// The raw current state, including the CDC tombstone rows.
+    pub fn raw(table: IvmTable, client: MetaDataClient) -> Self {
+        Self::new(table, client, IvmReadMode::Raw)
     }
 
     /// The state as of `as_of_ms` (inclusive).
@@ -169,7 +181,7 @@ impl TableProvider for IvmTableProvider {
                 })?;
             runtime.block_on(async move {
                 match &mode {
-                    IvmReadMode::Current => {
+                    IvmReadMode::Current | IvmReadMode::Raw => {
                         table
                             .read_current_projected(&client, reader_projection.as_ref())
                             .await
@@ -198,9 +210,12 @@ impl TableProvider for IvmTableProvider {
         .await
         .map_err(|error| DataFusionError::Execution(error.to_string()))?
         .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-        let batches = self
-            .drop_tombstones(batches)
-            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let batches = match self.mode {
+            IvmReadMode::Raw => batches,
+            _ => self
+                .drop_tombstones(batches)
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?,
+        };
         let batches = match projection {
             Some(_) => project_batches(&batches, &out_schema),
             None => batches,
@@ -214,7 +229,8 @@ impl TableProvider for IvmTableProvider {
 }
 
 impl IvmTableProvider {
-    /// Drop the rows whose latest version is a CDC tombstone.
+    /// Drop the rows whose latest version is a CDC tombstone (`delete` or
+    /// `update_before`), so a scan returns the logical rows.
     fn drop_tombstones(&self, batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>> {
         let Some(column) = self.change_column() else {
             return Ok(batches);
@@ -231,9 +247,10 @@ impl IvmTableProvider {
                 .ok_or_else(|| {
                     rootcause::report!("change column {column} is not a string column")
                 })?;
-            let mask = BooleanArray::from_iter(
-                (0..values.len()).map(|row| Some(values.value(row) != "delete")),
-            );
+            let mask = BooleanArray::from_iter((0..values.len()).map(|row| {
+                let kind = values.value(row);
+                Some(kind != "delete" && kind != "update_before")
+            }));
             kept.push(arrow::compute::filter_record_batch(&batch, &mask)?);
         }
         Ok(kept)

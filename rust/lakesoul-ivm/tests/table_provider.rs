@@ -92,6 +92,11 @@ async fn query_map(context: &SessionContext, sql: &str) -> HashMap<String, (i64,
     mv_map(&batches)
 }
 
+async fn query_rows(context: &SessionContext, sql: &str) -> usize {
+    let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
+    batches.iter().map(|batch| batch.num_rows()).sum()
+}
+
 struct Fixture {
     runtime: IvmRuntime,
     dir: tempfile::TempDir,
@@ -294,4 +299,110 @@ async fn provider_hides_cdc_tombstones() {
     // The deleted row is a tombstone in the merge-on-read state and must not
     // surface through the provider.
     assert_eq!(keys, vec![1, 3]);
+}
+
+#[test_log::test(tokio::test)]
+async fn provider_logical_reads_drop_tombstones_and_raw_keeps_them() {
+    let fixture = fixture().await;
+    let runtime = &fixture.runtime;
+    let _keep_dir = &fixture.dir;
+
+    // An append-only changelog keeps both tombstone kinds in its files.
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_logical_src_{suffix}"),
+                table_path(&fixture.dir, "logical"),
+                source_schema(),
+            )
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "insert"),
+                (1, "a", 10, "update_before"),
+                (1, "a", 12, "update_after"),
+                (2, "a", 20, "insert"),
+                (2, "a", 20, "delete"),
+            ]),
+        )
+        .await
+        .unwrap();
+
+    let context = SessionContext::new();
+    context
+        .register_table("src_now", Arc::new(runtime.table_provider(&source)))
+        .unwrap();
+    context
+        .register_table("src_raw", Arc::new(runtime.table_provider_raw(&source)))
+        .unwrap();
+    assert_eq!(query_rows(&context, "select * from src_now").await, 3);
+    assert_eq!(query_rows(&context, "select * from src_raw").await, 5);
+    assert_eq!(
+        query_rows(
+            &context,
+            "select * from src_now where op in ('delete', 'update_before')",
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        query_rows(
+            &context,
+            "select * from src_raw where op in ('delete', 'update_before')",
+        )
+        .await,
+        2
+    );
+
+    // MV tables carry `rowKinds` instead of a CDC column; the logical read
+    // drops the delete tombstone of a group whose last row was removed.
+    fixture
+        .source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime
+        .refresh_sum_count(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(2, "b", 20, "delete")]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_sum_count(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    context
+        .register_table("mv_now", Arc::new(runtime.table_provider(&fixture.mv)))
+        .unwrap();
+    context
+        .register_table("mv_raw", Arc::new(runtime.table_provider_raw(&fixture.mv)))
+        .unwrap();
+    assert_eq!(query_rows(&context, "select * from mv_now").await, 1);
+    assert_eq!(query_rows(&context, "select * from mv_raw").await, 2);
+    assert_eq!(
+        query_rows(&context, "select * from mv_now where g = 'b'").await,
+        0
+    );
+    assert_eq!(
+        query_rows(
+            &context,
+            "select * from mv_raw where g = 'b' and \"rowKinds\" = 'delete'",
+        )
+        .await,
+        1
+    );
 }
