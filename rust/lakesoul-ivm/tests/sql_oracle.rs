@@ -347,6 +347,22 @@ async fn oracle_top_k_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_select_distinct_matches_full_recompute() {
+    // DISTINCT over the value column: values enter and leave the view as
+    // updates and deletes change the multiset.
+    run_oracle(
+        "selectdistinct",
+        1,
+        sum_count_mv_schema_for(&source_schema(), &["v".to_string()], None).unwrap(),
+        vec!["v".to_string()],
+        "SELECT DISTINCT v FROM __SRC__ WHERE v > 30",
+        "SELECT DISTINCT v FROM __SRC__ WHERE op <> 'delete' AND v > 30",
+        "SELECT v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_count_distinct_matches_full_recompute() {
     // The optimizer splits COUNT(DISTINCT v); the SQL entry must reconstruct
     // the distinct view from the two-level aggregate plan.

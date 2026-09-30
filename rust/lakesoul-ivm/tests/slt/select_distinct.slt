@@ -1,0 +1,60 @@
+# SELECT DISTINCT over one column (count-only grouping).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=5,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT g FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query I rowsort
+SELECT g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a
+b
+
+# The only row of b is deleted: the distinct value disappears.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete; k=4,g=c,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT g FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a
+c
+
+# A WHERE changes the definition: the view is rebuilt.
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT g FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query I rowsort
+SELECT g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a
+
+# A row enters the predicate and brings its value back.
+statement ok
+/*ivm-append __SRC__: k=4,g=c,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT g FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a
+c

@@ -753,6 +753,27 @@ fn sqllogic_window_where() {
 }
 
 #[test]
+fn sqllogic_select_distinct() {
+    run_script_for_mv(
+        "selectdistinct",
+        include_str!("slt/select_distinct.slt"),
+        sum_count_mv_schema_for(&source_schema(), &group_keys(&["g"]), None).unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_select_distinct_rows() {
+    run_script_for_mv(
+        "selectdistinctrows",
+        include_str!("slt/select_distinct_rows.slt"),
+        sum_count_mv_schema_for(&source_schema(), &group_keys(&["k", "g"]), None)
+            .unwrap(),
+        group_keys(&["k", "g"]),
+    );
+}
+
+#[test]
 fn sqllogic_distinct_agg() {
     run_script_for_mv(
         "distinct",
