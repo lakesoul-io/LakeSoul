@@ -1,0 +1,51 @@
+# UNION ALL with a different predicate per branch (keyed sources).
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=b,v=7,op=insert; k=2,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT * FROM __SRC1__ WHERE v > 5 UNION ALL SELECT * FROM __SRC2__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITII rowsort
+SELECT k, g, v, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 0
+1 b 7 1
+
+# Rows move across the branch predicates.
+statement ok
+/*ivm-append __SRC1__: k=2,g=a,v=9,op=insert; k=1,g=a,v=2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=2,g=b,v=6,op=insert; k=1,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT * FROM __SRC1__ WHERE v > 5 UNION ALL SELECT * FROM __SRC2__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 9 0
+2 b 6 1
+
+# Changing one branch's predicate rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT * FROM __SRC1__ WHERE v > 5 UNION ALL SELECT * FROM __SRC2__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITII rowsort
+SELECT k, g, v, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 9 0
+2 b 6 1

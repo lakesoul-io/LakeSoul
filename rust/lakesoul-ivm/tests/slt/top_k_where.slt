@@ -1,0 +1,62 @@
+# TOP-K over a filtered source: the predicate applies before ranking.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert; k=4,g=b,v=1,op=insert; k=5,g=b,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn FROM __SRC__ WHERE v > 5) t WHERE rn <= 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 a 7
+5 b 6
+
+# The top row leaves the predicate and a lower row enters it.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=2,op=insert; k=4,g=b,v=8,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn FROM __SRC__ WHERE v > 5) t WHERE rn <= 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10
+5 b 6
+
+# A delete and an update in one window.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete; k=3,g=a,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn FROM __SRC__ WHERE v > 5) t WHERE rn <= 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 a 6
+5 b 6
+
+# A definition change (limit 2) rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn FROM __SRC__ WHERE v > 5) t WHERE rn <= 2
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 a 6
+4 b 8
+5 b 6

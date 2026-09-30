@@ -31,7 +31,8 @@ use datafusion::sql::unparser::Unparser;
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, MinMaxKind, SemiAntiCondition, ViewSpec, WindowFunction,
+    CompareOp, DistinctAggKind, MinMaxKind, SemiAntiCondition, UnionSourceSpec, ViewSpec,
+    WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -199,22 +200,27 @@ fn scan_filter(filters: &[Expr]) -> Result<Option<String>> {
     Ok(filter)
 }
 
-/// The source and the filter of an aggregate's input.
-fn collect_aggregate_source(
+/// The source and the filter of the plan below an aggregate, window or top-k
+/// node.  The optimizer may push the projection (and, with a capable
+/// provider, the filter) into the table scan, so plain projections and
+/// filters are both collected.
+fn collect_filtered_source(
     plan: &LogicalPlan,
     tables: &HashMap<String, IvmTable>,
+    shape: &str,
 ) -> Result<(IvmTable, Option<String>)> {
     match peel(plan) {
         LogicalPlan::Projection(projection) => {
             if !is_plain_projection(projection) {
-                return Err(unsupported(
-                    "computed columns below an aggregate are not supported",
-                ));
+                return Err(unsupported(format!(
+                    "computed columns below {shape} are not supported"
+                )));
             }
-            collect_aggregate_source(&projection.input, tables)
+            collect_filtered_source(&projection.input, tables, shape)
         }
         LogicalPlan::Filter(filter) => {
-            let (source, previous) = collect_aggregate_source(&filter.input, tables)?;
+            let (source, previous) =
+                collect_filtered_source(&filter.input, tables, shape)?;
             let filter =
                 Some(combine_filter(previous, render_filter(&filter.predicate)?));
             Ok((source, filter))
@@ -223,7 +229,7 @@ fn collect_aggregate_source(
             let source = resolve_table(tables, &scan.table_name)?.clone();
             Ok((source, scan_filter(&scan.filters)?))
         }
-        other => Err(unsupported(format!("aggregate over {}", plan_label(other)))),
+        other => Err(unsupported(format!("{shape} over {}", plan_label(other)))),
     }
 }
 
@@ -284,9 +290,9 @@ fn analyze_aggregate(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let (source, filter) = collect_aggregate_source(&aggregate.input, tables)?;
+    let (source, filter) =
+        collect_filtered_source(&aggregate.input, tables, "an aggregate")?;
     let source = &source;
-    let filter = filter.as_deref().map(str::to_string);
 
     let mut group_keys = Vec::with_capacity(aggregate.group_expr.len());
     for expr in &aggregate.group_expr {
@@ -422,13 +428,7 @@ fn analyze_window(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let scan = match peel(&window.input) {
-        LogicalPlan::TableScan(scan) => scan,
-        other => {
-            return Err(unsupported(format!("window over {}", plan_label(other))));
-        }
-    };
-    let source = resolve_table(tables, &scan.table_name)?;
+    let (source, filter) = collect_filtered_source(&window.input, tables, "a window")?;
     // Selecting the window expression itself is fine; computing on top of it
     // would be silently dropped otherwise.
     for expr in &projection.expr {
@@ -448,6 +448,7 @@ fn analyze_window(
         order_keys,
         function,
         value_column,
+        filter,
     })
 }
 
@@ -470,11 +471,6 @@ fn try_analyze_top_k(
     let LogicalPlan::Window(window) = peel(node) else {
         return Ok(None);
     };
-    let scan = match peel(&window.input) {
-        LogicalPlan::TableScan(scan) => scan,
-        _ => return Ok(None),
-    };
-    let source = resolve_table(tables, &scan.table_name)?;
     let (function, partition_keys, order_keys, value_column) =
         window_function_spec(window)?;
     if function != WindowFunction::RowNumber || value_column.is_some() {
@@ -545,6 +541,7 @@ fn try_analyze_top_k(
         }
         None => Vec::new(),
     };
+    let (source, filter) = collect_filtered_source(&window.input, tables, "top-k")?;
     Ok(Some(ViewSpec::TopK {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -553,6 +550,7 @@ fn try_analyze_top_k(
         order_keys,
         output_columns,
         limit,
+        filter,
     }))
 }
 
@@ -844,8 +842,8 @@ fn analyze_union(
     if sources.len() < 2 {
         return Err(unsupported("UNION ALL needs at least two branches"));
     }
-    for source in &sources[1..] {
-        if source.schema != sources[0].schema {
+    for (source, _) in &sources[1..] {
+        if source.schema != sources[0].0.schema {
             return Err(unsupported(
                 "UNION ALL branches must have identical schemas",
             ));
@@ -853,63 +851,41 @@ fn analyze_union(
     }
     Ok(ViewSpec::UnionAll {
         view_id: request.view_id.clone(),
-        source_table_ids: sources
-            .iter()
-            .map(|source| source.table_id.clone())
+        sources: sources
+            .into_iter()
+            .map(|(table, filter)| UnionSourceSpec {
+                table_id: table.table_id,
+                filter,
+            })
             .collect(),
         mv_table_id: request.mv_table_id.clone(),
     })
 }
 
-/// The source of one UNION ALL branch: a table scan, optionally behind a
-/// projection that selects every source column in order.
-fn union_branch<'a>(
-    plan: &'a LogicalPlan,
-    tables: &'a HashMap<String, IvmTable>,
-) -> Result<&'a IvmTable> {
-    let (scan_plan, projection) = match plan {
-        LogicalPlan::Projection(projection) => {
-            (peel(&projection.input), Some(projection))
-        }
-        other => (other, None),
-    };
-    let LogicalPlan::TableScan(scan) = scan_plan else {
-        return Err(unsupported(format!(
-            "UNION ALL branch over {}",
-            plan_label(scan_plan)
-        )));
-    };
-    let source = resolve_table(tables, &scan.table_name)?;
-    let source_columns = source
-        .schema
-        .fields()
-        .iter()
-        .map(|field| field.name().clone())
-        .collect::<Vec<_>>();
-    // The projection may live in the plan node or have been pushed into the
-    // scan (`scan.schema` reflects the pruned columns either way).
-    let columns = match projection {
-        Some(projection) => projection
-            .expr
+/// The source of one UNION ALL branch, with the branch filter.  The branch
+/// must select every source column in order.
+fn union_branch(
+    plan: &LogicalPlan,
+    tables: &HashMap<String, IvmTable>,
+) -> Result<(IvmTable, Option<String>)> {
+    let (source, filter) = collect_filtered_source(plan, tables, "a UNION ALL branch")?;
+    // `plan.schema()` is the branch output, `source.schema` the full table:
+    // a pruned or reordered projection is rejected.
+    let source_fields = source.schema.fields();
+    let branch_fields = plan.schema().fields();
+    if branch_fields.len() != source_fields.len()
+        || branch_fields
             .iter()
-            .map(column_name)
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                unsupported("UNION ALL branches must select source columns")
-            })?,
-        None => scan
-            .projected_schema
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .collect(),
-    };
-    if columns != source_columns {
+            .zip(source_fields.iter())
+            .any(|(left, right)| {
+                left.name() != right.name() || left.data_type() != right.data_type()
+            })
+    {
         return Err(unsupported(
             "UNION ALL branches must select all source columns in order",
         ));
     }
-    Ok(source)
+    Ok((source, filter))
 }
 
 /// The table of one join input, plus its alias when it has one.
@@ -1536,6 +1512,7 @@ mod tests {
                     order_keys: vec!["v".to_string()],
                     function,
                     value_column: None,
+                    filter: None,
                 }
             );
         }
@@ -1584,18 +1561,76 @@ mod tests {
         )
         .await
         .unwrap();
+        let ViewSpec::TopK {
+            group_keys,
+            order_keys,
+            output_columns,
+            limit,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert_eq!(order_keys, vec!["v".to_string()]);
+        assert_eq!(output_columns, vec!["k".to_string(), "v".to_string()]);
+        assert_eq!(limit, 3);
+        assert_eq!(filter, None);
+    }
+
+    #[tokio::test]
+    async fn analyzes_top_k_where() {
+        let analyzed = analyze(
+            "select k, v from (select k, g, v, row_number() over (partition by g order by v) as rn from src where v > 5) t where rn <= 3",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::TopK { limit, filter, .. } = analyzed.spec else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(limit, 3);
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+    }
+
+    #[tokio::test]
+    async fn analyzes_window_where() {
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v) from src where v > 5",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { filter, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+    }
+
+    #[tokio::test]
+    async fn analyzes_window_and_top_k_where_on_the_optimized_plan() {
+        // The optimizer pushes the filter below the window.
+        let analyzed = analyze_optimized(
+            "select k, sum(v) over (partition by g) from src where v > 5 and g <> 'x'",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { filter, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
         assert_eq!(
-            analyzed.spec,
-            ViewSpec::TopK {
-                view_id: "view_1".to_string(),
-                source_table_id: "table_src".to_string(),
-                mv_table_id: "table_mv".to_string(),
-                group_keys: vec!["g".to_string()],
-                order_keys: vec!["v".to_string()],
-                output_columns: vec!["k".to_string(), "v".to_string()],
-                limit: 3,
-            }
+            normalized(filter.as_deref()).as_deref(),
+            Some("v > 5 AND g <> 'x'")
         );
+
+        let analyzed = analyze_optimized(
+            "select k, v from (select k, g, v, row_number() over (partition by g order by v) as rn from src where v > 5) t where rn <= 3",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::TopK { filter, .. } = analyzed.spec else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
     }
 
     #[tokio::test]
@@ -1755,9 +1790,44 @@ mod tests {
             analyzed.spec,
             ViewSpec::UnionAll {
                 view_id: "view_1".to_string(),
-                source_table_ids: vec!["table_a".to_string(), "table_b".to_string()],
+                sources: vec![
+                    UnionSourceSpec {
+                        table_id: "table_a".to_string(),
+                        filter: None,
+                    },
+                    UnionSourceSpec {
+                        table_id: "table_b".to_string(),
+                        filter: None,
+                    },
+                ],
                 mv_table_id: "table_mv".to_string(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_union_all_where() {
+        let left = source_table("a");
+        let right = source_table("b");
+        let analyzed = analyze_multi(
+            "select * from a where v > 5 union all select * from b where g = 'x'",
+            vec![left, right],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::UnionAll { sources, .. } = analyzed.spec else {
+            panic!("expected a union spec");
+        };
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].table_id, "table_a");
+        assert_eq!(
+            normalized(sources[0].filter.as_deref()).as_deref(),
+            Some("v > 5")
+        );
+        assert_eq!(sources[1].table_id, "table_b");
+        assert_eq!(
+            normalized(sources[1].filter.as_deref()).as_deref(),
+            Some("g = 'x'")
         );
     }
 

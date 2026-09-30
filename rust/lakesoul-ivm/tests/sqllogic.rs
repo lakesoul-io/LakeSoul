@@ -29,9 +29,11 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
-    MinMaxKind, PhysicalFormat, min_max_mv_schema_for, row_mv_schema_for,
-    sum_count_mv_schema_for,
+    IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
+    IvmTableOptions, MinMaxKind, PhysicalFormat, WindowFunction, min_max_mv_schema_for,
+    row_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, window_aggregate_mv_schema_for,
+    window_ranking_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -476,12 +478,49 @@ fn typed_source_schema() -> arrow::datatypes::SchemaRef {
     ]))
 }
 
-/// Create a source table plus an MV and run one script against them.
-fn run_script_for_source(
+/// One source table of an SLT fixture.
+struct SltSource {
+    /// The placeholder in the script, e.g. `__SRC__`.
+    placeholder: &'static str,
+    schema: arrow::datatypes::SchemaRef,
+    primary_keys: Vec<String>,
+    cdc_column: bool,
+}
+
+impl SltSource {
+    /// A keyed source with CDC column `op`.
+    fn keyed(
+        placeholder: &'static str,
+        schema: arrow::datatypes::SchemaRef,
+        primary_keys: Vec<String>,
+    ) -> Self {
+        Self {
+            placeholder,
+            schema,
+            primary_keys,
+            cdc_column: true,
+        }
+    }
+
+    /// An append-only source without CDC semantics.
+    fn append_only(
+        placeholder: &'static str,
+        schema: arrow::datatypes::SchemaRef,
+    ) -> Self {
+        Self {
+            placeholder,
+            schema,
+            primary_keys: Vec::new(),
+            cdc_column: false,
+        }
+    }
+}
+
+/// Create the given source tables plus an MV and run one script against them.
+fn run_script_for_sources(
     tag: &str,
     script: &str,
-    source_schema: arrow::datatypes::SchemaRef,
-    source_primary_keys: Vec<String>,
+    sources: Vec<SltSource>,
     mv_schema: arrow::datatypes::SchemaRef,
     mv_primary_keys: Vec<String>,
 ) {
@@ -491,25 +530,31 @@ fn run_script_for_source(
         .unwrap();
     let dir = tempdir().unwrap();
     let suffix = uuid::Uuid::new_v4().simple();
-    let source_name = format!("slt_{tag}_src_{suffix}");
+    let source_names = (0..sources.len())
+        .map(|index| format!("slt_{tag}_src{index}_{suffix}"))
+        .collect::<Vec<_>>();
     let mv_name = format!("slt_{tag}_mv_{suffix}");
-    let schema = source_schema;
     setup.block_on(async {
         let runtime = IvmRuntime::from_env().await.unwrap();
         runtime.init_schema().await.unwrap();
-        runtime
-            .create_table(
-                IvmTableOptions::new(
-                    source_name.clone(),
-                    format!("file://{}", dir.path().join("src").display()),
-                    schema.clone(),
-                )
-                .with_primary_keys(source_primary_keys)
-                .with_cdc_column(CHANGE_COLUMN)
-                .with_file_format(PhysicalFormat::Vortex),
+        for (index, source) in sources.iter().enumerate() {
+            let mut options = IvmTableOptions::new(
+                source_names[index].clone(),
+                format!(
+                    "file://{}",
+                    dir.path().join(format!("src{index}")).display()
+                ),
+                source.schema.clone(),
             )
-            .await
-            .unwrap();
+            .with_file_format(PhysicalFormat::Vortex);
+            if !source.primary_keys.is_empty() {
+                options = options.with_primary_keys(source.primary_keys.clone());
+            }
+            if source.cdc_column {
+                options = options.with_cdc_column(CHANGE_COLUMN);
+            }
+            runtime.create_table(options).await.unwrap();
+        }
         runtime
             .create_table(
                 IvmTableOptions::new(
@@ -525,13 +570,16 @@ fn run_script_for_source(
     });
     drop(setup);
 
-    let script = script
-        .replace("__SRC__", &source_name)
-        .replace("__MV__", &mv_name);
-    let registrations = vec![
-        (source_name.clone(), source_name.clone()),
-        (mv_name.clone(), mv_name.clone()),
-    ];
+    let mut script = script.to_string();
+    for (source, name) in sources.iter().zip(&source_names) {
+        script = script.replace(source.placeholder, name);
+    }
+    let script = script.replace("__MV__", &mv_name);
+    let mut registrations = source_names
+        .iter()
+        .map(|name| (name.clone(), name.clone()))
+        .collect::<Vec<_>>();
+    registrations.push((mv_name.clone(), mv_name.clone()));
     // Every run gets its own session and private runtime; the tables live in
     // LakeSoul metadata, so they are reopened by name.
     let make_connection = move || {
@@ -542,6 +590,28 @@ fn run_script_for_source(
     runner
         .run_script(&script)
         .unwrap_or_else(|error| panic!("{tag}: {error}"));
+}
+
+/// Create one source table plus an MV and run one script against them.
+fn run_script_for_source(
+    tag: &str,
+    script: &str,
+    source_schema: arrow::datatypes::SchemaRef,
+    source_primary_keys: Vec<String>,
+    mv_schema: arrow::datatypes::SchemaRef,
+    mv_primary_keys: Vec<String>,
+) {
+    run_script_for_sources(
+        tag,
+        script,
+        vec![SltSource::keyed(
+            "__SRC__",
+            source_schema,
+            source_primary_keys,
+        )],
+        mv_schema,
+        mv_primary_keys,
+    );
 }
 
 /// The default fixture: keyed on `k`, CDC column `op`.
@@ -649,6 +719,79 @@ fn sqllogic_row_typed_append() {
         group_keys(&["k"]),
         row_mv_schema_for(&schema, &output_columns).unwrap(),
         group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_where() {
+    run_script_for_mv(
+        "windowwhere",
+        include_str!("slt/window_where.slt"),
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_aggregate_where() {
+    run_script_for_mv(
+        "windowaggwhere",
+        include_str!("slt/window_aggregate_where.slt"),
+        window_aggregate_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Sum,
+            Some("v"),
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_top_k_where() {
+    run_script_for_mv(
+        "topkwhere",
+        include_str!("slt/top_k_where.slt"),
+        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_union_where() {
+    let source = source_schema();
+    run_script_for_sources(
+        "unionwhere",
+        include_str!("slt/union_where.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", source.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", source.clone(), group_keys(&["k"])),
+        ],
+        union_all_mv_schema_for(&source).unwrap(),
+        group_keys(&[IVM_SOURCE_COLUMN, "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_union_append_where() {
+    let source = source_schema();
+    run_script_for_sources(
+        "unionappend",
+        include_str!("slt/union_append_where.slt"),
+        vec![
+            SltSource::append_only("__SRC1__", source.clone()),
+            SltSource::append_only("__SRC2__", source.clone()),
+        ],
+        union_all_mv_schema_for(&source).unwrap(),
+        Vec::new(),
     );
 }
 

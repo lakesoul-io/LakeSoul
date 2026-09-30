@@ -13,7 +13,7 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
-    RowView, UnionAllView, row_mv_schema_for, union_all_mv_schema_for,
+    RowView, UnionAllView, UnionSource, row_mv_schema_for, union_all_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -489,7 +489,10 @@ async fn union_all_tracks_keyed_sources() {
         .unwrap();
     let view = UnionAllView::new(
         format!("union_{suffix}"),
-        vec![left.clone(), right.clone()],
+        vec![
+            UnionSource::new(left.clone()),
+            UnionSource::new(right.clone()),
+        ],
         mv.clone(),
     );
 
@@ -572,7 +575,10 @@ async fn union_all_append_only_sources() {
         .unwrap();
     let view = UnionAllView::new(
         format!("union_append_{suffix}"),
-        vec![left.clone(), right.clone()],
+        vec![
+            UnionSource::new(left.clone()),
+            UnionSource::new(right.clone()),
+        ],
         mv.clone(),
     );
 
@@ -699,7 +705,10 @@ async fn row_and_union_validation() {
         .unwrap();
     let view = UnionAllView::new(
         format!("valid_union_a_{suffix}"),
-        vec![source.clone(), append_only.clone()],
+        vec![
+            UnionSource::new(source.clone()),
+            UnionSource::new(append_only.clone()),
+        ],
         union_mv,
     );
     assert!(
@@ -725,7 +734,10 @@ async fn row_and_union_validation() {
         .unwrap();
     let view = UnionAllView::new(
         format!("valid_union_c_{suffix}"),
-        vec![append_only.clone(), append_only],
+        vec![
+            UnionSource::new(append_only.clone()),
+            UnionSource::new(append_only),
+        ],
         append_union_mv,
     );
     assert!(runtime.refresh_union_all(&view).await.unwrap().is_none());
