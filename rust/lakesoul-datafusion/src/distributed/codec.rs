@@ -63,8 +63,8 @@ use vortex_datafusion::{VortexScanCodec, VortexSource};
 /// The generation also covers the *list* of codecs (see [`user_codecs`]): its
 /// order decides which codec reads an extension payload, so registering a
 /// codec a worker does not know is a protocol change even when no existing
-/// message layout moved. Version 3 added [`VortexScanCodec`] at position 2.
-pub const CODEC_VERSION: u32 = 3;
+/// message layout moved. Version 2 added [`VortexScanCodec`] at position 2.
+pub const CODEC_VERSION: u32 = 2;
 
 /// Wire format for [`MergeParquetExec`].
 ///

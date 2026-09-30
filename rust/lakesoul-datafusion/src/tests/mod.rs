@@ -103,6 +103,26 @@ fn assert_batches_eq(table_name: &str, expected: &[&str], results: &[RecordBatch
     );
 }
 
+/// Like [`assert_batches_eq`], but compares the result rows in their original
+/// output order instead of sorting them first: a query whose `ORDER BY` is a
+/// total order must return exactly the expected sequence.
+#[track_caller]
+fn assert_batches_eq_ordered(
+    table_name: &str,
+    expected: &[&str],
+    results: &[RecordBatch],
+) {
+    let formatted = datafusion::arrow::util::pretty::pretty_format_batches(results)
+        .unwrap()
+        .to_string();
+    let actual: Vec<&str> = formatted.trim().lines().collect();
+    assert_eq!(
+        expected,
+        &actual[..],
+        "\n\n{table_name}\n\nexpected:\n\n{expected:#?}\nactual:\n\n{actual:#?}\n\n"
+    );
+}
+
 /// Register a LakeSoul table in the LakeSoul metadata.
 #[allow(dead_code)]
 #[cfg(test)]
@@ -312,9 +332,38 @@ pub(crate) async fn create_cdc_table(
     table_name: &str,
     file_format: PhysicalFormat,
 ) -> Result<()> {
+    create_cdc_table_inner(client, table_name, file_format, &[]).await
+}
+
+/// Like [`create_cdc_table`], with range partitions: one merge work unit per
+/// populated partition value, so a query over the whole table is distributed
+/// as a union of merge operators instead of staying on the coordinator.
+pub(crate) async fn create_cdc_table_with_range_partitions(
+    client: MetaDataClientRef,
+    table_name: &str,
+    file_format: PhysicalFormat,
+    range_partitions: &[&str],
+) -> Result<()> {
+    create_cdc_table_inner(client, table_name, file_format, range_partitions).await
+}
+
+async fn create_cdc_table_inner(
+    client: MetaDataClientRef,
+    table_name: &str,
+    file_format: PhysicalFormat,
+    range_partitions: &[&str],
+) -> Result<()> {
     let primary_keys = vec!["id".to_string()];
+    let schema = Arc::new(Schema::new(
+        range_partitions
+            .iter()
+            .map(|part| Field::new(*part, DataType::Int32, false))
+            .chain(cdc_schema().fields().iter().map(|f| f.as_ref().clone()))
+            .collect::<Vec<_>>(),
+    ));
     let io_config = LakeSoulIOConfigBuilder::new()
-        .with_schema(cdc_schema())
+        .with_schema(schema)
+        .with_range_partitions(range_partitions.iter().map(|p| p.to_string()).collect())
         .with_primary_keys(primary_keys.clone())
         .with_option(OPTION_KEY_CDC_COLUMN, "op")
         .with_option(OPTION_KEY_STABLE_SORT, "true")
@@ -346,7 +395,13 @@ pub(crate) async fn create_cdc_table(
                 file_format: Some(file_format.name().to_string()),
                 ..Default::default()
             })?,
-            partitions: format_table_info_partitions(&[], &primary_keys),
+            partitions: format_table_info_partitions(
+                &range_partitions
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>(),
+                &primary_keys,
+            ),
             domain: "public".to_string(),
         })
         .await?;

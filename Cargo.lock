@@ -5275,11 +5275,11 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-build-info"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 
 [[package]]
 name = "lakesoul-common"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "arrow-ipc",
  "arrow-schema 59.3.0",
@@ -5293,7 +5293,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-console"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -5311,7 +5311,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-datafusion"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "adbc_core",
  "adbc_driver_manager",
@@ -5376,7 +5376,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-es-gateway"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5408,7 +5408,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-flight"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "arrow",
  "arrow-array 59.3.0",
@@ -5450,7 +5450,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "arrow",
  "arrow-array 59.3.0",
@@ -5538,7 +5538,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io-c"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "arrow-array 59.3.0",
  "arrow-ipc",
@@ -5561,7 +5561,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-ivm"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "arrow",
  "arrow-array 59.3.0",
@@ -5588,7 +5588,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "async-trait",
  "bb8-postgres",
@@ -5621,7 +5621,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata-c"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "lakesoul-build-info",
  "lakesoul-common",
@@ -5635,7 +5635,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata-proto"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "bytes",
  "prost",
@@ -5644,7 +5644,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-observability"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "lakesoul-build-info",
  "metrics",
@@ -5660,7 +5660,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-python"
-version = "2.0.0"
+version = "2.1.0-dev.0"
 dependencies = [
  "arrow-array 59.3.0",
  "arrow-pyarrow",
@@ -5693,7 +5693,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-s3-proxy"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5738,7 +5738,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-text"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "crc32fast",
  "lakesoul-common",
@@ -5756,7 +5756,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-vector"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "async-trait",
  "bincode",
@@ -7925,7 +7925,7 @@ dependencies = [
 
 [[package]]
 name = "postgres-lakesoul"
-version = "4.0.0"
+version = "4.1.0-dev.0"
 dependencies = [
  "async-trait",
  "clap",
