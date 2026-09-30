@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | `NTILE/PERCENT_RANK/CUME_DIST`；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
+| 窗口 | 单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
@@ -1289,6 +1289,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   oracle 新增 FIRST_VALUE + 全分区 frame 的 10 轮随机场景；analyzer 单测覆盖默认/显式 frame
   的存储与渲染、NTH_VALUE 参数校验与各类拒绝。
   全量 IVM 套件 35 个测试二进制 / 159 个测试通过。
+
+### 10.16 NTILE/PERCENT_RANK/CUME_DIST 实施记录（PR-10）
+
+- **函数**：`WindowFunction::{Ntile, PercentRank, CumeDist}`；NTILE 的桶数是必需的正整数
+  字面量（用 `positive_integer_arg` 存入 `window_args`）；MV 列 `ntile`（Int64；DataFusion 的
+  ntile 返回 UInt64，SQL 里 cast 成 bigint）、`percent_rank`/`cume_dist`（Float64）。
+- **排名列类型**：`window_ranking_mv_schema_for` 改用 `rank_result_type`（PercentRank/CumeDist
+  → Float64，其余 → Int64），列非空。
+- **frame**：三者都忽略 frame（`uses_frame()` 为 false），不输出 frame；NTILE 追加主键
+  tie-breaker（分桶确定），PERCENT_RANK/CUME_DIST 不追加（并列行必须共享同一个排名/分布值）。
+- **测试**：`window_ntile.slt`（分桶随排序变化）、`window_percent_rank.slt`、
+  `window_cume_dist.slt`（5 行唯一序，步长 0.25/0.2 便于精确断言）；oracle 新增 NTILE(3) 的
+  10 轮随机场景；analyzer 单测覆盖桶数校验与缺少 ORDER BY 的拒绝。
+  全量 IVM 套件 35 个测试二进制 / 164 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

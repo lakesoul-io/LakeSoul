@@ -1,0 +1,36 @@
+# NTILE buckets follow the ordering.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert; k=4,g=a,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, NTILE(2) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, ntile FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 2
+a 2 1
+a 3 2
+a 4 1
+
+# An update moves the row to the last bucket.
+statement ok
+/*ivm-append __SRC__: k=4,g=a,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, NTILE(2) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, ntile FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 2
+a 2 1
+a 3 1
+a 4 2

@@ -1,0 +1,38 @@
+# CUME_DIST over a partition with unique order keys.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=5,op=insert; k=2,g=a,v=1,op=insert; k=3,g=a,v=4,op=insert; k=4,g=a,v=2,op=insert; k=5,g=a,v=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, CUME_DIST() OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITR rowsort
+SELECT g, k, cume_dist FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 1.0
+a 2 0.2
+a 3 0.8
+a 4 0.4
+a 5 0.6
+
+# Moving a row to the end renumbers every distribution value.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, CUME_DIST() OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITR rowsort
+SELECT g, k, cume_dist FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 0.8
+a 2 1.0
+a 3 0.6
+a 4 0.2
+a 5 0.4

@@ -907,6 +907,54 @@ fn sqllogic_window_lead() {
 }
 
 #[test]
+fn sqllogic_window_ntile() {
+    run_script_for_mv(
+        "windowntile",
+        include_str!("slt/window_ntile.slt"),
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Ntile,
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_percent_rank() {
+    run_script_for_mv(
+        "windowpercent",
+        include_str!("slt/window_percent_rank.slt"),
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::PercentRank,
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_cume_dist() {
+    run_script_for_mv(
+        "windowcume",
+        include_str!("slt/window_cume_dist.slt"),
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::CumeDist,
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_first_value() {
     run_script_for_mv(
         "windowfirst",
