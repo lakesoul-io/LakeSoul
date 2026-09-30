@@ -1,0 +1,78 @@
+# AVG maintenance: bootstrap, updates, deletes and HAVING.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=5,op=insert; k=3,g=b,v=4,op=insert; k=4,g=b,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 7.5
+b 6.5
+
+# Updates change the sums behind the average.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=6,op=insert; k=4,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5.5
+b 5.5
+
+# A delete and a new group.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=4,op=delete; k=5,g=c,v=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5.5
+b 7.0
+c 3.0
+
+# AVG in HAVING: only groups above the threshold stay.
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g HAVING AVG(v) > 4
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5.5
+b 7.0
+
+# A group leaves the HAVING threshold; another enters the view.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=6,op=delete; k=2,g=a,v=2,op=insert; k=5,g=c,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g HAVING AVG(v) > 4
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 7.0
+c 12.0

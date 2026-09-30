@@ -1,0 +1,32 @@
+# AVG ignores NULL values; an all-NULL group averages to NULL.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=null,op=insert; k=3,g=b,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10.0
+b NULL
+
+# The non-NULL count drives the denominator.
+statement ok
+/*ivm-append __SRC__: k=4,g=a,v=6,op=insert; k=5,g=b,v=8,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 8.0
+b 8.0

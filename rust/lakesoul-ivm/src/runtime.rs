@@ -38,6 +38,9 @@ use crate::table::{
 pub const IVM_SUM_COLUMN: &str = "sum_v";
 /// The `COUNT` column of a [`sum_count_mv_schema`] materialized view.
 pub const IVM_COUNT_COLUMN: &str = "count_v";
+/// The average column of an [`avg_mv_schema_for`] materialized view
+/// (`AVG(value_column)`).
+pub const IVM_AVG_COLUMN: &str = "avg_v";
 /// The count of non-NULL values in a [`sum_count_mv_schema`] state row. It is
 /// what lets an all-NULL group sum to NULL instead of 0, matching SQL `SUM`.
 pub const IVM_NONNULL_COUNT_COLUMN: &str = "__ivm_nonnull_count";
@@ -175,6 +178,10 @@ pub enum ViewSpec {
         /// keys).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
+        /// `true` for `AVG(value_column)`: the MV additionally exposes the
+        /// average as [`IVM_AVG_COLUMN`].
+        #[serde(default)]
+        average: bool,
     },
     /// Inner equi-join of the append-only changelogs of two sources, appended
     /// to an append-only output table.
@@ -388,6 +395,9 @@ pub struct SumCountView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
     pub having: Option<String>,
+    /// `true` for an `AVG` view: the MV additionally holds
+    /// [`IVM_AVG_COLUMN`].
+    pub average: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -409,6 +419,7 @@ impl SumCountView {
             value_column,
             filter: None,
             having: None,
+            average: false,
             refresh_interval_ms: 0,
         }
     }
@@ -429,6 +440,7 @@ impl SumCountView {
             value_column,
             filter: None,
             having: None,
+            average: false,
             refresh_interval_ms: 0,
         }
     }
@@ -445,6 +457,12 @@ impl SumCountView {
         self
     }
 
+    /// Materialize the average as well; the value column must be numeric.
+    pub fn with_average(mut self) -> Self {
+        self.average = true;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::SumCount {
             view_id: self.view_id.clone(),
@@ -454,6 +472,7 @@ impl SumCountView {
             value_column: self.value_column.clone(),
             filter: self.filter.clone(),
             having: self.having.clone(),
+            average: self.average,
         }
     }
 }
@@ -1776,6 +1795,49 @@ pub fn sum_count_mv_schema_for(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The schema of an `AVG` materialized view: the sum/count machinery columns
+/// (`sum_v`, `count_v`, the non-NULL count) plus the average
+/// ([`IVM_AVG_COLUMN`]).
+pub fn avg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
+    avg_result_type(&field_type(source_schema, value_column)?)?;
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(
+        IVM_SUM_COLUMN,
+        sum_result_type(&field_type(source_schema, value_column)?)?,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_NONNULL_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_AVG_COLUMN,
+        DataType::Float64,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// The schema of a value-count state table, deriving the key and value types
 /// from the source schema.
 pub fn value_count_state_schema_for(
@@ -1945,6 +2007,7 @@ impl IvmRuntime {
                 value_column,
                 filter,
                 having,
+                average,
             } => SpecView::SumCount(SumCountView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1953,6 +2016,7 @@ impl IvmRuntime {
                 value_column: value_column.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
+                average: *average,
                 refresh_interval_ms,
             }),
             ViewSpec::Join {
@@ -2263,6 +2327,12 @@ impl IvmRuntime {
         validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
         if let Some(value_column) = &view.value_column {
             sum_result_type(&field_type(&view.source.schema, value_column)?)?;
+        }
+        if view.average {
+            let value_column = view.value_column.as_deref().ok_or_else(|| {
+                report!("AVG view {} needs a value column", view.view_id)
+            })?;
+            avg_result_type(&field_type(&view.source.schema, value_column)?)?;
         }
 
         let window = self
@@ -2732,6 +2802,12 @@ impl IvmRuntime {
         validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
         if let Some(value_column) = &view.value_column {
             sum_result_type(&field_type(&view.source.schema, value_column)?)?;
+        }
+        if view.average {
+            let value_column = view.value_column.as_deref().ok_or_else(|| {
+                report!("AVG view {} needs a value column", view.view_id)
+            })?;
+            avg_result_type(&field_type(&view.source.schema, value_column)?)?;
         }
 
         self.metadata
@@ -4975,6 +5051,25 @@ fn sum_result_type(value_type: &DataType) -> Result<DataType> {
     })
 }
 
+/// The result type of `AVG(value_column)`; only numeric inputs are supported.
+fn avg_result_type(value_type: &DataType) -> Result<DataType> {
+    Ok(match value_type {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64
+        | DataType::Float32
+        | DataType::Float64 => DataType::Float64,
+        other => {
+            return Err(report!("AVG is not supported for value type {other}"));
+        }
+    })
+}
+
 fn key_schema(source_schema: &Schema, group_keys: &[String]) -> Result<SchemaRef> {
     Ok(Arc::new(Schema::new(key_fields(
         source_schema,
@@ -5136,17 +5231,31 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         };
         let active_match = key_join_condition_null_safe("a", "s", &view.group_keys);
         let already_match = key_join_condition_null_safe("a", "p", &view.group_keys);
+        let avg = quote_ident(IVM_AVG_COLUMN);
+        let avg_group = if view.average {
+            format!(
+                ", case when {group_nonnull} > 0 then cast({group_sum} as double) \
+                     / cast({group_nonnull} as double) else null end as {avg}"
+            )
+        } else {
+            String::new()
+        };
+        let avg_col = if view.average {
+            format!(", {avg}")
+        } else {
+            String::new()
+        };
         let sql = format!(
             "with affected as ({affected}), \
              group_now as (select {keys}, {group_sum} as sum_v, {group_count} as count_v, \
-                                  {group_nonnull} as {nonnull_c} \
+                                  {group_nonnull} as {nonnull_c}{avg_group} \
                            from {src_from} group by {keys}), \
              already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
              active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-             deletes as (select {keys}, sum_v, count_v, {nonnull_c}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+             deletes as (select {keys}, sum_v, count_v, {nonnull_c}{avg_col}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                          from active s \
                          where exists (select 1 from affected a where {active_match})), \
-             inserts as (select {keys}, sum_v, count_v, {nonnull_c}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+             inserts as (select {keys}, sum_v, count_v, {nonnull_c}{avg_col}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                          from group_now p \
                          where count_v <> 0 and ({having}) \
                            and not exists (select 1 from already a where {already_match})) \
@@ -5242,15 +5351,28 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         .map(|key| format!("(a.{q} IS NOT DISTINCT FROM {q})", q = quote_ident(key)))
         .collect::<Vec<_>>()
         .join(" and ");
-    let passing = view
-        .having
-        .as_deref()
-        .map(|having| format!("passing as (select * from new_values where {having}), "));
-    let passing = passing.as_deref().unwrap_or_default();
-    let insert_source = if view.having.is_some() {
-        "passing"
+    let avg = quote_ident(IVM_AVG_COLUMN);
+    let avg_new = if view.average {
+        format!(
+            ", case when n_nonnull > 0 \
+                   then cast(coalesce(sum_v + dsum, sum_v, dsum) as double) \
+                        / cast(n_nonnull as double) else null end as {avg}"
+        )
     } else {
-        "new_values"
+        String::new()
+    };
+    let avg_delete = if view.average {
+        format!(
+            ", case when s_nonnull > 0 then cast(sum_v as double) \
+                   / cast(s_nonnull as double) else null end as {avg}"
+        )
+    } else {
+        String::new()
+    };
+    let avg_col = if view.average {
+        format!(", {avg}")
+    } else {
+        String::new()
     };
     format!(
         "with delta_pks as (select distinct {pks} from delta), \
@@ -5264,13 +5386,13 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
          new_values as (select {keys}, \
                                case when n_nonnull > 0 then coalesce(sum_v + dsum, sum_v, dsum) else null end as sum_v, \
                                coalesce(count_v + dcount, count_v, dcount) as count_v, \
-                               n_nonnull as {nonnull_c} \
+                               n_nonnull as {nonnull_c}{avg_new} \
                         from merged where dcount is not null), \
-         {passing}deletes as (select {keys}, sum_v, count_v, s_nonnull as {nonnull_c}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         deletes as (select {keys}, sum_v, count_v, s_nonnull as {nonnull_c}{avg_delete}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from merged where s_epoch is not null and dcount is not null), \
-         inserts as (select {keys}, sum_v, count_v, {nonnull_c}, \
+         inserts as (select {keys}, sum_v, count_v, {nonnull_c}{avg_col}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-                     from {insert_source} \
+                     from new_values \
                      where count_v <> 0 \
                        and not exists (select 1 from already a where {already_match})) \
          select * from deletes union all select * from inserts \
@@ -5292,9 +5414,18 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             change_column(&view.source),
         );
         let plain_where = filter_where(view.filter.as_deref());
+        let avg = quote_ident(IVM_AVG_COLUMN);
+        let avg_rebuild = if view.average {
+            format!(
+                ", case when nonnull > 0 then cast(dsum as double) \
+                       / cast(nonnull as double) else null end as {avg}"
+            )
+        } else {
+            String::new()
+        };
         let rebuild = format!(
             "select {keys}, case when nonnull > 0 then dsum else null end as {}, \
-                    dcount as {}, nonnull as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                    dcount as {}, nonnull as {}{avg_rebuild}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
              from (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
                           {signed_nonnull} as nonnull \
                    from src{plain_where} group by {keys}) \
@@ -5321,8 +5452,17 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         source_delete_filter("src", change_column(&view.source)),
         filter_clause(view.filter.as_deref()),
     );
+    let avg = quote_ident(IVM_AVG_COLUMN);
+    let avg_rebuild = if view.average {
+        format!(
+            ", case when {nonnull_expr} > 0 then cast({sum_expr} as double) \
+                   / cast({nonnull_expr} as double) else null end as {avg}"
+        )
+    } else {
+        String::new()
+    };
     let rebuild = format!(
-        "select {keys}, {sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+        "select {keys}, {sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}{avg_rebuild}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from src where {src_where} group by {keys}",
         quote_ident(IVM_SUM_COLUMN),
         quote_ident(IVM_COUNT_COLUMN),

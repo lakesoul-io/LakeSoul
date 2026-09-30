@@ -161,6 +161,7 @@ async fn refresh_spec_drives_a_registered_view() {
         value_column: Some("v".to_string()),
         filter: None,
         having: None,
+        average: false,
         refresh_interval_ms: 7_000,
     };
     runtime.register_view(&view).await.unwrap();
@@ -186,6 +187,7 @@ async fn refresh_spec_drives_a_registered_view() {
         value_column: Some("v".to_string()),
         filter: None,
         having: None,
+        average: false,
     };
     runtime.refresh_spec(&spec).await.unwrap().unwrap();
     assert_eq!(

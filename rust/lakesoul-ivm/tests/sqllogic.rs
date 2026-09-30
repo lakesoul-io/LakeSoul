@@ -30,9 +30,9 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, MinMaxKind, PhysicalFormat, WindowFunction, min_max_mv_schema_for,
-    row_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, window_aggregate_mv_schema_for,
+    IvmTableOptions, MinMaxKind, PhysicalFormat, WindowFunction, avg_mv_schema_for,
+    min_max_mv_schema_for, row_mv_schema_for, sum_count_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, window_aggregate_mv_schema_for,
     window_ranking_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -748,6 +748,34 @@ fn sqllogic_window_where() {
         )
         .unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_avg() {
+    run_script_for_mv(
+        "avg",
+        include_str!("slt/avg.slt"),
+        avg_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v").unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_avg_null() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_source(
+        "avgnull",
+        include_str!("slt/avg_null.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        avg_mv_schema_for(&schema, &group_keys(&["g"]), "v").unwrap(),
+        group_keys(&["g"]),
     );
 }
 
