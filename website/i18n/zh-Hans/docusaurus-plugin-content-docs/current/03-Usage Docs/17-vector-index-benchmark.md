@@ -18,6 +18,7 @@ LakeSoul 的向量检索基于 **IVF+RaBitQ** 索引，并在数据写入过程�
 | **E3** | 逐簇 vs 整 shard 触发 | 逐簇漂移检测是否比旧的整 shard `delta/base` 比值更早、更准确地触发？ |
 | **E4** | 不同索引状态的检索 | 全新索引、累积 delta 的索引、刚重建的索引，在 recall 与 QPS 上有何差异？ |
 | **E5** | DataFusion SQL 端到端 | 用 SQL `INSERT` 写入数据、再用 `ORDER BY array_distance(...) LIMIT k`（索引取候选 + 精确精排）检索时，QPS 与 recall 如何？ |
+| **E6** | f32 vs f16 向量存储 | 半精度存储能省下多少磁盘、内存与查询延迟？recall 代价是多少？ |
 
 ## 测试环境
 
@@ -27,6 +28,7 @@ LakeSoul 的向量检索基于 **IVF+RaBitQ** 索引，并在数据写入过程�
 | 构建 | `cargo bench` release profile，16 个工作线程（`RAYON_NUM_THREADS=16`） |
 | 存储 | 本地文件系统；所有场景的 LakeSoul 表数据都以 **vortex** 格式写入（`PhysicalFormat::Vortex`；SQL 场景通过 `file_format` 表选项选择） |
 | 距离度量 | L2 |
+| 向量存储 | 除 E6 外均为 `Float32`；E6 对比 `Float32` 与 `Float16` |
 | 索引配置 | `nlist = 256`、`total_bits = 7`、`top_k = 10`、检索 `nprobe = 64`（E4 扫描 1–256） |
 | 每次 checkpoint 查询数 | 100 |
 | 随机种子 | 42（固定，工作负载可复现） |
@@ -318,6 +320,45 @@ manifest 仍解析到同一 commit 就直接复用；重建或增量提交会发
   `gc_vector_index` API（`LakeSoulTable` 上也可用）用于按需清理，并删除已 drop 分区的
   控制面记录。
 
+### E6 — f32 vs f16 向量存储
+
+**目标。** 候选扫描之上的精确精排会读取约 100 个候选行的向量列，因此该列的元素类型决定了
+每次查询要取多少字节。半精度（`Float16` 代替 `Float32`）把原始字节减半，代价是每个存储向量
+都被舍入。本实验把**同一份 `f32` 源向量**分别以两种元素类型写入，recall 始终对**原始 `f32`**
+ground truth 计算，因此唯一的差异就是存储精度。
+
+**方法。**
+- SQL 场景新增 `--vector-type f32|f16`。由于 SQL DDL 无法表达半精度，建表改为通过元数据
+  客户端按显式 Arrow schema（`List<Float32>` / `List<Float16>`）创建；
+  `vector_index_columns` 属性、`INSERT ... SELECT` 写入、提交后自动建索引、检索 SQL 都
+  不变，两种类型走完全相同的代码路径。
+- 两次运行都写入相同的 100K base + 10 × 10K 均匀更新轮次（单分桶、`nlist = 256`、
+  `nprobe = 64`、top-10、固定种子），存储向量的唯一差异就是 `f32` → `f16` 的舍入。
+- `script/benchmark/vector/run.sh e6` 会在两个数据集上跑成对的 `f32`/`f16` 测量。
+
+| 数据集 | 类型 | 数据文件 | 活跃索引 | Recall@10 | QPS | 均值 / p50 / p99 | 峰值 RSS |
+|--------|------|---------:|---------:|----------:|----:|------------------|---------:|
+| GloVe-200d | `f32` | 140.5 MB | 106.8 MB | 0.899 | 22.8 | 43.9 / 44.9 / 61.0 ms | 1271 MB |
+| GloVe-200d | `f16` | 80.1 MB | 104.1 MB | 0.907 | 21.7 | 46.0 / 45.7 / 59.3 ms | 944 MB |
+| GIST-960d | `f32` | 304.2 MB | 431.4 MB | 0.980 | 17.7 | 56.5 / 55.9 / 74.6 ms | 5522 MB |
+| GIST-960d | `f16` | 289.4 MB | 431.5 MB | 0.976 | 17.6 | 56.9 / 55.3 / 85.7 ms | 4725 MB |
+
+**结论。**
+- **半精度端到端可用。** `EXPLAIN VERBOSE` 仍选择 `LakeSoulVectorSearchExec`；
+  `array_distance` 会把 `List<Float16>` 列强制转换为 `List<Float64>` 做精确精排，recall
+  与 `f32` 的差异在运行噪声内（GloVe 0.899 → 0.907，GIST 0.980 → 0.976）。
+- **磁盘收益取决于数据与格式，并非稳定 2×。** GIST 向量是整数值浮点，vortex 的浮点压缩已
+  把 `f32` 列压到接近其 `f16` 编码的大小（304 MB → 289 MB，−5%）；而单位化的 GloVe 向量
+  收益明确（140 MB → 80 MB，−43%）。
+- **查询延迟不变。** 精排只取候选行，几百 KB 减半相对索引探测与规划可忽略：两个数据集的
+  QPS、p50、执行时间都在噪声范围内一致。
+- **索引大小不变。** RaBitQ 存的是从数据算出的量化位，而不是存储的 `f32` 值，因此其占用不
+  随列精度变化；`f16` 运行更低的峰值 RSS 属于附带现象，并不保证内存下降。
+
+**结论建议：** 半精度是一种存储选项——当磁盘或扫描字节是约束、且数据本身压缩不动时（如
+GloVe 这类单位化稠密向量）有价值；它不是检索延迟优化，候选+精排路径的开销主要来自索引探测
+与规划，而非候选行的精度。
+
 ## 建议
 
 1. 通用负载保持默认 `rebuild_mode = "auto"`、`max_delta_ratio = 1.0`：均匀增长下不会
@@ -326,6 +367,8 @@ manifest 仍解析到同一 commit 就直接复用；重建或增量提交会发
 3. 均匀或轻微偏斜的写入使用 `rebuild_mode = "none"` 即可，完全避免重建成本。
 4. 按 E2 表格为重建预留资源（GIST 1M：`nlist=256` 时约 18 s、峰值约 14 GB），并确保触发
    与重建在后台执行。
+5. 仅当磁盘或扫描字节是约束、且数据本身压缩不动时才使用半精度向量列（E6）：recall 不变，
+   查询延迟同样不变；对 GIST 这类整数值向量，vortex 的浮点压缩本就能压到接近 `f16` 的大小。
 
 ## 复现基准测试
 
@@ -339,6 +382,7 @@ DATA_DIR=~/program/opensource/rabitq-rs/data \
 
 # 或者单独运行某个实验
 script/benchmark/vector/run.sh e1 --results /tmp/vector-bench
+script/benchmark/vector/run.sh e6 --results /tmp/vector-bench
 
 # 绘图（uv 会临时拉取 matplotlib）
 uv run --with matplotlib python script/benchmark/vector/plot.py \
