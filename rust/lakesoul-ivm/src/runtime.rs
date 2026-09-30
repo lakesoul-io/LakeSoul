@@ -319,6 +319,19 @@ impl ViewSpec {
     }
 }
 
+/// A typed view reconstructed from a persisted [`ViewSpec`].
+enum SpecView {
+    SumCount(SumCountView),
+    Join(JoinView),
+    MinMax(MinMaxView),
+    DistinctAgg(DistinctAggView),
+    Window(WindowView),
+    SemiAnti(SemiAntiView),
+    Row(RowView),
+    UnionAll(UnionAllView),
+    TopK(TopKView),
+}
+
 /// A `SUM`/`COUNT` view over a source table.
 #[derive(Debug, Clone)]
 pub struct SumCountView {
@@ -1784,33 +1797,28 @@ impl IvmRuntime {
         IvmTable::from_table_info(&info)
     }
 
-    /// Refresh a view from its persisted [`ViewSpec`], opening every table by
-    /// id.  The spec is the only state needed to drive a refresh from any
-    /// process; the registered refresh interval is preserved.
-    pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
+    /// Open the tables of a spec and build the typed view it describes.
+    async fn spec_view(&self, spec: &ViewSpec) -> Result<SpecView> {
         let refresh_interval_ms = self
             .metadata
             .view_refresh_interval_ms(spec.view_id())
             .await?
             .unwrap_or(0);
-        match spec {
+        Ok(match spec {
             ViewSpec::SumCount {
                 view_id,
                 source_table_id,
                 mv_table_id,
                 group_keys,
                 value_column,
-            } => {
-                let view = SumCountView {
-                    view_id: view_id.clone(),
-                    source: self.open_table_by_id(source_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    group_keys: group_keys.clone(),
-                    value_column: value_column.clone(),
-                    refresh_interval_ms,
-                };
-                self.refresh_sum_count(&view).await
-            }
+            } => SpecView::SumCount(SumCountView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::Join {
                 view_id,
                 left_table_id,
@@ -1819,19 +1827,16 @@ impl IvmRuntime {
                 join_keys,
                 left_value,
                 right_value,
-            } => {
-                let view = JoinView {
-                    view_id: view_id.clone(),
-                    left: self.open_table_by_id(left_table_id).await?,
-                    right: self.open_table_by_id(right_table_id).await?,
-                    output: self.open_table_by_id(output_table_id).await?,
-                    join_keys: join_keys.clone(),
-                    left_value: left_value.clone(),
-                    right_value: right_value.clone(),
-                    refresh_interval_ms,
-                };
-                self.refresh_join(&view).await
-            }
+            } => SpecView::Join(JoinView {
+                view_id: view_id.clone(),
+                left: self.open_table_by_id(left_table_id).await?,
+                right: self.open_table_by_id(right_table_id).await?,
+                output: self.open_table_by_id(output_table_id).await?,
+                join_keys: join_keys.clone(),
+                left_value: left_value.clone(),
+                right_value: right_value.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::MinMax {
                 view_id,
                 source_table_id,
@@ -1840,19 +1845,16 @@ impl IvmRuntime {
                 group_keys,
                 value_column,
                 min_max,
-            } => {
-                let view = MinMaxView {
-                    view_id: view_id.clone(),
-                    source: self.open_table_by_id(source_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    state: self.open_table_by_id(state_table_id).await?,
-                    group_keys: group_keys.clone(),
-                    value_column: value_column.clone(),
-                    min_max: *min_max,
-                    refresh_interval_ms,
-                };
-                self.refresh_min_max(&view).await
-            }
+            } => SpecView::MinMax(MinMaxView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                state: self.open_table_by_id(state_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                min_max: *min_max,
+                refresh_interval_ms,
+            }),
             ViewSpec::DistinctAgg {
                 view_id,
                 source_table_id,
@@ -1861,19 +1863,16 @@ impl IvmRuntime {
                 group_keys,
                 value_column,
                 agg,
-            } => {
-                let view = DistinctAggView {
-                    view_id: view_id.clone(),
-                    source: self.open_table_by_id(source_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    state: self.open_table_by_id(state_table_id).await?,
-                    group_keys: group_keys.clone(),
-                    value_column: value_column.clone(),
-                    agg: *agg,
-                    refresh_interval_ms,
-                };
-                self.refresh_distinct_agg(&view).await
-            }
+            } => SpecView::DistinctAgg(DistinctAggView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                state: self.open_table_by_id(state_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                agg: *agg,
+                refresh_interval_ms,
+            }),
             ViewSpec::Window {
                 view_id,
                 source_table_id,
@@ -1882,19 +1881,16 @@ impl IvmRuntime {
                 order_keys,
                 function,
                 value_column,
-            } => {
-                let view = WindowView {
-                    view_id: view_id.clone(),
-                    source: self.open_table_by_id(source_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    partition_keys: partition_keys.clone(),
-                    order_keys: order_keys.clone(),
-                    function: *function,
-                    value_column: value_column.clone(),
-                    refresh_interval_ms,
-                };
-                self.refresh_window(&view).await
-            }
+            } => SpecView::Window(WindowView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                partition_keys: partition_keys.clone(),
+                order_keys: order_keys.clone(),
+                function: *function,
+                value_column: value_column.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::SemiAnti {
                 view_id,
                 left_table_id,
@@ -1904,37 +1900,31 @@ impl IvmRuntime {
                 conditions,
                 output_columns,
                 anti,
-            } => {
-                let view = SemiAntiView {
-                    view_id: view_id.clone(),
-                    left: self.open_table_by_id(left_table_id).await?,
-                    right: self.open_table_by_id(right_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    join_keys: join_keys.clone(),
-                    conditions: conditions.clone(),
-                    output_columns: output_columns.clone(),
-                    anti: *anti,
-                    refresh_interval_ms,
-                };
-                self.refresh_semi_anti(&view).await
-            }
+            } => SpecView::SemiAnti(SemiAntiView {
+                view_id: view_id.clone(),
+                left: self.open_table_by_id(left_table_id).await?,
+                right: self.open_table_by_id(right_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                join_keys: join_keys.clone(),
+                conditions: conditions.clone(),
+                output_columns: output_columns.clone(),
+                anti: *anti,
+                refresh_interval_ms,
+            }),
             ViewSpec::Row {
                 view_id,
                 source_table_id,
                 mv_table_id,
                 output_columns,
                 filters,
-            } => {
-                let view = RowView {
-                    view_id: view_id.clone(),
-                    source: self.open_table_by_id(source_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    output_columns: output_columns.clone(),
-                    filters: filters.clone(),
-                    refresh_interval_ms,
-                };
-                self.refresh_row(&view).await
-            }
+            } => SpecView::Row(RowView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                output_columns: output_columns.clone(),
+                filters: filters.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::UnionAll {
                 view_id,
                 source_table_ids,
@@ -1944,13 +1934,12 @@ impl IvmRuntime {
                 for table_id in source_table_ids {
                     sources.push(self.open_table_by_id(table_id).await?);
                 }
-                let view = UnionAllView {
+                SpecView::UnionAll(UnionAllView {
                     view_id: view_id.clone(),
                     sources,
                     mv: self.open_table_by_id(mv_table_id).await?,
                     refresh_interval_ms,
-                };
-                self.refresh_union_all(&view).await
+                })
             }
             ViewSpec::TopK {
                 view_id,
@@ -1960,19 +1949,50 @@ impl IvmRuntime {
                 order_keys,
                 output_columns,
                 limit,
-            } => {
-                let view = TopKView {
-                    view_id: view_id.clone(),
-                    source: self.open_table_by_id(source_table_id).await?,
-                    mv: self.open_table_by_id(mv_table_id).await?,
-                    group_keys: group_keys.clone(),
-                    order_keys: order_keys.clone(),
-                    output_columns: output_columns.clone(),
-                    limit: *limit,
-                    refresh_interval_ms,
-                };
-                self.refresh_top_k(&view).await
-            }
+            } => SpecView::TopK(TopKView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                order_keys: order_keys.clone(),
+                output_columns: output_columns.clone(),
+                limit: *limit,
+                refresh_interval_ms,
+            }),
+        })
+    }
+
+    /// Refresh a view from its persisted [`ViewSpec`], opening every table by
+    /// id.  The spec is the only state needed to drive a refresh from any
+    /// process; the registered refresh interval is preserved.
+    pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
+        match self.spec_view(spec).await? {
+            SpecView::SumCount(view) => self.refresh_sum_count(&view).await,
+            SpecView::Join(view) => self.refresh_join(&view).await,
+            SpecView::MinMax(view) => self.refresh_min_max(&view).await,
+            SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
+            SpecView::Window(view) => self.refresh_window(&view).await,
+            SpecView::SemiAnti(view) => self.refresh_semi_anti(&view).await,
+            SpecView::Row(view) => self.refresh_row(&view).await,
+            SpecView::UnionAll(view) => self.refresh_union_all(&view).await,
+            SpecView::TopK(view) => self.refresh_top_k(&view).await,
+        }
+    }
+
+    /// Rebuild a view from its persisted [`ViewSpec`]: the full source state is
+    /// recomputed, the MV is replaced and the cursors are reset to the current
+    /// source versions.
+    pub async fn rebuild_spec(&self, spec: &ViewSpec) -> Result<i64> {
+        match self.spec_view(spec).await? {
+            SpecView::SumCount(view) => self.rebuild_sum_count(&view).await,
+            SpecView::Join(view) => self.rebuild_join(&view).await,
+            SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
+            SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
+            SpecView::Window(view) => self.rebuild_window(&view).await,
+            SpecView::SemiAnti(view) => self.rebuild_semi_anti(&view).await,
+            SpecView::Row(view) => self.rebuild_row(&view).await,
+            SpecView::UnionAll(view) => self.rebuild_union_all(&view).await,
+            SpecView::TopK(view) => self.rebuild_top_k(&view).await,
         }
     }
 

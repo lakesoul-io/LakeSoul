@@ -967,8 +967,19 @@ fn join_values(
 
 /// Stable definition identity.  FNV-1a over the canonical spec JSON: a change
 /// in columns, keys or aggregate kind changes the hash and triggers a rebuild.
-fn definition_hash(spec: &ViewSpec) -> Result<String> {
-    let bytes = serde_json::to_vec(spec)?;
+///
+/// The generated value-count state table id is normalised away, so recreating
+/// that table during a rebuild does not change the identity again.
+pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
+    let mut normalized = spec.clone();
+    match &mut normalized {
+        ViewSpec::MinMax { state_table_id, .. }
+        | ViewSpec::DistinctAgg { state_table_id, .. } => {
+            *state_table_id = String::new();
+        }
+        _ => {}
+    }
+    let bytes = serde_json::to_vec(&normalized)?;
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(byte);

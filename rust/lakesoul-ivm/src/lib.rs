@@ -70,6 +70,7 @@
 //! follow-up.
 
 pub mod error;
+pub mod executor;
 pub mod metadata;
 mod provider;
 pub mod runtime;
@@ -77,6 +78,7 @@ pub mod sql;
 pub mod table;
 
 pub use error::Result;
+pub use executor::{IvmExecution, IvmExecutionAction, IvmSqlExecutor};
 pub use lakesoul_io::file_format::PhysicalFormat;
 pub use metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, EpochStatus, IvmMetadata,
@@ -99,7 +101,7 @@ pub use runtime::{
     window_aggregate_mv_schema_for, window_key, window_mv_schema, window_mv_schema_for,
     window_ranking_mv_schema_for,
 };
-pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select};
+pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select, definition_hash};
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
 };
