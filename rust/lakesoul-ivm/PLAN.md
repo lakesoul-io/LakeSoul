@@ -930,6 +930,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 单测新增 4 例（三种排序窗口、聚合窗口与 frame 校验、TOP-K、窗口不支持形状）；
   合计 12 例。
 
+**SQL 增量执行入口 M2c：Join / SEMI-ANTI / UNION ALL 形状分析（已完成）**
+
+- 内连接：仅 INNER；等值键从 `Join.on`（优化后）与 `Join.filter` 的等值合取中提取，
+  要求两侧同名列；从选择列表按"左/右各一个 payload 列"提取 `left_value`/`right_value`
+  （列归属优先看 relation 别名，其次看 schema 唯一性）；非等值条件一律报错。
+- SEMI/ANTI：要求传入**优化后**的计划（DataFusion 会把 `EXISTS`/`NOT EXISTS`/`IN`
+  decorrelate 成 `LeftSemi`/`LeftAnti`）；等值键入 `join_keys`，额外列比较条件归一化为
+  `left.col op right.col`（按 relation/schema 判定左右并翻转操作符）；输出列取 join 左侧
+  schema（投影下推进 TableScan 时也不会丢列）。
+- UNION ALL：所有分支必须选择源的**全部列且顺序一致**（投影可能被下推进 scan，按
+  `projected_schema` 校验），所有源 schema 必须一致；输出投影不得改名/换序。
+- 明确报错：LEFT/RIGHT/FULL join、异名 join 键、内连接带非等值条件、UNION 分支投影裁剪。
+- 单测新增 5 例（内连接、semi/anti、带额外条件的 semi、union all、不支持形状），
+  合计 17 例；模块文档注明"计划需先经优化器"。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要

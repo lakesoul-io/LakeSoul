@@ -12,23 +12,25 @@
 //! with an explicit message, because silently appending the full result would
 //! duplicate data on the next refresh.
 //!
-//! This first slice covers projections/filters and the aggregate family
-//! (SUM/COUNT, MIN/MAX, COUNT(DISTINCT)/SUM(DISTINCT)); window, top-k, join,
-//! semi/anti and UNION ALL follow.
+//! Covered shapes: projections/filters, the aggregate family (SUM/COUNT,
+//! MIN/MAX, COUNT(DISTINCT)/SUM(DISTINCT)), windows (ranking and aggregates),
+//! per-group top-k, inner joins, semi/anti joins (pass an **optimized** plan
+//! so EXISTS/IN are decorrelated into left-semi/left-anti joins) and
+//! `UNION ALL` of identical schemas.
 
 use std::collections::HashMap;
 
-use datafusion::common::{ScalarValue, TableReference};
+use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
-    Aggregate, Expr, Filter, LogicalPlan, Operator, Projection, Window, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    Aggregate, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection, Union,
+    Window, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, FilterCondition, LiteralValue, MinMaxKind, ViewSpec,
-    WindowFunction,
+    CompareOp, DistinctAggKind, FilterCondition, LiteralValue, MinMaxKind,
+    SemiAntiCondition, ViewSpec, WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -91,6 +93,12 @@ pub fn analyze_select(
             LogicalPlan::Window(window) => {
                 analyze_window(projection, window, tables, request)?
             }
+            LogicalPlan::Join(join) => {
+                analyze_join(join, Some(projection), tables, request)?
+            }
+            LogicalPlan::Union(union) => {
+                analyze_union(union, Some(projection), tables, request)?
+            }
             LogicalPlan::Filter(filter) => {
                 match try_analyze_top_k(Some(projection), filter, tables, request)? {
                     Some(spec) => spec,
@@ -111,6 +119,8 @@ pub fn analyze_select(
         LogicalPlan::Aggregate(aggregate) => {
             analyze_aggregate(aggregate, tables, request)?
         }
+        LogicalPlan::Join(join) => analyze_join(join, None, tables, request)?,
+        LogicalPlan::Union(union) => analyze_union(union, None, tables, request)?,
         other => {
             return Err(unsupported(plan_label(other)));
         }
@@ -529,6 +539,430 @@ fn frame_supported(frame: &WindowFrame, has_order: bool) -> bool {
             && frame.start_bound.is_unbounded()
             && frame.end_bound.is_unbounded()
     }
+}
+
+/// The side of a join a column belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// An inner join or a semi/anti join.
+///
+/// The plan is expected to be optimized (EXISTS/IN decorrelated into
+/// left-semi/left-anti joins by DataFusion).
+fn analyze_join(
+    join: &Join,
+    projection: Option<&Projection>,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let (left, left_alias) = join_input(&join.left, tables)?;
+    let (right, right_alias) = join_input(&join.right, tables)?;
+
+    let mut join_keys = Vec::new();
+    let mut conditions = Vec::new();
+    for (left_expr, right_expr) in &join.on {
+        let left_column = column_of(left_expr)
+            .ok_or_else(|| unsupported("join keys must be plain columns"))?;
+        let right_column = column_of(right_expr)
+            .ok_or_else(|| unsupported("join keys must be plain columns"))?;
+        if left_column.name != right_column.name {
+            return Err(unsupported(format!(
+                "join keys must have the same name on both sides ({} vs {})",
+                left_column.name, right_column.name
+            )));
+        }
+        join_keys.push(left_column.name.clone());
+    }
+    if let Some(filter) = &join.filter {
+        for conjunct in split_conjunction(filter) {
+            if let Some((left_column, right_column)) = equi_columns(conjunct) {
+                if left_column.name != right_column.name {
+                    return Err(unsupported(format!(
+                        "join keys must have the same name on both sides ({} vs {})",
+                        left_column.name, right_column.name
+                    )));
+                }
+                let side = side_of(
+                    left_column,
+                    left_alias.as_deref(),
+                    right_alias.as_deref(),
+                    left,
+                    right,
+                )
+                .or_else(|| {
+                    side_of(
+                        right_column,
+                        left_alias.as_deref(),
+                        right_alias.as_deref(),
+                        left,
+                        right,
+                    )
+                });
+                if side.is_none() {
+                    return Err(unsupported(
+                        "join conditions between the same side are not supported",
+                    ));
+                }
+                join_keys.push(left_column.name.clone());
+            } else {
+                let (left_column, right_column, op) = column_compare(
+                    conjunct,
+                    left_alias.as_deref(),
+                    right_alias.as_deref(),
+                    left,
+                    right,
+                )?;
+                conditions.push(SemiAntiCondition {
+                    left_column,
+                    right_column,
+                    op,
+                });
+            }
+        }
+    }
+    if join_keys.is_empty() {
+        return Err(unsupported("join without an equality key"));
+    }
+    join_keys.sort();
+    join_keys.dedup();
+
+    match join.join_type {
+        JoinType::Inner => {
+            if !conditions.is_empty() {
+                return Err(unsupported("inner join with non-equality conditions"));
+            }
+            let (left_value, right_value) = join_values(
+                projection,
+                left_alias.as_deref(),
+                right_alias.as_deref(),
+                left,
+                right,
+                &join_keys,
+            )?;
+            Ok(ViewSpec::Join {
+                view_id: request.view_id.clone(),
+                left_table_id: left.table_id.clone(),
+                right_table_id: right.table_id.clone(),
+                output_table_id: request.mv_table_id.clone(),
+                join_keys,
+                left_value,
+                right_value,
+            })
+        }
+        JoinType::LeftSemi | JoinType::LeftAnti => {
+            let output_columns = match projection {
+                Some(projection) => {
+                    if !is_plain_projection(projection) {
+                        return Err(unsupported(
+                            "computed columns in a semi/anti join output",
+                        ));
+                    }
+                    let mut columns = Vec::new();
+                    for expr in &projection.expr {
+                        let column = column_of(expr).ok_or_else(|| {
+                            unsupported("semi/anti output must be plain columns")
+                        })?;
+                        let on_left = side_of(
+                            column,
+                            left_alias.as_deref(),
+                            right_alias.as_deref(),
+                            left,
+                            right,
+                        ) == Some(Side::Left)
+                            || (left.schema.field_with_name(&column.name).is_ok()
+                                && right.schema.field_with_name(&column.name).is_err());
+                        if !on_left {
+                            return Err(unsupported(format!(
+                                "semi/anti join output column {} is not a left column",
+                                column.name
+                            )));
+                        }
+                        columns.push(column.name.clone());
+                    }
+                    columns
+                }
+                // No projection left above the join: the join output is the
+                // left input's schema (a pushed-down projection included).
+                None => join
+                    .left
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect(),
+            };
+            Ok(ViewSpec::SemiAnti {
+                view_id: request.view_id.clone(),
+                left_table_id: left.table_id.clone(),
+                right_table_id: right.table_id.clone(),
+                mv_table_id: request.mv_table_id.clone(),
+                join_keys,
+                conditions,
+                output_columns,
+                anti: join.join_type == JoinType::LeftAnti,
+            })
+        }
+        other => Err(unsupported(format!("join type {other:?}"))),
+    }
+}
+
+/// A `UNION ALL` of sources with identical schemas.
+fn analyze_union(
+    union: &Union,
+    projection: Option<&Projection>,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    if let Some(projection) = projection {
+        if !is_plain_projection(projection) {
+            return Err(unsupported("computed columns above UNION ALL"));
+        }
+        let columns = projection
+            .expr
+            .iter()
+            .map(column_name)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| unsupported("UNION ALL output must be plain columns"))?;
+        let union_columns = union
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        if columns != union_columns {
+            return Err(unsupported(
+                "UNION ALL output must keep the column order and names",
+            ));
+        }
+    }
+    let mut sources = Vec::with_capacity(union.inputs.len());
+    for input in &union.inputs {
+        sources.push(union_branch(peel(input), tables)?);
+    }
+    if sources.len() < 2 {
+        return Err(unsupported("UNION ALL needs at least two branches"));
+    }
+    for source in &sources[1..] {
+        if source.schema != sources[0].schema {
+            return Err(unsupported(
+                "UNION ALL branches must have identical schemas",
+            ));
+        }
+    }
+    Ok(ViewSpec::UnionAll {
+        view_id: request.view_id.clone(),
+        source_table_ids: sources
+            .iter()
+            .map(|source| source.table_id.clone())
+            .collect(),
+        mv_table_id: request.mv_table_id.clone(),
+    })
+}
+
+/// The source of one UNION ALL branch: a table scan, optionally behind a
+/// projection that selects every source column in order.
+fn union_branch<'a>(
+    plan: &'a LogicalPlan,
+    tables: &'a HashMap<String, IvmTable>,
+) -> Result<&'a IvmTable> {
+    let (scan_plan, projection) = match plan {
+        LogicalPlan::Projection(projection) => {
+            (peel(&projection.input), Some(projection))
+        }
+        other => (other, None),
+    };
+    let LogicalPlan::TableScan(scan) = scan_plan else {
+        return Err(unsupported(format!(
+            "UNION ALL branch over {}",
+            plan_label(scan_plan)
+        )));
+    };
+    let source = resolve_table(tables, &scan.table_name)?;
+    let source_columns = source
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect::<Vec<_>>();
+    // The projection may live in the plan node or have been pushed into the
+    // scan (`scan.schema` reflects the pruned columns either way).
+    let columns = match projection {
+        Some(projection) => projection
+            .expr
+            .iter()
+            .map(column_name)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                unsupported("UNION ALL branches must select source columns")
+            })?,
+        None => scan
+            .projected_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect(),
+    };
+    if columns != source_columns {
+        return Err(unsupported(
+            "UNION ALL branches must select all source columns in order",
+        ));
+    }
+    Ok(source)
+}
+
+/// The table of one join input, plus its alias when it has one.
+fn join_input<'a>(
+    plan: &'a LogicalPlan,
+    tables: &'a HashMap<String, IvmTable>,
+) -> Result<(&'a IvmTable, Option<String>)> {
+    if let LogicalPlan::SubqueryAlias(alias) = plan {
+        let LogicalPlan::TableScan(scan) = peel(&alias.input) else {
+            return Err(unsupported("join input must be a table"));
+        };
+        let source = resolve_table(tables, &scan.table_name)?;
+        return Ok((source, Some(alias.alias.table().to_string())));
+    }
+    let LogicalPlan::TableScan(scan) = peel(plan) else {
+        return Err(unsupported("join input must be a table"));
+    };
+    let source = resolve_table(tables, &scan.table_name)?;
+    Ok((source, None))
+}
+
+fn column_of(expr: &Expr) -> Option<&Column> {
+    match expr {
+        Expr::Column(column) => Some(column),
+        Expr::Alias(alias) => column_of(&alias.expr),
+        _ => None,
+    }
+}
+
+/// `col = col` equality, used for join keys.
+fn equi_columns(expr: &Expr) -> Option<(&Column, &Column)> {
+    let Expr::BinaryExpr(binary) = expr else {
+        return None;
+    };
+    if binary.op != Operator::Eq {
+        return None;
+    }
+    let left = column_of(&binary.left)?;
+    let right = column_of(&binary.right)?;
+    Some((left, right))
+}
+
+/// `left.col op right.col`, normalized so the first column is on the left side
+/// of the join.
+fn column_compare(
+    expr: &Expr,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    left: &IvmTable,
+    right: &IvmTable,
+) -> Result<(String, String, CompareOp)> {
+    let Expr::BinaryExpr(binary) = expr else {
+        return Err(unsupported("join conditions must compare columns"));
+    };
+    let first = column_of(&binary.left)
+        .ok_or_else(|| unsupported("join conditions must compare columns"))?;
+    let second = column_of(&binary.right)
+        .ok_or_else(|| unsupported("join conditions must compare columns"))?;
+    let op = compare_op(binary.op)?;
+    let first_side = side_of(first, left_alias, right_alias, left, right);
+    let second_side = side_of(second, left_alias, right_alias, left, right);
+    match (first_side, second_side) {
+        (Some(Side::Left), Some(Side::Right)) => {
+            Ok((first.name.clone(), second.name.clone(), op))
+        }
+        (Some(Side::Right), Some(Side::Left)) => {
+            Ok((second.name.clone(), first.name.clone(), flip(op)))
+        }
+        _ => Err(unsupported(
+            "join conditions must compare a left and a right column",
+        )),
+    }
+}
+
+fn side_of(
+    column: &Column,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    left: &IvmTable,
+    right: &IvmTable,
+) -> Option<Side> {
+    if let Some(relation) = &column.relation {
+        let relation = relation.table();
+        if left_alias == Some(relation)
+            || (left_alias.is_none() && relation == left.table_name)
+        {
+            return Some(Side::Left);
+        }
+        if right_alias == Some(relation)
+            || (right_alias.is_none() && relation == right.table_name)
+        {
+            return Some(Side::Right);
+        }
+    }
+    let on_left = left.schema.field_with_name(&column.name).is_ok();
+    let on_right = right.schema.field_with_name(&column.name).is_ok();
+    match (on_left, on_right) {
+        (true, false) => Some(Side::Left),
+        (false, true) => Some(Side::Right),
+        _ => None,
+    }
+}
+
+/// The single payload column of each join side, taken from the select list.
+fn join_values(
+    projection: Option<&Projection>,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    left: &IvmTable,
+    right: &IvmTable,
+    join_keys: &[String],
+) -> Result<(String, String)> {
+    let projection = projection.ok_or_else(|| {
+        unsupported("a join view needs one payload column from each side")
+    })?;
+    if !is_plain_projection(projection) {
+        return Err(unsupported("computed columns in a join output"));
+    }
+    let mut left_value = None;
+    let mut right_value = None;
+    for expr in &projection.expr {
+        let column = column_of(expr)
+            .ok_or_else(|| unsupported("join output must be plain columns"))?;
+        if join_keys.contains(&column.name) {
+            continue;
+        }
+        match side_of(column, left_alias, right_alias, left, right) {
+            Some(Side::Left) => {
+                if left_value.replace(column.name.clone()).is_some() {
+                    return Err(unsupported("a join view takes one left payload column"));
+                }
+            }
+            Some(Side::Right) => {
+                if right_value.replace(column.name.clone()).is_some() {
+                    return Err(unsupported(
+                        "a join view takes one right payload column",
+                    ));
+                }
+            }
+            None => {
+                return Err(unsupported(format!(
+                    "join output column {} is ambiguous",
+                    column.name
+                )));
+            }
+        }
+    }
+    let left_value = left_value
+        .ok_or_else(|| unsupported("a join view needs a left payload column"))?;
+    let right_value = right_value
+        .ok_or_else(|| unsupported("a join view needs a right payload column"))?;
+    Ok((left_value, right_value))
 }
 
 /// Stable definition identity.  FNV-1a over the canonical spec JSON: a change
@@ -1077,6 +1511,158 @@ mod tests {
             analyze("select k, v from src order by v limit 3")
                 .await
                 .is_err()
+        );
+    }
+
+    async fn analyze_optimized(sql: &str) -> Result<AnalyzedView> {
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(table)).unwrap();
+        let tables = HashMap::from([("src".to_string(), source_table("src"))]);
+        let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+        let optimized = ctx.state().optimize(&plan).unwrap();
+        analyze_select(&optimized, &tables, &request())
+    }
+
+    async fn analyze_multi(sql: &str, tables: Vec<IvmTable>) -> Result<AnalyzedView> {
+        let ctx = SessionContext::new();
+        let mut map = HashMap::new();
+        for table in &tables {
+            let mem = MemTable::try_new(table.schema.clone(), vec![vec![]]).unwrap();
+            ctx.register_table(table.table_name.as_str(), Arc::new(mem))
+                .unwrap();
+            map.insert(table.table_name.clone(), table.clone());
+        }
+        let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+        let optimized = ctx.state().optimize(&plan).unwrap();
+        analyze_select(&optimized, &map, &request())
+    }
+
+    #[tokio::test]
+    async fn analyzes_inner_join() {
+        let analyzed =
+            analyze_optimized("select a.k, a.v, b.v from src a join src b on a.k = b.k")
+                .await
+                .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::Join {
+                view_id: "view_1".to_string(),
+                left_table_id: "table_src".to_string(),
+                right_table_id: "table_src".to_string(),
+                output_table_id: "table_mv".to_string(),
+                join_keys: vec!["k".to_string()],
+                left_value: "v".to_string(),
+                right_value: "v".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_semi_and_anti_joins() {
+        let analyzed = analyze_optimized(
+            "select a.k, a.v from src a where exists (select 1 from src b where b.k = a.k)",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::SemiAnti {
+                view_id: "view_1".to_string(),
+                left_table_id: "table_src".to_string(),
+                right_table_id: "table_src".to_string(),
+                mv_table_id: "table_mv".to_string(),
+                join_keys: vec!["k".to_string()],
+                conditions: Vec::new(),
+                output_columns: vec!["k".to_string(), "v".to_string()],
+                anti: false,
+            }
+        );
+
+        let analyzed = analyze_optimized(
+            "select a.k, a.v from src a where not exists (select 1 from src b where b.k = a.k)",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti { anti, .. } = analyzed.spec else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(anti);
+    }
+
+    #[tokio::test]
+    async fn analyzes_semi_join_with_extra_conditions() {
+        let analyzed = analyze_optimized(
+            "select a.k, a.v from src a where exists (select 1 from src b where b.k = a.k and b.v < a.v)",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti { conditions, .. } = analyzed.spec else {
+            panic!("expected a semi/anti spec");
+        };
+        // `b.v < a.v` is normalized to `a.v > b.v`.
+        assert_eq!(
+            conditions,
+            vec![SemiAntiCondition {
+                left_column: "v".to_string(),
+                right_column: "v".to_string(),
+                op: CompareOp::Gt,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_union_all() {
+        let left = source_table("a");
+        let right = source_table("b");
+        let analyzed = analyze_multi(
+            "select * from a union all select * from b",
+            vec![left, right],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::UnionAll {
+                view_id: "view_1".to_string(),
+                source_table_ids: vec!["table_a".to_string(), "table_b".to_string()],
+                mv_table_id: "table_mv".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_join_and_union_shapes() {
+        // Outer joins are not maintained incrementally.
+        assert!(
+            analyze_optimized("select a.k from src a left join src b on a.k = b.k")
+                .await
+                .is_err()
+        );
+        // The runtime keys a join on same-named columns.
+        assert!(
+            analyze_optimized("select a.k, a.v, b.v from src a join src b on a.k = b.v")
+                .await
+                .is_err()
+        );
+        // Inner joins take no extra conditions.
+        assert!(
+            analyze_optimized(
+                "select a.k, a.v, b.v from src a join src b on a.k = b.k and a.v > b.v"
+            )
+            .await
+            .is_err()
+        );
+        // UNION ALL branches must select all source columns in order.
+        let left = source_table("a");
+        let right = source_table("b");
+        assert!(
+            analyze_multi(
+                "select k from a union all select k from b",
+                vec![left, right]
+            )
+            .await
+            .is_err()
         );
     }
 
