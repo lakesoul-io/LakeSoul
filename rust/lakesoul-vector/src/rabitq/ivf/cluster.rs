@@ -2,6 +2,7 @@
 //!
 //! Includes V3 persistence I/O primitives, FastScan batch layout helpers,
 //! and pending-buffer incremental insert helpers.
+use crate::rabitq::key::IndexKey;
 use crate::rabitq::quantizer::QuantizedVector;
 use crate::rabitq::simd;
 use crate::rabitq::{Metric, RabitqError};
@@ -160,7 +161,7 @@ pub(crate) struct ClusterData {
     /// Cluster centroid
     pub(crate) centroid: Vec<f32>,
     /// Vector IDs (all vectors in cluster)
-    pub(crate) ids: Vec<u64>,
+    pub(crate) ids: Vec<IndexKey>,
     /// Single contiguous memory block for all batches
     /// Layout: [Batch 0][Batch 1]...[Batch N]
     /// Each batch layout:
@@ -187,7 +188,7 @@ pub(crate) struct ClusterData {
     pub(crate) ex_bits: usize,
     /// Pending vectors not yet packed into batch_data (O(1) insert).
     /// Flushed in groups of 32 when full.
-    pub(crate) pending_ids: Vec<u64>,
+    pub(crate) pending_ids: Vec<IndexKey>,
     pub(crate) pending_vectors: Vec<QuantizedVector>,
 }
 
@@ -198,7 +199,8 @@ impl ClusterData {
         let f32_size = std::mem::size_of::<f32>();
         let mut bytes = std::mem::size_of::<Self>();
         bytes += self.centroid.capacity() * f32_size;
-        bytes += self.ids.capacity() * std::mem::size_of::<u64>();
+        bytes += self.ids.capacity() * std::mem::size_of::<IndexKey>();
+        bytes += self.ids.iter().map(|key| key.heap_bytes()).sum::<usize>();
         bytes += self.batch_data.capacity();
         bytes += self
             .ex_codes_packed
@@ -209,7 +211,12 @@ impl ClusterData {
         bytes += self.f_rescale_ex.capacity() * f32_size;
         bytes += self.delta.capacity() * f32_size;
         bytes += self.vl.capacity() * f32_size;
-        bytes += self.pending_ids.capacity() * std::mem::size_of::<u64>();
+        bytes += self.pending_ids.capacity() * std::mem::size_of::<IndexKey>();
+        bytes += self
+            .pending_ids
+            .iter()
+            .map(|key| key.heap_bytes())
+            .sum::<usize>();
         bytes += self
             .pending_vectors
             .iter()
@@ -476,7 +483,7 @@ impl ClusterData {
         // keep the batch layouts for the parallel re-pack below.
         let mut cds: Vec<ClusterData> = Vec::with_capacity(segments.len());
         let mut offsets: Vec<usize> = Vec::with_capacity(segments.len());
-        let mut ids: Vec<u64> = Vec::with_capacity(n_total);
+        let mut ids: Vec<IndexKey> = Vec::with_capacity(n_total);
         let mut ex_codes_packed: Vec<Vec<u8>> = Vec::with_capacity(n_total);
         let mut f_add_ex: Vec<f32> = Vec::with_capacity(n_total);
         let mut f_rescale_ex: Vec<f32> = Vec::with_capacity(n_total);
@@ -621,7 +628,8 @@ impl ClusterData {
             self.ex_codes_packed.iter().map(|v| v.capacity()).sum();
         std::mem::size_of::<Self>()
             + self.centroid.len() * 4
-            + self.ids.capacity() * std::mem::size_of::<usize>()
+            + self.ids.capacity() * std::mem::size_of::<IndexKey>()
+            + self.ids.iter().map(|key| key.heap_bytes()).sum::<usize>()
             + self.batch_data.capacity()
             + self.ex_codes_packed.capacity() * std::mem::size_of::<Vec<u8>>()
             + ex_codes_heap
@@ -637,7 +645,7 @@ impl ClusterData {
     /// 2. Pre-unpacked ex_codes (avoids repeated unpacking)
     pub(crate) fn from_quantized_vectors(
         centroid: Vec<f32>,
-        ids: Vec<u64>,
+        ids: Vec<IndexKey>,
         vectors: Vec<QuantizedVector>,
         padded_dim: usize,
         ex_bits: usize,

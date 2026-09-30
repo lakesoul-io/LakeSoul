@@ -4,6 +4,7 @@
 //! MSTG, brute-force, HNSW, and Python bindings are excluded.
 
 pub mod ivf;
+pub mod key;
 pub mod math;
 mod memory;
 pub mod quantizer;
@@ -18,6 +19,7 @@ pub(crate) mod simd;
 // Re-export key types at the rabitq module level for convenience
 pub use ivf::builder::IvfRabitqBuilder;
 pub use ivf::{IdAndVecBatch, IvfRabitqIndex, SearchParams, SearchResult};
+pub use key::IndexKey;
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;
 pub use segment::{IndexHeader, IndexStore, SegmentEntry};

@@ -195,7 +195,7 @@ impl QueryPrecomputed {
 
 #[derive(Debug, Clone)]
 pub(crate) struct HeapCandidate {
-    pub(crate) id: u64,
+    pub(crate) id: crate::rabitq::key::IndexKey,
 
     pub(crate) distance: f32,
 
