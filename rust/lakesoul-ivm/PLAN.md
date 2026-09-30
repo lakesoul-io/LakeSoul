@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | `FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现（frame 语义先定） |
+| 窗口 | `NTILE/PERCENT_RANK/CUME_DIST`；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
@@ -1271,6 +1271,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `window_lead.slt`（bootstrap、行移动后重算）；oracle 新增 `LAG(v, 1, 0)` 的 10 轮随机场景；
   analyzer 单测覆盖 raw/优化一致、offset/default 渲染与各类拒绝。
   全量 IVM 套件 35 个测试二进制 / 153 个测试通过。
+
+### 10.15 自定义 frame 与 FIRST_VALUE/LAST_VALUE/NTH_VALUE（PR-9）
+
+- **frame**：`ViewSpec::Window` 增加 `window_frame: Option<String>`——仅当显式 frame 与声明的
+  ORDER BY 默认 frame 不同时存储（分析期渲染为 SQL 文本）；typed `WindowView.window_frame`
+  + `with_window_frame`。运行时把它拼进 OVER 子句；frame 始终落在分区内，"受影响分区整体
+  重算"模型成立，因此 ROWS/RANGE/GROUPS 都可维护。忽略 frame 的函数（排名、LAG/LEAD）不输出
+  frame，避免与它们追加的主键 tie-breaker 冲突（RANGE + offset 只允许一个 ORDER BY 键）。
+- **值函数**：`WindowFunction::{FirstValue, LastValue, NthValue}`；MV 列 `first_value_v` /
+  `last_value_v` / `nth_value_v`，类型取源列、可空；NTH_VALUE 的行号是必需的正整数字面量，
+  存入 `window_args`；值必须是普通列。
+- **选择**：自定义 frame 与 frame 相关的值函数一起交付；FIRST/LAST/NTH **不**追加主键
+  tie-breaker，生成的 SQL 与用户声明完全一致（并列行的歧义由用户负责）。
+- **测试**：`window_first_value.slt`（全分区 frame：首值进入/删除）、`window_last_value.slt`、
+  `window_nth_value.slt`、`window_sum_frame.slt`（running ROWS frame 的增量重算）；
+  oracle 新增 FIRST_VALUE + 全分区 frame 的 10 轮随机场景；analyzer 单测覆盖默认/显式 frame
+  的存储与渲染、NTH_VALUE 参数校验与各类拒绝。
+  全量 IVM 套件 35 个测试二进制 / 159 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

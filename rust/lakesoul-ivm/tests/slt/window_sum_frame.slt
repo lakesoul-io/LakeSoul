@@ -1,0 +1,35 @@
+# A running ROWS frame for a SUM window.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=5,op=insert; k=3,g=a,v=7,op=insert; k=4,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g ORDER BY v, k ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 22
+a 2 5
+a 3 12
+b 4 1
+
+# Deleting the running frame's first row shifts every following sum.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=5,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g ORDER BY v, k ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 17
+a 3 7
+b 4 1

@@ -63,6 +63,12 @@ pub const IVM_DENSE_RANK_COLUMN: &str = "dense_rank";
 pub const IVM_LAG_COLUMN: &str = "lag_v";
 /// The value column of a `LEAD()` [`WindowView`] materialized view.
 pub const IVM_LEAD_COLUMN: &str = "lead_v";
+/// The value column of a `FIRST_VALUE()` [`WindowView`] materialized view.
+pub const IVM_FIRST_VALUE_COLUMN: &str = "first_value_v";
+/// The value column of a `LAST_VALUE()` [`WindowView`] materialized view.
+pub const IVM_LAST_VALUE_COLUMN: &str = "last_value_v";
+/// The value column of a `NTH_VALUE()` [`WindowView`] materialized view.
+pub const IVM_NTH_VALUE_COLUMN: &str = "nth_value_v";
 
 /// Whether a [`MinMaxView`] maintains the minimum or the maximum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +117,15 @@ pub enum WindowFunction {
     /// `LEAD(value_column [, offset [, default]]) OVER (PARTITION BY ... ORDER
     /// BY ...)`. The next row's value; nullable.
     Lead,
+    /// `FIRST_VALUE(value_column) OVER (PARTITION BY ... ORDER BY ... [frame])`.
+    /// The first value of the frame; nullable.
+    FirstValue,
+    /// `LAST_VALUE(value_column) OVER (PARTITION BY ... ORDER BY ... [frame])`.
+    /// The last value of the frame; nullable.
+    LastValue,
+    /// `NTH_VALUE(value_column, n) OVER (PARTITION BY ... ORDER BY ... [frame])`.
+    /// The n-th value of the frame; nullable.
+    NthValue,
 }
 
 impl WindowFunction {
@@ -124,6 +139,9 @@ impl WindowFunction {
             WindowFunction::Count => "count",
             WindowFunction::Lag => "lag",
             WindowFunction::Lead => "lead",
+            WindowFunction::FirstValue => "first_value",
+            WindowFunction::LastValue => "last_value",
+            WindowFunction::NthValue => "nth_value",
         }
     }
 
@@ -137,6 +155,9 @@ impl WindowFunction {
             WindowFunction::Count => IVM_COUNT_COLUMN,
             WindowFunction::Lag => IVM_LAG_COLUMN,
             WindowFunction::Lead => IVM_LEAD_COLUMN,
+            WindowFunction::FirstValue => IVM_FIRST_VALUE_COLUMN,
+            WindowFunction::LastValue => IVM_LAST_VALUE_COLUMN,
+            WindowFunction::NthValue => IVM_NTH_VALUE_COLUMN,
         }
     }
 
@@ -145,10 +166,29 @@ impl WindowFunction {
         matches!(self, WindowFunction::Sum | WindowFunction::Count)
     }
 
-    /// Whether the function returns a source value shifted within the
-    /// partition (`LAG`/`LEAD`).
+    /// Whether the function returns source values from the frame
+    /// (`LAG`/`LEAD` and the frame value functions).
     pub fn is_value(self) -> bool {
-        matches!(self, WindowFunction::Lag | WindowFunction::Lead)
+        matches!(
+            self,
+            WindowFunction::Lag
+                | WindowFunction::Lead
+                | WindowFunction::FirstValue
+                | WindowFunction::LastValue
+                | WindowFunction::NthValue
+        )
+    }
+
+    /// Whether the function uses the window frame.
+    fn uses_frame(self) -> bool {
+        !matches!(
+            self,
+            WindowFunction::RowNumber
+                | WindowFunction::Rank
+                | WindowFunction::DenseRank
+                | WindowFunction::Lag
+                | WindowFunction::Lead
+        )
     }
 
     /// Whether the source primary keys are appended to the ordering.
@@ -300,10 +340,14 @@ pub enum ViewSpec {
         /// An optional filter applied before windowing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
-        /// Extra SQL arguments of a `LAG`/`LEAD` function (`2, 0` for
-        /// `lag(v, 2, 0)`), rendered at analysis time.
+        /// Extra SQL arguments of a `LAG`/`LEAD`/`NTH_VALUE` function
+        /// (`2, 0` for `lag(v, 2, 0)`), rendered at analysis time.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_args: Option<String>,
+        /// The declared window frame as SQL text, when it differs from the
+        /// default frame of the ordering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_frame: Option<String>,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -1062,9 +1106,12 @@ pub struct WindowView {
     pub value_column: Option<String>,
     /// An optional filter applied before windowing.
     pub filter: Option<String>,
-    /// Extra SQL arguments of a `LAG`/`LEAD` function (`2, 0` for
-    /// `lag(v, 2, 0)`).
+    /// Extra SQL arguments of a `LAG`/`LEAD`/`NTH_VALUE` function (`2, 0`
+    /// for `lag(v, 2, 0)`).
     pub window_args: Option<String>,
+    /// The declared window frame as SQL text, when it differs from the
+    /// default frame of the ordering.
+    pub window_frame: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1107,6 +1154,7 @@ impl WindowView {
             value_column: None,
             filter: None,
             window_args: None,
+            window_frame: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1132,6 +1180,7 @@ impl WindowView {
             value_column,
             filter: None,
             window_args: None,
+            window_frame: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1142,9 +1191,15 @@ impl WindowView {
         self
     }
 
-    /// Extra `LAG`/`LEAD` arguments, as SQL text.
+    /// Extra `LAG`/`LEAD`/`NTH_VALUE` arguments, as SQL text.
     pub fn with_window_args(mut self, args: impl Into<String>) -> Self {
         self.window_args = Some(args.into());
+        self
+    }
+
+    /// The declared window frame, as SQL text.
+    pub fn with_window_frame(mut self, frame: impl Into<String>) -> Self {
+        self.window_frame = Some(frame.into());
         self
     }
 
@@ -1159,6 +1214,7 @@ impl WindowView {
             value_column: self.value_column.clone(),
             filter: self.filter.clone(),
             window_args: self.window_args.clone(),
+            window_frame: self.window_frame.clone(),
         }
     }
 }
@@ -2171,6 +2227,7 @@ impl IvmRuntime {
                 value_column,
                 filter,
                 window_args,
+                window_frame,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -2181,6 +2238,7 @@ impl IvmRuntime {
                 value_column: value_column.clone(),
                 filter: filter.clone(),
                 window_args: window_args.clone(),
+                window_frame: window_frame.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
@@ -5766,7 +5824,7 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
                 })?;
             }
         }
-        WindowFunction::Lag | WindowFunction::Lead => {
+        function if function.is_value() => {
             let value = view.value_column.as_deref().ok_or_else(|| {
                 report!(
                     "window view {}: {} needs a value column",
@@ -5806,10 +5864,23 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     if view.function.breaks_ties_with_primary_keys() {
         order.extend(view.source.primary_keys.iter().cloned());
     }
-    let over = if order.is_empty() {
-        format!("partition by {parts}")
+    // Ranking and shift functions ignore the declared frame, so it is only
+    // emitted where it matters (and cannot conflict with the tie-breaker the
+    // shift functions append).
+    let frame = if view.function.uses_frame() {
+        view.window_frame.as_deref()
     } else {
-        format!("partition by {parts} order by {}", quoted_list(&order))
+        None
+    }
+    .map(|frame| format!(" {frame}"))
+    .unwrap_or_default();
+    let over = if order.is_empty() {
+        format!("partition by {parts}{frame}")
+    } else {
+        format!(
+            "partition by {parts} order by {}{frame}",
+            quoted_list(&order)
+        )
     };
     let filter = format!(
         "{}{}",
@@ -5826,14 +5897,14 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
             Some(column) => format!("count({}) over ({over})", quote_ident(column)),
             None => format!("count(1) over ({over})"),
         },
-        WindowFunction::Lag | WindowFunction::Lead => {
+        function if function.is_value() => {
             let column = quote_ident(view.value_column.as_deref().unwrap_or_default());
             let args = view
                 .window_args
                 .as_deref()
                 .map(|args| format!(", {args}"))
                 .unwrap_or_default();
-            format!("{}({column}{args}) over ({over})", view.function.sql_name())
+            format!("{}({column}{args}) over ({over})", function.sql_name())
         }
         function => format!("cast({}() over ({over}) as bigint)", function.sql_name()),
     };

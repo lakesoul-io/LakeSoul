@@ -913,8 +913,14 @@ fn analyze_window(
             ));
         }
     }
-    let (function, partition_keys, order_keys, value_column, window_args) =
-        window_function_spec(window)?;
+    let WindowParts {
+        function,
+        partition_keys,
+        order_keys,
+        value_column,
+        window_args,
+        window_frame,
+    } = window_function_spec(window)?;
     Ok(ViewSpec::Window {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -925,6 +931,7 @@ fn analyze_window(
         value_column,
         filter,
         window_args,
+        window_frame,
     })
 }
 
@@ -947,8 +954,13 @@ fn try_analyze_top_k(
     let LogicalPlan::Window(window) = peel(node) else {
         return Ok(None);
     };
-    let (function, partition_keys, order_keys, value_column, _window_args) =
-        window_function_spec(window)?;
+    let WindowParts {
+        function,
+        partition_keys,
+        order_keys,
+        value_column,
+        ..
+    } = window_function_spec(window)?;
     if function != WindowFunction::RowNumber || value_column.is_some() {
         return Ok(None);
     }
@@ -1031,13 +1043,14 @@ fn try_analyze_top_k(
 }
 
 /// `(function, partition keys, order keys, value column, extra SQL args)`.
-type WindowParts = (
-    WindowFunction,
-    Vec<String>,
-    Vec<String>,
-    Option<String>,
-    Option<String>,
-);
+struct WindowParts {
+    function: WindowFunction,
+    partition_keys: Vec<String>,
+    order_keys: Vec<String>,
+    value_column: Option<String>,
+    window_args: Option<String>,
+    window_frame: Option<String>,
+}
 
 /// The single window function of a window node.
 fn window_function_spec(window: &Window) -> Result<WindowParts> {
@@ -1077,6 +1090,18 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
                 let (value, args) = window_shift_args(&params.args)?;
                 (function, Some(value), args)
             }
+            "first_value" | "last_value" => {
+                let function = if udf.name() == "first_value" {
+                    WindowFunction::FirstValue
+                } else {
+                    WindowFunction::LastValue
+                };
+                (function, Some(window_value_arg(&params.args)?), None)
+            }
+            "nth_value" => {
+                let (value, args) = window_nth_value_args(&params.args)?;
+                (WindowFunction::NthValue, Some(value), args)
+            }
             other => {
                 return Err(unsupported(format!("window function {other}")));
             }
@@ -1108,22 +1133,114 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
     if partition_keys.is_empty() {
         return Err(unsupported("window views need PARTITION BY columns"));
     }
-    if function.is_aggregate() {
-        if !frame_supported(&params.window_frame, !order_keys.is_empty()) {
-            return Err(unsupported(
-                "window frame; only the whole partition or the SQL default running frame is maintained",
-            ));
-        }
-    } else if order_keys.is_empty() {
+    let window_frame = window_frame_sql(&params.window_frame, !order_keys.is_empty())?;
+    if !function.is_aggregate() && order_keys.is_empty() {
         return Err(unsupported("ranking window functions need ORDER BY"));
     }
-    Ok((
+    Ok(WindowParts {
         function,
         partition_keys,
         order_keys,
         value_column,
         window_args,
-    ))
+        window_frame,
+    })
+}
+
+/// The value column of a value window function (`FIRST_VALUE`/`LAST_VALUE`).
+fn window_value_arg(args: &[Expr]) -> Result<String> {
+    match args {
+        [arg] => column_name(arg)
+            .ok_or_else(|| unsupported("window values must be plain columns")),
+        _ => Err(unsupported(
+            "the window function takes exactly one value column",
+        )),
+    }
+}
+
+/// The value column and the row number of an `NTH_VALUE` call.
+fn window_nth_value_args(args: &[Expr]) -> Result<(String, Option<String>)> {
+    let [value, n] = args else {
+        return Err(unsupported(
+            "NTH_VALUE takes a value column and a row number",
+        ));
+    };
+    let value = column_name(value)
+        .ok_or_else(|| unsupported("NTH_VALUE values must be plain columns"))?;
+    let n = integer_literal(n).ok_or_else(|| {
+        unsupported("the NTH_VALUE row number must be an integer literal")
+    })?;
+    if n < 1 {
+        return Err(unsupported("the NTH_VALUE row number must be positive"));
+    }
+    Ok((value, Some(n.to_string())))
+}
+
+/// An integer literal of any width.
+fn integer_literal(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Literal(ScalarValue::Int8(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::Int16(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::Int32(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::Int64(Some(value)), _) => Some(*value),
+        Expr::Literal(ScalarValue::UInt8(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt16(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt32(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt64(Some(value)), _) => i64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+/// The SQL text of the declared window frame, or `None` when it is the
+/// default frame of the declared ordering (the runtime then omits it).
+fn window_frame_sql(frame: &WindowFrame, has_order: bool) -> Result<Option<String>> {
+    let is_default = if has_order {
+        frame.units == WindowFrameUnits::Range
+            && frame.start_bound.is_unbounded()
+            && matches!(frame.end_bound, WindowFrameBound::CurrentRow)
+    } else {
+        frame.units == WindowFrameUnits::Rows
+            && frame.start_bound.is_unbounded()
+            && frame.end_bound.is_unbounded()
+    };
+    if is_default {
+        return Ok(None);
+    }
+    let units = match frame.units {
+        WindowFrameUnits::Rows => "rows",
+        WindowFrameUnits::Range => "range",
+        WindowFrameUnits::Groups => "groups",
+    };
+    Ok(Some(format!(
+        "{units} between {} and {}",
+        window_bound_sql(&frame.start_bound)?,
+        window_bound_sql(&frame.end_bound)?,
+    )))
+}
+
+fn window_bound_sql(bound: &WindowFrameBound) -> Result<String> {
+    Ok(match bound {
+        WindowFrameBound::Preceding(value) if value.is_null() => {
+            "unbounded preceding".to_string()
+        }
+        WindowFrameBound::Preceding(value) => {
+            format!("{} preceding", window_literal_sql(value)?)
+        }
+        WindowFrameBound::CurrentRow => "current row".to_string(),
+        WindowFrameBound::Following(value) if value.is_null() => {
+            "unbounded following".to_string()
+        }
+        WindowFrameBound::Following(value) => {
+            format!("{} following", window_literal_sql(value)?)
+        }
+    })
+}
+
+fn window_literal_sql(value: &ScalarValue) -> Result<String> {
+    let ast = Unparser::default()
+        .expr_to_sql(&Expr::Literal(value.clone(), None))
+        .map_err(|error| unsupported(format!("window literal {error}")))?;
+    Ok(ast.to_string())
 }
 
 /// The value column and the optional extra arguments (`offset`, `default`)
@@ -1140,22 +1257,8 @@ fn window_shift_args(args: &[Expr]) -> Result<(String, Option<String>)> {
     if extras.len() > 2 {
         return Err(unsupported("LAG/LEAD take at most an offset and a default"));
     }
-    let offset = match &extras[0] {
-        Expr::Literal(ScalarValue::Int8(Some(value)), _) => i64::from(*value),
-        Expr::Literal(ScalarValue::Int16(Some(value)), _) => i64::from(*value),
-        Expr::Literal(ScalarValue::Int32(Some(value)), _) => i64::from(*value),
-        Expr::Literal(ScalarValue::Int64(Some(value)), _) => *value,
-        Expr::Literal(ScalarValue::UInt8(Some(value)), _) => i64::from(*value),
-        Expr::Literal(ScalarValue::UInt16(Some(value)), _) => i64::from(*value),
-        Expr::Literal(ScalarValue::UInt32(Some(value)), _) => i64::from(*value),
-        Expr::Literal(ScalarValue::UInt64(Some(value)), _) => i64::try_from(*value)
-            .map_err(|_| unsupported("the LAG/LEAD offset is out of range"))?,
-        _ => {
-            return Err(unsupported(
-                "the LAG/LEAD offset must be an integer literal",
-            ));
-        }
-    };
+    let offset = integer_literal(&extras[0])
+        .ok_or_else(|| unsupported("the LAG/LEAD offset must be an integer literal"))?;
     if offset < 0 {
         return Err(unsupported("the LAG/LEAD offset must not be negative"));
     }
@@ -1170,20 +1273,6 @@ fn window_shift_args(args: &[Expr]) -> Result<(String, Option<String>)> {
         rendered.push(ast.to_string());
     }
     Ok((value, Some(rendered.join(", "))))
-}
-
-/// The frames the runtime maintains: the whole partition (no ORDER BY) or the
-/// SQL default running frame (with ORDER BY).
-fn frame_supported(frame: &WindowFrame, has_order: bool) -> bool {
-    if has_order {
-        frame.units == WindowFrameUnits::Range
-            && frame.start_bound.is_unbounded()
-            && matches!(frame.end_bound, WindowFrameBound::CurrentRow)
-    } else {
-        frame.units == WindowFrameUnits::Rows
-            && frame.start_bound.is_unbounded()
-            && frame.end_bound.is_unbounded()
-    }
 }
 
 /// The side of a join a column belongs to.
@@ -2395,6 +2484,7 @@ mod tests {
                     value_column: None,
                     filter: None,
                     window_args: None,
+                    window_frame: None,
                 }
             );
         }
@@ -2457,6 +2547,89 @@ mod tests {
             analyze("select k, lag(v + 1) over (partition by g order by v) from src")
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_frame_value_windows() {
+        let analyzed = analyze(
+            "select k, first_value(v) over (partition by g order by v, k rows between unbounded preceding and unbounded following) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            function,
+            value_column,
+            window_args,
+            window_frame,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::FirstValue);
+        assert_eq!(value_column, Some("v".to_string()));
+        assert_eq!(window_args, None);
+        assert_eq!(
+            window_frame.as_deref(),
+            Some("rows between unbounded preceding and unbounded following")
+        );
+
+        // NTH_VALUE takes a positive integer row number.
+        let analyzed = analyze(
+            "select k, nth_value(v, 2) over (partition by g order by v, k) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            function,
+            window_args,
+            window_frame,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::NthValue);
+        assert_eq!(window_args.as_deref(), Some("2"));
+        assert_eq!(window_frame, None);
+
+        // LAST_VALUE under the default frame.
+        let analyzed = analyze(
+            "select k, last_value(v) over (partition by g order by v, k) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { function, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::LastValue);
+
+        // Rejections: a missing or non-literal row number, no ordering, and
+        // a computed value.
+        assert!(
+            analyze("select k, nth_value(v) over (partition by g order by v) from src")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze(
+                "select k, nth_value(v, k) over (partition by g order by v) from src"
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            analyze("select k, first_value(v) over (partition by g) from src")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze(
+                "select k, first_value(v + 1) over (partition by g order by v) from src"
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -2577,13 +2750,26 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unsupported_window_shapes() {
-        // A frame the runtime does not maintain.
-        assert!(
-            analyze(
-                "select k, sum(v) over (partition by g order by v rows between 1 preceding and current row) from src"
-            )
-            .await
-            .is_err()
+        // A frame is only stored when it is not the default.
+        let analyzed =
+            analyze("select k, sum(v) over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window { window_frame, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(window_frame, None);
+        let analyzed = analyze(
+            "select k, sum(v) over (partition by g order by v rows between 1 preceding and current row) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { window_frame, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(
+            window_frame.as_deref(),
+            Some("rows between 1 preceding and current row")
         );
         // Ranking needs an ordering.
         assert!(
