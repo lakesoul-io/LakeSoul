@@ -53,6 +53,8 @@ do $$ begin
         status              text not null default 'active',
         last_epoch          bigint not null default 0,
         generation          bigint not null default 0,
+        definition_hash     text,
+        source_sql          text,
         created_at          bigint not null
     );
 exception when duplicate_table or unique_violation then null;
@@ -65,6 +67,16 @@ end $$;
 
 do $$ begin
     alter table ivm.views add column if not exists generation bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists definition_hash text;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists source_sql text;
 exception when duplicate_column or unique_violation then null;
 end $$;
 
@@ -456,6 +468,58 @@ impl IvmMetadata {
         Ok(row.map(|row| row.get(0)))
     }
 
+    /// The persisted refresh interval of a view (0 when unset).
+    pub async fn view_refresh_interval_ms(&self, view_id: &str) -> Result<Option<i64>> {
+        let row = self
+            .client
+            .query_opt(
+                "select refresh_interval_ms from ivm.views where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(row.map(|row| row.get(0)))
+    }
+
+    /// Persist the canonical definition identity of a view: the hash of the
+    /// normalized query shape and the SQL it came from.
+    pub async fn set_view_definition(
+        &self,
+        view_id: &str,
+        definition_hash: &str,
+        source_sql: &str,
+    ) -> Result<()> {
+        self.execute_rw(
+            "update ivm.views
+             set definition_hash = $2::TEXT, source_sql = $3::TEXT
+             where view_id = $1::TEXT",
+            &[&view_id, &definition_hash, &source_sql],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The persisted `(definition_hash, source_sql)` of a view.
+    pub async fn view_definition(
+        &self,
+        view_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let row = self
+            .client
+            .query_opt(
+                "select definition_hash, source_sql from ivm.views
+                 where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(row.and_then(|row| {
+            let hash: Option<String> = row.get(0);
+            let sql: Option<String> = row.get(1);
+            hash.zip(sql)
+        }))
+    }
+
     /// Insert or update the cursor of one source partition.
     pub async fn upsert_cursor(
         &self,
@@ -802,6 +866,17 @@ impl IvmMetadata {
     }
 
     /// The internal table registered for one `(view, role)`.
+    /// Remove the `(view_id, role)` binding so a rebuilt view can register a
+    /// different state table.  The caller owns dropping the old table.
+    pub async fn unregister_state(&self, view_id: &str, role: StateRole) -> Result<()> {
+        self.execute_rw(
+            "delete from ivm.states where view_id = $1::TEXT and role = $2::TEXT",
+            &[&view_id, &role.as_str()],
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_state(
         &self,
         view_id: &str,

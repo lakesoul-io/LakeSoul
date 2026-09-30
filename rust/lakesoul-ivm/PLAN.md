@@ -886,6 +886,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 结论：收益集中在稳态增量刷新；`MIN_INDEX_ROWS`/`MAX_INDEX_CACHE_RATIO` 暂无需再调，
   写时预计算（Phase B）仍无必要。
 
+**SQL 增量执行入口 M1：按 spec 驱动刷新与注册表扩展（已完成）**
+
+- 背景：SQL 层不做 `CREATE/REFRESH MATERIALIZED VIEW` DDL，改为一个专用执行入口把
+  `INSERT INTO` 解释为增量维护（首跑全量、其后按源 changelog 增量），`INSERT OVERWRITE`
+  保持全量覆盖语义。M1 先补"spec 即状态"的基础设施。
+- `IvmTable::from_table_info` + `IvmRuntime::open_table/open_table_by_id`：按名称/id 从元数据
+  重建内部或用户表（schema 优先 Arrow IPC、回退 JSON；解析 PK、桶列、CDC 列、物理格式）。
+- `IvmRuntime::refresh_spec(&ViewSpec)`：从规范 JSON 打开全部相关表并调用对应的 `refresh_*`，
+  并保留 `ivm.views.refresh_interval_ms`（否则 `register_*` 会用 0 覆盖调度区间）；
+  新增 `ViewSpec::view_id()`。
+- `ivm.views` 增列 `definition_hash` / `source_sql`（幂等 alter），新增
+  `view_refresh_interval_ms` / `set_view_definition` / `view_definition`；
+  `ivm.states` 新增 `unregister_state` —— 注册表对"同一 role 换表"保持**报错拒绝**，
+  重建视图必须先注销再注册（正是定义变化清理旧 state 表所需的语义）。
+- 测试 `tests/spec_dispatch.rs`：open 往返（name/id、各属性）、spec 驱动首跑+增量刷新、
+  注册表替换语义、定义 hash/SQL 往返；IVM 全量（`--test-threads=1`）32 个测试二进制全绿。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
