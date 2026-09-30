@@ -295,6 +295,8 @@ enum HavingColumns<'a> {
     Distinct {
         kind: DistinctAggKind,
         value_column: &'a str,
+        /// The placeholder column of a split distinct aggregate (`alias1`).
+        alias: Option<&'a str>,
     },
 }
 
@@ -453,12 +455,27 @@ fn having_column(
                 Err(not_materialized(name))
             }
         }
-        HavingColumns::Distinct { kind, value_column } => {
+        HavingColumns::Distinct {
+            kind,
+            value_column,
+            alias,
+        } => {
             let expected = match kind {
                 DistinctAggKind::Count => "count",
                 DistinctAggKind::Sum => "sum",
             };
-            if name == expected && function.params.distinct && column_arg(value_column) {
+            let refers_to_alias = alias.is_some_and(|alias| {
+                matches!(
+                    function.params.args.as_slice(),
+                    [Expr::Column(column)] if column.name == alias
+                )
+            });
+            let matches = if function.params.distinct {
+                column_arg(value_column)
+            } else {
+                refers_to_alias
+            };
+            if name == expected && matches {
                 Ok(IVM_VALUE_COLUMN)
             } else {
                 Err(not_materialized(name))
@@ -514,6 +531,49 @@ fn validate_filter(expr: &Expr) -> Result<()> {
     Ok(())
 }
 
+/// The two-level plan of a single `DISTINCT` aggregate: the optimizer groups
+/// the source by `(group keys, value)` first and then aggregates the
+/// placeholder column (`alias1`).
+fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, String)>> {
+    let LogicalPlan::Aggregate(inner) = peel(&aggregate.input) else {
+        return Ok(None);
+    };
+    if !inner.aggr_expr.is_empty()
+        || inner.group_expr.len() != aggregate.group_expr.len() + 1
+    {
+        return Ok(None);
+    }
+    // The inner grouping repeats the outer keys plus one aliased value.
+    let mut alias: Option<(String, String)> = None;
+    let mut others = Vec::new();
+    for expr in &inner.group_expr {
+        match expr {
+            Expr::Alias(inner_alias) => {
+                if alias.is_some() {
+                    return Ok(None);
+                }
+                let Expr::Column(value) = inner_alias.expr.as_ref() else {
+                    return Ok(None);
+                };
+                alias = Some((inner_alias.name.clone(), value.name.clone()));
+            }
+            other => others.push(format!("{other}")),
+        }
+    }
+    let outer = aggregate
+        .group_expr
+        .iter()
+        .map(|expr| format!("{expr}"))
+        .collect::<Vec<_>>();
+    let Some((alias, value_column)) = alias else {
+        return Ok(None);
+    };
+    if others != outer {
+        return Ok(None);
+    }
+    Ok(Some((inner, alias, value_column)))
+}
+
 /// The aggregate family: SUM/COUNT, MIN/MAX and COUNT(DISTINCT)/SUM(DISTINCT).
 fn analyze_aggregate(
     aggregate: &Aggregate,
@@ -521,8 +581,15 @@ fn analyze_aggregate(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let (source, filter) =
-        collect_filtered_source(&aggregate.input, tables, "an aggregate")?;
+    // The optimizer rewrites a single DISTINCT aggregate into an inner
+    // grouping over `(group keys, value)` and an outer `count(alias)` /
+    // `sum(alias)`.
+    let distinct_split = distinct_split(aggregate)?;
+    let input = match &distinct_split {
+        Some((inner, _, _)) => &inner.input,
+        None => &aggregate.input,
+    };
+    let (source, filter) = collect_filtered_source(input, tables, "an aggregate")?;
     let source = &source;
 
     let mut group_keys = Vec::with_capacity(aggregate.group_expr.len());
@@ -550,6 +617,38 @@ fn analyze_aggregate(
             )));
         }
         let name = function.func.name();
+        // A split DISTINCT aggregate is the only aggregate and refers to its
+        // placeholder column (e.g. `count(alias1)` over `v AS alias1`).
+        if let Some((_, alias, value_column)) = &distinct_split {
+            let refers_to_alias = matches!(
+                function.params.args.as_slice(),
+                [Expr::Column(column)] if &column.name == alias
+            );
+            if refers_to_alias && !function.params.distinct {
+                if !matches!(name, "count" | "sum") {
+                    return Err(unsupported(format!(
+                        "aggregate function {name}(DISTINCT ...)"
+                    )));
+                }
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                {
+                    return Err(unsupported(
+                        "mixing DISTINCT aggregates with other aggregates",
+                    ));
+                }
+                let kind = if name == "count" {
+                    DistinctAggKind::Count
+                } else {
+                    DistinctAggKind::Sum
+                };
+                distinct = Some((kind, value_column.clone()));
+                continue;
+            }
+        }
         match (name, function.params.distinct) {
             ("count", true) | ("sum", true) => {
                 if count
@@ -664,6 +763,7 @@ fn analyze_aggregate(
             HavingColumns::Distinct {
                 kind: *agg,
                 value_column,
+                alias: distinct_split.as_ref().map(|(_, alias, _)| alias.as_str()),
             },
             aggregate,
             &group_keys,
@@ -1649,6 +1749,78 @@ mod tests {
             panic!("expected a distinct spec");
         };
         assert_eq!(agg, DistinctAggKind::Sum);
+    }
+
+    #[tokio::test]
+    async fn analyzes_split_distinct_aggregates() {
+        // The optimized plan splits COUNT(DISTINCT v) into two aggregates.
+        let analyzed =
+            analyze_optimized("select g, count(distinct v) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::DistinctAgg {
+            agg,
+            value_column,
+            filter,
+            having,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(agg, DistinctAggKind::Count);
+        assert_eq!(value_column, "v");
+        assert_eq!(filter, None);
+        assert_eq!(having, None);
+
+        // WHERE below the inner aggregate and SUM(DISTINCT).
+        let analyzed = analyze_optimized(
+            "select g, sum(distinct v) from src where v > 5 group by g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::DistinctAgg {
+            agg,
+            value_column,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(agg, DistinctAggKind::Sum);
+        assert_eq!(value_column, "v");
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+
+        // HAVING over the split distinct aggregate maps to `value`.
+        let analyzed = analyze_optimized(
+            "select g, count(distinct v) from src group by g having count(distinct v) > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::DistinctAgg { having, .. } = analyzed.spec else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("value > 1"));
+
+        // The raw and the optimized plan describe the same view.
+        let raw = analyze("select g, count(distinct v) from src group by g")
+            .await
+            .unwrap();
+        let optimized =
+            analyze_optimized("select g, count(distinct v) from src group by g")
+                .await
+                .unwrap();
+        assert_eq!(raw.spec, optimized.spec);
+
+        // Mixing distinct aggregates stays rejected.
+        assert!(
+            analyze_optimized(
+                "select g, count(distinct v), sum(distinct v) from src group by g"
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]

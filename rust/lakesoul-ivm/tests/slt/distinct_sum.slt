@@ -1,0 +1,44 @@
+# SUM(DISTINCT v) through the SQL entry.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=10,op=insert; k=3,g=a,v=5,op=insert; k=4,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(DISTINCT v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 15
+b 7
+
+# An update that collides with another row shrinks the distinct sum.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=10,op=insert; k=5,g=b,v=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(DISTINCT v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+b 9
+
+# HAVING over the distinct sum.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(DISTINCT v) FROM __SRC__ GROUP BY g HAVING SUM(DISTINCT v) > 9
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10

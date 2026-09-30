@@ -16,10 +16,10 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, MinMaxKind,
-    PhysicalFormat, WindowFunction, avg_mv_schema_for, min_max_mv_schema_for,
-    sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    window_ranking_mv_schema_for,
+    DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
+    MinMaxKind, PhysicalFormat, WindowFunction, avg_mv_schema_for,
+    distinct_agg_mv_schema_for, min_max_mv_schema_for, sum_count_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, window_ranking_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -342,6 +342,52 @@ async fn oracle_top_k_where_matches_full_recompute() {
              ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn \
              FROM __SRC__ WHERE op <> 'delete' AND v > 30) t WHERE rn <= 2",
         "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_count_distinct_matches_full_recompute() {
+    // The optimizer splits COUNT(DISTINCT v); the SQL entry must reconstruct
+    // the distinct view from the two-level aggregate plan.
+    run_oracle(
+        "countdistinct",
+        1,
+        distinct_agg_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            "v",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, COUNT(DISTINCT v) AS value FROM __SRC__ \
+         WHERE v > 30 GROUP BY g",
+        "SELECT g, COUNT(DISTINCT v) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_sum_distinct_matches_full_recompute() {
+    run_oracle(
+        "sumdistinct",
+        1,
+        distinct_agg_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            "v",
+            DistinctAggKind::Sum,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(DISTINCT v) AS value FROM __SRC__ \
+         WHERE v > 30 GROUP BY g",
+        "SELECT g, SUM(DISTINCT v) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
