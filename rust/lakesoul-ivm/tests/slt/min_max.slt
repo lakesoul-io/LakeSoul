@@ -1,0 +1,49 @@
+# MIN maintenance and a definition change to MAX on the same MV.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3
+b 7
+
+# An update moves the minimum up, a delete removes a group.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=5,op=insert; k=3,g=b,v=7,op=delete; k=4,g=c,v=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5
+c 2
+
+# The definition changes to MAX: the view and its state are rebuilt.
+statement ok
+INSERT INTO __MV__ SELECT g, MAX(v) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+c 2
+
+# And the new definition keeps incrementing.
+statement ok
+/*ivm-append __SRC__: k=5,g=a,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MAX(v) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 20
+c 2

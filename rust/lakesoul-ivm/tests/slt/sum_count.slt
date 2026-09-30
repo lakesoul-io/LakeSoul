@@ -1,0 +1,46 @@
+# SUM/COUNT incremental maintenance through the dedicated entry.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 30
+b 5
+
+query I
+SELECT COUNT(*) FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2
+
+# One update, one delete and a new group: only the delta is applied.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=11,op=insert; k=3,g=b,v=5,op=delete; k=4,g=c,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 31
+c 7
+
+query I
+SELECT COUNT(*) FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2
+
+# Re-running the same statement with no source change is a no-op.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 31
+c 7

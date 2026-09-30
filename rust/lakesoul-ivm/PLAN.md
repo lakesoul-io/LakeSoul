@@ -963,6 +963,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   OVERWRITE 重算并恢复增量（同 key 变更按 upsert 语义验证）、非法语句/列清单/形状/schema
   不匹配报错；IVM 全量 33 个测试二进制（`--test-threads=1`）全绿。
 
+**SQL 增量执行入口 M4：sqllogictest 与差分 oracle（已完成）**
+
+- 引入 `sqllogictest`（dev-dep）与 harness `tests/sqllogic.rs`：INSERT 走专用执行器，其余 SQL
+  走注册了源/MV provider 的 SessionContext；源变更用
+  `/*ivm-append <table>: k=..,g=..,v=..,op=..; ...*/` 指令（provider 只读）。harness 用私有
+  current-thread runtime + `block_on`（`AsyncDB` 要求 Send，而 LakeSoul reader 仅 Send 不 Sync）。
+- `.slt` 套件：`sum_count.slt`（bootstrap/增量/删除/幂等重跑）、`min_max.slt`（MIN→MAX 定义
+  变化重建后继续增量）、`errors.slt`（VALUES/AVG/聚合 WHERE/多语句/schema 不匹配报错且不影响
+  已注册定义）。
+- 差分 oracle `tests/sql_oracle.rs`：SUM/COUNT 与 MIN 各 10 轮随机插入/更新/删除，每轮
+  `INSERT INTO` 后与"源上全量定义查询"逐行比对，且每题连续执行两次验证幂等。
+- 已知限制（oracle 暴露）：聚合视图的 INSERT 定义里暂不支持 WHERE（M2 起明确报错），过滤需用
+  `delete` 撤回语义表达；列入后续。
+- 全量 35 个测试二进制（`--test-threads=1`）全绿。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要

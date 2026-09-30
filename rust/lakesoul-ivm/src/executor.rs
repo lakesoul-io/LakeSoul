@@ -169,6 +169,16 @@ impl IvmSqlExecutor {
         let same_definition =
             stored.as_ref().is_some_and(|(hash, _)| hash == &definition);
 
+        // Validate before any side effect: a statement that cannot maintain
+        // this target must not create or drop state tables.
+        let expected = expected_mv_schema(&probe.spec, &tables)?;
+        if !schema_matches(&mv.schema, &expected) {
+            return Err(rootcause::report!(
+                "target table `{}` does not match the view schema of this statement",
+                mv.table_name
+            ));
+        }
+
         // A changed definition invalidates the generated state: drop it before
         // the new spec creates (and registers) its own.
         if stored.is_some() && !same_definition {
@@ -187,14 +197,6 @@ impl IvmSqlExecutor {
         if definition_hash(&spec)? != definition {
             return Err(rootcause::report!(
                 "internal error: the definition identity changed during analysis"
-            ));
-        }
-
-        let expected = expected_mv_schema(&spec, &tables)?;
-        if !schema_matches(&mv.schema, &expected) {
-            return Err(rootcause::report!(
-                "target table `{}` does not match the view schema of this statement",
-                mv.table_name
             ));
         }
 
