@@ -155,6 +155,19 @@ fn vector_index_json(runtime: &IndexRuntime) -> anyhow::Result<Option<String>> {
         &[PK_COLUMN.to_string()],
     )
     .map_err(|error| anyhow::anyhow!("vector index validation: {error}"))?;
+    // The generic vector index supports any (composite) key type, but the
+    // gateway's document API is keyed by a single integer id.
+    let pk_type = runtime
+        .schema
+        .field_with_name(PK_COLUMN)
+        .map(|field| field.data_type().clone())
+        .map_err(|error| anyhow::anyhow!("vector index primary key: {error}"))?;
+    if !matches!(pk_type, DataType::UInt64 | DataType::Int64) {
+        anyhow::bail!(
+            "the gateway requires an Int64/UInt64 '{PK_COLUMN}' primary key, \
+             got {pk_type}"
+        );
+    }
     Ok(Some(vector_index_columns_to_json(&configs)))
 }
 

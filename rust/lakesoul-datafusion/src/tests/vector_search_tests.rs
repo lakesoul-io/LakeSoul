@@ -1407,3 +1407,214 @@ async fn uniform_growth_does_not_trigger_per_cluster_rebuild_before_ratio() {
         "even growth below the per-cluster ratio must never rebuild: {gens:?}"
     );
 }
+
+/// Build a batch with the given primary-key columns plus the shared vector
+/// column.
+fn make_keyed_batch(
+    pk_arrays: Vec<(&str, Arc<dyn arrow::array::Array>)>,
+    vectors: &[Vec<f32>],
+) -> RecordBatch {
+    let mut fields: Vec<Field> = pk_arrays
+        .iter()
+        .map(|(name, array)| Field::new(*name, array.data_type().clone(), false))
+        .collect();
+    fields.push(Field::new(
+        "vec",
+        DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            DIM as i32,
+        ),
+        false,
+    ));
+    let mut columns: Vec<Arc<dyn arrow::array::Array>> =
+        pk_arrays.into_iter().map(|(_, array)| array).collect();
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    columns.push(Arc::new(builder.finish()));
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// Non-integer and composite primary keys: the index stores the arrow-Row
+/// encoding of the key columns and the SQL search still resolves the right
+/// rows.
+///
+/// The two scenarios run in one test so their index commits do not race on
+/// the metadata catalog (serializable transactions).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_non_integer_primary_keys() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_string_pk";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("tenant", DataType::Utf8, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]));
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(schema)
+        .with_primary_keys(vec!["tenant".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    // Above the locator's MIN_INDEX_ROWS (4096) so the key lookup path is
+    // exercised when the locator cache is enabled.
+    let n = 5000usize;
+    let vectors = random_vectors(n);
+    let tenants: Vec<String> = (0..n).map(|i| format!("tenant-{i:04}")).collect();
+    let batch = make_keyed_batch(
+        vec![(
+            "tenant",
+            Arc::new(arrow::array::StringArray::from(tenants.clone())),
+        )],
+        &vectors,
+    );
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch)
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select tenant from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        use arrow::array::Array as _;
+        returned.extend((0..values.len()).map(|i| values.value(i).to_string()));
+    }
+    let expected: Vec<String> = brute_force_topk(&vectors, &query, 5)
+        .into_iter()
+        .map(|i| tenants[i as usize].clone())
+        .collect();
+    assert_eq!(returned, expected, "string primary key search");
+
+    // ---- composite primary keys: the key concatenates both columns ----
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_composite_pk";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new("tenant", DataType::Utf8, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]));
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(schema)
+        .with_primary_keys(vec!["id".to_string(), "tenant".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    // Above the locator's MIN_INDEX_ROWS (4096) so the key lookup path is
+    // exercised when the locator cache is enabled.
+    let n = 5000usize;
+    let vectors = random_vectors(n);
+    let ids: Vec<u64> = (0..n as u64).collect();
+    let tenants: Vec<String> = (0..n).map(|i| format!("group-{:02}", i % 4)).collect();
+    let batch = make_keyed_batch(
+        vec![
+            ("id", Arc::new(arrow::array::UInt64Array::from(ids.clone()))),
+            (
+                "tenant",
+                Arc::new(arrow::array::StringArray::from(tenants.clone())),
+            ),
+        ],
+        &vectors,
+    );
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch)
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id, tenant from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+        let tenants = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        use arrow::array::Array as _;
+        returned
+            .extend((0..ids.len()).map(|i| (ids.value(i), tenants.value(i).to_string())));
+    }
+    let expected: Vec<(u64, String)> = brute_force_topk(&vectors, &query, 5)
+        .into_iter()
+        .map(|i| (ids[i as usize], tenants[i as usize].clone()))
+        .collect();
+    assert_eq!(returned, expected, "composite primary key search");
+}

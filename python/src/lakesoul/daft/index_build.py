@@ -96,12 +96,12 @@ def build_index_daft(
             "an index requires an id column: the table has index properties "
             "but no primary key"
         )
-    pk_column = primary_keys[0]
+    pk_columns = list(primary_keys)
 
     rows: dict[str, list[Any]] = {
         "file_paths": [],
         "store_config_json": [],
-        "pk_column": [],
+        "pk_columns": [],
         "kind": [],
         "config_json": [],
     }
@@ -110,7 +110,7 @@ def build_index_daft(
         if not configs:
             continue
         kind_rows, _ = shard_build_rows(
-            kind, configs, file_infos, store_config_json, pk_column
+            kind, configs, file_infos, store_config_json, pk_columns
         )
         for key in rows:
             rows[key].extend(kind_rows[key])
@@ -137,7 +137,7 @@ def build_index_daft(
         udf()(
             col("file_paths"),
             col("store_config_json"),
-            col("pk_column"),
+            col("pk_columns"),
             col("kind"),
             col("config_json"),
         ),
@@ -171,7 +171,7 @@ class _BuildIndexShard:
         self,
         file_paths: Any,
         store_config_json: Any,
-        pk_column: Any,
+        pk_columns: Any,
         kind: Any,
         config_json: Any,
     ) -> str:
@@ -180,7 +180,7 @@ class _BuildIndexShard:
                 str(kind),
                 json.loads(store_config_json),
                 list(file_paths),
-                str(pk_column),
+                [str(column) for column in pk_columns],
                 json.loads(config_json),
             )
         except Exception as error:  # noqa: BLE001 - surface as a row status

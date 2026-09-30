@@ -31,8 +31,11 @@ use arrow_schema::DataType;
 use datafusion_common::{Column, ScalarValue};
 use datafusion_expr::Expr;
 use datafusion_expr::expr::InList;
+use lakesoul_vector::IndexKey;
+use rootcause::report;
 
 use crate::index::Candidate;
+use crate::index::key::KeyCodec;
 
 /// Build a `pk IN (candidates)` filter; empty candidates match nothing.
 ///
@@ -72,4 +75,44 @@ pub fn inject_candidates(
         .into_iter()
         .chain(std::iter::once(id_filter))
         .collect()
+}
+
+/// Build a `pk IN (...)` filter from encoded index keys, one `IN` per
+/// primary-key column (ANDed, i.e. a superset for composite keys).
+///
+/// This is the narrowing fallback for consumers of the native reader's
+/// vector-search options that expect per-shard candidate rows: the key
+/// locator is tried first, but it is only available for vortex tables and
+/// with the locator cache enabled.  Empty keys match nothing.
+pub fn inject_key_candidates(
+    filters: Vec<Expr>,
+    pk_columns: &[String],
+    codec: &KeyCodec,
+    keys: &[IndexKey],
+) -> crate::Result<Vec<Expr>> {
+    if keys.is_empty() {
+        // Match nothing, so the scan returns zero rows.
+        let no_match = Expr::Literal(ScalarValue::Boolean(Some(false)), None);
+        return Ok(filters
+            .into_iter()
+            .chain(std::iter::once(no_match))
+            .collect());
+    }
+    let arrays = codec.decode(keys)?;
+    let mut filters = filters;
+    for (column, array) in pk_columns.iter().zip(arrays.iter()) {
+        let literals = (0..array.len())
+            .map(|row| ScalarValue::try_from_array(array, row))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| report!("failed to build index key literals: {e}"))?
+            .into_iter()
+            .map(|value| Expr::Literal(value, None))
+            .collect();
+        filters.push(Expr::InList(InList::new(
+            Box::new(Expr::Column(Column::new_unqualified(column))),
+            literals,
+            false,
+        )));
+    }
+    Ok(filters)
 }

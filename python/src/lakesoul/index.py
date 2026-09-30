@@ -62,10 +62,10 @@ class IndexKindSpec:
         [Sequence[Mapping[str, Any]], pa.Schema, Sequence[str]],
         None,
     ]
-    #: Build one shard: ``(store_config, file_paths, pk_column, config,
+    #: Build one shard: ``(store_config, file_paths, pk_columns, config,
     #: rebuild) -> "ok"``; raises on failure.
     build_shard: Callable[
-        [Mapping[str, str], list[str], str, Mapping[str, Any], bool],
+        [Mapping[str, str], list[str], list[str], Mapping[str, Any], bool],
         str,
     ]
     #: Whether a shard should be compacted: ``(store_config, file_paths,
@@ -287,14 +287,14 @@ def build_shard(
     kind: str,
     store_config: Mapping[str, str],
     file_paths: Sequence[str],
-    pk_column: str,
+    pk_columns: Sequence[str],
     config: Mapping[str, Any],
     *,
     rebuild: bool = False,
 ) -> str:
     """Build one index shard with the kind's native builder."""
     return index_kind_spec(kind).build_shard(
-        store_config, list(file_paths), pk_column, config, rebuild
+        store_config, list(file_paths), list(pk_columns), config, rebuild
     )
 
 
@@ -331,9 +331,9 @@ def build_partition_index(
     if not pk_cols:
         raise ValueError(
             f"Table '{table_name}' has no primary key columns defined. "
-            f"A {kind} index requires a u64 primary key."
+            f"A {kind} index requires a primary key."
         )
-    pk_column = pk_cols[0]
+    pk_columns = list(pk_cols)
     table_path = _s3_clean_table_path(table_info.table_path)
 
     shards = group_files_by_shard(client, table_info.table_id, partition_desc, pk_cols)
@@ -356,7 +356,7 @@ def build_partition_index(
                 kind,
                 store_config,
                 shard.file_paths,
-                pk_column,
+                pk_columns,
                 config,
                 rebuild=rebuild,
             )
@@ -456,7 +456,7 @@ def incremental_build_index(
             f"a {kind} index requires an id column: the table has "
             f"{index_kind_spec(kind).property_key} but no primary key"
         )
-    pk_column = primary_keys[0]
+    pk_columns = list(primary_keys)
     store_config = default_object_store_config(catalog=table.catalog, table=table)
     shards = group_file_infos_by_shard(file_infos)
 
@@ -466,7 +466,7 @@ def incremental_build_index(
         for (partition_desc, bucket_id), files in sorted(shards.items()):
             try:
                 result = build_shard(
-                    kind, store_config, sorted(files), pk_column, config
+                    kind, store_config, sorted(files), pk_columns, config
                 )
                 if result == "ok":
                     succeeded += 1
@@ -530,7 +530,7 @@ def compact_index(
     _, pk_cols = client.get_partition_and_pk_cols(table_info)
     if not pk_cols:
         return 0
-    pk_column = pk_cols[0]
+    pk_columns = list(pk_cols)
     store_config = default_object_store_config(catalog=table.catalog, table=table)
 
     compacted = 0
@@ -548,7 +548,7 @@ def compact_index(
                         kind,
                         store_config,
                         shard.file_paths,
-                        pk_column,
+                        pk_columns,
                         config,
                         rebuild=True,
                     )
@@ -591,7 +591,7 @@ def shard_build_rows(
     configs: Sequence[Mapping[str, Any]],
     file_infos: Sequence[Any],
     store_config_json: str,
-    pk_column: str,
+    pk_columns: Sequence[str],
 ) -> tuple[dict[str, list[Any]], int]:
     """Materialize per-shard build tasks as dataframe column dicts (Daft).
 
@@ -604,7 +604,7 @@ def shard_build_rows(
     rows: dict[str, list[Any]] = {
         "file_paths": [],
         "store_config_json": [],
-        "pk_column": [],
+        "pk_columns": [],
         "kind": [],
         "config_json": [],
     }
@@ -613,7 +613,7 @@ def shard_build_rows(
         for config in configs:
             rows["file_paths"].append(files)
             rows["store_config_json"].append(store_config_json)
-            rows["pk_column"].append(pk_column)
+            rows["pk_columns"].append(list(pk_columns))
             rows["kind"].append(kind)
             rows["config_json"].append(json.dumps(dict(config)))
     return rows, len(rows["file_paths"])

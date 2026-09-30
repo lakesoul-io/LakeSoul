@@ -15,6 +15,7 @@ use crc32fast::Hasher;
 use object_store::path::Path as StorePath;
 use object_store::{ObjectStore, ObjectStoreExt, WriteMultipart};
 
+use crate::rabitq::key::IndexKey;
 use crate::rabitq::{Metric, RabitqError, RotatorType};
 
 // ---- little-endian read/write with optional hasher ----
@@ -66,8 +67,8 @@ macro_rules! hup {
 }
 
 pub const HEADER_MAGIC: [u8; 4] = *b"RBQH";
-pub const HEADER_VERSION: u32 = 1;
-pub const SEGMENT_MAGIC: [u8; 4] = *b"SEG1";
+pub const HEADER_VERSION: u32 = 2;
+pub const SEGMENT_MAGIC: [u8; 4] = *b"SEG2";
 
 /// Bundles an [`ObjectStore`] with a path prefix so that all header and
 /// segment files live under a single sub-directory.
@@ -119,6 +120,10 @@ pub struct IndexHeader {
     pub rotator_data: Vec<u8>,
     pub ex_bits: usize,
     pub total_bits: usize,
+    /// Fingerprint of the key layout the index was built with (the
+    /// `arrow-row` encoding of the primary-key columns).  Callers compare it
+    /// against the current table schema before reusing the index.
+    pub key_kind: u64,
 }
 
 impl IndexHeader {
@@ -140,6 +145,8 @@ impl IndexHeader {
         h.update(&[self.ex_bits as u8]);
         wle!(b, self.total_bits, u8);
         h.update(&[self.total_bits as u8]);
+        wle!(b, self.key_kind, u64);
+        h.update(&self.key_kind.to_le_bytes());
         wle!(b, self.rotator_data.len(), u64);
         h.update(&(self.rotator_data.len() as u64).to_le_bytes());
         b.write_all(&self.rotator_data).unwrap();
@@ -175,6 +182,8 @@ impl IndexHeader {
         h.update(&[ex_bits as u8]);
         let total_bits = rle!(r, u8) as usize;
         h.update(&[total_bits as u8]);
+        let key_kind = rle!(r, u64);
+        h.update(&key_kind.to_le_bytes());
         let rdl = u64_to_usize(rle!(r, u64))?;
         h.update(&(rdl as u64).to_le_bytes());
         let mut rotator_data = vec![0u8; rdl];
@@ -198,6 +207,7 @@ impl IndexHeader {
             rotator_data,
             ex_bits,
             total_bits,
+            key_kind,
         })
     }
 }
@@ -232,7 +242,7 @@ pub struct ClusterSegmentData {
     pub centroid: Vec<f32>,
     pub padded_dim: usize,
     pub ex_bits: usize,
-    pub ids: Vec<u64>,
+    pub ids: Vec<IndexKey>,
     pub batch_data: Vec<u8>,
     pub ex_codes_packed: Vec<Vec<u8>>,
     pub f_add_ex: Vec<f32>,
@@ -304,9 +314,12 @@ pub async fn read_segment_full(
 
     let mut ids = Vec::with_capacity(nv);
     for _ in 0..nv {
-        let id = rle!(r, u64);
-        hup!(Some(&mut h), &id.to_le_bytes());
-        ids.push(id);
+        let len = rle!(r, u32);
+        hup!(Some(&mut h), &len.to_le_bytes());
+        let mut key = vec![0u8; len as usize];
+        r.read_exact(&mut key)?;
+        h.update(&key);
+        ids.push(IndexKey::from(key));
     }
 
     let bdl = u64_to_usize(rle!(r, u64))?;
@@ -444,9 +457,12 @@ pub async fn write_segment(
         wle!(b, v, f32);
         hup!(Some(&mut h), &v.to_le_bytes());
     }
-    for &id in &seg.ids {
-        wle!(b, id, u64);
-        hup!(Some(&mut h), &id.to_le_bytes());
+    for id in &seg.ids {
+        let key = id.as_bytes();
+        wle!(b, key.len(), u32);
+        hup!(Some(&mut h), &(key.len() as u32).to_le_bytes());
+        b.write_all(key).unwrap();
+        h.update(key);
     }
 
     wle!(b, seg.batch_data.len(), u64);

@@ -10,10 +10,19 @@
 use std::sync::Arc;
 
 use lakesoul_vector::{
-    IdAndVecBatch, IndexStore, IvfRabitqBuilder, IvfRabitqIndex, Metric, RotatorType,
-    SearchParams,
+    IdAndVecBatch, IndexKey, IndexStore, IvfRabitqBuilder, IvfRabitqIndex, Metric,
+    RotatorType, SearchParams,
 };
 use object_store::memory::InMemory;
+
+/// Decode the test's synthetic keys (`u64::to_le_bytes`).
+fn key_u64(key: &IndexKey) -> u64 {
+    u64::from_le_bytes(key.as_bytes().try_into().unwrap())
+}
+
+fn u64_key(value: u64) -> IndexKey {
+    IndexKey::new(value.to_le_bytes())
+}
 
 #[tokio::test]
 async fn merged_segments_keep_delta_vectors_searchable() {
@@ -38,15 +47,16 @@ async fn merged_segments_keep_delta_vectors_searchable() {
         RotatorType::FhtKacRotator,
         42,
         true,
+        0,
     );
     builder
         .insert_batch(IdAndVecBatch {
-            ids: (0..5).collect(),
+            ids: (0..5u64).map(u64_key).collect(),
             vectors: base_vectors.clone(),
         })
         .unwrap();
     let stream = vec![IdAndVecBatch {
-        ids: (0..5).collect(),
+        ids: (0..5u64).map(u64_key).collect(),
         vectors: base_vectors.clone(),
     }];
     let index = builder
@@ -62,7 +72,7 @@ async fn merged_segments_keep_delta_vectors_searchable() {
         .unwrap();
     builder
         .insert_batch(IdAndVecBatch {
-            ids: vec![100],
+            ids: vec![u64_key(100)],
             vectors: new_vec.clone(),
         })
         .unwrap();
@@ -77,14 +87,14 @@ async fn merged_segments_keep_delta_vectors_searchable() {
 
     // Query exactly the new vector: it must be the top-1 with distance ~0.
     let results = loaded.search(&new_vec, SearchParams::new(3, 1)).unwrap();
-    let ids: Vec<u64> = results.iter().map(|r| r.id).collect();
+    let ids: Vec<u64> = results.iter().map(|r| key_u64(&r.id)).collect();
     println!("query=new_vec results: {:?}", results);
     assert_eq!(ids.first(), Some(&100), "new vector must be found");
 
     // Query each base vector and verify self-retrieval.
     for (i, v) in base_vectors.chunks_exact(dim).enumerate() {
         let results = loaded.search(v, SearchParams::new(3, 1)).unwrap();
-        let top: Vec<u64> = results.iter().map(|r| r.id).collect();
+        let top: Vec<u64> = results.iter().map(|r| key_u64(&r.id)).collect();
         println!("query=base[{i}] results: {:?}", results);
         assert_eq!(
             top.first(),

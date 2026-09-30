@@ -1971,11 +1971,13 @@ def _validate_vector_index_configs(
 ) -> None:
     """Validate a table can support the configured vector index.
 
-    Mirrors the native builder's requirements (``extract_vector_batch``): an
-    Int64/UInt64 primary key column and Float32 vector columns whose
-    ``FixedSizeList`` size matches the configured ``dim``.  Raises
-    ``ValueError`` so callers fail *before* creating metadata or committing
-    data, rather than in a post-commit auto-build step.
+    Mirrors the native builder's requirements: at least one non-null
+    primary-key column, whose ``arrow-row`` encoding forms the index key
+    (any scalar type is accepted, and composite keys use every listed
+    column), and Float32 vector columns whose ``FixedSizeList`` size matches
+    the configured ``dim``.  Raises ``ValueError`` so callers fail *before*
+    creating metadata or committing data, rather than in a post-commit
+    auto-build step.
     """
     if not configs:
         return
@@ -1985,19 +1987,13 @@ def _validate_vector_index_configs(
             "when creating a table with vector_index (the index maps "
             "search results to primary key values)"
         )
-    pk_column = primary_keys[0]
-    pk_index = schema.get_field_index(pk_column)
-    if pk_index < 0:
-        raise ValueError(
-            f"vector index primary key '{pk_column}' not found in table schema "
-            f"(columns: {list(schema.names)})"
-        )
-    pk_type = schema.field(pk_index).type
-    if not (pa.types.is_uint64(pk_type) or pa.types.is_int64(pk_type)):
-        raise ValueError(
-            f"vector index primary key '{pk_column}' must be UInt64 or Int64, "
-            f"got {pk_type}"
-        )
+    for pk_column in primary_keys:
+        pk_index = schema.get_field_index(pk_column)
+        if pk_index < 0:
+            raise ValueError(
+                f"vector index primary key '{pk_column}' not found in table "
+                f"schema (columns: {list(schema.names)})"
+            )
     for cfg in configs:
         column = cfg["column"]
         index = schema.get_field_index(column)

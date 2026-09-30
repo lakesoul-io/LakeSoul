@@ -22,6 +22,7 @@ use object_store::ObjectStore;
 use tracing::{info, warn};
 
 use crate::index::commit::ResolvedIndex;
+use crate::index::key::{KeyCodec, KeyLayout};
 use crate::index::reader::read_shard_batches;
 use crate::vector::reader::extract_vector_batch;
 
@@ -40,7 +41,7 @@ pub struct VectorShardIndexBuilder {
     store: Arc<dyn ObjectStore>,
     config: VectorIndexConfig,
     file_paths: Vec<String>,
-    pk_column: String,
+    pk_columns: Vec<String>,
     object_store_options: HashMap<String, String>,
     default_fs: Option<String>,
     base: Option<ResolvedIndex>,
@@ -51,7 +52,7 @@ impl VectorShardIndexBuilder {
         store: Arc<dyn ObjectStore>,
         config: VectorIndexConfig,
         file_paths: Vec<String>,
-        pk_column: String,
+        pk_columns: Vec<String>,
         object_store_options: HashMap<String, String>,
         default_fs: Option<String>,
     ) -> Self {
@@ -59,7 +60,7 @@ impl VectorShardIndexBuilder {
             store,
             config,
             file_paths,
-            pk_column,
+            pk_columns,
             object_store_options,
             default_fs,
             base: None,
@@ -86,12 +87,48 @@ impl VectorShardIndexBuilder {
     }
 
     /// Build the shard: fresh when no base was supplied, incremental otherwise.
+    ///
+    /// A base index is only updated incrementally while its stored key layout
+    /// matches the current primary-key columns; after a schema change the
+    /// shard is rebuilt from scratch so the index keys stay comparable with
+    /// the data files' key layout.
     pub async fn build(self) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
-        if self.base.is_some() {
-            self.build_incremental().await
-        } else {
-            self.build_fresh().await
+        use lakesoul_vector::RabitqError;
+
+        let index_prefix = self.index_prefix();
+        let (codec, all_batches) = self
+            .read_batches()
+            .await
+            .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
+        let key_kind = codec.as_ref().map(KeyCodec::kind_hash).unwrap_or(0);
+
+        if all_batches.is_empty() {
+            return match &self.base {
+                Some(base) => Ok(ShardBuildOutcome {
+                    index_prefix,
+                    header: base.header.clone(),
+                    new_segments: Vec::new(),
+                }),
+                None => Err(RabitqError::InvalidPersistence(
+                    "no vectors found in data files",
+                )),
+            };
         }
+
+        let Some(base) = self.base.clone() else {
+            return self.build_fresh(index_prefix, key_kind, all_batches).await;
+        };
+        let header = IndexHeader::deserialize(&base.header)?;
+        if header.key_kind != key_kind {
+            warn!(
+                "vector index key layout changed (index kind {:#x}, data kind \
+                 {:#x}); rebuilding the shard",
+                header.key_kind, key_kind
+            );
+            return self.build_fresh(index_prefix, key_kind, all_batches).await;
+        }
+        self.build_incremental(base, index_prefix, header, all_batches)
+            .await
     }
 
     /// Force a full rebuild of the shard index from scratch.
@@ -106,15 +143,30 @@ impl VectorShardIndexBuilder {
     pub async fn rebuild(
         self,
     ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
-        self.build_fresh().await
+        use lakesoul_vector::RabitqError;
+
+        let index_prefix = self.index_prefix();
+        let (codec, all_batches) = self
+            .read_batches()
+            .await
+            .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
+        if all_batches.is_empty() {
+            return Err(RabitqError::InvalidPersistence(
+                "no vectors found in data files",
+            ));
+        }
+        let key_kind = codec.as_ref().map(KeyCodec::kind_hash).unwrap_or(0);
+        self.build_fresh(index_prefix, key_kind, all_batches).await
     }
 
     async fn build_fresh(
         self,
+        index_prefix: String,
+        key_kind: u64,
+        all_batches: Vec<IdAndVecBatch>,
     ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
         use lakesoul_vector::RabitqError;
 
-        let index_prefix = self.index_prefix();
         info!(
             "Building fresh vector index for column '{}' at '{}' ({} files)",
             self.config.column_name,
@@ -122,18 +174,8 @@ impl VectorShardIndexBuilder {
             self.file_paths.len()
         );
 
-        // Pass 1: read all vectors via LakeSoulReader (handles merge-on-read)
-        info!("Pass 1: reading via LakeSoulReader for reservoir sampling");
-        let all_batches = self
-            .read_all_batches()
-            .await
-            .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
         let total: usize = all_batches.iter().map(|b| b.ids.len()).sum();
-        info!(
-            "Pass 1 done: {} vectors from {} batches",
-            total,
-            all_batches.len()
-        );
+        info!("Read {} vectors from {} batches", total, all_batches.len());
 
         if total == 0 {
             return Err(RabitqError::InvalidPersistence(
@@ -157,6 +199,7 @@ impl VectorShardIndexBuilder {
             self.config.rotator_type,
             self.config.seed,
             self.config.use_faster_config,
+            key_kind,
         );
         for batch in &all_batches {
             builder.insert_batch(batch.clone())?;
@@ -188,12 +231,13 @@ impl VectorShardIndexBuilder {
 
     async fn build_incremental(
         self,
+        base: ResolvedIndex,
+        index_prefix: String,
+        header: IndexHeader,
+        all_batches: Vec<IdAndVecBatch>,
     ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
         use lakesoul_vector::RabitqError;
 
-        let base = self.base.clone().expect("checked by caller");
-        let index_prefix = base.index_prefix.clone();
-        let header = IndexHeader::deserialize(&base.header)?;
         let base_segments: Vec<SegmentEntry> = base
             .segments_as()
             .map_err(|e| RabitqError::Io(format!("invalid base segments: {}", e)))?;
@@ -209,23 +253,12 @@ impl VectorShardIndexBuilder {
         let mut builder =
             IvfRabitqBuilder::load(&istore, &header, &base_segments).await?;
 
-        let all_batches = self
-            .read_all_batches()
-            .await
-            .map_err(|e| RabitqError::Io(format!("Failed to read: {}", e)))?;
         let mut total = 0usize;
         for batch in &all_batches {
             total += batch.ids.len();
             builder.insert_batch(batch.clone())?;
         }
         info!("Inserted {} vectors", total);
-        if total == 0 {
-            return Ok(ShardBuildOutcome {
-                index_prefix,
-                header: base.header,
-                new_segments: Vec::new(),
-            });
-        }
 
         let (header, new_segments) = builder.flush(&istore).await?;
         info!("Incremental index update complete");
@@ -236,25 +269,39 @@ impl VectorShardIndexBuilder {
         })
     }
 
-    /// Read all rows via LakeSoulReader (handles merge-on-read, CDC, etc.)
-    pub async fn read_all_batches(&self) -> crate::Result<Vec<IdAndVecBatch>> {
+    /// Read the shard's rows and build the key codec from the data schema.
+    ///
+    /// Returns `(None, [])` when the shard's data files hold no rows.
+    async fn read_batches(
+        &self,
+    ) -> crate::Result<(Option<KeyCodec>, Vec<IdAndVecBatch>)> {
         let vec_col = self.config.column_name.clone();
-        let pk_col = self.pk_column.clone();
         let dim = self.config.dim;
 
         let batches = read_shard_batches(
             &self.file_paths,
-            &pk_col,
+            &self.pk_columns,
             std::slice::from_ref(&vec_col),
             &self.object_store_options,
             self.default_fs.as_deref(),
         )
         .await?;
 
-        batches
+        let Some(schema) = batches.first().map(|batch| batch.schema()) else {
+            return Ok((None, Vec::new()));
+        };
+        let codec =
+            KeyCodec::new(KeyLayout::from_schema(schema.as_ref(), &self.pk_columns)?)?;
+        let batches = batches
             .iter()
-            .map(|batch| extract_vector_batch(batch, &pk_col, &vec_col, dim))
-            .collect()
+            .map(|batch| extract_vector_batch(batch, &codec, &vec_col, dim))
+            .collect::<crate::Result<Vec<_>>>()?;
+        Ok((Some(codec), batches))
+    }
+
+    /// Read all rows via LakeSoulReader (handles merge-on-read, CDC, etc.)
+    pub async fn read_all_batches(&self) -> crate::Result<Vec<IdAndVecBatch>> {
+        Ok(self.read_batches().await?.1)
     }
 }
 
@@ -327,7 +374,7 @@ mod tests {
                 max_delta_ratio: 1.0,
             },
             outputs.into_iter().map(|output| output.file_path).collect(),
-            "id".to_string(),
+            vec!["id".to_string()],
             HashMap::new(),
             None,
         );
