@@ -373,6 +373,10 @@ pub enum ViewSpec {
         /// default frame of the ordering.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_frame: Option<String>,
+        /// The `FILTER (WHERE ...)` predicate of an aggregate window function,
+        /// rendered to SQL text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_filter: Option<String>,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -1137,6 +1141,8 @@ pub struct WindowView {
     /// The declared window frame as SQL text, when it differs from the
     /// default frame of the ordering.
     pub window_frame: Option<String>,
+    /// The `FILTER (WHERE ...)` predicate of an aggregate window function.
+    pub window_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1180,6 +1186,7 @@ impl WindowView {
             filter: None,
             window_args: None,
             window_frame: None,
+            window_filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1206,6 +1213,7 @@ impl WindowView {
             filter: None,
             window_args: None,
             window_frame: None,
+            window_filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1228,6 +1236,12 @@ impl WindowView {
         self
     }
 
+    /// The `FILTER (WHERE ...)` predicate of an aggregate window function.
+    pub fn with_window_filter(mut self, filter: impl Into<String>) -> Self {
+        self.window_filter = Some(filter.into());
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Window {
             view_id: self.view_id.clone(),
@@ -1240,6 +1254,7 @@ impl WindowView {
             filter: self.filter.clone(),
             window_args: self.window_args.clone(),
             window_frame: self.window_frame.clone(),
+            window_filter: self.window_filter.clone(),
         }
     }
 }
@@ -2261,6 +2276,7 @@ impl IvmRuntime {
                 filter,
                 window_args,
                 window_frame,
+                window_filter,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -2272,6 +2288,7 @@ impl IvmRuntime {
                 filter: filter.clone(),
                 window_args: window_args.clone(),
                 window_frame: window_frame.clone(),
+                window_filter: window_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
@@ -5785,6 +5802,16 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
         let context = SessionContext::new();
         parse_filter(&context, &view.source.schema, filter)?;
     }
+    if let Some(filter) = &view.window_filter {
+        if !view.function.is_aggregate() {
+            return Err(report!(
+                "window view {}: FILTER needs an aggregate window function",
+                view.view_id
+            ));
+        }
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
     if view.source.primary_keys.is_empty() {
         return Err(report!(
             "window view {} needs a source with a primary key",
@@ -5921,14 +5948,24 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         filter_clause(view.filter.as_deref()),
     );
     let value = quote_ident(view.function.column_name());
+    let window_filter = view
+        .window_filter
+        .as_deref()
+        .map(|filter| format!(" filter (where {filter})"))
+        .unwrap_or_default();
     let computed = match view.function {
         WindowFunction::Sum => format!(
-            "sum({}) over ({over})",
+            "sum({}){window_filter} over ({over})",
             quote_ident(view.value_column.as_deref().unwrap_or_default())
         ),
         WindowFunction::Count => match view.value_column.as_deref() {
-            Some(column) => format!("count({}) over ({over})", quote_ident(column)),
-            None => format!("count(1) over ({over})"),
+            Some(column) => {
+                format!(
+                    "count({}){window_filter} over ({over})",
+                    quote_ident(column)
+                )
+            }
+            None => format!("count(1){window_filter} over ({over})"),
         },
         function if function.is_value() => {
             let column = quote_ident(view.value_column.as_deref().unwrap_or_default());
