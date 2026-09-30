@@ -34,8 +34,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arrow::array::{
-    FixedSizeListBuilder, Float32Builder, Int64Array, ListBuilder, RecordBatch,
-    UInt64Array,
+    ArrayRef, FixedSizeListBuilder, Float16Builder, Float32Builder, Int64Array,
+    ListBuilder, RecordBatch, UInt64Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{
@@ -113,6 +113,32 @@ enum Drift {
     Shift,
 }
 
+/// Storage element types compared by the SQL scenario's `--vector-type`.
+///
+/// The benchmark writes the same in-memory `f32` source vectors in either
+/// full or half precision; the ground truth stays the original `f32` data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VectorType {
+    F32,
+    F16,
+}
+
+impl VectorType {
+    fn name(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F16 => "f16",
+        }
+    }
+
+    fn element_type(self) -> DataType {
+        match self {
+            Self::F32 => DataType::Float32,
+            Self::F16 => DataType::Float16,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Args {
     scenario: Scenario,
@@ -159,6 +185,8 @@ struct Args {
     sql_format: String,
     /// Number of hash buckets for the SQL scenario's table.
     sql_hash_buckets: usize,
+    /// Vector column element type for the SQL scenario (`f32` or `f16`).
+    vector_type: VectorType,
     /// Print full usage.
     help: bool,
 }
@@ -196,6 +224,7 @@ impl Default for Args {
             table: "vec_bench_sql".to_string(),
             sql_format: "vortex".to_string(),
             sql_hash_buckets: 1,
+            vector_type: VectorType::F32,
             help: false,
         }
     }
@@ -242,6 +271,8 @@ STREAM / TRIGGER:
   --table <name>                            Table name for the SQL scenario (default: vec_bench_sql)
   --sql-format <parquet|vortex>              Data file format for the SQL scenario (default: vortex)
   --sql-hash-buckets <n>                     Hash buckets for the SQL scenario (default: 1)
+  --vector-type <f32|f16>                    Vector column element type for the SQL scenario
+                                             (default: f32; f16 stores half precision)
 
   --help                                    Show this help
 "#
@@ -344,6 +375,13 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("bad --sql-hash-buckets: {e}"))?
             }
+            "--vector-type" => {
+                args.vector_type = match value(flag)?.to_lowercase().as_str() {
+                    "f32" | "float32" => VectorType::F32,
+                    "f16" | "float16" | "half" => VectorType::F16,
+                    other => return Err(format!("unknown vector type: {other}")),
+                }
+            }
             "--policy" => {
                 args.policy = match value(flag)?.to_lowercase().as_str() {
                     "none" => Policy::None,
@@ -418,6 +456,9 @@ fn parse_args() -> Result<Args, String> {
         if args.checkpoint_every == 0 {
             return Err("--checkpoint-every must be > 0".to_string());
         }
+    }
+    if args.vector_type != VectorType::F32 && args.scenario != Scenario::Sql {
+        return Err("--vector-type is only supported by --scenario sql".to_string());
     }
     Ok(args)
 }
@@ -1976,31 +2017,112 @@ fn core_args() -> CoreArgs {
     }
 }
 
-/// Record batch matching the SQL table schema (`id BIGINT`, `vec FLOAT[]`).
+/// Record batch matching the SQL table schema (`id BIGINT`, `vec List<T>`).
+///
+/// `vectors` is always the original `f32` source data; `vector_type` selects
+/// the stored element type (`f32` verbatim, `f16` rounded on insert), so both
+/// runs of the benchmark write exactly the same source vectors.
 fn sql_vector_batch(
     ids: &[i64],
     vectors: &[f32],
     dim: usize,
+    vector_type: VectorType,
 ) -> Result<RecordBatch, String> {
     let id_array = Int64Array::from(ids.to_vec());
-    let mut builder = ListBuilder::new(Float32Builder::new());
-    for vector in vectors.chunks_exact(dim) {
-        for value in vector {
-            builder.values().append_value(*value);
+    let element = vector_type.element_type();
+    let list: ArrayRef = match vector_type {
+        VectorType::F32 => {
+            let mut builder = ListBuilder::new(Float32Builder::new());
+            for vector in vectors.chunks_exact(dim) {
+                for value in vector {
+                    builder.values().append_value(*value);
+                }
+                builder.append(true);
+            }
+            Arc::new(builder.finish())
         }
-        builder.append(true);
-    }
-    let list = builder.finish();
+        VectorType::F16 => {
+            let mut builder = ListBuilder::new(Float16Builder::new());
+            for vector in vectors.chunks_exact(dim) {
+                for value in vector {
+                    builder.values().append_value(half::f16::from_f32(*value));
+                }
+                builder.append(true);
+            }
+            Arc::new(builder.finish())
+        }
+    };
     let schema = Arc::new(Schema::new(vec![
         Field::new(PK_COLUMN, DataType::Int64, false),
         Field::new(
             VEC_COLUMN,
-            DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+            DataType::List(Arc::new(Field::new("item", element, true))),
             false,
         ),
     ]));
-    RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(list)])
+    RecordBatch::try_new(schema, vec![Arc::new(id_array), list])
         .map_err(|e| format!("build sql batch: {e}"))
+}
+
+/// Create the SQL scenario's LakeSoul table through the metadata client.
+///
+/// SQL DDL cannot express `Float16` (DataFusion's parser has no such type
+/// name), so the benchmark creates the table from an explicit Arrow schema
+/// plus the `vector_index_columns` / `hashBucketNum` / `file_format`
+/// properties — the same metadata the equivalent `CREATE EXTERNAL TABLE`
+/// produces.  Both vector types take this path so the comparison is paired.
+async fn create_sql_table(
+    client: &lakesoul_datafusion::MetaDataClientRef,
+    table_name: &str,
+    work_dir: &Path,
+    vector_type: VectorType,
+    hash_buckets: usize,
+    file_format: &str,
+    vector_index_columns: Option<String>,
+) -> Result<(), String> {
+    use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
+    use lakesoul_datafusion::catalog::LakeSoulTableProperty;
+    use lakesoul_metadata::utils::qualify_path;
+    use lakesoul_metadata_proto::entity::TableInfo;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(PK_COLUMN, DataType::Int64, false),
+        Field::new(
+            VEC_COLUMN,
+            DataType::List(Arc::new(Field::new(
+                "item",
+                vector_type.element_type(),
+                true,
+            ))),
+            false,
+        ),
+    ]));
+    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+        schema_to_metadata_parts(schema.as_ref());
+    let table_path = qualify_path(&work_dir.to_string_lossy())
+        .map_err(|e| format!("qualify table path: {e}"))?;
+    let properties = serde_json::to_string(&LakeSoulTableProperty {
+        hash_bucket_num: Some(hash_buckets.to_string()),
+        vector_index_columns,
+        file_format: Some(file_format.to_string()),
+        ..Default::default()
+    })
+    .map_err(|e| format!("serialize table properties: {e}"))?;
+    client
+        .create_table(TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: table_name.to_string(),
+            table_path,
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            table_namespace: "default".to_string(),
+            properties,
+            partitions: format!(";{}", PK_COLUMN),
+            domain: "public".to_string(),
+        })
+        .await
+        .map_err(|e| format!("create table: {e}"))
 }
 
 fn query_literal(dataset: &Dataset, i: usize) -> String {
@@ -2035,6 +2157,11 @@ async fn explain_text(
 /// the index (candidate ids) plus an exact re-rank over the candidate rows in
 /// DataFusion; this scenario therefore measures the full write + search path.
 ///
+/// The table is created through the metadata client from an explicit Arrow
+/// schema, so `--vector-type f16` can store `List<Float16>` (SQL DDL cannot
+/// spell half precision).  The ground truth is always computed from the
+/// original in-memory `f32` vectors.
+///
 /// Requires a running PostgreSQL metadata service (same default as the
 /// integration tests).
 async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
@@ -2050,19 +2177,10 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     );
     let _ = client.drop_table(&table_name, "default").await;
 
-    let core = core_args();
-    let ctx = lakesoul_datafusion::create_lakesoul_session_ctx(client.clone(), &core)
-        .map_err(|e| format!("create session: {e}"))?;
-    // The LakeSoul catalog only accepts LakeSoul tables, so the INSERT source
-    // data lives in a separate in-memory catalog (`src.public.*`).
-    let src_catalog = Arc::new(MemoryCatalogProvider::new());
-    let src_schema = Arc::new(MemorySchemaProvider::new());
-    src_catalog
-        .register_schema("public", src_schema.clone())
-        .map_err(|e| format!("register schema: {e}"))?;
-    ctx.register_catalog("src", src_catalog as Arc<dyn CatalogProvider>);
-
-    // 1. Create the table through SQL DDL with the vector index property.
+    // 1. Create the table (Arrow schema + vector index property) through the
+    //    metadata client before opening the session, so the catalog resolves
+    //    it for the INSERT below.  SQL DDL can only spell `FLOAT[]`, so the
+    //    explicit Arrow schema is what lets the same scenario store `Float16`.
     let config = VectorIndexTableConfig {
         column: VEC_COLUMN.to_string(),
         params: VectorIndexParams {
@@ -2083,29 +2201,35 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         },
     };
     let property = vector_index_columns_to_json(std::slice::from_ref(&config));
-    let create_sql = format!(
-        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (\
-            id BIGINT NOT NULL PRIMARY KEY, \
-            vec FLOAT[] NOT NULL\
-         ) STORED AS LAKESOUL LOCATION '{}' \
-         OPTIONS ('vector_index_columns' '{property}', 'hashBucketNum' '{}', \
-                  'file_format' '{}')",
-        work_dir.display(),
+    create_sql_table(
+        &client,
+        &table_name,
+        &work_dir,
+        args.vector_type,
         args.sql_hash_buckets,
-        args.sql_format
-    );
-    ctx.sql(&create_sql)
-        .await
-        .map_err(|e| format!("create table: {e}"))?
-        .collect()
-        .await
-        .map_err(|e| format!("create table: {e}"))?;
+        &args.sql_format,
+        Some(property),
+    )
+    .await?;
+
+    let core = core_args();
+    let ctx = lakesoul_datafusion::create_lakesoul_session_ctx(client.clone(), &core)
+        .map_err(|e| format!("create session: {e}"))?;
+    // The LakeSoul catalog only accepts LakeSoul tables, so the INSERT source
+    // data lives in a separate in-memory catalog (`src.public.*`).
+    let src_catalog = Arc::new(MemoryCatalogProvider::new());
+    let src_schema = Arc::new(MemorySchemaProvider::new());
+    src_catalog
+        .register_schema("public", src_schema.clone())
+        .map_err(|e| format!("register schema: {e}"))?;
+    ctx.register_catalog("src", src_catalog as Arc<dyn CatalogProvider>);
 
     // 2. Write the base data through `INSERT ... SELECT` from an in-memory
     //    table: this goes through the DataFusion planner, the LakeSoul sink,
     //    and the post-commit auto index build.
     let base_ids: Vec<i64> = (0..dataset.base.n as i64).collect();
-    let base_batch = sql_vector_batch(&base_ids, &dataset.base.data, dim)?;
+    let base_batch =
+        sql_vector_batch(&base_ids, &dataset.base.data, dim, args.vector_type)?;
     let src = Arc::new(
         MemTable::try_new(base_batch.schema(), vec![vec![base_batch.clone()]])
             .map_err(|e| format!("memtable: {e}"))?,
@@ -2136,7 +2260,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             let updates = sampler.sample(args.per_round);
             let ids: Vec<i64> = (next_id..next_id + args.per_round as i64).collect();
             next_id += args.per_round as i64;
-            let batch = sql_vector_batch(&ids, &updates, dim)?;
+            let batch = sql_vector_batch(&ids, &updates, dim, args.vector_type)?;
             let name = format!("bench_src_r{round}");
             let src = Arc::new(
                 MemTable::try_new(batch.schema(), vec![vec![batch.clone()]])
@@ -2267,10 +2391,14 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let index_state = collect_all_shard_stats(&find_data_files(&work_dir))
         .await
         .unwrap_or(Value::Null);
+    let index_bytes = index_size_bytes(&work_dir);
+    let data_bytes = dir_size_bytes(&work_dir).saturating_sub(index_bytes);
 
     let summary = json!({
         "scenario": "sql",
         "table": table_name,
+        "vector_type": args.vector_type.name(),
+        "gt_source": "original-f32",
         "dim": dim,
         "n_base": dataset.base.n,
         "n_rounds": args.rounds,
@@ -2288,7 +2416,8 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "physical_plan_mean_ms": phys_mean_ms,
         "exec_mean_ms": exec_mean_ms,
         "uses_vector_index_exec": uses_vector_index_exec,
-        "index_size_bytes": index_size_bytes(&work_dir),
+        "data_size_bytes": data_bytes,
+        "index_size_bytes": index_bytes,
         "index_state": index_state,
         "peak_rss_mb": peak_rss_mb(),
         "explain": explain,

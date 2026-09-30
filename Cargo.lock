@@ -5321,6 +5321,7 @@ dependencies = [
  "datafusion-proto",
  "downcast-rs",
  "futures",
+ "half",
  "http 1.5.0",
  "json",
  "lakesoul-common",
