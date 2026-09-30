@@ -29,10 +29,11 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, MinMaxKind, PhysicalFormat, WindowFunction, avg_mv_schema_for,
-    min_max_mv_schema_for, row_mv_schema_for, sum_count_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, window_aggregate_mv_schema_for,
+    DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
+    IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, WindowFunction,
+    avg_mv_schema_for, distinct_agg_mv_schema_for, min_max_mv_schema_for,
+    row_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, window_aggregate_mv_schema_for,
     window_ranking_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -748,6 +749,38 @@ fn sqllogic_window_where() {
         )
         .unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_distinct_agg() {
+    run_script_for_mv(
+        "distinct",
+        include_str!("slt/distinct_agg.slt"),
+        distinct_agg_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            "v",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_distinct_sum() {
+    run_script_for_mv(
+        "distinctsum",
+        include_str!("slt/distinct_sum.slt"),
+        distinct_agg_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            "v",
+            DistinctAggKind::Sum,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
     );
 }
 

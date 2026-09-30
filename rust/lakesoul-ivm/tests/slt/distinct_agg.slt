@@ -1,0 +1,73 @@
+# COUNT(DISTINCT v) through the SQL entry (the optimizer splits the aggregate).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=10,op=insert; k=3,g=a,v=5,op=insert; k=4,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 1
+
+# Updates and deletes move the distinct set.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=8,op=insert; k=3,g=a,v=5,op=delete; k=5,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 1
+
+# HAVING over the distinct count.
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT v) FROM __SRC__ GROUP BY g HAVING COUNT(DISTINCT v) > 1
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+
+# The group drops below the threshold and leaves the view.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT v) FROM __SRC__ GROUP BY g HAVING COUNT(DISTINCT v) > 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# A new distinct value brings the group back.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,v=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT v) FROM __SRC__ GROUP BY g HAVING COUNT(DISTINCT v) > 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2

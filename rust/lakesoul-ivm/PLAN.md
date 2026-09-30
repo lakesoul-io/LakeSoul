@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `HAVING`（下一步单独做）；`AVG`（SUM/COUNT 派生）；`STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`SELECT DISTINCT`（值计数状态可复用）；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | HAVING → AVG → DISTINCT |
+| 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`SELECT DISTINCT`（无 GROUP BY，值计数状态可复用）；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | `LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1165,11 +1165,9 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
     计算 `group_now`，用“受影响分组列表（delta ∪ old）”删除旧 MV 行、用 `group_now` 过滤
     HAVING 后插入；append-only 源保留撤回标记并做 signed 聚合。非 HAVING 路径不变。
 - **rebuild**：三种聚合的 rebuild 都在聚合结果外层套 HAVING 过滤。
-- **发现并记录**：`COUNT(DISTINCT)`/`SUM(DISTINCT)` 经 SQL 入口目前会失败——优化器把
-  distinct 聚合改写成
-  `Aggregate(count(alias1)) -> Aggregate(groupBy=[g, alias1])` 的嵌套聚合，analyzer 报
-  "an aggregate over an aggregate"。DISTINCT 的 SQL 入口（及其 HAVING）放入 §10.5 的
-  DISTINCT 批次处理。
+- **发现并记录**（已在 §10.11 修复）：`COUNT(DISTINCT)`/`SUM(DISTINCT)` 经 SQL 入口曾因
+  优化器把 distinct 聚合改写成嵌套聚合
+  (`Aggregate(count(alias1)) -> Aggregate(groupBy=[g, alias1])`) 而失败。
 - **测试**：`having.slt`（阈值双向跨越、分组离开/回归、COUNT+分组键、WHERE+HAVING、
   删除导致失败）、`min_max_having.slt`、`having_append.slt`（append-only 撤回标记与
   update_before/after）；oracle 新增 SUM/COUNT HAVING 与 MIN HAVING 两个 10 轮随机场景；
@@ -1201,6 +1199,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   需要 `WHERE "rowKinds" = 'insert'`（或运行时内部的 `filter_deletes`）。实现时要考虑默认
   开关的位置（provider / reader / table API）、与 AsOf/AtVersions 读的交互，以及运行时内部
   读是否保持 raw。
+
+### 10.11 DISTINCT 的 SQL 入口修复（PR-5）
+
+- **背景**：优化器把单个 `DISTINCT` 聚合改写成两层
+  `Aggregate(count(alias1)) -> Aggregate(groupBy=[g, v AS alias1])`；此前 analyzer 直接报
+  "an aggregate over an aggregate"，`COUNT(DISTINCT)`/`SUM(DISTINCT)` 只能走 runtime API。
+- **修复**：`analyze_aggregate` 先识别该两层形态（`distinct_split`）：内层 `aggr_expr` 为空、
+  内层分组 = 外层分组 + 恰好一个 `value AS alias`；WHERE/源过滤从**内层输入**收集；外层
+  `count(alias)`/`sum(alias)` 还原为 `DistinctAggKind` 与 value column。raw 与优化计划产出
+  同一 spec（definition_hash 一致）。
+- **HAVING**：`HavingColumns::Distinct` 增加 `alias` 字段，`count(alias1)`（非 distinct）映射
+  到 `value`；直接形态 `count(DISTINCT v)` 仍按原逻辑。混用/未物化照旧明确报错。
+- **测试**：`distinct_agg.slt`（bootstrap、更新/删除、HAVING 阈值跌出与回归）、
+  `distinct_sum.slt`；oracle 新增 COUNT(DISTINCT) 与 SUM(DISTINCT) 两个 10 轮随机场景；
+  analyzer 单测覆盖拆分形态、WHERE、HAVING、raw/优化 spec 等价与混用拒绝。
+- **仍待办**：无 GROUP BY 的 `SELECT DISTINCT`（值计数状态可复用，backlog 单独立项）。
+  全量 IVM 套件 35 个测试二进制 / 141 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
