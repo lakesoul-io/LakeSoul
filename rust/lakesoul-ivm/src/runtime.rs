@@ -137,6 +137,16 @@ impl WindowFunction {
     }
 }
 
+/// A persisted source of a [`ViewSpec::UnionAll`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnionSourceSpec {
+    /// The source table id.
+    pub table_id: String,
+    /// An optional filter the source rows must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
 /// The persisted description of a view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -244,6 +254,9 @@ pub enum ViewSpec {
         /// The aggregated column of a `SUM`/`COUNT` window function.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_column: Option<String>,
+        /// An optional filter applied before windowing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -286,8 +299,8 @@ pub enum ViewSpec {
     UnionAll {
         /// The view id.
         view_id: String,
-        /// The source table ids, in output order.
-        source_table_ids: Vec<String>,
+        /// The sources, in output order.
+        sources: Vec<UnionSourceSpec>,
         /// The materialized view table id.
         mv_table_id: String,
     },
@@ -308,6 +321,9 @@ pub enum ViewSpec {
         output_columns: Vec<String>,
         /// How many rows to keep per group.
         limit: i64,
+        /// An optional filter applied before ranking.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
     },
 }
 
@@ -951,6 +967,8 @@ pub struct WindowView {
     pub function: WindowFunction,
     /// The aggregated column of a `SUM`/`COUNT` window function.
     pub value_column: Option<String>,
+    /// An optional filter applied before windowing.
+    pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -991,6 +1009,7 @@ impl WindowView {
             order_keys,
             function,
             value_column: None,
+            filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1014,8 +1033,15 @@ impl WindowView {
             order_keys,
             function,
             value_column,
+            filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only rows matching `filter` are windowed.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -1027,6 +1053,7 @@ impl WindowView {
             order_keys: self.order_keys.clone(),
             function: self.function,
             value_column: self.value_column.clone(),
+            filter: self.filter.clone(),
         }
     }
 }
@@ -1216,17 +1243,53 @@ impl RowView {
 pub struct UnionAllView {
     /// The view id.
     pub view_id: String,
-    /// The source tables, in output order.
-    pub sources: Vec<IvmTable>,
+    /// The sources, in output order.
+    pub sources: Vec<UnionSource>,
     /// The materialized view table.
     pub mv: IvmTable,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
 
+/// One source of a [`UnionAllView`], optionally filtered.
+#[derive(Debug, Clone)]
+pub struct UnionSource {
+    /// The source table.
+    pub table: IvmTable,
+    /// An optional filter the source rows must satisfy.
+    pub filter: Option<String>,
+}
+
+impl UnionSource {
+    /// A source with no filter.
+    pub fn new(table: IvmTable) -> Self {
+        Self {
+            table,
+            filter: None,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    fn to_spec(&self) -> UnionSourceSpec {
+        UnionSourceSpec {
+            table_id: self.table.table_id.clone(),
+            filter: self.filter.clone(),
+        }
+    }
+}
+
 impl UnionAllView {
     /// A new union-all view over `sources`.
-    pub fn new(view_id: impl Into<String>, sources: Vec<IvmTable>, mv: IvmTable) -> Self {
+    pub fn new(
+        view_id: impl Into<String>,
+        sources: Vec<UnionSource>,
+        mv: IvmTable,
+    ) -> Self {
         Self {
             view_id: view_id.into(),
             sources,
@@ -1238,11 +1301,7 @@ impl UnionAllView {
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::UnionAll {
             view_id: self.view_id.clone(),
-            source_table_ids: self
-                .sources
-                .iter()
-                .map(|source| source.table_id.clone())
-                .collect(),
+            sources: self.sources.iter().map(UnionSource::to_spec).collect(),
             mv_table_id: self.mv.table_id.clone(),
         }
     }
@@ -1271,6 +1330,8 @@ pub struct TopKView {
     pub output_columns: Vec<String>,
     /// How many rows to keep per group.
     pub limit: i64,
+    /// An optional filter applied before ranking.
+    pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1293,6 +1354,7 @@ impl TopKView {
             order_keys,
             output_columns: Vec::new(),
             limit,
+            filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1301,6 +1363,12 @@ impl TopKView {
     /// source primary keys).
     pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
         self.output_columns = output_columns;
+        self
+    }
+
+    /// Only rows matching `filter` are ranked.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
         self
     }
 
@@ -1313,6 +1381,7 @@ impl TopKView {
             order_keys: self.order_keys.clone(),
             output_columns: self.output_columns.clone(),
             limit: self.limit,
+            filter: self.filter.clone(),
         }
     }
 }
@@ -1903,6 +1972,7 @@ impl IvmRuntime {
                 order_keys,
                 function,
                 value_column,
+                filter,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1911,6 +1981,7 @@ impl IvmRuntime {
                 order_keys: order_keys.clone(),
                 function: *function,
                 value_column: value_column.clone(),
+                filter: filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
@@ -1949,16 +2020,19 @@ impl IvmRuntime {
             }),
             ViewSpec::UnionAll {
                 view_id,
-                source_table_ids,
+                sources,
                 mv_table_id,
             } => {
-                let mut sources = Vec::with_capacity(source_table_ids.len());
-                for table_id in source_table_ids {
-                    sources.push(self.open_table_by_id(table_id).await?);
+                let mut opened = Vec::with_capacity(sources.len());
+                for source in sources {
+                    opened.push(UnionSource {
+                        table: self.open_table_by_id(&source.table_id).await?,
+                        filter: source.filter.clone(),
+                    });
                 }
                 SpecView::UnionAll(UnionAllView {
                     view_id: view_id.clone(),
-                    sources,
+                    sources: opened,
                     mv: self.open_table_by_id(mv_table_id).await?,
                     refresh_interval_ms,
                 })
@@ -1971,6 +2045,7 @@ impl IvmRuntime {
                 order_keys,
                 output_columns,
                 limit,
+                filter,
             } => SpecView::TopK(TopKView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1979,6 +2054,7 @@ impl IvmRuntime {
                 order_keys: order_keys.clone(),
                 output_columns: output_columns.clone(),
                 limit: *limit,
+                filter: filter.clone(),
                 refresh_interval_ms,
             }),
         })
@@ -3689,12 +3765,15 @@ impl IvmRuntime {
         self.register_union_all_view(view).await?;
         validate_union_all_view(view)?;
         for source in &view.sources {
-            self.ensure_unpartitioned(source).await?;
+            self.ensure_unpartitioned(&source.table).await?;
         }
 
         let mut windows = Vec::new();
         for source in &view.sources {
-            windows.push(self.collect_source_window(&view.view_id, source).await?);
+            windows.push(
+                self.collect_source_window(&view.view_id, &source.table)
+                    .await?,
+            );
         }
         if windows.iter().all(|window| window.added_files.is_empty()) {
             return Ok(None);
@@ -3718,34 +3797,38 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let keyed = !view.sources[0].primary_keys.is_empty();
+        let keyed = !view.sources[0].table.primary_keys.is_empty();
 
         let context = SessionContext::new();
         let mut inserts = Vec::new();
         let mut changed = Vec::new();
         for (index, source) in view.sources.iter().enumerate() {
+            let table = &source.table;
+            let filter = source
+                .filter
+                .as_deref()
+                .map(|filter| parse_filter(&context, &table.schema, filter))
+                .transpose()?;
             let delta = dataframe(
                 &context,
-                source
-                    .read_files(windows[index].added_files.clone())
-                    .await?,
-                &source.schema,
+                table.read_files(windows[index].added_files.clone()).await?,
+                &table.schema,
             )?;
             if keyed {
                 let source_now = filter_deletes(
                     dataframe(
                         &context,
-                        source.read_current(&self.client).await?,
-                        &source.schema,
+                        table.read_current(&self.client).await?,
+                        &table.schema,
                     )?,
-                    change_column(source),
+                    change_column(table),
                 )?;
-                let key_names = source
+                let key_names = table
                     .primary_keys
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>();
-                let key_exprs = source
+                let key_exprs = table
                     .primary_keys
                     .iter()
                     .map(|column| col(column.as_str()))
@@ -3754,23 +3837,30 @@ impl IvmRuntime {
                     .select(key_exprs)?
                     .distinct()?
                     .with_column(IVM_SOURCE_COLUMN, lit(index as i32))?;
-                let rows = source_now
-                    .join(
-                        affected.clone(),
-                        JoinType::LeftSemi,
-                        &key_names,
-                        &key_names,
-                        None,
-                    )?
-                    .select(union_all_projection(source, index)?)?;
-                inserts.push(rows);
+                let rows = source_now.join(
+                    affected.clone(),
+                    JoinType::LeftSemi,
+                    &key_names,
+                    &key_names,
+                    None,
+                )?;
+                let rows = match &filter {
+                    Some(filter) => rows.filter(filter.clone())?,
+                    None => rows,
+                };
+                inserts.push(rows.select(union_all_projection(table, index)?)?);
                 changed.push(affected);
             } else {
-                inserts.push(delta.select(union_all_projection(source, index)?)?);
+                let delta = match &filter {
+                    Some(filter) => delta.filter(filter.clone())?,
+                    None => delta,
+                };
+                inserts.push(delta.select(union_all_projection(table, index)?)?);
             }
         }
 
         let output_exprs = view.sources[0]
+            .table
             .schema
             .fields()
             .iter()
@@ -3785,7 +3875,7 @@ impl IvmRuntime {
                 &view.mv.schema,
             )?;
             let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
-            pair_names.extend(view.sources[0].primary_keys.iter().cloned());
+            pair_names.extend(view.sources[0].table.primary_keys.iter().cloned());
             let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
             let pair_exprs = pair_names
                 .iter()
@@ -3811,6 +3901,7 @@ impl IvmRuntime {
             let mut sort_exprs = vec![column_expr(IVM_SOURCE_COLUMN)];
             sort_exprs.extend(
                 view.sources[0]
+                    .table
                     .primary_keys
                     .iter()
                     .map(|key| column_expr(key)),
@@ -3856,7 +3947,7 @@ impl IvmRuntime {
         self.register_union_all_view(view).await?;
         validate_union_all_view(view)?;
         for source in &view.sources {
-            self.ensure_unpartitioned(source).await?;
+            self.ensure_unpartitioned(&source.table).await?;
         }
 
         self.metadata
@@ -3868,7 +3959,7 @@ impl IvmRuntime {
 
         let mut baselines = Vec::new();
         for source in &view.sources {
-            baselines.push(self.source_baseline(source).await?);
+            baselines.push(self.source_baseline(&source.table).await?);
         }
         let to_versions = baselines
             .iter()
@@ -3904,13 +3995,21 @@ impl IvmRuntime {
         let context = SessionContext::new();
         let mut frames = Vec::new();
         for (index, source) in view.sources.iter().enumerate() {
+            let table = &source.table;
             let rows = filter_deletes(
-                dataframe(&context, baselines[index].batches.clone(), &source.schema)?,
-                change_column(source),
+                dataframe(&context, baselines[index].batches.clone(), &table.schema)?,
+                change_column(table),
             )?;
-            frames.push(rows.select(union_all_projection(source, index)?)?);
+            let rows = match &source.filter {
+                Some(filter) => {
+                    rows.filter(parse_filter(&context, &table.schema, filter)?)?
+                }
+                None => rows,
+            };
+            frames.push(rows.select(union_all_projection(table, index)?)?);
         }
         let output_exprs = view.sources[0]
+            .table
             .schema
             .fields()
             .iter()
@@ -5208,6 +5307,10 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
 
 /// Validate that a window view can be maintained.
 fn validate_window_view(view: &WindowView) -> Result<()> {
+    if let Some(filter) = &view.filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
     if view.source.primary_keys.is_empty() {
         return Err(report!(
             "window view {} needs a source with a primary key",
@@ -5310,7 +5413,11 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     } else {
         format!("partition by {parts} order by {}", quoted_list(&order))
     };
-    let filter = source_delete_filter(source_alias, change_column(&view.source));
+    let filter = format!(
+        "{}{}",
+        source_delete_filter(source_alias, change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
     let value = quote_ident(view.function.column_name());
     let computed = match view.function {
         WindowFunction::Sum => format!(
@@ -5522,7 +5629,11 @@ fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     order.extend(view.source.primary_keys.iter().cloned());
     let orders = quoted_list(&order);
     let output = quoted_list(&top_k_output_columns(view));
-    let filter = source_delete_filter(source_alias, change_column(&view.source));
+    let filter = format!(
+        "{}{}",
+        source_delete_filter(source_alias, change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
     let rank = quote_ident(IVM_TOP_K_RANK_COLUMN);
     format!(
         "computed as (select {output}, \
@@ -5927,11 +6038,16 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
             view.view_id
         ));
     }
-    let keyed = !view.sources[0].primary_keys.is_empty();
-    let first = &view.sources[0].schema;
+    let keyed = !view.sources[0].table.primary_keys.is_empty();
+    let first = &view.sources[0].table.schema;
     for source in &view.sources {
-        if source.schema.fields().len() != first.fields().len()
-            || source
+        if let Some(filter) = &source.filter {
+            let context = SessionContext::new();
+            parse_filter(&context, &source.table.schema, filter)?;
+        }
+        let table = &source.table;
+        if table.schema.fields().len() != first.fields().len()
+            || table
                 .schema
                 .fields()
                 .iter()
@@ -5943,22 +6059,22 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
             return Err(report!(
                 "union all view {}: source {} does not have the same schema",
                 view.view_id,
-                source.table_name
+                table.table_name
             ));
         }
-        if keyed != !source.primary_keys.is_empty() {
+        if keyed != !table.primary_keys.is_empty() {
             return Err(report!(
                 "union all view {}: sources must be all keyed or all append-only",
                 view.view_id
             ));
         }
         if keyed {
-            for key in &source.primary_keys {
-                let field = source.schema.field_with_name(key).map_err(|_| {
+            for key in &table.primary_keys {
+                let field = table.schema.field_with_name(key).map_err(|_| {
                     report!(
                         "union all view {}: key column {key} is not in source {}",
                         view.view_id,
-                        source.table_name
+                        table.table_name
                     )
                 })?;
                 if field.is_nullable() {
@@ -6011,6 +6127,10 @@ fn top_k_output_columns(view: &TopKView) -> Vec<String> {
 
 /// Validate that a top-k view can be maintained.
 fn validate_top_k_view(view: &TopKView) -> Result<()> {
+    if let Some(filter) = &view.filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
     if view.limit <= 0 {
         return Err(report!(
             "top-k view {} needs a positive limit",

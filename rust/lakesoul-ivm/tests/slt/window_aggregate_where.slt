@@ -1,0 +1,44 @@
+# A SUM window over a filtered source.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert; k=4,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 17
+a 3 17
+
+# One row leaves the predicate and one enters it.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=4,op=insert; k=2,g=a,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2 16
+a 3 16
+
+# Changing the predicate rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g) FROM __SRC__ WHERE v > 8
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2 9

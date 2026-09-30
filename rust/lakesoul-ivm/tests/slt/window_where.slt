@@ -1,0 +1,63 @@
+# ROW_NUMBER over a filtered source: rows enter and leave the predicate.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert; k=4,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 2
+a 3 1
+
+# An update below the predicate drops out of the window, one above enters.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=4,op=insert; k=2,g=a,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2 2
+a 3 1
+
+# A partition key change moves the row to another window.
+statement ok
+/*ivm-append __SRC__: k=2,g=b,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3 1
+b 2 1
+
+# Dropping the WHERE changes the definition: the view is rebuilt.
+statement ok
+INSERT INTO __MV__ SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT g, k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 1
+a 3 2
+b 2 2
+b 4 1

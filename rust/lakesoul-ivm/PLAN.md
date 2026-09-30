@@ -1120,6 +1120,34 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **语义变化**：过滤谓词里的 `= NULL` 现在是 SQL 语义（结果为未知）；需要判空请写
   `IS NULL`。旧 `LiteralValue::Null + Eq` 的"= NULL 即 IS NULL"特例随旧格式一并移除。
 
+### 10.8 PR-2 实施记录（W2：Window / Top-K / UNION ALL 的 WHERE）
+
+- **spec**：`ViewSpec::Window` 与 `ViewSpec::TopK` 增加 `filter: Option<String>`；
+  `ViewSpec::UnionAll` 由 `source_table_ids: Vec<String>` 改为
+  `sources: Vec<UnionSourceSpec { table_id, filter }>`（新格式，无兼容）；
+  typed 侧新增 `UnionSource { table, filter }`，`UnionAllView.sources: Vec<UnionSource>`。
+- **analyzer**：原 `collect_aggregate_source` 泛化为
+  `collect_filtered_source(plan, tables, shape)`，aggregate / window / top-k 共用，
+  接受 `(Projection|Filter)* -> TableScan` 链并收集 `TableScan.filters`；
+  UNION ALL 的 `union_branch` 改为返回 `(IvmTable, Option<String>)`，用
+  `plan.schema()` 与源 schema 比对，保持"分支必须按源列顺序全列输出"的校验。
+- **语义（关键）**：
+  - Window/Top-K：谓词注入 `window_function_cte` / `top_k_computed_cte` 的源读
+    （即"先过滤、后开窗/排名"）。affected partitions/groups 仍用**未过滤**的 delta 与
+    MV 旧行推导——行离开谓词时其旧分区/旧分组必须重算并删除 MV 行；多余的重算幂等无害。
+  - UNION ALL：keyed 分支的 `affected`（去重 pk）来自未过滤 delta（离开谓词的行也要删）；
+    插入行用过滤后的当前行；append-only 分支直接过滤 delta；rebuild 过滤当前状态。
+- **顺带修复**：executor `expected_mv_schema` 的 Window 分支原先把 `order_keys`
+  当作 MV 的 row keys，实际 MV 以**源主键**为 row keys（runtime 一直如此）；
+  window view 此前没有 SQL 入口端到端用例，故未暴露。现已修正。
+- **测试**：`window_where.slt`、`window_aggregate_where.slt`、`top_k_where.slt`、
+  `union_where.slt`、`union_append_where.slt`（含 action 断言）；差分 oracle 泛化为多源
+  （`__SRC0__/__SRC__` 占位符）并新增 window / top-k / union ALL 三个 10 轮随机场景，
+  每个 oracle 断言 MV 在 10 轮内非空；slt harness 新增 `run_script_for_sources`、
+  `SltSource::{keyed, append_only}` 多源 fixture。全量 IVM 套件 35 个测试二进制 /
+  126 个测试通过。
+- 语义变化：UNION ALL 的持久化格式改为 `sources`（旧 spec 不兼容，符合"无旧格式兼容"决策）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -468,25 +468,26 @@ fn expected_mv_schema(
         ViewSpec::Window {
             source_table_id,
             partition_keys,
-            order_keys,
             function,
             value_column,
             ..
         } => {
-            let source = &find_table(tables, source_table_id)?.schema;
+            // The MV is keyed by the partition keys plus the source primary
+            // keys (the order keys are only used to number the rows).
+            let source = find_table(tables, source_table_id)?;
             if function.is_aggregate() {
                 window_aggregate_mv_schema_for(
-                    source,
+                    &source.schema,
                     partition_keys,
-                    order_keys,
+                    &source.primary_keys,
                     *function,
                     value_column.as_deref(),
                 )?
             } else {
                 window_ranking_mv_schema_for(
-                    source,
+                    &source.schema,
                     partition_keys,
-                    order_keys,
+                    &source.primary_keys,
                     *function,
                 )?
             }
@@ -515,14 +516,15 @@ fn expected_mv_schema(
             &find_table(tables, source_table_id)?.schema,
             output_columns,
         )?,
-        ViewSpec::UnionAll {
-            source_table_ids, ..
-        } => union_all_mv_schema_for(
+        ViewSpec::UnionAll { sources, .. } => union_all_mv_schema_for(
             &find_table(
                 tables,
-                source_table_ids.first().ok_or_else(|| {
-                    rootcause::report!("UNION ALL view without sources")
-                })?,
+                sources
+                    .first()
+                    .map(|source| source.table_id.as_str())
+                    .ok_or_else(|| {
+                        rootcause::report!("UNION ALL view without sources")
+                    })?,
             )?
             .schema,
         )?,
