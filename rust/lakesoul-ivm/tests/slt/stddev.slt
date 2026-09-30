@@ -1,0 +1,72 @@
+# STDDEV_SAMP and STDDEV_POP over groups, including a WHERE filter.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STDDEV_SAMP(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TR rowsort
+SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 7.0710678118654755
+b NULL
+
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=15,op=insert; k=4,g=b,v=25,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STDDEV_SAMP(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TR rowsort
+SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 7.0710678118654755
+b 7.0710678118654755
+
+# The population variant reuses the same MV column.
+statement ok
+INSERT INTO __MV__ SELECT g, STDDEV_POP(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TR rowsort
+SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5.0
+b 5.0
+
+# A WHERE changes the definition; a filtered-out value leaves a single row.
+statement ok
+INSERT INTO __MV__ SELECT g, STDDEV_POP(v) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TR rowsort
+SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5.0
+b 5.0
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=0,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STDDEV_POP(v) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TR rowsort
+SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 0.0
+b 5.0

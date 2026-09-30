@@ -17,10 +17,11 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
-    MinMaxKind, PhysicalFormat, WindowFunction, avg_mv_schema_for,
+    MinMaxKind, PhysicalFormat, VarianceKind, WindowFunction, avg_mv_schema_for,
     distinct_agg_mv_schema_for, min_max_mv_schema_for, sum_count_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, window_aggregate_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -531,6 +532,27 @@ async fn oracle_sum_distinct_matches_full_recompute() {
         "SELECT g, SUM(DISTINCT v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
         "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_variance_matches_full_recompute() {
+    run_oracle(
+        "variance",
+        1,
+        variance_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            "v",
+            VarianceKind::VarSamp,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, VAR_SAMP(v) AS variance_v FROM __SRC__ WHERE v > 30 GROUP BY g",
+        "SELECT g, VAR_SAMP(v) AS variance_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

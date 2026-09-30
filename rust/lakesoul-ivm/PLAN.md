@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
+| 聚合/分组 | `MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 单视图多窗口 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1345,6 +1345,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   2. SQL executor 路径的两层链；
   3. 聚合 MV → 全局 ROW_NUMBER 窗口视图（跨算子族的级联）。
 - 全量 IVM 套件 36 个测试二进制 / 174 个测试通过。
+
+### 10.20 VARIANCE/STDDEV 实施记录（PR-14）
+
+- **函数**：`VAR_SAMP`（DataFusion 规范名 `var`）、`VAR_POP`、`STDDEV_SAMP`（`stddev`）、
+  `STDDEV_POP`；新增 `VarianceKind` 与 spec `ViewSpec::Variance`（group_keys、value_column、
+  statistic、filter、having）。
+- **状态策略**：DataFusion 用 Welford 算法（m2/mean/count），无法用有符号 delta 合并，因此刷新时
+  **按受影响分组从当前源重算**（复用 `affected_groups_sql` + `key_filters` 的分组裁剪）；MV 只存
+  分组键 + 派生列（`variance_v` / `stddev_v`，Float64 可空：样本统计量在 <2 个值时 NULL），
+  rebuild 直接全量聚合。该策略保证结果与原生聚合一致（oracle 可用）。
+- **analyzer 细节**：单个 variance 聚合的参数是内联 `var(CAST(v AS Float64))`；出现多个聚合或
+  HAVING 时优化器会把 cast hoist 成投影（`__common_expr_1 AS v`），所以 `variance_argument`
+  同时解开 Cast 与 Alias，`collect_filtered_source` 接受仅含 `CAST(column)` 的投影；HAVING 把
+  `var`/`var_pop`/`stddev`/`stddev_pop` 映射到派生列。与其它聚合族混用明确报错。
+- **测试**：`variance.slt`（VAR_SAMP 的 bootstrap/NULL、更新、删除、HAVING 重建与增量）、
+  `stddev.slt`（STDDEV_SAMP → STDDEV_POP 定义切换、WHERE、过滤后单值 → 0）；oracle 新增
+  VAR_SAMP 的 10 轮随机场景（连续 3 次运行稳定）；analyzer 单测覆盖四种函数、WHERE/HAVING
+  与混用拒绝。
+  全量 IVM 套件 36 个测试二进制 / 178 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
