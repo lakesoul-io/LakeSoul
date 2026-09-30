@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, ScalarValue, TableReference};
+use datafusion::logical_expr::expr::AggregateFunction;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection, Union,
@@ -31,8 +32,9 @@ use datafusion::sql::unparser::Unparser;
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, MinMaxKind, SemiAntiCondition, UnionSourceSpec, ViewSpec,
-    WindowFunction,
+    CompareOp, DistinctAggKind, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,
+    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind, SemiAntiCondition, UnionSourceSpec,
+    ViewSpec, WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -90,7 +92,7 @@ pub fn analyze_select(
                         "computed columns above an aggregate are not supported",
                     ));
                 }
-                analyze_aggregate(aggregate, tables, request)?
+                analyze_aggregate(aggregate, &[], tables, request)?
             }
             LogicalPlan::Window(window) => {
                 analyze_window(projection, window, tables, request)?
@@ -102,9 +104,20 @@ pub fn analyze_select(
                 analyze_union(union, Some(projection), tables, request)?
             }
             LogicalPlan::Filter(filter) => {
-                match try_analyze_top_k(Some(projection), filter, tables, request)? {
-                    Some(spec) => spec,
-                    None => analyze_row(plan, tables, request)?,
+                // `HAVING` is one or more filters directly above the
+                // aggregate; a filter on a window rank column is top-k.
+                if let Some((aggregate, having)) = having_aggregate(&projection.input) {
+                    if !is_plain_projection(projection) {
+                        return Err(unsupported(
+                            "computed columns above an aggregate are not supported",
+                        ));
+                    }
+                    analyze_aggregate(aggregate, &having, tables, request)?
+                } else {
+                    match try_analyze_top_k(Some(projection), filter, tables, request)? {
+                        Some(spec) => spec,
+                        None => analyze_row(plan, tables, request)?,
+                    }
                 }
             }
             LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
@@ -115,11 +128,18 @@ pub fn analyze_select(
                 )));
             }
         },
-        LogicalPlan::Filter(_) | LogicalPlan::TableScan(_) => {
-            analyze_row(plan, tables, request)?
+        LogicalPlan::Filter(_) => {
+            // The projection above an aggregate may be optimized away (e.g.
+            // for MIN/MAX), leaving a bare `Filter -> Aggregate` plan.
+            if let Some((aggregate, having)) = having_aggregate(plan) {
+                analyze_aggregate(aggregate, &having, tables, request)?
+            } else {
+                analyze_row(plan, tables, request)?
+            }
         }
+        LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
         LogicalPlan::Aggregate(aggregate) => {
-            analyze_aggregate(aggregate, tables, request)?
+            analyze_aggregate(aggregate, &[], tables, request)?
         }
         LogicalPlan::Join(join) => analyze_join(join, None, tables, request)?,
         LogicalPlan::Union(union) => analyze_union(union, None, tables, request)?,
@@ -131,6 +151,23 @@ pub fn analyze_select(
         definition_hash: definition_hash(&spec)?,
         spec,
     })
+}
+
+/// The aggregate under one or more filters (a `HAVING` clause) together with
+/// the predicates, when the plan has that shape.
+fn having_aggregate(plan: &LogicalPlan) -> Option<(&Aggregate, Vec<Expr>)> {
+    let mut node = peel(plan);
+    let mut conjuncts = Vec::new();
+    while let LogicalPlan::Filter(filter) = node {
+        conjuncts.extend(split_conjunction(&filter.predicate).into_iter().cloned());
+        node = peel(&filter.input);
+    }
+    match node {
+        LogicalPlan::Aggregate(aggregate) if !conjuncts.is_empty() => {
+            Some((aggregate, conjuncts))
+        }
+        _ => None,
+    }
 }
 
 /// A projection (and optional filters) of one source table.
@@ -241,6 +278,156 @@ fn combine_filter(previous: Option<String>, rendered: String) -> String {
     }
 }
 
+/// The materialized columns a `HAVING` predicate may reference.
+#[derive(Clone, Copy)]
+enum HavingColumns<'a> {
+    /// `sum_v`, `count_v` and `nonnull_v`.
+    SumCount { value_column: Option<&'a str> },
+    /// `value` for a MIN/MAX view.
+    MinMax {
+        kind: MinMaxKind,
+        value_column: &'a str,
+    },
+    /// `value` for a COUNT(DISTINCT)/SUM(DISTINCT) view.
+    Distinct {
+        kind: DistinctAggKind,
+        value_column: &'a str,
+    },
+}
+
+/// Rewrite the `HAVING` predicates over the materialized MV columns and render
+/// them to canonical SQL, so the runtime can evaluate them on the aggregate
+/// the refresh just computed.
+///
+/// The planner refers to an aggregate in `HAVING` by a hidden column named
+/// after the aggregate expression (`sum(src.v)`), so the mapping is built from
+/// the aggregate node's expressions.
+fn render_having(
+    exprs: &[Expr],
+    columns: HavingColumns<'_>,
+    aggregate: &Aggregate,
+    group_keys: &[String],
+) -> Result<Option<String>> {
+    if exprs.is_empty() {
+        return Ok(None);
+    }
+    let mut mapping = HashMap::new();
+    for aggr in &aggregate.aggr_expr {
+        let Expr::AggregateFunction(function) = aggr else {
+            continue;
+        };
+        if let Ok(column) = having_column(function, columns) {
+            mapping.insert(format!("{aggr}"), column);
+        }
+    }
+    let group_keys = group_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut parts = Vec::with_capacity(exprs.len());
+    for expr in exprs {
+        let rewritten = rewrite_having(expr, columns, &mapping, &group_keys)?;
+        parts.push(render_filter(&rewritten)?);
+    }
+    Ok(Some(parts.join(" AND ")))
+}
+
+fn rewrite_having(
+    expr: &Expr,
+    columns: HavingColumns<'_>,
+    mapping: &HashMap<String, &'static str>,
+    group_keys: &std::collections::HashSet<&str>,
+) -> Result<Expr> {
+    expr.clone()
+        .transform_down(|node| match node {
+            Expr::Column(column) if !group_keys.contains(column.name.as_str()) => {
+                match mapping.get(&column.name) {
+                    Some(mv_column) => Ok(Transformed::yes(Expr::Column(
+                        Column::from_name(*mv_column),
+                    ))),
+                    None => Err(datafusion::error::DataFusionError::Plan(format!(
+                        "HAVING over {}, which the view does not materialize",
+                        column.name
+                    ))),
+                }
+            }
+            Expr::AggregateFunction(function) => {
+                match having_column(&function, columns) {
+                    Ok(column) => {
+                        Ok(Transformed::yes(Expr::Column(Column::from_name(column))))
+                    }
+                    Err(message) => {
+                        Err(datafusion::error::DataFusionError::Plan(message))
+                    }
+                }
+            }
+            other => Ok(Transformed::no(other)),
+        })
+        .map(|transformed| transformed.data)
+        .map_err(|error| unsupported(format!("HAVING {error}")))
+}
+
+/// The MV column holding the aggregate a `HAVING` function refers to.
+fn having_column(
+    function: &AggregateFunction,
+    columns: HavingColumns<'_>,
+) -> std::result::Result<&'static str, String> {
+    if function.params.filter.is_some() || !function.params.order_by.is_empty() {
+        return Err(format!(
+            "{} with FILTER/ORDER BY is not maintained",
+            function.func.name()
+        ));
+    }
+    let name = function.func.name();
+    let column_arg = |column: &str| matches!(function.params.args.as_slice(), [Expr::Column(arg)] if arg.name == column);
+    let counts_all = function.params.args.is_empty()
+        || matches!(function.params.args.as_slice(), [Expr::Literal(..)]);
+    match columns {
+        HavingColumns::SumCount { value_column } => match name {
+            "sum" if !function.params.distinct => match value_column {
+                Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN),
+                _ => Err(not_materialized(name)),
+            },
+            "count" if !function.params.distinct => {
+                if counts_all {
+                    Ok(IVM_COUNT_COLUMN)
+                } else if value_column.is_some_and(&column_arg) {
+                    Ok(IVM_NONNULL_COUNT_COLUMN)
+                } else {
+                    Err(not_materialized(name))
+                }
+            }
+            _ => Err(not_materialized(name)),
+        },
+        HavingColumns::MinMax { kind, value_column } => {
+            let expected = match kind {
+                MinMaxKind::Min => "min",
+                MinMaxKind::Max => "max",
+            };
+            if name == expected && !function.params.distinct && column_arg(value_column) {
+                Ok(IVM_VALUE_COLUMN)
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::Distinct { kind, value_column } => {
+            let expected = match kind {
+                DistinctAggKind::Count => "count",
+                DistinctAggKind::Sum => "sum",
+            };
+            if name == expected && function.params.distinct && column_arg(value_column) {
+                Ok(IVM_VALUE_COLUMN)
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+    }
+}
+
+fn not_materialized(name: &str) -> String {
+    format!("HAVING over {name}, which the view does not materialize")
+}
+
 /// Validate a filter and render it to canonical SQL over unqualified columns,
 /// so it can be embedded in the runtime's queries under any table alias.
 fn render_filter(expr: &Expr) -> Result<String> {
@@ -287,6 +474,7 @@ fn validate_filter(expr: &Expr) -> Result<()> {
 /// The aggregate family: SUM/COUNT, MIN/MAX and COUNT(DISTINCT)/SUM(DISTINCT).
 fn analyze_aggregate(
     aggregate: &Aggregate,
+    having_exprs: &[Expr],
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
@@ -382,6 +570,40 @@ fn analyze_aggregate(
         }
     }
 
+    let having = if let Some((agg, value_column)) = &distinct {
+        render_having(
+            having_exprs,
+            HavingColumns::Distinct {
+                kind: *agg,
+                value_column,
+            },
+            aggregate,
+            &group_keys,
+        )?
+    } else if let Some((min_max, value_column)) = &min_max {
+        render_having(
+            having_exprs,
+            HavingColumns::MinMax {
+                kind: *min_max,
+                value_column,
+            },
+            aggregate,
+            &group_keys,
+        )?
+    } else if sum.is_some() || count {
+        render_having(
+            having_exprs,
+            HavingColumns::SumCount {
+                value_column: sum.as_deref(),
+            },
+            aggregate,
+            &group_keys,
+        )?
+    } else {
+        return Err(unsupported(
+            "GROUP BY without a supported aggregate (use SUM/COUNT/MIN/MAX or DISTINCT)",
+        ));
+    };
     let spec = if let Some((agg, value_column)) = distinct {
         ViewSpec::DistinctAgg {
             view_id: request.view_id.clone(),
@@ -392,6 +614,7 @@ fn analyze_aggregate(
             value_column,
             agg,
             filter,
+            having,
         }
     } else if let Some((min_max, value_column)) = min_max {
         ViewSpec::MinMax {
@@ -403,6 +626,7 @@ fn analyze_aggregate(
             value_column,
             min_max,
             filter,
+            having,
         }
     } else if sum.is_some() || count {
         ViewSpec::SumCount {
@@ -412,6 +636,7 @@ fn analyze_aggregate(
             group_keys,
             value_column: sum,
             filter,
+            having,
         }
     } else {
         return Err(unsupported(
@@ -1229,10 +1454,10 @@ mod tests {
         analyze_select(&plan(sql).await, &tables, &request())
     }
 
-    /// The rendered predicate without grouping parentheses, so the assertions
-    /// do not depend on the unparser's parenthesization.
+    /// The rendered predicate without grouping parentheses or identifier
+    /// quotes, so the assertions do not depend on the unparser's formatting.
     fn normalized(filter: Option<&str>) -> Option<String> {
-        filter.map(|filter| filter.replace(['(', ')'], ""))
+        filter.map(|filter| filter.replace(['(', ')', '"'], ""))
     }
 
     #[tokio::test]
@@ -1249,6 +1474,7 @@ mod tests {
                 group_keys: vec!["g".to_string()],
                 value_column: Some("v".to_string()),
                 filter: None,
+                having: None,
             }
         );
     }
@@ -1292,6 +1518,7 @@ mod tests {
                 value_column: "v".to_string(),
                 min_max: MinMaxKind::Max,
                 filter: None,
+                having: None,
             }
         );
 
@@ -1464,15 +1691,9 @@ mod tests {
         );
         // SELECT DISTINCT has no view kind.
         assert!(analyze("select distinct g from src").await.is_err());
-        // HAVING is not maintained yet.
+        // HAVING over an aggregate the view does not materialize.
         assert!(
-            analyze("select g, sum(v) from src group by g having sum(v) > 0")
-                .await
-                .is_err()
-        );
-        // HAVING filters above the aggregate.
-        assert!(
-            analyze("select g, sum(v) from src group by g having sum(v) > 10")
+            analyze("select g, sum(v) from src group by g having avg(v) > 0")
                 .await
                 .is_err()
         );

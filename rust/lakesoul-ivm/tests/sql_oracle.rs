@@ -346,6 +346,43 @@ async fn oracle_top_k_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_sum_count_having_matches_full_recompute() {
+    // HAVING keeps qualifying groups only; the incremental path recomputes
+    // groups that were previously kept out of the MV.
+    run_oracle(
+        "having",
+        1,
+        sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v")).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY g HAVING COUNT(*) >= 2 OR g = 'g2'",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g \
+         HAVING COUNT(*) >= 2 OR g = 'g2'",
+        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_min_having_matches_full_recompute() {
+    run_oracle(
+        "minhaving",
+        1,
+        min_max_mv_schema_for(&source_schema(), &["g".to_string()], "v", MinMaxKind::Min)
+            .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, MIN(v) AS value FROM __SRC__ WHERE v > 30 GROUP BY g \
+         HAVING MIN(v) <= 40 OR g = 'g2'",
+        "SELECT g, MIN(v) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g \
+         HAVING MIN(v) <= 40 OR g = 'g2'",
+        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_union_all_where_matches_full_recompute() {
     run_oracle(
         "unionwhere",
