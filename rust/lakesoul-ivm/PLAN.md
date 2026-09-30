@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | 单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 随需求做 |
+| 窗口 | 单视图多窗口；无 `PARTITION BY` | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
@@ -1303,6 +1303,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `window_cume_dist.slt`（5 行唯一序，步长 0.25/0.2 便于精确断言）；oracle 新增 NTILE(3) 的
   10 轮随机场景；analyzer 单测覆盖桶数校验与缺少 ORDER BY 的拒绝。
   全量 IVM 套件 35 个测试二进制 / 164 个测试通过。
+
+### 10.17 窗口聚合的 FILTER（PR-11）
+
+- **spec**：`ViewSpec::Window` 增加 `window_filter: Option<String>`（分析期用 `render_filter`
+  渲染 FILTER 谓词）；typed `WindowView.window_filter` + `with_window_filter`。
+- **analyzer**：移除 "FILTER on a window function" 的拒绝；仅聚合窗口（SUM/COUNT）允许 FILTER，
+  非聚合窗口明确报错；FILTER 谓词复用过滤器渲染管线（剥离关系名、禁聚合/子查询）。
+- **运行时**：`window_function_cte` 生成 `sum(v) filter (where P) over (...)`、
+  `count(1) filter (where P) over (...)`；`validate_window_view` 对源 schema 解析 FILTER。
+- **语义**：FILTER 只影响聚合输入行，行本身仍在窗口内（frame 位置不变），受影响分区整体重算
+  天然覆盖 FILTER 成员变化；分区内无匹配行时 SUM 为 NULL。
+- **测试**：`window_filter.slt`（成员进入/移除、NULL 和）、oracle 新增 SUM ... FILTER 的
+  10 轮随机场景（阈值随更新变化）；analyzer 单测覆盖 SUM/COUNT FILTER 的渲染。
+  全量 IVM 套件 35 个测试二进制 / 167 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

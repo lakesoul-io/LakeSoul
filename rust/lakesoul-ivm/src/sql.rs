@@ -920,6 +920,7 @@ fn analyze_window(
         value_column,
         window_args,
         window_frame,
+        window_filter,
     } = window_function_spec(window)?;
     Ok(ViewSpec::Window {
         view_id: request.view_id.clone(),
@@ -932,6 +933,7 @@ fn analyze_window(
         filter,
         window_args,
         window_frame,
+        window_filter,
     })
 }
 
@@ -1050,6 +1052,7 @@ struct WindowParts {
     value_column: Option<String>,
     window_args: Option<String>,
     window_frame: Option<String>,
+    window_filter: Option<String>,
 }
 
 /// The single window function of a window node.
@@ -1061,9 +1064,6 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
         return Err(unsupported("non-window expression in a window node"));
     };
     let params = &function.params;
-    if params.filter.is_some() {
-        return Err(unsupported("FILTER on a window function"));
-    }
     let partition_keys = params
         .partition_by
         .iter()
@@ -1147,6 +1147,15 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
     if !function.is_aggregate() && order_keys.is_empty() {
         return Err(unsupported("ranking window functions need ORDER BY"));
     }
+    let window_filter = match &params.filter {
+        Some(filter) => {
+            if !function.is_aggregate() {
+                return Err(unsupported("FILTER on a non-aggregate window function"));
+            }
+            Some(render_filter(filter)?)
+        }
+        None => None,
+    };
     Ok(WindowParts {
         function,
         partition_keys,
@@ -1154,6 +1163,7 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
         value_column,
         window_args,
         window_frame,
+        window_filter,
     })
 }
 
@@ -2508,6 +2518,7 @@ mod tests {
                     filter: None,
                     window_args: None,
                     window_frame: None,
+                    window_filter: None,
                 }
             );
         }
@@ -2704,6 +2715,49 @@ mod tests {
             analyze("select k, ntile(4) over (partition by g) from src")
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_window_filter() {
+        let analyzed = analyze(
+            "select k, sum(v) filter (where v > 5) over (partition by g) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            function,
+            window_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Sum);
+        assert_eq!(
+            normalized(window_filter.as_deref()).as_deref(),
+            Some("v > 5")
+        );
+
+        let analyzed = analyze(
+            "select k, count(*) filter (where g = 'a') over (partition by g) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            function,
+            value_column,
+            window_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Count);
+        assert_eq!(value_column, None);
+        assert_eq!(
+            normalized(window_filter.as_deref()).as_deref(),
+            Some("g = 'a'")
         );
     }
 

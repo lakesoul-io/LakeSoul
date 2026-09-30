@@ -955,6 +955,23 @@ fn sqllogic_window_cume_dist() {
 }
 
 #[test]
+fn sqllogic_window_filter() {
+    run_script_for_mv(
+        "windowfilter",
+        include_str!("slt/window_filter.slt"),
+        window_aggregate_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Sum,
+            Some("v"),
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_first_value() {
     run_script_for_mv(
         "windowfirst",
