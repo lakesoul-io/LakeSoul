@@ -1086,7 +1086,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 窗口 | `LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
-| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证；**用户可见/全量批量读取默认过滤 `delete` 标记（逻辑读模式）** | 级联先验证；逻辑读见 §10.10 备注 |
+| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
 
 ### 10.6 本轮 PR 拆分
@@ -1235,6 +1235,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `SELECT DISTINCT v`（值列高频变化）10 轮随机场景；analyzer 单测覆盖 raw/优化一致、
   多列 + WHERE、与显式 count(*) 定义等价、计算列拒绝。
   全量 IVM 套件 35 个测试二进制 / 148 个测试通过。
+
+### 10.13 逻辑读默认过滤 tombstone（PR-7）
+
+- **背景**：`IvmTableProvider` 早已隐藏 `delete` tombstone（`drop_tombstones`，含无 CDC 列时的
+  `rowKinds` 回退），但 ① `update_before` 未过滤；② 没有关闭过滤的入口，无法查看物理标记。
+- **变更**：
+  - 逻辑读默认过滤 `delete` 与 `update_before`（与运行时 `filter_deletes` 同一判据）；
+    `Current`/`AsOf`/`AtVersions` 都返回逻辑行。
+  - 新增 `IvmReadMode::Raw` 与 `IvmTableProvider::raw` / `IvmRuntime::table_provider_raw`，
+    返回 merge-on-read 后的物理行（保留 tombstone），供调试与工具使用。
+  - 运行时内部读取（`IvmTable::read_current*` 等）保持 raw 不变，不影响增量算法。
+- **语义**：keyed 表 merge-on-read 后每 key 仅剩最新行——被删 key 的最新行就是 tombstone，
+  逻辑读丢弃它；append-only changelog 的 `delete`/`update_before` 标记同样按行丢弃。
+- **测试**：`table_provider.rs` 新增用例：append-only 源 5 行（insert / update_before /
+  update_after / insert / delete）→ 逻辑读 3 行、raw 5 行；MV 组被删除后逻辑读 1 行、raw 2 行
+  （`rowKinds='delete'` 只在 raw 可见）。既有 `provider_hides_cdc_tombstones` 继续覆盖 `delete`。
+  全量 IVM 套件 35 个测试二进制 / 149 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

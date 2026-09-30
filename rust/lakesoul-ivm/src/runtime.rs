@@ -2227,6 +2227,12 @@ impl IvmRuntime {
     }
 
     /// A DataFusion provider over the current state of an internal table.
+    /// A provider that returns the raw merge-on-read state, keeping the CDC
+    /// tombstone rows; the regular [`IvmRuntime::table_provider`] hides them.
+    pub fn table_provider_raw(&self, table: &IvmTable) -> IvmTableProvider {
+        IvmTableProvider::raw(table.clone(), self.client.clone())
+    }
+
     pub fn table_provider(&self, table: &IvmTable) -> IvmTableProvider {
         IvmTableProvider::current(table.clone(), self.client.clone())
     }
