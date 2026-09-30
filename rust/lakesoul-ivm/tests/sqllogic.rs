@@ -20,13 +20,18 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::DataType;
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Float64Array,
+    Int32Array, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
+};
+use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat,
-    min_max_mv_schema_for, sum_count_mv_schema_for,
+    IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
+    MinMaxKind, PhysicalFormat, min_max_mv_schema_for, row_mv_schema_for,
+    sum_count_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -66,6 +71,9 @@ struct SltDb {
     executor: IvmSqlExecutor,
     ctx: SessionContext,
     tables: HashMap<String, IvmTable>,
+    /// The action of the last `INSERT` the executor ran, for
+    /// `/*ivm-expect-action*/` assertions.
+    last_action: Option<IvmExecutionAction>,
     /// A private runtime: the sqllogictest `AsyncDB` future must be `Send`,
     /// while LakeSoul readers are only `Send` (not `Sync`).  The SQL work runs
     /// through `block_on`, so no non-`Send` value is held across an await, and
@@ -104,6 +112,7 @@ impl SltDb {
             executor,
             ctx,
             tables,
+            last_action: None,
             rt,
         })
     }
@@ -123,8 +132,9 @@ impl AsyncDB for SltDb {
             executor,
             ctx,
             tables,
+            last_action,
         } = self;
-        rt.block_on(run_statement(executor, ctx, tables, sql))
+        rt.block_on(run_statement(executor, ctx, tables, last_action, sql))
     }
 
     async fn shutdown(&mut self) {}
@@ -134,6 +144,7 @@ async fn run_statement(
     executor: &mut IvmSqlExecutor,
     ctx: &SessionContext,
     tables: &mut HashMap<String, IvmTable>,
+    last_action: &mut Option<IvmExecutionAction>,
     sql: &str,
 ) -> Result<DBOutput<DefaultColumnType>, SltError> {
     let sql = sql.trim();
@@ -141,11 +152,12 @@ async fn run_statement(
         .strip_prefix("/*")
         .and_then(|rest| rest.strip_suffix("*/"))
     {
-        append_rows(executor, tables, directive.trim()).await?;
+        run_directive(executor, tables, last_action, directive.trim()).await?;
         return Ok(DBOutput::StatementComplete(0));
     }
     if sql.to_ascii_lowercase().starts_with("insert") {
-        executor.execute(sql).await.map_err(SltError::from)?;
+        let execution = executor.execute(sql).await.map_err(SltError::from)?;
+        *last_action = Some(execution.action);
         return Ok(DBOutput::StatementComplete(0));
     }
 
@@ -185,6 +197,31 @@ async fn run_statement(
     Ok(DBOutput::Rows { types, rows })
 }
 
+/// `/*ivm-append ...*/` appends source rows, `/*ivm-expect-action ...*/`
+/// asserts the action of the last `INSERT`.
+async fn run_directive(
+    executor: &IvmSqlExecutor,
+    tables: &mut HashMap<String, IvmTable>,
+    last_action: &Option<IvmExecutionAction>,
+    directive: &str,
+) -> Result<(), SltError> {
+    if let Some(expected) = directive.strip_prefix("ivm-expect-action") {
+        let expected = expected.trim();
+        let Some(last_action) = last_action else {
+            return Err(SltError(
+                "ivm-expect-action: no INSERT has run yet".to_string(),
+            ));
+        };
+        if last_action.to_string() != expected {
+            return Err(SltError(format!(
+                "expected action {expected}, got {last_action}"
+            )));
+        }
+        return Ok(());
+    }
+    append_rows(executor, tables, directive).await
+}
+
 /// `/*ivm-append <table>: k=1,g=a,v=10,op=insert; ...*/`
 async fn append_rows(
     executor: &IvmSqlExecutor,
@@ -220,34 +257,75 @@ async fn append_rows(
 
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(table.schema.fields().len());
     for field in table.schema.fields() {
-        let values = columns.get(field.name()).ok_or_else(|| {
+        let column = columns.get(field.name()).ok_or_else(|| {
             SltError(format!("row values miss column {}", field.name()))
         })?;
-        if values.len() != count {
+        if column.len() != count {
             return Err(SltError(format!(
                 "column {} has {} values, expected {count}",
                 field.name(),
-                values.len()
+                column.len()
             )));
         }
+        // `null` (case-insensitive) maps to a NULL of any type.
+        let values = column
+            .iter()
+            .map(|value| {
+                if value.eq_ignore_ascii_case("null") {
+                    None
+                } else {
+                    Some(value.as_str())
+                }
+            })
+            .collect::<Vec<_>>();
         arrays.push(match field.data_type() {
-            DataType::Int64 => Arc::new(Int64Array::from(
-                values
+            DataType::Int64 => {
+                Arc::new(Int64Array::from(parse_i64(&values)?)) as ArrayRef
+            }
+            DataType::Int32 => {
+                Arc::new(Int32Array::from(parse_i32(&values)?)) as ArrayRef
+            }
+            DataType::Float64 => {
+                Arc::new(Float64Array::from(parse_f64(&values)?)) as ArrayRef
+            }
+            DataType::Boolean => {
+                Arc::new(BooleanArray::from(parse_bool(&values)?)) as ArrayRef
+            }
+            DataType::Utf8 => {
+                Arc::new(StringArray::from_iter(values.clone())) as ArrayRef
+            }
+            DataType::Date32 => {
+                Arc::new(Date32Array::from(parse_i32(&values)?)) as ArrayRef
+            }
+            DataType::Timestamp(unit, _) => {
+                let parsed = parse_i64(&values)?;
+                let array: ArrayRef = match unit {
+                    TimeUnit::Second => Arc::new(TimestampSecondArray::from(parsed)),
+                    TimeUnit::Millisecond => {
+                        Arc::new(TimestampMillisecondArray::from(parsed))
+                    }
+                    TimeUnit::Microsecond => {
+                        Arc::new(TimestampMicrosecondArray::from(parsed))
+                    }
+                    TimeUnit::Nanosecond => {
+                        Arc::new(TimestampNanosecondArray::from(parsed))
+                    }
+                };
+                array
+            }
+            DataType::Decimal128(precision, scale) => {
+                let parsed = values
                     .iter()
-                    .map(|value| value.parse::<i64>())
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| SltError(error.to_string()))?,
-            )) as ArrayRef,
-            DataType::Int32 => Arc::new(Int32Array::from(
-                values
-                    .iter()
-                    .map(|value| value.parse::<i32>())
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| SltError(error.to_string()))?,
-            )) as ArrayRef,
-            DataType::Utf8 => Arc::new(StringArray::from_iter_values(
-                values.iter().map(String::as_str),
-            )),
+                    .map(|value| {
+                        value.map(|value| parse_decimal(value, *scale)).transpose()
+                    })
+                    .collect::<Result<Vec<Option<i128>>, _>>()?;
+                Arc::new(
+                    Decimal128Array::from(parsed)
+                        .with_precision_and_scale(*precision, *scale)
+                        .map_err(SltError::from)?,
+                ) as ArrayRef
+            }
             other => {
                 return Err(SltError(format!(
                     "ivm-append does not support column type {other}"
@@ -262,6 +340,97 @@ async fn append_rows(
         .await
         .map_err(SltError::from)?;
     Ok(())
+}
+
+fn parse_i64(values: &[Option<&str>]) -> Result<Vec<Option<i64>>, SltError> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .map(|value| {
+                    value
+                        .parse::<i64>()
+                        .map_err(|error| SltError(error.to_string()))
+                })
+                .transpose()
+        })
+        .collect()
+}
+
+fn parse_i32(values: &[Option<&str>]) -> Result<Vec<Option<i32>>, SltError> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .map(|value| {
+                    value
+                        .parse::<i32>()
+                        .map_err(|error| SltError(error.to_string()))
+                })
+                .transpose()
+        })
+        .collect()
+}
+
+fn parse_f64(values: &[Option<&str>]) -> Result<Vec<Option<f64>>, SltError> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .map(|value| {
+                    value
+                        .parse::<f64>()
+                        .map_err(|error| SltError(error.to_string()))
+                })
+                .transpose()
+        })
+        .collect()
+}
+
+fn parse_bool(values: &[Option<&str>]) -> Result<Vec<Option<bool>>, SltError> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .map(|value| match value.to_ascii_lowercase().as_str() {
+                    "true" => Ok(true),
+                    "false" => Ok(false),
+                    other => Err(SltError(format!("bad boolean {other:?}"))),
+                })
+                .transpose()
+        })
+        .collect()
+}
+
+/// A decimal string like `12.34` with scale `2` becomes `1234`.
+fn parse_decimal(value: &str, scale: i8) -> Result<i128, SltError> {
+    let (sign, rest) = match value.strip_prefix('-') {
+        Some(rest) => (-1i128, rest),
+        None => (1i128, value),
+    };
+    let (integer, fraction) = rest.split_once('.').unwrap_or((rest, ""));
+    if !integer.is_ascii() || !fraction.is_ascii() {
+        return Err(SltError(format!("bad decimal {value:?}")));
+    }
+    let scale = usize::try_from(scale)
+        .map_err(|_| SltError(format!("bad decimal scale {scale}")))?;
+    let mut fraction = fraction.to_string();
+    if fraction.len() > scale {
+        if fraction[scale..].chars().any(|digit| digit != '0') {
+            return Err(SltError(format!(
+                "decimal {value} does not fit scale {scale}"
+            )));
+        }
+        fraction.truncate(scale);
+    } else {
+        fraction.push_str(&"0".repeat(scale - fraction.len()));
+    }
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let digits = format!("{integer}{fraction}");
+    let magnitude = digits
+        .parse::<i128>()
+        .map_err(|error| SltError(error.to_string()))?;
+    Ok(sign * magnitude)
 }
 
 fn format_value(array: &dyn Array, row: usize) -> Result<String, SltError> {
@@ -284,11 +453,35 @@ fn group_keys(keys: &[&str]) -> Vec<String> {
     keys.iter().map(|key| (*key).to_string()).collect()
 }
 
-/// Create a source table (keyed on `k`, CDC column `op`) plus an MV with the
-/// given schema and run one script against them.
-fn run_script_for_mv(
+/// A source table with a composite primary key.
+fn multi_key_source_schema() -> arrow::datatypes::SchemaRef {
+    Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k1", DataType::Int64, false),
+        arrow::datatypes::Field::new("k2", DataType::Utf8, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+/// A source with nullable float/decimal columns and a boolean flag.
+fn typed_source_schema() -> arrow::datatypes::SchemaRef {
+    Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("v", DataType::Float64, true),
+        arrow::datatypes::Field::new("flag", DataType::Boolean, false),
+        arrow::datatypes::Field::new("d", DataType::Decimal128(10, 2), true),
+        arrow::datatypes::Field::new("day", DataType::Date32, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+/// Create a source table plus an MV and run one script against them.
+fn run_script_for_source(
     tag: &str,
     script: &str,
+    source_schema: arrow::datatypes::SchemaRef,
+    source_primary_keys: Vec<String>,
     mv_schema: arrow::datatypes::SchemaRef,
     mv_primary_keys: Vec<String>,
 ) {
@@ -300,7 +493,7 @@ fn run_script_for_mv(
     let suffix = uuid::Uuid::new_v4().simple();
     let source_name = format!("slt_{tag}_src_{suffix}");
     let mv_name = format!("slt_{tag}_mv_{suffix}");
-    let schema = source_schema();
+    let schema = source_schema;
     setup.block_on(async {
         let runtime = IvmRuntime::from_env().await.unwrap();
         runtime.init_schema().await.unwrap();
@@ -311,7 +504,7 @@ fn run_script_for_mv(
                     format!("file://{}", dir.path().join("src").display()),
                     schema.clone(),
                 )
-                .with_primary_keys(vec!["k".to_string()])
+                .with_primary_keys(source_primary_keys)
                 .with_cdc_column(CHANGE_COLUMN)
                 .with_file_format(PhysicalFormat::Vortex),
             )
@@ -351,6 +544,23 @@ fn run_script_for_mv(
         .unwrap_or_else(|error| panic!("{tag}: {error}"));
 }
 
+/// The default fixture: keyed on `k`, CDC column `op`.
+fn run_script_for_mv(
+    tag: &str,
+    script: &str,
+    mv_schema: arrow::datatypes::SchemaRef,
+    mv_primary_keys: Vec<String>,
+) {
+    run_script_for_source(
+        tag,
+        script,
+        source_schema(),
+        vec!["k".to_string()],
+        mv_schema,
+        mv_primary_keys,
+    );
+}
+
 #[test]
 fn sqllogic_sum_count() {
     run_script_for_mv(
@@ -375,6 +585,70 @@ fn sqllogic_min_max() {
         )
         .unwrap(),
         group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_sum_count_where() {
+    run_script_for_mv(
+        "where",
+        include_str!("slt/sum_count_where.slt"),
+        sum_count_mv_schema_for(&source_schema(), &group_keys(&["g"]), Some("v"))
+            .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_min_max_where() {
+    run_script_for_mv(
+        "minmaxwhere",
+        include_str!("slt/min_max_where.slt"),
+        min_max_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            "v",
+            MinMaxKind::Min,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_sum_count_multi_key() {
+    let schema = multi_key_source_schema();
+    run_script_for_source(
+        "multikey",
+        include_str!("slt/sum_count_multi_key.slt"),
+        schema.clone(),
+        group_keys(&["k1", "k2"]),
+        sum_count_mv_schema_for(&schema, &group_keys(&["g"]), Some("v")).unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_row_where() {
+    run_script_for_mv(
+        "rowwhere",
+        include_str!("slt/row_where.slt"),
+        row_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_row_typed_append() {
+    let schema = typed_source_schema();
+    let output_columns = group_keys(&["k", "v", "flag", "d", "day"]);
+    run_script_for_source(
+        "rowtypes",
+        include_str!("slt/row_types.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        row_mv_schema_for(&schema, &output_columns).unwrap(),
+        group_keys(&["k"]),
     );
 }
 

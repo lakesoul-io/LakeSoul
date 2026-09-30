@@ -1,0 +1,32 @@
+# ivm-append accepts float, boolean, decimal, date and NULL values.
+
+statement ok
+/*ivm-append __SRC__: k=1,v=10.5,flag=true,d=12.34,day=1,op=insert; k=2,v=null,flag=true,d=null,day=0,op=insert; k=3,v=3.25,flag=false,d=1.00,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v, flag, d, day FROM __SRC__ WHERE flag = true
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IRT?? rowsort
+SELECT k, v, flag, d, day FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10.5 true 12.34 1970-01-02
+2 NULL true NULL 1970-01-01
+
+# A row entering and one leaving the predicate.
+statement ok
+/*ivm-append __SRC__: k=1,v=10.5,flag=false,d=12.34,day=1,op=insert; k=3,v=3.25,flag=true,d=1.00,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v, flag, d, day FROM __SRC__ WHERE flag = true
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IRT?? rowsort
+SELECT k, v, flag, d, day FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 NULL true NULL 1970-01-01
+3 3.25 true 1.00 1970-01-03

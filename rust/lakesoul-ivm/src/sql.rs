@@ -20,17 +20,18 @@
 
 use std::collections::HashMap;
 
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection, Union,
     Window, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
+use datafusion::sql::unparser::Unparser;
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, FilterCondition, LiteralValue, MinMaxKind,
-    SemiAntiCondition, ViewSpec, WindowFunction,
+    CompareOp, DistinctAggKind, MinMaxKind, SemiAntiCondition, ViewSpec, WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -137,17 +138,17 @@ fn analyze_row(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let (source, output_columns, filters) = collect_row(plan, tables)?;
+    let (source, output_columns, filter) = collect_row(plan, tables)?;
     Ok(ViewSpec::Row {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
         output_columns: output_columns.unwrap_or_default(),
-        filters,
+        filter,
     })
 }
 
-type RowParts = (IvmTable, Option<Vec<String>>, Vec<FilterCondition>);
+type RowParts = (IvmTable, Option<Vec<String>>, Option<String>);
 
 fn collect_row(
     plan: &LogicalPlan,
@@ -163,24 +164,118 @@ fn collect_row(
                 .ok_or_else(|| {
                     unsupported("computed projection columns are not supported")
                 })?;
-            let (source, _, mut filters) = collect_row(&projection.input, tables)?;
-            let _ = &mut filters;
-            Ok((source, Some(output_columns), filters))
+            let (source, _, filter) = collect_row(&projection.input, tables)?;
+            Ok((source, Some(output_columns), filter))
         }
         LogicalPlan::Filter(filter) => {
-            let (source, output_columns, mut filters) =
-                collect_row(&filter.input, tables)?;
-            for conjunct in split_conjunction(&filter.predicate) {
-                filters.push(filter_condition(conjunct)?);
-            }
-            Ok((source, output_columns, filters))
+            let (source, output_columns, previous) = collect_row(&filter.input, tables)?;
+            let filter =
+                Some(combine_filter(previous, render_filter(&filter.predicate)?));
+            Ok((source, output_columns, filter))
         }
         LogicalPlan::TableScan(scan) => {
             let source = resolve_table(tables, &scan.table_name)?.clone();
-            Ok((source, None, Vec::new()))
+            // The optimizer pushes the projection into the scan, so the
+            // scanned columns define the row view's output columns.
+            let output_columns = scan.projection.as_ref().map(|_| {
+                scan.projected_schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect::<Vec<_>>()
+            });
+            Ok((source, output_columns, scan_filter(&scan.filters)?))
         }
         other => Err(unsupported(format!("row shape over {}", plan_label(other)))),
     }
+}
+
+/// The predicates DataFusion pushed into a table scan.
+fn scan_filter(filters: &[Expr]) -> Result<Option<String>> {
+    let mut filter: Option<String> = None;
+    for predicate in filters {
+        filter = Some(combine_filter(filter, render_filter(predicate)?));
+    }
+    Ok(filter)
+}
+
+/// The source and the filter of an aggregate's input.
+fn collect_aggregate_source(
+    plan: &LogicalPlan,
+    tables: &HashMap<String, IvmTable>,
+) -> Result<(IvmTable, Option<String>)> {
+    match peel(plan) {
+        LogicalPlan::Projection(projection) => {
+            if !is_plain_projection(projection) {
+                return Err(unsupported(
+                    "computed columns below an aggregate are not supported",
+                ));
+            }
+            collect_aggregate_source(&projection.input, tables)
+        }
+        LogicalPlan::Filter(filter) => {
+            let (source, previous) = collect_aggregate_source(&filter.input, tables)?;
+            let filter =
+                Some(combine_filter(previous, render_filter(&filter.predicate)?));
+            Ok((source, filter))
+        }
+        LogicalPlan::TableScan(scan) => {
+            let source = resolve_table(tables, &scan.table_name)?.clone();
+            Ok((source, scan_filter(&scan.filters)?))
+        }
+        other => Err(unsupported(format!("aggregate over {}", plan_label(other)))),
+    }
+}
+
+/// `(previous) AND (rendered)` when a filter was already collected.
+fn combine_filter(previous: Option<String>, rendered: String) -> String {
+    match previous {
+        Some(previous) => format!("({previous}) AND ({rendered})"),
+        None => rendered,
+    }
+}
+
+/// Validate a filter and render it to canonical SQL over unqualified columns,
+/// so it can be embedded in the runtime's queries under any table alias.
+fn render_filter(expr: &Expr) -> Result<String> {
+    validate_filter(expr)?;
+    let stripped = strip_relations(expr.clone())?;
+    let ast = Unparser::default()
+        .expr_to_sql(&stripped)
+        .map_err(|error| unsupported(format!("filter {error}")))?;
+    Ok(ast.to_string())
+}
+
+fn strip_relations(expr: Expr) -> Result<Expr> {
+    expr.transform_down(|node| match node {
+        Expr::Column(column) if column.relation.is_some() => Ok(Transformed::yes(
+            Expr::Column(Column::from_name(column.name.clone())),
+        )),
+        other => Ok(Transformed::no(other)),
+    })
+    .map(|transformed| transformed.data)
+    .map_err(|error| unsupported(format!("filter {error}")))
+}
+
+fn validate_filter(expr: &Expr) -> Result<()> {
+    expr.apply(|node| {
+        match node {
+            Expr::AggregateFunction(_)
+            | Expr::WindowFunction(_)
+            | Expr::Exists { .. }
+            | Expr::InSubquery(_)
+            | Expr::ScalarSubquery(_) => {
+                return Err(datafusion::error::DataFusionError::Plan(
+                    "filters may not contain aggregates, windows or subqueries"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .map_err(|error| unsupported(format!("filter {error}")))?;
+    Ok(())
 }
 
 /// The aggregate family: SUM/COUNT, MIN/MAX and COUNT(DISTINCT)/SUM(DISTINCT).
@@ -189,18 +284,9 @@ fn analyze_aggregate(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let scan = match peel(&aggregate.input) {
-        LogicalPlan::TableScan(scan) => scan,
-        LogicalPlan::Filter(_) => {
-            return Err(unsupported(
-                "WHERE on an aggregate view (use an intermediate filtered view)",
-            ));
-        }
-        other => {
-            return Err(unsupported(format!("aggregate over {}", plan_label(other))));
-        }
-    };
-    let source = resolve_table(tables, &scan.table_name)?;
+    let (source, filter) = collect_aggregate_source(&aggregate.input, tables)?;
+    let source = &source;
+    let filter = filter.as_deref().map(str::to_string);
 
     let mut group_keys = Vec::with_capacity(aggregate.group_expr.len());
     for expr in &aggregate.group_expr {
@@ -299,6 +385,7 @@ fn analyze_aggregate(
             group_keys,
             value_column,
             agg,
+            filter,
         }
     } else if let Some((min_max, value_column)) = min_max {
         ViewSpec::MinMax {
@@ -309,6 +396,7 @@ fn analyze_aggregate(
             group_keys,
             value_column,
             min_max,
+            filter,
         }
     } else if sum.is_some() || count {
         ViewSpec::SumCount {
@@ -317,6 +405,7 @@ fn analyze_aggregate(
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column: sum,
+            filter,
         }
     } else {
         return Err(unsupported(
@@ -417,14 +506,24 @@ fn try_analyze_top_k(
     if conjuncts.len() != 1 {
         return Ok(None);
     }
-    let condition = filter_condition(conjuncts[0])?;
-    let limit = match (&condition.column, condition.op, &condition.value) {
-        (column, CompareOp::Le, LiteralValue::Int(limit))
-            if column == rank_column && *limit > 0 =>
-        {
-            *limit
-        }
-        _ => return Ok(None),
+    let limit = match conjuncts[0] {
+        Expr::BinaryExpr(binary) => match (&*binary.left, binary.op, &*binary.right) {
+            (Expr::Column(column), Operator::LtEq, right)
+                if &column.name == rank_column =>
+            {
+                int_literal(right)
+            }
+            (left, Operator::GtEq, Expr::Column(column))
+                if &column.name == rank_column =>
+            {
+                int_literal(left)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(limit) = limit.filter(|limit| *limit > 0) else {
+        return Ok(None);
     };
     if partition_keys.is_empty() || order_keys.is_empty() {
         return Err(unsupported("top-k needs PARTITION BY and ORDER BY columns"));
@@ -1036,42 +1135,18 @@ fn single_column_arg(args: &[Expr]) -> Result<String> {
     }
 }
 
-fn filter_condition(expr: &Expr) -> Result<FilterCondition> {
+/// An integer literal, for the top-k rank comparison.
+fn int_literal(expr: &Expr) -> Option<i64> {
     match expr {
-        Expr::BinaryExpr(binary) => {
-            let (column, op, value) = match (binary.left.as_ref(), binary.right.as_ref())
-            {
-                (Expr::Column(column), literal) => (
-                    column.name.clone(),
-                    compare_op(binary.op)?,
-                    literal_value(literal)?,
-                ),
-                (literal, Expr::Column(column)) => (
-                    column.name.clone(),
-                    flip(compare_op(binary.op)?),
-                    literal_value(literal)?,
-                ),
-                _ => {
-                    return Err(unsupported(
-                        "filters comparing two columns are not supported",
-                    ));
-                }
-            };
-            Ok(FilterCondition { column, op, value })
-        }
-        Expr::IsNull(inner) => Ok(FilterCondition {
-            column: column_name(inner)
-                .ok_or_else(|| unsupported("IS NULL on a non-column expression"))?,
-            op: CompareOp::Eq,
-            value: LiteralValue::Null,
-        }),
-        Expr::IsNotNull(inner) => Ok(FilterCondition {
-            column: column_name(inner)
-                .ok_or_else(|| unsupported("IS NOT NULL on a non-column expression"))?,
-            op: CompareOp::Ne,
-            value: LiteralValue::Null,
-        }),
-        _ => Err(unsupported(format!("filter {expr}"))),
+        Expr::Literal(ScalarValue::Int8(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::Int16(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::Int32(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::Int64(Some(value)), _) => Some(*value),
+        Expr::Literal(ScalarValue::UInt8(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt16(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt32(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt64(Some(value)), _) => i64::try_from(*value).ok(),
+        _ => None,
     }
 }
 
@@ -1095,32 +1170,6 @@ fn flip(op: CompareOp) -> CompareOp {
         CompareOp::Le => CompareOp::Ge,
         CompareOp::Gt => CompareOp::Lt,
         CompareOp::Ge => CompareOp::Le,
-    }
-}
-
-fn literal_value(expr: &Expr) -> Result<LiteralValue> {
-    let Expr::Literal(scalar, _) = expr else {
-        return Err(unsupported("comparisons against non-literals"));
-    };
-    match scalar {
-        ScalarValue::Null => Ok(LiteralValue::Null),
-        ScalarValue::Boolean(Some(value)) => Ok(LiteralValue::Bool(*value)),
-        ScalarValue::Int8(Some(value)) => Ok(LiteralValue::Int(i64::from(*value))),
-        ScalarValue::Int16(Some(value)) => Ok(LiteralValue::Int(i64::from(*value))),
-        ScalarValue::Int32(Some(value)) => Ok(LiteralValue::Int(i64::from(*value))),
-        ScalarValue::Int64(Some(value)) => Ok(LiteralValue::Int(*value)),
-        ScalarValue::UInt8(Some(value)) => Ok(LiteralValue::Int(i64::from(*value))),
-        ScalarValue::UInt16(Some(value)) => Ok(LiteralValue::Int(i64::from(*value))),
-        ScalarValue::UInt32(Some(value)) => Ok(LiteralValue::Int(i64::from(*value))),
-        ScalarValue::UInt64(Some(value)) => i64::try_from(*value)
-            .map(LiteralValue::Int)
-            .map_err(|_| unsupported("integer literal out of i64 range")),
-        ScalarValue::Float32(Some(value)) => Ok(LiteralValue::Float(f64::from(*value))),
-        ScalarValue::Float64(Some(value)) => Ok(LiteralValue::Float(*value)),
-        ScalarValue::Utf8(Some(value))
-        | ScalarValue::LargeUtf8(Some(value))
-        | ScalarValue::Utf8View(Some(value)) => Ok(LiteralValue::String(value.clone())),
-        other => Err(unsupported(format!("literal {other}"))),
     }
 }
 
@@ -1204,6 +1253,12 @@ mod tests {
         analyze_select(&plan(sql).await, &tables, &request())
     }
 
+    /// The rendered predicate without grouping parentheses, so the assertions
+    /// do not depend on the unparser's parenthesization.
+    fn normalized(filter: Option<&str>) -> Option<String> {
+        filter.map(|filter| filter.replace(['(', ')'], ""))
+    }
+
     #[tokio::test]
     async fn analyzes_sum_count() {
         let analyzed = analyze("select g, sum(v), count(*) from src group by g")
@@ -1217,6 +1272,7 @@ mod tests {
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
                 value_column: Some("v".to_string()),
+                filter: None,
             }
         );
     }
@@ -1259,6 +1315,7 @@ mod tests {
                 group_keys: vec!["g".to_string()],
                 value_column: "v".to_string(),
                 min_max: MinMaxKind::Max,
+                filter: None,
             }
         );
 
@@ -1300,40 +1357,21 @@ mod tests {
 
     #[tokio::test]
     async fn analyzes_projection_and_filters() {
-        let analyzed =
-            analyze("select v, k from src where v > 5 and g = 'a' and 5 <= v or false")
-                .await;
-        // The trailing `or false` makes the whole predicate unsupported: the
-        // analyzer never drops part of a predicate.
-        assert!(analyzed.is_err());
-
         let analyzed = analyze("select v, k from src where v > 5 and g = 'a'")
             .await
             .unwrap();
         let ViewSpec::Row {
             output_columns,
-            filters,
+            filter,
             ..
         } = analyzed.spec
         else {
             panic!("expected a row spec");
         };
         assert_eq!(output_columns, vec!["v".to_string(), "k".to_string()]);
-        let mut got = filters
-            .iter()
-            .map(|filter| (filter.column.clone(), filter.op, filter.value.clone()))
-            .collect::<Vec<_>>();
-        got.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(
-            got,
-            vec![
-                (
-                    "g".to_string(),
-                    CompareOp::Eq,
-                    LiteralValue::String("a".to_string())
-                ),
-                ("v".to_string(), CompareOp::Gt, LiteralValue::Int(5)),
-            ]
+            normalized(filter.as_deref()).as_deref(),
+            Some("v > 5 AND g = 'a'")
         );
     }
 
@@ -1342,20 +1380,101 @@ mod tests {
         let analyzed = analyze("select k from src where g is null and 5 < v")
             .await
             .unwrap();
-        let ViewSpec::Row { filters, .. } = analyzed.spec else {
+        let ViewSpec::Row { filter, .. } = analyzed.spec else {
             panic!("expected a row spec");
         };
-        let mut got = filters
-            .iter()
-            .map(|filter| (filter.column.clone(), filter.op, filter.value.clone()))
-            .collect::<Vec<_>>();
-        got.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(
-            got,
-            vec![
-                ("g".to_string(), CompareOp::Eq, LiteralValue::Null),
-                ("v".to_string(), CompareOp::Gt, LiteralValue::Int(5)),
-            ]
+            normalized(filter.as_deref()).as_deref(),
+            Some("g IS NULL AND 5 < v")
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_aggregate_where() {
+        let analyzed = analyze("select g, sum(v) from src where v > 5 group by g")
+            .await
+            .unwrap();
+        let ViewSpec::SumCount { filter, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+
+        let analyzed = analyze("select g, max(v) from src where v > 5 group by g")
+            .await
+            .unwrap();
+        let ViewSpec::MinMax { filter, .. } = analyzed.spec else {
+            panic!("expected a min/max spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+
+        let analyzed =
+            analyze("select g, count(distinct v) from src where v > 5 group by g")
+                .await
+                .unwrap();
+        let ViewSpec::DistinctAgg { filter, .. } = analyzed.spec else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+    }
+
+    #[tokio::test]
+    async fn analyzes_aggregate_where_on_the_optimized_plan() {
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(table)).unwrap();
+        let dataframe = ctx
+            .sql("select g, sum(v) from src where v > 5 and g <> 'x' group by g")
+            .await
+            .unwrap();
+        let optimized = dataframe.into_optimized_plan().unwrap();
+        let tables = HashMap::from([("src".to_string(), source_table("src"))]);
+        let analyzed = analyze_select(&optimized, &tables, &request()).unwrap();
+        let ViewSpec::SumCount { filter, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(
+            normalized(filter.as_deref()).as_deref(),
+            Some("v > 5 AND g <> 'x'")
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_row_where_on_the_optimized_plan() {
+        // The optimizer pushes the projection and (with an exact pushdown
+        // provider) the filter into the table scan.
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(table)).unwrap();
+        let dataframe = ctx
+            .sql("select v, k from src where v > 5 and g = 'a'")
+            .await
+            .unwrap();
+        let optimized = dataframe.into_optimized_plan().unwrap();
+        let tables = HashMap::from([("src".to_string(), source_table("src"))]);
+        let analyzed = analyze_select(&optimized, &tables, &request()).unwrap();
+        let ViewSpec::Row {
+            output_columns,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row spec");
+        };
+        assert_eq!(output_columns, vec!["v".to_string(), "k".to_string()]);
+        assert_eq!(
+            normalized(filter.as_deref()).as_deref(),
+            Some("v > 5 AND g = 'a'")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_subquery_filters() {
+        assert!(
+            analyze(
+                "select g, sum(v) from src where v > (select max(k) from src) group by g"
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -1369,9 +1488,9 @@ mod tests {
         );
         // SELECT DISTINCT has no view kind.
         assert!(analyze("select distinct g from src").await.is_err());
-        // WHERE on an aggregate needs an intermediate view.
+        // HAVING is not maintained yet.
         assert!(
-            analyze("select g, sum(v) from src where v > 0 group by g")
+            analyze("select g, sum(v) from src group by g having sum(v) > 0")
                 .await
                 .is_err()
         );

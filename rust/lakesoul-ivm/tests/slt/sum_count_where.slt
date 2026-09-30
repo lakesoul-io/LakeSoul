@@ -1,0 +1,95 @@
+# Aggregate WHERE: only rows matching the predicate contribute.
+# The action directives double as a check that the harness can observe what
+# the executor did.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert; k=4,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+b 7
+
+# An update above the threshold retracts the previous value, an update below
+# the threshold drops the row out of the group, and a delete of a row that is
+# already outside the predicate has no effect.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=8,op=insert; k=3,g=b,v=4,op=insert; k=4,g=b,v=1,op=delete; k=5,g=c,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 8
+c 6
+
+# Re-running the same statement with no new source rows is a no-op.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 8
+c 6
+
+# Dropping the WHERE changes the definition: the view is rebuilt from the
+# current source state.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 11
+b 4
+c 6
+
+# Re-adding the WHERE rebuilds again and picks up a row added in between.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 20
+c 6
+
+# And the incremental path keeps working on the filtered definition.
+statement ok
+/*ivm-append __SRC__: k=5,g=c,v=1,op=insert; k=6,g=a,v=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 8

@@ -46,7 +46,9 @@
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
 - **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
   dirty 自动重建）→ PG `CREATE/REFRESH MATERIALIZED VIEW` 表面（postgres-lakesoul）
-  （P2 已全部收尾）
+  （P2 已全部收尾）。SQL 增量入口的后续路线（WHERE、测试深度、算子扩展、框架扩展
+  checklist）见 §10；M1（spec 驱动）/M2（形状分析）/M3（专用执行器）/M4（sqllogictest +
+  差分 oracle）均已合并。
 
 ## 0. 背景与边界
 
@@ -988,6 +990,135 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
    可消除正确性依赖，但 W 仍用于调度。
 4. ~~OCC 重试与 PG 事务隔离需并发测试覆盖~~（已完成：40001/40P01 退避重试 +
    `tests/concurrency.rs`；serializable 测试环境稳定）。
+
+## 10. SQL 增量入口后续路线（WHERE、测试深度、算子扩展）
+
+> 决策（已确认）：① 过滤谓词直接来自 SQL 解析，表示形式（DataFusion `Expr` 或逻辑计划）
+> 均可，**不为旧格式做兼容**；② HAVING 下一步单独做；③ 本轮只做 W1（聚合 WHERE）与
+> W2（窗口/TOP-K/UNION 分支 WHERE）；④ AVG 等算子放后续批次；⑤ slt 的 action 断言用
+> `/*ivm-expect-action ...*/` 指令；⑥ 核心诉求是**框架能否承接未来算子**，见 §10.1。
+
+### 10.1 框架可扩展性评估（本轮重点）
+
+**现有扩展点（新增一个算子/形状的清单）**
+
+1. runtime：typed view struct + `to_spec()` + `refresh_*`/`rebuild_*`（SQL 构造与状态维护）+
+   `*_mv_schema_for` + `validate_*`；
+2. `ViewSpec` 新 variant（serde）+ `view_id()`；
+3. runtime `spec_view()` 与 `refresh_spec`/`rebuild_spec` 分发；
+4. analyzer（`sql.rs`）：形状匹配 + 明确错误；
+5. executor（`executor.rs`）：`expected_mv_schema` 增加一支；
+6. 测试：单测 + `*.slt` + 差分 oracle 场景。
+
+**结论：分层方向正确，扩展成本可控**
+
+- ✅ `ViewSpec` 即状态：跨进程/入口可复现，executor 与 runtime 解耦，新增算子只改上面的
+  1–6 点中的指定位置。
+- ✅ 状态注册表（`ivm.states`）+ generation/cursor/epoch 统一承载重建与定义变化；
+  `spec_view()` 让"只用 spec 驱动"成为默认路径。
+- ✅ analyzer 与 executor 的形状覆盖是"白名单式"的：不支持就明确报错，绝不静默退化。
+- ⚠️ 需要先补齐的共性能力（按本计划顺序）：
+  a. **过滤/谓词表示与注入点**（W0/W1/W2）：目前 `FilterCondition` 只支持单列-字面量比较，
+     且只有 `Row` 有过滤；改为通用 SQL 谓词并统一注入 delta/old/rebuild/state/affected。
+  b. **表达式/投影**：计算列、`CAST`、函数、`CASE` 目前一律拒绝；未来需要"表达式白名单 +
+     可序列化表示"（与 a 相同的基础设施）。
+  c. **窗口函数注册表**：`WindowFunction` 是封闭枚举，LAG/LEAD/NTILE 等逐个需要 runtime
+     实现（受影响分区重算语义）。
+  d. **连接模型**：目前仅单层 join、同名列、每侧一个 payload；多表/外连接需要新的 spec
+     形态（join 树/条件列表）。
+  e. **视图级联**：MV 作为另一个 MV 的源（cascading views）尚未验证；调度器需要保证
+     拓扑序刷新。
+- 结论：本计划先补 (a) 并顺手验证 (e)；b–e 作为已知扩展点登记在 §10.4。
+
+### 10.2 W0：过滤谓词表示（与 W1 同一个 PR）
+
+- analyzer 从逻辑计划提取 `Expr::Filter` 谓词（或等价 AST），**spec 中存可解析 SQL 文本**
+  `filter: Option<String>`（用 `datafusion::sql::unparser::Unparser` 渲染，保证可回注到运行
+  时的字符串 SQL）；**移除 `FilterCondition`/`Vec<FilterCondition>` 的旧路径**（无兼容负担），
+  `Row` 视图一并迁移；`CompareOp` 保留给 `SemiAntiCondition`。
+- 校验：谓词只引用源列、无子查询/聚合/窗口/volatile；运行时把文本嵌入 SQL，规划或执行失败
+  即报错（不静默）。
+- 覆盖 Operand：`= <> < <= > >=`、`IN`、`BETWEEN`、`LIKE`、`IS [NOT] NULL`、
+  `AND/OR/NOT`、简单 `CAST`/常量表达式。
+
+### 10.3 W1（聚合 WHERE）与 W2（窗口/TOP-K/UNION WHERE）
+
+**W1：SUM/COUNT、MIN/MAX、DISTINCT（+ `Row` 复用）**
+
+- 语义要点：keyed 源是 upsert，变更贡献 = `f(new)·P(new) − f(old)·P(old)`，因此
+  **delta 按新行过滤、old 按旧行过滤**；`affected_groups` 取"新命中分组 ∪ 旧命中分组"。
+- 注入点：
+  - `sum_count_refresh_sql`：keyed 的 `delta` 聚合与 `old_agg/old_changed`；append-only 的
+    signed delta（`where` 或 `case when P`）与 old 读；`sum_count_rebuild_sql` 源读；
+  - `refresh_value_count` 内联 SQL（MIN/MAX/DISTINCT）：state 增量/撤回、MV 计算、rebuild；
+  - `affected_groups_sql`：`delta_groups` 与 `old_groups` 分别过滤。
+- analyzer：接受 `Aggregate` 下方的 `Filter`（含 `Filter` 在 `Projection`/`Aggregate` 之间的
+  常见排布），提取谓词；不再报"聚合上的 WHERE"。
+
+**W2：Window / Top-K / UNION ALL**
+
+- Window：`window_affected_cte`、`window_refresh_sql`、`window_rebuild_sql` 的源读先过滤
+  再开窗（语义 = `SELECT ... OVER (...) FROM (SELECT * FROM src WHERE P)`）。
+- Top-K：`top_k_affected_cte`、`top_k_computed_cte`、`top_k_refresh_sql`、
+  `top_k_rebuild_sql` 加过滤（先过滤再取 `row_number() <= k`）。
+- UNION ALL：spec 由 `source_table_ids: Vec<String>` 改为
+  `sources: Vec<UnionSource{ table_id, filter: Option<String> }>`（新格式）；分支各自过滤，
+  仍要求各分支输出 schema 一致。
+
+### 10.4 测试深度（随 W1/W2 同步）
+
+- **H1 fixtures**：slt harness 支持自定义源 schema 与多张表；`ivm-append` 扩展
+  Float64/Boolean/Date32/Timestamp/Decimal128/NULL 与多列 key。
+- **H2 action 断言**：`/*ivm-expect-action bootstrap|incremental|rebuild|overwrite*/`，
+  与执行结果比对（当前 slt 未验证 action）。
+- **H4/H5 覆盖**：带 WHERE 的 SUM/COUNT、MIN/MAX、COUNT(DISTINCT)/SUM(DISTINCT)、窗口、
+  TOP-K、UNION ALL 的 slt；同算子"不同 WHERE → rebuild"用例；差分 oracle 把现有
+  "delete 撤回"场景换成真 WHERE，并为每个新形状加 10 轮随机变更场景。
+- **H6 错误矩阵**：子查询谓词、引用不存在列、`HAVING`、`OR` 中混入聚合等非法形态逐条
+  `statement error`，并确认无副作用（executor 已保证先校验后动 state）。
+
+### 10.5 不支持算子清单（backlog，按优先级）
+
+| 组 | 缺口 | 建议 |
+|---|---|---|
+| 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
+| 聚合/分组 | `HAVING`（下一步单独做）；`AVG`（SUM/COUNT 派生）；`STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`SELECT DISTINCT`（值计数状态可复用）；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | HAVING → AVG → DISTINCT |
+| 窗口 | `LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
+| 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
+| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
+| 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
+
+### 10.6 本轮 PR 拆分
+
+1. **PR-1**：W0 + W1 + H1/H2 + 聚合类 slt/oracle（一个 PR）。
+2. **PR-2**：W2 + 窗口/TOP-K/UNION slt/oracle。
+3. 后续单独立项：HAVING、AVG、SELECT DISTINCT、窗口扩展、外连接/多表 join、
+   子查询/CTE、M5 文档与指标（复用 #959 观测）。
+
+### 10.7 PR-1 实施记录（W0 + W1 + H1/H2）
+
+- **W0 已落地**：`ViewSpec::Row/SumCount/MinMax/DistinctAgg` 存 `filter: Option<String>`；
+  analyzer 用 `Unparser` 渲染谓词并剥离关系名，回注运行时 `delta/old/src` 别名下都能解析；
+  `FilterCondition`/`LiteralValue` 已删除，`CompareOp` 仅剩 `SemiAntiCondition` 使用。
+  谓词校验拒绝聚合/窗口/子查询；引用不存在的列在 `SessionState::create_logical_expr`
+  解析（`validate_*` 与执行前）时报错。
+- **W1 已落地**：注入点与 §10.3 一致——keyed 的 delta 过滤新行、`old_changed/old_agg`
+  过滤旧行；append-only 的 signed delta 直接 `where`；`sum_count_rebuild_sql` 与
+  value-count 的 state 增量/重建同步过滤；`affected_groups_sql` 对 `delta_groups` 与
+  `old_groups` 分别过滤（`delta_pks` 不过滤，保证被改 key 的旧值能被正确撤回）。
+- **analyzer 形状**：接受 `Aggregate -> (Projection|Filter)* -> TableScan` 链，并读取
+  `TableScan.filters` 与 `scan.projection`（优化器把过滤/投影下推进 scan 的形态）；
+  HAVING、子查询谓词仍明确报错。
+- **H1/H2 已落地**：`/*ivm-expect-action bootstrap|incremental|rebuild|overwrite*/`；
+  `ivm-append` 支持 Float64/Boolean/Date32/Timestamp/Decimal128/NULL 与多列 key fixture；
+  fixture 抽取为 `run_script_for_source`，可传自定义源 schema/主键。
+- **测试**：`sum_count_where.slt`、`min_max_where.slt`、`row_where.slt`、
+  `sum_count_multi_key.slt`；2 个真 WHERE 差分 oracle（SUM/COUNT `v > 30`、
+  MIN `v > 30 AND g <> 'g1'`）；analyzer 优化计划（scan 下推）单测。全量 IVM 套件
+  35 个测试二进制 / 113 个测试通过。
+- **语义变化**：过滤谓词里的 `= NULL` 现在是 SQL 语义（结果为未知）；需要判空请写
+  `IS NULL`。旧 `LiteralValue::Null + Eq` 的"= NULL 即 IS NULL"特例随旧格式一并移除。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

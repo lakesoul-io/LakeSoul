@@ -12,9 +12,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    CompareOp, FilterCondition, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmRuntime,
-    IvmTable, IvmTableOptions, LiteralValue, RowView, UnionAllView, row_mv_schema_for,
-    union_all_mv_schema_for,
+    IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
+    RowView, UnionAllView, row_mv_schema_for, union_all_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -84,22 +83,6 @@ fn append_only_batch(rows: &[(i64, Option<&str>)]) -> RecordBatch {
         ],
     )
     .unwrap()
-}
-
-fn int_condition(column: &str, op: CompareOp, value: i64) -> FilterCondition {
-    FilterCondition {
-        column: column.to_string(),
-        op,
-        value: LiteralValue::Int(value),
-    }
-}
-
-fn string_condition(column: &str, op: CompareOp, value: &str) -> FilterCondition {
-    FilterCondition {
-        column: column.to_string(),
-        op,
-        value: LiteralValue::String(value.to_string()),
-    }
 }
 
 async fn keyed_source(
@@ -204,7 +187,7 @@ async fn row_view_projection_and_filter() {
         .unwrap();
     let view = RowView::new(format!("row_{suffix}"), source.clone(), mv.clone())
         .with_output_columns(output_columns)
-        .with_filters(vec![int_condition("amount", CompareOp::Gt, 15)]);
+        .with_filter("amount > 15");
 
     source
         .append_batch(
@@ -328,7 +311,7 @@ async fn row_view_append_only_source_and_nullable_filters() {
         matching.clone(),
     )
     .with_output_columns(output_columns.clone())
-    .with_filters(vec![string_condition("name", CompareOp::Eq, "x")]);
+    .with_filter("name = 'x'");
     let null_mv = runtime
         .create_table(IvmTableOptions::new(
             format!("ivm_row_append_null_{suffix}"),
@@ -343,11 +326,7 @@ async fn row_view_append_only_source_and_nullable_filters() {
         null_mv.clone(),
     )
     .with_output_columns(output_columns)
-    .with_filters(vec![FilterCondition {
-        column: "name".to_string(),
-        op: CompareOp::Eq,
-        value: LiteralValue::Null,
-    }]);
+    .with_filter("name is null");
 
     source
         .append_batch(
@@ -683,30 +662,21 @@ async fn row_and_union_validation() {
             .contains("output columns must contain the source key")
     );
 
-    // A filter column that does not exist / NULL with an ordering operator.
+    // A filter column that does not exist is rejected while parsing.
     let view = RowView::new(format!("valid_c_{suffix}"), source.clone(), mv.clone())
-        .with_filters(vec![int_condition("missing", CompareOp::Gt, 1)]);
-    assert!(
-        runtime
-            .refresh_row(&view)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("filter column missing is not in the source")
-    );
+        .with_filter("missing > 1");
+    let error = runtime.refresh_row(&view).await.unwrap_err().to_string();
+    assert!(error.contains("No field named missing"), "{error}");
+    // An unparseable filter is rejected.
     let view = RowView::new(format!("valid_d_{suffix}"), source.clone(), mv.clone())
-        .with_filters(vec![FilterCondition {
-            column: "name".to_string(),
-            op: CompareOp::Lt,
-            value: LiteralValue::Null,
-        }]);
+        .with_filter("name <");
     assert!(
         runtime
             .refresh_row(&view)
             .await
             .unwrap_err()
             .to_string()
-            .contains("NULL can only be compared")
+            .contains("invalid filter")
     );
 
     // Union-all: schemas must match and all sources must be keyed or all

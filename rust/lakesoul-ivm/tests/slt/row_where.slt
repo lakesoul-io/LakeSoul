@@ -1,0 +1,56 @@
+# A row view with a SQL predicate: rows entering and leaving the filter.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+3 7
+
+# An update out of the predicate removes its row, one into the predicate adds
+# it, and a delete removes it.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=4,op=insert; k=2,g=a,v=9,op=insert; k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 9
+
+# Changing the predicate rebuilds the view from the source state.
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ WHERE v > 8
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 9
+
+# Re-running the same definition is a no-op.
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ WHERE v > 8
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 9

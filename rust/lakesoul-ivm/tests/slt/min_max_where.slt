@@ -1,0 +1,44 @@
+# MIN/MAX with an aggregate WHERE.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+b 7
+
+# An update that leaves the predicate retracts the previous minimum.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=4,op=insert; k=4,g=b,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ WHERE v > 5 GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 7
+
+# Dropping the WHERE rebuilds the maintained aggregate.
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3
+b 7

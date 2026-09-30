@@ -1,0 +1,32 @@
+# A source with a composite primary key.
+
+statement ok
+/*ivm-append __SRC__: k1=1,k2=x,g=a,v=10,op=insert; k1=1,k2=y,g=a,v=20,op=insert; k1=2,k2=x,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 30
+b 5
+
+# Upserting (1, y) and deleting (2, x) only touches those rows.
+statement ok
+/*ivm-append __SRC__: k1=1,k2=y,g=a,v=25,op=insert; k1=2,k2=x,g=b,v=5,op=delete; k1=3,k2=x,g=c,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 35
+c 7

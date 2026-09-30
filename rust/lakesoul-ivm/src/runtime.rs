@@ -17,7 +17,7 @@ use std::sync::Arc;
 use arrow::record_batch::RecordBatch;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use datafusion::common::ScalarValue;
+use datafusion::common::{DFSchema, ScalarValue};
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
@@ -157,6 +157,9 @@ pub enum ViewSpec {
         group_keys: Vec<String>,
         /// The summed column; `None` means `SUM(0)`, i.e. count only.
         value_column: Option<String>,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
     },
     /// Inner equi-join of the append-only changelogs of two sources, appended
     /// to an append-only output table.
@@ -195,6 +198,9 @@ pub enum ViewSpec {
         value_column: String,
         /// Whether the minimum or the maximum is maintained.
         min_max: MinMaxKind,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
     },
     /// `group_key`, `COUNT(DISTINCT value_column)` or
     /// `SUM(DISTINCT value_column)` over the source changelog, backed by the
@@ -215,6 +221,9 @@ pub enum ViewSpec {
         value_column: String,
         /// Whether the distinct count or the distinct sum is maintained.
         agg: DistinctAggKind,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
     },
     /// `ROW_NUMBER()` over a source, maintained by recomputing the affected
     /// partitions.
@@ -269,9 +278,9 @@ pub enum ViewSpec {
         /// The projected source columns; empty means all of them.
         #[serde(default)]
         output_columns: Vec<String>,
-        /// The filter conditions, all of which must hold.
-        #[serde(default)]
-        filters: Vec<FilterCondition>,
+        /// An optional filter the source rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
     },
     /// `UNION ALL` of several sources with the same schema.
     UnionAll {
@@ -346,6 +355,8 @@ pub struct SumCountView {
     pub group_keys: Vec<String>,
     /// The summed column; `None` counts rows only.
     pub value_column: Option<String>,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -365,6 +376,7 @@ impl SumCountView {
             mv,
             group_keys: vec![group_key.into()],
             value_column,
+            filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -383,8 +395,15 @@ impl SumCountView {
             mv,
             group_keys,
             value_column,
+            filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -394,6 +413,7 @@ impl SumCountView {
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
+            filter: self.filter.clone(),
         }
     }
 }
@@ -711,6 +731,7 @@ struct ValueCountView<'a> {
     group_keys: &'a [String],
     value_column: &'a str,
     agg: ValueAgg,
+    filter: Option<&'a str>,
 }
 
 /// A `MIN`/`MAX` view over a source table.
@@ -736,6 +757,8 @@ pub struct MinMaxView {
     pub value_column: String,
     /// Whether the minimum or the maximum is maintained.
     pub min_max: MinMaxKind,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -759,6 +782,7 @@ impl MinMaxView {
             group_keys: vec![group_key.into()],
             value_column: value_column.into(),
             min_max,
+            filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -781,8 +805,15 @@ impl MinMaxView {
             group_keys,
             value_column: value_column.into(),
             min_max,
+            filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -794,6 +825,7 @@ impl MinMaxView {
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
             min_max: self.min_max,
+            filter: self.filter.clone(),
         }
     }
 }
@@ -820,6 +852,8 @@ pub struct DistinctAggView {
     pub value_column: String,
     /// Whether the distinct count or the distinct sum is maintained.
     pub agg: DistinctAggKind,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -843,6 +877,7 @@ impl DistinctAggView {
             group_keys: vec![group_key.into()],
             value_column: value_column.into(),
             agg,
+            filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -865,8 +900,15 @@ impl DistinctAggView {
             group_keys,
             value_column: value_column.into(),
             agg,
+            filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -878,6 +920,7 @@ impl DistinctAggView {
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
             agg: self.agg,
+            filter: self.filter.clone(),
         }
     }
 }
@@ -1006,33 +1049,6 @@ pub enum CompareOp {
     Ge,
 }
 
-/// A literal value of a [`FilterCondition`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type", content = "value")]
-pub enum LiteralValue {
-    /// `NULL` (only meaningful with `=` / `<>`).
-    Null,
-    /// A boolean.
-    Bool(bool),
-    /// An integer.
-    Int(i64),
-    /// A float.
-    Float(f64),
-    /// A string.
-    String(String),
-}
-
-/// One filter condition of a [`RowView`]: `{column} {op} {value}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FilterCondition {
-    /// The source column.
-    pub column: String,
-    /// The comparison operator.
-    pub op: CompareOp,
-    /// The literal value.
-    pub value: LiteralValue,
-}
-
 /// One condition of a [`SemiAntiView`]:
 /// `left.{left_column} {op} right.{right_column}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1149,8 +1165,8 @@ pub struct RowView {
     pub mv: IvmTable,
     /// The projected source columns; empty means all of them.
     pub output_columns: Vec<String>,
-    /// The filter conditions, all of which must hold.
-    pub filters: Vec<FilterCondition>,
+    /// An optional filter the source rows must satisfy.
+    pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1163,7 +1179,7 @@ impl RowView {
             source,
             mv,
             output_columns: Vec::new(),
-            filters: Vec::new(),
+            filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1174,9 +1190,9 @@ impl RowView {
         self
     }
 
-    /// Add filter conditions (all of which must hold).
-    pub fn with_filters(mut self, filters: Vec<FilterCondition>) -> Self {
-        self.filters = filters;
+    /// Only rows matching `filter` are materialized.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
         self
     }
 
@@ -1186,7 +1202,7 @@ impl RowView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             output_columns: self.output_columns.clone(),
-            filters: self.filters.clone(),
+            filter: self.filter.clone(),
         }
     }
 }
@@ -1811,12 +1827,14 @@ impl IvmRuntime {
                 mv_table_id,
                 group_keys,
                 value_column,
+                filter,
             } => SpecView::SumCount(SumCountView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
+                filter: filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Join {
@@ -1845,6 +1863,7 @@ impl IvmRuntime {
                 group_keys,
                 value_column,
                 min_max,
+                filter,
             } => SpecView::MinMax(MinMaxView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1853,6 +1872,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
                 min_max: *min_max,
+                filter: filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::DistinctAgg {
@@ -1863,6 +1883,7 @@ impl IvmRuntime {
                 group_keys,
                 value_column,
                 agg,
+                filter,
             } => SpecView::DistinctAgg(DistinctAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -1871,6 +1892,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
                 agg: *agg,
+                filter: filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Window {
@@ -1916,13 +1938,13 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 output_columns,
-                filters,
+                filter,
             } => SpecView::Row(RowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 output_columns: output_columns.clone(),
-                filters: filters.clone(),
+                filter: filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::UnionAll {
@@ -2157,7 +2179,12 @@ impl IvmRuntime {
             Vec::new()
         };
         let groups = delta_context
-            .sql(&affected_groups_sql(&view.source, &view.group_keys, keyed))
+            .sql(&affected_groups_sql(
+                &view.source,
+                &view.group_keys,
+                keyed,
+                view.filter.as_deref(),
+            ))
             .await?
             .collect()
             .await?;
@@ -2635,6 +2662,7 @@ impl IvmRuntime {
             state: &view.state,
             group_keys: &view.group_keys,
             value_column: &view.value_column,
+            filter: view.filter.as_deref(),
             agg: ValueAgg::from(view.min_max),
         })
         .await
@@ -2654,6 +2682,7 @@ impl IvmRuntime {
             state: &view.state,
             group_keys: &view.group_keys,
             value_column: &view.value_column,
+            filter: view.filter.as_deref(),
             agg: ValueAgg::from(view.agg),
         })
         .await
@@ -3057,7 +3086,12 @@ impl IvmRuntime {
             Vec::new()
         };
         let groups = delta_context
-            .sql(&affected_groups_sql(view.source, view.group_keys, keyed))
+            .sql(&affected_groups_sql(
+                view.source,
+                view.group_keys,
+                keyed,
+                view.filter,
+            ))
             .await?
             .collect()
             .await?;
@@ -3258,6 +3292,7 @@ impl IvmRuntime {
             state: &view.state,
             group_keys: &view.group_keys,
             value_column: &view.value_column,
+            filter: view.filter.as_deref(),
             agg: ValueAgg::from(view.min_max),
         })
         .await
@@ -3274,6 +3309,7 @@ impl IvmRuntime {
             state: &view.state,
             group_keys: &view.group_keys,
             value_column: &view.value_column,
+            filter: view.filter.as_deref(),
             agg: ValueAgg::from(view.agg),
         })
         .await
@@ -3475,7 +3511,7 @@ impl IvmRuntime {
             .iter()
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
-        let predicate = row_filter_predicate(view);
+        let predicate = row_filter_predicate(&context, view)?;
 
         if keyed {
             let source_now = filter_deletes(
@@ -3617,7 +3653,7 @@ impl IvmRuntime {
             dataframe(&context, baseline.batches, &view.source.schema)?,
             change_column(&view.source),
         )?;
-        if let Some(predicate) = row_filter_predicate(view) {
+        if let Some(predicate) = row_filter_predicate(&context, view)? {
             rows = rows.filter(predicate)?;
         }
         let output_exprs = row_output_columns(view)
@@ -4079,11 +4115,12 @@ impl IvmRuntime {
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
         let state_sql = if view.source.primary_keys.is_empty() {
             let retract = source_retract_condition("src", change_column(view.source));
+            let plain_where = filter_where(view.filter);
             format!(
                 "select {}, {} as {}, \
                         sum(case when {retract} then -1 else 1 end) as {}, \
                         'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-                 from src group by {}, {} \
+                 from src{plain_where} group by {}, {} \
                  having sum(case when {retract} then -1 else 1 end) > 0",
                 quoted_list(view.group_keys),
                 quote_ident(view.value_column),
@@ -4093,14 +4130,18 @@ impl IvmRuntime {
                 quote_ident(view.value_column),
             )
         } else {
+            let src_where = format!(
+                "{}{}",
+                source_delete_filter("src", change_column(view.source)),
+                filter_clause(view.filter),
+            );
             format!(
                 "select {}, {} as {}, count(1) as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-                 from src where {} group by {}, {}",
+                 from src where {src_where} group by {}, {}",
                 quoted_list(view.group_keys),
                 quote_ident(view.value_column),
                 quote_ident(IVM_VALUE_COLUMN),
                 quote_ident(IVM_VALUE_COUNT_COLUMN),
-                source_delete_filter("src", change_column(view.source)),
                 quoted_list(view.group_keys),
                 quote_ident(view.value_column),
             )
@@ -4890,8 +4931,17 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         Some(column) => format!("count({})", quote_ident(column)),
         None => "count(1)".to_string(),
     };
-    let delta_filter = source_delete_filter("delta", change_column(&view.source));
-    let old_filter = source_delete_filter("o", change_column(&view.source));
+    let delta_filter = format!(
+        "{}{}",
+        source_delete_filter("delta", change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
+    let old_filter = format!(
+        "{}{}",
+        source_delete_filter("o", change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
+    let plain_where = filter_where(view.filter.as_deref());
     let pk_match = key_join_condition("o", "p", &view.source.primary_keys);
     let delta_part = if keyed {
         // The delta is merged per primary key, so only the surviving version
@@ -4912,7 +4962,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         format!(
             "new_agg as (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
                             {signed_nonnull} as dnonnull \
-                     from delta group by {keys})"
+                     from delta{plain_where} group by {keys})"
         )
     };
     let d2 = if keyed {
@@ -4999,12 +5049,13 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             view.value_column.as_deref(),
             change_column(&view.source),
         );
+        let plain_where = filter_where(view.filter.as_deref());
         return format!(
             "select {keys}, case when nonnull > 0 then dsum else null end as {}, \
                     dcount as {}, nonnull as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
              from (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
                           {signed_nonnull} as nonnull \
-                   from src group by {keys}) \
+                   from src{plain_where} group by {keys}) \
              where dcount > 0",
             quote_ident(IVM_SUM_COLUMN),
             quote_ident(IVM_COUNT_COLUMN),
@@ -5019,13 +5070,17 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         Some(column) => format!("count({})", quote_ident(column)),
         None => "count(1)".to_string(),
     };
+    let src_where = format!(
+        "{}{}",
+        source_delete_filter("src", change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
     format!(
         "select {keys}, {sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-         from src where {} group by {keys}",
+         from src where {src_where} group by {keys}",
         quote_ident(IVM_SUM_COLUMN),
         quote_ident(IVM_COUNT_COLUMN),
         quote_ident(IVM_NONNULL_COUNT_COLUMN),
-        source_delete_filter("src", change_column(&view.source)),
     )
 }
 
@@ -5036,8 +5091,17 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
     let keys = quoted_list(view.group_keys);
     let source_value = quote_ident(view.value_column);
     let state_value = quote_ident(IVM_VALUE_COLUMN);
-    let delta_filter = source_delete_filter("delta", change_column(view.source));
-    let old_filter = source_delete_filter("o", change_column(view.source));
+    let delta_filter = format!(
+        "{}{}",
+        source_delete_filter("delta", change_column(view.source)),
+        filter_clause(view.filter),
+    );
+    let old_filter = format!(
+        "{}{}",
+        source_delete_filter("o", change_column(view.source)),
+        filter_clause(view.filter),
+    );
+    let plain_where = filter_where(view.filter);
     let pk_match = key_join_condition("o", "p", &view.source.primary_keys);
     let new_select = format!("{keys}, {source_value} as {state_value}");
     let new_group = format!("{keys}, {source_value}");
@@ -5084,7 +5148,7 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
         format!(
             "new_agg as (select {new_select}, \
                                 sum(case when {retract} then -1 else 1 end) as dcount \
-                         from delta group by {new_group})"
+                         from delta{plain_where} group by {new_group})"
         )
     };
     let merged_match = key_join_condition_null_safe("s", "c", &state_value_keys);
@@ -5314,16 +5378,26 @@ fn window_affected_sql(view: &WindowView) -> String {
 
 /// The groups a refresh window can touch: the groups in the delta plus, for a
 /// keyed source, the previous groups of the rows that changed.
-fn affected_groups_sql(source: &IvmTable, group_keys: &[String], keyed: bool) -> String {
+fn affected_groups_sql(
+    source: &IvmTable,
+    group_keys: &[String],
+    keyed: bool,
+    filter: Option<&str>,
+) -> String {
     let keys = quoted_list(group_keys);
+    let plain_where = filter_where(filter);
     if !keyed {
-        return format!("select distinct {keys} from delta");
+        return format!("select distinct {keys} from delta{plain_where}");
     }
     let pks = quoted_list(&source.primary_keys);
-    let old_filter = source_delete_filter("o", change_column(source));
+    let old_filter = format!(
+        "{}{}",
+        source_delete_filter("o", change_column(source)),
+        filter_clause(filter),
+    );
     let pk_match = key_join_condition("o", "p", &source.primary_keys);
     format!(
-        "with delta_groups as (select distinct {keys} from delta), \
+        "with delta_groups as (select distinct {keys} from delta{plain_where}), \
          delta_pks as (select distinct {pks} from delta), \
          old_groups as (select distinct {keys} from old o \
                         where {old_filter} \
@@ -5759,29 +5833,43 @@ fn semi_anti_join(
     Ok(left.join(right, join_type, &left_on, &right_on, filter)?)
 }
 
-/// The expression of one filter condition.
-fn filter_expr(condition: &FilterCondition) -> Expr {
-    let column = col(condition.column.as_str());
-    match (&condition.value, condition.op) {
-        (LiteralValue::Null, CompareOp::Eq) => column.is_null(),
-        (LiteralValue::Null, CompareOp::Ne) => column.is_not_null(),
-        (LiteralValue::Bool(value), op) => semi_anti_compare(column, lit(*value), op),
-        (LiteralValue::Int(value), op) => semi_anti_compare(column, lit(*value), op),
-        (LiteralValue::Float(value), op) => semi_anti_compare(column, lit(*value), op),
-        (LiteralValue::String(value), op) => {
-            semi_anti_compare(column, lit(value.as_str()), op)
-        }
-        // A comparison with NULL is unknown; such a filter matches nothing.
-        _ => lit(false),
-    }
+/// Parse a persisted filter predicate into a logical expression.
+fn parse_filter(
+    context: &SessionContext,
+    schema: &SchemaRef,
+    filter: &str,
+) -> Result<Expr> {
+    let df_schema = DFSchema::try_from(schema.as_ref().clone())
+        .map_err(|error| report!("invalid filter schema: {error}"))?;
+    context
+        .state()
+        .create_logical_expr(filter, &df_schema)
+        .map_err(|error| report!("invalid filter {filter:?}: {error}"))
 }
 
-/// The conjunction of a row view's filter conditions.
-fn row_filter_predicate(view: &RowView) -> Option<Expr> {
-    view.filters
-        .iter()
-        .map(filter_expr)
-        .reduce(|left, right| left.and(right))
+/// The conjunction of a row view's filter, when it has one.
+fn row_filter_predicate(
+    context: &SessionContext,
+    view: &RowView,
+) -> Result<Option<Expr>> {
+    view.filter
+        .as_deref()
+        .map(|filter| parse_filter(context, &view.source.schema, filter))
+        .transpose()
+}
+
+/// ` and (<filter>)`, to append to an existing WHERE clause.
+fn filter_clause(filter: Option<&str>) -> String {
+    filter
+        .map(|filter| format!(" and ({filter})"))
+        .unwrap_or_default()
+}
+
+/// ` where (<filter>)`, for a query that has no other predicate.
+fn filter_where(filter: Option<&str>) -> String {
+    filter
+        .map(|filter| format!(" where ({filter})"))
+        .unwrap_or_default()
 }
 
 /// The source columns a [`RowView`] materializes.
@@ -5823,25 +5911,10 @@ fn validate_row_view(view: &RowView) -> Result<()> {
             }
         }
     }
-    for condition in &view.filters {
-        view.source
-            .schema
-            .field_with_name(&condition.column)
-            .map_err(|_| {
-                report!(
-                    "row view {}: filter column {} is not in the source",
-                    view.view_id,
-                    condition.column
-                )
-            })?;
-        if condition.value == LiteralValue::Null
-            && !matches!(condition.op, CompareOp::Eq | CompareOp::Ne)
-        {
-            return Err(report!(
-                "row view {}: NULL can only be compared with = or <>",
-                view.view_id
-            ));
-        }
+    if let Some(filter) = &view.filter {
+        // The parser resolves every referenced column against the source schema.
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
     }
     Ok(())
 }
