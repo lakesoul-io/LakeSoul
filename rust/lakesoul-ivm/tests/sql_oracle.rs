@@ -348,6 +348,30 @@ async fn oracle_top_k_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_ntile_matches_full_recompute() {
+    // The runtime appends the primary keys to the ordering, so the reference
+    // uses the same refined ordering.
+    run_oracle(
+        "ntile",
+        1,
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &["k".to_string()],
+            WindowFunction::Ntile,
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT g, k, NTILE(3) OVER (PARTITION BY g ORDER BY v, k) AS ntile \
+         FROM __SRC__ WHERE v > 30",
+        "SELECT g, k, NTILE(3) OVER (PARTITION BY g ORDER BY v, k) AS ntile \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 30",
+        "SELECT g, k, ntile FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_first_value_matches_full_recompute() {
     // A whole-partition frame; the ordering includes the source key, so the
     // first value is deterministic.

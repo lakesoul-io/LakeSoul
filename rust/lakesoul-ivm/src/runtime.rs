@@ -51,6 +51,12 @@ pub const IVM_VALUE_COLUMN: &str = "value";
 pub const IVM_VALUE_COUNT_COLUMN: &str = "value_count";
 /// The row-number column of a `ROW_NUMBER()` [`WindowView`] materialized view.
 pub const IVM_ROW_NUMBER_COLUMN: &str = "row_number";
+/// The bucket column of an `NTILE()` [`WindowView`] materialized view.
+pub const IVM_NTILE_COLUMN: &str = "ntile";
+/// The column of a `PERCENT_RANK()` [`WindowView`] materialized view.
+pub const IVM_PERCENT_RANK_COLUMN: &str = "percent_rank";
+/// The column of a `CUME_DIST()` [`WindowView`] materialized view.
+pub const IVM_CUME_DIST_COLUMN: &str = "cume_dist";
 /// The source index column of a [`UnionAllView`] materialized view.
 pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
 /// The internal rank column of a [`TopKView`] computation (not materialized).
@@ -126,6 +132,13 @@ pub enum WindowFunction {
     /// `NTH_VALUE(value_column, n) OVER (PARTITION BY ... ORDER BY ... [frame])`.
     /// The n-th value of the frame; nullable.
     NthValue,
+    /// `NTILE(n) OVER (PARTITION BY ... ORDER BY ...)`. The bucket number of
+    /// the row; never NULL.
+    Ntile,
+    /// `PERCENT_RANK() OVER (PARTITION BY ... ORDER BY ...)`. Never NULL.
+    PercentRank,
+    /// `CUME_DIST() OVER (PARTITION BY ... ORDER BY ...)`. Never NULL.
+    CumeDist,
 }
 
 impl WindowFunction {
@@ -142,6 +155,9 @@ impl WindowFunction {
             WindowFunction::FirstValue => "first_value",
             WindowFunction::LastValue => "last_value",
             WindowFunction::NthValue => "nth_value",
+            WindowFunction::Ntile => "ntile",
+            WindowFunction::PercentRank => "percent_rank",
+            WindowFunction::CumeDist => "cume_dist",
         }
     }
 
@@ -158,6 +174,9 @@ impl WindowFunction {
             WindowFunction::FirstValue => IVM_FIRST_VALUE_COLUMN,
             WindowFunction::LastValue => IVM_LAST_VALUE_COLUMN,
             WindowFunction::NthValue => IVM_NTH_VALUE_COLUMN,
+            WindowFunction::Ntile => IVM_NTILE_COLUMN,
+            WindowFunction::PercentRank => IVM_PERCENT_RANK_COLUMN,
+            WindowFunction::CumeDist => IVM_CUME_DIST_COLUMN,
         }
     }
 
@@ -186,6 +205,9 @@ impl WindowFunction {
             WindowFunction::RowNumber
                 | WindowFunction::Rank
                 | WindowFunction::DenseRank
+                | WindowFunction::Ntile
+                | WindowFunction::PercentRank
+                | WindowFunction::CumeDist
                 | WindowFunction::Lag
                 | WindowFunction::Lead
         )
@@ -198,7 +220,10 @@ impl WindowFunction {
     fn breaks_ties_with_primary_keys(self) -> bool {
         matches!(
             self,
-            WindowFunction::RowNumber | WindowFunction::Lag | WindowFunction::Lead
+            WindowFunction::RowNumber
+                | WindowFunction::Lag
+                | WindowFunction::Lead
+                | WindowFunction::Ntile
         )
     }
 }
@@ -1616,7 +1641,7 @@ pub fn window_ranking_mv_schema_for(
     let mut fields = key_fields(source_schema, &keys)?;
     fields.push(Arc::new(Field::new(
         function.column_name(),
-        DataType::Int64,
+        rank_result_type(function),
         false,
     )));
     fields.push(Arc::new(Field::new(
@@ -1630,6 +1655,14 @@ pub fn window_ranking_mv_schema_for(
         false,
     )));
     Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The result type of a ranking window function.
+fn rank_result_type(function: WindowFunction) -> DataType {
+    match function {
+        WindowFunction::PercentRank | WindowFunction::CumeDist => DataType::Float64,
+        _ => DataType::Int64,
+    }
 }
 
 /// The schema of a value [`WindowView`] (`LAG`/`LEAD`): the partition keys,
@@ -5905,6 +5938,14 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
                 .map(|args| format!(", {args}"))
                 .unwrap_or_default();
             format!("{}({column}{args}) over ({over})", function.sql_name())
+        }
+        WindowFunction::Ntile => {
+            let buckets = view.window_args.as_deref().unwrap_or_default();
+            // `ntile` returns UInt64 in DataFusion; the MV stores bigint.
+            format!("cast(ntile({buckets}) over ({over}) as bigint)")
+        }
+        WindowFunction::PercentRank | WindowFunction::CumeDist => {
+            format!("{}() over ({over})", view.function.sql_name())
         }
         function => format!("cast({}() over ({over}) as bigint)", function.sql_name()),
     };

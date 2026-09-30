@@ -1102,6 +1102,16 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
                 let (value, args) = window_nth_value_args(&params.args)?;
                 (WindowFunction::NthValue, Some(value), args)
             }
+            "ntile" => (
+                WindowFunction::Ntile,
+                None,
+                Some(positive_integer_arg(
+                    &params.args,
+                    "the NTILE bucket count",
+                )?),
+            ),
+            "percent_rank" => (WindowFunction::PercentRank, None, None),
+            "cume_dist" => (WindowFunction::CumeDist, None, None),
             other => {
                 return Err(unsupported(format!("window function {other}")));
             }
@@ -1174,6 +1184,19 @@ fn window_nth_value_args(args: &[Expr]) -> Result<(String, Option<String>)> {
         return Err(unsupported("the NTH_VALUE row number must be positive"));
     }
     Ok((value, Some(n.to_string())))
+}
+
+/// A single positive integer literal argument, rendered to SQL text.
+fn positive_integer_arg(args: &[Expr], what: &str) -> Result<String> {
+    let [arg] = args else {
+        return Err(unsupported(format!("{what} must be a single literal")));
+    };
+    let value = integer_literal(arg)
+        .ok_or_else(|| unsupported(format!("{what} must be an integer literal")))?;
+    if value < 1 {
+        return Err(unsupported(format!("{what} must be positive")));
+    }
+    Ok(value.to_string())
 }
 
 /// An integer literal of any width.
@@ -2630,6 +2653,57 @@ mod tests {
             )
             .await
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_distribution_windows() {
+        let analyzed =
+            analyze("select k, ntile(4) over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window {
+            function,
+            value_column,
+            window_args,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Ntile);
+        assert_eq!(value_column, None);
+        assert_eq!(window_args.as_deref(), Some("4"));
+
+        let analyzed =
+            analyze("select k, percent_rank() over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window { function, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::PercentRank);
+
+        let analyzed =
+            analyze("select k, cume_dist() over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window { function, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::CumeDist);
+
+        // NTILE needs a positive integer literal bucket count.
+        assert!(
+            analyze("select k, ntile(v) over (partition by g order by v) from src")
+                .await
+                .is_err()
+        );
+        // Ranking functions need an ordering.
+        assert!(
+            analyze("select k, ntile(4) over (partition by g) from src")
+                .await
+                .is_err()
         );
     }
 
