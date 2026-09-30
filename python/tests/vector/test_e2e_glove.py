@@ -133,7 +133,7 @@ def test_e2e_glove_local_writer():
         r = build_shard_vector_index(
             store_config={"type": "local"},
             file_paths=bfiles,
-            pk_column="id",
+            pk_columns=["id"],
             vector_column="vec",
             dim=dim,
             nlist=16,
