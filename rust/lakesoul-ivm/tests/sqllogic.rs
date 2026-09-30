@@ -34,7 +34,7 @@ use lakesoul_ivm::{
     avg_mv_schema_for, distinct_agg_mv_schema_for, min_max_mv_schema_for,
     row_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
     union_all_mv_schema_for, window_aggregate_mv_schema_for,
-    window_ranking_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -869,6 +869,40 @@ fn sqllogic_min_max_having() {
         )
         .unwrap(),
         group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_lag() {
+    run_script_for_mv(
+        "windowlag",
+        include_str!("slt/window_lag.slt"),
+        window_value_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Lag,
+            "v",
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_lead() {
+    run_script_for_mv(
+        "windowlead",
+        include_str!("slt/window_lead.slt"),
+        window_value_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Lead,
+            "v",
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
     );
 }
 

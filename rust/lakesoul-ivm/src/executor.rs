@@ -38,7 +38,7 @@ use crate::runtime::{
     min_max_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
     sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     value_count_state_schema_for, window_aggregate_mv_schema_for,
-    window_ranking_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
@@ -497,6 +497,16 @@ fn expected_mv_schema(
                     &source.primary_keys,
                     *function,
                     value_column.as_deref(),
+                )?
+            } else if function.is_value() {
+                window_value_mv_schema_for(
+                    &source.schema,
+                    partition_keys,
+                    &source.primary_keys,
+                    *function,
+                    value_column.as_deref().ok_or_else(|| {
+                        rootcause::report!("window value function without a value column")
+                    })?,
                 )?
             } else {
                 window_ranking_mv_schema_for(

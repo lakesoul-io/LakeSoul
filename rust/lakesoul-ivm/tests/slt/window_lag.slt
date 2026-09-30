@@ -1,0 +1,61 @@
+# LAG over a filtered source, including offset and default arguments.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert; k=4,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, LAG(v) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, lag_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 7
+a 3 NULL
+
+# An update renumbers the window.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, LAG(v) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, lag_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 NULL
+a 3 10
+
+# An explicit offset and default (same value column, so the view is rebuilt
+# in place).
+statement ok
+INSERT INTO __MV__ SELECT k, g, LAG(v, 1, 0) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT g, k, lag_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 0
+a 3 10
+
+# A delete shortens the window.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, LAG(v, 1, 0) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, lag_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3 0
