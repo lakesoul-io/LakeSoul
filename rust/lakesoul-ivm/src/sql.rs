@@ -913,7 +913,7 @@ fn analyze_window(
             ));
         }
     }
-    let (function, partition_keys, order_keys, value_column) =
+    let (function, partition_keys, order_keys, value_column, window_args) =
         window_function_spec(window)?;
     Ok(ViewSpec::Window {
         view_id: request.view_id.clone(),
@@ -924,6 +924,7 @@ fn analyze_window(
         function,
         value_column,
         filter,
+        window_args,
     })
 }
 
@@ -946,7 +947,7 @@ fn try_analyze_top_k(
     let LogicalPlan::Window(window) = peel(node) else {
         return Ok(None);
     };
-    let (function, partition_keys, order_keys, value_column) =
+    let (function, partition_keys, order_keys, value_column, _window_args) =
         window_function_spec(window)?;
     if function != WindowFunction::RowNumber || value_column.is_some() {
         return Ok(None);
@@ -1029,8 +1030,14 @@ fn try_analyze_top_k(
     }))
 }
 
-/// `(function, partition keys, order keys, aggregate column)`.
-type WindowParts = (WindowFunction, Vec<String>, Vec<String>, Option<String>);
+/// `(function, partition keys, order keys, value column, extra SQL args)`.
+type WindowParts = (
+    WindowFunction,
+    Vec<String>,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// The single window function of a window node.
 fn window_function_spec(window: &Window) -> Result<WindowParts> {
@@ -1056,17 +1063,30 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
         .map(|sort| column_name(&sort.expr))
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
-    let (function, value_column) = match &function.fun {
+    let (function, value_column, window_args) = match &function.fun {
         WindowFunctionDefinition::WindowUDF(udf) => match udf.name() {
-            "row_number" => (WindowFunction::RowNumber, None),
-            "rank" => (WindowFunction::Rank, None),
-            "dense_rank" => (WindowFunction::DenseRank, None),
+            "row_number" => (WindowFunction::RowNumber, None, None),
+            "rank" => (WindowFunction::Rank, None, None),
+            "dense_rank" => (WindowFunction::DenseRank, None, None),
+            "lag" | "lead" => {
+                let function = if udf.name() == "lag" {
+                    WindowFunction::Lag
+                } else {
+                    WindowFunction::Lead
+                };
+                let (value, args) = window_shift_args(&params.args)?;
+                (function, Some(value), args)
+            }
             other => {
                 return Err(unsupported(format!("window function {other}")));
             }
         },
         WindowFunctionDefinition::AggregateUDF(udf) => match udf.name() {
-            "sum" => (WindowFunction::Sum, Some(single_column_arg(&params.args)?)),
+            "sum" => (
+                WindowFunction::Sum,
+                Some(single_column_arg(&params.args)?),
+                None,
+            ),
             "count" => {
                 let counts_all = params.args.is_empty()
                     || matches!(params.args.as_slice(), [Expr::Literal(..)]);
@@ -1077,6 +1097,7 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
                     } else {
                         Some(single_column_arg(&params.args)?)
                     },
+                    None,
                 )
             }
             other => {
@@ -1096,7 +1117,59 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
     } else if order_keys.is_empty() {
         return Err(unsupported("ranking window functions need ORDER BY"));
     }
-    Ok((function, partition_keys, order_keys, value_column))
+    Ok((
+        function,
+        partition_keys,
+        order_keys,
+        value_column,
+        window_args,
+    ))
+}
+
+/// The value column and the optional extra arguments (`offset`, `default`)
+/// of a `LAG`/`LEAD` call; the extra arguments are rendered to SQL text.
+fn window_shift_args(args: &[Expr]) -> Result<(String, Option<String>)> {
+    let Some((value, extras)) = args.split_first() else {
+        return Err(unsupported("LAG/LEAD need a value column"));
+    };
+    let value = column_name(value)
+        .ok_or_else(|| unsupported("the LAG/LEAD value must be a plain column"))?;
+    if extras.is_empty() {
+        return Ok((value, None));
+    }
+    if extras.len() > 2 {
+        return Err(unsupported("LAG/LEAD take at most an offset and a default"));
+    }
+    let offset = match &extras[0] {
+        Expr::Literal(ScalarValue::Int8(Some(value)), _) => i64::from(*value),
+        Expr::Literal(ScalarValue::Int16(Some(value)), _) => i64::from(*value),
+        Expr::Literal(ScalarValue::Int32(Some(value)), _) => i64::from(*value),
+        Expr::Literal(ScalarValue::Int64(Some(value)), _) => *value,
+        Expr::Literal(ScalarValue::UInt8(Some(value)), _) => i64::from(*value),
+        Expr::Literal(ScalarValue::UInt16(Some(value)), _) => i64::from(*value),
+        Expr::Literal(ScalarValue::UInt32(Some(value)), _) => i64::from(*value),
+        Expr::Literal(ScalarValue::UInt64(Some(value)), _) => i64::try_from(*value)
+            .map_err(|_| unsupported("the LAG/LEAD offset is out of range"))?,
+        _ => {
+            return Err(unsupported(
+                "the LAG/LEAD offset must be an integer literal",
+            ));
+        }
+    };
+    if offset < 0 {
+        return Err(unsupported("the LAG/LEAD offset must not be negative"));
+    }
+    if extras.iter().any(|arg| !matches!(arg, Expr::Literal(..))) {
+        return Err(unsupported("the LAG/LEAD default must be a literal"));
+    }
+    let mut rendered = Vec::with_capacity(extras.len());
+    for arg in extras {
+        let ast = Unparser::default()
+            .expr_to_sql(arg)
+            .map_err(|error| unsupported(format!("window argument {error}")))?;
+        rendered.push(ast.to_string());
+    }
+    Ok((value, Some(rendered.join(", "))))
 }
 
 /// The frames the runtime maintains: the whole partition (no ORDER BY) or the
@@ -2321,9 +2394,70 @@ mod tests {
                     function,
                     value_column: None,
                     filter: None,
+                    window_args: None,
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn analyzes_lag_lead_windows() {
+        let analyzed =
+            analyze("select k, lag(v) over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window {
+            function,
+            value_column,
+            window_args,
+            order_keys,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Lag);
+        assert_eq!(value_column, Some("v".to_string()));
+        assert_eq!(window_args, None);
+        assert_eq!(order_keys, vec!["v".to_string()]);
+
+        // Offset and default render to SQL text; the optimized plan keeps the
+        // same spec.
+        let analyzed = analyze_optimized(
+            "select k, lead(v, 2, 0) over (partition by g order by v) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            function,
+            value_column,
+            window_args,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Lead);
+        assert_eq!(value_column, Some("v".to_string()));
+        assert_eq!(window_args.as_deref(), Some("2, 0"));
+
+        // LAG/LEAD need an ordering.
+        assert!(
+            analyze("select k, lag(v) over (partition by g) from src")
+                .await
+                .is_err()
+        );
+        // The offset must be an integer literal, the value a plain column.
+        assert!(
+            analyze("select k, lag(v, k) over (partition by g order by v) from src")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze("select k, lag(v + 1) over (partition by g order by v) from src")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

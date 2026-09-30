@@ -59,6 +59,10 @@ const IVM_TOP_K_RANK_COLUMN: &str = "__ivm_rank";
 pub const IVM_RANK_COLUMN: &str = "rank";
 /// The rank column of a `DENSE_RANK()` [`WindowView`] materialized view.
 pub const IVM_DENSE_RANK_COLUMN: &str = "dense_rank";
+/// The value column of a `LAG()` [`WindowView`] materialized view.
+pub const IVM_LAG_COLUMN: &str = "lag_v";
+/// The value column of a `LEAD()` [`WindowView`] materialized view.
+pub const IVM_LEAD_COLUMN: &str = "lead_v";
 
 /// Whether a [`MinMaxView`] maintains the minimum or the maximum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +105,12 @@ pub enum WindowFunction {
     /// `COUNT(*)` or `COUNT(value_column) OVER (PARTITION BY ... [ORDER BY
     /// ...])`. Never NULL.
     Count,
+    /// `LAG(value_column [, offset [, default]]) OVER (PARTITION BY ... ORDER
+    /// BY ...)`. The previous row's value; nullable.
+    Lag,
+    /// `LEAD(value_column [, offset [, default]]) OVER (PARTITION BY ... ORDER
+    /// BY ...)`. The next row's value; nullable.
+    Lead,
 }
 
 impl WindowFunction {
@@ -112,6 +122,8 @@ impl WindowFunction {
             WindowFunction::DenseRank => "dense_rank",
             WindowFunction::Sum => "sum",
             WindowFunction::Count => "count",
+            WindowFunction::Lag => "lag",
+            WindowFunction::Lead => "lead",
         }
     }
 
@@ -123,6 +135,8 @@ impl WindowFunction {
             WindowFunction::DenseRank => IVM_DENSE_RANK_COLUMN,
             WindowFunction::Sum => IVM_SUM_COLUMN,
             WindowFunction::Count => IVM_COUNT_COLUMN,
+            WindowFunction::Lag => IVM_LAG_COLUMN,
+            WindowFunction::Lead => IVM_LEAD_COLUMN,
         }
     }
 
@@ -131,12 +145,21 @@ impl WindowFunction {
         matches!(self, WindowFunction::Sum | WindowFunction::Count)
     }
 
-    /// Whether the source primary keys are appended to the ordering. Only
-    /// `ROW_NUMBER` needs it: for `RANK`/`DENSE_RANK` appending them would
-    /// break ties that must share a rank, and aggregate windows ignore the
-    /// ordering of peers.
+    /// Whether the function returns a source value shifted within the
+    /// partition (`LAG`/`LEAD`).
+    pub fn is_value(self) -> bool {
+        matches!(self, WindowFunction::Lag | WindowFunction::Lead)
+    }
+
+    /// Whether the source primary keys are appended to the ordering.
+    /// `ROW_NUMBER`, `LAG` and `LEAD` need it for deterministic ties; for
+    /// `RANK`/`DENSE_RANK` appending them would break ties that must share a
+    /// rank, and aggregate windows ignore the ordering of peers.
     fn breaks_ties_with_primary_keys(self) -> bool {
-        matches!(self, WindowFunction::RowNumber)
+        matches!(
+            self,
+            WindowFunction::RowNumber | WindowFunction::Lag | WindowFunction::Lead
+        )
     }
 }
 
@@ -277,6 +300,10 @@ pub enum ViewSpec {
         /// An optional filter applied before windowing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
+        /// Extra SQL arguments of a `LAG`/`LEAD` function (`2, 0` for
+        /// `lag(v, 2, 0)`), rendered at analysis time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_args: Option<String>,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -1035,6 +1062,9 @@ pub struct WindowView {
     pub value_column: Option<String>,
     /// An optional filter applied before windowing.
     pub filter: Option<String>,
+    /// Extra SQL arguments of a `LAG`/`LEAD` function (`2, 0` for
+    /// `lag(v, 2, 0)`).
+    pub window_args: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1076,6 +1106,7 @@ impl WindowView {
             function,
             value_column: None,
             filter: None,
+            window_args: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1100,6 +1131,7 @@ impl WindowView {
             function,
             value_column,
             filter: None,
+            window_args: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1107,6 +1139,12 @@ impl WindowView {
     /// Only rows matching `filter` are windowed.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
+        self
+    }
+
+    /// Extra `LAG`/`LEAD` arguments, as SQL text.
+    pub fn with_window_args(mut self, args: impl Into<String>) -> Self {
+        self.window_args = Some(args.into());
         self
     }
 
@@ -1120,6 +1158,7 @@ impl WindowView {
             function: self.function,
             value_column: self.value_column.clone(),
             filter: self.filter.clone(),
+            window_args: self.window_args.clone(),
         }
     }
 }
@@ -1523,6 +1562,47 @@ pub fn window_ranking_mv_schema_for(
         function.column_name(),
         DataType::Int64,
         false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a value [`WindowView`] (`LAG`/`LEAD`): the partition keys,
+/// the source primary keys and the shifted value, named after the function
+/// (`lag_v` / `lead_v`). The value is always nullable (the shift can fall
+/// outside the partition).
+pub fn window_value_mv_schema_for(
+    source_schema: &Schema,
+    partition_keys: &[String],
+    row_keys: &[String],
+    function: WindowFunction,
+    value_column: &str,
+) -> Result<SchemaRef> {
+    if !function.is_value() {
+        return Err(rootcause::report!(
+            "{} is not a value window function",
+            function.sql_name()
+        ));
+    }
+    let keys = partition_keys
+        .iter()
+        .chain(row_keys.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut fields = key_fields(source_schema, &keys)?;
+    fields.push(Arc::new(Field::new(
+        function.column_name(),
+        field_type(source_schema, value_column)?,
+        true,
     )));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -2090,6 +2170,7 @@ impl IvmRuntime {
                 function,
                 value_column,
                 filter,
+                window_args,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -2099,6 +2180,7 @@ impl IvmRuntime {
                 function: *function,
                 value_column: value_column.clone(),
                 filter: filter.clone(),
+                window_args: window_args.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
@@ -5684,6 +5766,21 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
                 })?;
             }
         }
+        WindowFunction::Lag | WindowFunction::Lead => {
+            let value = view.value_column.as_deref().ok_or_else(|| {
+                report!(
+                    "window view {}: {} needs a value column",
+                    view.view_id,
+                    view.function.sql_name()
+                )
+            })?;
+            view.source.schema.field_with_name(value).map_err(|_| {
+                report!(
+                    "window view {}: value column {value} is not in the source",
+                    view.view_id
+                )
+            })?;
+        }
         function => {
             if view.value_column.is_some() {
                 return Err(report!(
@@ -5729,6 +5826,15 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
             Some(column) => format!("count({}) over ({over})", quote_ident(column)),
             None => format!("count(1) over ({over})"),
         },
+        WindowFunction::Lag | WindowFunction::Lead => {
+            let column = quote_ident(view.value_column.as_deref().unwrap_or_default());
+            let args = view
+                .window_args
+                .as_deref()
+                .map(|args| format!(", {args}"))
+                .unwrap_or_default();
+            format!("{}({column}{args}) over ({over})", view.function.sql_name())
+        }
         function => format!("cast({}() over ({over}) as bigint)", function.sql_name()),
     };
     format!(

@@ -20,6 +20,7 @@ use lakesoul_ivm::{
     MinMaxKind, PhysicalFormat, WindowFunction, avg_mv_schema_for,
     distinct_agg_mv_schema_for, min_max_mv_schema_for, sum_count_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -342,6 +343,31 @@ async fn oracle_top_k_where_matches_full_recompute() {
              ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn \
              FROM __SRC__ WHERE op <> 'delete' AND v > 30) t WHERE rn <= 2",
         "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_lag_matches_full_recompute() {
+    // The runtime appends the primary keys to the ordering, so the reference
+    // uses the same refined ordering.
+    run_oracle(
+        "lag",
+        1,
+        window_value_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &["k".to_string()],
+            WindowFunction::Lag,
+            "v",
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT g, k, LAG(v, 1, 0) OVER (PARTITION BY g ORDER BY v, k) AS lag_v \
+         FROM __SRC__ WHERE v > 30",
+        "SELECT g, k, LAG(v, 1, 0) OVER (PARTITION BY g ORDER BY v, k) AS lag_v \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 30",
+        "SELECT g, k, lag_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

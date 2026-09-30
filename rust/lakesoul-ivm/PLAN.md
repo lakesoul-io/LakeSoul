@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | `LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
+| 窗口 | `FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现（frame 语义先定） |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
@@ -1252,6 +1252,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   update_after / insert / delete）→ 逻辑读 3 行、raw 5 行；MV 组被删除后逻辑读 1 行、raw 2 行
   （`rowKinds='delete'` 只在 raw 可见）。既有 `provider_hides_cdc_tombstones` 继续覆盖 `delete`。
   全量 IVM 套件 35 个测试二进制 / 149 个测试通过。
+
+### 10.14 LAG/LEAD 实施记录（PR-8）
+
+- **选择**：先做 LAG/LEAD——语义不依赖窗口 frame（ROWS/RANGE、INCLUDE/EXCLUDE 都不影响），
+  边界清晰；`FIRST_VALUE/LAST_VALUE/NTH_VALUE` 与 frame 语义绑定，留到"自定义 frame"批次。
+- **spec**：`ViewSpec::Window` 增加 `window_args: Option<String>`（`lag(v, 2, 0)` → `"2, 0"`，
+  分析期用 Unparser 渲染字面量）；typed `WindowView.window_args` + `with_window_args`。
+- **analyzer**：WindowUDF `lag`/`lead` → `WindowFunction::{Lag,Lead}`；值参数必须是普通列，
+  offset 必须是非负整数字面量，default 必须是字面量；表达式值、列 offset、负 offset、
+  超过两个额外参数都明确报错；非聚合函数要求 ORDER BY（既有规则）。
+- **运行时**：`window_function_cte` 生成
+  `{lag|lead}(value[, args]) over (partition by ... order by ...)`；LAG/LEAD 与 ROW_NUMBER 一样
+  在 ORDER BY 后追加源主键以确定性打破并列；MV 列名 `lag_v`/`lead_v`，类型取源列、可空；
+  新增 `window_value_mv_schema_for`，executor 的 `expected_mv_schema` 变为
+  ranking / aggregate / value 三分支。
+- **测试**：`window_lag.slt`（bootstrap、更新、offset+default 定义变化 rebuild、删除）、
+  `window_lead.slt`（bootstrap、行移动后重算）；oracle 新增 `LAG(v, 1, 0)` 的 10 轮随机场景；
+  analyzer 单测覆盖 raw/优化一致、offset/default 渲染与各类拒绝。
+  全量 IVM 套件 35 个测试二进制 / 153 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

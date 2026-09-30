@@ -1,0 +1,34 @@
+# LEAD resets affected partitions when rows move.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, LEAD(v) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, lead_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 NULL
+a 2 7
+a 3 10
+
+# An update moves the row to the end of the ordering.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, LEAD(v) OVER (PARTITION BY g ORDER BY v, k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, lead_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 12
+a 2 NULL
+a 3 10
