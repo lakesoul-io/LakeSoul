@@ -1028,7 +1028,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
      形态（join 树/条件列表）。
   e. **视图级联**：MV 作为另一个 MV 的源（cascading views）尚未验证；调度器需要保证
      拓扑序刷新。
-- 结论：本计划先补 (a) 并顺手验证 (e)；b–e 作为已知扩展点登记在 §10.4。
+- 结论：本计划先补 (a) 并顺手验证 (e)（已在 §10.19 验证）；b–e 作为已知扩展点登记在 §10.4。
 
 ### 10.2 W0：过滤谓词表示（与 W1 同一个 PR）
 
@@ -1086,7 +1086,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 窗口 | 单视图多窗口 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
-| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
+| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
 
 ### 10.6 本轮 PR 拆分
@@ -1331,6 +1331,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （全局 running ROWS frame）；oracle 新增全局 ROW_NUMBER 的 10 轮随机场景；analyzer 单测覆盖
   `over ()` 与 `over (order by ...)`；"单视图多窗口"改为新的拒绝断言。
   全量 IVM 套件 35 个测试二进制 / 171 个测试通过。
+
+### 10.19 MV 级联验证（PR-13）
+
+- **结论**：MV 作为下游视图的源表已经可用，**无需运行时改动**：
+  - 下游视图把上游 MV 当作普通 keyed 源；MV 没有显式 CDC 列时 `change_column` 回退到
+    `rowKinds`，上游写下的 `delete` 撤回行会像其它 CDC 标记一样在下游读取时被过滤。
+  - 下游增量刷新的窗口/游标机制对上游 MV 同样生效；上游更新/删除经两层传播。
+  - 重放（无新文件）在上游/下游都是 no-op；SQL 入口同样可用（executor 自动注册上游 MV）。
+- **契约**：调度方（或未来的调度器）必须按拓扑序刷新；本 PR 只验证语义，不引入调度。
+- **测试**：新增 `tests/cascading_views.rs`：
+  1. 运行时两层 SUM/COUNT 链（bootstrap、更新、删除、重放 no-op）；
+  2. SQL executor 路径的两层链；
+  3. 聚合 MV → 全局 ROW_NUMBER 窗口视图（跨算子族的级联）。
+- 全量 IVM 套件 36 个测试二进制 / 174 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
