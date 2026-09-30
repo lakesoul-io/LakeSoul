@@ -945,6 +945,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 单测新增 5 例（内连接、semi/anti、带额外条件的 semi、union all、不支持形状），
   合计 17 例；模块文档注明"计划需先经优化器"。
 
+**SQL 增量执行入口 M3：专用执行器（已完成）**
+
+- 新增 `rust/lakesoul-ivm/src/executor.rs`：`IvmSqlExecutor`（可选 `with_session`）只接受单条
+  `INSERT INTO`/`INSERT OVERWRITE ... SELECT`；流程 = sqlparser 解析 → 收集并打开源表
+  （无 session 时自建 SessionContext 并用 `IvmTableProvider` 注册）→ 逻辑计划 + 优化器 →
+  形状分析 → 目标表 schema/键校验。
+- 视图身份 = 目标表 `table_id`；定义哈希（FNV-1a，已归一化生成的 state 表 id）写入
+  `ivm.views.definition_hash/source_sql`（存原始语句）。
+- 行为：无定义 → `rebuild_spec` 全量建立并记录定义（Bootstrap）；哈希相同 → `refresh_spec`
+  增量（Incremental）；哈希变化 → 先注销并 drop 旧的非 Mv state 表，再 `rebuild_spec`
+  （generation+1、cursor 重置、清空 MV 均由 rebuild 内部完成）并更新定义（Rebuild）；
+  `INSERT OVERWRITE` 同定义 → `rebuild_spec`（Overwrite），定义变化时同 Rebuild。
+- value-count state 表按需创建（schema 匹配则复用、失配则重建），命名/路径由 MV 派生；
+  运行时新增 `rebuild_spec`（与 `refresh_spec` 共用抽出的 `spec_view`）。
+- 测试 `tests/sql_executor.rs` 4 例：bootstrap+增量、MIN→MAX 定义变化（state 表被替换且仅一份）、
+  OVERWRITE 重算并恢复增量（同 key 变更按 upsert 语义验证）、非法语句/列清单/形状/schema
+  不匹配报错；IVM 全量 33 个测试二进制（`--test-threads=1`）全绿。
+
 ## 9. 风险与开放问题
 
 1. bucket 前缀属性为"IVM 内部表"专用，JVM 引擎误读会得到错误结果 → 需要
