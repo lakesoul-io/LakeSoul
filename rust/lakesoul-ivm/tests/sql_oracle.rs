@@ -348,6 +348,30 @@ async fn oracle_top_k_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_global_row_number_matches_full_recompute() {
+    // A global window without PARTITION BY; the runtime appends the primary
+    // keys to the ordering.
+    run_oracle(
+        "globalrownumber",
+        1,
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &[],
+            &["k".to_string()],
+            WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, ROW_NUMBER() OVER (ORDER BY v, k) AS row_number \
+         FROM __SRC__ WHERE v > 30",
+        "SELECT k, ROW_NUMBER() OVER (ORDER BY v, k) AS row_number \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 30",
+        "SELECT k, row_number FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_window_filter_matches_full_recompute() {
     // FILTER membership changes as values move across the threshold.
     run_oracle(

@@ -1140,9 +1140,6 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
             }
         },
     };
-    if partition_keys.is_empty() {
-        return Err(unsupported("window views need PARTITION BY columns"));
-    }
     let window_frame = window_frame_sql(&params.window_frame, !order_keys.is_empty())?;
     if !function.is_aggregate() && order_keys.is_empty() {
         return Err(unsupported("ranking window functions need ORDER BY"));
@@ -2762,6 +2759,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_global_windows() {
+        let analyzed = analyze("select k, row_number() over (order by v, k) from src")
+            .await
+            .unwrap();
+        let ViewSpec::Window {
+            function,
+            partition_keys,
+            order_keys,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::RowNumber);
+        assert!(partition_keys.is_empty());
+        assert_eq!(order_keys, vec!["v".to_string(), "k".to_string()]);
+
+        let analyzed = analyze("select k, sum(v) over () from src").await.unwrap();
+        let ViewSpec::Window {
+            function,
+            partition_keys,
+            order_keys,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(function, WindowFunction::Sum);
+        assert_eq!(value_column, Some("v".to_string()));
+        assert!(partition_keys.is_empty());
+        assert!(order_keys.is_empty());
+    }
+
+    #[tokio::test]
     async fn analyzes_aggregate_windows() {
         let analyzed = analyze("select k, sum(v) over (partition by g) from src")
             .await
@@ -2905,11 +2937,13 @@ mod tests {
                 .await
                 .is_err()
         );
-        // PARTITION BY is required.
+        // Multiple window functions are not maintained yet.
         assert!(
-            analyze("select k, row_number() over (order by v) from src")
-                .await
-                .is_err()
+            analyze(
+                "select k, row_number() over (partition by g order by v), rank() over (partition by g order by v) from src"
+            )
+            .await
+            .is_err()
         );
         // Computing on top of the window column is not maintained.
         assert!(

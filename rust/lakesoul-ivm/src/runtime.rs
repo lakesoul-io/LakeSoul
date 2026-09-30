@@ -5818,9 +5818,6 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             view.view_id
         ));
     }
-    if view.partition_keys.is_empty() {
-        return Err(report!("window view {} needs partition keys", view.view_id));
-    }
     // Ranking functions need an ordering; aggregates may span the whole
     // partition (empty order keys).
     if !view.function.is_aggregate() && view.order_keys.is_empty() {
@@ -5919,6 +5916,11 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
 /// order keys, running with them).
 fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     let parts = quoted_list(&view.partition_keys);
+    let keys_select = if view.partition_keys.is_empty() {
+        String::new()
+    } else {
+        format!("{parts}, ")
+    };
     let pks = quoted_list(&view.source.primary_keys);
     let mut order = view.order_keys.clone();
     if view.function.breaks_ties_with_primary_keys() {
@@ -5934,13 +5936,22 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     }
     .map(|frame| format!(" {frame}"))
     .unwrap_or_default();
-    let over = if order.is_empty() {
-        format!("partition by {parts}{frame}")
+    let order_clause = if order.is_empty() {
+        String::new()
     } else {
-        format!(
-            "partition by {parts} order by {}{frame}",
-            quoted_list(&order)
-        )
+        format!("order by {}", quoted_list(&order))
+    };
+    let part_clause = if view.partition_keys.is_empty() {
+        String::new()
+    } else {
+        format!("partition by {parts}")
+    };
+    let over = match (part_clause.is_empty(), order_clause.is_empty()) {
+        // A global window: `over ()`, or `over (order by ...)`.
+        (true, true) => frame.clone(),
+        (true, false) => format!("{order_clause}{frame}"),
+        (false, true) => format!("{part_clause}{frame}"),
+        (false, false) => format!("{part_clause} {order_clause}{frame}"),
     };
     let filter = format!(
         "{}{}",
@@ -5987,7 +5998,7 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         function => format!("cast({}() over ({over}) as bigint)", function.sql_name()),
     };
     format!(
-        "computed as (select {pks}, {parts}, {computed} as {value} \
+        "computed as (select {pks}, {keys_select}{computed} as {value} \
          from {source_alias} where {filter})"
     )
 }
@@ -6036,6 +6047,11 @@ fn window_affected_cte(view: &WindowView) -> String {
 
 /// SQL returning the affected partitions of one window refresh.
 fn window_affected_sql(view: &WindowView) -> String {
+    if view.partition_keys.is_empty() {
+        // A global window recomputes every row; there are no partitions to
+        // enumerate (the caller then reads the whole source anyway).
+        return "select 1 as \"__ivm_all\"".to_string();
+    }
     format!("with {} select * from affected", window_affected_cte(view))
 }
 
@@ -6140,24 +6156,52 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     let pk_match_computed = key_join_condition("c", "a", &view.source.primary_keys);
     let part_match_active =
         key_join_condition_null_safe("active", "a", &view.partition_keys);
+    // A global window has no `affected` CTE: every active row is deleted and
+    // every computed row is inserted.
+    let keyed = !view.partition_keys.is_empty();
+    let affected = if keyed {
+        format!("{}, ", window_affected_cte(view))
+    } else {
+        String::new()
+    };
+    let computed_parts_select = if keyed {
+        format!("{computed_parts}, ")
+    } else {
+        String::new()
+    };
+    let parts_select = if keyed {
+        format!("{parts}, ")
+    } else {
+        String::new()
+    };
+    let computed_where = if keyed {
+        format!(
+            "where exists (select 1 from affected a where {part_match_computed}) and "
+        )
+    } else {
+        "where ".to_string()
+    };
+    let active_where = if keyed {
+        format!("where exists (select 1 from affected a where {part_match_active})")
+    } else {
+        String::new()
+    };
     format!(
-        "with {affected}, {computed}, \
+        "with {affected}{computed}, \
          already as (select distinct {pks} from mv \
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv \
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-         inserts as (select {computed_parts}, {computed_pks}, c.{value}, \
+         inserts as (select {computed_parts_select}{computed_pks}, c.{value}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from computed c \
-                     where exists (select 1 from affected a where {part_match_computed}) \
-                       and not exists (select 1 from already a where {pk_match_computed})), \
-         deletes as (select {parts}, {pks}, {value}, \
+                     {computed_where}not exists (select 1 from already a where {pk_match_computed})), \
+         deletes as (select {parts_select}{pks}, {value}, \
                             'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from active \
-                     where exists (select 1 from affected a where {part_match_active})) \
+                     {active_where}) \
          select * from deletes union all select * from inserts \
          order by {pks}, \"rowKinds\"",
-        affected = window_affected_cte(view),
         computed = window_function_cte(view, "src"),
     )
 }
@@ -6247,11 +6291,16 @@ fn top_k_rebuild_sql(view: &TopKView, epoch: i64) -> String {
 /// SQL for a full `ROW_NUMBER()` rebuild.
 fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
     let parts = quoted_list(&view.partition_keys);
+    let parts_select = if view.partition_keys.is_empty() {
+        String::new()
+    } else {
+        format!("{parts}, ")
+    };
     let pks = quoted_list(&view.source.primary_keys);
     let value = quote_ident(view.function.column_name());
     format!(
         "with {computed} \
-         select {parts}, {pks}, {value}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         select {parts_select}{pks}, {value}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from computed",
         computed = window_function_cte(view, "src"),
     )

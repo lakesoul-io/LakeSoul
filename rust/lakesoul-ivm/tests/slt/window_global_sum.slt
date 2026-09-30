@@ -1,0 +1,36 @@
+# A global running SUM frame.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=a,v=7,op=insert; k=4,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, SUM(v) OVER (ORDER BY v, k ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 21
+2 4
+3 11
+4 1
+
+# An update shifts every following running sum.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=8,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, SUM(v) OVER (ORDER BY v, k ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 28
+2 3
+3 10
+4 18

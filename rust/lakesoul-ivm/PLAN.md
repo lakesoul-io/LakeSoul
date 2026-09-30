@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `STDDEV/VARIANCE/MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | 单视图多窗口；无 `PARTITION BY` | 随需求做 |
+| 窗口 | 单视图多窗口 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
@@ -1317,6 +1317,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`window_filter.slt`（成员进入/移除、NULL 和）、oracle 新增 SUM ... FILTER 的
   10 轮随机场景（阈值随更新变化）；analyzer 单测覆盖 SUM/COUNT FILTER 的渲染。
   全量 IVM 套件 35 个测试二进制 / 167 个测试通过。
+
+### 10.18 无 PARTITION BY 的全局窗口（PR-12）
+
+- **spec**：`partition_keys` 允许为空——窗口作用于整张表；`WindowParts`/analyzer 不再要求
+  PARTITION BY（top-k 仍要求 PARTITION BY + ORDER BY，全局 top-k 未开放）。
+- **SQL 生成**：OVER 子句按需拼装（`over ()` / `over (order by ...)` / 带 frame 的变体）；
+  computed / insert / delete / rebuild 的投影片段在无分区键时省略。
+- **刷新语义**：全局窗口没有"受影响分区"概念：`window_affected_sql` 返回常量查询，刷新时读取
+  全量源、删除全部 active 行并重算插入（每次窗口即全量重算，符合全局语义）；`already`
+  反连接仍保证重放幂等。
+- **测试**：`window_global.slt`（全局 ROW_NUMBER、更新后整体重编号）、`window_global_sum.slt`
+  （全局 running ROWS frame）；oracle 新增全局 ROW_NUMBER 的 10 轮随机场景；analyzer 单测覆盖
+  `over ()` 与 `over (order by ...)`；"单视图多窗口"改为新的拒绝断言。
+  全量 IVM 套件 35 个测试二进制 / 171 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

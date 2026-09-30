@@ -955,6 +955,39 @@ fn sqllogic_window_cume_dist() {
 }
 
 #[test]
+fn sqllogic_window_global() {
+    run_script_for_mv(
+        "windowglobal",
+        include_str!("slt/window_global.slt"),
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &[],
+            &group_keys(&["k"]),
+            WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_global_sum() {
+    run_script_for_mv(
+        "windowglobalsum",
+        include_str!("slt/window_global_sum.slt"),
+        window_aggregate_mv_schema_for(
+            &source_schema(),
+            &[],
+            &group_keys(&["k"]),
+            WindowFunction::Sum,
+            Some("v"),
+        )
+        .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_filter() {
     run_script_for_mv(
         "windowfilter",
