@@ -18,6 +18,7 @@
 pub mod cache;
 pub mod candidate;
 pub mod commit;
+pub mod key;
 pub mod options;
 pub mod prefix;
 pub mod reader;

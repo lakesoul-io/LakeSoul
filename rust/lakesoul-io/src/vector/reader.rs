@@ -5,9 +5,9 @@
 //! 从 Arrow RecordBatch 中提取向量数据的工具函数。
 
 use crate::Result;
+use crate::index::key::KeyCodec;
 use arrow_array::{
-    Array, FixedSizeListArray, Float16Array, Float32Array, Float64Array, Int64Array,
-    RecordBatch, UInt64Array,
+    Array, FixedSizeListArray, Float16Array, Float32Array, Float64Array, RecordBatch,
 };
 use arrow_schema::DataType;
 use lakesoul_vector::IdAndVecBatch;
@@ -32,21 +32,22 @@ fn float32_values(value_array: &dyn Array) -> Result<Vec<f32>> {
     )
 }
 
-/// 从 RecordBatch 中提取 PK 列（u64）和向量列（Float32），构造 `IdAndVecBatch`。
+/// 从 RecordBatch 中提取主键 key 和向量列，构造 `IdAndVecBatch`。
 ///
-/// Float16/Float64 列表/FixedSizeList 中的值会被转换为 Float32 后写入索引。
+/// 主键列由 [`KeyCodec`] 编码成 arrow-Row 字节 key（支持任意类型与复合主键）；
+/// Float16/Float64 向量值会被转换为 Float32 后写入索引。
 ///
 /// # 参数
 /// - `batch`: Arrow RecordBatch，包含 PK 列和向量列
-/// - `pk_column`: PK 列名，类型必须是 `UInt64` 或 `Int64`
+/// - `codec`: 主键列的 key 编解码器，其列必须存在于 `batch` 中且非空
 /// - `vector_column`: 向量列名，类型必须是 `FixedSizeList<Float16/Float32/Float64, dim>` 或等长 `List<Float16/Float32/Float64>`
 /// - `dim`: 向量的维度
 ///
 /// # 返回
-/// `IdAndVecBatch`，其中 `ids` 是 u64 向量，`vectors` 是展平为 `[n * dim]` 的 f32 数组
+/// `IdAndVecBatch`，其中 `ids` 是编码后的主键 key，`vectors` 是展平为 `[n * dim]` 的 f32 数组
 pub fn extract_vector_batch(
     batch: &RecordBatch,
-    pk_column: &str,
+    codec: &KeyCodec,
     vector_column: &str,
     dim: usize,
 ) -> Result<IdAndVecBatch> {
@@ -57,46 +58,8 @@ pub fn extract_vector_batch(
         });
     }
 
-    // 1. 提取 PK 列
-    let pk_array = batch
-        .column_by_name(pk_column)
-        .ok_or_else(|| report!("PK column '{}' not found in batch", pk_column))?;
-
-    let ids: Vec<u64> = match pk_array.data_type() {
-        DataType::UInt64 => {
-            let arr =
-                pk_array
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| {
-                        report!(
-                            "failed to downcast PK column '{}' to UInt64Array",
-                            pk_column
-                        )
-                    })?;
-            arr.values().to_vec()
-        }
-        DataType::Int64 => {
-            let arr =
-                pk_array
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .ok_or_else(|| {
-                        report!(
-                            "failed to downcast PK column '{}' to Int64Array",
-                            pk_column
-                        )
-                    })?;
-            arr.values().iter().map(|&v| v as u64).collect()
-        }
-        other => {
-            bail!(
-                "vector index PK column '{}' must be UInt64 or Int64, got {:?}",
-                pk_column,
-                other
-            );
-        }
-    };
+    // 1. 提取主键 key
+    let ids = codec.encode_batch(batch)?;
 
     let n = ids.len();
 
@@ -206,7 +169,28 @@ pub fn extract_vector_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::key::KeyLayout;
+    use arrow_array::{Int64Array, UInt64Array};
+    use lakesoul_vector::IndexKey;
     use std::sync::Arc;
+
+    /// Codec over the single `id UInt64` key column the helpers build.
+    fn u64_codec() -> KeyCodec {
+        KeyCodec::new(KeyLayout::new(
+            vec!["id".to_string()],
+            vec![DataType::UInt64],
+        ))
+        .unwrap()
+    }
+
+    fn decode_u64(codec: &KeyCodec, ids: &[IndexKey]) -> Vec<u64> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let arrays = codec.decode(ids).unwrap();
+        let values = arrays[0].as_any().downcast_ref::<UInt64Array>().unwrap();
+        (0..values.len()).map(|i| values.value(i)).collect()
+    }
 
     fn make_fixed_size_list_batch(
         ids: Vec<u64>,
@@ -239,15 +223,16 @@ mod tests {
             vec![vec![0.1, 0.2], vec![0.3, 0.4], vec![0.5, 0.6]],
             2,
         );
-        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
-        assert_eq!(result.ids, vec![1, 2, 3]);
+        let codec = u64_codec();
+        let result = extract_vector_batch(&batch, &codec, "vec", 2).unwrap();
+        assert_eq!(decode_u64(&codec, &result.ids), vec![1, 2, 3]);
         assert_eq!(result.vectors, vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
     }
 
     #[test]
     fn test_extract_empty_batch() {
         let batch = make_fixed_size_list_batch(vec![], vec![], 2);
-        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
+        let result = extract_vector_batch(&batch, &u64_codec(), "vec", 2).unwrap();
         assert!(result.ids.is_empty());
         assert!(result.vectors.is_empty());
     }
@@ -256,15 +241,62 @@ mod tests {
     fn test_dimension_mismatch() {
         let batch = make_fixed_size_list_batch(vec![1], vec![vec![0.1, 0.2]], 2);
         // Pass wrong dim
-        let result = extract_vector_batch(&batch, "id", "vec", 3);
+        let result = extract_vector_batch(&batch, &u64_codec(), "vec", 3);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_missing_column() {
         let batch = make_fixed_size_list_batch(vec![1], vec![vec![0.1]], 1);
-        let result = extract_vector_batch(&batch, "nonexistent", "vec", 1);
+        let codec = KeyCodec::new(KeyLayout::new(
+            vec!["nonexistent".to_string()],
+            vec![DataType::UInt64],
+        ))
+        .unwrap();
+        let result = extract_vector_batch(&batch, &codec, "vec", 1);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_composite_pk() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int64Array::from(vec![1i64, 2])) as arrow_array::ArrayRef,
+            ),
+            (
+                "tenant",
+                Arc::new(arrow_array::StringArray::from(vec!["a", "b"]))
+                    as arrow_array::ArrayRef,
+            ),
+            (
+                "vec",
+                Arc::new(FixedSizeListArray::new(
+                    Arc::new(arrow_schema::Field::new("item", DataType::Float32, true)),
+                    2,
+                    Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+                    None,
+                )) as arrow_array::ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let codec = KeyCodec::new(KeyLayout::new(
+            vec!["id".to_string(), "tenant".to_string()],
+            vec![DataType::Int64, DataType::Utf8],
+        ))
+        .unwrap();
+        let result = extract_vector_batch(&batch, &codec, "vec", 2).unwrap();
+        assert_eq!(result.ids.len(), 2);
+        assert_ne!(result.ids[0], result.ids[1]);
+        let arrays = codec.decode(&result.ids).unwrap();
+        let ids = arrays[0].as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(ids.values(), &[1, 2]);
+        let tenants = arrays[1]
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .unwrap();
+        assert_eq!(tenants.value(0), "a");
+        assert_eq!(tenants.value(1), "b");
     }
 
     fn make_fixed_size_list_f64_batch(
@@ -319,16 +351,18 @@ mod tests {
             vec![vec![0.1, 0.2], vec![0.3, 0.4]],
             2,
         );
-        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
-        assert_eq!(result.ids, vec![1, 2]);
+        let codec = u64_codec();
+        let result = extract_vector_batch(&batch, &codec, "vec", 2).unwrap();
+        assert_eq!(decode_u64(&codec, &result.ids), vec![1, 2]);
         assert_eq!(result.vectors, vec![0.1f32, 0.2, 0.3, 0.4]);
     }
 
     #[test]
     fn test_extract_f64_var_size_list_converts_to_f32() {
         let batch = make_list_f64_batch(vec![7], vec![vec![1.5, -2.5]]);
-        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
-        assert_eq!(result.ids, vec![7]);
+        let codec = u64_codec();
+        let result = extract_vector_batch(&batch, &codec, "vec", 2).unwrap();
+        assert_eq!(decode_u64(&codec, &result.ids), vec![7]);
         assert_eq!(result.vectors, vec![1.5f32, -2.5]);
     }
 
@@ -363,8 +397,9 @@ mod tests {
             ],
             2,
         );
-        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
-        assert_eq!(result.ids, vec![1, 2]);
+        let codec = u64_codec();
+        let result = extract_vector_batch(&batch, &codec, "vec", 2).unwrap();
+        assert_eq!(decode_u64(&codec, &result.ids), vec![1, 2]);
         // 1.5 / -2.5 / 0.25 / 2.0 are exactly representable in f16.
         assert_eq!(result.vectors, vec![1.5f32, -2.5, 0.25, 2.0]);
     }
@@ -389,8 +424,9 @@ mod tests {
             ("vec", Arc::new(list_array) as arrow_array::ArrayRef),
         ])
         .unwrap();
-        let result = extract_vector_batch(&batch, "id", "vec", 2).unwrap();
-        assert_eq!(result.ids, vec![7]);
+        let codec = u64_codec();
+        let result = extract_vector_batch(&batch, &codec, "vec", 2).unwrap();
+        assert_eq!(decode_u64(&codec, &result.ids), vec![7]);
         assert_eq!(result.vectors, vec![1.5f32, -2.5]);
     }
 }

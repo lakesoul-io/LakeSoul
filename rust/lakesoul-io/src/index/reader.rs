@@ -48,14 +48,14 @@ pub fn table_prefix(file_paths: &[String]) -> String {
 /// `fs.s3a.*` keys it recognises.
 pub fn shard_reader_config_builder(
     file_paths: &[String],
-    pk_column: &str,
+    pk_columns: &[String],
     object_store_options: &HashMap<String, String>,
     default_fs: Option<&str>,
 ) -> LakeSoulIOConfigBuilder {
     let mut config_builder = LakeSoulIOConfigBuilder::new()
         .with_files(file_paths.to_vec())
         .with_prefix(table_prefix(file_paths))
-        .with_primary_keys(vec![pk_column.to_string()]);
+        .with_primary_keys(pk_columns.to_vec());
 
     for (key, value) in object_store_options {
         if key != "type" {
@@ -71,15 +71,15 @@ pub fn shard_reader_config_builder(
     config_builder
 }
 
-/// Read `pk_column` plus the projected columns of every row of the shard's
-/// data files.
+/// Read the primary-key columns plus the projected columns of every row of
+/// the shard's data files.
 ///
 /// The schema is inferred through LakeSoul's format registry so Parquet,
 /// Vortex, and remote object stores all use the same schema path as the
 /// actual reader.  Empty row groups are skipped.
 pub async fn read_shard_batches(
     file_paths: &[String],
-    pk_column: &str,
+    pk_columns: &[String],
     projection: &[String],
     object_store_options: &HashMap<String, String>,
     default_fs: Option<&str>,
@@ -93,7 +93,7 @@ pub async fn read_shard_batches(
     // object stores all use the same schema path as the actual reader.
     let inference_config = shard_reader_config_builder(
         file_paths,
-        pk_column,
+        pk_columns,
         object_store_options,
         default_fs,
     )
@@ -108,15 +108,17 @@ pub async fn read_shard_batches(
         .await
         .map_err(|e| rootcause::report!("failed to infer data file schema: {}", e))?;
     let file_schema = inferred_schema.file_schema();
-    let mut fields = Vec::with_capacity(projection.len() + 1);
-    fields.push(
-        file_schema
-            .field_with_name(pk_column)
-            .map_err(|e| {
-                rootcause::report!("PK column '{}' not found: {}", pk_column, e)
-            })?
-            .clone(),
-    );
+    let mut fields = Vec::with_capacity(projection.len() + pk_columns.len());
+    for column in pk_columns {
+        fields.push(
+            file_schema
+                .field_with_name(column)
+                .map_err(|e| {
+                    rootcause::report!("PK column '{}' not found: {}", column, e)
+                })?
+                .clone(),
+        );
+    }
     for column in projection {
         fields.push(
             file_schema
@@ -131,7 +133,7 @@ pub async fn read_shard_batches(
 
     let io_config = shard_reader_config_builder(
         file_paths,
-        pk_column,
+        pk_columns,
         object_store_options,
         default_fs,
     )
