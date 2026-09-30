@@ -1086,7 +1086,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 窗口 | `LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE/NTILE/PERCENT_RANK/CUME_DIST`；自定义 frame；单视图多窗口；窗口 `FILTER`；无 `PARTITION BY` | 每个函数需要 runtime 实现 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
-| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证 | 级联先验证并补测试 |
+| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`）；**MV 级联**未验证；**用户可见/全量批量读取默认过滤 `delete` 标记（逻辑读模式）** | 级联先验证；逻辑读见 §10.10 备注 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
 
 ### 10.6 本轮 PR 拆分
@@ -1175,6 +1175,32 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   update_before/after）；oracle 新增 SUM/COUNT HAVING 与 MIN HAVING 两个 10 轮随机场景；
   analyzer 单测覆盖优化计划、聚合仅出现在 HAVING、未物化聚合拒绝。全量 IVM 套件
   35 个测试二进制 / 131 个测试通过。
+
+### 10.10 AVG 实施记录（PR-4）
+
+- **spec**：`ViewSpec::SumCount` 增加 `average: bool`（`serde(default)`，缺省 false），复用
+  sum/count 状态机；`SumCountView.average` + `with_average()`。Analyzer 识别 `AVG(col)`，
+  允许与 `SUM(col)`/`COUNT(*)` 同列混用（必须同一 value column），与 MIN/MAX/DISTINCT
+  混用明确报错。
+- **schema**：`avg_mv_schema_for` = 分组键 + `sum_v` + `count_v` + `__ivm_nonnull_count` +
+  `avg_v`（Float64）。AVG 仅支持数值类型（Int/UInt/Float）；Decimal、字符串等在创建/刷新
+  校验时明确报错（`avg_result_type`）。
+- **运行时**：增量与重建 SQL 在原有 sum/count 列后追加
+  `case when n_nonnull > 0 then cast(sum as double) / cast(n_nonnull as double) else null end
+  as avg_v`；append-only 源对 signed 聚合做同样处理；HAVING 可引用 `avg_v`（映射
+  `avg(col)` → `avg_v`），未开 average 的视图引用 AVG 仍报"未物化"。
+- **优化器细节**：优化后的计划把 `avg(v)` 规范化为 `avg(CAST(v AS Float64))`，而 HAVING
+  隐藏列名仍是未加 cast 的 `avg(src.v)`；因此聚合参数提取需解开 cast，HAVING 映射同时
+  登记原显示名与去 cast 归一化名。
+- **测试**：`avg.slt`（更新/删除/HAVING 阈值进出）、`avg_null.slt`（NULL 忽略、全 NULL 组
+  为 NULL）、oracle 新增 AVG 的 10 轮随机场景；analyzer 单测覆盖混用拒绝与优化计划形态。
+  全量 IVM 套件 35 个测试二进制 / 136 个测试通过。
+- **备注（用户要求，后续单独实现）**：用户可见/全量批量读取 MV 或普通表时，应**默认过滤**
+  `rowKinds`/`op` 的 `delete`（及 `update_before`）标记，即提供"逻辑读"模式。当前 provider
+  忠实返回 merge-on-read 后的最新物理行（被删 key 的最新行就是 delete 标记），所以显式查询
+  需要 `WHERE "rowKinds" = 'insert'`（或运行时内部的 `filter_deletes`）。实现时要考虑默认
+  开关的位置（provider / reader / table API）、与 AsOf/AtVersions 读的交互，以及运行时内部
+  读是否保持 raw。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

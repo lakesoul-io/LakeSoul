@@ -4,7 +4,7 @@ statement error
 INSERT INTO __MV__ VALUES (1, 2, 3)
 
 statement error
-INSERT INTO __MV__ SELECT g, AVG(v) FROM __SRC__ GROUP BY g
+INSERT INTO __MV__ SELECT g, AVG(v), MIN(v) FROM __SRC__ GROUP BY g
 
 statement error
 INSERT INTO __MV__ SELECT g, SUM(v) FROM __SRC__ GROUP BY g HAVING MAX(v) > 0

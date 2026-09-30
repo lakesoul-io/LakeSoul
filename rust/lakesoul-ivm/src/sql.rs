@@ -32,9 +32,9 @@ use datafusion::sql::unparser::Unparser;
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,
-    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind, SemiAntiCondition, UnionSourceSpec,
-    ViewSpec, WindowFunction,
+    CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
+    IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
+    SemiAntiCondition, UnionSourceSpec, ViewSpec, WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -281,8 +281,11 @@ fn combine_filter(previous: Option<String>, rendered: String) -> String {
 /// The materialized columns a `HAVING` predicate may reference.
 #[derive(Clone, Copy)]
 enum HavingColumns<'a> {
-    /// `sum_v`, `count_v` and `nonnull_v`.
-    SumCount { value_column: Option<&'a str> },
+    /// `sum_v`, `count_v`, the non-NULL count and, for AVG views, `avg_v`.
+    SumCount {
+        value_column: Option<&'a str>,
+        average: bool,
+    },
     /// `value` for a MIN/MAX view.
     MinMax {
         kind: MinMaxKind,
@@ -317,7 +320,10 @@ fn render_having(
             continue;
         };
         if let Ok(column) = having_column(function, columns) {
+            // The HAVING filter refers to the aggregate by the name it had
+            // before the optimizer added argument casts, so map both names.
             mapping.insert(format!("{aggr}"), column);
+            mapping.insert(cast_normalized(aggr), column);
         }
     }
     let group_keys = group_keys
@@ -330,6 +336,20 @@ fn render_having(
         parts.push(render_filter(&rewritten)?);
     }
     Ok(Some(parts.join(" AND ")))
+}
+
+/// The display of an expression with argument casts removed, matching the
+/// hidden column names the planner uses in `HAVING`.
+fn cast_normalized(expr: &Expr) -> String {
+    let normalized = expr
+        .clone()
+        .transform_down(|node| match node {
+            Expr::Cast(cast) => Ok(Transformed::yes(*cast.expr)),
+            other => Ok(Transformed::no(other)),
+        })
+        .map(|transformed| transformed.data)
+        .unwrap_or_else(|_| expr.clone());
+    format!("{normalized}")
 }
 
 fn rewrite_having(
@@ -367,6 +387,19 @@ fn rewrite_having(
         .map_err(|error| unsupported(format!("HAVING {error}")))
 }
 
+/// The column an aggregate argument refers to, unwrapping the numeric cast
+/// the optimizer adds (`avg(v)` becomes `avg(CAST(v AS Float64))`).
+fn aggregate_column_of(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Column(column) => Some(column.name.as_str()),
+        Expr::Cast(cast) => match cast.expr.as_ref() {
+            Expr::Column(column) => Some(column.name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The MV column holding the aggregate a `HAVING` function refers to.
 fn having_column(
     function: &AggregateFunction,
@@ -379,11 +412,21 @@ fn having_column(
         ));
     }
     let name = function.func.name();
-    let column_arg = |column: &str| matches!(function.params.args.as_slice(), [Expr::Column(arg)] if arg.name == column);
+    let column_arg = |column: &str| matches!(function.params.args.as_slice(), [arg] if aggregate_column_of(arg) == Some(column));
     let counts_all = function.params.args.is_empty()
         || matches!(function.params.args.as_slice(), [Expr::Literal(..)]);
     match columns {
-        HavingColumns::SumCount { value_column } => match name {
+        HavingColumns::SumCount {
+            value_column,
+            average,
+        } => match name {
+            "avg" if !function.params.distinct => {
+                if average && value_column.is_some_and(&column_arg) {
+                    Ok(IVM_AVG_COLUMN)
+                } else {
+                    Err(not_materialized(name))
+                }
+            }
             "sum" if !function.params.distinct => match value_column {
                 Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN),
                 _ => Err(not_materialized(name)),
@@ -493,6 +536,7 @@ fn analyze_aggregate(
 
     let mut count = false;
     let mut sum: Option<String> = None;
+    let mut avg: Option<String> = None;
     let mut min_max: Option<(MinMaxKind, String)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     for expr in &aggregate.aggr_expr {
@@ -508,7 +552,12 @@ fn analyze_aggregate(
         let name = function.func.name();
         match (name, function.params.distinct) {
             ("count", true) | ("sum", true) => {
-                if count || sum.is_some() || min_max.is_some() || distinct.is_some() {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                {
                     return Err(unsupported(
                         "mixing DISTINCT aggregates with other aggregates",
                     ));
@@ -544,10 +593,49 @@ fn analyze_aggregate(
                 if sum.is_some() {
                     return Err(unsupported("duplicate SUM aggregate"));
                 }
-                sum = Some(single_column_arg(&function.params.args)?);
+                let column = single_column_arg(&function.params.args)?;
+                if avg.as_ref().is_some_and(|avg| avg != &column) {
+                    return Err(unsupported(
+                        "AVG and SUM must use the same value column",
+                    ));
+                }
+                sum = Some(column);
+            }
+            ("avg", false) => {
+                if min_max.is_some() || distinct.is_some() {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                if avg.is_some() {
+                    return Err(unsupported("duplicate AVG aggregate"));
+                }
+                // The optimizer coerces the argument: `avg(CAST(v AS Float64))`.
+                let column =
+                    match function.params.args.as_slice() {
+                        [arg] => {
+                            aggregate_column_of(arg).map(str::to_string).ok_or_else(
+                                || unsupported("AVG arguments must be plain columns"),
+                            )?
+                        }
+                        _ => {
+                            return Err(unsupported(
+                                "aggregates take exactly one column argument",
+                            ));
+                        }
+                    };
+                if sum.as_ref().is_some_and(|sum| sum != &column) {
+                    return Err(unsupported(
+                        "AVG and SUM must use the same value column",
+                    ));
+                }
+                avg = Some(column);
             }
             ("min", false) | ("max", false) => {
-                if count || sum.is_some() || min_max.is_some() || distinct.is_some() {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
                 let kind = if name == "min" {
@@ -590,11 +678,12 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
-    } else if sum.is_some() || count {
+    } else if sum.is_some() || count || avg.is_some() {
         render_having(
             having_exprs,
             HavingColumns::SumCount {
-                value_column: sum.as_deref(),
+                value_column: sum.as_deref().or(avg.as_deref()),
+                average: avg.is_some(),
             },
             aggregate,
             &group_keys,
@@ -604,6 +693,8 @@ fn analyze_aggregate(
             "GROUP BY without a supported aggregate (use SUM/COUNT/MIN/MAX or DISTINCT)",
         ));
     };
+    let average = avg.is_some();
+    let value_column = sum.or(avg);
     let spec = if let Some((agg, value_column)) = distinct {
         ViewSpec::DistinctAgg {
             view_id: request.view_id.clone(),
@@ -628,15 +719,16 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if sum.is_some() || count {
+    } else if value_column.is_some() || count {
         ViewSpec::SumCount {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
-            value_column: sum,
+            value_column,
             filter,
             having,
+            average,
         }
     } else {
         return Err(unsupported(
@@ -1475,6 +1567,7 @@ mod tests {
                 value_column: Some("v".to_string()),
                 filter: None,
                 having: None,
+                average: false,
             }
         );
     }
@@ -1593,6 +1686,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_avg() {
+        let analyzed = analyze("select g, avg(v) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::SumCount {
+            value_column,
+            average,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(value_column, Some("v".to_string()));
+        assert!(average);
+
+        // AVG alongside SUM/COUNT over the same value column.
+        let analyzed = analyze("select g, avg(v), sum(v), count(*) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::SumCount {
+            value_column,
+            average,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(value_column, Some("v".to_string()));
+        assert!(average);
+
+        // WHERE and HAVING work on the AVG view.
+        let analyzed = analyze(
+            "select g, avg(v) from src where v > 5 group by g having avg(v) > 10 or sum(v) > 100",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount {
+            filter,
+            having,
+            average,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert!(average);
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("avg_v > 10 OR sum_v > 100")
+        );
+
+        // The optimized plan keeps the same shape.
+        let analyzed =
+            analyze_optimized("select g, avg(v) from src group by g having avg(v) > 10")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount {
+            having, average, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert!(average);
+        // The optimized plan coerces the literal to Float64.
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("avg_v > 10.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_avg() {
+        // AVG mixes with MIN/MAX or DISTINCT.
+        assert!(
+            analyze("select g, avg(v), min(v) from src group by g")
+                .await
+                .is_err()
+        );
+        // AVG and SUM must share the value column.
+        assert!(
+            analyze("select g, avg(v), sum(k) from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze("select g, sum(k), avg(v) from src group by g")
+                .await
+                .is_err()
+        );
+        // AVG over a non-numeric column is rejected when the MV is created.
+        assert!(
+            crate::runtime::avg_mv_schema_for(&schema(), &["g".to_string()], "g")
+                .is_err()
+        );
+        assert!(
+            crate::runtime::avg_mv_schema_for(&schema(), &["g".to_string()], "v").is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_aggregate_where() {
         let analyzed = analyze("select g, sum(v) from src where v > 5 group by g")
             .await
@@ -1683,17 +1877,17 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unsupported_shapes() {
-        // AVG is not maintained incrementally.
+        // AVG does not mix with MIN/MAX.
         assert!(
-            analyze("select g, avg(v) from src group by g")
+            analyze("select g, avg(v), min(v) from src group by g")
                 .await
                 .is_err()
         );
         // SELECT DISTINCT has no view kind.
         assert!(analyze("select distinct g from src").await.is_err());
-        // HAVING over an aggregate the view does not materialize.
+        // HAVING mixing aggregate kinds.
         assert!(
-            analyze("select g, sum(v) from src group by g having avg(v) > 0")
+            analyze("select g, sum(v) from src group by g having max(v) > 0")
                 .await
                 .is_err()
         );

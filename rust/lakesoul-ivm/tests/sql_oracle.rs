@@ -17,8 +17,9 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, MinMaxKind,
-    PhysicalFormat, WindowFunction, min_max_mv_schema_for, sum_count_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, window_ranking_mv_schema_for,
+    PhysicalFormat, WindowFunction, avg_mv_schema_for, min_max_mv_schema_for,
+    sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    window_ranking_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -341,6 +342,23 @@ async fn oracle_top_k_where_matches_full_recompute() {
              ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn \
              FROM __SRC__ WHERE op <> 'delete' AND v > 30) t WHERE rn <= 2",
         "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_avg_matches_full_recompute() {
+    // AVG is derived from the maintained sum and non-NULL count; integer sums
+    // keep the incremental division bit-identical to the full recompute.
+    run_oracle(
+        "avg",
+        1,
+        avg_mv_schema_for(&source_schema(), &["g".to_string()], "v").unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, AVG(v) AS avg_v FROM __SRC__ WHERE v > 30 GROUP BY g",
+        "SELECT g, AVG(v) AS avg_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, avg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
