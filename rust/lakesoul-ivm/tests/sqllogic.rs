@@ -907,6 +907,74 @@ fn sqllogic_window_lead() {
 }
 
 #[test]
+fn sqllogic_window_first_value() {
+    run_script_for_mv(
+        "windowfirst",
+        include_str!("slt/window_first_value.slt"),
+        window_value_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::FirstValue,
+            "v",
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_last_value() {
+    run_script_for_mv(
+        "windowlast",
+        include_str!("slt/window_last_value.slt"),
+        window_value_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::LastValue,
+            "v",
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_nth_value() {
+    run_script_for_mv(
+        "windownth",
+        include_str!("slt/window_nth_value.slt"),
+        window_value_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::NthValue,
+            "v",
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_sum_frame() {
+    run_script_for_mv(
+        "windowsumframe",
+        include_str!("slt/window_sum_frame.slt"),
+        window_aggregate_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Sum,
+            Some("v"),
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_aggregate_where() {
     run_script_for_mv(
         "windowaggwhere",

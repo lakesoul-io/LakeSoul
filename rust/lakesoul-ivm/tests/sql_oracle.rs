@@ -348,6 +348,33 @@ async fn oracle_top_k_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_first_value_matches_full_recompute() {
+    // A whole-partition frame; the ordering includes the source key, so the
+    // first value is deterministic.
+    run_oracle(
+        "firstvalue",
+        1,
+        window_value_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &["k".to_string()],
+            WindowFunction::FirstValue,
+            "v",
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT g, k, FIRST_VALUE(v) OVER (PARTITION BY g ORDER BY v, k \
+         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_value_v \
+         FROM __SRC__ WHERE v > 30",
+        "SELECT g, k, FIRST_VALUE(v) OVER (PARTITION BY g ORDER BY v, k \
+         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_value_v \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 30",
+        "SELECT g, k, first_value_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_lag_matches_full_recompute() {
     // The runtime appends the primary keys to the ordering, so the reference
     // uses the same refined ordering.
