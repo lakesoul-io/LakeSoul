@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, ScalarValue, TableReference};
-use datafusion::logical_expr::expr::AggregateFunction;
+use datafusion::logical_expr::expr::{AggregateFunction, NullTreatment};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
@@ -1012,6 +1012,7 @@ fn analyze_window(
         window_args,
         window_frame,
         window_filter,
+        ignore_nulls,
     } = window_function_spec(window)?;
     Ok(ViewSpec::Window {
         view_id: request.view_id.clone(),
@@ -1025,6 +1026,7 @@ fn analyze_window(
         window_args,
         window_frame,
         window_filter,
+        ignore_nulls,
     })
 }
 
@@ -1144,6 +1146,8 @@ struct WindowParts {
     window_args: Option<String>,
     window_frame: Option<String>,
     window_filter: Option<String>,
+    /// `IGNORE NULLS` on a value function.
+    ignore_nulls: bool,
 }
 
 /// The single window function of a window node.
@@ -1244,6 +1248,10 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
         }
         None => None,
     };
+    // `IGNORE NULLS` only changes the value functions; for ranking and
+    // aggregate windows it is a no-op, so it is normalized away.
+    let ignore_nulls = function.is_value()
+        && matches!(params.null_treatment, Some(NullTreatment::IgnoreNulls));
     Ok(WindowParts {
         function,
         partition_keys,
@@ -1252,6 +1260,7 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
         window_args,
         window_frame,
         window_filter,
+        ignore_nulls,
     })
 }
 
@@ -2437,6 +2446,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_ignore_nulls_windows() {
+        // IGNORE NULLS is kept for the value functions.
+        for (sql, function) in [
+            (
+                "select k, lag(v) ignore nulls over (partition by g order by v) from src",
+                WindowFunction::Lag,
+            ),
+            (
+                "select k, first_value(v) ignore nulls over (partition by g order by v) from src",
+                WindowFunction::FirstValue,
+            ),
+        ] {
+            let analyzed = analyze(sql).await.unwrap();
+            let ViewSpec::Window {
+                function: got,
+                ignore_nulls,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("expected a window spec");
+            };
+            assert_eq!(got, function);
+            assert!(ignore_nulls);
+        }
+
+        // The default and the explicit RESPECT NULLS stay false.
+        let analyzed = analyze(
+            "select k, lag(v) respect nulls over (partition by g order by v) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { ignore_nulls, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert!(!ignore_nulls);
+
+        // For ranking and aggregate windows it is a no-op and normalized away.
+        let analyzed =
+            analyze("select k, row_number() ignore nulls over (partition by g order by v) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window { ignore_nulls, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert!(!ignore_nulls);
+        let analyzed =
+            analyze("select k, sum(v) ignore nulls over (partition by g) from src")
+                .await
+                .unwrap();
+        let ViewSpec::Window { ignore_nulls, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert!(!ignore_nulls);
+    }
+
+    #[tokio::test]
     async fn analyzes_avg() {
         let analyzed = analyze("select g, avg(v) from src group by g")
             .await
@@ -2686,6 +2751,7 @@ mod tests {
                     window_args: None,
                     window_frame: None,
                     window_filter: None,
+                    ignore_nulls: false,
                 }
             );
         }
