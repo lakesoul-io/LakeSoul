@@ -18,9 +18,9 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowFunction, avg_mv_schema_for,
-    distinct_agg_mv_schema_for, min_max_mv_schema_for, sum_count_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_ranking_mv_schema_for,
+    distinct_agg_mv_schema_for, median_mv_schema_for, min_max_mv_schema_for,
+    sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    variance_mv_schema_for, window_aggregate_mv_schema_for, window_ranking_mv_schema_for,
     window_value_mv_schema_for,
 };
 use tempfile::tempdir;
@@ -532,6 +532,23 @@ async fn oracle_sum_distinct_matches_full_recompute() {
         "SELECT g, SUM(DISTINCT v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
         "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_median_matches_full_recompute() {
+    // The median is order-independent, so the pruned incremental recompute is
+    // bit-identical to the full one.
+    run_oracle(
+        "median",
+        1,
+        median_mv_schema_for(&source_schema(), &["g".to_string()], "v").unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, MEDIAN(v) AS median_v FROM __SRC__ WHERE v > 30 GROUP BY g",
+        "SELECT g, MEDIAN(v) AS median_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

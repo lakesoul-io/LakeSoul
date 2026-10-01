@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `MEDIAN`、`ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
+| 聚合/分组 | `ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 单视图多窗口 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1378,6 +1378,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `LAG(v, 2) IGNORE NULLS` 定义变化 rebuild）；analyzer 单测覆盖值函数保留、
   `RESPECT NULLS`/默认保持 false、排名与聚合窗口归一化。
   全量 IVM 套件 36 个测试二进制 / 180 个测试通过。
+
+### 10.22 MEDIAN 实施记录（PR-16）
+
+- **策略**：中位数同样无法用有符号 delta 合并，复用 variance 的"按受影响分组从当前源重算"机制。
+  本 PR 把该机制抽成通用 `RecomputeParts`（view_id/source/mv/group_keys/value_column/aggregate/
+  column/filter/having）、`recompute_refresh_sql` / `recompute_rebuild_sql` /
+  `validate_recompute_view` 与 `refresh_recomputed` / `rebuild_recomputed` 引擎；variance 与
+  median 共用，variance 的公开 API 与行为保持不变。
+- **类型**：`median_result_type`——整数会被 DataFusion 强制转成 Float64（结果 Float64），
+  Float32/Float64 保持原宽；其它类型（如 Decimal）在创建/刷新时明确报错。MV 派生列名
+  `median_v`，可空。
+- **spec/analyzer**：`ViewSpec::Median` + `MedianView`（group_keys、value_column、filter、having）；
+  分析器识别 `median(...)`（参数复用 `recomputed_argument` 解开 Cast/Alias），HAVING 把
+  `median` 映射到 `median_v`；与其它聚合族混用报错。
+- **测试**：`median.slt`（奇数/偶数中位数、更新、删除、HAVING 重建与分组回归）；oracle 新增
+  MEDIAN 的 10 轮随机场景（中位数与行序无关，增量结果与全量逐位一致）；analyzer 单测覆盖
+  WHERE/HAVING 与混用拒绝。
+  全量 IVM 套件 36 个测试二进制 / 184 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

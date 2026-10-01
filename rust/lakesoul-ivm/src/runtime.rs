@@ -61,6 +61,8 @@ pub const IVM_CUME_DIST_COLUMN: &str = "cume_dist";
 pub const IVM_VARIANCE_COLUMN: &str = "variance_v";
 /// The standard-deviation column of a [`VarianceView`] materialized view.
 pub const IVM_STDDEV_COLUMN: &str = "stddev_v";
+/// The median column of a [`MedianView`] materialized view.
+pub const IVM_MEDIAN_COLUMN: &str = "median_v";
 /// The source index column of a [`UnionAllView`] materialized view.
 pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
 /// The internal rank column of a [`TopKView`] computation (not materialized).
@@ -373,6 +375,29 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// `MEDIAN(value_column)` over a group.
+    ///
+    /// The median cannot be merged from signed deltas either, so it is
+    /// recomputed from the affected groups' current source rows like the
+    /// variance family.
+    Median {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        group_keys: Vec<String>,
+        /// The value column.
+        value_column: String,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// `ROW_NUMBER()` over a source, maintained by recomputing the affected
     /// partitions.
     Window {
@@ -486,6 +511,7 @@ impl ViewSpec {
         match self {
             ViewSpec::SumCount { view_id, .. }
             | ViewSpec::Variance { view_id, .. }
+            | ViewSpec::Median { view_id, .. }
             | ViewSpec::Join { view_id, .. }
             | ViewSpec::MinMax { view_id, .. }
             | ViewSpec::DistinctAgg { view_id, .. }
@@ -502,6 +528,7 @@ impl ViewSpec {
 enum SpecView {
     SumCount(SumCountView),
     Variance(VarianceView),
+    Median(MedianView),
     Join(JoinView),
     MinMax(MinMaxView),
     DistinctAgg(DistinctAggView),
@@ -1315,6 +1342,184 @@ fn variance_result_type(value_type: &DataType) -> Result<DataType> {
             return Err(report!("variance is not supported for value type {other}"));
         }
     })
+}
+
+/// The result type of a `MEDIAN` aggregate: the optimizer coerces integers to
+/// Float64; floats keep their width.
+fn median_result_type(value_type: &DataType) -> Result<DataType> {
+    Ok(match value_type {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => DataType::Float64,
+        DataType::Float32 | DataType::Float64 => value_type.clone(),
+        other => {
+            return Err(report!("median is not supported for value type {other}"));
+        }
+    })
+}
+
+/// A `MEDIAN(value_column)` view over a source table.
+///
+/// The median is recomputed from the affected groups' current source rows,
+/// which keeps the result identical to the native aggregate.
+#[derive(Debug, Clone)]
+pub struct MedianView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the statistic.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The value column.
+    pub value_column: String,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized column.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl MedianView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+    ) -> Self {
+        Self::new_with_group_keys(
+            view_id,
+            source,
+            mv,
+            vec![group_key.into()],
+            value_column,
+        )
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            value_column: value_column.into(),
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::Median {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            value_column: self.value_column.clone(),
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+}
+
+/// The schema of a [`MedianView`] materialized view: the group keys and the
+/// median (nullable when the group has no rows).
+pub fn median_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
+    let value_type = median_result_type(&field_type(source_schema, value_column)?)?;
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(IVM_MEDIAN_COLUMN, value_type, true)));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The source and statistic of a "recomputed aggregate" view: the statistic
+/// cannot be merged from signed deltas, so a refresh recomputes the affected
+/// groups from their current source rows.
+struct RecomputeParts<'a> {
+    view_id: &'a str,
+    source: &'a IvmTable,
+    mv: &'a IvmTable,
+    group_keys: &'a [String],
+    value_column: &'a str,
+    /// The SQL aggregate name (`var`, `median`, ...).
+    aggregate: &'a str,
+    /// The MV column holding the statistic.
+    column: &'a str,
+    filter: Option<&'a str>,
+    having: Option<&'a str>,
+}
+
+impl VarianceView {
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            value_column: &self.value_column,
+            aggregate: self.statistic.sql_name(),
+            column: self.statistic.column_name(),
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        }
+    }
+}
+
+impl MedianView {
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            value_column: &self.value_column,
+            aggregate: "median",
+            column: IVM_MEDIAN_COLUMN,
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        }
+    }
 }
 
 /// A `ROW_NUMBER()` view over a source table.
@@ -2506,6 +2711,24 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::Median {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                value_column,
+                filter,
+                having,
+            } => SpecView::Median(MedianView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::Window {
                 view_id,
                 source_table_id,
@@ -2617,6 +2840,7 @@ impl IvmRuntime {
         match self.spec_view(spec).await? {
             SpecView::SumCount(view) => self.refresh_sum_count(&view).await,
             SpecView::Variance(view) => self.refresh_variance(&view).await,
+            SpecView::Median(view) => self.refresh_median(&view).await,
             SpecView::Join(view) => self.refresh_join(&view).await,
             SpecView::MinMax(view) => self.refresh_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
@@ -2635,6 +2859,7 @@ impl IvmRuntime {
         match self.spec_view(spec).await? {
             SpecView::SumCount(view) => self.rebuild_sum_count(&view).await,
             SpecView::Variance(view) => self.rebuild_variance(&view).await,
+            SpecView::Median(view) => self.rebuild_median(&view).await,
             SpecView::Join(view) => self.rebuild_join(&view).await,
             SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
@@ -2909,20 +3134,39 @@ impl IvmRuntime {
     /// by the group keys, exactly like the value-count refresh).
     pub async fn refresh_variance(&self, view: &VarianceView) -> Result<Option<i64>> {
         self.register_variance_view(view).await?;
-        validate_variance_view(view)?;
+        variance_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
 
+    /// Refresh a median view.
+    pub async fn refresh_median(&self, view: &MedianView) -> Result<Option<i64>> {
+        self.register_median_view(view).await?;
+        median_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Refresh a recomputed-aggregate view (variance family or median) by
+    /// recomputing the affected groups from their current source rows.
+    async fn refresh_recomputed(
+        &self,
+        parts: &RecomputeParts<'_>,
+    ) -> Result<Option<i64>> {
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window(parts.view_id, parts.source)
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
         }
         let record = match self
-            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .begin_window(parts.view_id, &window.identity, parts.mv)
             .await?
         {
             WindowStart::AlreadyApplied(epoch) => {
-                self.advance_cursors(&view.view_id, window.cursors).await?;
+                self.advance_cursors(parts.view_id, window.cursors).await?;
                 return Ok(Some(epoch));
             }
             WindowStart::Apply(record) => record,
@@ -2931,94 +3175,113 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let delta_batches = view.source.read_files(window.added_files).await?;
-        let keyed = !view.source.primary_keys.is_empty();
+        let delta_batches = parts.source.read_files(window.added_files).await?;
+        let keyed = !parts.source.primary_keys.is_empty();
         let delta_context = SessionContext::new();
         register_table(
             &delta_context,
             "delta",
             delta_batches.clone(),
-            &view.source.schema,
+            &parts.source.schema,
         )?;
         let old_batches = if keyed {
-            let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
-            let batches = view
+            let pk_filters = key_filters(&parts.source.primary_keys, &delta_batches)?;
+            let batches = parts
                 .source
                 .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
                 .await?;
-            register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
+            register_table(&delta_context, "old", batches.clone(), &parts.source.schema)?;
             batches
         } else {
             Vec::new()
         };
         let groups = delta_context
             .sql(&affected_groups_sql(
-                &view.source,
-                &view.group_keys,
+                parts.source,
+                parts.group_keys,
                 keyed,
-                view.filter.as_deref(),
+                parts.filter,
             ))
             .await?
             .collect()
             .await?;
-        let filters = key_filters(&view.group_keys, &groups)?;
+        let filters = key_filters(parts.group_keys, &groups)?;
 
-        register_table(&context, "delta", delta_batches, &view.source.schema)?;
+        register_table(&context, "delta", delta_batches, &parts.source.schema)?;
         if keyed {
-            register_table(&context, "old", old_batches, &view.source.schema)?;
+            register_table(&context, "old", old_batches, &parts.source.schema)?;
         }
         register_table(
             &context,
             "src",
-            view.source
+            parts
+                .source
                 .read_current_filtered(&self.client, filters.clone())
                 .await?,
-            &view.source.schema,
+            &parts.source.schema,
         )?;
         register_table(
             &context,
             "mv",
-            view.mv.read_current_filtered(&self.client, filters).await?,
-            &view.mv.schema,
+            parts
+                .mv
+                .read_current_filtered(&self.client, filters)
+                .await?,
+            &parts.mv.schema,
         )?;
         for batch in context
-            .sql(&variance_refresh_sql(view, epoch))
+            .sql(&recompute_refresh_sql(parts, epoch))
             .await?
             .collect()
             .await?
         {
             if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
             }
         }
 
-        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
-        self.advance_cursors(&view.view_id, window.cursors).await?;
+        self.advance_cursors(parts.view_id, window.cursors).await?;
         Ok(Some(epoch))
     }
 
     /// Rebuild a variance view from the full source state.
     pub async fn rebuild_variance(&self, view: &VarianceView) -> Result<i64> {
         self.register_variance_view(view).await?;
-        validate_variance_view(view)?;
+        variance_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
 
+    /// Rebuild a median view from the full source state.
+    pub async fn rebuild_median(&self, view: &MedianView) -> Result<i64> {
+        self.register_median_view(view).await?;
+        median_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
+    /// Rebuild a recomputed-aggregate view from the full source state.
+    async fn rebuild_recomputed(&self, parts: &RecomputeParts<'_>) -> Result<i64> {
         self.metadata
-            .set_view_status(&view.view_id, "rebuilding")
+            .set_view_status(parts.view_id, "rebuilding")
             .await?;
-        let generation = self.metadata.bump_generation(&view.view_id).await?;
-        self.metadata.delete_cursors(&view.view_id).await?;
-        view.mv.truncate(&self.client).await?;
+        let generation = self.metadata.bump_generation(parts.view_id).await?;
+        self.metadata.delete_cursors(parts.view_id).await?;
+        parts.mv.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(&view.source).await?;
+        let baseline = self.source_baseline(parts.source).await?;
         let mv_versions_before =
-            output_partition_versions(&self.client, &view.mv).await?;
+            output_partition_versions(&self.client, parts.mv).await?;
         let record = match self
             .metadata
             .begin_epoch(
-                &view.view_id,
+                parts.view_id,
                 &format!("rebuild:{generation}"),
                 &baseline.to_versions,
                 &mv_versions_before,
@@ -3026,10 +3289,10 @@ impl IvmRuntime {
             .await?
         {
             BeginEpoch::Committed(record) => {
-                self.advance_cursors(&view.view_id, baseline.cursors)
+                self.advance_cursors(parts.view_id, baseline.cursors)
                     .await?;
                 self.metadata
-                    .set_view_status(&view.view_id, "active")
+                    .set_view_status(parts.view_id, "active")
                     .await?;
                 return Ok(record.epoch);
             }
@@ -3039,28 +3302,38 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        register_table(&context, "src", baseline.batches, &parts.source.schema)?;
         for batch in context
-            .sql(&variance_rebuild_sql(view, epoch))
+            .sql(&recompute_rebuild_sql(parts, epoch))
             .await?
             .collect()
             .await?
         {
             if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
             }
         }
 
-        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
-        self.advance_cursors(&view.view_id, baseline.cursors)
+        self.advance_cursors(parts.view_id, baseline.cursors)
             .await?;
         self.metadata
-            .set_view_status(&view.view_id, "active")
+            .set_view_status(parts.view_id, "active")
             .await?;
         Ok(epoch)
+    }
+
+    /// Persist a median view spec (idempotent).
+    pub async fn register_median_view(&self, view: &MedianView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
     }
 
     /// Persist a window view spec (idempotent).
@@ -6212,31 +6485,26 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
     )
 }
 
-/// SQL for one variance refresh window: recompute the affected groups from
-/// their current source rows.
-fn variance_refresh_sql(view: &VarianceView, epoch: i64) -> String {
-    let keys = quoted_list(&view.group_keys);
-    let column = quote_ident(view.statistic.column_name());
-    let agg = format!(
-        "{}({})",
-        view.statistic.sql_name(),
-        quote_ident(&view.value_column)
-    );
-    let keyed = !view.source.primary_keys.is_empty();
+/// SQL for one recomputed-aggregate refresh window: recompute the affected
+/// groups from their current source rows.
+fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
+    let keys = quoted_list(parts.group_keys);
+    let column = quote_ident(parts.column);
+    let agg = format!("{}({})", parts.aggregate, quote_ident(parts.value_column));
+    let keyed = !parts.source.primary_keys.is_empty();
     let src_from = if keyed {
         format!(
             "src where {}{}",
-            source_delete_filter("src", change_column(&view.source)),
-            filter_clause(view.filter.as_deref()),
+            source_delete_filter("src", change_column(parts.source)),
+            filter_clause(parts.filter),
         )
     } else {
-        format!("src{}", filter_where(view.filter.as_deref()))
+        format!("src{}", filter_where(parts.filter))
     };
-    let active_match = key_join_condition_null_safe("a", "s", &view.group_keys);
-    let already_match = key_join_condition_null_safe("a", "p", &view.group_keys);
-    let having = view
+    let active_match = key_join_condition_null_safe("a", "s", parts.group_keys);
+    let already_match = key_join_condition_null_safe("a", "p", parts.group_keys);
+    let having = parts
         .having
-        .as_deref()
         .map(|having| format!(" and ({having})"))
         .unwrap_or_default();
     format!(
@@ -6252,55 +6520,46 @@ fn variance_refresh_sql(view: &VarianceView, epoch: i64) -> String {
                      where not exists (select 1 from already a where {already_match}){having}) \
          select * from deletes union all select * from inserts \
          order by {keys}, \"rowKinds\"",
-        affected = affected_groups_sql(
-            &view.source,
-            &view.group_keys,
-            keyed,
-            view.filter.as_deref(),
-        ),
+        affected =
+            affected_groups_sql(parts.source, parts.group_keys, keyed, parts.filter,),
     )
 }
 
-/// SQL for a full variance rebuild.
-fn variance_rebuild_sql(view: &VarianceView, epoch: i64) -> String {
-    let keys = quoted_list(&view.group_keys);
-    let column = quote_ident(view.statistic.column_name());
-    let agg = format!(
-        "{}({})",
-        view.statistic.sql_name(),
-        quote_ident(&view.value_column)
-    );
-    let keyed = !view.source.primary_keys.is_empty();
+/// SQL for a full recomputed-aggregate rebuild.
+fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
+    let keys = quoted_list(parts.group_keys);
+    let column = quote_ident(parts.column);
+    let agg = format!("{}({})", parts.aggregate, quote_ident(parts.value_column));
+    let keyed = !parts.source.primary_keys.is_empty();
     let src_from = if keyed {
         format!(
             "src where {}{}",
-            source_delete_filter("src", change_column(&view.source)),
-            filter_clause(view.filter.as_deref()),
+            source_delete_filter("src", change_column(parts.source)),
+            filter_clause(parts.filter),
         )
     } else {
-        format!("src{}", filter_where(view.filter.as_deref()))
+        format!("src{}", filter_where(parts.filter))
     };
     let rebuild = format!(
         "select {keys}, {agg} as {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from {src_from} group by {keys}"
     );
-    match &view.having {
+    match parts.having {
         Some(having) => format!("select * from ({rebuild}) t where {having}"),
         None => rebuild,
     }
 }
 
-/// Validate that a variance view can be maintained.
-fn validate_variance_view(view: &VarianceView) -> Result<()> {
-    validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
-    variance_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
-    if let Some(filter) = &view.filter {
+/// Validate that a recomputed-aggregate view can be maintained.
+fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> {
+    validate_group_keys(parts.source, parts.group_keys, parts.view_id)?;
+    if let Some(filter) = parts.filter {
         let context = SessionContext::new();
-        parse_filter(&context, &view.source.schema, filter)?;
+        parse_filter(&context, &parts.source.schema, filter)?;
     }
-    if let Some(having) = &view.having {
+    if let Some(having) = parts.having {
         let context = SessionContext::new();
-        parse_filter(&context, &view.mv.schema, having)?;
+        parse_filter(&context, &parts.mv.schema, having)?;
     }
     Ok(())
 }
