@@ -398,8 +398,8 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
-    /// `ROW_NUMBER()` over a source, maintained by recomputing the affected
-    /// partitions.
+    /// Window functions over a source, maintained by recomputing the
+    /// affected partitions.
     Window {
         /// The view id.
         view_id: String,
@@ -411,30 +411,11 @@ pub enum ViewSpec {
         partition_keys: Vec<String>,
         /// The `ORDER BY` columns; empty for whole-partition aggregates.
         order_keys: Vec<String>,
-        /// The window function.
-        #[serde(default)]
-        function: WindowFunction,
-        /// The aggregated column of a `SUM`/`COUNT` window function.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value_column: Option<String>,
+        /// The window columns, sharing the partition and ordering.
+        columns: Vec<WindowColumn>,
         /// An optional filter applied before windowing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
-        /// Extra SQL arguments of a `LAG`/`LEAD`/`NTH_VALUE` function
-        /// (`2, 0` for `lag(v, 2, 0)`), rendered at analysis time.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        window_args: Option<String>,
-        /// The declared window frame as SQL text, when it differs from the
-        /// default frame of the ordering.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        window_frame: Option<String>,
-        /// The `FILTER (WHERE ...)` predicate of an aggregate window function,
-        /// rendered to SQL text.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        window_filter: Option<String>,
-        /// `IGNORE NULLS` on a value window function.
-        #[serde(default)]
-        ignore_nulls: bool,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -1522,13 +1503,93 @@ impl MedianView {
     }
 }
 
-/// A `ROW_NUMBER()` view over a source table.
+/// One column of a [`WindowView`].
+///
+/// All columns of a view share the `PARTITION BY`/`ORDER BY` clause; the
+/// function, its arguments, frame, filter and null treatment are per column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowColumn {
+    /// The window function.
+    pub function: WindowFunction,
+    /// The aggregated or shifted source column, when the function takes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_column: Option<String>,
+    /// Extra SQL arguments of a `LAG`/`LEAD`/`NTH_VALUE` function (`2, 0` for
+    /// `lag(v, 2, 0)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_args: Option<String>,
+    /// The `FILTER (WHERE ...)` predicate of an aggregate window function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_filter: Option<String>,
+    /// `IGNORE NULLS` on a value window function.
+    #[serde(default)]
+    pub ignore_nulls: bool,
+    /// The declared frame as SQL text, when it differs from the default frame
+    /// of the ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_frame: Option<String>,
+    /// The materialized view column name.
+    pub column: String,
+}
+
+impl WindowColumn {
+    /// A column named after the function's materialized column.
+    pub fn new(function: WindowFunction) -> Self {
+        Self {
+            function,
+            value_column: None,
+            window_args: None,
+            window_filter: None,
+            ignore_nulls: false,
+            window_frame: None,
+            column: function.column_name().to_string(),
+        }
+    }
+
+    /// The aggregated or shifted source column.
+    pub fn with_value(mut self, value_column: impl Into<String>) -> Self {
+        self.value_column = Some(value_column.into());
+        self
+    }
+
+    /// Extra SQL arguments, as text.
+    pub fn with_args(mut self, args: impl Into<String>) -> Self {
+        self.window_args = Some(args.into());
+        self
+    }
+
+    /// The `FILTER (WHERE ...)` predicate.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.window_filter = Some(filter.into());
+        self
+    }
+
+    /// `IGNORE NULLS`.
+    pub fn with_ignore_nulls(mut self) -> Self {
+        self.ignore_nulls = true;
+        self
+    }
+
+    /// The declared frame, as SQL text.
+    pub fn with_frame(mut self, frame: impl Into<String>) -> Self {
+        self.window_frame = Some(frame.into());
+        self
+    }
+
+    /// An explicit materialized view column name.
+    pub fn with_column(mut self, column: impl Into<String>) -> Self {
+        self.column = column.into();
+        self
+    }
+}
+
+/// A window view over a source table.
 ///
 /// The materialized view stores one row per source row — keyed by the
-/// partition keys and the source primary keys — with its row number. A refresh
-/// recomputes the affected partitions from the current source state, so an
-/// order-value change, a delete or a partition move shifts the ranks of the
-/// whole partition.
+/// partition keys and the source primary keys — with one column per window
+/// function. A refresh recomputes the affected partitions from the current
+/// source state, so an order-value change, a delete or a partition move
+/// shifts the values of the whole partition.
 #[derive(Debug, Clone)]
 pub struct WindowView {
     /// The view id.
@@ -1544,22 +1605,10 @@ pub struct WindowView {
     pub partition_keys: Vec<String>,
     /// The `ORDER BY` columns.
     pub order_keys: Vec<String>,
-    /// The window function.
-    pub function: WindowFunction,
-    /// The aggregated column of a `SUM`/`COUNT` window function.
-    pub value_column: Option<String>,
+    /// The window columns, sharing the partition and ordering.
+    pub columns: Vec<WindowColumn>,
     /// An optional filter applied before windowing.
     pub filter: Option<String>,
-    /// Extra SQL arguments of a `LAG`/`LEAD`/`NTH_VALUE` function (`2, 0`
-    /// for `lag(v, 2, 0)`).
-    pub window_args: Option<String>,
-    /// The declared window frame as SQL text, when it differs from the
-    /// default frame of the ordering.
-    pub window_frame: Option<String>,
-    /// The `FILTER (WHERE ...)` predicate of an aggregate window function.
-    pub window_filter: Option<String>,
-    /// `IGNORE NULLS` on a value window function.
-    pub ignore_nulls: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1592,21 +1641,14 @@ impl WindowView {
         order_keys: Vec<String>,
         function: WindowFunction,
     ) -> Self {
-        Self {
-            view_id: view_id.into(),
+        Self::new_with_columns(
+            view_id,
             source,
             mv,
             partition_keys,
             order_keys,
-            function,
-            value_column: None,
-            filter: None,
-            window_args: None,
-            window_frame: None,
-            window_filter: None,
-            ignore_nulls: false,
-            refresh_interval_ms: 0,
-        }
+            vec![WindowColumn::new(function)],
+        )
     }
 
     /// An aggregate window view (`SUM`/`COUNT` over a partition, optionally
@@ -1620,19 +1662,37 @@ impl WindowView {
         function: WindowFunction,
         value_column: Option<String>,
     ) -> Self {
+        let column = match value_column {
+            Some(value) => WindowColumn::new(function).with_value(value),
+            None => WindowColumn::new(function),
+        };
+        Self::new_with_columns(
+            view_id,
+            source,
+            mv,
+            partition_keys,
+            order_keys,
+            vec![column],
+        )
+    }
+
+    /// A view over several window columns sharing the partition and ordering.
+    pub fn new_with_columns(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        partition_keys: Vec<String>,
+        order_keys: Vec<String>,
+        columns: Vec<WindowColumn>,
+    ) -> Self {
         Self {
             view_id: view_id.into(),
             source,
             mv,
             partition_keys,
             order_keys,
-            function,
-            value_column,
+            columns,
             filter: None,
-            window_args: None,
-            window_frame: None,
-            window_filter: None,
-            ignore_nulls: false,
             refresh_interval_ms: 0,
         }
     }
@@ -1643,28 +1703,37 @@ impl WindowView {
         self
     }
 
-    /// Extra `LAG`/`LEAD`/`NTH_VALUE` arguments, as SQL text.
+    /// Extra `LAG`/`LEAD`/`NTH_VALUE` arguments on the only column.
     pub fn with_window_args(mut self, args: impl Into<String>) -> Self {
-        self.window_args = Some(args.into());
+        self.only_column().window_args = Some(args.into());
         self
     }
 
-    /// The declared window frame, as SQL text.
+    /// The declared window frame on the only column, as SQL text.
     pub fn with_window_frame(mut self, frame: impl Into<String>) -> Self {
-        self.window_frame = Some(frame.into());
+        self.only_column().window_frame = Some(frame.into());
         self
     }
 
-    /// The `FILTER (WHERE ...)` predicate of an aggregate window function.
+    /// The `FILTER (WHERE ...)` predicate on the only column.
     pub fn with_window_filter(mut self, filter: impl Into<String>) -> Self {
-        self.window_filter = Some(filter.into());
+        self.only_column().window_filter = Some(filter.into());
         self
     }
 
-    /// `IGNORE NULLS` on a value window function.
+    /// `IGNORE NULLS` on the only column.
     pub fn with_ignore_nulls(mut self) -> Self {
-        self.ignore_nulls = true;
+        self.only_column().ignore_nulls = true;
         self
+    }
+
+    fn only_column(&mut self) -> &mut WindowColumn {
+        debug_assert_eq!(
+            self.columns.len(),
+            1,
+            "the builder applies to a single window column"
+        );
+        &mut self.columns[0]
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -1674,13 +1743,8 @@ impl WindowView {
             mv_table_id: self.mv.table_id.clone(),
             partition_keys: self.partition_keys.clone(),
             order_keys: self.order_keys.clone(),
-            function: self.function,
-            value_column: self.value_column.clone(),
+            columns: self.columns.clone(),
             filter: self.filter.clone(),
-            window_args: self.window_args.clone(),
-            window_frame: self.window_frame.clone(),
-            window_filter: self.window_filter.clone(),
-            ignore_nulls: self.ignore_nulls,
         }
     }
 }
@@ -2037,8 +2101,9 @@ pub fn distinct_agg_mv_schema(group_key: &str) -> SchemaRef {
     value_count_mv_schema(group_key)
 }
 
-/// The schema of a [`WindowView`] materialized view: the partition keys, the
-/// source primary keys, the row number, the row kind and the epoch.
+/// The schema of a [`WindowView`] materialized view keyed by `Int64`: the
+/// partition keys, the source primary keys, the row number, the row kind and
+/// the epoch.
 pub fn window_mv_schema(partition_keys: &[String], row_keys: &[String]) -> SchemaRef {
     let mut fields = Vec::new();
     for column in partition_keys.iter().chain(row_keys.iter()) {
@@ -2048,6 +2113,73 @@ pub fn window_mv_schema(partition_keys: &[String], row_keys: &[String]) -> Schem
     fields.push(Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false));
     fields.push(Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false));
     Arc::new(Schema::new(fields))
+}
+
+/// The schema of a [`WindowView`] materialized view: the partition keys and
+/// the source primary keys, one column per window function, the row kind and
+/// the epoch.
+pub fn window_columns_mv_schema_for(
+    source_schema: &Schema,
+    partition_keys: &[String],
+    row_keys: &[String],
+    columns: &[WindowColumn],
+) -> Result<SchemaRef> {
+    let keys = partition_keys
+        .iter()
+        .chain(row_keys.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut fields = key_fields(source_schema, &keys)?;
+    for column in columns {
+        let (data_type, nullable) = window_column_type(source_schema, column)?;
+        fields.push(Arc::new(Field::new(&column.column, data_type, nullable)));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The arrow type and nullability of one window column.
+fn window_column_type(
+    source_schema: &Schema,
+    column: &WindowColumn,
+) -> Result<(DataType, bool)> {
+    Ok(match column.function {
+        WindowFunction::Sum => {
+            let value = column
+                .value_column
+                .as_deref()
+                .ok_or_else(|| report!("a SUM window column needs a value column"))?;
+            (sum_result_type(&field_type(source_schema, value)?)?, true)
+        }
+        WindowFunction::Count => (DataType::Int64, false),
+        WindowFunction::RowNumber
+        | WindowFunction::Rank
+        | WindowFunction::DenseRank
+        | WindowFunction::Ntile => (DataType::Int64, false),
+        WindowFunction::PercentRank | WindowFunction::CumeDist => {
+            (DataType::Float64, false)
+        }
+        WindowFunction::Lag
+        | WindowFunction::Lead
+        | WindowFunction::FirstValue
+        | WindowFunction::LastValue
+        | WindowFunction::NthValue => {
+            let value = column
+                .value_column
+                .as_deref()
+                .ok_or_else(|| report!("a value window column needs a value column"))?;
+            (field_type(source_schema, value)?, true)
+        }
+    })
 }
 
 /// The schema of a [`WindowView`] materialized view, deriving the partition
@@ -2065,51 +2197,23 @@ pub fn window_mv_schema_for(
     )
 }
 
-/// The schema of a [`WindowView`] materialized view for a ranking function:
-/// the partition keys, the source primary keys, the rank column (named after
-/// the function), the row kind and the epoch.
+/// The schema of a single ranking window column, deriving the key types from
+/// the source schema.
 pub fn window_ranking_mv_schema_for(
     source_schema: &Schema,
     partition_keys: &[String],
     row_keys: &[String],
     function: WindowFunction,
 ) -> Result<SchemaRef> {
-    let keys = partition_keys
-        .iter()
-        .chain(row_keys.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut fields = key_fields(source_schema, &keys)?;
-    fields.push(Arc::new(Field::new(
-        function.column_name(),
-        rank_result_type(function),
-        false,
-    )));
-    fields.push(Arc::new(Field::new(
-        IVM_ROW_KINDS_COLUMN,
-        DataType::Utf8,
-        false,
-    )));
-    fields.push(Arc::new(Field::new(
-        IVM_EPOCH_COLUMN,
-        DataType::Int64,
-        false,
-    )));
-    Ok(Arc::new(Schema::new(fields)))
+    window_columns_mv_schema_for(
+        source_schema,
+        partition_keys,
+        row_keys,
+        &[WindowColumn::new(function)],
+    )
 }
 
-/// The result type of a ranking window function.
-fn rank_result_type(function: WindowFunction) -> DataType {
-    match function {
-        WindowFunction::PercentRank | WindowFunction::CumeDist => DataType::Float64,
-        _ => DataType::Int64,
-    }
-}
-
-/// The schema of a value [`WindowView`] (`LAG`/`LEAD`): the partition keys,
-/// the source primary keys and the shifted value, named after the function
-/// (`lag_v` / `lead_v`). The value is always nullable (the shift can fall
-/// outside the partition).
+/// The schema of a single value window column (`LAG`/`LEAD`/...).
 pub fn window_value_mv_schema_for(
     source_schema: &Schema,
     partition_keys: &[String],
@@ -2123,34 +2227,16 @@ pub fn window_value_mv_schema_for(
             function.sql_name()
         ));
     }
-    let keys = partition_keys
-        .iter()
-        .chain(row_keys.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut fields = key_fields(source_schema, &keys)?;
-    fields.push(Arc::new(Field::new(
-        function.column_name(),
-        field_type(source_schema, value_column)?,
-        true,
-    )));
-    fields.push(Arc::new(Field::new(
-        IVM_ROW_KINDS_COLUMN,
-        DataType::Utf8,
-        false,
-    )));
-    fields.push(Arc::new(Field::new(
-        IVM_EPOCH_COLUMN,
-        DataType::Int64,
-        false,
-    )));
-    Ok(Arc::new(Schema::new(fields)))
+    window_columns_mv_schema_for(
+        source_schema,
+        partition_keys,
+        row_keys,
+        &[WindowColumn::new(function).with_value(value_column)],
+    )
 }
 
-/// The schema of an aggregate [`WindowView`] (`SUM`/`COUNT` over a
-/// partition): the partition keys, the source primary keys and the aggregate
-/// value, named after the function (`sum_v` / `count_v`). A `SUM` is nullable
-/// (the frame may hold no non-NULL value), a `COUNT` never is.
+/// The schema of a single aggregate window column (`SUM`/`COUNT` over a
+/// partition).
 pub fn window_aggregate_mv_schema_for(
     source_schema: &Schema,
     partition_keys: &[String],
@@ -2158,43 +2244,17 @@ pub fn window_aggregate_mv_schema_for(
     function: WindowFunction,
     value_column: Option<&str>,
 ) -> Result<SchemaRef> {
-    let keys = partition_keys
-        .iter()
-        .chain(row_keys.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut fields = key_fields(source_schema, &keys)?;
-    let (value_type, nullable) = match function {
-        WindowFunction::Count => (DataType::Int64, false),
-        WindowFunction::Sum => {
-            let value = value_column.ok_or_else(|| {
-                rootcause::report!("a SUM window view needs a value column")
-            })?;
-            (sum_result_type(&field_type(source_schema, value)?)?, true)
-        }
-        other => {
-            return Err(rootcause::report!(
-                "{} is not an aggregate window function",
-                other.sql_name()
-            ));
-        }
+    if !function.is_aggregate() {
+        return Err(rootcause::report!(
+            "{} is not an aggregate window function",
+            function.sql_name()
+        ));
+    }
+    let column = match value_column {
+        Some(value) => WindowColumn::new(function).with_value(value),
+        None => WindowColumn::new(function),
     };
-    fields.push(Arc::new(Field::new(
-        function.column_name(),
-        value_type,
-        nullable,
-    )));
-    fields.push(Arc::new(Field::new(
-        IVM_ROW_KINDS_COLUMN,
-        DataType::Utf8,
-        false,
-    )));
-    fields.push(Arc::new(Field::new(
-        IVM_EPOCH_COLUMN,
-        DataType::Int64,
-        false,
-    )));
-    Ok(Arc::new(Schema::new(fields)))
+    window_columns_mv_schema_for(source_schema, partition_keys, row_keys, &[column])
 }
 
 /// The schema of a [`SemiAntiView`] materialized view: the left columns plus
@@ -2735,26 +2795,16 @@ impl IvmRuntime {
                 mv_table_id,
                 partition_keys,
                 order_keys,
-                function,
-                value_column,
+                columns,
                 filter,
-                window_args,
-                window_frame,
-                window_filter,
-                ignore_nulls,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 partition_keys: partition_keys.clone(),
                 order_keys: order_keys.clone(),
-                function: *function,
-                value_column: value_column.clone(),
+                columns: columns.clone(),
                 filter: filter.clone(),
-                window_args: window_args.clone(),
-                window_frame: window_frame.clone(),
-                window_filter: window_filter.clone(),
-                ignore_nulls: *ignore_nulls,
                 refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
@@ -6570,29 +6620,16 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
         let context = SessionContext::new();
         parse_filter(&context, &view.source.schema, filter)?;
     }
-    if let Some(filter) = &view.window_filter {
-        if !view.function.is_aggregate() {
-            return Err(report!(
-                "window view {}: FILTER needs an aggregate window function",
-                view.view_id
-            ));
-        }
-        let context = SessionContext::new();
-        parse_filter(&context, &view.source.schema, filter)?;
+    if view.columns.is_empty() {
+        return Err(report!(
+            "window view {} needs at least one window column",
+            view.view_id
+        ));
     }
     if view.source.primary_keys.is_empty() {
         return Err(report!(
             "window view {} needs a source with a primary key",
             view.view_id
-        ));
-    }
-    // Ranking functions need an ordering; aggregates may span the whole
-    // partition (empty order keys).
-    if !view.function.is_aggregate() && view.order_keys.is_empty() {
-        return Err(report!(
-            "window view {}: {} needs order keys",
-            view.view_id,
-            view.function.sql_name()
         ));
     }
     for column in &view.partition_keys {
@@ -6626,21 +6663,71 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             )
         })?;
     }
-    match view.function {
-        WindowFunction::Sum => {
-            let value = view.value_column.as_deref().ok_or_else(|| {
-                report!("window view {}: SUM needs a value column", view.view_id)
-            })?;
-            let field = view.source.schema.field_with_name(value).map_err(|_| {
-                report!(
-                    "window view {}: value column {value} is not in the source",
-                    view.view_id
-                )
-            })?;
-            sum_result_type(field.data_type())?;
+    let mut names = std::collections::HashSet::new();
+    for column in &view.columns {
+        if column.column.is_empty() {
+            return Err(report!(
+                "window view {}: window columns need a name",
+                view.view_id
+            ));
         }
-        WindowFunction::Count => {
-            if let Some(value) = view.value_column.as_deref() {
+        if !names.insert(column.column.as_str()) {
+            return Err(report!(
+                "window view {}: duplicate window column {}",
+                view.view_id,
+                column.column
+            ));
+        }
+        // Ranking and value functions need an ordering; aggregates may span
+        // the whole partition (empty order keys).
+        if !column.function.is_aggregate() && view.order_keys.is_empty() {
+            return Err(report!(
+                "window view {}: {} needs order keys",
+                view.view_id,
+                column.function.sql_name()
+            ));
+        }
+        if let Some(filter) = &column.window_filter {
+            if !column.function.is_aggregate() {
+                return Err(report!(
+                    "window view {}: FILTER needs an aggregate window function",
+                    view.view_id
+                ));
+            }
+            let context = SessionContext::new();
+            parse_filter(&context, &view.source.schema, filter)?;
+        }
+        match column.function {
+            WindowFunction::Sum => {
+                let value = column.value_column.as_deref().ok_or_else(|| {
+                    report!("window view {}: SUM needs a value column", view.view_id)
+                })?;
+                let field = view.source.schema.field_with_name(value).map_err(|_| {
+                    report!(
+                        "window view {}: value column {value} is not in the source",
+                        view.view_id
+                    )
+                })?;
+                sum_result_type(field.data_type())?;
+            }
+            WindowFunction::Count => {
+                if let Some(value) = column.value_column.as_deref() {
+                    view.source.schema.field_with_name(value).map_err(|_| {
+                        report!(
+                            "window view {}: value column {value} is not in the source",
+                            view.view_id
+                        )
+                    })?;
+                }
+            }
+            function if function.is_value() => {
+                let value = column.value_column.as_deref().ok_or_else(|| {
+                    report!(
+                        "window view {}: {} needs a value column",
+                        view.view_id,
+                        function.sql_name()
+                    )
+                })?;
                 view.source.schema.field_with_name(value).map_err(|_| {
                     report!(
                         "window view {}: value column {value} is not in the source",
@@ -6648,40 +6735,26 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
                     )
                 })?;
             }
-        }
-        function if function.is_value() => {
-            let value = view.value_column.as_deref().ok_or_else(|| {
-                report!(
-                    "window view {}: {} needs a value column",
-                    view.view_id,
-                    view.function.sql_name()
-                )
-            })?;
-            view.source.schema.field_with_name(value).map_err(|_| {
-                report!(
-                    "window view {}: value column {value} is not in the source",
-                    view.view_id
-                )
-            })?;
-        }
-        function => {
-            if view.value_column.is_some() {
-                return Err(report!(
-                    "window view {}: {} does not take a value column",
-                    view.view_id,
-                    function.sql_name()
-                ));
+            function => {
+                if column.value_column.is_some() {
+                    return Err(report!(
+                        "window view {}: {} does not take a value column",
+                        view.view_id,
+                        function.sql_name()
+                    ));
+                }
             }
         }
     }
     Ok(())
 }
 
-/// The `computed` CTE: the window function over the current source state.
-/// `ROW_NUMBER` appends the primary keys to the ordering for deterministic
-/// ties; `RANK`/`DENSE_RANK` keep the declared ordering so ties share a rank,
-/// and aggregate windows use the SQL default frame (whole partition without
-/// order keys, running with them).
+/// The `computed` CTE: the window functions over the current source state.
+///
+/// The primary keys are appended to the ordering only when every column needs
+/// them (`ROW_NUMBER`, `LAG`, `LEAD`, `NTILE`): for `RANK`/`DENSE_RANK` and
+/// `PERCENT_RANK`/`CUME_DIST` they would break the ties that must share a
+/// value, and for framed aggregates they would change the `RANGE` peers.
 fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     let parts = quoted_list(&view.partition_keys);
     let keys_select = if view.partition_keys.is_empty() {
@@ -6691,19 +6764,14 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     };
     let pks = quoted_list(&view.source.primary_keys);
     let mut order = view.order_keys.clone();
-    if view.function.breaks_ties_with_primary_keys() {
+    if !view.columns.is_empty()
+        && view
+            .columns
+            .iter()
+            .all(|column| column.function.breaks_ties_with_primary_keys())
+    {
         order.extend(view.source.primary_keys.iter().cloned());
     }
-    // Ranking and shift functions ignore the declared frame, so it is only
-    // emitted where it matters (and cannot conflict with the tie-breaker the
-    // shift functions append).
-    let frame = if view.function.uses_frame() {
-        view.window_frame.as_deref()
-    } else {
-        None
-    }
-    .map(|frame| format!(" {frame}"))
-    .unwrap_or_default();
     let order_clause = if order.is_empty() {
         String::new()
     } else {
@@ -6714,69 +6782,87 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
     } else {
         format!("partition by {parts}")
     };
-    let over = match (part_clause.is_empty(), order_clause.is_empty()) {
-        // A global window: `over ()`, or `over (order by ...)`.
-        (true, true) => frame.clone(),
-        (true, false) => format!("{order_clause}{frame}"),
-        (false, true) => format!("{part_clause}{frame}"),
-        (false, false) => format!("{part_clause} {order_clause}{frame}"),
+    let over_base = match (part_clause.is_empty(), order_clause.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => order_clause,
+        (false, true) => part_clause,
+        (false, false) => format!("{part_clause} {order_clause}"),
     };
+    let computed = view
+        .columns
+        .iter()
+        .map(|column| {
+            let frame = if column.function.uses_frame() {
+                column
+                    .window_frame
+                    .as_deref()
+                    .map(|frame| format!(" {frame}"))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let expr = window_column_expr(column, &format!("{over_base}{frame}"));
+            format!("{expr} as {}", quote_ident(&column.column))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     let filter = format!(
         "{}{}",
         source_delete_filter(source_alias, change_column(&view.source)),
         filter_clause(view.filter.as_deref()),
     );
-    let value = quote_ident(view.function.column_name());
-    let window_filter = view
+    format!(
+        "computed as (select {pks}, {keys_select}{computed} \
+         from {source_alias} where {filter})"
+    )
+}
+
+/// One window column's expression inside the `computed` CTE.
+fn window_column_expr(column: &WindowColumn, over: &str) -> String {
+    let function = column.function;
+    let filter = column
         .window_filter
         .as_deref()
         .map(|filter| format!(" filter (where {filter})"))
         .unwrap_or_default();
-    let computed = match view.function {
+    match function {
         WindowFunction::Sum => format!(
-            "sum({}){window_filter} over ({over})",
-            quote_ident(view.value_column.as_deref().unwrap_or_default())
+            "sum({}){filter} over ({over})",
+            quote_ident(column.value_column.as_deref().unwrap_or_default())
         ),
-        WindowFunction::Count => match view.value_column.as_deref() {
-            Some(column) => {
-                format!(
-                    "count({}){window_filter} over ({over})",
-                    quote_ident(column)
-                )
+        WindowFunction::Count => match column.value_column.as_deref() {
+            Some(value) => {
+                format!("count({}){filter} over ({over})", quote_ident(value))
             }
-            None => format!("count(1){window_filter} over ({over})"),
+            None => format!("count(1){filter} over ({over})"),
         },
         function if function.is_value() => {
-            let column = quote_ident(view.value_column.as_deref().unwrap_or_default());
-            let args = view
+            let value = quote_ident(column.value_column.as_deref().unwrap_or_default());
+            let args = column
                 .window_args
                 .as_deref()
                 .map(|args| format!(", {args}"))
                 .unwrap_or_default();
-            let ignore_nulls = if view.ignore_nulls {
+            let ignore_nulls = if column.ignore_nulls {
                 " ignore nulls"
             } else {
                 ""
             };
             format!(
-                "{}({column}{args}){ignore_nulls} over ({over})",
+                "{}({value}{args}){ignore_nulls} over ({over})",
                 function.sql_name()
             )
         }
         WindowFunction::Ntile => {
-            let buckets = view.window_args.as_deref().unwrap_or_default();
+            let buckets = column.window_args.as_deref().unwrap_or_default();
             // `ntile` returns UInt64 in DataFusion; the MV stores bigint.
             format!("cast(ntile({buckets}) over ({over}) as bigint)")
         }
         WindowFunction::PercentRank | WindowFunction::CumeDist => {
-            format!("{}() over ({over})", view.function.sql_name())
+            format!("{}() over ({over})", function.sql_name())
         }
         function => format!("cast({}() over ({over}) as bigint)", function.sql_name()),
-    };
-    format!(
-        "computed as (select {pks}, {keys_select}{computed} as {value} \
-         from {source_alias} where {filter})"
-    )
+    }
 }
 
 /// The CTE prefix computing the affected partitions of one refresh window:
@@ -6908,12 +6994,22 @@ fn key_filters(
     Ok(filters)
 }
 
-/// SQL for one `ROW_NUMBER()` refresh window: recompute the affected
-/// partitions and rewrite their MV rows (`delete` then `insert`).
+/// SQL for one window refresh window: recompute the affected partitions and
+/// rewrite their MV rows (`delete` then `insert`).
 fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     let parts = quoted_list(&view.partition_keys);
     let pks = quoted_list(&view.source.primary_keys);
-    let value = quote_ident(view.function.column_name());
+    let names = view
+        .columns
+        .iter()
+        .map(|column| column.column.clone())
+        .collect::<Vec<_>>();
+    let columns = quoted_list(&names);
+    let computed_columns = names
+        .iter()
+        .map(|column| format!("c.{}", quote_ident(column)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let computed_pks = view
         .source
         .primary_keys
@@ -6968,11 +7064,11 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv \
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-         inserts as (select {computed_parts_select}{computed_pks}, c.{value}, \
+         inserts as (select {computed_parts_select}{computed_pks}, {computed_columns}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from computed c \
                      {computed_where}not exists (select 1 from already a where {pk_match_computed})), \
-         deletes as (select {parts_select}{pks}, {value}, \
+         deletes as (select {parts_select}{pks}, {columns}, \
                             'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from active \
                      {active_where}) \
@@ -7064,19 +7160,24 @@ fn top_k_rebuild_sql(view: &TopKView, epoch: i64) -> String {
     )
 }
 
-/// SQL for a full `ROW_NUMBER()` rebuild.
+/// SQL for a full window rebuild.
 fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
-    let parts = quoted_list(&view.partition_keys);
     let parts_select = if view.partition_keys.is_empty() {
         String::new()
     } else {
-        format!("{parts}, ")
+        format!("{}, ", quoted_list(&view.partition_keys))
     };
     let pks = quoted_list(&view.source.primary_keys);
-    let value = quote_ident(view.function.column_name());
+    let columns = quoted_list(
+        &view
+            .columns
+            .iter()
+            .map(|column| column.column.clone())
+            .collect::<Vec<_>>(),
+    );
     format!(
         "with {computed} \
-         select {parts_select}{pks}, {value}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         select {parts_select}{pks}, {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from computed",
         computed = window_function_cte(view, "src"),
     )

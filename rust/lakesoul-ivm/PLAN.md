@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | 单视图多窗口 | 随需求做 |
+| 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`DESC`/`NULLS FIRST` 排序；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
@@ -1396,6 +1396,34 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   MEDIAN 的 10 轮随机场景（中位数与行序无关，增量结果与全量逐位一致）；analyzer 单测覆盖
   WHERE/HAVING 与混用拒绝。
   全量 IVM 套件 36 个测试二进制 / 184 个测试通过。
+
+### 10.23 单视图多窗口（PR-17）
+
+- **问题**：`ViewSpec::Window` 此前只能承载一个窗口函数（`function`/`value_column`/
+  `window_*` 顶层字段），`row_number() over w, rank() over w` 这类共享同窗口的多列会被拒绝。
+- **计划形态**：DataFusion 把共享同一 `PARTITION BY`/`ORDER BY` 的窗口函数放进**一个**
+  `WindowAggr` 节点（每列可有自己的 frame）；不同 spec 会形成 `Window -> Window` 链，
+  本期仍不支持并在分析期明确报错。
+- **spec/typed**：新增 `WindowColumn { function, value_column, window_args, window_filter,
+  ignore_nulls, window_frame, column }`（serde，旧顶层字段移除、无兼容层）；
+  `ViewSpec::Window` 与 `WindowView` 改为 `columns: Vec<WindowColumn>`。typed 侧保留单列
+  便捷构造（`new`/`new_with_function`/`new_aggregate`，`with_window_*` 作用于唯一列），
+  新增 `new_with_columns`。
+- **列名**：优先取投影别名（未命名时回退函数默认名，如 `sum_v`）；解析器同时处理 DataFusion
+  的双层别名与优化计划中"列名 = 窗口表达式显示文本"的引用形态，并忽略自动生成的别名；
+  同名列（如同窗口两个 `SUM` 未加别名）在分析期报错。
+- **tie-breaker**：仅当**所有**列都需要时才把源主键追加进 ORDER BY（`ROW_NUMBER`/`LAG`/
+  `LEAD`/`NTILE` 需要；`RANK`/`DENSE_RANK`/`PERCENT_RANK`/`CUME_DIST` 与带 frame 的聚合
+  不需要，追加会破坏并列语义或 RANGE 的 peer 定义）。
+- **schema**：新增 `window_columns_mv_schema_for` 逐列推导类型（SUM → 值类型可空；
+  COUNT/排名 → Int64 非空；`PERCENT_RANK`/`CUME_DIST` → Float64 非空；值函数 → 源列类型
+  可空）；既有三个单列 schema 函数改为其包装，公开 API 不变。
+- **顺手修复**：`DESC` / `NULLS FIRST` 排序此前被静默按 `ASC NULLS LAST` 维护（结果错误），
+  现于分析期拒绝；并移除 PR-16 遗漏在 `sql.rs` 的 `probe_median` 探针测试。
+- **测试**：`window_multi.slt`（SUM + COUNT + ROW_NUMBER 同窗、更新/删除增量）；oracle
+  多窗口全量差分；typed 运行时 `multi_column_window_refreshes_and_rebuilds`（refresh 与
+  rebuild 一致）；analyzer 单测覆盖共享 spec、逐列 frame、别名、重名/不同 spec/DESC 拒绝。
+  全量 IVM 套件 36 个测试二进制 / 186 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
