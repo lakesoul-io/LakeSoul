@@ -1364,6 +1364,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   VAR_SAMP 的 10 轮随机场景（连续 3 次运行稳定）；analyzer 单测覆盖四种函数、WHERE/HAVING
   与混用拒绝。
   全量 IVM 套件 36 个测试二进制 / 178 个测试通过。
+### 10.21 窗口 `IGNORE NULLS`（PR-15）
+
+- **问题**：分析器此前完全忽略 `WindowFunctionParams.null_treatment`，`LAG(v) IGNORE NULLS`
+  会被静默按默认的 `RESPECT NULLS` 维护（结果错误）。DataFusion 对值窗口函数实现了
+  `IGNORE NULLS`（lead_lag / nth_value），对排名与聚合窗口则只是语法上的 no-op。
+- **变更**：`WindowParts` / `ViewSpec::Window` / `WindowView` 增加 `ignore_nulls: bool`
+  （serde default）；仅值函数（LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE）保留该标志，
+  排名/聚合窗口在分析期归一化为 false；`window_function_cte` 对值函数生成
+  `lag(v[, args]) ignore nulls over (...)`。
+- **语义**：偏移量只累计非 NULL 行；MV 列本就可空，重算模型对可空值同样成立。
+- **测试**：`window_ignore_nulls.slt`（可空 v：bootstrap、更新为 NULL、链延长、
+  `LAG(v, 2) IGNORE NULLS` 定义变化 rebuild）；analyzer 单测覆盖值函数保留、
+  `RESPECT NULLS`/默认保持 false、排名与聚合窗口归一化。
+  全量 IVM 套件 36 个测试二进制 / 180 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

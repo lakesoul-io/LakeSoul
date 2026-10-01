@@ -407,6 +407,9 @@ pub enum ViewSpec {
         /// rendered to SQL text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_filter: Option<String>,
+        /// `IGNORE NULLS` on a value window function.
+        #[serde(default)]
+        ignore_nulls: bool,
     },
     /// `SEMI`/`ANTI` join of a keyed left source against a right source,
     /// maintained by recomputing the affected left rows.
@@ -1350,6 +1353,8 @@ pub struct WindowView {
     pub window_frame: Option<String>,
     /// The `FILTER (WHERE ...)` predicate of an aggregate window function.
     pub window_filter: Option<String>,
+    /// `IGNORE NULLS` on a value window function.
+    pub ignore_nulls: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1394,6 +1399,7 @@ impl WindowView {
             window_args: None,
             window_frame: None,
             window_filter: None,
+            ignore_nulls: false,
             refresh_interval_ms: 0,
         }
     }
@@ -1421,6 +1427,7 @@ impl WindowView {
             window_args: None,
             window_frame: None,
             window_filter: None,
+            ignore_nulls: false,
             refresh_interval_ms: 0,
         }
     }
@@ -1449,6 +1456,12 @@ impl WindowView {
         self
     }
 
+    /// `IGNORE NULLS` on a value window function.
+    pub fn with_ignore_nulls(mut self) -> Self {
+        self.ignore_nulls = true;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Window {
             view_id: self.view_id.clone(),
@@ -1462,6 +1475,7 @@ impl WindowView {
             window_args: self.window_args.clone(),
             window_frame: self.window_frame.clone(),
             window_filter: self.window_filter.clone(),
+            ignore_nulls: self.ignore_nulls,
         }
     }
 }
@@ -2504,6 +2518,7 @@ impl IvmRuntime {
                 window_args,
                 window_frame,
                 window_filter,
+                ignore_nulls,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -2516,6 +2531,7 @@ impl IvmRuntime {
                 window_args: window_args.clone(),
                 window_frame: window_frame.clone(),
                 window_filter: window_filter.clone(),
+                ignore_nulls: *ignore_nulls,
                 refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
@@ -6478,7 +6494,15 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
                 .as_deref()
                 .map(|args| format!(", {args}"))
                 .unwrap_or_default();
-            format!("{}({column}{args}) over ({over})", function.sql_name())
+            let ignore_nulls = if view.ignore_nulls {
+                " ignore nulls"
+            } else {
+                ""
+            };
+            format!(
+                "{}({column}{args}){ignore_nulls} over ({over})",
+                function.sql_name()
+            )
         }
         WindowFunction::Ntile => {
             let buckets = view.window_args.as_deref().unwrap_or_default();

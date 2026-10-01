@@ -922,6 +922,31 @@ fn sqllogic_window_lag() {
 }
 
 #[test]
+fn sqllogic_window_ignore_nulls() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_source(
+        "ignorenulls",
+        include_str!("slt/window_ignore_nulls.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        window_value_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Lag,
+            "v",
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_lead() {
     run_script_for_mv(
         "windowlead",
