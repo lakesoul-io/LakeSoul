@@ -33,7 +33,7 @@ use datafusion::sql::unparser::Unparser;
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
+    CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
     SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowFunction,
 };
@@ -339,6 +339,8 @@ enum HavingColumns<'a> {
     },
     /// `variance_v` / `stddev_v` for a variance view.
     Variance { statistic: VarianceKind },
+    /// `median_v` for a median view.
+    Median,
 }
 
 /// Rewrite the `HAVING` predicates over the materialized MV columns and render
@@ -492,6 +494,16 @@ fn having_column(
             };
             if name == expected && !function.params.distinct && column_arg(value_column) {
                 Ok(IVM_VALUE_COLUMN)
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::Median => {
+            if name == "median"
+                && !function.params.distinct
+                && function.params.args.len() == 1
+            {
+                Ok(IVM_MEDIAN_COLUMN)
             } else {
                 Err(not_materialized(name))
             }
@@ -708,6 +720,7 @@ fn analyze_aggregate(
     let mut sum: Option<String> = None;
     let mut avg: Option<String> = None;
     let mut variance: Option<(VarianceKind, String)> = None;
+    let mut median: Option<String> = None;
     let mut min_max: Option<(MinMaxKind, String)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     for expr in &aggregate.aggr_expr {
@@ -759,6 +772,7 @@ fn analyze_aggregate(
                     || sum.is_some()
                     || avg.is_some()
                     || variance.is_some()
+                    || median.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -781,7 +795,11 @@ fn analyze_aggregate(
                         "COUNT(column) is not supported; use COUNT(*)",
                     ));
                 }
-                if min_max.is_some() || distinct.is_some() || variance.is_some() {
+                if min_max.is_some()
+                    || distinct.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
                 if count {
@@ -791,7 +809,11 @@ fn analyze_aggregate(
                 count = true;
             }
             ("sum", false) => {
-                if min_max.is_some() || distinct.is_some() || variance.is_some() {
+                if min_max.is_some()
+                    || distinct.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
                 if sum.is_some() {
@@ -806,7 +828,11 @@ fn analyze_aggregate(
                 sum = Some(column);
             }
             ("avg", false) => {
-                if min_max.is_some() || distinct.is_some() || variance.is_some() {
+                if min_max.is_some()
+                    || distinct.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
                 if avg.is_some() {
@@ -838,6 +864,7 @@ fn analyze_aggregate(
                     || sum.is_some()
                     || avg.is_some()
                     || variance.is_some()
+                    || median.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -858,6 +885,7 @@ fn analyze_aggregate(
                     || sum.is_some()
                     || avg.is_some()
                     || variance.is_some()
+                    || median.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -869,9 +897,23 @@ fn analyze_aggregate(
                     "stddev_pop" => VarianceKind::StddevPop,
                     _ => VarianceKind::VarSamp,
                 };
-                let raw = variance_argument(&function.params.args)?;
+                let raw = recomputed_argument(&function.params.args)?;
                 let value = hoisted.get(&raw).cloned().unwrap_or(raw);
                 variance = Some((statistic, value));
+            }
+            ("median", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                let raw = recomputed_argument(&function.params.args)?;
+                median = Some(hoisted.get(&raw).cloned().unwrap_or(raw));
             }
             _ => {
                 return Err(unsupported(format!(
@@ -916,6 +958,8 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if median.is_some() {
+        render_having(having_exprs, HavingColumns::Median, aggregate, &group_keys)?
     } else if sum.is_some() || count || avg.is_some() {
         render_having(
             having_exprs,
@@ -941,6 +985,16 @@ fn analyze_aggregate(
             group_keys,
             value_column: variance_column,
             statistic,
+            filter,
+            having,
+        }
+    } else if let Some(median_column) = median {
+        ViewSpec::Median {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            value_column: median_column,
             filter,
             having,
         }
@@ -1306,10 +1360,11 @@ fn positive_integer_arg(args: &[Expr], what: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
-/// The value column of a variance aggregate: the optimizer either casts the
-/// column inline (`var(CAST(v AS Float64))`) or hoists the cast into a
-/// projection (`var(__common_expr_1 AS v)`), so both wrappers are unwrapped.
-fn variance_argument(args: &[Expr]) -> Result<String> {
+/// The value column of a recomputed aggregate (variance family or median):
+/// the optimizer either casts the column inline (`var(CAST(v AS Float64))`)
+/// or hoists the cast into a projection (`var(__common_expr_1 AS v)`), so
+/// both wrappers are unwrapped.
+fn recomputed_argument(args: &[Expr]) -> Result<String> {
     let [arg] = args else {
         return Err(unsupported("aggregates take exactly one column argument"));
     };
@@ -2499,6 +2554,68 @@ mod tests {
             panic!("expected a window spec");
         };
         assert!(!ignore_nulls);
+    }
+
+    #[tokio::test]
+    async fn probe_median() {
+        for sql in [
+            "select g, median(v) from src group by g",
+            "select g, median(v) from src where v > 5 group by g having median(v) > 1",
+        ] {
+            let ctx = SessionContext::new();
+            let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+            ctx.register_table("src", Arc::new(table)).unwrap();
+            match ctx.sql(sql).await {
+                Ok(frame) => {
+                    let plan = frame.logical_plan().clone();
+                    println!("SQL: {sql}\nRAW:\n{plan}\n");
+                    let optimized = ctx.state().optimize(&plan).unwrap();
+                    println!("OPT:\n{optimized}\n----");
+                }
+                Err(error) => println!("SQL: {sql}\nPLAN ERROR: {error}\n----"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn analyzes_median() {
+        let analyzed = analyze_optimized("select g, median(v) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::Median {
+            value_column,
+            filter,
+            having,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a median spec");
+        };
+        assert_eq!(value_column, "v");
+        assert_eq!(filter, None);
+        assert_eq!(having, None);
+
+        // WHERE and HAVING.
+        let analyzed = analyze_optimized(
+            "select g, median(v) from src where v > 5 group by g having median(v) > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Median { filter, having, .. } = analyzed.spec else {
+            panic!("expected a median spec");
+        };
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("median_v > 1.0")
+        );
+
+        // Mixing with other aggregate kinds is rejected.
+        assert!(
+            analyze("select g, median(v), sum(v) from src group by g")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

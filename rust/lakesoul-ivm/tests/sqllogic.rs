@@ -31,10 +31,11 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowFunction,
-    avg_mv_schema_for, distinct_agg_mv_schema_for, min_max_mv_schema_for,
-    row_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
+    min_max_mv_schema_for, row_mv_schema_for, sum_count_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -801,6 +802,16 @@ fn sqllogic_distinct_sum() {
             DistinctAggKind::Sum,
         )
         .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_median() {
+    run_script_for_mv(
+        "median",
+        include_str!("slt/median.slt"),
+        median_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v").unwrap(),
         group_keys(&["g"]),
     );
 }
