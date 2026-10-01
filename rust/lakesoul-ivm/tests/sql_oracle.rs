@@ -17,10 +17,11 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
-    MinMaxKind, PhysicalFormat, VarianceKind, WindowFunction, avg_mv_schema_for,
-    distinct_agg_mv_schema_for, median_mv_schema_for, min_max_mv_schema_for,
-    sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    variance_mv_schema_for, window_aggregate_mv_schema_for, window_ranking_mv_schema_for,
+    MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
+    avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
+    min_max_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
     window_value_mv_schema_for,
 };
 use tempfile::tempdir;
@@ -344,6 +345,36 @@ async fn oracle_top_k_where_matches_full_recompute() {
              ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn \
              FROM __SRC__ WHERE op <> 'delete' AND v > 30) t WHERE rn <= 2",
         "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_window_matches_full_recompute() {
+    // Several window functions sharing one window specification.
+    let columns = vec![
+        WindowColumn::new(WindowFunction::Sum)
+            .with_value("v")
+            .with_column("total"),
+        WindowColumn::new(WindowFunction::Count).with_column("n"),
+    ];
+    run_oracle(
+        "multiwindow",
+        1,
+        window_columns_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &["k".to_string()],
+            &columns,
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT g, k, SUM(v) OVER w AS total, COUNT(*) OVER w AS n \
+         FROM __SRC__ WHERE v > 30 WINDOW w AS (PARTITION BY g)",
+        "SELECT g, k, SUM(v) OVER (PARTITION BY g) AS total, \
+                COUNT(*) OVER (PARTITION BY g) AS n \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 30",
+        "SELECT g, k, total, n FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

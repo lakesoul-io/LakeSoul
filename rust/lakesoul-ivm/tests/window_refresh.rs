@@ -15,7 +15,8 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IVM_ROW_NUMBER_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
-    WindowView, window_mv_schema,
+    WindowColumn, WindowFunction, WindowView, window_columns_mv_schema_for,
+    window_mv_schema,
 };
 use tempfile::tempdir;
 
@@ -82,6 +83,175 @@ async fn window_map(runtime: &IvmRuntime, mv: &IvmTable) -> HashMap<(i64, i64), 
         }
     }
     values
+}
+
+/// The current `(partition, key) -> (sum, count, row_number)` state.
+async fn multi_window_map(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> HashMap<(i64, i64), (i64, i64, i64)> {
+    let mut values = HashMap::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap() {
+        let schema = batch.schema();
+        let index = |name: &str| schema.index_of(name).unwrap();
+        let partitions = batch
+            .column(index("g"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let keys = batch
+            .column(index("k"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let sum = batch
+            .column(index("sum_v"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let count = batch
+            .column(index("count_v"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let number = batch
+            .column(index(IVM_ROW_NUMBER_COLUMN))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(index(IVM_ROW_KINDS_COLUMN))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                values.insert(
+                    (partitions.value(row), keys.value(row)),
+                    (sum.value(row), count.value(row), number.value(row)),
+                );
+            }
+        }
+    }
+    values
+}
+
+#[test_log::test(tokio::test)]
+async fn multi_column_window_refreshes_and_rebuilds() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_window_multi_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let columns = vec![
+        WindowColumn::new(WindowFunction::Sum).with_value("v"),
+        WindowColumn::new(WindowFunction::Count),
+        WindowColumn::new(WindowFunction::RowNumber),
+    ];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_window_multi_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                window_columns_mv_schema_for(
+                    &source_schema(),
+                    &["g".to_string()],
+                    &["k".to_string()],
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string(), "k".to_string()])
+            .with_bucket_columns(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = WindowView::new_with_columns(
+        format!("window_multi_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        vec!["v".to_string()],
+        columns,
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, 1, 10, "insert"),
+                (2, 1, 20, "insert"),
+                (3, 1, 30, "insert"),
+                (4, 2, 5, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    assert_eq!(
+        multi_window_map(&runtime, &mv).await,
+        HashMap::from([
+            ((1, 1), (10, 1, 1)),
+            ((1, 2), (30, 2, 2)),
+            ((1, 3), (60, 3, 3)),
+            ((2, 4), (5, 1, 1)),
+        ])
+    );
+
+    // An update recomputes every column of the affected partition.
+    source
+        .append_batch(runtime.client(), source_batch(&[(3, 1, 100, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    assert_eq!(
+        multi_window_map(&runtime, &mv).await,
+        HashMap::from([
+            ((1, 1), (10, 1, 1)),
+            ((1, 2), (30, 2, 2)),
+            ((1, 3), (130, 3, 3)),
+            ((2, 4), (5, 1, 1)),
+        ])
+    );
+
+    // A delete removes the row and shifts the following ranks.
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, 1, 20, "delete")]))
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    let expected = HashMap::from([
+        ((1, 1), (10, 1, 1)),
+        ((1, 3), (110, 2, 2)),
+        ((2, 4), (5, 1, 1)),
+    ]);
+    assert_eq!(multi_window_map(&runtime, &mv).await, expected);
+
+    // A rebuild agrees with the incremental result.
+    runtime.rebuild_window(&view).await.unwrap();
+    assert_eq!(multi_window_map(&runtime, &mv).await, expected);
+
+    runtime
+        .client()
+        .drop_table(&source.table_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&mv.table_name, "default")
+        .await
+        .unwrap();
+    drop(dir);
 }
 
 /// Full `ROW_NUMBER()` of the current source state.
