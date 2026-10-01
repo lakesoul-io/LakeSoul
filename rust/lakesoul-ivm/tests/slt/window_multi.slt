@@ -1,0 +1,53 @@
+# Several window functions over one window specification.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=a,v=30,op=insert; k=4,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, SUM(v) OVER w AS total, COUNT(*) OVER w AS n, ROW_NUMBER() OVER w AS rn FROM __SRC__ WINDOW w AS (PARTITION BY g ORDER BY v, k)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIII rowsort
+SELECT k, total, n, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 1 1
+2 30 2 2
+3 60 3 3
+4 5 1 1
+
+# An update moves the running values of the whole partition.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, SUM(v) OVER w AS total, COUNT(*) OVER w AS n, ROW_NUMBER() OVER w AS rn FROM __SRC__ WINDOW w AS (PARTITION BY g ORDER BY v, k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIII rowsort
+SELECT k, total, n, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 1 1
+2 30 2 2
+3 130 3 3
+4 5 1 1
+
+# A delete drops the row and shifts the following ranks.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, SUM(v) OVER w AS total, COUNT(*) OVER w AS n, ROW_NUMBER() OVER w AS rn FROM __SRC__ WINDOW w AS (PARTITION BY g ORDER BY v, k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIII rowsort
+SELECT k, total, n, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 1 1
+3 110 2 2
+4 5 1 1

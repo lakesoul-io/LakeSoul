@@ -30,12 +30,12 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
-    IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowFunction,
-    avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
+    IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
+    WindowFunction, avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
     min_max_mv_schema_for, row_mv_schema_for, sum_count_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -747,6 +747,29 @@ fn sqllogic_window_where() {
             &group_keys(&["g"]),
             &group_keys(&["k"]),
             WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_multi() {
+    let columns = vec![
+        WindowColumn::new(WindowFunction::Sum)
+            .with_value("v")
+            .with_column("total"),
+        WindowColumn::new(WindowFunction::Count).with_column("n"),
+        WindowColumn::new(WindowFunction::RowNumber).with_column("rn"),
+    ];
+    run_script_for_mv(
+        "windowmulti",
+        include_str!("slt/window_multi.slt"),
+        window_columns_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            &columns,
         )
         .unwrap(),
         group_keys(&["g", "k"]),

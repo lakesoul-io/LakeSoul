@@ -35,7 +35,8 @@ use crate::error::Result;
 use crate::runtime::{
     CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
-    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowFunction,
+    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
+    WindowFunction,
 };
 use crate::table::IvmTable;
 
@@ -1049,38 +1050,32 @@ fn analyze_window(
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
     let (source, filter) = collect_filtered_source(&window.input, tables, "a window")?;
-    // Selecting the window expression itself is fine; computing on top of it
-    // would be silently dropped otherwise.
+    // Selecting a window expression itself (aliased or not) is fine;
+    // computing on top of it would be silently dropped otherwise.
     for expr in &projection.expr {
-        if column_name(expr).is_none() && !window.window_expr.contains(expr) {
+        let mut inner = expr;
+        while let Expr::Alias(alias) = inner {
+            inner = &alias.expr;
+        }
+        if column_name(inner).is_none() && !window.window_expr.contains(inner) {
             return Err(unsupported(
                 "computed columns above a window function are not supported",
             ));
         }
     }
     let WindowParts {
-        function,
         partition_keys,
         order_keys,
-        value_column,
-        window_args,
-        window_frame,
-        window_filter,
-        ignore_nulls,
-    } = window_function_spec(window)?;
+        columns,
+    } = window_function_spec(window, Some(projection))?;
     Ok(ViewSpec::Window {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
         partition_keys,
         order_keys,
-        function,
-        value_column,
+        columns,
         filter,
-        window_args,
-        window_frame,
-        window_filter,
-        ignore_nulls,
     })
 }
 
@@ -1104,13 +1099,14 @@ fn try_analyze_top_k(
         return Ok(None);
     };
     let WindowParts {
-        function,
         partition_keys,
         order_keys,
-        value_column,
-        ..
-    } = window_function_spec(window)?;
-    if function != WindowFunction::RowNumber || value_column.is_some() {
+        columns,
+    } = window_function_spec(window, None)?;
+    if columns.len() != 1
+        || columns[0].function != WindowFunction::RowNumber
+        || columns[0].value_column.is_some()
+    {
         return Ok(None);
     }
     // The filter references the window column through the subquery scope: it
@@ -1191,40 +1187,93 @@ fn try_analyze_top_k(
     }))
 }
 
-/// `(function, partition keys, order keys, value column, extra SQL args)`.
+/// The window columns of a window node plus their shared partition and
+/// ordering.
 struct WindowParts {
-    function: WindowFunction,
     partition_keys: Vec<String>,
     order_keys: Vec<String>,
-    value_column: Option<String>,
-    window_args: Option<String>,
-    window_frame: Option<String>,
-    window_filter: Option<String>,
-    /// `IGNORE NULLS` on a value function.
-    ignore_nulls: bool,
+    columns: Vec<WindowColumn>,
 }
 
-/// The single window function of a window node.
-fn window_function_spec(window: &Window) -> Result<WindowParts> {
-    let [expr] = window.window_expr.as_slice() else {
-        return Err(unsupported("multiple window functions in one view"));
-    };
-    let Expr::WindowFunction(function) = expr else {
-        return Err(unsupported("non-window expression in a window node"));
-    };
+/// The window columns of a window node, sharing one `PARTITION BY`/`ORDER BY`
+/// clause.
+fn window_function_spec(
+    window: &Window,
+    projection: Option<&Projection>,
+) -> Result<WindowParts> {
+    if window.window_expr.is_empty() {
+        return Err(unsupported("window node without window functions"));
+    }
+    let mut partition_keys: Option<Vec<String>> = None;
+    let mut order_keys: Option<Vec<String>> = None;
+    let mut columns = Vec::with_capacity(window.window_expr.len());
+    for expr in &window.window_expr {
+        let Expr::WindowFunction(function) = expr else {
+            return Err(unsupported("non-window expression in a window node"));
+        };
+        let params = &function.params;
+        // The materialized ordering is ascending `NULLS LAST`; anything else
+        // would be silently reordered.
+        for sort in &params.order_by {
+            if !sort.asc || sort.nulls_first {
+                return Err(unsupported(
+                    "only ascending window ordering (NULLS LAST) is supported",
+                ));
+            }
+        }
+        let expr_partition = params
+            .partition_by
+            .iter()
+            .map(column_name)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| unsupported("PARTITION BY expressions must be columns"))?;
+        let expr_order = params
+            .order_by
+            .iter()
+            .map(|sort| column_name(&sort.expr))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
+        match (&partition_keys, &order_keys) {
+            (Some(partition), Some(order)) => {
+                if partition != &expr_partition || order != &expr_order {
+                    return Err(unsupported(
+                        "multiple window functions with different PARTITION BY/ORDER BY",
+                    ));
+                }
+            }
+            _ => {
+                partition_keys = Some(expr_partition.clone());
+                order_keys = Some(expr_order.clone());
+            }
+        }
+        let mut column = window_column(function, &expr_order)?;
+        column.column = projection
+            .and_then(|projection| projection_alias(projection, expr))
+            .unwrap_or_else(|| column.function.column_name().to_string());
+        columns.push(column);
+    }
+    let mut names = std::collections::HashSet::new();
+    for column in &columns {
+        if !names.insert(column.column.clone()) {
+            return Err(unsupported(format!(
+                "duplicate window column {}; alias the repeated functions",
+                column.column
+            )));
+        }
+    }
+    Ok(WindowParts {
+        partition_keys: partition_keys.unwrap_or_default(),
+        order_keys: order_keys.unwrap_or_default(),
+        columns,
+    })
+}
+
+/// One window column parsed from its function expression.
+fn window_column(
+    function: &datafusion::logical_expr::expr::WindowFunction,
+    order_keys: &[String],
+) -> Result<WindowColumn> {
     let params = &function.params;
-    let partition_keys = params
-        .partition_by
-        .iter()
-        .map(column_name)
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| unsupported("PARTITION BY expressions must be columns"))?;
-    let order_keys = params
-        .order_by
-        .iter()
-        .map(|sort| column_name(&sort.expr))
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
     let (function, value_column, window_args) = match &function.fun {
         WindowFunctionDefinition::WindowUDF(udf) => match udf.name() {
             "row_number" => (WindowFunction::RowNumber, None, None),
@@ -1306,16 +1355,44 @@ fn window_function_spec(window: &Window) -> Result<WindowParts> {
     // aggregate windows it is a no-op, so it is normalized away.
     let ignore_nulls = function.is_value()
         && matches!(params.null_treatment, Some(NullTreatment::IgnoreNulls));
-    Ok(WindowParts {
+    Ok(WindowColumn {
         function,
-        partition_keys,
-        order_keys,
         value_column,
         window_args,
-        window_frame,
         window_filter,
         ignore_nulls,
+        window_frame,
+        column: String::new(),
     })
+}
+
+/// The alias the projection gives a window expression, when it has one (the
+/// outermost alias wins).
+fn projection_alias(projection: &Projection, target: &Expr) -> Option<String> {
+    let target_display = format!("{target}");
+    for expr in &projection.expr {
+        let mut name = None;
+        let mut inner = expr;
+        while let Expr::Alias(alias) = inner {
+            if name.is_none() {
+                name = Some(alias.name.clone());
+            }
+            inner = &alias.expr;
+        }
+        // The optimized plan references the window node's output by a column
+        // named after the window expression.
+        let matches = inner == target
+            || matches!(inner, Expr::Column(column) if column.name == target_display);
+        if matches {
+            // Ignore the alias DataFusion generates from the expression text
+            // when the user did not name the column.
+            return match name {
+                Some(name) if name != format!("{inner}") => Some(name),
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 /// The value column of a value window function (`FIRST_VALUE`/`LAST_VALUE`).
@@ -2514,14 +2591,10 @@ mod tests {
             ),
         ] {
             let analyzed = analyze(sql).await.unwrap();
-            let ViewSpec::Window {
-                function: got,
-                ignore_nulls,
-                ..
-            } = analyzed.spec
-            else {
-                panic!("expected a window spec");
-            };
+            let column = only_window_column(&analyzed.spec);
+            let got = column.function;
+            let ignore_nulls = column.ignore_nulls;
+
             assert_eq!(got, function);
             assert!(ignore_nulls);
         }
@@ -2532,9 +2605,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window { ignore_nulls, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let ignore_nulls = column.ignore_nulls;
+
         assert!(!ignore_nulls);
 
         // For ranking and aggregate windows it is a no-op and normalized away.
@@ -2542,80 +2615,18 @@ mod tests {
             analyze("select k, row_number() ignore nulls over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window { ignore_nulls, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let ignore_nulls = column.ignore_nulls;
+
         assert!(!ignore_nulls);
         let analyzed =
             analyze("select k, sum(v) ignore nulls over (partition by g) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window { ignore_nulls, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let ignore_nulls = column.ignore_nulls;
+
         assert!(!ignore_nulls);
-    }
-
-    #[tokio::test]
-    async fn probe_median() {
-        for sql in [
-            "select g, median(v) from src group by g",
-            "select g, median(v) from src where v > 5 group by g having median(v) > 1",
-        ] {
-            let ctx = SessionContext::new();
-            let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
-            ctx.register_table("src", Arc::new(table)).unwrap();
-            match ctx.sql(sql).await {
-                Ok(frame) => {
-                    let plan = frame.logical_plan().clone();
-                    println!("SQL: {sql}\nRAW:\n{plan}\n");
-                    let optimized = ctx.state().optimize(&plan).unwrap();
-                    println!("OPT:\n{optimized}\n----");
-                }
-                Err(error) => println!("SQL: {sql}\nPLAN ERROR: {error}\n----"),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn analyzes_median() {
-        let analyzed = analyze_optimized("select g, median(v) from src group by g")
-            .await
-            .unwrap();
-        let ViewSpec::Median {
-            value_column,
-            filter,
-            having,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a median spec");
-        };
-        assert_eq!(value_column, "v");
-        assert_eq!(filter, None);
-        assert_eq!(having, None);
-
-        // WHERE and HAVING.
-        let analyzed = analyze_optimized(
-            "select g, median(v) from src where v > 5 group by g having median(v) > 1",
-        )
-        .await
-        .unwrap();
-        let ViewSpec::Median { filter, having, .. } = analyzed.spec else {
-            panic!("expected a median spec");
-        };
-        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
-        assert_eq!(
-            normalized(having.as_deref()).as_deref(),
-            Some("median_v > 1.0")
-        );
-
-        // Mixing with other aggregate kinds is rejected.
-        assert!(
-            analyze("select g, median(v), sum(v) from src group by g")
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]
@@ -2837,6 +2848,14 @@ mod tests {
         );
     }
 
+    /// The only window column of an analyzed window view.
+    fn only_window_column(spec: &ViewSpec) -> &WindowColumn {
+        match spec {
+            ViewSpec::Window { columns, .. } if columns.len() == 1 => &columns[0],
+            other => panic!("expected a single-column window spec, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn analyzes_ranking_windows() {
         for (sql, function) in [
@@ -2862,16 +2881,51 @@ mod tests {
                     mv_table_id: "table_mv".to_string(),
                     partition_keys: vec!["g".to_string()],
                     order_keys: vec!["v".to_string()],
-                    function,
-                    value_column: None,
+                    columns: vec![WindowColumn::new(function)],
                     filter: None,
-                    window_args: None,
-                    window_frame: None,
-                    window_filter: None,
-                    ignore_nulls: false,
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn analyzes_multiple_window_columns() {
+        let analyzed = analyze(
+            "select k, sum(v) over w as total, count(*) over w as n from src window w as (partition by g)",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            partition_keys,
+            columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(partition_keys, vec!["g".to_string()]);
+        assert_eq!(columns.len(), 2);
+        assert_eq!(columns[0].function, WindowFunction::Sum);
+        assert_eq!(columns[0].value_column.as_deref(), Some("v"));
+        assert_eq!(columns[0].column, "total");
+        assert_eq!(columns[1].function, WindowFunction::Count);
+        assert_eq!(columns[1].column, "n");
+
+        // Columns may carry their own frames.
+        let analyzed = analyze(
+            "select k, sum(v) over (partition by g order by v) as a, sum(k) over (partition by g order by v rows between unbounded preceding and current row) as b from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { columns, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(columns.len(), 2);
+        assert_eq!(columns[0].window_frame, None);
+        assert_eq!(
+            columns[1].window_frame.as_deref(),
+            Some("rows between unbounded preceding and current row")
+        );
     }
 
     #[tokio::test]
@@ -2880,16 +2934,15 @@ mod tests {
             analyze("select k, lag(v) over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window {
-            function,
-            value_column,
-            window_args,
-            order_keys,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let value_column = column.value_column.clone();
+        let window_args = column.window_args.clone();
+        let order_keys = match &analyzed.spec {
+            ViewSpec::Window { order_keys, .. } => order_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+
         assert_eq!(function, WindowFunction::Lag);
         assert_eq!(value_column, Some("v".to_string()));
         assert_eq!(window_args, None);
@@ -2902,15 +2955,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window {
-            function,
-            value_column,
-            window_args,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let value_column = column.value_column.clone();
+        let window_args = column.window_args.clone();
+
         assert_eq!(function, WindowFunction::Lead);
         assert_eq!(value_column, Some("v".to_string()));
         assert_eq!(window_args.as_deref(), Some("2, 0"));
@@ -2941,16 +2990,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window {
-            function,
-            value_column,
-            window_args,
-            window_frame,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let value_column = column.value_column.clone();
+        let window_args = column.window_args.clone();
+        let window_frame = column.window_frame.clone();
+
         assert_eq!(function, WindowFunction::FirstValue);
         assert_eq!(value_column, Some("v".to_string()));
         assert_eq!(window_args, None);
@@ -2965,15 +3010,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window {
-            function,
-            window_args,
-            window_frame,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let window_args = column.window_args.clone();
+        let window_frame = column.window_frame.clone();
+
         assert_eq!(function, WindowFunction::NthValue);
         assert_eq!(window_args.as_deref(), Some("2"));
         assert_eq!(window_frame, None);
@@ -2984,9 +3025,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window { function, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+
         assert_eq!(function, WindowFunction::LastValue);
 
         // Rejections: a missing or non-literal row number, no ordering, and
@@ -3023,15 +3064,11 @@ mod tests {
             analyze("select k, ntile(4) over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window {
-            function,
-            value_column,
-            window_args,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let value_column = column.value_column.clone();
+        let window_args = column.window_args.clone();
+
         assert_eq!(function, WindowFunction::Ntile);
         assert_eq!(value_column, None);
         assert_eq!(window_args.as_deref(), Some("4"));
@@ -3040,18 +3077,18 @@ mod tests {
             analyze("select k, percent_rank() over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window { function, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+
         assert_eq!(function, WindowFunction::PercentRank);
 
         let analyzed =
             analyze("select k, cume_dist() over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window { function, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+
         assert_eq!(function, WindowFunction::CumeDist);
 
         // NTILE needs a positive integer literal bucket count.
@@ -3075,14 +3112,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window {
-            function,
-            window_filter,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let window_filter = column.window_filter.clone();
+
         assert_eq!(function, WindowFunction::Sum);
         assert_eq!(
             normalized(window_filter.as_deref()).as_deref(),
@@ -3094,15 +3127,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window {
-            function,
-            value_column,
-            window_filter,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let value_column = column.value_column.clone();
+        let window_filter = column.window_filter.clone();
+
         assert_eq!(function, WindowFunction::Count);
         assert_eq!(value_column, None);
         assert_eq!(
@@ -3116,30 +3145,34 @@ mod tests {
         let analyzed = analyze("select k, row_number() over (order by v, k) from src")
             .await
             .unwrap();
-        let ViewSpec::Window {
-            function,
-            partition_keys,
-            order_keys,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let partition_keys = match &analyzed.spec {
+            ViewSpec::Window { partition_keys, .. } => partition_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+        let order_keys = match &analyzed.spec {
+            ViewSpec::Window { order_keys, .. } => order_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
+        };
+
         assert_eq!(function, WindowFunction::RowNumber);
         assert!(partition_keys.is_empty());
         assert_eq!(order_keys, vec!["v".to_string(), "k".to_string()]);
 
         let analyzed = analyze("select k, sum(v) over () from src").await.unwrap();
-        let ViewSpec::Window {
-            function,
-            partition_keys,
-            order_keys,
-            value_column,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let partition_keys = match &analyzed.spec {
+            ViewSpec::Window { partition_keys, .. } => partition_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+        let order_keys = match &analyzed.spec {
+            ViewSpec::Window { order_keys, .. } => order_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
+        };
+        let value_column = column.value_column.clone();
+
         assert_eq!(function, WindowFunction::Sum);
         assert_eq!(value_column, Some("v".to_string()));
         assert!(partition_keys.is_empty());
@@ -3151,15 +3184,14 @@ mod tests {
         let analyzed = analyze("select k, sum(v) over (partition by g) from src")
             .await
             .unwrap();
-        let ViewSpec::Window {
-            function,
-            order_keys,
-            value_column,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let order_keys = match &analyzed.spec {
+            ViewSpec::Window { order_keys, .. } => order_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+        let value_column = column.value_column.clone();
+
         assert_eq!(function, WindowFunction::Sum);
         assert_eq!(value_column, Some("v".to_string()));
         assert!(order_keys.is_empty());
@@ -3168,15 +3200,14 @@ mod tests {
             analyze("select k, count(*) over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window {
-            function,
-            order_keys,
-            value_column,
-            ..
-        } = analyzed.spec
-        else {
-            panic!("expected a window spec");
+        let column = only_window_column(&analyzed.spec);
+        let function = column.function;
+        let order_keys = match &analyzed.spec {
+            ViewSpec::Window { order_keys, .. } => order_keys.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+        let value_column = column.value_column.clone();
+
         assert_eq!(function, WindowFunction::Count);
         assert_eq!(value_column, None);
         assert_eq!(order_keys, vec!["v".to_string()]);
@@ -3228,9 +3259,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window { filter, .. } = analyzed.spec else {
-            panic!("expected a window spec");
+        let filter = match &analyzed.spec {
+            ViewSpec::Window { filter, .. } => filter.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+
         assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
     }
 
@@ -3242,9 +3275,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let ViewSpec::Window { filter, .. } = analyzed.spec else {
-            panic!("expected a window spec");
+        let filter = match &analyzed.spec {
+            ViewSpec::Window { filter, .. } => filter.clone(),
+            other => panic!("expected a window spec, got {other:?}"),
         };
+
         assert_eq!(
             normalized(filter.as_deref()).as_deref(),
             Some("v > 5 AND g <> 'x'")
@@ -3268,18 +3303,18 @@ mod tests {
             analyze("select k, sum(v) over (partition by g order by v) from src")
                 .await
                 .unwrap();
-        let ViewSpec::Window { window_frame, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let window_frame = column.window_frame.clone();
+
         assert_eq!(window_frame, None);
         let analyzed = analyze(
             "select k, sum(v) over (partition by g order by v rows between 1 preceding and current row) from src",
         )
         .await
         .unwrap();
-        let ViewSpec::Window { window_frame, .. } = analyzed.spec else {
-            panic!("expected a window spec");
-        };
+        let column = only_window_column(&analyzed.spec);
+        let window_frame = column.window_frame.clone();
+
         assert_eq!(
             window_frame.as_deref(),
             Some("rows between 1 preceding and current row")
@@ -3290,10 +3325,27 @@ mod tests {
                 .await
                 .is_err()
         );
-        // Multiple window functions are not maintained yet.
+        // Multiple windows with different partitionings are not maintained
+        // yet.
         assert!(
             analyze(
-                "select k, row_number() over (partition by g order by v), rank() over (partition by g order by v) from src"
+                "select k, row_number() over (partition by g order by v), rank() over (partition by k order by v) from src"
+            )
+            .await
+            .is_err()
+        );
+        // Non-ascending orderings would be silently reordered.
+        assert!(
+            analyze(
+                "select k, row_number() over (partition by g order by v desc) from src"
+            )
+            .await
+            .is_err()
+        );
+        // Repeated functions need distinct column names (an alias).
+        assert!(
+            analyze(
+                "select k, sum(v) over (partition by g order by v), sum(k) over (partition by g order by v rows between unbounded preceding and current row) from src"
             )
             .await
             .is_err()

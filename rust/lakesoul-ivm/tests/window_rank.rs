@@ -177,7 +177,7 @@ async fn read_ranks(fixture: &Fixture) -> Vec<(String, i64, i64)> {
 
 /// The SQL semantics of the same ranking function.
 async fn full_ranks(fixture: &Fixture) -> Vec<(String, i64, i64)> {
-    let function = fixture.view.function.sql_name();
+    let function = fixture.view.columns[0].function.sql_name();
     let context = SessionContext::new();
     register(
         &context,
@@ -419,7 +419,7 @@ async fn rank_and_dense_rank_match_sql() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(spec["function"], "rank");
+    assert_eq!(spec["columns"][0]["function"], "rank");
     let spec = dense
         .runtime
         .metadata()
@@ -427,7 +427,7 @@ async fn rank_and_dense_rank_match_sql() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(spec["function"], "dense_rank");
+    assert_eq!(spec["columns"][0]["function"], "dense_rank");
 }
 
 #[test_log::test(tokio::test)]
