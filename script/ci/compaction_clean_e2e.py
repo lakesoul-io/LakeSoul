@@ -67,6 +67,31 @@ def _data_files(files: set[str]) -> set[str]:
     return {path for path in files if path.endswith(DATA_SUFFIXES)}
 
 
+def _live_blob_state(
+    filesystem, base: str
+) -> tuple[set[str], list[str], set[str]] | None:
+    """List the live data files and read their sidecars, or ``None`` on a race.
+
+    The compaction and clean jobs keep rewriting and deleting files while the
+    scenario runs; a file listed here can disappear before its sidecar is
+    read, which simply means the caller should retry.
+    """
+    files = _list_files(base)
+    data_files = sorted(_data_files(files))
+    if not data_files:
+        return None
+    used_packs: set[str] = set()
+    for path in data_files:
+        sidecar = f"{path}.blobref"
+        if sidecar not in files:
+            return None
+        packs = read_blobref(f"s3://{path}", filesystem=filesystem)
+        if packs is None:
+            return None
+        used_packs.update(packs)
+    return files, data_files, used_packs
+
+
 def _table(catalog: LakeSoulCatalog, name: str, schema: pa.Schema, **kwargs):
     catalog.drop_table(name, if_exists=True)
     return catalog.create_table(
@@ -215,25 +240,28 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
         )
 
         def settled() -> bool:
-            files = _list_files(base)
-            data_files = _data_files(files)
-            return bool(data_files) and all(
-                f"{path}.blobref" in files for path in data_files
-            )
+            state = _live_blob_state(filesystem, base)
+            if state is None:
+                stable_state["data_files"] = None
+                return False
+            _files, data_files, _packs = state
+            previous = stable_state.get("data_files")
+            stable_state["data_files"] = data_files
+            return previous == data_files
 
+        filesystem = _s3()
+        stable_state: dict[str, list[str] | None] = {"data_files": None}
         _wait_for(settled, "compaction to settle with blobref sidecars")
 
-        files = _list_files(base)
-        data_files = sorted(_data_files(files))
+        state = None
+        for _attempt in range(20):
+            state = _live_blob_state(filesystem, base)
+            if state is not None:
+                break
+            time.sleep(3)
+        assert state is not None, "could not read a stable live blob state"
+        files, data_files, used_packs = state
         assert data_files, "expected live data files after compaction"
-        filesystem = _s3()
-        used_packs: set[str] = set()
-        for path in data_files:
-            sidecar = f"{path}.blobref"
-            assert sidecar in files, f"missing blobref sidecar for {path}"
-            packs = read_blobref(f"s3://{path}", filesystem=filesystem)
-            assert packs is not None, f"unreadable blobref sidecar {sidecar}"
-            used_packs.update(packs)
         assert used_packs, "compacted blob table must reference packs"
         missing = {pack for pack in used_packs if _s3_path(pack) not in files}
         assert not missing, f"referenced packs missing from storage: {missing}"
@@ -257,15 +285,22 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
             "orphan packs must be visible"
         )
 
-        dry = vacuum_blobs(catalog, table, older_than=0, dry_run=True)
-        assert not dry.aborted, f"vacuum must not abort: {dry}"
+        def vacuum_until_stable(**kwargs):
+            last = None
+            for _attempt in range(20):
+                last = vacuum_blobs(catalog, table, **kwargs)
+                if not last.aborted:
+                    return last
+                time.sleep(3)
+            raise AssertionError(f"vacuum kept aborting: {last}")
+
+        dry = vacuum_until_stable(older_than=0, dry_run=True)
         assert dry.packs_deleted == dry.packs_total - dry.packs_used, f"dry run {dry}"
         assert dry.packs_deleted >= 2, f"orphan packs must be reclaimable: {dry}"
 
-        result = vacuum_blobs(
-            catalog, table, older_than=0, dry_run=False, allow_short_grace=True
+        result = vacuum_until_stable(
+            older_than=0, dry_run=False, allow_short_grace=True
         )
-        assert not result.aborted, f"vacuum must not abort: {result}"
         assert result.packs_deleted == dry.packs_deleted, (
             f"vacuum deleted {result.packs_deleted} of {dry.packs_deleted} dry-run packs"
         )
@@ -274,10 +309,16 @@ def scenario_blob(catalog: LakeSoulCatalog) -> None:
         assert partition_orphan not in files, "partition orphan pack must be deleted"
         for pack in used_packs:
             assert _s3_path(pack) in files, f"referenced pack deleted: {pack}"
-        again = vacuum_blobs(
-            catalog, table, older_than=0, dry_run=False, allow_short_grace=True
-        )
-        assert not again.aborted and again.packs_deleted == 0, (
+
+        again = None
+        for _attempt in range(10):
+            again = vacuum_until_stable(
+                older_than=0, dry_run=False, allow_short_grace=True
+            )
+            if again.packs_deleted == 0:
+                break
+            time.sleep(3)
+        assert again is not None and again.packs_deleted == 0, (
             f"vacuum must be idempotent: {again}"
         )
 
