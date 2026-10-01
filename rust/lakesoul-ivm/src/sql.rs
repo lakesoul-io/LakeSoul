@@ -201,6 +201,7 @@ fn analyze_distinct_rows(
         mv_table_id: request.mv_table_id.clone(),
         group_keys,
         value_column: None,
+        count_column: None,
         filter,
         having: None,
         average: false,
@@ -324,6 +325,7 @@ enum HavingColumns<'a> {
     /// `sum_v`, `count_v`, the non-NULL count and, for AVG views, `avg_v`.
     SumCount {
         value_column: Option<&'a str>,
+        count_column: Option<&'a str>,
         average: bool,
     },
     /// `value` for a MIN/MAX view.
@@ -464,6 +466,7 @@ fn having_column(
     match columns {
         HavingColumns::SumCount {
             value_column,
+            count_column,
             average,
         } => match name {
             "avg" if !function.params.distinct => {
@@ -480,7 +483,7 @@ fn having_column(
             "count" if !function.params.distinct => {
                 if counts_all {
                     Ok(IVM_COUNT_COLUMN)
-                } else if value_column.is_some_and(&column_arg) {
+                } else if count_column.is_some_and(&column_arg) {
                     Ok(IVM_NONNULL_COUNT_COLUMN)
                 } else {
                     Err(not_materialized(name))
@@ -711,6 +714,7 @@ fn analyze_aggregate(
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column: None,
+            count_column: None,
             filter,
             having: None,
             average: false,
@@ -718,6 +722,7 @@ fn analyze_aggregate(
     }
 
     let mut count = false;
+    let mut count_column: Option<String> = None;
     let mut sum: Option<String> = None;
     let mut avg: Option<String> = None;
     let mut variance: Option<(VarianceKind, String)> = None;
@@ -791,11 +796,6 @@ fn analyze_aggregate(
             ("count", false) => {
                 let counts_all = function.params.args.is_empty()
                     || matches!(function.params.args.as_slice(), [Expr::Literal(..)]);
-                if !counts_all {
-                    return Err(unsupported(
-                        "COUNT(column) is not supported; use COUNT(*)",
-                    ));
-                }
                 if min_max.is_some()
                     || distinct.is_some()
                     || variance.is_some()
@@ -803,11 +803,21 @@ fn analyze_aggregate(
                 {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
-                if count {
-                    return Err(unsupported("duplicate COUNT aggregate"));
+                if counts_all {
+                    if count {
+                        return Err(unsupported("duplicate COUNT aggregate"));
+                    }
+                    // SUM + COUNT(*) is the standard sum/count shape.
+                    count = true;
+                } else {
+                    // COUNT(column) counts non-NULL values; the sum/count
+                    // state keeps that as the non-NULL count of a column.
+                    let column = single_column_arg(&function.params.args)?;
+                    if count_column.as_ref().is_some_and(|count| count != &column) {
+                        return Err(unsupported("duplicate COUNT aggregate"));
+                    }
+                    count_column = Some(column);
                 }
-                // SUM + COUNT(*) is the standard sum/count shape.
-                count = true;
             }
             ("sum", false) => {
                 if min_max.is_some()
@@ -929,6 +939,16 @@ fn analyze_aggregate(
         }
     }
 
+    // A single non-NULL count accumulator is shared with SUM/AVG.
+    if let Some(count_column) = &count_column
+        && (sum.as_ref().is_some_and(|sum| sum != count_column)
+            || avg.as_ref().is_some_and(|avg| avg != count_column))
+    {
+        return Err(unsupported(
+            "COUNT and SUM/AVG must use the same value column",
+        ));
+    }
+
     let having = if let Some((agg, value_column)) = &distinct {
         render_having(
             having_exprs,
@@ -961,11 +981,15 @@ fn analyze_aggregate(
         )?
     } else if median.is_some() {
         render_having(having_exprs, HavingColumns::Median, aggregate, &group_keys)?
-    } else if sum.is_some() || count || avg.is_some() {
+    } else if sum.is_some() || count || count_column.is_some() || avg.is_some() {
         render_having(
             having_exprs,
             HavingColumns::SumCount {
                 value_column: sum.as_deref().or(avg.as_deref()),
+                count_column: count_column
+                    .as_deref()
+                    .or(sum.as_deref())
+                    .or(avg.as_deref()),
                 average: avg.is_some(),
             },
             aggregate,
@@ -1023,13 +1047,14 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if value_column.is_some() || count {
+    } else if value_column.is_some() || count || count_column.is_some() {
         ViewSpec::SumCount {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column,
+            count_column,
             filter,
             having,
             average,
@@ -2165,10 +2190,70 @@ mod tests {
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
                 value_column: Some("v".to_string()),
+                count_column: None,
                 filter: None,
                 having: None,
                 average: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_count_column() {
+        // A count-only view maintains the non-NULL count of the column.
+        let analyzed = analyze("select g, count(v) from src group by g")
+            .await
+            .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::SumCount {
+                view_id: "view_1".to_string(),
+                source_table_id: "table_src".to_string(),
+                mv_table_id: "table_mv".to_string(),
+                group_keys: vec!["g".to_string()],
+                value_column: None,
+                count_column: Some("v".to_string()),
+                filter: None,
+                having: None,
+                average: false,
+            }
+        );
+
+        // SUM and COUNT over the same column share the count state.
+        let analyzed = analyze("select g, sum(v), count(v) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::SumCount {
+            value_column,
+            count_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(value_column, Some("v".to_string()));
+        assert_eq!(count_column, Some("v".to_string()));
+
+        // The non-NULL count is shared, so SUM and COUNT must agree.
+        assert!(
+            analyze("select g, sum(v), count(k) from src group by g")
+                .await
+                .is_err()
+        );
+        // A repeated COUNT(column) is rejected by the planner before the
+        // analyzer sees it, so only the mixed-column case is asserted here.
+
+        // HAVING maps COUNT(column) onto the maintained column.
+        let analyzed =
+            analyze("select g, count(v) from src group by g having count(v) > 0")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount { having, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("__ivm_nonnull_count > 0")
         );
     }
 
@@ -2366,6 +2451,7 @@ mod tests {
             mv_table_id: "table_mv".to_string(),
             group_keys: vec!["g".to_string()],
             value_column: None,
+            count_column: None,
             filter: None,
             having: None,
             average: false,
@@ -2496,11 +2582,17 @@ mod tests {
                 .await
                 .is_err()
         );
-        // COUNT(column) is not maintained by the SUM/COUNT shape.
+        // COUNT(column) over another column would need a second non-NULL
+        // count; over the summed column it is maintained.
+        assert!(
+            analyze("select g, sum(v) from src group by g having count(k) > 1")
+                .await
+                .is_err()
+        );
         assert!(
             analyze("select g, sum(v) from src group by g having count(v) > 1")
                 .await
-                .is_err()
+                .is_ok()
         );
         // A second value column would need a second SUM state.
         assert!(

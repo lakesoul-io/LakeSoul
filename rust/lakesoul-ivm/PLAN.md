@@ -1081,7 +1081,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；`COUNT(col)`；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
+| 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`DESC`/`NULLS FIRST` 排序；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
@@ -1424,6 +1424,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   多窗口全量差分；typed 运行时 `multi_column_window_refreshes_and_rebuilds`（refresh 与
   rebuild 一致）；analyzer 单测覆盖共享 spec、逐列 frame、别名、重名/不同 spec/DESC 拒绝。
   全量 IVM 套件 36 个测试二进制 / 186 个测试通过。
+
+### 10.24 `COUNT(column)` 非空计数（PR-18）
+
+- **问题**：`COUNT(column)` 此前直接报错（提示改用 `COUNT(*)`）。SUM/COUNT 的 MV 本来就维护
+  `__ivm_nonnull_count`（`SUM(v)` 的非空计数，也是 AVG 的分母），只缺 SELECT 入口。
+- **spec/typed**：`ViewSpec::SumCount` 与 `SumCountView` 增加 `count_column: Option<String>`
+  （serde default；构建器 `with_count_column`）。为 `None` 时非空计数回退到 `value_column`，
+  既有 SUM 视图的语义与序列化保持不变。
+- **语义**：非空计数只有一个累加器，因此 `COUNT(col)` 必须与 `SUM`/`AVG` 使用同一列
+  （不同列在分析期报错）；`COUNT(*)` 与 `COUNT(col)` 可并存（分别落到 `count_v` 与
+  `__ivm_nonnull_count`）；只有 `COUNT(col)` 的视图 `value_column` 为 `None`，`sum_v` 恒为 0。
+- **运行时**：`signed_delta_exprs` 拆分 value/count 两个列参数（有符号 SUM 用 value 列、
+  有符号非空计数用 count 列），rebuild 与 HAVING 的 `count(col)` 同样按 count 列聚合；
+  校验合并到 `validate_sum_count_view`。
+- **测试**：`count_column.slt`（keyed：值↔NULL 更新、删除、HAVING、定义变化 rebuild）、
+  `count_column_append.slt`（append-only changelog：delete/update 标记撤回）；差分 oracle
+  扩展出 `run_oracle_with`（可选 schema 与可空值），新增 `COUNT(v)` 的可空随机负载；
+  analyzer 单测覆盖 count-only、与 SUM 共用、列不一致拒绝与 HAVING 映射。
+  全量 IVM 套件 36 个测试二进制 / 190 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

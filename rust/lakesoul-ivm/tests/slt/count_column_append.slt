@@ -1,0 +1,49 @@
+# COUNT(column) over an append-only changelog: markers retract through the
+# view.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=null,op=insert; k=3,g=b,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, count_v, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2 1
+b 1 0
+
+# A delete marker retracts the value it was inserted with.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete; k=4,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, count_v, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 0
+b 2 1
+
+# An update pair retracts the old value and applies the new one.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=7,op=update_before; k=4,g=b,v=null,op=update_after*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, count_v, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1 0
+b 2 0

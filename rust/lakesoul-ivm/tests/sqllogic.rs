@@ -457,6 +457,16 @@ fn group_keys(keys: &[&str]) -> Vec<String> {
     keys.iter().map(|key| (*key).to_string()).collect()
 }
 
+/// The default fixture with a nullable value column.
+fn nullable_source_schema() -> arrow::datatypes::SchemaRef {
+    Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
 /// A source table with a composite primary key.
 fn multi_key_source_schema() -> arrow::datatypes::SchemaRef {
     Arc::new(arrow::datatypes::Schema::new(vec![
@@ -653,6 +663,31 @@ fn sqllogic_sum_count() {
         include_str!("slt/sum_count.slt"),
         sum_count_mv_schema_for(&source_schema(), &group_keys(&["g"]), Some("v"))
             .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_count_column() {
+    let schema = nullable_source_schema();
+    run_script_for_source(
+        "countcolumn",
+        include_str!("slt/count_column.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        sum_count_mv_schema_for(&schema, &group_keys(&["g"]), None).unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_count_column_append_only() {
+    let schema = nullable_source_schema();
+    run_script_for_sources(
+        "countcolumnappend",
+        include_str!("slt/count_column_append.slt"),
+        vec![SltSource::append_only_cdc("__SRC__", schema.clone())],
+        sum_count_mv_schema_for(&schema, &group_keys(&["g"]), None).unwrap(),
         group_keys(&["g"]),
     );
 }
@@ -883,12 +918,7 @@ fn sqllogic_avg() {
 
 #[test]
 fn sqllogic_avg_null() {
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("k", DataType::Int64, false),
-        arrow::datatypes::Field::new("g", DataType::Utf8, false),
-        arrow::datatypes::Field::new("v", DataType::Int64, true),
-        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
-    ]));
+    let schema = nullable_source_schema();
     run_script_for_source(
         "avgnull",
         include_str!("slt/avg_null.slt"),
