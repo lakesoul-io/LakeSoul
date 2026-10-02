@@ -1081,7 +1081,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 其它聚合族的参数表达式（MIN/MAX/VARIANCE/MEDIAN/STRING_AGG）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
+| 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN/STRING_AGG）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
@@ -1560,6 +1560,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`array_agg.slt`（bootstrap、更新重排、删除、DESC+WHERE 重建）、差分 oracle
   （随机负载 10 轮全量对比）、analyzer 单测（渲染/缺 ORDER BY/混用拒绝）。
   全量 IVM 套件 36 个测试二进制 / 211 个测试通过。
+
+### 10.31 MIN/MAX 的参数表达式（PR-25）
+
+- **能力**：`MIN(v * 2)`、`MAX(CASE WHEN ... THEN v END)` 等直接物化；MIN/MAX 保留用户在
+  表达式里写的 CAST（不做 SUM/AVG 那样的数值强制转换剥离）。
+- **spec/typed**：`ViewSpec::MinMax` / `MinMaxView` 的 `value_column` 变为 `Option<String>`
+  并新增 `value_expr: Option<String>`（serde default，互斥；构建器 `with_value_expr`）。
+  新增 `value_count_state_expr_schema_for` / `min_max_expr_mv_schema_for`（复用统一
+  `expression_type` 规划表达式类型与可空性）；`ValueCountView` 增加 `value_expr`，
+  refresh/rebuild 与值 SQL 统一走 `value_count_value_sql`。
+- **analyzer**：`AggValue`（原 `SumValue`）统一承载"纯列或渲染表达式"；`value_argument`
+  可选剥离优化器 CAST（SUM/AVG 剥离，MIN/MAX 不剥离）；**HAVING 对 MIN/MAX 改为结构化
+  比对参数**——此前只要函数名与参数个数匹配就会映射，`HAVING MIN(w)` 会错误命中
+  `MIN(v)` 的物化列。
+- **测试**：`min_expr.slt`（表达式 bootstrap、更新、删除最小值、条件 MAX + WHERE 重建）、
+  差分 oracle（`MIN(v * 2)` 随机负载全量对比）、analyzer 单测（表达式/条件聚合/HAVING
+  同参数映射与不同参数拒绝）。
+  全量 IVM 套件 36 个测试二进制 / 214 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

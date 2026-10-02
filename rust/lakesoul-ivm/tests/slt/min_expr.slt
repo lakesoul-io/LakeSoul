@@ -1,0 +1,61 @@
+# MIN/MAX over a scalar expression instead of a plain column.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 6
+b 14
+
+# An update changes the minimum.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 14
+
+# Deleting the minimum row moves the value to the next candidate.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, MIN(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 20
+b 14
+
+# A conditional MAX and a WHERE clause rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT g, MAX(CASE WHEN v > 5 THEN v END) FROM __SRC__ WHERE v > 1 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+b 7

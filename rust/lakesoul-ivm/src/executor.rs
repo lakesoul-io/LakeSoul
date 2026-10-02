@@ -35,9 +35,10 @@ use crate::metadata::StateRole;
 use crate::runtime::{
     IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, array_agg_mv_schema_for, avg_mv_schema_for,
     distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_view_schema_for,
-    median_mv_schema_for, min_max_mv_schema_for, row_expr_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_mv_schema_for,
+    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_mv_schema_for, sum_expr_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, value_count_state_expr_schema_for,
     value_count_state_schema_for, variance_mv_schema_for, window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
@@ -243,19 +244,30 @@ impl IvmSqlExecutor {
     /// The value-count state table of the view, reusing the registered one when
     /// its schema still matches and recreating it otherwise.
     async fn ensure_state_table(&self, mv: &IvmTable, spec: &ViewSpec) -> Result<String> {
-        let (source_table_id, group_keys, value_column) = match spec {
+        let (source_table_id, group_keys, value_column, value_expr) = match spec {
             ViewSpec::MinMax {
                 source_table_id,
                 group_keys,
                 value_column,
+                value_expr,
                 ..
-            }
-            | ViewSpec::DistinctAgg {
+            } => (
+                source_table_id,
+                group_keys,
+                value_column.as_deref(),
+                value_expr.as_deref(),
+            ),
+            ViewSpec::DistinctAgg {
                 source_table_id,
                 group_keys,
                 value_column,
                 ..
-            } => (source_table_id, group_keys, value_column),
+            } => (
+                source_table_id,
+                group_keys,
+                Some(value_column.as_str()),
+                None,
+            ),
             _ => {
                 return Err(rootcause::report!(
                     "view {} does not use a value-count state table",
@@ -264,8 +276,18 @@ impl IvmSqlExecutor {
             }
         };
         let source = self.runtime.open_table_by_id(source_table_id).await?;
-        let schema =
-            value_count_state_schema_for(&source.schema, group_keys, value_column)?;
+        let schema = match value_expr {
+            Some(value_expr) => {
+                value_count_state_expr_schema_for(&source.schema, group_keys, value_expr)?
+            }
+            None => value_count_state_schema_for(
+                &source.schema,
+                group_keys,
+                value_column.ok_or_else(|| {
+                    rootcause::report!("the value-count view has no value")
+                })?,
+            )?,
+        };
 
         if let Some(existing) = self
             .runtime
@@ -289,7 +311,7 @@ impl IvmSqlExecutor {
         }
 
         let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
-        let mut primary_keys = group_keys.clone();
+        let mut primary_keys = group_keys.to_vec();
         primary_keys.push(IVM_VALUE_COLUMN.to_string());
         let table = create_ivm_table(
             self.runtime.client(),
@@ -299,7 +321,7 @@ impl IvmSqlExecutor {
                 schema,
             )
             .with_primary_keys(primary_keys)
-            .with_bucket_columns(group_keys.clone())
+            .with_bucket_columns(group_keys.to_vec())
             .with_file_format(mv.file_format),
         )
         .await?;
@@ -503,14 +525,28 @@ fn expected_mv_schema(
             source_table_id,
             group_keys,
             value_column,
+            value_expr,
             min_max,
             ..
-        } => min_max_mv_schema_for(
-            &find_table(tables, source_table_id)?.schema,
-            group_keys,
-            value_column,
-            *min_max,
-        )?,
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            match value_expr {
+                Some(value_expr) => min_max_expr_mv_schema_for(
+                    &source.schema,
+                    group_keys,
+                    value_expr,
+                    *min_max,
+                )?,
+                None => min_max_mv_schema_for(
+                    &source.schema,
+                    group_keys,
+                    value_column.as_deref().ok_or_else(|| {
+                        rootcause::report!("the MIN/MAX view has no value")
+                    })?,
+                    *min_max,
+                )?,
+            }
+        }
         ViewSpec::DistinctAgg {
             source_table_id,
             group_keys,

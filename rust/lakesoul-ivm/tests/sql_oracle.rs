@@ -19,11 +19,11 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
     array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_mv_schema_for,
-    median_mv_schema_for, min_max_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_mv_schema_for, sum_expr_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -411,6 +411,28 @@ async fn oracle_count_column_matches_full_recompute() {
         "SELECT g, COUNT(v) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
         "SELECT g, \"__ivm_nonnull_count\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_min_expr_matches_full_recompute() {
+    run_oracle(
+        "minexpr",
+        1,
+        min_max_expr_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            "v * 2",
+            MinMaxKind::Min,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, MIN(v * 2) AS value FROM __SRC__ \
+         WHERE v > 30 GROUP BY g",
+        "SELECT g, MIN(v * 2) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
