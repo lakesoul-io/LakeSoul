@@ -668,6 +668,16 @@ fn sqllogic_sum_count() {
 }
 
 #[test]
+fn sqllogic_aggregate_filter() {
+    run_script_for_mv(
+        "aggfilter",
+        include_str!("slt/aggregate_filter.slt"),
+        avg_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v").unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
 fn sqllogic_count_column() {
     let schema = nullable_source_schema();
     run_script_for_source(

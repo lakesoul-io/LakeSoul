@@ -202,6 +202,7 @@ fn analyze_distinct_rows(
         group_keys,
         value_column: None,
         count_column: None,
+        aggregate_filter: None,
         filter,
         having: None,
         average: false,
@@ -286,10 +287,11 @@ fn collect_filtered_source(
 ) -> Result<(IvmTable, Option<String>)> {
     match peel(plan) {
         LogicalPlan::Projection(projection) => {
-            // The optimizer hoists a variance argument into a projection
-            // (`CAST(value AS Float64) AS __common_expr_1`), so cast-only
+            // The optimizer hoists a variance argument or a shared aggregate
+            // FILTER predicate into a projection (`CAST(value AS Float64) AS
+            // __common_expr_1`, `value > 5 AS __common_expr_2`), so scalar
             // projections are allowed next to plain ones.
-            if !is_plain_projection(projection) && !is_cast_projection(projection) {
+            if !is_plain_projection(projection) && !is_scalar_projection(projection) {
                 return Err(unsupported(format!(
                     "computed columns below {shape} are not supported"
                 )));
@@ -327,6 +329,9 @@ enum HavingColumns<'a> {
         value_column: Option<&'a str>,
         count_column: Option<&'a str>,
         average: bool,
+        /// The aggregate `FILTER` the view materializes; `None` when its
+        /// aggregates are unfiltered.
+        aggregate_filter: Option<&'a str>,
     },
     /// `value` for a MIN/MAX view.
     MinMax {
@@ -362,16 +367,24 @@ fn render_having(
     if exprs.is_empty() {
         return Ok(None);
     }
+    let hoisted = hoisted_expressions(&aggregate.input);
     let mut mapping = HashMap::new();
     for aggr in &aggregate.aggr_expr {
-        let Expr::AggregateFunction(function) = aggr else {
+        let mut inner = aggr;
+        while let Expr::Alias(alias) = inner {
+            inner = &alias.expr;
+        }
+        let Expr::AggregateFunction(function) = inner else {
             continue;
         };
-        if let Ok(column) = having_column(function, columns) {
-            // The HAVING filter refers to the aggregate by the name it had
-            // before the optimizer added argument casts, so map both names.
-            mapping.insert(format!("{aggr}"), column);
-            mapping.insert(cast_normalized(aggr), column);
+        if let Ok(column) = having_column(function, columns, &hoisted) {
+            // The HAVING filter refers to the aggregate by the name the
+            // optimizer gave its output column: with the hoisted FILTER
+            // aliases resolved and the argument casts dropped, so map both.
+            let resolved =
+                resolve_hoisted(&Expr::AggregateFunction(function.clone()), &hoisted);
+            mapping.insert(format!("{resolved}"), column);
+            mapping.insert(cast_normalized(&resolved), column);
         }
     }
     let group_keys = group_keys
@@ -380,7 +393,7 @@ fn render_having(
         .collect::<std::collections::HashSet<_>>();
     let mut parts = Vec::with_capacity(exprs.len());
     for expr in exprs {
-        let rewritten = rewrite_having(expr, columns, &mapping, &group_keys)?;
+        let rewritten = rewrite_having(expr, columns, &mapping, &group_keys, &hoisted)?;
         parts.push(render_filter(&rewritten)?);
     }
     Ok(Some(parts.join(" AND ")))
@@ -405,6 +418,7 @@ fn rewrite_having(
     columns: HavingColumns<'_>,
     mapping: &HashMap<String, &'static str>,
     group_keys: &std::collections::HashSet<&str>,
+    hoisted: &HashMap<String, Expr>,
 ) -> Result<Expr> {
     expr.clone()
         .transform_down(|node| match node {
@@ -420,7 +434,7 @@ fn rewrite_having(
                 }
             }
             Expr::AggregateFunction(function) => {
-                match having_column(&function, columns) {
+                match having_column(&function, columns, hoisted) {
                     Ok(column) => {
                         Ok(Transformed::yes(Expr::Column(Column::from_name(column))))
                     }
@@ -452,10 +466,11 @@ fn aggregate_column_of(expr: &Expr) -> Option<&str> {
 fn having_column(
     function: &AggregateFunction,
     columns: HavingColumns<'_>,
+    hoisted: &HashMap<String, Expr>,
 ) -> std::result::Result<&'static str, String> {
-    if function.params.filter.is_some() || !function.params.order_by.is_empty() {
+    if !function.params.order_by.is_empty() {
         return Err(format!(
-            "{} with FILTER/ORDER BY is not maintained",
+            "{} with ORDER BY is not maintained",
             function.func.name()
         ));
     }
@@ -463,34 +478,53 @@ fn having_column(
     let column_arg = |column: &str| matches!(function.params.args.as_slice(), [arg] if aggregate_column_of(arg) == Some(column));
     let counts_all = function.params.args.is_empty()
         || matches!(function.params.args.as_slice(), [Expr::Literal(..)]);
+    let function_filter = match &function.params.filter {
+        Some(filter) => {
+            let filter = resolve_hoisted(filter, hoisted);
+            Some(render_filter(&filter).map_err(|error| error.to_string())?)
+        }
+        None => None,
+    };
     match columns {
         HavingColumns::SumCount {
             value_column,
             count_column,
             average,
-        } => match name {
-            "avg" if !function.params.distinct => {
-                if average && value_column.is_some_and(&column_arg) {
-                    Ok(IVM_AVG_COLUMN)
-                } else {
-                    Err(not_materialized(name))
-                }
+            aggregate_filter,
+        } => {
+            if function_filter.as_deref() != aggregate_filter {
+                return Err(format!(
+                    "{} with a different FILTER is not materialized",
+                    name
+                ));
             }
-            "sum" if !function.params.distinct => match value_column {
-                Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN),
+            match name {
+                "avg" if !function.params.distinct => {
+                    if average && value_column.is_some_and(&column_arg) {
+                        Ok(IVM_AVG_COLUMN)
+                    } else {
+                        Err(not_materialized(name))
+                    }
+                }
+                "sum" if !function.params.distinct => match value_column {
+                    Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN),
+                    _ => Err(not_materialized(name)),
+                },
+                "count" if !function.params.distinct => {
+                    if counts_all {
+                        Ok(IVM_COUNT_COLUMN)
+                    } else if count_column.is_some_and(&column_arg) {
+                        Ok(IVM_NONNULL_COUNT_COLUMN)
+                    } else {
+                        Err(not_materialized(name))
+                    }
+                }
                 _ => Err(not_materialized(name)),
-            },
-            "count" if !function.params.distinct => {
-                if counts_all {
-                    Ok(IVM_COUNT_COLUMN)
-                } else if count_column.is_some_and(&column_arg) {
-                    Ok(IVM_NONNULL_COUNT_COLUMN)
-                } else {
-                    Err(not_materialized(name))
-                }
             }
-            _ => Err(not_materialized(name)),
-        },
+        }
+        HavingColumns::MinMax { .. } if function_filter.is_some() => {
+            Err(not_materialized(name))
+        }
         HavingColumns::MinMax { kind, value_column } => {
             let expected = match kind {
                 MinMaxKind::Min => "min",
@@ -502,6 +536,7 @@ fn having_column(
                 Err(not_materialized(name))
             }
         }
+        HavingColumns::Median if function_filter.is_some() => Err(not_materialized(name)),
         HavingColumns::Median => {
             if name == "median"
                 && !function.params.distinct
@@ -511,6 +546,9 @@ fn having_column(
             } else {
                 Err(not_materialized(name))
             }
+        }
+        HavingColumns::Variance { .. } if function_filter.is_some() => {
+            Err(not_materialized(name))
         }
         HavingColumns::Variance { statistic } => {
             if name == statistic.sql_name()
@@ -553,6 +591,26 @@ fn having_column(
 
 fn not_materialized(name: &str) -> String {
     format!("HAVING over {name}, which the view does not materialize")
+}
+
+/// An aggregate `FILTER (WHERE ...)` predicate is evaluated against the source
+/// rows the view reads, so it may only refer to source columns.
+fn validate_filter_columns(source: &IvmTable, filter: &Expr) -> Result<()> {
+    let stripped = strip_relations(filter.clone())?;
+    stripped
+        .apply(|node| {
+            if let Expr::Column(column) = node
+                && source.schema.field_with_name(&column.name).is_err()
+            {
+                return Err(datafusion::error::DataFusionError::Plan(format!(
+                    "FILTER over {} does not refer to a source column",
+                    column.name
+                )));
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .map_err(|error| unsupported(format!("FILTER {error}")))?;
+    Ok(())
 }
 
 /// Validate a filter and render it to canonical SQL over unqualified columns,
@@ -642,16 +700,52 @@ fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, S
 }
 
 /// The aggregate family: SUM/COUNT, MIN/MAX and COUNT(DISTINCT)/SUM(DISTINCT).
-/// A projection of plain columns and `CAST(column)` aliases.
-fn is_cast_projection(projection: &Projection) -> bool {
+/// A projection of plain columns and the scalar aliases the optimizer hoists
+/// above the scan: `CAST(column)` casts and shared aggregate `FILTER`
+/// predicates.
+fn is_scalar_projection(projection: &Projection) -> bool {
     projection.expr.iter().all(|expr| match expr {
         Expr::Column(_) => true,
-        Expr::Alias(alias) => matches!(
-            alias.expr.as_ref(),
-            Expr::Cast(cast) if matches!(cast.expr.as_ref(), Expr::Column(_))
-        ),
+        Expr::Alias(alias) => match alias.expr.as_ref() {
+            Expr::Cast(cast) => matches!(cast.expr.as_ref(), Expr::Column(_)),
+            hoisted => validate_filter(hoisted).is_ok(),
+        },
         _ => false,
     })
+}
+
+/// The aliases the optimizer hoisted above the aggregate input, mapped to
+/// their expressions.
+fn hoisted_expressions(plan: &LogicalPlan) -> HashMap<String, Expr> {
+    let mut exprs = HashMap::new();
+    if let LogicalPlan::Projection(projection) = peel(plan) {
+        for expr in &projection.expr {
+            if let Expr::Alias(alias) = expr {
+                exprs.insert(alias.name.clone(), alias.expr.as_ref().clone());
+            }
+        }
+    }
+    exprs
+}
+
+/// Replace the hoisted aliases a predicate refers to by their expressions.
+fn resolve_hoisted(expr: &Expr, hoisted: &HashMap<String, Expr>) -> Expr {
+    expr.clone()
+        .transform_down(|node| {
+            // The optimizer wraps the hoisted column in a display alias.
+            let mut inner = &node;
+            while let Expr::Alias(alias) = inner {
+                inner = &alias.expr;
+            }
+            if let Expr::Column(column) = inner
+                && let Some(hoisted_expr) = hoisted.get(&column.name)
+            {
+                return Ok(Transformed::yes(hoisted_expr.clone()));
+            }
+            Ok(Transformed::no(node))
+        })
+        .map(|transformed| transformed.data)
+        .unwrap_or_else(|_| expr.clone())
 }
 
 /// The columns the optimizer hoisted into a projection before an aggregate
@@ -678,6 +772,7 @@ fn analyze_aggregate(
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
     let hoisted = hoisted_columns(&aggregate.input);
+    let hoisted_exprs = hoisted_expressions(&aggregate.input);
     // The optimizer rewrites a single DISTINCT aggregate into an inner
     // grouping over `(group keys, value)` and an outer `count(alias)` /
     // `sum(alias)`.
@@ -715,6 +810,7 @@ fn analyze_aggregate(
             group_keys,
             value_column: None,
             count_column: None,
+            aggregate_filter: None,
             filter,
             having: None,
             average: false,
@@ -729,17 +825,31 @@ fn analyze_aggregate(
     let mut median: Option<String> = None;
     let mut min_max: Option<(MinMaxKind, String)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
+    // `(aggregate name, FILTER predicate, whether it is a value aggregate)`.
+    let mut aggregate_filters: Vec<(&str, Option<String>, bool)> = Vec::new();
     for expr in &aggregate.aggr_expr {
-        let Expr::AggregateFunction(function) = expr else {
+        let mut inner = expr;
+        while let Expr::Alias(alias) = inner {
+            inner = &alias.expr;
+        }
+        let Expr::AggregateFunction(function) = inner else {
             return Err(unsupported("non-aggregate expression in the select list"));
         };
-        if function.params.filter.is_some() || !function.params.order_by.is_empty() {
+        if !function.params.order_by.is_empty() {
             return Err(unsupported(format!(
-                "{} with FILTER/ORDER BY",
+                "{} with ORDER BY",
                 function.func.name()
             )));
         }
         let name = function.func.name();
+        let function_filter = match &function.params.filter {
+            Some(filter) => {
+                let filter = resolve_hoisted(filter, &hoisted_exprs);
+                validate_filter_columns(source, &filter)?;
+                Some(render_filter(&filter)?)
+            }
+            None => None,
+        };
         // A split DISTINCT aggregate is the only aggregate and refers to its
         // placeholder column (e.g. `count(alias1)` over `v AS alias1`).
         if let Some((_, alias, value_column)) = &distinct_split {
@@ -748,6 +858,11 @@ fn analyze_aggregate(
                 [Expr::Column(column)] if &column.name == alias
             );
             if refers_to_alias && !function.params.distinct {
+                if function_filter.is_some() {
+                    return Err(unsupported(
+                        "FILTER over a DISTINCT aggregate is not maintained",
+                    ));
+                }
                 if !matches!(name, "count" | "sum") {
                     return Err(unsupported(format!(
                         "aggregate function {name}(DISTINCT ...)"
@@ -792,10 +907,16 @@ fn analyze_aggregate(
                     DistinctAggKind::Sum
                 };
                 distinct = Some((kind, single_column_arg(&function.params.args)?));
+                aggregate_filters.push((name, function_filter, false));
             }
             ("count", false) => {
                 let counts_all = function.params.args.is_empty()
                     || matches!(function.params.args.as_slice(), [Expr::Literal(..)]);
+                if counts_all && function_filter.is_some() {
+                    return Err(unsupported(
+                        "COUNT(*) FILTER is not maintained; use COUNT(column) or SUM",
+                    ));
+                }
                 if min_max.is_some()
                     || distinct.is_some()
                     || variance.is_some()
@@ -818,6 +939,7 @@ fn analyze_aggregate(
                     }
                     count_column = Some(column);
                 }
+                aggregate_filters.push(("count", function_filter, !counts_all));
             }
             ("sum", false) => {
                 if min_max.is_some()
@@ -837,6 +959,7 @@ fn analyze_aggregate(
                     ));
                 }
                 sum = Some(column);
+                aggregate_filters.push(("sum", function_filter, true));
             }
             ("avg", false) => {
                 if min_max.is_some()
@@ -869,6 +992,7 @@ fn analyze_aggregate(
                     ));
                 }
                 avg = Some(column);
+                aggregate_filters.push(("avg", function_filter, true));
             }
             ("min", false) | ("max", false) => {
                 if count
@@ -887,6 +1011,7 @@ fn analyze_aggregate(
                     MinMaxKind::Max
                 };
                 min_max = Some((kind, single_column_arg(&function.params.args)?));
+                aggregate_filters.push((name, function_filter, false));
             }
             ("var", false)
             | ("var_pop", false)
@@ -911,6 +1036,7 @@ fn analyze_aggregate(
                 let raw = recomputed_argument(&function.params.args)?;
                 let value = hoisted.get(&raw).cloned().unwrap_or(raw);
                 variance = Some((statistic, value));
+                aggregate_filters.push((name, function_filter, false));
             }
             ("median", false) => {
                 if count
@@ -925,6 +1051,7 @@ fn analyze_aggregate(
                 }
                 let raw = recomputed_argument(&function.params.args)?;
                 median = Some(hoisted.get(&raw).cloned().unwrap_or(raw));
+                aggregate_filters.push((name, function_filter, false));
             }
             _ => {
                 return Err(unsupported(format!(
@@ -935,6 +1062,41 @@ fn analyze_aggregate(
                         ""
                     }
                 )));
+            }
+        }
+    }
+
+    // Aggregate FILTER predicates: only the value aggregates (SUM, AVG and
+    // COUNT(column)) may be filtered, they must share one predicate, and the
+    // row count stays unfiltered so a group without matching rows keeps
+    // existing with a NULL value.
+    let mut aggregate_filter: Option<String> = None;
+    {
+        let value_filters = aggregate_filters
+            .iter()
+            .filter(|(_, _, is_value)| *is_value)
+            .map(|(_, filter, _)| filter.as_deref())
+            .collect::<Vec<Option<&str>>>();
+        let present = value_filters
+            .iter()
+            .filter_map(|filter| *filter)
+            .collect::<Vec<&str>>();
+        if let Some(first) = present.first() {
+            if present.iter().any(|filter| filter != first) {
+                return Err(unsupported(
+                    "aggregates with different FILTER predicates are not maintained",
+                ));
+            }
+            if present.len() != value_filters.len() {
+                return Err(unsupported(
+                    "every SUM/AVG/COUNT(column) must carry the same FILTER",
+                ));
+            }
+            aggregate_filter = Some(first.to_string());
+        }
+        for (name, filter, is_value) in &aggregate_filters {
+            if !is_value && filter.is_some() {
+                return Err(unsupported(format!("FILTER over {name} is not maintained")));
             }
         }
     }
@@ -991,6 +1153,7 @@ fn analyze_aggregate(
                     .or(sum.as_deref())
                     .or(avg.as_deref()),
                 average: avg.is_some(),
+                aggregate_filter: aggregate_filter.as_deref(),
             },
             aggregate,
             &group_keys,
@@ -1055,6 +1218,7 @@ fn analyze_aggregate(
             group_keys,
             value_column,
             count_column,
+            aggregate_filter,
             filter,
             having,
             average,
@@ -2191,10 +2355,101 @@ mod tests {
                 group_keys: vec!["g".to_string()],
                 value_column: Some("v".to_string()),
                 count_column: None,
+                aggregate_filter: None,
                 filter: None,
                 having: None,
                 average: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_aggregate_filter() {
+        let analyzed =
+            analyze("select g, sum(v) filter (where v > 5) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount {
+            value_column,
+            aggregate_filter,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(value_column, Some("v".to_string()));
+        assert_eq!(
+            normalized(aggregate_filter.as_deref()).as_deref(),
+            Some("v > 5")
+        );
+        assert_eq!(filter, None);
+
+        // WHERE and FILTER combine; COUNT(*) stays unfiltered machinery.
+        let analyzed = analyze(
+            "select g, sum(v) filter (where v > 5), count(*) from src \
+             where g <> 'x' group by g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount {
+            aggregate_filter,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(
+            normalized(aggregate_filter.as_deref()).as_deref(),
+            Some("v > 5")
+        );
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("g <> 'x'"));
+
+        // HAVING over the same filtered aggregate maps onto sum_v.
+        let analyzed = analyze(
+            "select g, sum(v) filter (where v > 5) from src group by g \
+             having sum(v) filter (where v > 5) > 10",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount { having, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("sum_v > 10"));
+
+        // Every value aggregate must carry the same FILTER.
+        assert!(
+            analyze("select g, sum(v) filter (where v > 5), avg(v) from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze(
+                "select g, sum(v) filter (where v > 5), sum(v) filter (where v < 0) from src group by g"
+            )
+            .await
+            .is_err()
+        );
+        // COUNT(*) FILTER and a HAVING with a different FILTER are not
+        // maintained.
+        assert!(
+            analyze("select g, count(*) filter (where v > 5) from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze(
+                "select g, sum(v) filter (where v > 5) from src group by g having sum(v) > 10"
+            )
+            .await
+            .is_err()
+        );
+        // So is a FILTER over another aggregate family.
+        assert!(
+            analyze("select g, min(v) filter (where v > 5) from src group by g")
+                .await
+                .is_err()
         );
     }
 
@@ -2213,6 +2468,7 @@ mod tests {
                 group_keys: vec!["g".to_string()],
                 value_column: None,
                 count_column: Some("v".to_string()),
+                aggregate_filter: None,
                 filter: None,
                 having: None,
                 average: false,
@@ -2452,6 +2708,7 @@ mod tests {
             group_keys: vec!["g".to_string()],
             value_column: None,
             count_column: None,
+            aggregate_filter: None,
             filter: None,
             having: None,
             average: false,
