@@ -1081,7 +1081,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
+| 表达式/投影 | 聚合参数表达式（`SUM(v * 2)`）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `ARRAY_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
@@ -1504,6 +1504,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （`string_agg(g, '|' order by k)` 随机负载 10 轮全量对比）；analyzer 单测覆盖渲染
   （delimiter/方向）、缺少 ORDER BY、非字面量 delimiter 与混用拒绝。
   全量 IVM 套件 36 个测试二进制 / 202 个测试通过。
+
+### 10.28 Row 视图的计算列（PR-22）
+
+- **能力**：`SELECT k, v * 2 AS v2, CASE WHEN v > 5 THEN 'big' ELSE 'small' END AS bucket
+  FROM src` 现在可以直接物化——投影里的标量表达式（算术/CAST/CASE/函数）按别名落成 MV 列。
+- **spec/typed**：`ViewSpec::Row` / `RowView` 增加 `output_exprs: Vec<String>`（与
+  `output_columns` 平行；为空表示全部按原列投影，既有 spec 与行为不变）；构建器
+  `with_output_exprs`。
+- **analyzer**：投影表达式渲染为 SQL（复用过滤谓词的 `Unparser` 渲染并剥离关系名）；
+  未命名（没有 `AS`）的计算列明确报错；纯列投影保持紧凑，列改名存原列名。
+- **schema**：新增 `row_expr_mv_schema_for`（旧 `row_mv_schema_for` 成为其无表达式包装）：
+  用 DataFusion 逐个规划表达式取类型与可空性，列数不匹配时报错。
+- **运行时**：`row_projection` 解析存储表达式（`create_logical_expr`）并按 MV 列名别名，
+  用于 insert 与 rebuild；**删除路径改为按 MV 列名取数**（计算列在 MV 里是同名结果列，
+  不能在 MV 上重算源表达式）；keyed 视图要求源主键列原样投影（拒绝 `k + 1 AS k`）。
+- **测试**：`row_exprs.slt`（bootstrap、更新、删除、`WHERE`+表达式定义变化 rebuild）；
+  analyzer 单测覆盖表达式/改名/纯列与 `WHERE` 组合。
+  全量 IVM 套件 36 个测试二进制 / 204 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

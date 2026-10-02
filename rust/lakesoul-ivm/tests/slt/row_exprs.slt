@@ -1,0 +1,62 @@
+# Computed projection columns are materialized and maintained incrementally.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v * 2 AS v2, CASE WHEN v > 5 THEN 'big' ELSE 'small' END AS bucket FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIT rowsort
+SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 20 big
+2 6 small
+3 14 big
+
+# An update recomputes the derived columns.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=4,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v * 2 AS v2, CASE WHEN v > 5 THEN 'big' ELSE 'small' END AS bucket FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIT rowsort
+SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 8 small
+2 6 small
+3 14 big
+
+# A delete removes the derived row.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v * 2 AS v2, CASE WHEN v > 5 THEN 'big' ELSE 'small' END AS bucket FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIT rowsort
+SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 8 small
+2 6 small
+
+# WHERE and the expressions combine; the definition change rebuilds.
+statement ok
+INSERT INTO __MV__ SELECT k, v * 2 AS v2, CASE WHEN v > 5 THEN 'big' ELSE 'small' END AS bucket FROM __SRC__ WHERE v > 3
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIT rowsort
+SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 8 small

@@ -32,10 +32,11 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
-    min_max_mv_schema_for, row_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -764,6 +765,23 @@ fn sqllogic_row_where() {
         "rowwhere",
         include_str!("slt/row_where.slt"),
         row_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_row_expressions() {
+    let source = source_schema();
+    let columns = group_keys(&["k", "v2", "bucket"]);
+    let exprs = vec![
+        "k".to_string(),
+        "v * 2".to_string(),
+        "CASE WHEN v > 5 THEN 'big' ELSE 'small' END".to_string(),
+    ];
+    run_script_for_mv(
+        "rowexprs",
+        include_str!("slt/row_exprs.slt"),
+        row_expr_mv_schema_for(&source, &columns, &exprs).unwrap(),
         group_keys(&["k"]),
     );
 }

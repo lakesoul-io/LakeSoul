@@ -215,17 +215,18 @@ fn analyze_row(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let (source, output_columns, filter) = collect_row(plan, tables)?;
+    let (source, output_columns, output_exprs, filter) = collect_row(plan, tables)?;
     Ok(ViewSpec::Row {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
         output_columns: output_columns.unwrap_or_default(),
+        output_exprs,
         filter,
     })
 }
 
-type RowParts = (IvmTable, Option<Vec<String>>, Option<String>);
+type RowParts = (IvmTable, Option<Vec<String>>, Vec<String>, Option<String>);
 
 fn collect_row(
     plan: &LogicalPlan,
@@ -233,22 +234,48 @@ fn collect_row(
 ) -> Result<RowParts> {
     match peel(plan) {
         LogicalPlan::Projection(projection) => {
-            let output_columns = projection
-                .expr
-                .iter()
-                .map(column_name)
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    unsupported("computed projection columns are not supported")
-                })?;
-            let (source, _, filter) = collect_row(&projection.input, tables)?;
-            Ok((source, Some(output_columns), filter))
+            let (source, _, _, filter) = collect_row(&projection.input, tables)?;
+            let mut names = Vec::with_capacity(projection.expr.len());
+            let mut exprs = Vec::with_capacity(projection.expr.len());
+            for expr in &projection.expr {
+                // Display aliases wrap the actual expression; the outermost
+                // alias names the materialized column.
+                let mut inner = expr;
+                let mut alias = None;
+                while let Expr::Alias(nested) = inner {
+                    if alias.is_none() {
+                        alias = Some(nested.name.clone());
+                    }
+                    inner = &nested.expr;
+                }
+                match inner {
+                    Expr::Column(column) => {
+                        let name = alias.unwrap_or_else(|| column.name.clone());
+                        names.push(name);
+                        exprs.push(column.name.clone());
+                    }
+                    other => {
+                        let name = alias.ok_or_else(|| {
+                            unsupported("computed projection columns need an alias")
+                        })?;
+                        names.push(name);
+                        exprs.push(render_filter(other)?);
+                    }
+                }
+            }
+            // Plain projections stay compact: the expressions default to the
+            // output columns themselves.
+            if names == exprs {
+                exprs.clear();
+            }
+            Ok((source, Some(names), exprs, filter))
         }
         LogicalPlan::Filter(filter) => {
-            let (source, output_columns, previous) = collect_row(&filter.input, tables)?;
+            let (source, output_columns, output_exprs, previous) =
+                collect_row(&filter.input, tables)?;
             let filter =
                 Some(combine_filter(previous, render_filter(&filter.predicate)?));
-            Ok((source, output_columns, filter))
+            Ok((source, output_columns, output_exprs, filter))
         }
         LogicalPlan::TableScan(scan) => {
             let source = resolve_table(tables, &scan.table_name)?.clone();
@@ -261,7 +288,12 @@ fn collect_row(
                     .map(|field| field.name().clone())
                     .collect::<Vec<_>>()
             });
-            Ok((source, output_columns, scan_filter(&scan.filters)?))
+            Ok((
+                source,
+                output_columns,
+                Vec::new(),
+                scan_filter(&scan.filters)?,
+            ))
         }
         other => Err(unsupported(format!("row shape over {}", plan_label(other)))),
     }
@@ -2524,6 +2556,68 @@ mod tests {
                 average: false,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_row_expressions() {
+        let analyzed = analyze(
+            "select k, v * 2 as v2, case when v > 5 then 'big' else 'small' end as bucket from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Row {
+            output_columns,
+            output_exprs,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row spec");
+        };
+        assert_eq!(output_columns, vec!["k", "v2", "bucket"]);
+        assert_eq!(output_exprs.len(), 3);
+        let exprs = output_exprs
+            .iter()
+            .map(|expr| expr.replace(['(', ')'], ""))
+            .collect::<Vec<_>>();
+        assert_eq!(exprs[0], "k");
+        assert_eq!(exprs[1], "v * 2");
+        assert!(exprs[2].to_uppercase().starts_with("CASE"));
+        assert_eq!(filter, None);
+
+        // A plain projection stays compact; a rename keeps its expression.
+        let analyzed = analyze("select k, v from src").await.unwrap();
+        let ViewSpec::Row { output_exprs, .. } = analyzed.spec else {
+            panic!("expected a row spec");
+        };
+        assert!(output_exprs.is_empty());
+
+        let analyzed = analyze("select k, v as value from src").await.unwrap();
+        let ViewSpec::Row {
+            output_columns,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row spec");
+        };
+        assert_eq!(output_columns, vec!["k", "value"]);
+        assert_eq!(output_exprs, vec!["k", "v"]);
+
+        // WHERE and expressions combine.
+        let analyzed = analyze("select k, v + 1 as v1 from src where v > 5")
+            .await
+            .unwrap();
+        let ViewSpec::Row {
+            output_exprs,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row spec");
+        };
+        assert_eq!(output_exprs, vec!["k", "(v + 1)"]);
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
     }
 
     #[tokio::test]
