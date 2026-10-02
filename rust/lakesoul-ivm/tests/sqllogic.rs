@@ -33,10 +33,10 @@ use lakesoul_ivm::{
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
     min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -674,6 +674,29 @@ fn sqllogic_aggregate_filter() {
         "aggfilter",
         include_str!("slt/aggregate_filter.slt"),
         avg_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v").unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_sum_expression() {
+    run_script_for_mv(
+        "sumexpr",
+        include_str!("slt/sum_expr.slt"),
+        sum_expr_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v * 2", true)
+            .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_sum_expression_append_only() {
+    let source = source_schema();
+    run_script_for_sources(
+        "sumexprappend",
+        include_str!("slt/sum_expr_append.slt"),
+        vec![SltSource::append_only_cdc("__SRC__", source.clone())],
+        sum_expr_mv_schema_for(&source, &group_keys(&["g"]), "v * 2", false).unwrap(),
         group_keys(&["g"]),
     );
 }

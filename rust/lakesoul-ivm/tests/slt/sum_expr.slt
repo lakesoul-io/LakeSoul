@@ -1,0 +1,86 @@
+# SUM/AVG over a scalar expression instead of a plain column.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2), AVG(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIR rowsort
+SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 26 13.0
+b 14 14.0
+
+# An update recomputes the expression.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=4,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2), AVG(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIR rowsort
+SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 14 7.0
+b 14 14.0
+
+# A delete drops the group when it was the only row.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2), AVG(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIR rowsort
+SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 14 7.0
+
+# HAVING over the same expression maps onto sum_v.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2), AVG(v * 2) FROM __SRC__ GROUP BY g HAVING SUM(v * 2) > 5
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIR rowsort
+SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 14 7.0
+
+# An append maintains the HAVING view incrementally.
+statement ok
+/*ivm-append __SRC__: k=4,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2), AVG(v * 2) FROM __SRC__ GROUP BY g HAVING SUM(v * 2) > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIR rowsort
+SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 24 8.0
+
+# WHERE and the expression combine.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2), AVG(v * 2) FROM __SRC__ WHERE v > 3 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIR rowsort
+SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 18 9.0

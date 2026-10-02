@@ -201,6 +201,7 @@ fn analyze_distinct_rows(
         mv_table_id: request.mv_table_id.clone(),
         group_keys,
         value_column: None,
+        value_expr: None,
         count_column: None,
         aggregate_filter: None,
         filter,
@@ -358,7 +359,7 @@ fn combine_filter(previous: Option<String>, rendered: String) -> String {
 enum HavingColumns<'a> {
     /// `sum_v`, `count_v`, the non-NULL count and, for AVG views, `avg_v`.
     SumCount {
-        value_column: Option<&'a str>,
+        value: Option<&'a SumValue>,
         count_column: Option<&'a str>,
         average: bool,
         /// The aggregate `FILTER` the view materializes; `None` when its
@@ -533,7 +534,7 @@ fn having_column(
     };
     match columns {
         HavingColumns::SumCount {
-            value_column,
+            value,
             count_column,
             average,
             aggregate_filter,
@@ -544,22 +545,32 @@ fn having_column(
                     name
                 ));
             }
+            let value_matches = |value: &SumValue| {
+                matches!(function.params.args.as_slice(), [arg]
+                    if sum_value_argument(arg, hoisted)
+                        .map(|parsed| parsed == *value)
+                        .unwrap_or(false))
+            };
             match name {
                 "avg" if !function.params.distinct => {
-                    if average && value_column.is_some_and(&column_arg) {
+                    if average && value.is_some_and(&value_matches) {
                         Ok(IVM_AVG_COLUMN.to_string())
                     } else {
                         Err(not_materialized(name))
                     }
                 }
-                "sum" if !function.params.distinct => match value_column {
-                    Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN.to_string()),
+                "sum" if !function.params.distinct => match value {
+                    Some(value) if value_matches(value) => Ok(IVM_SUM_COLUMN.to_string()),
                     _ => Err(not_materialized(name)),
                 },
                 "count" if !function.params.distinct => {
                     if counts_all {
                         Ok(IVM_COUNT_COLUMN.to_string())
                     } else if count_column.is_some_and(&column_arg) {
+                        Ok(IVM_NONNULL_COUNT_COLUMN.to_string())
+                    } else if let Some(SumValue::Column(column)) = value
+                        && column_arg(column)
+                    {
                         Ok(IVM_NONNULL_COUNT_COLUMN.to_string())
                     } else {
                         Err(not_materialized(name))
@@ -834,6 +845,29 @@ fn hoisted_columns(plan: &LogicalPlan) -> HashMap<String, String> {
     columns
 }
 
+/// The argument of a materialized `SUM`/`AVG`: a plain column or a rendered
+/// scalar expression.
+#[derive(Clone, PartialEq)]
+enum SumValue {
+    Column(String),
+    Expr(String),
+}
+
+/// Parse a `SUM`/`AVG` argument, resolving hoisted aliases and dropping the
+/// numeric cast the optimizer adds (`avg(v)` becomes `avg(CAST(v AS
+/// Float64))`).
+fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<SumValue> {
+    let resolved = resolve_hoisted(arg, hoisted);
+    let inner = match &resolved {
+        Expr::Cast(cast) => cast.expr.as_ref(),
+        other => other,
+    };
+    match inner {
+        Expr::Column(column) => Ok(SumValue::Column(column.name.clone())),
+        other => Ok(SumValue::Expr(render_filter(other)?)),
+    }
+}
+
 fn analyze_aggregate(
     aggregate: &Aggregate,
     having_exprs: &[Expr],
@@ -878,6 +912,7 @@ fn analyze_aggregate(
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column: None,
+            value_expr: None,
             count_column: None,
             aggregate_filter: None,
             filter,
@@ -888,8 +923,8 @@ fn analyze_aggregate(
 
     let mut count = false;
     let mut count_column: Option<String> = None;
-    let mut sum: Option<String> = None;
-    let mut avg: Option<String> = None;
+    let mut sum: Option<SumValue> = None;
+    let mut avg: Option<SumValue> = None;
     let mut variance: Option<(VarianceKind, String)> = None;
     let mut median: Option<String> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
@@ -1021,13 +1056,16 @@ fn analyze_aggregate(
                 if sum.is_some() {
                     return Err(unsupported("duplicate SUM aggregate"));
                 }
-                let column = single_column_arg(&function.params.args)?;
-                if avg.as_ref().is_some_and(|avg| avg != &column) {
+                let [arg] = function.params.args.as_slice() else {
                     return Err(unsupported(
-                        "AVG and SUM must use the same value column",
+                        "aggregates take exactly one value argument",
                     ));
+                };
+                let value = sum_value_argument(arg, &hoisted_exprs)?;
+                if avg.as_ref().is_some_and(|avg| avg != &value) {
+                    return Err(unsupported("AVG and SUM must use the same value"));
                 }
-                sum = Some(column);
+                sum = Some(value);
                 aggregate_filters.push(("sum", function_filter, true));
             }
             ("avg", false) => {
@@ -1041,26 +1079,16 @@ fn analyze_aggregate(
                 if avg.is_some() {
                     return Err(unsupported("duplicate AVG aggregate"));
                 }
-                // The optimizer coerces the argument: `avg(CAST(v AS Float64))`.
-                let column =
-                    match function.params.args.as_slice() {
-                        [arg] => {
-                            aggregate_column_of(arg).map(str::to_string).ok_or_else(
-                                || unsupported("AVG arguments must be plain columns"),
-                            )?
-                        }
-                        _ => {
-                            return Err(unsupported(
-                                "aggregates take exactly one column argument",
-                            ));
-                        }
-                    };
-                if sum.as_ref().is_some_and(|sum| sum != &column) {
+                let [arg] = function.params.args.as_slice() else {
                     return Err(unsupported(
-                        "AVG and SUM must use the same value column",
+                        "aggregates take exactly one value argument",
                     ));
+                };
+                let value = sum_value_argument(arg, &hoisted_exprs)?;
+                if sum.as_ref().is_some_and(|sum| sum != &value) {
+                    return Err(unsupported("AVG and SUM must use the same value"));
                 }
-                avg = Some(column);
+                avg = Some(value);
                 aggregate_filters.push(("avg", function_filter, true));
             }
             ("min", false) | ("max", false) => {
@@ -1218,13 +1246,20 @@ fn analyze_aggregate(
     }
 
     // A single non-NULL count accumulator is shared with SUM/AVG.
-    if let Some(count_column) = &count_column
-        && (sum.as_ref().is_some_and(|sum| sum != count_column)
-            || avg.as_ref().is_some_and(|avg| avg != count_column))
-    {
-        return Err(unsupported(
-            "COUNT and SUM/AVG must use the same value column",
-        ));
+    if let Some(count_column) = &count_column {
+        match sum.as_ref().or(avg.as_ref()) {
+            Some(SumValue::Expr(_)) => {
+                return Err(unsupported(
+                    "COUNT(column) cannot be combined with an aggregated expression",
+                ));
+            }
+            Some(SumValue::Column(column)) if column != count_column => {
+                return Err(unsupported(
+                    "COUNT and SUM/AVG must use the same value column",
+                ));
+            }
+            _ => {}
+        }
     }
 
     let having = if let Some((agg, value_column)) = &distinct {
@@ -1274,11 +1309,8 @@ fn analyze_aggregate(
         render_having(
             having_exprs,
             HavingColumns::SumCount {
-                value_column: sum.as_deref().or(avg.as_deref()),
-                count_column: count_column
-                    .as_deref()
-                    .or(sum.as_deref())
-                    .or(avg.as_deref()),
+                value: sum.as_ref().or(avg.as_ref()),
+                count_column: count_column.as_deref(),
                 average: avg.is_some(),
                 aggregate_filter: aggregate_filter.as_deref(),
             },
@@ -1291,7 +1323,7 @@ fn analyze_aggregate(
         ));
     };
     let average = avg.is_some();
-    let value_column = sum.or(avg);
+    let value = sum.or(avg);
     let spec = if let Some((statistic, variance_column)) = variance {
         ViewSpec::Variance {
             view_id: request.view_id.clone(),
@@ -1349,13 +1381,19 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if value_column.is_some() || count || count_column.is_some() {
+    } else if value.is_some() || count || count_column.is_some() {
+        let (value_column, value_expr) = match &value {
+            Some(SumValue::Column(column)) => (Some(column.clone()), None),
+            Some(SumValue::Expr(expression)) => (None, Some(expression.clone())),
+            None => (None, None),
+        };
         ViewSpec::SumCount {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column,
+            value_expr,
             count_column,
             aggregate_filter,
             filter,
@@ -2549,12 +2587,74 @@ mod tests {
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
                 value_column: Some("v".to_string()),
+                value_expr: None,
                 count_column: None,
                 aggregate_filter: None,
                 filter: None,
                 having: None,
                 average: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_sum_expressions() {
+        let analyzed = analyze("select g, sum(v * 2) from src group by g")
+            .await
+            .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::SumCount {
+                view_id: "view_1".to_string(),
+                source_table_id: "table_src".to_string(),
+                mv_table_id: "table_mv".to_string(),
+                group_keys: vec!["g".to_string()],
+                value_column: None,
+                value_expr: Some("(v * 2)".to_string()),
+                count_column: None,
+                aggregate_filter: None,
+                filter: None,
+                having: None,
+                average: false,
+            }
+        );
+
+        // SUM and AVG share the same expression, hoisted by the optimizer.
+        let analyzed = analyze("select g, sum(v * 2), avg(v * 2) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::SumCount {
+            value_expr,
+            average,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(value_expr.as_deref(), Some("(v * 2)"));
+        assert!(average);
+
+        // HAVING over the same expression maps onto sum_v.
+        let analyzed =
+            analyze("select g, sum(v * 2) from src group by g having sum(v * 2) > 10")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount { having, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("sum_v > 10"));
+
+        // The aggregates must agree on one value.
+        assert!(
+            analyze("select g, sum(v), avg(v * 2) from src group by g")
+                .await
+                .is_err()
+        );
+        // COUNT(column) cannot count an aggregated expression.
+        assert!(
+            analyze("select g, sum(v * 2), count(v) from src group by g")
+                .await
+                .is_err()
         );
     }
 
@@ -2785,6 +2885,7 @@ mod tests {
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
                 value_column: None,
+                value_expr: None,
                 count_column: Some("v".to_string()),
                 aggregate_filter: None,
                 filter: None,
@@ -3025,6 +3126,7 @@ mod tests {
             mv_table_id: "table_mv".to_string(),
             group_keys: vec!["g".to_string()],
             value_column: None,
+            value_expr: None,
             count_column: None,
             aggregate_filter: None,
             filter: None,

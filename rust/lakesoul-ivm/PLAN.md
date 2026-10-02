@@ -1081,7 +1081,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 聚合参数表达式（`SUM(v * 2)`）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
+| 表达式/投影 | 其它聚合族的参数表达式（MIN/MAX/VARIANCE/MEDIAN/STRING_AGG）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `ARRAY_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
@@ -1522,6 +1522,28 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`row_exprs.slt`（bootstrap、更新、删除、`WHERE`+表达式定义变化 rebuild）；
   analyzer 单测覆盖表达式/改名/纯列与 `WHERE` 组合。
   全量 IVM 套件 36 个测试二进制 / 204 个测试通过。
+
+### 10.29 SUM/AVG 的聚合参数表达式（PR-23）
+
+- **能力**：`SUM(v * 2)`、`AVG(v * 2)`（以及 `SUM(CASE WHEN ... THEN ... END)` 这样的条件
+  聚合）现在可以直接物化——SUM 家族（含 COUNT(*) 机制）保留一个"值"，既可以是纯列，也可以
+  是标量表达式。
+- **spec/typed**：`ViewSpec::SumCount` / `SumCountView` 增加 `value_expr: Option<String>`
+  （与 `value_column` 互斥；serde default）。纯列参数仍走 `value_column`，既有 spec 与行为
+  不变；构建器 `with_value_expr`。
+- **analyzer**：新增 `SumValue::{Column, Expr}` 统一解析 `SUM`/`AVG` 参数（解析 hoisted
+  别名、去掉优化器加上的数值 CAST）；SUM/AVG 必须引用同一个值；`COUNT(column)` 不能与表达式
+  值共存（非空计数只有一个累加器）；HAVING 中同值（纯列或表达式）的 SUM/AVG 映射到物化列。
+- **schema**：新增 `sum_expr_mv_schema_for`（规划表达式取类型并做 SUM/AVG 数值校验）；抽出
+  `expression_type` 与 `sum_count_schema_for`，`sum_count_mv_schema_for` / `avg_mv_schema_for`
+  行为不变。
+- **运行时**：`sum_count_value_sql` 统一取渲染值；`signed_delta_exprs` 改为接收已渲染的值
+  （append-only 的 delete/update 标记按表达式有符号撤回）；keyed 的 new/old 聚合、HAVING 的
+  `group_now` 与 rebuild（含非 keyed 分支）全部复用。
+- **测试**：`sum_expr.slt`（bootstrap、表达式更新、删除、HAVING 增量、WHERE+表达式 rebuild）、
+  `sum_expr_append.slt`（append-only 的 delete/update 标记撤回）；差分 oracle（`SUM(v * 2)` +
+  `COUNT(*)` 全量对比）；analyzer 单测覆盖表达式/共享值/HAVING 映射与拒绝。
+  全量 IVM 套件 36 个测试二进制 / 208 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
