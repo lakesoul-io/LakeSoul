@@ -36,9 +36,9 @@ use crate::runtime::{
     IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, avg_mv_schema_for,
     distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_view_schema_for,
     median_mv_schema_for, min_max_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, value_count_state_schema_for, variance_mv_schema_for,
-    window_columns_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_mv_schema_for, sum_count_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, value_count_state_schema_for,
+    variance_mv_schema_for, window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
@@ -468,6 +468,15 @@ fn expected_mv_schema(
             value_column,
             *statistic,
         )?,
+        ViewSpec::StringAgg {
+            source_table_id,
+            group_keys,
+            value_column,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            string_agg_mv_schema_for(&source.schema, group_keys, value_column)?
+        }
         ViewSpec::Median {
             source_table_id,
             group_keys,
