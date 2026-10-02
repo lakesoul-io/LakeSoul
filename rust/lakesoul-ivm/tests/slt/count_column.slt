@@ -1,0 +1,79 @@
+# COUNT(column) counts the non-NULL values of that column.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=null,op=insert; k=3,g=b,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1
+b 0
+
+# An update to NULL lowers the count, an update away from NULL raises it.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=null,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 0
+b 1
+
+# A delete of the last non-NULL row leaves the group with a zero count.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 0
+
+# HAVING maps COUNT(column) onto the same non-NULL count.
+statement ok
+/*ivm-append __SRC__: k=4,g=a,v=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(v) FROM __SRC__ GROUP BY g HAVING COUNT(v) > 0
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1
+
+# SUM and COUNT over the same column share the count state; adding SUM to
+# the definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: k=5,g=c,v=4,op=insert; k=6,g=c,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), COUNT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT g, sum_v, "__ivm_nonnull_count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3 1
+c 4 1

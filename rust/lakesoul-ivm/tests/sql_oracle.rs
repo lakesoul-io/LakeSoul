@@ -54,19 +54,42 @@ fn source_schema() -> SchemaRef {
     ]))
 }
 
-fn batch(rows: &[(i64, String, i64, &str)]) -> RecordBatch {
+/// The default source schema with a nullable value column.
+fn nullable_source_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn batch(rows: &[(i64, String, Option<i64>, &str)], schema: &SchemaRef) -> RecordBatch {
     RecordBatch::try_new(
-        source_schema(),
+        schema.clone(),
         vec![
             Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
             Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.1.as_str()),
             )),
-            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(Int64Array::from_iter(rows.iter().map(|row| row.2))),
             Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.3))),
         ],
     )
     .unwrap()
+}
+
+/// One appended source row: `(key, group, value, change)`.
+type SourceRow = (i64, String, Option<i64>, &'static str);
+
+/// One random value; about a quarter of them are NULL when the workload
+/// allows NULLs.
+fn oracle_value(rng: &mut Lcg, nullable: bool) -> Option<i64> {
+    if nullable && rng.range(4) == 0 {
+        None
+    } else {
+        Some(rng.range(100) as i64)
+    }
 }
 
 async fn collect_rows(ctx: &SessionContext, sql: &str) -> Vec<Vec<String>> {
@@ -101,6 +124,36 @@ async fn run_oracle(
     reference: &str,
     mv_query: &str,
 ) {
+    run_oracle_with(
+        tag,
+        source_count,
+        source_schema(),
+        false,
+        mv_schema,
+        mv_primary_keys,
+        definition,
+        reference,
+        mv_query,
+    )
+    .await;
+}
+
+/// Run one differential oracle over random mutation rounds.
+///
+/// `schema` seeds the source tables; when `nullable_values` is set some
+/// inserted and updated rows carry a NULL value.
+#[allow(clippy::too_many_arguments)]
+async fn run_oracle_with(
+    tag: &str,
+    source_count: usize,
+    schema: SchemaRef,
+    nullable_values: bool,
+    mv_schema: SchemaRef,
+    mv_primary_keys: Vec<String>,
+    definition: &str,
+    reference: &str,
+    mv_query: &str,
+) {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -119,7 +172,7 @@ async fn run_oracle(
                         "file://{}",
                         dir.path().join(format!("src{index}")).display()
                     ),
-                    source_schema(),
+                    schema.clone(),
                 )
                 .with_primary_keys(vec!["k".to_string()])
                 .with_cdc_column(CHANGE_COLUMN)
@@ -168,14 +221,13 @@ async fn run_oracle(
 
     let executor = IvmSqlExecutor::new(runtime).with_session(ctx.clone());
     let mut rng = Lcg(42);
-    let mut live: Vec<Vec<(i64, String, i64)>> = vec![Vec::new(); source_count];
+    let mut live: Vec<Vec<(i64, String, Option<i64>)>> = vec![Vec::new(); source_count];
     let mut next_key = 0i64;
     let mut mv_rows = 0usize;
 
     for round in 0..10 {
         let mutations = 1 + rng.range(3) as usize;
-        let mut rows_per_source: Vec<Vec<(i64, String, i64, &'static str)>> =
-            vec![Vec::new(); source_count];
+        let mut rows_per_source: Vec<Vec<SourceRow>> = vec![Vec::new(); source_count];
         for _ in 0..mutations {
             let source_index = rng.range(source_count as u64) as usize;
             let live_rows = &mut live[source_index];
@@ -185,7 +237,7 @@ async fn run_oracle(
                 let key = next_key;
                 next_key += 1;
                 let group = format!("g{}", key % 3);
-                let value = rng.range(100) as i64;
+                let value = oracle_value(&mut rng, nullable_values);
                 rows_per_source[source_index].push((key, group.clone(), value, "insert"));
                 live_rows.push((key, group, value));
             } else {
@@ -193,7 +245,7 @@ async fn run_oracle(
                 let (key, group, _) = live_rows[index].clone();
                 if operation == 1 {
                     // An update of the same key.
-                    let value = rng.range(100) as i64;
+                    let value = oracle_value(&mut rng, nullable_values);
                     rows_per_source[source_index].push((
                         key,
                         group.clone(),
@@ -219,7 +271,7 @@ async fn run_oracle(
                 continue;
             }
             sources[index]
-                .append_batch(executor.runtime().client(), batch(rows))
+                .append_batch(executor.runtime().client(), batch(rows, &schema))
                 .await
                 .unwrap();
         }
@@ -251,6 +303,25 @@ async fn oracle_sum_count_matches_full_recompute() {
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
         "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_count_column_matches_full_recompute() {
+    // COUNT(column) counts non-NULL values through the shared non-NULL count.
+    let schema = nullable_source_schema();
+    run_oracle_with(
+        "countcolumn",
+        1,
+        schema.clone(),
+        true,
+        sum_count_mv_schema_for(&schema, &["g".to_string()], None).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, COUNT(v) AS count_v FROM __SRC__ GROUP BY g",
+        "SELECT g, COUNT(v) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, \"__ivm_nonnull_count\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

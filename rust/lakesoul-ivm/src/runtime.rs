@@ -264,6 +264,10 @@ pub enum ViewSpec {
         group_keys: Vec<String>,
         /// The summed column; `None` means `SUM(0)`, i.e. count only.
         value_column: Option<String>,
+        /// The non-NULL count column of a `COUNT(column)` aggregate; `None`
+        /// falls back to `value_column`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count_column: Option<String>,
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -534,6 +538,9 @@ pub struct SumCountView {
     pub group_keys: Vec<String>,
     /// The summed column; `None` counts rows only.
     pub value_column: Option<String>,
+    /// The column whose non-NULL values a `COUNT(column)` aggregate counts;
+    /// `None` falls back to [`Self::value_column`].
+    pub count_column: Option<String>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
@@ -560,6 +567,7 @@ impl SumCountView {
             mv,
             group_keys: vec![group_key.into()],
             value_column,
+            count_column: None,
             filter: None,
             having: None,
             average: false,
@@ -581,6 +589,7 @@ impl SumCountView {
             mv,
             group_keys,
             value_column,
+            count_column: None,
             filter: None,
             having: None,
             average: false,
@@ -600,6 +609,13 @@ impl SumCountView {
         self
     }
 
+    /// Materialize the non-NULL count of `count_column` (a `COUNT(column)`
+    /// aggregate).
+    pub fn with_count_column(mut self, count_column: impl Into<String>) -> Self {
+        self.count_column = Some(count_column.into());
+        self
+    }
+
     /// Materialize the average as well; the value column must be numeric.
     pub fn with_average(mut self) -> Self {
         self.average = true;
@@ -613,6 +629,7 @@ impl SumCountView {
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
+            count_column: self.count_column.clone(),
             filter: self.filter.clone(),
             having: self.having.clone(),
             average: self.average,
@@ -2675,6 +2692,7 @@ impl IvmRuntime {
                 mv_table_id,
                 group_keys,
                 value_column,
+                count_column,
                 filter,
                 having,
                 average,
@@ -2684,6 +2702,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
+                count_column: count_column.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
                 average: *average,
@@ -3039,17 +3058,7 @@ impl IvmRuntime {
     /// no-op.
     pub async fn refresh_sum_count(&self, view: &SumCountView) -> Result<Option<i64>> {
         self.register_view(view).await?;
-        validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
-        validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
-        if let Some(value_column) = &view.value_column {
-            sum_result_type(&field_type(&view.source.schema, value_column)?)?;
-        }
-        if view.average {
-            let value_column = view.value_column.as_deref().ok_or_else(|| {
-                report!("AVG view {} needs a value column", view.view_id)
-            })?;
-            avg_result_type(&field_type(&view.source.schema, value_column)?)?;
-        }
+        validate_sum_count_view(view)?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -3733,17 +3742,7 @@ impl IvmRuntime {
     /// Rebuild a `SUM`/`COUNT` view from the full source state.
     pub async fn rebuild_sum_count(&self, view: &SumCountView) -> Result<i64> {
         self.register_view(view).await?;
-        validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
-        validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
-        if let Some(value_column) = &view.value_column {
-            sum_result_type(&field_type(&view.source.schema, value_column)?)?;
-        }
-        if view.average {
-            let value_column = view.value_column.as_deref().ok_or_else(|| {
-                report!("AVG view {} needs a value column", view.view_id)
-            })?;
-            avg_result_type(&field_type(&view.source.schema, value_column)?)?;
-        }
+        validate_sum_count_view(view)?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -6082,22 +6081,30 @@ fn source_retract_condition(alias: &str, change_column: Option<&str>) -> String 
 fn signed_delta_exprs(
     alias: &str,
     value_column: Option<&str>,
+    count_column: Option<&str>,
     change_column: Option<&str>,
 ) -> (String, String, String) {
     let retract = source_retract_condition(alias, change_column);
     let count = format!("sum(case when {retract} then -1 else 1 end)");
-    match value_column {
+    let sum = match value_column {
         Some(column) => {
             let value = quote_ident(column);
-            let sum =
-                format!("sum(case when {retract} then -({value}) else ({value}) end)");
-            let nonnull = format!(
-                "sum(case when {value} is null then 0 when {retract} then -1 else 1 end)"
-            );
-            (sum, count, nonnull)
+            format!("sum(case when {retract} then -({value}) else ({value}) end)")
         }
-        None => ("sum(0)".to_string(), count.clone(), count),
-    }
+        None => "sum(0)".to_string(),
+    };
+    // The non-NULL count belongs to the count column, falling back to the
+    // summed column.
+    let nonnull = match count_column.or(value_column) {
+        Some(column) => {
+            let value = quote_ident(column);
+            format!(
+                "sum(case when {value} is null then 0 when {retract} then -1 else 1 end)"
+            )
+        }
+        None => count.clone(),
+    };
+    (sum, count, nonnull)
 }
 
 fn key_join_condition(left: &str, right: &str, keys: &[String]) -> String {
@@ -6122,6 +6129,35 @@ fn key_join_condition_null_safe(left: &str, right: &str, keys: &[String]) -> Str
         .join(" and ")
 }
 
+/// Validate a `SUM`/`COUNT` view: the group keys, the value/count columns and
+/// the `HAVING` predicate.
+fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
+    validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+    validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
+    if let Some(value_column) = &view.value_column {
+        sum_result_type(&field_type(&view.source.schema, value_column)?)?;
+    }
+    if let Some(count_column) = &view.count_column {
+        field_type(&view.source.schema, count_column)?;
+        if let Some(value_column) = &view.value_column
+            && value_column != count_column
+        {
+            return Err(report!(
+                "SUM/COUNT view {}: SUM and COUNT must use the same value column",
+                view.view_id
+            ));
+        }
+    }
+    if view.average {
+        let value_column = view
+            .value_column
+            .as_deref()
+            .ok_or_else(|| report!("AVG view {} needs a value column", view.view_id))?;
+        avg_result_type(&field_type(&view.source.schema, value_column)?)?;
+    }
+    Ok(())
+}
+
 /// SQL for one `SUM`/`COUNT` refresh window: a `delete` part (the previous
 /// accumulator of changed groups) unioned with an `insert` part (the new
 /// accumulator). Keys already written for this epoch are skipped.
@@ -6131,7 +6167,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         Some(column) => format!("sum({})", quote_ident(column)),
         None => "sum(0)".to_string(),
     };
-    let nonnull_expr = match &view.value_column {
+    let nonnull_expr = match view.count_column.as_ref().or(view.value_column.as_ref()) {
         Some(column) => format!("count({})", quote_ident(column)),
         None => "count(1)".to_string(),
     };
@@ -6149,6 +6185,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
                 "src",
                 view.value_column.as_deref(),
+                view.count_column.as_deref(),
                 change_column(&view.source),
             );
             (signed_sum, signed_count, signed_nonnull)
@@ -6232,6 +6269,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
             "delta",
             view.value_column.as_deref(),
+            view.count_column.as_deref(),
             change_column(&view.source),
         );
         format!(
@@ -6346,6 +6384,7 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
             "src",
             view.value_column.as_deref(),
+            view.count_column.as_deref(),
             change_column(&view.source),
         );
         let plain_where = filter_where(view.filter.as_deref());
@@ -6378,7 +6417,7 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         Some(column) => format!("sum({})", quote_ident(column)),
         None => "sum(0)".to_string(),
     };
-    let nonnull_expr = match &view.value_column {
+    let nonnull_expr = match view.count_column.as_ref().or(view.value_column.as_ref()) {
         Some(column) => format!("count({})", quote_ident(column)),
         None => "count(1)".to_string(),
     };
