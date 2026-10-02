@@ -439,6 +439,28 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// `ARRAY_AGG(value ORDER BY keys)` over a source, maintained by
+    /// recomputing the affected groups.
+    ArrayAgg {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
+        /// The collected column.
+        value_column: String,
+        /// The rendered `ORDER BY` items inside the aggregate (required, so
+        /// the collected list is deterministic).
+        #[serde(default)]
+        order_by: Vec<String>,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+    },
     /// Window functions over a source, maintained by recomputing the
     /// affected partitions.
     Window {
@@ -547,6 +569,7 @@ impl ViewSpec {
             | ViewSpec::Variance { view_id, .. }
             | ViewSpec::Median { view_id, .. }
             | ViewSpec::StringAgg { view_id, .. }
+            | ViewSpec::ArrayAgg { view_id, .. }
             | ViewSpec::Join { view_id, .. }
             | ViewSpec::MinMax { view_id, .. }
             | ViewSpec::DistinctAgg { view_id, .. }
@@ -565,6 +588,7 @@ enum SpecView {
     Variance(VarianceView),
     Median(MedianView),
     StringAgg(StringAggView),
+    ArrayAgg(ArrayAggView),
     Join(JoinView),
     MinMax(MinMaxView),
     DistinctAgg(DistinctAggView),
@@ -1752,6 +1776,140 @@ pub fn string_agg_mv_schema_for(
     fields.push(Arc::new(Field::new(
         string_agg_column(value_column),
         DataType::LargeUtf8,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The derived column of an [`ArrayAggView`] materialized view.
+pub fn array_agg_column(value_column: &str) -> String {
+    format!("array_agg_{value_column}")
+}
+
+/// An `ARRAY_AGG(value ORDER BY order_keys)` view over a source table.
+///
+/// The collected list cannot be merged from signed deltas, so a refresh
+/// recomputes the affected groups from their current source rows; the
+/// aggregate ordering makes the result deterministic.
+#[derive(Debug, Clone)]
+pub struct ArrayAggView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the collected list.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The collected column.
+    pub value_column: String,
+    /// The rendered ordering items inside the aggregate.
+    pub order_by: Vec<String>,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl ArrayAggView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+        order_by: Vec<String>,
+    ) -> Self {
+        Self::new_with_group_keys(
+            view_id,
+            source,
+            mv,
+            vec![group_key.into()],
+            value_column,
+            order_by,
+        )
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        order_by: Vec<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            value_column: value_column.into(),
+            order_by,
+            filter: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            aggregate_call: format!(
+                "array_agg({} order by {})",
+                quote_ident(&self.value_column),
+                self.order_by.join(", "),
+            ),
+            column: array_agg_column(&self.value_column),
+            filter: self.filter.as_deref(),
+            having: None,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::ArrayAgg {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            value_column: self.value_column.clone(),
+            order_by: self.order_by.clone(),
+            filter: self.filter.clone(),
+        }
+    }
+}
+
+/// The schema of an [`ArrayAggView`] materialized view: the group keys and the
+/// collected `List` column.
+pub fn array_agg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
+    let value_type = field_type(source_schema, value_column)?;
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(
+        array_agg_column(value_column),
+        DataType::List(Arc::new(Field::new_list_field(value_type, true))),
         true,
     )));
     fields.push(Arc::new(Field::new(
@@ -3166,6 +3324,24 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::ArrayAgg {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                value_column,
+                order_by,
+                filter,
+            } => SpecView::ArrayAgg(ArrayAggView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                order_by: order_by.clone(),
+                filter: filter.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::Window {
                 view_id,
                 source_table_id,
@@ -3275,6 +3451,7 @@ impl IvmRuntime {
             SpecView::Variance(view) => self.refresh_variance(&view).await,
             SpecView::Median(view) => self.refresh_median(&view).await,
             SpecView::StringAgg(view) => self.refresh_string_agg(&view).await,
+            SpecView::ArrayAgg(view) => self.refresh_array_agg(&view).await,
             SpecView::Join(view) => self.refresh_join(&view).await,
             SpecView::MinMax(view) => self.refresh_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
@@ -3295,6 +3472,7 @@ impl IvmRuntime {
             SpecView::Variance(view) => self.rebuild_variance(&view).await,
             SpecView::Median(view) => self.rebuild_median(&view).await,
             SpecView::StringAgg(view) => self.rebuild_string_agg(&view).await,
+            SpecView::ArrayAgg(view) => self.rebuild_array_agg(&view).await,
             SpecView::Join(view) => self.rebuild_join(&view).await,
             SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
@@ -3603,6 +3781,45 @@ impl IvmRuntime {
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.rebuild_recomputed(&parts).await
+    }
+
+    /// Refresh an `ARRAY_AGG` view by recomputing the affected groups from
+    /// their current source rows.
+    pub async fn refresh_array_agg(&self, view: &ArrayAggView) -> Result<Option<i64>> {
+        self.register_array_agg_view(view).await?;
+        if view.order_by.is_empty() {
+            return Err(report!(
+                "ARRAY_AGG view {} needs an aggregate ORDER BY",
+                view.view_id
+            ));
+        }
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Rebuild an `ARRAY_AGG` view from the full source state.
+    pub async fn rebuild_array_agg(&self, view: &ArrayAggView) -> Result<i64> {
+        self.register_array_agg_view(view).await?;
+        if view.order_by.is_empty() {
+            return Err(report!(
+                "ARRAY_AGG view {} needs an aggregate ORDER BY",
+                view.view_id
+            ));
+        }
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
+    /// Persist an `ARRAY_AGG` view spec (idempotent).
+    pub async fn register_array_agg_view(&self, view: &ArrayAggView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
     }
 
     /// Persist a `STRING_AGG` view spec (idempotent).

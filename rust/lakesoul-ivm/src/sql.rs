@@ -929,6 +929,8 @@ fn analyze_aggregate(
     let mut median: Option<String> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(String, String, Vec<String>)> = None;
+    // `(value column, rendered aggregate ordering)`.
+    let mut array_agg: Option<(String, Vec<String>)> = None;
     let mut min_max: Option<(MinMaxKind, String)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     // `(aggregate name, FILTER predicate, whether it is a value aggregate)`.
@@ -942,8 +944,10 @@ fn analyze_aggregate(
             return Err(unsupported("non-aggregate expression in the select list"));
         };
         let name = function.func.name();
-        // `STRING_AGG` is defined by its in-aggregate ordering.
-        if !function.params.order_by.is_empty() && name != "string_agg" {
+        // `STRING_AGG`/`ARRAY_AGG` are defined by their in-aggregate ordering.
+        if !function.params.order_by.is_empty()
+            && !matches!(name, "string_agg" | "array_agg")
+        {
             return Err(unsupported(format!("{name} with ORDER BY")));
         }
         let function_filter = match &function.params.filter {
@@ -1185,6 +1189,36 @@ fn analyze_aggregate(
                 string_agg = Some((value_column, delimiter, order_by));
                 aggregate_filters.push((name, function_filter, false));
             }
+            ("array_agg", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                    || string_agg.is_some()
+                    || array_agg.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                if function.params.order_by.is_empty() {
+                    return Err(unsupported(
+                        "ARRAY_AGG needs an ORDER BY inside the aggregate to be deterministic",
+                    ));
+                }
+                let [value] = function.params.args.as_slice() else {
+                    return Err(unsupported("ARRAY_AGG takes a value column"));
+                };
+                let value_column = column_of(value)
+                    .map(|column| column.name.clone())
+                    .ok_or_else(|| {
+                        unsupported("ARRAY_AGG values must be plain columns")
+                    })?;
+                let order_by = render_order_items(&function.params.order_by)?;
+                array_agg = Some((value_column, order_by));
+                aggregate_filters.push((name, function_filter, false));
+            }
             _ => {
                 return Err(unsupported(format!(
                     "aggregate function {name}{}",
@@ -1233,7 +1267,7 @@ fn analyze_aggregate(
         }
     }
 
-    if string_agg.is_some()
+    if (string_agg.is_some() || array_agg.is_some())
         && (count
             || sum.is_some()
             || avg.is_some()
@@ -1292,6 +1326,12 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some((value_column, order_by)) = &array_agg {
+        if !having_exprs.is_empty() {
+            return Err(unsupported("HAVING with ARRAY_AGG"));
+        }
+        let _ = (value_column, order_by);
+        None
     } else if let Some((value_column, delimiter, order_by)) = &string_agg {
         render_having(
             having_exprs,
@@ -1334,6 +1374,16 @@ fn analyze_aggregate(
             statistic,
             filter,
             having,
+        }
+    } else if let Some((value_column, order_by)) = array_agg {
+        ViewSpec::ArrayAgg {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            value_column,
+            order_by,
+            filter,
         }
     } else if let Some((value_column, delimiter, order_by)) = string_agg {
         ViewSpec::StringAgg {
@@ -2594,6 +2644,47 @@ mod tests {
                 having: None,
                 average: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_array_agg() {
+        let analyzed = analyze("select k, array_agg(g order by v) from src group by k")
+            .await
+            .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::ArrayAgg {
+                view_id: "view_1".to_string(),
+                source_table_id: "table_src".to_string(),
+                mv_table_id: "table_mv".to_string(),
+                group_keys: vec!["k".to_string()],
+                value_column: "g".to_string(),
+                order_by: vec!["v".to_string()],
+                filter: None,
+            }
+        );
+
+        // Directions render inside the aggregate.
+        let analyzed =
+            analyze("select k, array_agg(g order by v desc) from src group by k")
+                .await
+                .unwrap();
+        let ViewSpec::ArrayAgg { order_by, .. } = analyzed.spec else {
+            panic!("expected an array_agg spec");
+        };
+        assert_eq!(order_by, vec!["\"v\" desc nulls first".to_string()]);
+
+        // The aggregate ordering is required and mixing is rejected.
+        assert!(
+            analyze("select k, array_agg(g) from src group by k")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze("select k, array_agg(g order by v), sum(v) from src group by k")
+                .await
+                .is_err()
         );
     }
 

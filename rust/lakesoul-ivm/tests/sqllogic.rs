@@ -31,12 +31,13 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
-    min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    WindowFunction, array_agg_mv_schema_for, avg_mv_schema_for,
+    distinct_agg_mv_schema_for, median_mv_schema_for, min_max_mv_schema_for,
+    row_expr_mv_schema_for, row_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_mv_schema_for, sum_expr_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -820,6 +821,16 @@ fn sqllogic_row_typed_append() {
         group_keys(&["k"]),
         row_mv_schema_for(&schema, &output_columns).unwrap(),
         group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_array_agg() {
+    run_script_for_mv(
+        "arrayagg",
+        include_str!("slt/array_agg.slt"),
+        array_agg_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v").unwrap(),
+        group_keys(&["g"]),
     );
 }
 

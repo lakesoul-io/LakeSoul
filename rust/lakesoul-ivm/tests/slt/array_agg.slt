@@ -1,0 +1,61 @@
+# ARRAY_AGG collects the values of a group in the aggregate ordering.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, ARRAY_AGG(v ORDER BY k) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a [10, 3]
+b [7]
+
+# An update reorders the collected list.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, ARRAY_AGG(v ORDER BY k) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a [5, 3]
+b [7]
+
+# A delete removes the value.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=3,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, ARRAY_AGG(v ORDER BY k) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a [5]
+b [7]
+
+# A descending ordering and a WHERE clause rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT g, ARRAY_AGG(v ORDER BY k DESC) FROM __SRC__ WHERE v > 4 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a [5]
+b [7]
