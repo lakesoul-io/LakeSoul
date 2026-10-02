@@ -26,7 +26,7 @@ use datafusion::logical_expr::expr::{AggregateFunction, NullTreatment};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
-    Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    SortExpr, Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::sql::unparser::Unparser;
@@ -36,7 +36,7 @@ use crate::runtime::{
     CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
     SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
-    WindowFunction,
+    WindowFunction, string_agg_column,
 };
 use crate::table::IvmTable;
 
@@ -349,6 +349,12 @@ enum HavingColumns<'a> {
     Variance { statistic: VarianceKind },
     /// `median_v` for a median view.
     Median,
+    /// `string_agg_<value>` for a `STRING_AGG` view.
+    StringAgg {
+        value_column: &'a str,
+        delimiter: &'a str,
+        order_by: &'a [String],
+    },
 }
 
 /// Rewrite the `HAVING` predicates over the materialized MV columns and render
@@ -368,8 +374,9 @@ fn render_having(
         return Ok(None);
     }
     let hoisted = hoisted_expressions(&aggregate.input);
-    let mut mapping = HashMap::new();
-    for aggr in &aggregate.aggr_expr {
+    let mut mapping: HashMap<String, String> = HashMap::new();
+    let group_count = aggregate.group_expr.len();
+    for (index, aggr) in aggregate.aggr_expr.iter().enumerate() {
         let mut inner = aggr;
         while let Expr::Alias(alias) = inner {
             inner = &alias.expr;
@@ -378,12 +385,17 @@ fn render_having(
             continue;
         };
         if let Ok(column) = having_column(function, columns, &hoisted) {
+            // The HAVING filter refers to the aggregate by the name of its
+            // output field.
+            if let Some(field) = aggregate.schema.fields().get(group_count + index) {
+                mapping.insert(field.name().clone(), column.clone());
+            }
             // The HAVING filter refers to the aggregate by the name the
             // optimizer gave its output column: with the hoisted FILTER
             // aliases resolved and the argument casts dropped, so map both.
             let resolved =
                 resolve_hoisted(&Expr::AggregateFunction(function.clone()), &hoisted);
-            mapping.insert(format!("{resolved}"), column);
+            mapping.insert(format!("{resolved}"), column.clone());
             mapping.insert(cast_normalized(&resolved), column);
         }
     }
@@ -416,7 +428,7 @@ fn cast_normalized(expr: &Expr) -> String {
 fn rewrite_having(
     expr: &Expr,
     columns: HavingColumns<'_>,
-    mapping: &HashMap<String, &'static str>,
+    mapping: &HashMap<String, String>,
     group_keys: &std::collections::HashSet<&str>,
     hoisted: &HashMap<String, Expr>,
 ) -> Result<Expr> {
@@ -425,7 +437,7 @@ fn rewrite_having(
             Expr::Column(column) if !group_keys.contains(column.name.as_str()) => {
                 match mapping.get(&column.name) {
                     Some(mv_column) => Ok(Transformed::yes(Expr::Column(
-                        Column::from_name(*mv_column),
+                        Column::from_name(mv_column.clone()),
                     ))),
                     None => Err(datafusion::error::DataFusionError::Plan(format!(
                         "HAVING over {}, which the view does not materialize",
@@ -467,8 +479,10 @@ fn having_column(
     function: &AggregateFunction,
     columns: HavingColumns<'_>,
     hoisted: &HashMap<String, Expr>,
-) -> std::result::Result<&'static str, String> {
-    if !function.params.order_by.is_empty() {
+) -> std::result::Result<String, String> {
+    // A `STRING_AGG` is defined by its in-aggregate ordering.
+    let string_agg = matches!(columns, HavingColumns::StringAgg { .. });
+    if !function.params.order_by.is_empty() && !string_agg {
         return Err(format!(
             "{} with ORDER BY is not maintained",
             function.func.name()
@@ -501,20 +515,20 @@ fn having_column(
             match name {
                 "avg" if !function.params.distinct => {
                     if average && value_column.is_some_and(&column_arg) {
-                        Ok(IVM_AVG_COLUMN)
+                        Ok(IVM_AVG_COLUMN.to_string())
                     } else {
                         Err(not_materialized(name))
                     }
                 }
                 "sum" if !function.params.distinct => match value_column {
-                    Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN),
+                    Some(value) if column_arg(value) => Ok(IVM_SUM_COLUMN.to_string()),
                     _ => Err(not_materialized(name)),
                 },
                 "count" if !function.params.distinct => {
                     if counts_all {
-                        Ok(IVM_COUNT_COLUMN)
+                        Ok(IVM_COUNT_COLUMN.to_string())
                     } else if count_column.is_some_and(&column_arg) {
-                        Ok(IVM_NONNULL_COUNT_COLUMN)
+                        Ok(IVM_NONNULL_COUNT_COLUMN.to_string())
                     } else {
                         Err(not_materialized(name))
                     }
@@ -531,7 +545,30 @@ fn having_column(
                 MinMaxKind::Max => "max",
             };
             if name == expected && !function.params.distinct && column_arg(value_column) {
-                Ok(IVM_VALUE_COLUMN)
+                Ok(IVM_VALUE_COLUMN.to_string())
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::StringAgg {
+            value_column,
+            delimiter,
+            order_by,
+        } => {
+            if function_filter.is_some() || function.params.distinct {
+                return Err(not_materialized(name));
+            }
+            let same_value = matches!(function.params.args.as_slice(), [value, _]
+                if column_of(value)
+                    .map(|column| column.name == value_column)
+                    .unwrap_or(false));
+            let same_delimiter = matches!(function.params.args.as_slice(), [_, delimiter_arg]
+                if render_string_literal(delimiter_arg).as_deref() == Some(delimiter));
+            let same_order = render_order_items(&function.params.order_by)
+                .map(|items| items.as_slice() == order_by)
+                .unwrap_or(false);
+            if name == "string_agg" && same_value && same_delimiter && same_order {
+                Ok(string_agg_column(value_column))
             } else {
                 Err(not_materialized(name))
             }
@@ -542,7 +579,7 @@ fn having_column(
                 && !function.params.distinct
                 && function.params.args.len() == 1
             {
-                Ok(IVM_MEDIAN_COLUMN)
+                Ok(IVM_MEDIAN_COLUMN.to_string())
             } else {
                 Err(not_materialized(name))
             }
@@ -555,7 +592,7 @@ fn having_column(
                 && !function.params.distinct
                 && function.params.args.len() == 1
             {
-                Ok(statistic.column_name())
+                Ok(statistic.column_name().to_string())
             } else {
                 Err(not_materialized(name))
             }
@@ -581,7 +618,7 @@ fn having_column(
                 refers_to_alias
             };
             if name == expected && matches {
-                Ok(IVM_VALUE_COLUMN)
+                Ok(IVM_VALUE_COLUMN.to_string())
             } else {
                 Err(not_materialized(name))
             }
@@ -823,6 +860,8 @@ fn analyze_aggregate(
     let mut avg: Option<String> = None;
     let mut variance: Option<(VarianceKind, String)> = None;
     let mut median: Option<String> = None;
+    // `(value column, rendered delimiter, rendered aggregate ordering)`.
+    let mut string_agg: Option<(String, String, Vec<String>)> = None;
     let mut min_max: Option<(MinMaxKind, String)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     // `(aggregate name, FILTER predicate, whether it is a value aggregate)`.
@@ -835,13 +874,11 @@ fn analyze_aggregate(
         let Expr::AggregateFunction(function) = inner else {
             return Err(unsupported("non-aggregate expression in the select list"));
         };
-        if !function.params.order_by.is_empty() {
-            return Err(unsupported(format!(
-                "{} with ORDER BY",
-                function.func.name()
-            )));
-        }
         let name = function.func.name();
+        // `STRING_AGG` is defined by its in-aggregate ordering.
+        if !function.params.order_by.is_empty() && name != "string_agg" {
+            return Err(unsupported(format!("{name} with ORDER BY")));
+        }
         let function_filter = match &function.params.filter {
             Some(filter) => {
                 let filter = resolve_hoisted(filter, &hoisted_exprs);
@@ -1053,6 +1090,41 @@ fn analyze_aggregate(
                 median = Some(hoisted.get(&raw).cloned().unwrap_or(raw));
                 aggregate_filters.push((name, function_filter, false));
             }
+            ("string_agg", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                    || string_agg.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                if function.params.order_by.is_empty() {
+                    return Err(unsupported(
+                        "STRING_AGG needs an ORDER BY inside the aggregate to be deterministic",
+                    ));
+                }
+                let [value, delimiter_arg] = function.params.args.as_slice() else {
+                    return Err(unsupported(
+                        "STRING_AGG takes a value column and a delimiter",
+                    ));
+                };
+                let value_column = column_of(value)
+                    .map(|column| column.name.clone())
+                    .ok_or_else(|| {
+                        unsupported("STRING_AGG values must be plain string columns")
+                    })?;
+                let delimiter =
+                    render_string_literal(delimiter_arg).ok_or_else(|| {
+                        unsupported("STRING_AGG delimiter must be a string literal")
+                    })?;
+                let order_by = render_order_items(&function.params.order_by)?;
+                string_agg = Some((value_column, delimiter, order_by));
+                aggregate_filters.push((name, function_filter, false));
+            }
             _ => {
                 return Err(unsupported(format!(
                     "aggregate function {name}{}",
@@ -1101,6 +1173,18 @@ fn analyze_aggregate(
         }
     }
 
+    if string_agg.is_some()
+        && (count
+            || sum.is_some()
+            || avg.is_some()
+            || variance.is_some()
+            || median.is_some()
+            || min_max.is_some()
+            || distinct.is_some())
+    {
+        return Err(unsupported("mixing aggregate kinds"));
+    }
+
     // A single non-NULL count accumulator is shared with SUM/AVG.
     if let Some(count_column) = &count_column
         && (sum.as_ref().is_some_and(|sum| sum != count_column)
@@ -1141,6 +1225,17 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some((value_column, delimiter, order_by)) = &string_agg {
+        render_having(
+            having_exprs,
+            HavingColumns::StringAgg {
+                value_column,
+                delimiter,
+                order_by,
+            },
+            aggregate,
+            &group_keys,
+        )?
     } else if median.is_some() {
         render_having(having_exprs, HavingColumns::Median, aggregate, &group_keys)?
     } else if sum.is_some() || count || count_column.is_some() || avg.is_some() {
@@ -1173,6 +1268,18 @@ fn analyze_aggregate(
             group_keys,
             value_column: variance_column,
             statistic,
+            filter,
+            having,
+        }
+    } else if let Some((value_column, delimiter, order_by)) = string_agg {
+        ViewSpec::StringAgg {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            value_column,
+            delimiter,
+            order_by,
             filter,
             having,
         }
@@ -1488,6 +1595,29 @@ fn render_order_key(column: &str, asc: bool, nulls_first: bool) -> String {
 /// Quote an identifier for a rendered ordering item.
 fn quote_order_identifier(column: &str) -> String {
     format!("\"{}\"", column.replace('"', "\"\""))
+}
+
+/// Render the `ORDER BY` items of a window or aggregate expression.
+fn render_order_items(order_by: &[SortExpr]) -> Result<Vec<String>> {
+    order_by
+        .iter()
+        .map(|sort| {
+            let column = column_name(&sort.expr)
+                .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
+            Ok(render_order_key(&column, sort.asc, sort.nulls_first))
+        })
+        .collect()
+}
+
+/// Render a string literal argument (`','`).
+fn render_string_literal(expr: &Expr) -> Option<String> {
+    let value = match expr {
+        Expr::Literal(ScalarValue::Utf8(Some(value)), _) => value.as_str(),
+        Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) => value.as_str(),
+        Expr::Literal(ScalarValue::Utf8View(Some(value)), _) => value.as_str(),
+        _ => return None,
+    };
+    Some(format!("'{}'", value.replace('\'', "''")))
 }
 
 /// One window column parsed from its function expression.
@@ -2393,6 +2523,67 @@ mod tests {
                 having: None,
                 average: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_string_agg() {
+        let analyzed =
+            analyze("select k, string_agg(g, ',' order by v) from src group by k")
+                .await
+                .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::StringAgg {
+                view_id: "view_1".to_string(),
+                source_table_id: "table_src".to_string(),
+                mv_table_id: "table_mv".to_string(),
+                group_keys: vec!["k".to_string()],
+                value_column: "g".to_string(),
+                delimiter: "','".to_string(),
+                order_by: vec!["v".to_string()],
+                filter: None,
+                having: None,
+            }
+        );
+
+        // Directions render inside the aggregate; HAVING maps the column.
+        let analyzed = analyze(
+            "select k, string_agg(g, '|' order by v desc) from src group by k \
+             having string_agg(g, '|' order by v desc) <> ''",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::StringAgg {
+            order_by, having, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a string_agg spec");
+        };
+        assert_eq!(order_by, vec!["\"v\" desc nulls first".to_string()]);
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("string_agg_g <> ''")
+        );
+
+        // The aggregate ordering is required, the delimiter must be a string
+        // literal, and the aggregate cannot be mixed.
+        assert!(
+            analyze("select k, string_agg(g, ',') from src group by k")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze("select k, string_agg(g, v order by v) from src group by k")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze(
+                "select k, string_agg(g, ',' order by v), sum(v) from src group by k"
+            )
+            .await
+            .is_err()
         );
     }
 

@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
+| 聚合/分组 | `ARRAY_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1482,6 +1482,28 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   降序 top-k，参考侧用 `v DESC, k` 与运行时 tie-break 对齐）；analyzer 单测覆盖方向/NULL
   位置渲染、默认归一化为空与 top-k 透传。
   全量 IVM 套件 36 个测试二进制 / 199 个测试通过。
+
+### 10.27 `STRING_AGG(value, delimiter ORDER BY ...)`（PR-21）
+
+- **问题**：`STRING_AGG` 顺序相关、无法用有符号 delta 合并，但复用 variance/median 的
+  "按受影响分组从当前源重算"策略即可与全量一致；前提是排序写在聚合内部（`ORDER BY`），
+  否则重算时输入顺序不稳定、增量与重建可能不同。
+- **spec/typed**：新增 `ViewSpec::StringAgg` + `StringAggView`（group_keys、value_column、
+  渲染后的 `delimiter` 字面量、渲染后的 `order_by`、filter、having）。派生列名
+  `string_agg_<value>`，类型 `LargeUtf8` 可空（与 DataFusion 累加器一致）。
+- **recompute 引擎泛化**：`RecomputeParts.aggregate`（函数名）改为 `aggregate_call`
+  （完整渲染调用），variance/median 分别渲染 `var("v")` / `median("v")`；
+  `StringAggView::parts()` 渲染 `string_agg("s", ',' order by "k")`。
+- **analyzer**：识别 `STRING_AGG(value, delimiter ORDER BY ...)`：value 必须是纯字符串列、
+  delimiter 必须是字符串字面量、聚合内必须带 `ORDER BY`（否则明确报错），不能与其它聚合
+  混用；HAVING 按 value/delimiter/order 结构化比对映射到派生列。
+- **顺手修复**：HAVING 映射新增"按聚合输出字段名"（`aggregate.schema.fields()`）映射，
+  修掉渲染文本空格差异导致的多参聚合（STRING_AGG）HAVING 匹配失败。
+- **测试**：`string_agg.slt`（自定义可空字符串 schema：bootstrap、值/顺序更新、NULL 跳过与
+  全 NULL 分组、删除、HAVING、delimiter+DESC+WHERE 重建、重建后增量）；差分 oracle
+  （`string_agg(g, '|' order by k)` 随机负载 10 轮全量对比）；analyzer 单测覆盖渲染
+  （delimiter/方向）、缺少 ORDER BY、非字面量 delimiter 与混用拒绝。
+  全量 IVM 套件 36 个测试二进制 / 202 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

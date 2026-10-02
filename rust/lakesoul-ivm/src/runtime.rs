@@ -407,6 +407,33 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// `STRING_AGG(value, delimiter ORDER BY keys)` over a source, maintained
+    /// by recomputing the affected groups.
+    StringAgg {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
+        /// The concatenated column.
+        value_column: String,
+        /// The delimiter, rendered as a SQL string literal (e.g. `','`).
+        delimiter: String,
+        /// The rendered `ORDER BY` items inside the aggregate (required, so
+        /// the concatenation is deterministic).
+        #[serde(default)]
+        order_by: Vec<String>,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// Window functions over a source, maintained by recomputing the
     /// affected partitions.
     Window {
@@ -510,6 +537,7 @@ impl ViewSpec {
             ViewSpec::SumCount { view_id, .. }
             | ViewSpec::Variance { view_id, .. }
             | ViewSpec::Median { view_id, .. }
+            | ViewSpec::StringAgg { view_id, .. }
             | ViewSpec::Join { view_id, .. }
             | ViewSpec::MinMax { view_id, .. }
             | ViewSpec::DistinctAgg { view_id, .. }
@@ -527,6 +555,7 @@ enum SpecView {
     SumCount(SumCountView),
     Variance(VarianceView),
     Median(MedianView),
+    StringAgg(StringAggView),
     Join(JoinView),
     MinMax(MinMaxView),
     DistinctAgg(DistinctAggView),
@@ -1508,11 +1537,11 @@ struct RecomputeParts<'a> {
     source: &'a IvmTable,
     mv: &'a IvmTable,
     group_keys: &'a [String],
-    value_column: &'a str,
-    /// The SQL aggregate name (`var`, `median`, ...).
-    aggregate: &'a str,
+    /// The rendered aggregate call over the source columns (e.g.
+    /// `var("v")`, `string_agg("s", ',' order by "k")`).
+    aggregate_call: String,
     /// The MV column holding the statistic.
-    column: &'a str,
+    column: String,
     filter: Option<&'a str>,
     having: Option<&'a str>,
 }
@@ -1524,9 +1553,12 @@ impl VarianceView {
             source: &self.source,
             mv: &self.mv,
             group_keys: &self.group_keys,
-            value_column: &self.value_column,
-            aggregate: self.statistic.sql_name(),
-            column: self.statistic.column_name(),
+            aggregate_call: format!(
+                "{}({})",
+                self.statistic.sql_name(),
+                quote_ident(&self.value_column)
+            ),
+            column: self.statistic.column_name().to_string(),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
         }
@@ -1540,13 +1572,177 @@ impl MedianView {
             source: &self.source,
             mv: &self.mv,
             group_keys: &self.group_keys,
-            value_column: &self.value_column,
-            aggregate: "median",
-            column: IVM_MEDIAN_COLUMN,
+            aggregate_call: format!("median({})", quote_ident(&self.value_column)),
+            column: IVM_MEDIAN_COLUMN.to_string(),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
         }
     }
+}
+
+/// The derived column of a [`StringAggView`] materialized view.
+pub fn string_agg_column(value_column: &str) -> String {
+    format!("string_agg_{value_column}")
+}
+
+/// The result type of `STRING_AGG(value, delimiter)`: the value must be a
+/// string column and the concatenation is `LargeUtf8`, like DataFusion's
+/// accumulator.
+fn string_agg_result_type(value_type: &DataType) -> Result<()> {
+    match value_type {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok(()),
+        other => Err(report!(
+            "STRING_AGG is not supported for value type {other}"
+        )),
+    }
+}
+
+/// A `STRING_AGG(value, delimiter ORDER BY order_keys)` view over a source
+/// table.
+///
+/// The concatenation cannot be merged from signed deltas, so a refresh
+/// recomputes the affected groups from their current source rows; the
+/// aggregate ordering makes the result deterministic.
+#[derive(Debug, Clone)]
+pub struct StringAggView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the concatenation.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The concatenated column.
+    pub value_column: String,
+    /// The delimiter, rendered as a SQL string literal (e.g. `','`).
+    pub delimiter: String,
+    /// The rendered ordering items inside the aggregate.
+    pub order_by: Vec<String>,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized column.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl StringAggView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+        delimiter: impl Into<String>,
+        order_by: Vec<String>,
+    ) -> Self {
+        Self::new_with_group_keys(
+            view_id,
+            source,
+            mv,
+            vec![group_key.into()],
+            value_column,
+            delimiter,
+            order_by,
+        )
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        delimiter: impl Into<String>,
+        order_by: Vec<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            value_column: value_column.into(),
+            delimiter: delimiter.into(),
+            order_by,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            aggregate_call: format!(
+                "string_agg({}, {} order by {})",
+                quote_ident(&self.value_column),
+                self.delimiter,
+                self.order_by.join(", "),
+            ),
+            column: string_agg_column(&self.value_column),
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::StringAgg {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            value_column: self.value_column.clone(),
+            delimiter: self.delimiter.clone(),
+            order_by: self.order_by.clone(),
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+}
+
+/// The schema of a [`StringAggView`] materialized view: the group keys and the
+/// `LargeUtf8` concatenation.
+pub fn string_agg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
+    string_agg_result_type(&field_type(source_schema, value_column)?)?;
+    let mut fields = key_fields(source_schema, group_keys)?;
+    fields.push(Arc::new(Field::new(
+        string_agg_column(value_column),
+        DataType::LargeUtf8,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 /// One column of a [`WindowView`].
@@ -2863,6 +3059,28 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::StringAgg {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                value_column,
+                delimiter,
+                order_by,
+                filter,
+                having,
+            } => SpecView::StringAgg(StringAggView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                value_column: value_column.clone(),
+                delimiter: delimiter.clone(),
+                order_by: order_by.clone(),
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::Window {
                 view_id,
                 source_table_id,
@@ -2969,6 +3187,7 @@ impl IvmRuntime {
             SpecView::SumCount(view) => self.refresh_sum_count(&view).await,
             SpecView::Variance(view) => self.refresh_variance(&view).await,
             SpecView::Median(view) => self.refresh_median(&view).await,
+            SpecView::StringAgg(view) => self.refresh_string_agg(&view).await,
             SpecView::Join(view) => self.refresh_join(&view).await,
             SpecView::MinMax(view) => self.refresh_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
@@ -2988,6 +3207,7 @@ impl IvmRuntime {
             SpecView::SumCount(view) => self.rebuild_sum_count(&view).await,
             SpecView::Variance(view) => self.rebuild_variance(&view).await,
             SpecView::Median(view) => self.rebuild_median(&view).await,
+            SpecView::StringAgg(view) => self.rebuild_string_agg(&view).await,
             SpecView::Join(view) => self.rebuild_join(&view).await,
             SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
@@ -3265,6 +3485,47 @@ impl IvmRuntime {
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.refresh_recomputed(&parts).await
+    }
+
+    /// Refresh a `STRING_AGG` view by recomputing the affected groups from
+    /// their current source rows.
+    pub async fn refresh_string_agg(&self, view: &StringAggView) -> Result<Option<i64>> {
+        self.register_string_agg_view(view).await?;
+        string_agg_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        if view.order_by.is_empty() {
+            return Err(report!(
+                "STRING_AGG view {} needs an aggregate ORDER BY",
+                view.view_id
+            ));
+        }
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Rebuild a `STRING_AGG` view from the full source state.
+    pub async fn rebuild_string_agg(&self, view: &StringAggView) -> Result<i64> {
+        self.register_string_agg_view(view).await?;
+        string_agg_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        if view.order_by.is_empty() {
+            return Err(report!(
+                "STRING_AGG view {} needs an aggregate ORDER BY",
+                view.view_id
+            ));
+        }
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
+    /// Persist a `STRING_AGG` view spec (idempotent).
+    pub async fn register_string_agg_view(&self, view: &StringAggView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
     }
 
     /// Refresh a recomputed-aggregate view (variance family or median) by
@@ -6667,8 +6928,8 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
 /// groups from their current source rows.
 fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     let keys = quoted_list(parts.group_keys);
-    let column = quote_ident(parts.column);
-    let agg = format!("{}({})", parts.aggregate, quote_ident(parts.value_column));
+    let column = quote_ident(&parts.column);
+    let agg = &parts.aggregate_call;
     let keyed = !parts.source.primary_keys.is_empty();
     let src_from = if keyed {
         format!(
@@ -6706,8 +6967,8 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
 /// SQL for a full recomputed-aggregate rebuild.
 fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     let keys = quoted_list(parts.group_keys);
-    let column = quote_ident(parts.column);
-    let agg = format!("{}({})", parts.aggregate, quote_ident(parts.value_column));
+    let column = quote_ident(&parts.column);
+    let agg = &parts.aggregate_call;
     let keyed = !parts.source.primary_keys.is_empty();
     let src_from = if keyed {
         format!(

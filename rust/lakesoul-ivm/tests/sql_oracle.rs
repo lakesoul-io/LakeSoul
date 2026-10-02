@@ -19,10 +19,10 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
     avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
-    min_max_mv_schema_for, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    min_max_mv_schema_for, string_agg_mv_schema_for, sum_count_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -341,6 +341,23 @@ async fn oracle_count_filter_matches_full_recompute() {
         "SELECT g, COUNT(v) FILTER (WHERE v > 30) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
         "SELECT g, \"__ivm_nonnull_count\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_string_agg_matches_full_recompute() {
+    // The aggregate ordering makes the concatenation deterministic, so the
+    // incremental result must match the full recompute exactly.
+    run_oracle(
+        "stringagg",
+        1,
+        string_agg_mv_schema_for(&source_schema(), &["g".to_string()], "g").unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, STRING_AGG(g, '|' ORDER BY k) FROM __SRC__ GROUP BY g",
+        "SELECT g, STRING_AGG(g, '|' ORDER BY k) AS string_agg_g FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, string_agg_g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

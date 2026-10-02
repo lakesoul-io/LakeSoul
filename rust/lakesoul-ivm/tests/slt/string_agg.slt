@@ -1,0 +1,95 @@
+# STRING_AGG concatenates the non-NULL values of a group in the aggregate
+# ordering.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,s=x,v=3,op=insert; k=2,g=a,s=y,v=1,op=insert; k=3,g=a,s=z,v=2,op=insert; k=4,g=b,s=w,v=1,op=insert; k=5,g=c,s=null,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(s, ',' ORDER BY v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, string_agg_s FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a y,z,x
+b w
+c NULL
+
+# An update changes both the value and its position in the ordering.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,s=q,v=0,op=insert; k=3,g=a,s=z,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(s, ',' ORDER BY v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, string_agg_s FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a q,y,x,z
+b w
+c NULL
+
+# NULL values are skipped; a group whose values are all NULL stays NULL.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,s=q,v=0,op=delete; k=4,g=b,s=null,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(s, ',' ORDER BY v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, string_agg_s FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a y,x,z
+b NULL
+c NULL
+
+# HAVING over the same aggregate maps onto the materialized column.
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(s, ',' ORDER BY v) FROM __SRC__ GROUP BY g HAVING STRING_AGG(s, ',' ORDER BY v) IS NOT NULL
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, string_agg_s FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a y,x,z
+
+# A different delimiter, ordering and WHERE clause rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(s, '|' ORDER BY v DESC) FROM __SRC__ WHERE v < 4 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, string_agg_s FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a x|y
+b NULL
+c NULL
+
+# An incremental delete after the rebuild.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,s=y,v=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(s, '|' ORDER BY v DESC) FROM __SRC__ WHERE v < 4 GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, string_agg_s FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a x
+b NULL
+c NULL
