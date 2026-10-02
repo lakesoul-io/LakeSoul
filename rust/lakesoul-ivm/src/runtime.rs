@@ -18,6 +18,7 @@ use arrow::record_batch::RecordBatch;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DFSchema, ScalarValue};
+use datafusion::logical_expr::ExprSchemable;
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
@@ -490,6 +491,10 @@ pub enum ViewSpec {
         /// The projected source columns; empty means all of them.
         #[serde(default)]
         output_columns: Vec<String>,
+        /// The rendered projection expressions, parallel to `output_columns`;
+        /// empty means every column is projected as a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_exprs: Vec<String>,
         /// An optional filter the source rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -2137,6 +2142,10 @@ pub struct RowView {
     pub mv: IvmTable,
     /// The projected source columns; empty means all of them.
     pub output_columns: Vec<String>,
+    /// The rendered projection expressions, parallel to
+    /// [`Self::output_columns`]; empty means every column is projected
+    /// unchanged.
+    pub output_exprs: Vec<String>,
     /// An optional filter the source rows must satisfy.
     pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
@@ -2151,6 +2160,7 @@ impl RowView {
             source,
             mv,
             output_columns: Vec::new(),
+            output_exprs: Vec::new(),
             filter: None,
             refresh_interval_ms: 0,
         }
@@ -2159,6 +2169,13 @@ impl RowView {
     /// Project only `output_columns` (keyed sources must include their keys).
     pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
         self.output_columns = output_columns;
+        self
+    }
+
+    /// The rendered projection expressions, parallel to the output columns
+    /// (`v * 2` for a `v * 2 AS v2` projection).
+    pub fn with_output_exprs(mut self, output_exprs: Vec<String>) -> Self {
+        self.output_exprs = output_exprs;
         self
     }
 
@@ -2174,6 +2191,7 @@ impl RowView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             output_columns: self.output_columns.clone(),
+            output_exprs: self.output_exprs.clone(),
             filter: self.filter.clone(),
         }
     }
@@ -2572,6 +2590,17 @@ pub fn row_mv_schema_for(
     source_schema: &Schema,
     output_columns: &[String],
 ) -> Result<SchemaRef> {
+    row_expr_mv_schema_for(source_schema, output_columns, &[])
+}
+
+/// The schema of a [`RowView`] materialized view, with one rendered
+/// projection expression per output column.  The expression types are derived
+/// by planning each expression against the source schema.
+pub fn row_expr_mv_schema_for(
+    source_schema: &Schema,
+    output_columns: &[String],
+    output_exprs: &[String],
+) -> Result<SchemaRef> {
     let columns = if output_columns.is_empty() {
         source_schema
             .fields()
@@ -2581,11 +2610,39 @@ pub fn row_mv_schema_for(
     } else {
         output_columns.to_vec()
     };
-    let mut fields = project_schema(source_schema, &columns)?
-        .fields()
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut fields = if output_exprs.is_empty() {
+        project_schema(source_schema, &columns)?
+            .fields()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        if output_exprs.len() != columns.len() {
+            return Err(report!(
+                "the projection needs one expression per output column"
+            ));
+        }
+        let context = SessionContext::new();
+        let df_schema = DFSchema::try_from(source_schema.clone())
+            .map_err(|error| report!("invalid source schema: {error}"))?;
+        let mut fields = Vec::with_capacity(columns.len());
+        for (column, expression) in columns.iter().zip(output_exprs) {
+            let expression = context
+                .state()
+                .create_logical_expr(expression, &df_schema)
+                .map_err(|error| {
+                    report!("invalid projection expression {expression:?}: {error}")
+                })?;
+            let data_type = expression.get_type(&df_schema).map_err(|error| {
+                report!("invalid projection expression {expression:?}: {error}")
+            })?;
+            let nullable = expression.nullable(&df_schema).map_err(|error| {
+                report!("invalid projection expression {expression:?}: {error}")
+            })?;
+            fields.push(Arc::new(Field::new(column, data_type, nullable)));
+        }
+        fields
+    };
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
         DataType::Utf8,
@@ -3126,12 +3183,14 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 output_columns,
+                output_exprs,
                 filter,
             } => SpecView::Row(RowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 output_columns: output_columns.clone(),
+                output_exprs: output_exprs.clone(),
                 filter: filter.clone(),
                 refresh_interval_ms,
             }),
@@ -4982,11 +5041,7 @@ impl IvmRuntime {
             view.source.read_files(window.added_files).await?,
             &view.source.schema,
         )?;
-        let output_columns = row_output_columns(view);
-        let output_exprs = output_columns
-            .iter()
-            .map(|column| col(column.as_str()))
-            .collect::<Vec<_>>();
+        let output_exprs = row_projection(view, &context)?;
         let predicate = row_filter_predicate(&context, view)?;
 
         if keyed {
@@ -5036,10 +5091,16 @@ impl IvmRuntime {
                 .join(already, JoinType::LeftAnti, &key_names, &key_names, None)?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            // The deleted rows come from the MV, so they are selected by
+            // their materialized names rather than by the source expressions.
+            let delete_exprs = row_output_columns(view)
+                .iter()
+                .map(|column| col(column.as_str()))
+                .collect::<Vec<_>>();
             let deletes = mv
                 .join(affected, JoinType::LeftSemi, &key_names, &key_names, None)?
                 .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
-                .select(output_exprs)?
+                .select(delete_exprs)?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
             let mut sort_exprs = view
@@ -5132,10 +5193,7 @@ impl IvmRuntime {
         if let Some(predicate) = row_filter_predicate(&context, view)? {
             rows = rows.filter(predicate)?;
         }
-        let output_exprs = row_output_columns(view)
-            .iter()
-            .map(|column| col(column.as_str()))
-            .collect::<Vec<_>>();
+        let output_exprs = row_projection(view, &context)?;
         for batch in rows
             .select(output_exprs)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
@@ -7886,6 +7944,33 @@ fn filter_where(filter: Option<&str>) -> String {
 }
 
 /// The source columns a [`RowView`] materializes.
+/// The aliased projection expressions of a row view, parsed against the
+/// source schema.
+fn row_projection(view: &RowView, context: &SessionContext) -> Result<Vec<Expr>> {
+    let columns = row_output_columns(view);
+    if view.output_exprs.is_empty() {
+        return Ok(columns.iter().map(|column| col(column.as_str())).collect());
+    }
+    let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    columns
+        .iter()
+        .zip(&view.output_exprs)
+        .map(|(column, expression)| {
+            let expression = context
+                .state()
+                .create_logical_expr(expression, &df_schema)
+                .map_err(|error| {
+                    report!(
+                        "row view {}: invalid projection expression {expression:?}: {error}",
+                        view.view_id
+                    )
+                })?;
+            Ok(expression.alias(column))
+        })
+        .collect()
+}
+
 fn row_output_columns(view: &RowView) -> Vec<String> {
     if view.output_columns.is_empty() {
         view.source
@@ -7901,7 +7986,31 @@ fn row_output_columns(view: &RowView) -> Vec<String> {
 
 /// Validate that a projection/filter view can be maintained.
 fn validate_row_view(view: &RowView) -> Result<()> {
-    project_schema(&view.source.schema, &row_output_columns(view))?;
+    let columns = row_output_columns(view);
+    if view.output_exprs.is_empty() {
+        project_schema(&view.source.schema, &columns)?;
+    } else {
+        if view.output_exprs.len() != columns.len() {
+            return Err(report!(
+                "row view {}: the projection needs one expression per output column",
+                view.view_id
+            ));
+        }
+        let context = SessionContext::new();
+        let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
+            .map_err(|error| report!("invalid source schema: {error}"))?;
+        for expression in &view.output_exprs {
+            context
+                .state()
+                .create_logical_expr(expression, &df_schema)
+                .map_err(|error| {
+                    report!(
+                        "row view {}: invalid projection expression {expression:?}: {error}",
+                        view.view_id
+                    )
+                })?;
+        }
+    }
     if !view.source.primary_keys.is_empty() {
         for key in &view.source.primary_keys {
             let field = view.source.schema.field_with_name(key).map_err(|_| {
@@ -7916,11 +8025,36 @@ fn validate_row_view(view: &RowView) -> Result<()> {
                     view.view_id
                 ));
             }
-            if !row_output_columns(view).contains(key) {
+            if !columns.contains(key) {
                 return Err(report!(
                     "row view {}: output columns must contain the source key {key}",
                     view.view_id
                 ));
+            }
+            // A key must be projected unchanged, so the MV rows stay keyed by
+            // the source key.
+            if let Some(position) = columns.iter().position(|column| column == key)
+                && let Some(expression) = view.output_exprs.get(position)
+            {
+                let context = SessionContext::new();
+                let df_schema =
+                    DFSchema::try_from(view.source.schema.as_ref().clone())
+                        .map_err(|error| report!("invalid source schema: {error}"))?;
+                let parsed = context
+                    .state()
+                    .create_logical_expr(expression, &df_schema)
+                    .map_err(|error| {
+                        report!(
+                            "row view {}: invalid projection expression {expression:?}: {error}",
+                            view.view_id
+                        )
+                    })?;
+                if !matches!(&parsed, Expr::Column(column) if column.name == *key) {
+                    return Err(report!(
+                        "row view {}: the key column {key} must be projected unchanged",
+                        view.view_id
+                    ));
+                }
             }
         }
     }
