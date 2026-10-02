@@ -359,7 +359,7 @@ fn combine_filter(previous: Option<String>, rendered: String) -> String {
 enum HavingColumns<'a> {
     /// `sum_v`, `count_v`, the non-NULL count and, for AVG views, `avg_v`.
     SumCount {
-        value: Option<&'a SumValue>,
+        value: Option<&'a AggValue>,
         count_column: Option<&'a str>,
         average: bool,
         /// The aggregate `FILTER` the view materializes; `None` when its
@@ -369,7 +369,7 @@ enum HavingColumns<'a> {
     /// `value` for a MIN/MAX view.
     MinMax {
         kind: MinMaxKind,
-        value_column: &'a str,
+        value: &'a AggValue,
     },
     /// `value` for a COUNT(DISTINCT)/SUM(DISTINCT) view.
     Distinct {
@@ -532,6 +532,12 @@ fn having_column(
         }
         None => None,
     };
+    let value_matches = |value: &AggValue, strip_cast: bool| {
+        matches!(function.params.args.as_slice(), [arg]
+            if value_argument(arg, hoisted, strip_cast)
+                .map(|parsed| parsed == *value)
+                .unwrap_or(false))
+    };
     match columns {
         HavingColumns::SumCount {
             value,
@@ -545,22 +551,18 @@ fn having_column(
                     name
                 ));
             }
-            let value_matches = |value: &SumValue| {
-                matches!(function.params.args.as_slice(), [arg]
-                    if sum_value_argument(arg, hoisted)
-                        .map(|parsed| parsed == *value)
-                        .unwrap_or(false))
-            };
             match name {
                 "avg" if !function.params.distinct => {
-                    if average && value.is_some_and(&value_matches) {
+                    if average && value.is_some_and(|value| value_matches(value, true)) {
                         Ok(IVM_AVG_COLUMN.to_string())
                     } else {
                         Err(not_materialized(name))
                     }
                 }
                 "sum" if !function.params.distinct => match value {
-                    Some(value) if value_matches(value) => Ok(IVM_SUM_COLUMN.to_string()),
+                    Some(value) if value_matches(value, true) => {
+                        Ok(IVM_SUM_COLUMN.to_string())
+                    }
                     _ => Err(not_materialized(name)),
                 },
                 "count" if !function.params.distinct => {
@@ -568,7 +570,7 @@ fn having_column(
                         Ok(IVM_COUNT_COLUMN.to_string())
                     } else if count_column.is_some_and(&column_arg) {
                         Ok(IVM_NONNULL_COUNT_COLUMN.to_string())
-                    } else if let Some(SumValue::Column(column)) = value
+                    } else if let Some(AggValue::Column(column)) = value
                         && column_arg(column)
                     {
                         Ok(IVM_NONNULL_COUNT_COLUMN.to_string())
@@ -582,12 +584,16 @@ fn having_column(
         HavingColumns::MinMax { .. } if function_filter.is_some() => {
             Err(not_materialized(name))
         }
-        HavingColumns::MinMax { kind, value_column } => {
+        HavingColumns::MinMax { kind, value } => {
             let expected = match kind {
                 MinMaxKind::Min => "min",
                 MinMaxKind::Max => "max",
             };
-            if name == expected && !function.params.distinct && column_arg(value_column) {
+            if name == expected
+                && !function.params.distinct
+                && function.params.args.len() == 1
+                && value_matches(value, false)
+            {
                 Ok(IVM_VALUE_COLUMN.to_string())
             } else {
                 Err(not_materialized(name))
@@ -848,24 +854,37 @@ fn hoisted_columns(plan: &LogicalPlan) -> HashMap<String, String> {
 /// The argument of a materialized `SUM`/`AVG`: a plain column or a rendered
 /// scalar expression.
 #[derive(Clone, PartialEq)]
-enum SumValue {
+enum AggValue {
     Column(String),
     Expr(String),
 }
 
-/// Parse a `SUM`/`AVG` argument, resolving hoisted aliases and dropping the
-/// numeric cast the optimizer adds (`avg(v)` becomes `avg(CAST(v AS
-/// Float64))`).
-fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<SumValue> {
+/// Parse a value-aggregate argument, resolving hoisted aliases.  The numeric
+/// aggregates drop the coercion cast the optimizer adds (`avg(v)` becomes
+/// `avg(CAST(v AS Float64))`); MIN/MAX keep user casts.
+fn value_argument(
+    arg: &Expr,
+    hoisted: &HashMap<String, Expr>,
+    strip_cast: bool,
+) -> Result<AggValue> {
     let resolved = resolve_hoisted(arg, hoisted);
-    let inner = match &resolved {
-        Expr::Cast(cast) => cast.expr.as_ref(),
-        other => other,
+    let inner = if strip_cast {
+        match &resolved {
+            Expr::Cast(cast) => cast.expr.as_ref(),
+            other => other,
+        }
+    } else {
+        &resolved
     };
     match inner {
-        Expr::Column(column) => Ok(SumValue::Column(column.name.clone())),
-        other => Ok(SumValue::Expr(render_filter(other)?)),
+        Expr::Column(column) => Ok(AggValue::Column(column.name.clone())),
+        other => Ok(AggValue::Expr(render_filter(other)?)),
     }
+}
+
+/// A `SUM`/`AVG` argument (numeric coercion casts are dropped).
+fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<AggValue> {
+    value_argument(arg, hoisted, true)
 }
 
 fn analyze_aggregate(
@@ -923,15 +942,15 @@ fn analyze_aggregate(
 
     let mut count = false;
     let mut count_column: Option<String> = None;
-    let mut sum: Option<SumValue> = None;
-    let mut avg: Option<SumValue> = None;
+    let mut sum: Option<AggValue> = None;
+    let mut avg: Option<AggValue> = None;
     let mut variance: Option<(VarianceKind, String)> = None;
     let mut median: Option<String> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(String, String, Vec<String>)> = None;
     // `(value column, rendered aggregate ordering)`.
     let mut array_agg: Option<(String, Vec<String>)> = None;
-    let mut min_max: Option<(MinMaxKind, String)> = None;
+    let mut min_max: Option<(MinMaxKind, AggValue)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     // `(aggregate name, FILTER predicate, whether it is a value aggregate)`.
     let mut aggregate_filters: Vec<(&str, Option<String>, bool)> = Vec::new();
@@ -1111,7 +1130,13 @@ fn analyze_aggregate(
                 } else {
                     MinMaxKind::Max
                 };
-                min_max = Some((kind, single_column_arg(&function.params.args)?));
+                let [arg] = function.params.args.as_slice() else {
+                    return Err(unsupported(
+                        "aggregates take exactly one value argument",
+                    ));
+                };
+                let value = value_argument(arg, &hoisted_exprs, false)?;
+                min_max = Some((kind, value));
                 aggregate_filters.push((name, function_filter, false));
             }
             ("var", false)
@@ -1282,12 +1307,12 @@ fn analyze_aggregate(
     // A single non-NULL count accumulator is shared with SUM/AVG.
     if let Some(count_column) = &count_column {
         match sum.as_ref().or(avg.as_ref()) {
-            Some(SumValue::Expr(_)) => {
+            Some(AggValue::Expr(_)) => {
                 return Err(unsupported(
                     "COUNT(column) cannot be combined with an aggregated expression",
                 ));
             }
-            Some(SumValue::Column(column)) if column != count_column => {
+            Some(AggValue::Column(column)) if column != count_column => {
                 return Err(unsupported(
                     "COUNT and SUM/AVG must use the same value column",
                 ));
@@ -1307,12 +1332,12 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
-    } else if let Some((min_max, value_column)) = &min_max {
+    } else if let Some((min_max, value)) = &min_max {
         render_having(
             having_exprs,
             HavingColumns::MinMax {
                 kind: *min_max,
-                value_column,
+                value,
             },
             aggregate,
             &group_keys,
@@ -1419,7 +1444,11 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if let Some((min_max, value_column)) = min_max {
+    } else if let Some((min_max, value)) = min_max {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
         ViewSpec::MinMax {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
@@ -1427,14 +1456,15 @@ fn analyze_aggregate(
             state_table_id: request.state_table()?,
             group_keys,
             value_column,
+            value_expr,
             min_max,
             filter,
             having,
         }
     } else if value.is_some() || count || count_column.is_some() {
         let (value_column, value_expr) = match &value {
-            Some(SumValue::Column(column)) => (Some(column.clone()), None),
-            Some(SumValue::Expr(expression)) => (None, Some(expression.clone())),
+            Some(AggValue::Column(column)) => (Some(column.clone()), None),
+            Some(AggValue::Expr(expression)) => (None, Some(expression.clone())),
             None => (None, None),
         };
         ViewSpec::SumCount {
@@ -3047,6 +3077,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_min_max_expressions() {
+        let analyzed = analyze("select g, min(v * 2) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::MinMax {
+            value_column,
+            value_expr,
+            min_max,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a min/max spec");
+        };
+        assert_eq!(value_column, None);
+        assert_eq!(value_expr.as_deref(), Some("(v * 2)"));
+        assert_eq!(min_max, MinMaxKind::Min);
+
+        // A conditional aggregate is materialized as written.
+        let analyzed = analyze(
+            "select g, max(case when v > 5 then v else 0 end) from src group by g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MinMax { value_expr, .. } = analyzed.spec else {
+            panic!("expected a min/max spec");
+        };
+        assert!(
+            value_expr
+                .as_deref()
+                .is_some_and(|expr| expr.to_uppercase().contains("CASE"))
+        );
+
+        // HAVING must reference the same argument.
+        let analyzed =
+            analyze("select g, min(v * 2) from src group by g having min(v * 2) > 10")
+                .await
+                .unwrap();
+        let ViewSpec::MinMax { having, .. } = analyzed.spec else {
+            panic!("expected a min/max spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("value > 10"));
+        assert!(
+            analyze("select g, min(v * 2) from src group by g having min(v) > 10")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_min_max_and_requires_a_state_table() {
         let analyzed = analyze("select g, max(v) from src group by g")
             .await
@@ -3059,7 +3138,8 @@ mod tests {
                 mv_table_id: "table_mv".to_string(),
                 state_table_id: "table_state".to_string(),
                 group_keys: vec!["g".to_string()],
-                value_column: "v".to_string(),
+                value_column: Some("v".to_string()),
+                value_expr: None,
                 min_max: MinMaxKind::Max,
                 filter: None,
                 having: None,
