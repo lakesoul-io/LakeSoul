@@ -783,6 +783,35 @@ fn sqllogic_row_typed_append() {
 }
 
 #[test]
+fn sqllogic_window_desc() {
+    let schema = nullable_source_schema();
+    run_script_for_source(
+        "windowdesc",
+        include_str!("slt/window_desc.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        window_ranking_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_top_k_desc() {
+    run_script_for_mv(
+        "topkdesc",
+        include_str!("slt/top_k_desc.slt"),
+        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_where() {
     run_script_for_mv(
         "windowwhere",

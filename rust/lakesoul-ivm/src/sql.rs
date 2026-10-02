@@ -1255,6 +1255,7 @@ fn analyze_window(
     let WindowParts {
         partition_keys,
         order_keys,
+        order_by,
         columns,
     } = window_function_spec(window, Some(projection))?;
     Ok(ViewSpec::Window {
@@ -1263,6 +1264,7 @@ fn analyze_window(
         mv_table_id: request.mv_table_id.clone(),
         partition_keys,
         order_keys,
+        order_by,
         columns,
         filter,
     })
@@ -1290,6 +1292,7 @@ fn try_analyze_top_k(
     let WindowParts {
         partition_keys,
         order_keys,
+        order_by,
         columns,
     } = window_function_spec(window, None)?;
     if columns.len() != 1
@@ -1370,6 +1373,7 @@ fn try_analyze_top_k(
         mv_table_id: request.mv_table_id.clone(),
         group_keys: partition_keys,
         order_keys,
+        order_by,
         output_columns,
         limit,
         filter,
@@ -1381,6 +1385,8 @@ fn try_analyze_top_k(
 struct WindowParts {
     partition_keys: Vec<String>,
     order_keys: Vec<String>,
+    /// The rendered ordering; empty when it is the plain ascending default.
+    order_by: Vec<String>,
     columns: Vec<WindowColumn>,
 }
 
@@ -1395,21 +1401,13 @@ fn window_function_spec(
     }
     let mut partition_keys: Option<Vec<String>> = None;
     let mut order_keys: Option<Vec<String>> = None;
+    let mut order_by: Option<Vec<String>> = None;
     let mut columns = Vec::with_capacity(window.window_expr.len());
     for expr in &window.window_expr {
         let Expr::WindowFunction(function) = expr else {
             return Err(unsupported("non-window expression in a window node"));
         };
         let params = &function.params;
-        // The materialized ordering is ascending `NULLS LAST`; anything else
-        // would be silently reordered.
-        for sort in &params.order_by {
-            if !sort.asc || sort.nulls_first {
-                return Err(unsupported(
-                    "only ascending window ordering (NULLS LAST) is supported",
-                ));
-            }
-        }
         let expr_partition = params
             .partition_by
             .iter()
@@ -1422,9 +1420,18 @@ fn window_function_spec(
             .map(|sort| column_name(&sort.expr))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
-        match (&partition_keys, &order_keys) {
-            (Some(partition), Some(order)) => {
-                if partition != &expr_partition || order != &expr_order {
+        let expr_order_by = params
+            .order_by
+            .iter()
+            .zip(expr_order.iter())
+            .map(|(sort, column)| render_order_key(column, sort.asc, sort.nulls_first))
+            .collect::<Vec<_>>();
+        match (&partition_keys, &order_keys, &order_by) {
+            (Some(partition), Some(order), Some(rendered)) => {
+                if partition != &expr_partition
+                    || order != &expr_order
+                    || rendered != &expr_order_by
+                {
                     return Err(unsupported(
                         "multiple window functions with different PARTITION BY/ORDER BY",
                     ));
@@ -1433,6 +1440,7 @@ fn window_function_spec(
             _ => {
                 partition_keys = Some(expr_partition.clone());
                 order_keys = Some(expr_order.clone());
+                order_by = Some(expr_order_by.clone());
             }
         }
         let mut column = window_column(function, &expr_order)?;
@@ -1450,11 +1458,36 @@ fn window_function_spec(
             )));
         }
     }
+    let order_by = order_by.unwrap_or_default();
+    let order_keys = order_keys.unwrap_or_default();
+    // The plain ascending ordering is the default; keep the spec compact.
+    let order_by = if order_by == order_keys {
+        Vec::new()
+    } else {
+        order_by
+    };
     Ok(WindowParts {
         partition_keys: partition_keys.unwrap_or_default(),
-        order_keys: order_keys.unwrap_or_default(),
+        order_keys,
+        order_by,
         columns,
     })
+}
+
+/// Render one `ORDER BY` item: the ascending `NULLS LAST` default stays the
+/// bare column, anything else is spelled out.
+fn render_order_key(column: &str, asc: bool, nulls_first: bool) -> String {
+    match (asc, nulls_first) {
+        (true, false) => column.to_string(),
+        (true, true) => format!("{} asc nulls first", quote_order_identifier(column)),
+        (false, true) => format!("{} desc nulls first", quote_order_identifier(column)),
+        (false, false) => format!("{} desc nulls last", quote_order_identifier(column)),
+    }
+}
+
+/// Quote an identifier for a rendered ordering item.
+fn quote_order_identifier(column: &str) -> String {
+    format!("\"{}\"", column.replace('"', "\"\""))
 }
 
 /// One window column parsed from its function expression.
@@ -3230,6 +3263,7 @@ mod tests {
                     mv_table_id: "table_mv".to_string(),
                     partition_keys: vec!["g".to_string()],
                     order_keys: vec!["v".to_string()],
+                    order_by: Vec::new(),
                     columns: vec![WindowColumn::new(function)],
                     filter: None,
                 }
@@ -3275,6 +3309,73 @@ mod tests {
             columns[1].window_frame.as_deref(),
             Some("rows between unbounded preceding and current row")
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_descending_orderings() {
+        // A descending ordering is rendered explicitly.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v desc) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            order_keys,
+            order_by,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(order_keys, vec!["v".to_string()]);
+        assert_eq!(order_by, vec!["\"v\" desc nulls first".to_string()]);
+
+        // `DESC NULLS LAST` and `ASC NULLS FIRST` keep their null placement.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v desc nulls last, k asc nulls first) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { order_by, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(
+            order_by,
+            vec![
+                "\"v\" desc nulls last".to_string(),
+                "\"k\" asc nulls first".to_string(),
+            ]
+        );
+
+        // The ascending default stays the bare column.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v asc nulls last) from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window { order_by, .. } = analyzed.spec else {
+            panic!("expected a window spec");
+        };
+        assert!(order_by.is_empty());
+
+        // Top-k carries the same rendering.
+        let analyzed = analyze(
+            "select k, v from (select k, v, row_number() over (partition by g order by v desc) as rn from src) t where rn <= 2",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::TopK {
+            order_keys,
+            order_by,
+            limit,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(order_keys, vec!["v".to_string()]);
+        assert_eq!(order_by, vec!["\"v\" desc nulls first".to_string()]);
+        assert_eq!(limit, 2);
     }
 
     #[tokio::test]
@@ -3679,14 +3780,6 @@ mod tests {
         assert!(
             analyze(
                 "select k, row_number() over (partition by g order by v), rank() over (partition by k order by v) from src"
-            )
-            .await
-            .is_err()
-        );
-        // Non-ascending orderings would be silently reordered.
-        assert!(
-            analyze(
-                "select k, row_number() over (partition by g order by v desc) from src"
             )
             .await
             .is_err()

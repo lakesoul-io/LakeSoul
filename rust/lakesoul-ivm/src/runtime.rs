@@ -420,6 +420,10 @@ pub enum ViewSpec {
         partition_keys: Vec<String>,
         /// The `ORDER BY` columns; empty for whole-partition aggregates.
         order_keys: Vec<String>,
+        /// The rendered `ORDER BY` items (e.g. `v desc`), when they differ
+        /// from the plain ascending `order_keys`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        order_by: Vec<String>,
         /// The window columns, sharing the partition and ordering.
         columns: Vec<WindowColumn>,
         /// An optional filter applied before windowing.
@@ -484,6 +488,10 @@ pub enum ViewSpec {
         group_keys: Vec<String>,
         /// The `ORDER BY` columns.
         order_keys: Vec<String>,
+        /// The rendered `ORDER BY` items (e.g. `v desc`), when they differ
+        /// from the plain ascending `order_keys`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        order_by: Vec<String>,
         /// The projected source columns; empty means all of them.
         #[serde(default)]
         output_columns: Vec<String>,
@@ -1643,6 +1651,9 @@ pub struct WindowView {
     pub partition_keys: Vec<String>,
     /// The `ORDER BY` columns.
     pub order_keys: Vec<String>,
+    /// The rendered `ORDER BY` items (e.g. `v desc nulls last`), when they
+    /// differ from the plain ascending [`Self::order_keys`].
+    pub order_by: Vec<String>,
     /// The window columns, sharing the partition and ordering.
     pub columns: Vec<WindowColumn>,
     /// An optional filter applied before windowing.
@@ -1729,10 +1740,18 @@ impl WindowView {
             mv,
             partition_keys,
             order_keys,
+            order_by: Vec::new(),
             columns,
             filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// An explicit rendered ordering (e.g. `v desc nulls last`), replacing
+    /// the plain ascending [`Self::order_keys`].
+    pub fn with_order_by(mut self, order_by: Vec<String>) -> Self {
+        self.order_by = order_by;
+        self
     }
 
     /// Only rows matching `filter` are windowed.
@@ -1781,6 +1800,7 @@ impl WindowView {
             mv_table_id: self.mv.table_id.clone(),
             partition_keys: self.partition_keys.clone(),
             order_keys: self.order_keys.clone(),
+            order_by: self.order_by.clone(),
             columns: self.columns.clone(),
             filter: self.filter.clone(),
         }
@@ -2054,6 +2074,9 @@ pub struct TopKView {
     pub group_keys: Vec<String>,
     /// The `ORDER BY` columns.
     pub order_keys: Vec<String>,
+    /// The rendered `ORDER BY` items (e.g. `v desc`), when they differ from
+    /// the plain ascending [`Self::order_keys`].
+    pub order_by: Vec<String>,
     /// The projected source columns; empty means all of them. Must contain the
     /// group keys and the source primary keys.
     pub output_columns: Vec<String>,
@@ -2081,11 +2104,19 @@ impl TopKView {
             mv,
             group_keys,
             order_keys,
+            order_by: Vec::new(),
             output_columns: Vec::new(),
             limit,
             filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// An explicit rendered ordering (e.g. `v desc nulls last`), replacing
+    /// the plain ascending [`Self::order_keys`].
+    pub fn with_order_by(mut self, order_by: Vec<String>) -> Self {
+        self.order_by = order_by;
+        self
     }
 
     /// Project only `output_columns` (must contain the group keys and the
@@ -2108,6 +2139,7 @@ impl TopKView {
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
             order_keys: self.order_keys.clone(),
+            order_by: self.order_by.clone(),
             output_columns: self.output_columns.clone(),
             limit: self.limit,
             filter: self.filter.clone(),
@@ -2837,6 +2869,7 @@ impl IvmRuntime {
                 mv_table_id,
                 partition_keys,
                 order_keys,
+                order_by,
                 columns,
                 filter,
             } => SpecView::Window(WindowView {
@@ -2845,6 +2878,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 partition_keys: partition_keys.clone(),
                 order_keys: order_keys.clone(),
+                order_by: order_by.clone(),
                 columns: columns.clone(),
                 filter: filter.clone(),
                 refresh_interval_ms,
@@ -2908,6 +2942,7 @@ impl IvmRuntime {
                 mv_table_id,
                 group_keys,
                 order_keys,
+                order_by,
                 output_columns,
                 limit,
                 filter,
@@ -2917,6 +2952,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
                 order_keys: order_keys.clone(),
+                order_by: order_by.clone(),
                 output_columns: output_columns.clone(),
                 limit: *limit,
                 filter: filter.clone(),
@@ -6755,6 +6791,12 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             )
         })?;
     }
+    if !view.order_by.is_empty() && view.order_by.len() != view.order_keys.len() {
+        return Err(report!(
+            "window view {}: the rendered ordering must match the order keys",
+            view.view_id
+        ));
+    }
     let mut names = std::collections::HashSet::new();
     for column in &view.columns {
         if column.column.is_empty() {
@@ -6855,19 +6897,19 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         format!("{parts}, ")
     };
     let pks = quoted_list(&view.source.primary_keys);
-    let mut order = view.order_keys.clone();
+    let mut order = order_items(&view.order_by, &view.order_keys);
     if !view.columns.is_empty()
         && view
             .columns
             .iter()
             .all(|column| column.function.breaks_ties_with_primary_keys())
     {
-        order.extend(view.source.primary_keys.iter().cloned());
+        order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
     }
     let order_clause = if order.is_empty() {
         String::new()
     } else {
-        format!("order by {}", quoted_list(&order))
+        format!("order by {}", order.join(", "))
     };
     let part_clause = if view.partition_keys.is_empty() {
         String::new()
@@ -7086,6 +7128,16 @@ fn key_filters(
     Ok(filters)
 }
 
+/// The ordering items of a window/top-k view: the analyzed rendered ordering,
+/// falling back to the plain ascending order keys.
+fn order_items(order_by: &[String], order_keys: &[String]) -> Vec<String> {
+    if order_by.is_empty() {
+        order_keys.iter().map(|key| quote_ident(key)).collect()
+    } else {
+        order_by.to_vec()
+    }
+}
+
 /// SQL for one window refresh window: recompute the affected partitions and
 /// rewrite their MV rows (`delete` then `insert`).
 fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
@@ -7189,9 +7241,9 @@ fn top_k_affected_cte(view: &TopKView) -> String {
 /// number inside the group (ties broken by the source primary keys).
 fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     let groups = quoted_list(&view.group_keys);
-    let mut order = view.order_keys.clone();
-    order.extend(view.source.primary_keys.iter().cloned());
-    let orders = quoted_list(&order);
+    let mut order = order_items(&view.order_by, &view.order_keys);
+    order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
+    let orders = order.join(", ");
     let output = quoted_list(&top_k_output_columns(view));
     let filter = format!(
         "{}{}",
@@ -7759,6 +7811,12 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
                 view.view_id
             )
         })?;
+    }
+    if !view.order_by.is_empty() && view.order_by.len() != view.order_keys.len() {
+        return Err(report!(
+            "top-k view {}: the rendered ordering must match the order keys",
+            view.view_id
+        ));
     }
     let output = top_k_output_columns(view);
     project_schema(&view.source.schema, &output)?;

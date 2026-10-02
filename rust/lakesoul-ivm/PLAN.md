@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
-| 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`DESC`/`NULLS FIRST` 排序；`ORDER BY` 表达式 | 随需求做 |
+| 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
@@ -1463,6 +1463,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   两个差分 oracle（`SUM/COUNT(*) FILTER`、可空列的 `COUNT(v) FILTER`）、analyzer 单测覆盖
   混用与其它族的拒绝。
   全量 IVM 套件 36 个测试二进制 / 194 个测试通过。
+
+### 10.26 窗口/Top-K 的 `DESC` 与 `NULLS FIRST/LAST`（PR-20）
+
+- **问题**：排序方向此前完全没有记录（PR-17 起对非升序直接报错），`row_number() over
+  (order by ts desc)` 这类"取每组最新一条"的常见写法无法使用。
+- **spec/typed**：`ViewSpec::Window`/`TopK` 与 `WindowView`/`TopKView` 增加
+  `order_by: Vec<String>`（serde default；构建器 `with_order_by`）——存**渲染后的排序项**
+  （如 `"v" desc nulls first`）；为空时回退到既有 `order_keys` 的升序列引用，因此既有 spec
+  序列化与行为不变。校验要求 `order_by` 非空时与 `order_keys` 等长。
+- **analyzer**：`render_order_key` 把排序项渲染为：升序 `NULLS LAST`（默认）→ 裸列名；
+  其余显式写 `asc|desc nulls first|last` 并引用标识符。同一 WindowAggr 节点内的多列仍要求
+  排序完全一致（含方向与 NULL 位置）。
+- **运行时**：新增 `order_items` 统一取排序项，窗口与 top-k 都用它拼 `ORDER BY`；tie-break
+  仍按需追加源主键。
+- **测试**：`window_desc.slt`（降序排名 + 更新/删除 + `DESC NULLS LAST` 重建，可空源）、
+  `top_k_desc.slt`（降序 top-1 与 limit 变化重建）；两个差分 oracle（降序 `ROW_NUMBER`、
+  降序 top-k，参考侧用 `v DESC, k` 与运行时 tie-break 对齐）；analyzer 单测覆盖方向/NULL
+  位置渲染、默认归一化为空与 top-k 透传。
+  全量 IVM 套件 36 个测试二进制 / 199 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

@@ -1,0 +1,62 @@
+# TOP-K ordered descending: the largest values per group are kept.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=a,v=20,op=insert; k=4,g=b,v=5,op=insert; k=5,g=b,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) AS rn FROM __SRC__) t WHERE rn <= 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+5 b 15
+
+# An update changes the top row of a group.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) AS rn FROM __SRC__) t WHERE rn <= 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 a 40
+5 b 15
+
+# The top row of another group leaves; the runner-up takes over.
+statement ok
+/*ivm-append __SRC__: k=5,g=b,v=15,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) AS rn FROM __SRC__) t WHERE rn <= 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 a 40
+4 b 5
+
+# A definition change (limit 2) rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM (SELECT k, g, v, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) AS rn FROM __SRC__) t WHERE rn <= 2
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+3 a 40
+4 b 5
