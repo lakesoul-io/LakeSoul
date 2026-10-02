@@ -427,8 +427,12 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
-        /// The concatenated column.
-        value_column: String,
+        /// The concatenated column; `None` when the argument is an
+        /// expression.
+        value_column: Option<String>,
+        /// The rendered concatenated expression.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
         /// The delimiter, rendered as a SQL string literal (e.g. `','`).
         delimiter: String,
         /// The rendered `ORDER BY` items inside the aggregate (required, so
@@ -454,8 +458,11 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
-        /// The collected column.
-        value_column: String,
+        /// The collected column; `None` when the argument is an expression.
+        value_column: Option<String>,
+        /// The rendered collected expression.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
         /// The rendered `ORDER BY` items inside the aggregate (required, so
         /// the collected list is deterministic).
         #[serde(default)]
@@ -1642,9 +1649,49 @@ impl MedianView {
     }
 }
 
+/// The rendered value of an aggregate whose argument is a plain column or a
+/// stored expression.
+fn aggregate_value_sql(value_column: Option<&str>, value_expr: Option<&str>) -> String {
+    match (value_expr, value_column) {
+        (Some(expression), _) => expression.to_string(),
+        (None, Some(column)) => quote_ident(column),
+        (None, None) => String::new(),
+    }
+}
+
+/// The value type of an aggregate whose argument is a plain column or a
+/// stored expression.
+fn aggregate_value_type(
+    source_schema: &Schema,
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+) -> Result<DataType> {
+    match (value_expr, value_column) {
+        (Some(expression), _) => Ok(expression_type(source_schema, expression)?.0),
+        (None, Some(column)) => field_type(source_schema, column),
+        (None, None) => Err(report!("the aggregate has no value")),
+    }
+}
+
 /// The derived column of a [`StringAggView`] materialized view.
 pub fn string_agg_column(value_column: &str) -> String {
     format!("string_agg_{value_column}")
+}
+
+/// The derived column of a `STRING_AGG` view over an expression.
+pub fn string_agg_output_column(value_column: Option<&str>) -> String {
+    match value_column {
+        Some(column) => string_agg_column(column),
+        None => "string_agg_value".to_string(),
+    }
+}
+
+/// The derived column of an [`ArrayAggView`] view over an expression.
+pub fn array_agg_output_column(value_column: Option<&str>) -> String {
+    match value_column {
+        Some(column) => array_agg_column(column),
+        None => "array_agg_value".to_string(),
+    }
 }
 
 /// The result type of `STRING_AGG(value, delimiter)`: the value must be a
@@ -1675,8 +1722,10 @@ pub struct StringAggView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
-    /// The concatenated column.
-    pub value_column: String,
+    /// The concatenated column; `None` when the argument is an expression.
+    pub value_column: Option<String>,
+    /// The rendered concatenated expression.
+    pub value_expr: Option<String>,
     /// The delimiter, rendered as a SQL string literal (e.g. `','`).
     pub delimiter: String,
     /// The rendered ordering items inside the aggregate.
@@ -1726,7 +1775,8 @@ impl StringAggView {
             source,
             mv,
             group_keys,
-            value_column: value_column.into(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
             delimiter: delimiter.into(),
             order_by,
             filter: None,
@@ -1747,6 +1797,14 @@ impl StringAggView {
         self
     }
 
+    /// Aggregate over a rendered scalar expression
+    /// (`STRING_AGG(CAST(v AS TEXT), ',')`).
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
             view_id: &self.view_id,
@@ -1755,11 +1813,14 @@ impl StringAggView {
             group_keys: &self.group_keys,
             aggregate_call: format!(
                 "string_agg({}, {} order by {})",
-                quote_ident(&self.value_column),
+                aggregate_value_sql(
+                    self.value_column.as_deref(),
+                    self.value_expr.as_deref()
+                ),
                 self.delimiter,
                 self.order_by.join(", "),
             ),
-            column: string_agg_column(&self.value_column),
+            column: string_agg_output_column(self.value_column.as_deref()),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
         }
@@ -1772,6 +1833,7 @@ impl StringAggView {
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
             delimiter: self.delimiter.clone(),
             order_by: self.order_by.clone(),
             filter: self.filter.clone(),
@@ -1788,12 +1850,29 @@ pub fn string_agg_mv_schema_for(
     value_column: &str,
 ) -> Result<SchemaRef> {
     string_agg_result_type(&field_type(source_schema, value_column)?)?;
+    string_agg_schema_for(source_schema, group_keys, string_agg_column(value_column))
+}
+
+/// The schema of a [`StringAggView`] materialized view whose value is a
+/// rendered expression.
+pub fn string_agg_expr_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_expr: &str,
+) -> Result<SchemaRef> {
+    let (data_type, _) = expression_type(source_schema, value_expr)?;
+    string_agg_result_type(&data_type)?;
+    string_agg_schema_for(source_schema, group_keys, "string_agg_value".to_string())
+}
+
+/// The `STRING_AGG` materialized view schema given the value column name.
+fn string_agg_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    column: String,
+) -> Result<SchemaRef> {
     let mut fields = key_fields(source_schema, group_keys)?;
-    fields.push(Arc::new(Field::new(
-        string_agg_column(value_column),
-        DataType::LargeUtf8,
-        true,
-    )));
+    fields.push(Arc::new(Field::new(column, DataType::LargeUtf8, true)));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
         DataType::Utf8,
@@ -1827,8 +1906,10 @@ pub struct ArrayAggView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
-    /// The collected column.
-    pub value_column: String,
+    /// The collected column; `None` when the argument is an expression.
+    pub value_column: Option<String>,
+    /// The rendered collected expression.
+    pub value_expr: Option<String>,
     /// The rendered ordering items inside the aggregate.
     pub order_by: Vec<String>,
     /// An optional filter the contributing rows must satisfy.
@@ -1871,7 +1952,8 @@ impl ArrayAggView {
             source,
             mv,
             group_keys,
-            value_column: value_column.into(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
             order_by,
             filter: None,
             refresh_interval_ms: 0,
@@ -1884,6 +1966,13 @@ impl ArrayAggView {
         self
     }
 
+    /// Aggregate over a rendered scalar expression (`ARRAY_AGG(v * 2 ...)`).
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
             view_id: &self.view_id,
@@ -1892,10 +1981,13 @@ impl ArrayAggView {
             group_keys: &self.group_keys,
             aggregate_call: format!(
                 "array_agg({} order by {})",
-                quote_ident(&self.value_column),
+                aggregate_value_sql(
+                    self.value_column.as_deref(),
+                    self.value_expr.as_deref()
+                ),
                 self.order_by.join(", "),
             ),
-            column: array_agg_column(&self.value_column),
+            column: array_agg_output_column(self.value_column.as_deref()),
             filter: self.filter.as_deref(),
             having: None,
         }
@@ -1908,6 +2000,7 @@ impl ArrayAggView {
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
             order_by: self.order_by.clone(),
             filter: self.filter.clone(),
         }
@@ -1922,9 +2015,41 @@ pub fn array_agg_mv_schema_for(
     value_column: &str,
 ) -> Result<SchemaRef> {
     let value_type = field_type(source_schema, value_column)?;
+    array_agg_schema_for(
+        source_schema,
+        group_keys,
+        array_agg_column(value_column),
+        value_type,
+    )
+}
+
+/// The schema of an [`ArrayAggView`] materialized view whose value is a
+/// rendered expression.
+pub fn array_agg_expr_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_expr: &str,
+) -> Result<SchemaRef> {
+    let (value_type, _) = expression_type(source_schema, value_expr)?;
+    array_agg_schema_for(
+        source_schema,
+        group_keys,
+        "array_agg_value".to_string(),
+        value_type,
+    )
+}
+
+/// The `ARRAY_AGG` materialized view schema given the value column name and
+/// type.
+fn array_agg_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    column: String,
+    value_type: DataType,
+) -> Result<SchemaRef> {
     let mut fields = key_fields(source_schema, group_keys)?;
     fields.push(Arc::new(Field::new(
-        array_agg_column(value_column),
+        column,
         DataType::List(Arc::new(Field::new_list_field(value_type, true))),
         true,
     )));
@@ -3375,6 +3500,7 @@ impl IvmRuntime {
                 mv_table_id,
                 group_keys,
                 value_column,
+                value_expr,
                 delimiter,
                 order_by,
                 filter,
@@ -3385,6 +3511,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
                 delimiter: delimiter.clone(),
                 order_by: order_by.clone(),
                 filter: filter.clone(),
@@ -3397,6 +3524,7 @@ impl IvmRuntime {
                 mv_table_id,
                 group_keys,
                 value_column,
+                value_expr,
                 order_by,
                 filter,
             } => SpecView::ArrayAgg(ArrayAggView {
@@ -3405,6 +3533,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
                 order_by: order_by.clone(),
                 filter: filter.clone(),
                 refresh_interval_ms,
@@ -3823,7 +3952,11 @@ impl IvmRuntime {
     /// their current source rows.
     pub async fn refresh_string_agg(&self, view: &StringAggView) -> Result<Option<i64>> {
         self.register_string_agg_view(view).await?;
-        string_agg_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        string_agg_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
         if view.order_by.is_empty() {
             return Err(report!(
                 "STRING_AGG view {} needs an aggregate ORDER BY",
@@ -3838,7 +3971,11 @@ impl IvmRuntime {
     /// Rebuild a `STRING_AGG` view from the full source state.
     pub async fn rebuild_string_agg(&self, view: &StringAggView) -> Result<i64> {
         self.register_string_agg_view(view).await?;
-        string_agg_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        string_agg_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
         if view.order_by.is_empty() {
             return Err(report!(
                 "STRING_AGG view {} needs an aggregate ORDER BY",

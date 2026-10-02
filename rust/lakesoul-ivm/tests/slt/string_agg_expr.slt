@@ -1,0 +1,47 @@
+# STRING_AGG over a cast expression.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(CAST(v AS TEXT), '|' ORDER BY k) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, string_agg_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10|3
+b 7
+
+# An update changes one of the concatenated values.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=4,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(CAST(v AS TEXT), '|' ORDER BY k) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, string_agg_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10|4
+b 7
+
+# A delete removes the group; HAVING over the same cast maps onto the column.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, STRING_AGG(CAST(v AS TEXT), '|' ORDER BY k) FROM __SRC__ GROUP BY g HAVING STRING_AGG(CAST(v AS TEXT), '|' ORDER BY k) IS NOT NULL
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, string_agg_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10|4
