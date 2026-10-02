@@ -100,11 +100,11 @@ pub use runtime::{
     median_mv_schema_for, min_max_mv_schema, min_max_mv_schema_for, min_max_state_schema,
     row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema,
     semi_anti_mv_schema_for, string_agg_column, string_agg_mv_schema_for,
-    sum_count_mv_schema, sum_count_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, value_count_mv_schema, value_count_mv_schema_for,
-    value_count_state_schema, value_count_state_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for, window_key,
-    window_mv_schema, window_mv_schema_for, window_ranking_mv_schema_for,
+    sum_count_mv_schema, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, value_count_mv_schema,
+    value_count_mv_schema_for, value_count_state_schema, value_count_state_schema_for,
+    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_key, window_mv_schema, window_mv_schema_for, window_ranking_mv_schema_for,
     window_value_mv_schema_for,
 };
 pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select, definition_hash};

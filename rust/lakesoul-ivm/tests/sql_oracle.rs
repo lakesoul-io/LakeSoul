@@ -20,8 +20,8 @@ use lakesoul_ivm::{
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
     avg_mv_schema_for, distinct_agg_mv_schema_for, median_mv_schema_for,
     min_max_mv_schema_for, string_agg_mv_schema_for, sum_count_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
@@ -290,6 +290,24 @@ async fn run_oracle_with(
         );
     }
     assert!(mv_rows > 0, "{tag}: the view stayed empty for every round");
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_sum_expr_matches_full_recompute() {
+    // The value is a rendered expression instead of a plain column.
+    run_oracle(
+        "sumexpr",
+        1,
+        sum_expr_mv_schema_for(&source_schema(), &["g".to_string()], "v * 2", false)
+            .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v * 2) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY g",
+        "SELECT g, SUM(v * 2) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
 }
 
 #[test_log::test(tokio::test)]

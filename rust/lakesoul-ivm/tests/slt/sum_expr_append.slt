@@ -1,0 +1,49 @@
+# SUM over a scalar expression on an append-only changelog: the markers
+# retract through the view.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 26
+b 14
+
+# A delete marker retracts the expression value.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 6
+b 14
+
+# An update pair retracts the old value and adds the new one.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=update_before; k=3,g=b,v=9,op=update_after*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 6
+b 18
