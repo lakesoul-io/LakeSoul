@@ -1081,7 +1081,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；聚合内多参 `DISTINCT`/`FILTER`/`ORDER BY` | 与 W0 基础设施复用，随需求做 |
+| 表达式/投影 | 计算列（`k+1`/`CAST`/`CASE`/函数）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `ARRAY_AGG/STRING_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`DESC`/`NULLS FIRST` 排序；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
@@ -1443,6 +1443,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   扩展出 `run_oracle_with`（可选 schema 与可空值），新增 `COUNT(v)` 的可空随机负载；
   analyzer 单测覆盖 count-only、与 SUM 共用、列不一致拒绝与 HAVING 映射。
   全量 IVM 套件 36 个测试二进制 / 190 个测试通过。
+
+### 10.25 聚合 `FILTER (WHERE ...)`（PR-19）
+
+- **问题**：`SUM(v) FILTER (WHERE ...)` 此前直接报错。把 FILTER 直接折进视图过滤是错的：
+  SQL 里 FILTER 只影响聚合输入、不删除分组，折叠会让"无匹配行"的分组消失（结果应为 NULL）。
+- **语义**：采用**条件聚合**——行数 `count_v` 不过滤（分组存在性不变），SUM 与非空计数带
+  `FILTER (WHERE ...)`，AVG = 条件 SUM / 条件非空计数；无匹配行的分组保留为 NULL 值 + 行数。
+- **spec/typed**：`ViewSpec::SumCount` / `SumCountView` 增加 `aggregate_filter: Option<String>`
+  （serde default；构建器 `with_aggregate_filter`）。
+- **analyzer**：仅值聚合（`SUM`/`AVG`/`COUNT(column)`）可带 FILTER 且必须共用同一个谓词；
+  `COUNT(*) FILTER`、混用不同谓词、其它聚合族（MIN/MAX/VARIANCE/MEDIAN/DISTINCT）带 FILTER
+  一律明确报错。优化器会把共享谓词 hoist 成投影（`v > 5 AS __common_expr_1`），分析器用
+  `resolve_hoisted` 解析回源列表达式并允许这种标量投影；HAVING 中的同一聚合按解析后的表达式名
+  映射到物化列，不同 FILTER 的 HAVING 报错。
+- **运行时**：`signed_delta_exprs` 接受聚合谓词（有符号 SUM/非空计数加 `FILTER`，行数不加）；
+  keyed 的 new/old 聚合、HAVING 的 `group_now` 与 rebuild 都改用条件表达式。
+- **测试**：`aggregate_filter.slt`（无匹配行的分组保留 NULL、更新跨阈值、HAVING、WHERE+FILTER）、
+  两个差分 oracle（`SUM/COUNT(*) FILTER`、可空列的 `COUNT(v) FILTER`）、analyzer 单测覆盖
+  混用与其它族的拒绝。
+  全量 IVM 套件 36 个测试二进制 / 194 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

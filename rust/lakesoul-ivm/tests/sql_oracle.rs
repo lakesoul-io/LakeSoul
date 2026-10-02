@@ -308,6 +308,44 @@ async fn oracle_sum_count_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_aggregate_filter_matches_full_recompute() {
+    // The aggregate FILTER is materialized while the row count stays
+    // unfiltered, so groups without a matching row keep their NULL sum.
+    run_oracle(
+        "aggfilter",
+        1,
+        sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v")).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) FILTER (WHERE v > 30) AS sum_v, COUNT(*) AS count_v \
+         FROM __SRC__ GROUP BY g",
+        "SELECT g, SUM(v) FILTER (WHERE v > 30) AS sum_v, COUNT(*) AS count_v \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_count_filter_matches_full_recompute() {
+    // COUNT(column) FILTER counts the non-NULL values that match.
+    let schema = nullable_source_schema();
+    run_oracle_with(
+        "countfilter",
+        1,
+        schema.clone(),
+        true,
+        sum_count_mv_schema_for(&schema, &["g".to_string()], None).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, COUNT(v) FILTER (WHERE v > 30) AS count_v FROM __SRC__ \
+         GROUP BY g",
+        "SELECT g, COUNT(v) FILTER (WHERE v > 30) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, \"__ivm_nonnull_count\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_count_column_matches_full_recompute() {
     // COUNT(column) counts non-NULL values through the shared non-NULL count.
     let schema = nullable_source_schema();

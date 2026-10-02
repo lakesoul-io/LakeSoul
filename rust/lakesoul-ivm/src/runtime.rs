@@ -268,6 +268,11 @@ pub enum ViewSpec {
         /// falls back to `value_column`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         count_column: Option<String>,
+        /// The `FILTER (WHERE ...)` predicate of the materialized aggregates
+        /// (SUM/AVG/COUNT(column)); `None` when they are unfiltered.  Row
+        /// counts (and so the groups themselves) stay unfiltered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aggregate_filter: Option<String>,
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -541,6 +546,11 @@ pub struct SumCountView {
     /// The column whose non-NULL values a `COUNT(column)` aggregate counts;
     /// `None` falls back to [`Self::value_column`].
     pub count_column: Option<String>,
+    /// The `FILTER (WHERE ...)` predicate of the summed column and the
+    /// non-NULL count; `None` when they are unfiltered.  The row count is
+    /// never filtered, so a group with no matching row stays with a NULL
+    /// value.
+    pub aggregate_filter: Option<String>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
@@ -568,6 +578,7 @@ impl SumCountView {
             group_keys: vec![group_key.into()],
             value_column,
             count_column: None,
+            aggregate_filter: None,
             filter: None,
             having: None,
             average: false,
@@ -590,6 +601,7 @@ impl SumCountView {
             group_keys,
             value_column,
             count_column: None,
+            aggregate_filter: None,
             filter: None,
             having: None,
             average: false,
@@ -616,6 +628,14 @@ impl SumCountView {
         self
     }
 
+    /// Only rows matching `aggregate_filter` contribute to the summed column
+    /// and the non-NULL count (an aggregate `FILTER (WHERE ...)`); the row
+    /// count stays unfiltered.
+    pub fn with_aggregate_filter(mut self, aggregate_filter: impl Into<String>) -> Self {
+        self.aggregate_filter = Some(aggregate_filter.into());
+        self
+    }
+
     /// Materialize the average as well; the value column must be numeric.
     pub fn with_average(mut self) -> Self {
         self.average = true;
@@ -630,6 +650,7 @@ impl SumCountView {
             group_keys: self.group_keys.clone(),
             value_column: self.value_column.clone(),
             count_column: self.count_column.clone(),
+            aggregate_filter: self.aggregate_filter.clone(),
             filter: self.filter.clone(),
             having: self.having.clone(),
             average: self.average,
@@ -2693,6 +2714,7 @@ impl IvmRuntime {
                 group_keys,
                 value_column,
                 count_column,
+                aggregate_filter,
                 filter,
                 having,
                 average,
@@ -2703,6 +2725,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 value_column: value_column.clone(),
                 count_column: count_column.clone(),
+                aggregate_filter: aggregate_filter.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
                 average: *average,
@@ -6082,14 +6105,19 @@ fn signed_delta_exprs(
     alias: &str,
     value_column: Option<&str>,
     count_column: Option<&str>,
+    aggregate_filter: Option<&str>,
     change_column: Option<&str>,
 ) -> (String, String, String) {
     let retract = source_retract_condition(alias, change_column);
+    // The row count drives the groups, so it is never filtered.
     let count = format!("sum(case when {retract} then -1 else 1 end)");
+    let filter = aggregate_filter
+        .map(|filter| format!(" filter (where {filter})"))
+        .unwrap_or_default();
     let sum = match value_column {
         Some(column) => {
             let value = quote_ident(column);
-            format!("sum(case when {retract} then -({value}) else ({value}) end)")
+            format!("sum(case when {retract} then -({value}) else ({value}) end){filter}")
         }
         None => "sum(0)".to_string(),
     };
@@ -6099,7 +6127,7 @@ fn signed_delta_exprs(
         Some(column) => {
             let value = quote_ident(column);
             format!(
-                "sum(case when {value} is null then 0 when {retract} then -1 else 1 end)"
+                "sum(case when {value} is null then 0 when {retract} then -1 else 1 end){filter}"
             )
         }
         None => count.clone(),
@@ -6137,6 +6165,10 @@ fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
     if let Some(value_column) = &view.value_column {
         sum_result_type(&field_type(&view.source.schema, value_column)?)?;
     }
+    if let Some(aggregate_filter) = &view.aggregate_filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, aggregate_filter)?;
+    }
     if let Some(count_column) = &view.count_column {
         field_type(&view.source.schema, count_column)?;
         if let Some(value_column) = &view.value_column
@@ -6163,12 +6195,21 @@ fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
 /// accumulator). Keys already written for this epoch are skipped.
 fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String {
     let keys = quoted_list(&view.group_keys);
+    let aggregate_filter = view
+        .aggregate_filter
+        .as_deref()
+        .map(|filter| format!(" filter (where {filter})"))
+        .unwrap_or_default();
     let sum_expr = match &view.value_column {
-        Some(column) => format!("sum({})", quote_ident(column)),
+        Some(column) => {
+            format!("sum({}){aggregate_filter}", quote_ident(column))
+        }
         None => "sum(0)".to_string(),
     };
     let nonnull_expr = match view.count_column.as_ref().or(view.value_column.as_ref()) {
-        Some(column) => format!("count({})", quote_ident(column)),
+        Some(column) => {
+            format!("count({}){aggregate_filter}", quote_ident(column))
+        }
         None => "count(1)".to_string(),
     };
     if let Some(having) = view.having.as_deref() {
@@ -6186,6 +6227,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                 "src",
                 view.value_column.as_deref(),
                 view.count_column.as_deref(),
+                view.aggregate_filter.as_deref(),
                 change_column(&view.source),
             );
             (signed_sum, signed_count, signed_nonnull)
@@ -6270,6 +6312,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             "delta",
             view.value_column.as_deref(),
             view.count_column.as_deref(),
+            view.aggregate_filter.as_deref(),
             change_column(&view.source),
         );
         format!(
@@ -6385,6 +6428,7 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             "src",
             view.value_column.as_deref(),
             view.count_column.as_deref(),
+            view.aggregate_filter.as_deref(),
             change_column(&view.source),
         );
         let plain_where = filter_where(view.filter.as_deref());
@@ -6413,12 +6457,21 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             None => rebuild,
         };
     }
+    let aggregate_filter = view
+        .aggregate_filter
+        .as_deref()
+        .map(|filter| format!(" filter (where {filter})"))
+        .unwrap_or_default();
     let sum_expr = match &view.value_column {
-        Some(column) => format!("sum({})", quote_ident(column)),
+        Some(column) => {
+            format!("sum({}){aggregate_filter}", quote_ident(column))
+        }
         None => "sum(0)".to_string(),
     };
     let nonnull_expr = match view.count_column.as_ref().or(view.value_column.as_ref()) {
-        Some(column) => format!("count({})", quote_ident(column)),
+        Some(column) => {
+            format!("count({}){aggregate_filter}", quote_ident(column))
+        }
         None => "count(1)".to_string(),
     };
     let src_where = format!(

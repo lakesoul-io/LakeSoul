@@ -1,0 +1,63 @@
+# SUM/COUNT/AVG with an aggregate FILTER: the values are filtered, the groups
+# stay.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FILTER (WHERE v > 5), AVG(v) FILTER (WHERE v > 5) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIR rowsort
+SELECT g, sum_v, count_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10 2 10.0
+b NULL 1 NULL
+
+# An update moves values in and out of the filtered set; a group with no
+# matching row keeps its NULL value and its row count.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=7,op=insert; k=1,g=a,v=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FILTER (WHERE v > 5), AVG(v) FILTER (WHERE v > 5) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIR rowsort
+SELECT g, sum_v, count_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 7 2 7.0
+b NULL 1 NULL
+
+# HAVING over the same FILTER maps onto the maintained column.
+statement ok
+/*ivm-append __SRC__: k=4,g=c,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FILTER (WHERE v > 5), AVG(v) FILTER (WHERE v > 5) FROM __SRC__ GROUP BY g HAVING SUM(v) FILTER (WHERE v > 5) > 5
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIR rowsort
+SELECT g, sum_v, count_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 7 2 7.0
+c 9 1 9.0
+
+# A WHERE clause narrows the rows before the FILTER.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FILTER (WHERE v > 5), AVG(v) FILTER (WHERE v > 5) FROM __SRC__ WHERE v > 2 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIR rowsort
+SELECT g, sum_v, count_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 7 1 7.0
+c 9 1 9.0
