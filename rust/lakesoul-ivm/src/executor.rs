@@ -33,7 +33,7 @@ use datafusion::sql::sqlparser::ast::{
 use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
-    IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, avg_mv_schema_for,
+    IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, array_agg_mv_schema_for, avg_mv_schema_for,
     distinct_agg_mv_schema_for, join_view_schema_for, keyed_join_view_schema_for,
     median_mv_schema_for, min_max_mv_schema_for, row_expr_mv_schema_for,
     semi_anti_mv_schema_for, string_agg_mv_schema_for, sum_count_mv_schema_for,
@@ -479,6 +479,15 @@ fn expected_mv_schema(
         } => {
             let source = find_table(tables, source_table_id)?;
             string_agg_mv_schema_for(&source.schema, group_keys, value_column)?
+        }
+        ViewSpec::ArrayAgg {
+            source_table_id,
+            group_keys,
+            value_column,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            array_agg_mv_schema_for(&source.schema, group_keys, value_column)?
         }
         ViewSpec::Median {
             source_table_id,

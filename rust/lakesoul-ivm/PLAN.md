@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 其它聚合族的参数表达式（MIN/MAX/VARIANCE/MEDIAN/STRING_AGG）；多参数聚合（`COUNT(DISTINCT a, b)`）；聚合内 `ORDER BY` | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `ARRAY_AGG`；`GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
+| 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1544,6 +1544,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `sum_expr_append.slt`（append-only 的 delete/update 标记撤回）；差分 oracle（`SUM(v * 2)` +
   `COUNT(*)` 全量对比）；analyzer 单测覆盖表达式/共享值/HAVING 映射与拒绝。
   全量 IVM 套件 36 个测试二进制 / 208 个测试通过。
+
+### 10.30 `ARRAY_AGG(value ORDER BY ...)`（PR-24）
+
+- **能力**：`ARRAY_AGG(value ORDER BY keys)` 直接把分组内的值收集成 List 列（延续
+  STRING_AGG 的 recompute 策略；聚合内 `ORDER BY` 必填以保证确定性）。
+- **spec/typed**：新增 `ViewSpec::ArrayAgg` + `ArrayAggView`（group_keys、value_column、
+  渲染后的 order_by、filter；不支持 HAVING，遇到明确报错）。派生列 `array_agg_<value>`，
+  类型 `List<value>` 可空（与 DataFusion 的累加器一致）。
+- **运行时**：复用 `RecomputeParts`，渲染 `array_agg("v" order by "k")`；
+  `refresh_array_agg` / `rebuild_array_agg` / `register_array_agg_view` 与 STRING_AGG 对称；
+  schema 由 `array_agg_mv_schema_for` 推导。
+- **analyzer**：值必须是纯列（任意类型）、聚合内必须带 ORDER BY，不能与其它聚合族混用；
+  HAVING 不支持。`array_agg` 与 `string_agg` 一样从顶部 ORDER BY 拒绝中豁免。
+- **测试**：`array_agg.slt`（bootstrap、更新重排、删除、DESC+WHERE 重建）、差分 oracle
+  （随机负载 10 轮全量对比）、analyzer 单测（渲染/缺 ORDER BY/混用拒绝）。
+  全量 IVM 套件 36 个测试二进制 / 211 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
