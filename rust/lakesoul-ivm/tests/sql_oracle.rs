@@ -437,6 +437,53 @@ async fn oracle_window_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_desc_window_matches_full_recompute() {
+    // The runtime appends the primary keys to the descending ordering, so the
+    // reference uses `v DESC, k`.
+    run_oracle(
+        "descwindow",
+        1,
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &["k".to_string()],
+            WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) \
+         FROM __SRC__",
+        "SELECT g, k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC, k) \
+             AS \"row_number\" \
+         FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT g, k, \"row_number\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_top_k_desc_matches_full_recompute() {
+    run_oracle(
+        "topkdesc",
+        1,
+        top_k_mv_schema_for(
+            &source_schema(),
+            &["k".to_string(), "g".to_string(), "v".to_string()],
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT k, g, v FROM (SELECT k, g, v, \
+             ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) AS rn \
+             FROM __SRC__) t WHERE rn <= 2",
+        "SELECT k, g, v FROM (SELECT k, g, v, \
+             ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC, k) AS rn \
+             FROM __SRC__ WHERE op <> 'delete') t WHERE rn <= 2",
+        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_top_k_where_matches_full_recompute() {
     run_oracle(
         "topkwhere",
