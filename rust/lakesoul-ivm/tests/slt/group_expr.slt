@@ -1,0 +1,66 @@
+# GROUP BY a scalar expression: the key is computed when the view reads the
+# source.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert; k=4,g=b,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, SUM(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT bucket, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 10
+3 3
+5 15
+7 7
+
+# An update moves a row to another bucket.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=13,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, SUM(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 10
+3 13
+5 15
+7 7
+
+# A delete empties a bucket.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=15,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, SUM(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 10
+3 13
+7 7
+
+# HAVING over the group alias plus a WHERE clause rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, SUM(v) FROM __SRC__ WHERE v > 3 GROUP BY bucket HAVING bucket > 3
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT bucket, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+7 7

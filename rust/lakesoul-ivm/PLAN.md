@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
+| 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`；其它聚合族的 `GROUP BY` 表达式（当前仅 SUM/COUNT 家族） | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1596,6 +1596,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   两个差分 oracle（`STRING_AGG(CAST(v AS VARCHAR), '|')`、`ARRAY_AGG(v * 2)`）、analyzer
   单测（cast 保留、array_agg 表达式）。
   全量 IVM 套件 36 个测试二进制 / 218 个测试通过。
+
+### 10.33 GROUP BY 表达式（PR-27，SUM/COUNT 家族）
+
+- **能力**：`SELECT v % 10 AS bucket, SUM(v) FROM src GROUP BY bucket`（以及
+  `date_trunc('day', ts)` 这类）直接物化：分组键可以是标量表达式，`GROUP BY` 允许引用
+  SELECT 别名。
+- **spec/typed**：`ViewSpec::SumCount` / `SumCountView` 增加 `group_exprs: Vec<String>`
+  （与 `group_keys` 平行；为空表示全部为普通列；构建器 `with_group_exprs`）。
+- **analyzer**：分组表达式从 Aggregate 的 `group_expr` 解析，别名通过 SELECT 投影匹配
+  （复用 `projection_alias`，并解开 hoisted 别名）；表达式必须有别名；HAVING 中引用分组
+  别名/输出字段名时按 Aggregate schema 映射到 MV 键列。
+- **schema**：抽出 `group_key_fields`（普通列或按 `expression_type` 规划表达式，并拒绝与源列
+  重名）；新增 `sum_count_groups_mv_schema_for`（同时支持分组表达式与值表达式，旧的
+  `sum_count_mv_schema_for`/`sum_expr_mv_schema_for`/`avg_mv_schema_for` 均委托它）。
+- **运行时**：新增 `project_group_keys`——在注册 delta/old/src/rebuild 基线前把计算出的键
+  列 `with_column` 进批次（含空批次补 schema），下游 SQL（分组、join、HAVING）无需改动即
+  可用；计算键无法用于源裁剪，此时跳过 `key_filters`（读全表保证正确）。
+- **测试**：`group_expr.slt`（表达式分组 bootstrap、更新换桶、删除清空桶、HAVING+WHERE
+  重建）、差分 oracle（`v % 10` 分组随机负载全量对比）、analyzer 单测（别名、混合键、HAVING
+  映射、缺别名拒绝）。
+  全量 IVM 套件 36 个测试二进制 / 221 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
