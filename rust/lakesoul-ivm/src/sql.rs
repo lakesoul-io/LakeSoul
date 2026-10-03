@@ -1442,6 +1442,7 @@ fn analyze_aggregate(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
+            group_exprs,
             value_column: variance_column,
             statistic,
             filter,
@@ -1457,6 +1458,7 @@ fn analyze_aggregate(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
+            group_exprs,
             value_column,
             value_expr,
             order_by,
@@ -1472,6 +1474,7 @@ fn analyze_aggregate(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
+            group_exprs,
             value_column,
             value_expr,
             delimiter,
@@ -1485,6 +1488,7 @@ fn analyze_aggregate(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
+            group_exprs,
             value_column: median_column,
             filter,
             having,
@@ -2854,6 +2858,7 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["k".to_string()],
+                group_exprs: Vec::new(),
                 value_column: Some("g".to_string()),
                 value_expr: None,
                 order_by: vec!["v".to_string()],
@@ -3021,6 +3026,7 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["k".to_string()],
+                group_exprs: Vec::new(),
                 value_column: Some("g".to_string()),
                 value_expr: None,
                 delimiter: "','".to_string(),
@@ -3297,6 +3303,92 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_recompute_group_expressions() {
+        // The recompute families carry computed group keys the same way
+        // SUM/COUNT does.
+        let analyzed =
+            analyze("select v % 10 as bucket, var_samp(v) from src group by bucket")
+                .await
+                .unwrap();
+        let ViewSpec::Variance {
+            group_keys,
+            group_exprs,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a variance spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+        assert_eq!(value_column, "v");
+
+        let analyzed =
+            analyze("select v % 10 as bucket, median(v) from src group by bucket")
+                .await
+                .unwrap();
+        let ViewSpec::Median {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a median spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+
+        let analyzed = analyze(
+            "select v % 10 as bucket, string_agg(g, ',' order by k) from src group by bucket",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::StringAgg {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a string_agg spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+
+        let analyzed = analyze(
+            "select v % 10 as bucket, array_agg(g order by k) from src group by bucket",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::ArrayAgg {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an array_agg spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+
+        // A plain column key keeps the compact form next to an expression.
+        let analyzed = analyze(
+            "select g, v % 10 as bucket, var_samp(v) from src group by g, bucket",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Variance {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a variance spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["g".to_string(), "(v % 10)".to_string()]);
     }
 
     #[tokio::test]
@@ -3833,6 +3925,30 @@ mod tests {
         let ignore_nulls = column.ignore_nulls;
 
         assert!(!ignore_nulls);
+    }
+
+    #[tokio::test]
+    async fn probe_union_distinct() {
+        for sql in [
+            "select k, v from src union select k, v from src",
+            "select k, v from src union all select k, v from src",
+            "select k, v from src union select k, g from src",
+        ] {
+            let ctx = SessionContext::new();
+            let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+            ctx.register_table("src", Arc::new(table)).unwrap();
+            match ctx.sql(sql).await {
+                Ok(frame) => {
+                    let plan = frame.logical_plan().clone();
+                    println!("SQL: {sql}\nRAW:\n{plan}");
+                    match ctx.state().optimize(&plan) {
+                        Ok(optimized) => println!("OPT:\n{optimized}\n----"),
+                        Err(error) => println!("OPT ERROR: {error}\n----"),
+                    }
+                }
+                Err(error) => println!("SQL: {sql}\nPLAN ERROR: {error}\n----"),
+            }
+        }
     }
 
     #[tokio::test]

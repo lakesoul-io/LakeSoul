@@ -1082,7 +1082,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`；其它聚合族的 `GROUP BY` 表达式（当前仅 SUM/COUNT 家族） | 随需求做 |
+| 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE` | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | CROSS join；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
@@ -1687,6 +1687,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：analyzer 单测（lookup 与 pair-keyed 两种交换结果）、`right_join.slt`
   （维度行保留、同一维度多事实、事实删除/换键、NULL 填充，SQL 入口端到端）。
   全量 IVM 套件 36 个测试二进制 / 231 个测试通过。
+
+### 10.38 其它聚合族的 `GROUP BY` 表达式（PR-32）
+
+- **能力**：`GROUP BY <expr>` 从 SUM/COUNT 家族推广到全部聚合族——Variance/Stddev、
+  Median、`STRING_AGG`、`ARRAY_AGG` 都接受计算分组键（与 SumCount 同一套 `project_group_keys`
+  机制，键列在注册 delta/old/src 前注入批次）。
+- **spec/typed**：`ViewSpec::{Variance,Median,StringAgg,ArrayAgg}` 增加
+  `group_exprs: Vec<String>`（serde default，空 = 全是普通列）；typed view 同步字段 +
+  `with_group_exprs`；`RecomputeParts` 携带 `group_exprs`。
+- **schema**：新增 `variance_groups_mv_schema_for` / `median_groups_mv_schema_for` /
+  `string_agg_groups_mv_schema_for` / `array_agg_groups_mv_schema_for`（键字段走
+  `group_key_fields`，同时支持计算键 + 计算 value），旧的 `*_mv_schema_for` 委托空表达式；
+  executor 统一走 groups 版本。
+- **运行时**：`validate_recompute_view` 在有表达式时跳过源列校验、改用 `group_key_fields`；
+  `refresh_recomputed` 对 delta/old/src 三个注册点投影计算键，计算键无法裁剪源时跳过多余的
+  `key_filters` 剪枝（`filters` 置空）；rebuild 对基线批次同样投影。
+- **测试**：analyzer 单测（四个家族 + 普通列与表达式混合）、`variance_group_expr.slt`
+  （keyed 源跨桶更新/删除/HAVING/WHERE，SQL 入口端到端）、4 个差分 oracle
+  （variance/median/`ARRAY_AGG`/`STRING_AGG`，其中 string/array 同时带计算值与计算键）。
+  全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）238 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

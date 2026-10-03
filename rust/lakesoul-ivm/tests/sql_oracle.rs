@@ -18,12 +18,14 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
-    array_agg_expr_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
-    distinct_agg_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
+    array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_mv_schema_for,
+    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
@@ -861,6 +863,77 @@ async fn oracle_sum_distinct_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_array_agg_group_expr_matches_full_recompute() {
+    // A computed group key together with a computed element.
+    run_oracle(
+        "arrayagg_groupexpr",
+        1,
+        array_agg_groups_mv_schema_for(
+            &source_schema(),
+            &["bucket".to_string()],
+            &["v % 10".to_string()],
+            None,
+            Some("v * 2"),
+        )
+        .unwrap(),
+        vec!["bucket".to_string()],
+        "SELECT v % 10 AS bucket, ARRAY_AGG(v * 2 ORDER BY k) FROM __SRC__ \
+         GROUP BY bucket",
+        "SELECT v % 10 AS bucket, ARRAY_AGG(v * 2 ORDER BY k) AS array_agg_value \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY bucket",
+        "SELECT bucket, array_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_string_agg_group_expr_matches_full_recompute() {
+    // A computed group key together with a computed value.
+    run_oracle(
+        "stringagg_groupexpr",
+        1,
+        string_agg_groups_mv_schema_for(
+            &source_schema(),
+            &["bucket".to_string()],
+            &["v % 10".to_string()],
+            None,
+            Some("CAST(v AS VARCHAR)"),
+        )
+        .unwrap(),
+        vec!["bucket".to_string()],
+        "SELECT v % 10 AS bucket, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY k) \
+         FROM __SRC__ GROUP BY bucket",
+        "SELECT v % 10 AS bucket, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY k) \
+         AS string_agg_value FROM __SRC__ WHERE op <> 'delete' GROUP BY bucket",
+        "SELECT bucket, string_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_median_group_expr_matches_full_recompute() {
+    // The median family recomputes the affected computed groups.
+    run_oracle(
+        "median_groupexpr",
+        1,
+        median_groups_mv_schema_for(
+            &source_schema(),
+            &["bucket".to_string()],
+            &["v % 10".to_string()],
+            "v",
+        )
+        .unwrap(),
+        vec!["bucket".to_string()],
+        "SELECT v % 10 AS bucket, MEDIAN(v) AS median_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY bucket",
+        "SELECT v % 10 AS bucket, MEDIAN(v) AS median_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
+        "SELECT bucket, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_median_matches_full_recompute() {
     // The median is order-independent, so the pruned incremental recompute is
     // bit-identical to the full one.
@@ -894,6 +967,30 @@ async fn oracle_variance_matches_full_recompute() {
         "SELECT g, VAR_SAMP(v) AS variance_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
         "SELECT g, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_variance_group_expr_matches_full_recompute() {
+    // The variance family recomputes the affected computed groups.
+    run_oracle(
+        "variance_groupexpr",
+        1,
+        variance_groups_mv_schema_for(
+            &source_schema(),
+            &["bucket".to_string()],
+            &["v % 10".to_string()],
+            "v",
+            VarianceKind::VarSamp,
+        )
+        .unwrap(),
+        vec!["bucket".to_string()],
+        "SELECT v % 10 AS bucket, VAR_SAMP(v) AS variance_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY bucket",
+        "SELECT v % 10 AS bucket, VAR_SAMP(v) AS variance_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
+        "SELECT bucket, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
