@@ -32,9 +32,9 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, array_agg_mv_schema_for, avg_mv_schema_for,
-    distinct_agg_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    distinct_agg_mv_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_mv_schema_for, row_expr_mv_schema_for,
+    row_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
     window_aggregate_mv_schema_for, window_columns_mv_schema_for,
@@ -1377,6 +1377,40 @@ fn sqllogic_top_k_where() {
         include_str!("slt/top_k_where.slt"),
         top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_left_lookup_join() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("jk", DataType::Utf8, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "leftjoin",
+        include_str!("slt/left_join.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["jk"])),
+        ],
+        lookup_join_view_schema_for(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["jk"]),
+            &group_keys(&["jk"]),
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        group_keys(&["id"]),
     );
 }
 

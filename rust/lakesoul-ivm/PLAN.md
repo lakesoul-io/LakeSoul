@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`；其它聚合族的 `GROUP BY` 表达式（当前仅 SUM/COUNT 家族） | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
-| 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 连接/集合 | 其它外连接（RIGHT/FULL/CROSS、非 lookup 的 LEFT JOIN）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
@@ -1617,6 +1617,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   重建）、差分 oracle（`v % 10` 分组随机负载全量对比）、analyzer 单测（别名、混合键、HAVING
   映射、缺别名拒绝）。
   全量 IVM 套件 36 个测试二进制 / 221 个测试通过。
+
+### 10.34 LEFT lookup join（PR-28）
+
+- **能力**：`SELECT l.jk, l.lv, r.rv FROM fact l LEFT JOIN dim r ON l.jk = r.jk`——星型模型的
+  事实表 ⋈ 维表：左表每一行保留其引用的右表 payload（无匹配为 NULL）。
+- **约束**：两侧都必须有主键，且**右表以连接键为主键**（lookup 唯一），因此左行至多一个匹配、
+  输出以左表主键为键（不会出现 NULL 主键）；连接键仍需两侧同名（沿用既有 join 规范）。
+- **spec/typed**：新增 `ViewSpec::LookupJoin` + `LookupJoinView`（left/right/output、join_keys、
+  left_value、right_value）；schema `lookup_join_view_schema_for` 输出
+  `join_keys + left_value + right_value(可空) + 左主键 + rowKinds + epoch`。
+- **analyzer**：`JoinType::Left` 分支校验右表主键集合等于连接键，复用 `join_values` 选 payload；
+  非法形状（右表非该键、非等值条件）明确报错。
+- **运行时**：keyed 路径——受影响左行 = Δ左表的主键 ∪ 连接键出现在 Δ右表的当前左行；
+  对这些行 `delete(旧) + insert(用当前右表左连接的新值)`，epoch 幂等；右侧删除/更新会把
+  引用它的左行重算为 NULL 或新值；rebuild 用两侧基线做同样的左连接。
+- **测试**：typed `lookup_join.rs`（bootstrap、右表新增填 NULL、右表更新、右表删除回 NULL、
+  左表换键、左表删除、rebuild 一致，逐步与 SQL 左连接对拍）、`left_join.slt`（SQL 入口端到端）、
+  analyzer 单测（合法形状与右表非该键拒绝）。
+  全量 IVM 套件 36 个测试二进制 / 224 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
