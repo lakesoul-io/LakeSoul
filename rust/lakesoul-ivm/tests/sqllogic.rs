@@ -38,8 +38,9 @@ use lakesoul_ivm::{
     min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
     string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    variance_groups_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -1553,6 +1554,36 @@ fn sqllogic_right_join() {
         )
         .unwrap(),
         keyed_join_output_primary_keys(&group_keys(&["jk"]), &group_keys(&["id"])),
+    );
+}
+
+#[test]
+fn sqllogic_union_distinct() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "uniondistinct",
+        include_str!("slt/union_distinct.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+        ],
+        union_distinct_mv_schema_for(&schema, Some(CHANGE_COLUMN)),
+        group_keys(&["k", "g", "v"]),
+    );
+}
+
+#[test]
+fn sqllogic_union_distinct_append_only() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "uniondistinctappend",
+        include_str!("slt/union_distinct_append.slt"),
+        vec![
+            SltSource::append_only_cdc("__SRC1__", schema.clone()),
+            SltSource::append_only_cdc("__SRC2__", schema.clone()),
+        ],
+        union_distinct_mv_schema_for(&schema, Some(CHANGE_COLUMN)),
+        group_keys(&["k", "g", "v"]),
     );
 }
 

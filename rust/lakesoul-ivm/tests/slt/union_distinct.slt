@@ -1,0 +1,105 @@
+# UNION (distinct) of two keyed sources: the MV keeps every distinct row with
+# its occurrence count, and keyed updates/deletes retract their old values.
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert; k=2,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=10,op=insert; k=3,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 2
+2 b 20 1
+3 a 30 1
+
+# Updating one copy of a duplicated row decrements its count.
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 1
+1 a 40 1
+2 b 20 1
+3 a 30 1
+
+# Deleting the last copy removes the row from the union.
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 40 1
+2 b 20 1
+3 a 30 1
+
+# Re-inserting the row brings it back with count 1.
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 1
+1 a 40 1
+2 b 20 1
+3 a 30 1
+
+# Per-branch predicates rebuild the view from the current source states.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ WHERE v > 15 UNION SELECT k, g, v FROM __SRC2__ WHERE v > 15
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 40 1
+2 b 20 1
+3 a 30 1
+
+# An update inside the definition retracts the old row and inserts the new one.
+statement ok
+/*ivm-append __SRC1__: k=2,g=b,v=16,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ WHERE v > 15 UNION SELECT k, g, v FROM __SRC2__ WHERE v > 15
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 40 1
+2 b 16 1
+3 a 30 1
