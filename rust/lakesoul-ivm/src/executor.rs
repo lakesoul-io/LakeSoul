@@ -33,15 +33,14 @@ use datafusion::sql::sqlparser::ast::{
 use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
-    IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, array_agg_expr_mv_schema_for,
-    array_agg_mv_schema_for, distinct_agg_mv_schema_for, full_join_view_schema_for,
-    join_view_schema_for, keyed_join_view_schema_for, left_join_view_schema_for,
-    lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, array_agg_groups_mv_schema_for,
+    distinct_agg_mv_schema_for, full_join_view_schema_for, join_view_schema_for,
+    keyed_join_view_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
+    median_groups_mv_schema_for, min_max_expr_mv_schema_for, min_max_mv_schema_for,
+    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     value_count_state_expr_schema_for, value_count_state_schema_for,
-    variance_mv_schema_for, window_columns_mv_schema_for,
+    variance_groups_mv_schema_for, window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
@@ -538,65 +537,55 @@ fn expected_mv_schema(
         ViewSpec::Variance {
             source_table_id,
             group_keys,
+            group_exprs,
             value_column,
             statistic,
             ..
-        } => variance_mv_schema_for(
+        } => variance_groups_mv_schema_for(
             &find_table(tables, source_table_id)?.schema,
             group_keys,
+            group_exprs,
             value_column,
             *statistic,
         )?,
         ViewSpec::StringAgg {
             source_table_id,
             group_keys,
+            group_exprs,
             value_column,
             value_expr,
             ..
-        } => {
-            let source = find_table(tables, source_table_id)?;
-            match value_expr {
-                Some(value_expr) => {
-                    string_agg_expr_mv_schema_for(&source.schema, group_keys, value_expr)?
-                }
-                None => string_agg_mv_schema_for(
-                    &source.schema,
-                    group_keys,
-                    value_column.as_deref().ok_or_else(|| {
-                        rootcause::report!("the STRING_AGG view has no value")
-                    })?,
-                )?,
-            }
-        }
+        } => string_agg_groups_mv_schema_for(
+            &find_table(tables, source_table_id)?.schema,
+            group_keys,
+            group_exprs,
+            value_column.as_deref(),
+            value_expr.as_deref(),
+        )?,
         ViewSpec::ArrayAgg {
             source_table_id,
             group_keys,
+            group_exprs,
             value_column,
             value_expr,
             ..
-        } => {
-            let source = find_table(tables, source_table_id)?;
-            match value_expr {
-                Some(value_expr) => {
-                    array_agg_expr_mv_schema_for(&source.schema, group_keys, value_expr)?
-                }
-                None => array_agg_mv_schema_for(
-                    &source.schema,
-                    group_keys,
-                    value_column.as_deref().ok_or_else(|| {
-                        rootcause::report!("the ARRAY_AGG view has no value")
-                    })?,
-                )?,
-            }
-        }
+        } => array_agg_groups_mv_schema_for(
+            &find_table(tables, source_table_id)?.schema,
+            group_keys,
+            group_exprs,
+            value_column.as_deref(),
+            value_expr.as_deref(),
+        )?,
         ViewSpec::Median {
             source_table_id,
             group_keys,
+            group_exprs,
             value_column,
             ..
-        } => median_mv_schema_for(
+        } => median_groups_mv_schema_for(
             &find_table(tables, source_table_id)?.schema,
             group_keys,
+            group_exprs,
             value_column,
         )?,
         ViewSpec::MinMax {

@@ -448,6 +448,10 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The group key columns.
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The value column.
         value_column: String,
         /// Which statistic is maintained.
@@ -473,6 +477,10 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The group key columns.
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The value column.
         value_column: String,
         /// An optional filter the contributing rows must satisfy.
@@ -494,6 +502,10 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The concatenated column; `None` when the argument is an
         /// expression.
         value_column: Option<String>,
@@ -525,6 +537,10 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The collected column; `None` when the argument is an expression.
         value_column: Option<String>,
         /// The rendered collected expression.
@@ -2000,6 +2016,9 @@ pub struct VarianceView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The value column.
     pub value_column: String,
     /// Which statistic is maintained.
@@ -2046,6 +2065,7 @@ impl VarianceView {
             source,
             mv,
             group_keys,
+            group_exprs: Vec::new(),
             value_column: value_column.into(),
             statistic: kind,
             filter: None,
@@ -2072,6 +2092,7 @@ impl VarianceView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             statistic: self.statistic,
             filter: self.filter.clone(),
@@ -2088,8 +2109,19 @@ pub fn variance_mv_schema_for(
     value_column: &str,
     kind: VarianceKind,
 ) -> Result<SchemaRef> {
+    variance_groups_mv_schema_for(source_schema, group_keys, &[], value_column, kind)
+}
+
+/// The schema of a [`VarianceView`] materialized view with group expressions.
+pub fn variance_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: &str,
+    kind: VarianceKind,
+) -> Result<SchemaRef> {
     variance_result_type(&field_type(source_schema, value_column)?)?;
-    let mut fields = key_fields(source_schema, group_keys)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(
         kind.column_name(),
         DataType::Float64,
@@ -2160,6 +2192,9 @@ pub struct MedianView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The value column.
     pub value_column: String,
     /// An optional filter the contributing rows must satisfy.
@@ -2201,6 +2236,7 @@ impl MedianView {
             source,
             mv,
             group_keys,
+            group_exprs: Vec::new(),
             value_column: value_column.into(),
             filter: None,
             having: None,
@@ -2226,6 +2262,7 @@ impl MedianView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             filter: self.filter.clone(),
             having: self.having.clone(),
@@ -2240,8 +2277,18 @@ pub fn median_mv_schema_for(
     group_keys: &[String],
     value_column: &str,
 ) -> Result<SchemaRef> {
+    median_groups_mv_schema_for(source_schema, group_keys, &[], value_column)
+}
+
+/// The schema of a [`MedianView`] materialized view with group expressions.
+pub fn median_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
     let value_type = median_result_type(&field_type(source_schema, value_column)?)?;
-    let mut fields = key_fields(source_schema, group_keys)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(IVM_MEDIAN_COLUMN, value_type, true)));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -2264,6 +2311,8 @@ struct RecomputeParts<'a> {
     source: &'a IvmTable,
     mv: &'a IvmTable,
     group_keys: &'a [String],
+    /// The rendered group expressions, parallel to `group_keys`.
+    group_exprs: &'a [String],
     /// The rendered aggregate call over the source columns (e.g.
     /// `var("v")`, `string_agg("s", ',' order by "k")`).
     aggregate_call: String,
@@ -2280,6 +2329,7 @@ impl VarianceView {
             source: &self.source,
             mv: &self.mv,
             group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
             aggregate_call: format!(
                 "{}({})",
                 self.statistic.sql_name(),
@@ -2299,6 +2349,7 @@ impl MedianView {
             source: &self.source,
             mv: &self.mv,
             group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
             aggregate_call: format!("median({})", quote_ident(&self.value_column)),
             column: IVM_MEDIAN_COLUMN.to_string(),
             filter: self.filter.as_deref(),
@@ -2380,6 +2431,9 @@ pub struct StringAggView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The concatenated column; `None` when the argument is an expression.
     pub value_column: Option<String>,
     /// The rendered concatenated expression.
@@ -2433,6 +2487,7 @@ impl StringAggView {
             source,
             mv,
             group_keys,
+            group_exprs: Vec::new(),
             value_column: Some(value_column.into()),
             value_expr: None,
             delimiter: delimiter.into(),
@@ -2463,12 +2518,19 @@ impl StringAggView {
         self
     }
 
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
             group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
             aggregate_call: format!(
                 "string_agg({}, {} order by {})",
                 aggregate_value_sql(
@@ -2490,6 +2552,7 @@ impl StringAggView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             value_expr: self.value_expr.clone(),
             delimiter: self.delimiter.clone(),
@@ -2507,8 +2570,32 @@ pub fn string_agg_mv_schema_for(
     group_keys: &[String],
     value_column: &str,
 ) -> Result<SchemaRef> {
-    string_agg_result_type(&field_type(source_schema, value_column)?)?;
-    string_agg_schema_for(source_schema, group_keys, string_agg_column(value_column))
+    string_agg_groups_mv_schema_for(
+        source_schema,
+        group_keys,
+        &[],
+        Some(value_column),
+        None,
+    )
+}
+
+/// The schema of a [`StringAggView`] materialized view with optional group and
+/// value expressions.
+pub fn string_agg_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+) -> Result<SchemaRef> {
+    let value_type = aggregate_value_type(source_schema, value_column, value_expr)?;
+    string_agg_result_type(&value_type)?;
+    let column = if value_expr.is_some() {
+        "string_agg_value".to_string()
+    } else {
+        string_agg_column(value_column.unwrap_or_default())
+    };
+    string_agg_schema_for(source_schema, group_keys, group_exprs, column)
 }
 
 /// The schema of a [`StringAggView`] materialized view whose value is a
@@ -2518,18 +2605,23 @@ pub fn string_agg_expr_mv_schema_for(
     group_keys: &[String],
     value_expr: &str,
 ) -> Result<SchemaRef> {
-    let (data_type, _) = expression_type(source_schema, value_expr)?;
-    string_agg_result_type(&data_type)?;
-    string_agg_schema_for(source_schema, group_keys, "string_agg_value".to_string())
+    string_agg_groups_mv_schema_for(
+        source_schema,
+        group_keys,
+        &[],
+        None,
+        Some(value_expr),
+    )
 }
 
 /// The `STRING_AGG` materialized view schema given the value column name.
 fn string_agg_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
+    group_exprs: &[String],
     column: String,
 ) -> Result<SchemaRef> {
-    let mut fields = key_fields(source_schema, group_keys)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(column, DataType::LargeUtf8, true)));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -2564,6 +2656,9 @@ pub struct ArrayAggView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The collected column; `None` when the argument is an expression.
     pub value_column: Option<String>,
     /// The rendered collected expression.
@@ -2610,6 +2705,7 @@ impl ArrayAggView {
             source,
             mv,
             group_keys,
+            group_exprs: Vec::new(),
             value_column: Some(value_column.into()),
             value_expr: None,
             order_by,
@@ -2631,12 +2727,19 @@ impl ArrayAggView {
         self
     }
 
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
             group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
             aggregate_call: format!(
                 "array_agg({} order by {})",
                 aggregate_value_sql(
@@ -2657,6 +2760,7 @@ impl ArrayAggView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             value_expr: self.value_expr.clone(),
             order_by: self.order_by.clone(),
@@ -2672,13 +2776,31 @@ pub fn array_agg_mv_schema_for(
     group_keys: &[String],
     value_column: &str,
 ) -> Result<SchemaRef> {
-    let value_type = field_type(source_schema, value_column)?;
-    array_agg_schema_for(
+    array_agg_groups_mv_schema_for(
         source_schema,
         group_keys,
-        array_agg_column(value_column),
-        value_type,
+        &[],
+        Some(value_column),
+        None,
     )
+}
+
+/// The schema of an [`ArrayAggView`] materialized view with optional group and
+/// value expressions.
+pub fn array_agg_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+) -> Result<SchemaRef> {
+    let value_type = aggregate_value_type(source_schema, value_column, value_expr)?;
+    let column = if value_expr.is_some() {
+        "array_agg_value".to_string()
+    } else {
+        array_agg_column(value_column.unwrap_or_default())
+    };
+    array_agg_schema_for(source_schema, group_keys, group_exprs, column, value_type)
 }
 
 /// The schema of an [`ArrayAggView`] materialized view whose value is a
@@ -2688,13 +2810,7 @@ pub fn array_agg_expr_mv_schema_for(
     group_keys: &[String],
     value_expr: &str,
 ) -> Result<SchemaRef> {
-    let (value_type, _) = expression_type(source_schema, value_expr)?;
-    array_agg_schema_for(
-        source_schema,
-        group_keys,
-        "array_agg_value".to_string(),
-        value_type,
-    )
+    array_agg_groups_mv_schema_for(source_schema, group_keys, &[], None, Some(value_expr))
 }
 
 /// The `ARRAY_AGG` materialized view schema given the value column name and
@@ -2702,10 +2818,11 @@ pub fn array_agg_expr_mv_schema_for(
 fn array_agg_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
+    group_exprs: &[String],
     column: String,
     value_type: DataType,
 ) -> Result<SchemaRef> {
-    let mut fields = key_fields(source_schema, group_keys)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(
         column,
         DataType::List(Arc::new(Field::new_list_field(value_type, true))),
@@ -4233,6 +4350,7 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 statistic,
                 filter,
@@ -4242,6 +4360,7 @@ impl IvmRuntime {
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 statistic: *statistic,
                 filter: filter.clone(),
@@ -4253,6 +4372,7 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 filter,
                 having,
@@ -4261,6 +4381,7 @@ impl IvmRuntime {
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
@@ -4271,6 +4392,7 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 value_expr,
                 delimiter,
@@ -4282,6 +4404,7 @@ impl IvmRuntime {
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 value_expr: value_expr.clone(),
                 delimiter: delimiter.clone(),
@@ -4295,6 +4418,7 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 value_expr,
                 order_by,
@@ -4304,6 +4428,7 @@ impl IvmRuntime {
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 value_expr: value_expr.clone(),
                 order_by: order_by.clone(),
@@ -4865,7 +4990,14 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let delta_batches = parts.source.read_files(window.added_files).await?;
+        let delta_batches = project_group_keys(
+            &context,
+            parts.source.read_files(window.added_files).await?,
+            &parts.source.schema,
+            parts.group_keys,
+            parts.group_exprs,
+        )
+        .await?;
         let keyed = !parts.source.primary_keys.is_empty();
         let delta_context = SessionContext::new();
         register_table(
@@ -4876,10 +5008,21 @@ impl IvmRuntime {
         )?;
         let old_batches = if keyed {
             let pk_filters = key_filters(&parts.source.primary_keys, &delta_batches)?;
-            let batches = parts
-                .source
-                .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
-                .await?;
+            let batches = project_group_keys(
+                &context,
+                parts
+                    .source
+                    .read_as_of_filtered(
+                        &self.client,
+                        window.before_timestamp,
+                        pk_filters,
+                    )
+                    .await?,
+                &parts.source.schema,
+                parts.group_keys,
+                parts.group_exprs,
+            )
+            .await?;
             register_table(&delta_context, "old", batches.clone(), &parts.source.schema)?;
             batches
         } else {
@@ -4895,21 +5038,29 @@ impl IvmRuntime {
             .await?
             .collect()
             .await?;
-        let filters = key_filters(parts.group_keys, &groups)?;
+        // A computed group key cannot prune the source reads.
+        let filters = if parts.group_exprs.is_empty() {
+            key_filters(parts.group_keys, &groups)?
+        } else {
+            Vec::new()
+        };
 
         register_table(&context, "delta", delta_batches, &parts.source.schema)?;
         if keyed {
             register_table(&context, "old", old_batches, &parts.source.schema)?;
         }
-        register_table(
+        let src_batches = project_group_keys(
             &context,
-            "src",
             parts
                 .source
                 .read_current_filtered(&self.client, filters.clone())
                 .await?,
             &parts.source.schema,
-        )?;
+            parts.group_keys,
+            parts.group_exprs,
+        )
+        .await?;
+        register_table(&context, "src", src_batches, &parts.source.schema)?;
         register_table(
             &context,
             "mv",
@@ -4992,7 +5143,15 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &parts.source.schema)?;
+        let batches = project_group_keys(
+            &context,
+            baseline.batches,
+            &parts.source.schema,
+            parts.group_keys,
+            parts.group_exprs,
+        )
+        .await?;
+        register_table(&context, "src", batches, &parts.source.schema)?;
         for batch in context
             .sql(&recompute_rebuild_sql(parts, epoch))
             .await?
@@ -9412,7 +9571,14 @@ fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
 
 /// Validate that a recomputed-aggregate view can be maintained.
 fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> {
-    validate_group_keys(parts.source, parts.group_keys, parts.view_id)?;
+    if parts.group_exprs.is_empty() {
+        validate_group_keys(parts.source, parts.group_keys, parts.view_id)?;
+    }
+    group_key_fields(
+        parts.source.schema.as_ref(),
+        parts.group_keys,
+        parts.group_exprs,
+    )?;
     if let Some(filter) = parts.filter {
         let context = SessionContext::new();
         parse_filter(&context, &parts.source.schema, filter)?;

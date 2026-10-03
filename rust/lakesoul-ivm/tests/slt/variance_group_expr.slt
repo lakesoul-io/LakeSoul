@@ -1,0 +1,78 @@
+# VAR_SAMP over a computed group key: the bucket is `v % 10`, so an update can
+# move a row between buckets.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=a,v=30,op=insert; k=4,g=b,v=7,op=insert; k=5,g=b,v=17,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, VAR_SAMP(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IR rowsort
+SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 100.0
+7 50.0
+
+# An update moves a row into another bucket; the old bucket is recomputed.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=45,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, VAR_SAMP(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 200.0
+5 NULL
+7 50.0
+
+# A delete empties a bucket, which keeps a row with a NULL statistic.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, VAR_SAMP(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 NULL
+5 NULL
+7 50.0
+
+# HAVING over the statistic plus a WHERE clause rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, VAR_SAMP(v) FROM __SRC__ WHERE v > 3 GROUP BY bucket HAVING VAR_SAMP(v) > 20
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IR rowsort
+SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+7 50.0
+
+# An update inside the HAVING definition recomputes only the affected bucket.
+statement ok
+/*ivm-append __SRC__: k=6,g=b,v=27,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, VAR_SAMP(v) FROM __SRC__ WHERE v > 3 GROUP BY bucket HAVING VAR_SAMP(v) > 20
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+7 100.0
