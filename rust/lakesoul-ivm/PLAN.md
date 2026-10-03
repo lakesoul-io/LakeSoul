@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`；其它聚合族的 `GROUP BY` 表达式（当前仅 SUM/COUNT 家族） | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
-| 连接/集合 | 其它外连接（RIGHT/FULL/CROSS、非 lookup 的 LEFT JOIN）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 连接/集合 | 其它外连接（RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
@@ -1636,6 +1636,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   左表换键、左表删除、rebuild 一致，逐步与 SQL 左连接对拍）、`left_join.slt`（SQL 入口端到端）、
   analyzer 单测（合法形状与右表非该键拒绝）。
   全量 IVM 套件 36 个测试二进制 / 224 个测试通过。
+
+### 10.35 通用 LEFT JOIN（PR-29）
+
+- **能力**：右侧非唯一的 `LEFT JOIN`（两侧均为 keyed 源）：左行保留**所有**匹配的右行，
+  无匹配时输出一行 NULL 填充的 pair。
+- **spec/typed**：新增 `ViewSpec::LeftJoin` + `LeftJoinView`；schema
+  `left_join_view_schema_for`（与 keyed inner join 同形状，但连接键保留左表可空性、
+  右 payload 与右主键别名可空）。analyzer 的 `JoinType::Left` 分支：右表以连接键为主键时
+  仍走更省的 `LookupJoin`，否则在两侧 keyed 的前提下生成 `LeftJoin`（未 keyed 报错）。
+- **运行时**：pair 键控（`__left_pk_*` + `__right_pk_*`，右主键可空）；刷新时对受影响左行
+  **整体重写**（删除其全部旧 pair 再插入当前左连接的全部 pair），受影响左行 = Δ左表主键 ∪
+  连接键出现在 Δ右表的当前左行；重放时同样的删除+插入天然幂等（无需 epoch 守卫）。
+  `keyed_join_projection` / `keyed_join_output_columns` 抽出 `PairJoin` 复用给 inner 与 left。
+- **验证**：右主键为 NULL 的 pair 在 MV 合并路径可用（与 value-count 状态列可空同理），
+  typed 测试逐步与 SQL 左连接对拍。
+- **测试**：typed `left_join.rs`（多匹配、NULL 连接键、右表更新/删除、新匹配填 NULL、
+  左表换键/删除、rebuild 一致）、`left_join_multi.slt`（SQL 入口端到端）、analyzer 单测
+  （lookup 与通用两种形状 + 未 keyed 拒绝）。
+  全量 IVM 套件 36 个测试二进制 / 226 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

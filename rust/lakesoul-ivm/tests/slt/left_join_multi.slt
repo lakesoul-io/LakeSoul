@@ -1,0 +1,68 @@
+# General LEFT join: the right side is keyed by its own row id, so a left row
+# keeps all of its matches (or a NULL-padded pair).
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=L1,op=insert; id=2,jk=b,lv=L2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=10,jk=a,rv=100,op=insert; rid=11,jk=a,rv=101,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a L1 100 10
+1 a L1 101 11
+2 b L2 NULL NULL
+
+# A right update and delete only touch the referencing left rows.
+statement ok
+/*ivm-append __SRC2__: rid=10,jk=a,rv=110,op=insert; rid=11,jk=a,rv=101,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a L1 110 10
+2 b L2 NULL NULL
+
+# A new match fills the previously NULL-padded pair.
+statement ok
+/*ivm-append __SRC2__: rid=12,jk=b,rv=102,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a L1 110 10
+2 b L2 102 12
+
+# A left delete removes all of its pairs.
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=L1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 b L2 102 12
