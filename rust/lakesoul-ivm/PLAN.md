@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`；其它聚合族的 `GROUP BY` 表达式（当前仅 SUM/COUNT 家族） | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
-| 连接/集合 | 其它外连接（RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 连接/集合 | 其它外连接（RIGHT/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
@@ -1655,6 +1655,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   左表换键/删除、rebuild 一致）、`left_join_multi.slt`（SQL 入口端到端）、analyzer 单测
   （lookup 与通用两种形状 + 未 keyed 拒绝）。
   全量 IVM 套件 36 个测试二进制 / 226 个测试通过。
+
+### 10.36 FULL JOIN（PR-30）
+
+- **能力**：两侧 keyed 的 `FULL JOIN`：匹配 pair + 左右各自未匹配的行（NULL 填充）。
+- **spec/typed**：新增 `ViewSpec::FullJoin` + `FullJoinView`；schema `full_join_view_schema_for`：
+  连接键、两侧 payload 以及**两侧**主键别名都可空（未匹配的右行没有左主键）。
+  `keyed_join_schema_for` 抽出 `JoinSchema::{Inner,Left,Full}` 控制可空性，
+  `keyed_join_projection` 增加 `keys_from_right`（未匹配右行的连接键取自右表）。
+- **运行时**：受影响左行 = Δ左主键 ∪ 连接键出现在 Δ右表的当前左行；受影响右行对称。
+  左路对受影响左行做左连接、右路对受影响右行做右连接，两路 union + distinct 后
+  删除（按左主键或右主键匹配全部旧 pair）再插入；rebuild 用两侧基线同样两路合成。
+  注意 LakeSoul 内部 writer 拒绝**声明为非空**的列出现 NULL——FULL JOIN 的左右主键别名
+  因此在 schema 里必须声明为可空（Arrow nullability）。
+- **测试**：typed `full_join.rs`（左/右未匹配、NULL 连接键、右删除使左行转为未匹配、
+  新左行匹配未匹配右行、左删除、rebuild，逐步与 SQL FULL JOIN 对拍）、`full_join.slt`
+  （SQL 入口端到端）、analyzer 单测（形状 + 未 keyed 拒绝）。
+  全量 IVM 套件 36 个测试二进制 / 229 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

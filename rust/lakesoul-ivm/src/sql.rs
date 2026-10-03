@@ -2273,6 +2273,31 @@ fn analyze_join(
                 ))
             }
         }
+        JoinType::Full => {
+            if !conditions.is_empty() {
+                return Err(unsupported("full join with non-equality conditions"));
+            }
+            if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
+                return Err(unsupported("FULL JOIN needs a primary key on both sources"));
+            }
+            let (left_value, right_value) = join_values(
+                projection,
+                left_alias.as_deref(),
+                right_alias.as_deref(),
+                left,
+                right,
+                &join_keys,
+            )?;
+            Ok(ViewSpec::FullJoin {
+                view_id: request.view_id.clone(),
+                left_table_id: left.table_id.clone(),
+                right_table_id: right.table_id.clone(),
+                output_table_id: request.mv_table_id.clone(),
+                join_keys,
+                left_value,
+                right_value,
+            })
+        }
         JoinType::LeftSemi | JoinType::LeftAnti => {
             let output_columns = match projection {
                 Some(projection) => {
@@ -4677,6 +4702,39 @@ mod tests {
         assert!(
             analyze_multi(
                 "select a.k, a.v, b.v from src a left join dim2 b on a.k = b.k",
+                vec![source_table("src"), unkeyed],
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_full_join() {
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v from src a full join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::FullJoin {
+                view_id: "view_1".to_string(),
+                left_table_id: "table_src".to_string(),
+                right_table_id: "table_src".to_string(),
+                output_table_id: "table_mv".to_string(),
+                join_keys: vec!["k".to_string()],
+                left_value: "v".to_string(),
+                right_value: "v".to_string(),
+            }
+        );
+
+        // Both sides must be keyed.
+        let mut unkeyed = source_table("dim");
+        unkeyed.primary_keys = Vec::new();
+        assert!(
+            analyze_multi(
+                "select a.k, a.v, b.v from src a full join dim b on a.k = b.k",
                 vec![source_table("src"), unkeyed],
             )
             .await
