@@ -2230,22 +2230,6 @@ fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("left join with non-equality conditions"));
             }
-            // The right side is the lookup: keyed by the join keys, so every
-            // left row has at most one match.
-            if right.primary_keys.is_empty() {
-                return Err(unsupported(
-                    "LEFT JOIN needs a right source keyed by the join keys",
-                ));
-            }
-            let mut expected = right.primary_keys.clone();
-            expected.sort();
-            let mut keys = join_keys.clone();
-            keys.sort();
-            if expected != keys {
-                return Err(unsupported(
-                    "LEFT JOIN needs the right source keyed by the join keys",
-                ));
-            }
             let (left_value, right_value) = join_values(
                 projection,
                 left_alias.as_deref(),
@@ -2254,15 +2238,40 @@ fn analyze_join(
                 right,
                 &join_keys,
             )?;
-            Ok(ViewSpec::LookupJoin {
-                view_id: request.view_id.clone(),
-                left_table_id: left.table_id.clone(),
-                right_table_id: right.table_id.clone(),
-                output_table_id: request.mv_table_id.clone(),
-                join_keys,
-                left_value,
-                right_value,
-            })
+            // A right side keyed by the join keys makes every left row match at
+            // most once; otherwise the pairs are kept keyed by both identities.
+            let lookup = {
+                let mut expected = right.primary_keys.clone();
+                expected.sort();
+                let mut keys = join_keys.clone();
+                keys.sort();
+                !expected.is_empty() && expected == keys
+            };
+            if lookup {
+                Ok(ViewSpec::LookupJoin {
+                    view_id: request.view_id.clone(),
+                    left_table_id: left.table_id.clone(),
+                    right_table_id: right.table_id.clone(),
+                    output_table_id: request.mv_table_id.clone(),
+                    join_keys,
+                    left_value,
+                    right_value,
+                })
+            } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
+                Ok(ViewSpec::LeftJoin {
+                    view_id: request.view_id.clone(),
+                    left_table_id: left.table_id.clone(),
+                    right_table_id: right.table_id.clone(),
+                    output_table_id: request.mv_table_id.clone(),
+                    join_keys,
+                    left_value,
+                    right_value,
+                })
+            } else {
+                Err(unsupported(
+                    "LEFT JOIN needs keyed sources (or a right source keyed by the join keys)",
+                ))
+            }
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
             let output_columns = match projection {
@@ -4636,16 +4645,39 @@ mod tests {
             }
         );
 
-        // The right side must be keyed by the join keys.
+        // A right side keyed by something else keeps the pairs keyed by both
+        // row identities.
         let dim = {
             let mut table = source_table("dim");
             table.primary_keys = vec!["v".to_string()];
             table
         };
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from src a left join dim b on a.k = b.k",
+            vec![source_table("src"), dim.clone()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::LeftJoin {
+                view_id: "view_1".to_string(),
+                left_table_id: "table_src".to_string(),
+                right_table_id: "table_dim".to_string(),
+                output_table_id: "table_mv".to_string(),
+                join_keys: vec!["k".to_string()],
+                left_value: "v".to_string(),
+                right_value: "v".to_string(),
+            }
+        );
+
+        // An unkeyed side is rejected.
+        let mut unkeyed = source_table("dim2");
+        unkeyed.primary_keys = Vec::new();
         assert!(
             analyze_multi(
-                "select a.k, a.v, b.v from src a left join dim b on a.k = b.k",
-                vec![source_table("src"), dim],
+                "select a.k, a.v, b.v from src a left join dim2 b on a.k = b.k",
+                vec![source_table("src"), unkeyed],
             )
             .await
             .is_err()
