@@ -1,0 +1,76 @@
+# VAR_POP over a computed value (`v * 2`), which the runtime renders into the
+# recompute SQL.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=a,v=30,op=insert; k=4,g=a,v=40,op=insert; k=5,g=a,v=50,op=insert; k=6,g=b,v=5,op=insert; k=7,g=b,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_POP(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 800.0
+b 100.0
+
+# A delete changes the population variance.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_POP(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 500.0
+b 100.0
+
+# An update of the expression input.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_POP(v * 2) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 275.0
+b 100.0
+
+# HAVING over the statistic.
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_POP(v * 2) FROM __SRC__ GROUP BY g HAVING VAR_POP(v * 2) > 150
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 275.0
+
+# An update inside the HAVING definition recomputes the affected group.
+statement ok
+/*ivm-append __SRC__: k=8,g=a,v=60,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, VAR_POP(v * 2) FROM __SRC__ GROUP BY g HAVING VAR_POP(v * 2) > 150
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR rowsort
+SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 416.0

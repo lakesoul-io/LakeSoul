@@ -1708,6 +1708,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （variance/median/`ARRAY_AGG`/`STRING_AGG`，其中 string/array 同时带计算值与计算键）。
   全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）238 个测试通过、0 失败。
 
+### 10.39 VARIANCE/MEDIAN 参数表达式（PR-33）
+
+- **能力**：`VAR_*`/`STDDEV_*`/`MEDIAN` 的参数可以是标量表达式（此前只接受普通列）。
+  解析复用 SUM/AVG 的 `value_argument`：解析优化器 hoist 的别名、丢弃为数值强制添加的
+  外层 CAST，普通列仍走列形式。
+- **spec/typed**：`ViewSpec::{Variance,Median}` 的 `value_column` 变为 `Option<String>` 并新增
+  `value_expr`；typed view 同步字段 + `with_value_expr`；`RecomputeParts.aggregate_call`
+  用 `aggregate_value_sql` 渲染 `var(...)`/`median(...)`。
+- **schema**：`variance_groups_mv_schema_for` / `median_groups_mv_schema_for` 增加
+  `value_column`/`value_expr` 参数（用 `aggregate_value_type` 推导结果类型），旧函数委托；
+  executor 统一传入两者；刷新/重建前的类型校验同步改为 `aggregate_value_type`。
+- **测试**：analyzer（`var_samp(v * 2)`、`median(v * 2)`、普通列保持列形式）、
+  `variance_expr.slt`（`VAR_POP(v * 2)`：bootstrap/删除/更新/HAVING rebuild/增量）、
+  两个差分 oracle（variance/median 的表达式参数）。
+  全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）242 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

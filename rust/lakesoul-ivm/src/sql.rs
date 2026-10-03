@@ -866,23 +866,6 @@ fn resolve_hoisted(expr: &Expr, hoisted: &HashMap<String, Expr>) -> Expr {
         .unwrap_or_else(|_| expr.clone())
 }
 
-/// The columns the optimizer hoisted into a projection before an aggregate
-/// (alias -> source column), e.g. the `CAST(value AS Float64)` of a variance.
-fn hoisted_columns(plan: &LogicalPlan) -> HashMap<String, String> {
-    let mut columns = HashMap::new();
-    if let LogicalPlan::Projection(projection) = peel(plan) {
-        for expr in &projection.expr {
-            if let Expr::Alias(alias) = expr
-                && let Expr::Cast(cast) = alias.expr.as_ref()
-                && let Expr::Column(column) = cast.expr.as_ref()
-            {
-                columns.insert(alias.name.clone(), column.name.clone());
-            }
-        }
-    }
-    columns
-}
-
 /// The argument of a materialized `SUM`/`AVG`: a plain column or a rendered
 /// scalar expression.
 #[derive(Clone, PartialEq)]
@@ -926,7 +909,6 @@ fn analyze_aggregate(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let hoisted = hoisted_columns(&aggregate.input);
     let hoisted_exprs = hoisted_expressions(&aggregate.input);
     // The optimizer rewrites a single DISTINCT aggregate into an inner
     // grouping over `(group keys, value)` and an outer `count(alias)` /
@@ -999,8 +981,8 @@ fn analyze_aggregate(
     let mut count_column: Option<String> = None;
     let mut sum: Option<AggValue> = None;
     let mut avg: Option<AggValue> = None;
-    let mut variance: Option<(VarianceKind, String)> = None;
-    let mut median: Option<String> = None;
+    let mut variance: Option<(VarianceKind, AggValue)> = None;
+    let mut median: Option<AggValue> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
     // `(value column, rendered aggregate ordering)`.
@@ -1214,8 +1196,12 @@ fn analyze_aggregate(
                     "stddev_pop" => VarianceKind::StddevPop,
                     _ => VarianceKind::VarSamp,
                 };
-                let raw = recomputed_argument(&function.params.args)?;
-                let value = hoisted.get(&raw).cloned().unwrap_or(raw);
+                let [arg] = function.params.args.as_slice() else {
+                    return Err(unsupported(
+                        "variance aggregates take exactly one argument",
+                    ));
+                };
+                let value = value_argument(arg, &hoisted_exprs, true)?;
                 variance = Some((statistic, value));
                 aggregate_filters.push((name, function_filter, false));
             }
@@ -1230,8 +1216,11 @@ fn analyze_aggregate(
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
-                let raw = recomputed_argument(&function.params.args)?;
-                median = Some(hoisted.get(&raw).cloned().unwrap_or(raw));
+                let [arg] = function.params.args.as_slice() else {
+                    return Err(unsupported("median takes exactly one argument"));
+                };
+                let value = value_argument(arg, &hoisted_exprs, true)?;
+                median = Some(value);
                 aggregate_filters.push((name, function_filter, false));
             }
             ("string_agg", false) => {
@@ -1436,14 +1425,19 @@ fn analyze_aggregate(
     };
     let average = avg.is_some();
     let value = sum.or(avg);
-    let spec = if let Some((statistic, variance_column)) = variance {
+    let spec = if let Some((statistic, value)) = variance {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
         ViewSpec::Variance {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             group_exprs,
-            value_column: variance_column,
+            value_column,
+            value_expr,
             statistic,
             filter,
             having,
@@ -1482,14 +1476,19 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if let Some(median_column) = median {
+    } else if let Some(value) = median {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
         ViewSpec::Median {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             group_exprs,
-            value_column: median_column,
+            value_column,
+            value_expr,
             filter,
             having,
         }
@@ -1999,25 +1998,6 @@ fn positive_integer_arg(args: &[Expr], what: &str) -> Result<String> {
         return Err(unsupported(format!("{what} must be positive")));
     }
     Ok(value.to_string())
-}
-
-/// The value column of a recomputed aggregate (variance family or median):
-/// the optimizer either casts the column inline (`var(CAST(v AS Float64))`)
-/// or hoists the cast into a projection (`var(__common_expr_1 AS v)`), so
-/// both wrappers are unwrapped.
-fn recomputed_argument(args: &[Expr]) -> Result<String> {
-    let [arg] = args else {
-        return Err(unsupported("aggregates take exactly one column argument"));
-    };
-    let inner = match arg {
-        Expr::Alias(alias) => alias.expr.as_ref(),
-        other => other,
-    };
-    let inner = match inner {
-        Expr::Cast(cast) => cast.expr.as_ref(),
-        other => other,
-    };
-    column_name(inner).ok_or_else(|| unsupported("variance values must be plain columns"))
 }
 
 /// An integer literal of any width.
@@ -3324,7 +3304,7 @@ mod tests {
         };
         assert_eq!(group_keys, vec!["bucket".to_string()]);
         assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
-        assert_eq!(value_column, "v");
+        assert_eq!(value_column.as_deref(), Some("v"));
 
         let analyzed =
             analyze("select v % 10 as bucket, median(v) from src group by bucket")
@@ -3389,6 +3369,54 @@ mod tests {
         };
         assert_eq!(group_keys, vec!["g".to_string(), "bucket".to_string()]);
         assert_eq!(group_exprs, vec!["g".to_string(), "(v % 10)".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn analyzes_recompute_value_expressions() {
+        // Variance/median arguments may be scalar expressions; the optimizer
+        // numeric-coercion cast is dropped like for SUM/AVG.
+        let analyzed = analyze("select g, var_samp(v * 2) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::Variance {
+            value_column,
+            value_expr,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a variance spec");
+        };
+        assert_eq!(value_column, None);
+        assert_eq!(value_expr.as_deref(), Some("(v * 2)"));
+
+        let analyzed = analyze("select g, median(v * 2) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::Median {
+            value_column,
+            value_expr,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a median spec");
+        };
+        assert_eq!(value_column, None);
+        assert_eq!(value_expr.as_deref(), Some("(v * 2)"));
+
+        // A plain column keeps the column form.
+        let analyzed = analyze("select g, stddev_samp(v) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::Variance {
+            value_column,
+            value_expr,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a variance spec");
+        };
+        assert_eq!(value_column.as_deref(), Some("v"));
+        assert_eq!(value_expr, None);
     }
 
     #[tokio::test]
@@ -3844,7 +3872,7 @@ mod tests {
                 panic!("expected a variance spec");
             };
             assert_eq!(got, statistic);
-            assert_eq!(value_column, "v");
+            assert_eq!(value_column.as_deref(), Some("v"));
         }
 
         // WHERE and HAVING.

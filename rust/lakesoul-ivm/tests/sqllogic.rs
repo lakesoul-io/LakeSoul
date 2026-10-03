@@ -1061,11 +1061,30 @@ fn sqllogic_variance_group_expression() {
             &source_schema(),
             &group_keys(&["bucket"]),
             &group_keys(&["v % 10"]),
-            "v",
+            Some("v"),
+            None,
             VarianceKind::VarSamp,
         )
         .unwrap(),
         group_keys(&["bucket"]),
+    );
+}
+
+#[test]
+fn sqllogic_variance_expression() {
+    run_script_for_mv(
+        "varianceexpr",
+        include_str!("slt/variance_expr.slt"),
+        variance_groups_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &[],
+            None,
+            Some("v * 2"),
+            VarianceKind::VarPop,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
     );
 }
 

@@ -920,7 +920,8 @@ async fn oracle_median_group_expr_matches_full_recompute() {
             &source_schema(),
             &["bucket".to_string()],
             &["v % 10".to_string()],
-            "v",
+            Some("v"),
+            None,
         )
         .unwrap(),
         vec!["bucket".to_string()],
@@ -929,6 +930,54 @@ async fn oracle_median_group_expr_matches_full_recompute() {
         "SELECT v % 10 AS bucket, MEDIAN(v) AS median_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
         "SELECT bucket, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_variance_expr_matches_full_recompute() {
+    // The variance argument may be a rendered expression.
+    run_oracle(
+        "varianceexpr",
+        1,
+        variance_groups_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            None,
+            Some("v * 2"),
+            VarianceKind::VarSamp,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, VAR_SAMP(v * 2) AS variance_v FROM __SRC__ WHERE v > 30 \
+         GROUP BY g",
+        "SELECT g, VAR_SAMP(v * 2) AS variance_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_median_expr_matches_full_recompute() {
+    // The median argument may be a rendered expression.
+    run_oracle(
+        "medianexpr",
+        1,
+        median_groups_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            None,
+            Some("v * 2"),
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, MEDIAN(v * 2) AS median_v FROM __SRC__ WHERE v > 30 GROUP BY g",
+        "SELECT g, MEDIAN(v * 2) AS median_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
@@ -981,7 +1030,8 @@ async fn oracle_variance_group_expr_matches_full_recompute() {
             &source_schema(),
             &["bucket".to_string()],
             &["v % 10".to_string()],
-            "v",
+            Some("v"),
+            None,
             VarianceKind::VarSamp,
         )
         .unwrap(),
