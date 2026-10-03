@@ -539,13 +539,15 @@ fn expected_mv_schema(
             group_keys,
             group_exprs,
             value_column,
+            value_expr,
             statistic,
             ..
         } => variance_groups_mv_schema_for(
             &find_table(tables, source_table_id)?.schema,
             group_keys,
             group_exprs,
-            value_column,
+            value_column.as_deref(),
+            value_expr.as_deref(),
             *statistic,
         )?,
         ViewSpec::StringAgg {
@@ -581,12 +583,14 @@ fn expected_mv_schema(
             group_keys,
             group_exprs,
             value_column,
+            value_expr,
             ..
         } => median_groups_mv_schema_for(
             &find_table(tables, source_table_id)?.schema,
             group_keys,
             group_exprs,
-            value_column,
+            value_column.as_deref(),
+            value_expr.as_deref(),
         )?,
         ViewSpec::MinMax {
             source_table_id,

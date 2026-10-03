@@ -452,8 +452,12 @@ pub enum ViewSpec {
         /// means every key is a plain column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         group_exprs: Vec<String>,
-        /// The value column.
-        value_column: String,
+        /// The value column; `None` when the argument is an expression.
+        #[serde(default)]
+        value_column: Option<String>,
+        /// The rendered value expression.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
         /// Which statistic is maintained.
         statistic: VarianceKind,
         /// An optional filter the contributing rows must satisfy.
@@ -481,8 +485,12 @@ pub enum ViewSpec {
         /// means every key is a plain column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         group_exprs: Vec<String>,
-        /// The value column.
-        value_column: String,
+        /// The value column; `None` when the argument is an expression.
+        #[serde(default)]
+        value_column: Option<String>,
+        /// The rendered value expression.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -2019,8 +2027,10 @@ pub struct VarianceView {
     /// The rendered group expressions, parallel to
     /// [`Self::group_keys`]; empty means every key is a plain column.
     pub group_exprs: Vec<String>,
-    /// The value column.
-    pub value_column: String,
+    /// The value column; `None` when the argument is an expression.
+    pub value_column: Option<String>,
+    /// The rendered value expression.
+    pub value_expr: Option<String>,
     /// Which statistic is maintained.
     pub statistic: VarianceKind,
     /// An optional filter the contributing rows must satisfy.
@@ -2066,7 +2076,8 @@ impl VarianceView {
             mv,
             group_keys,
             group_exprs: Vec::new(),
-            value_column: value_column.into(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
             statistic: kind,
             filter: None,
             having: None,
@@ -2086,6 +2097,13 @@ impl VarianceView {
         self
     }
 
+    /// Aggregate over a rendered scalar expression (`VAR_SAMP(v * 2)`).
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Variance {
             view_id: self.view_id.clone(),
@@ -2094,6 +2112,7 @@ impl VarianceView {
             group_keys: self.group_keys.clone(),
             group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
             statistic: self.statistic,
             filter: self.filter.clone(),
             having: self.having.clone(),
@@ -2109,18 +2128,28 @@ pub fn variance_mv_schema_for(
     value_column: &str,
     kind: VarianceKind,
 ) -> Result<SchemaRef> {
-    variance_groups_mv_schema_for(source_schema, group_keys, &[], value_column, kind)
+    variance_groups_mv_schema_for(
+        source_schema,
+        group_keys,
+        &[],
+        Some(value_column),
+        None,
+        kind,
+    )
 }
 
-/// The schema of a [`VarianceView`] materialized view with group expressions.
+/// The schema of a [`VarianceView`] materialized view with optional group and
+/// value expressions.
 pub fn variance_groups_mv_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
     group_exprs: &[String],
-    value_column: &str,
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
     kind: VarianceKind,
 ) -> Result<SchemaRef> {
-    variance_result_type(&field_type(source_schema, value_column)?)?;
+    let value_type = aggregate_value_type(source_schema, value_column, value_expr)?;
+    variance_result_type(&value_type)?;
     let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(
         kind.column_name(),
@@ -2195,8 +2224,10 @@ pub struct MedianView {
     /// The rendered group expressions, parallel to
     /// [`Self::group_keys`]; empty means every key is a plain column.
     pub group_exprs: Vec<String>,
-    /// The value column.
-    pub value_column: String,
+    /// The value column; `None` when the argument is an expression.
+    pub value_column: Option<String>,
+    /// The rendered value expression.
+    pub value_expr: Option<String>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
@@ -2237,7 +2268,8 @@ impl MedianView {
             mv,
             group_keys,
             group_exprs: Vec::new(),
-            value_column: value_column.into(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
             filter: None,
             having: None,
             refresh_interval_ms: 0,
@@ -2256,6 +2288,13 @@ impl MedianView {
         self
     }
 
+    /// Aggregate over a rendered scalar expression (`MEDIAN(v * 2)`).
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Median {
             view_id: self.view_id.clone(),
@@ -2264,6 +2303,7 @@ impl MedianView {
             group_keys: self.group_keys.clone(),
             group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
             filter: self.filter.clone(),
             having: self.having.clone(),
         }
@@ -2277,17 +2317,20 @@ pub fn median_mv_schema_for(
     group_keys: &[String],
     value_column: &str,
 ) -> Result<SchemaRef> {
-    median_groups_mv_schema_for(source_schema, group_keys, &[], value_column)
+    median_groups_mv_schema_for(source_schema, group_keys, &[], Some(value_column), None)
 }
 
-/// The schema of a [`MedianView`] materialized view with group expressions.
+/// The schema of a [`MedianView`] materialized view with optional group and
+/// value expressions.
 pub fn median_groups_mv_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
     group_exprs: &[String],
-    value_column: &str,
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
 ) -> Result<SchemaRef> {
-    let value_type = median_result_type(&field_type(source_schema, value_column)?)?;
+    let value_type = aggregate_value_type(source_schema, value_column, value_expr)?;
+    let value_type = median_result_type(&value_type)?;
     let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(IVM_MEDIAN_COLUMN, value_type, true)));
     fields.push(Arc::new(Field::new(
@@ -2333,7 +2376,10 @@ impl VarianceView {
             aggregate_call: format!(
                 "{}({})",
                 self.statistic.sql_name(),
-                quote_ident(&self.value_column)
+                aggregate_value_sql(
+                    self.value_column.as_deref(),
+                    self.value_expr.as_deref()
+                )
             ),
             column: self.statistic.column_name().to_string(),
             filter: self.filter.as_deref(),
@@ -2350,7 +2396,13 @@ impl MedianView {
             mv: &self.mv,
             group_keys: &self.group_keys,
             group_exprs: &self.group_exprs,
-            aggregate_call: format!("median({})", quote_ident(&self.value_column)),
+            aggregate_call: format!(
+                "median({})",
+                aggregate_value_sql(
+                    self.value_column.as_deref(),
+                    self.value_expr.as_deref()
+                )
+            ),
             column: IVM_MEDIAN_COLUMN.to_string(),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
@@ -4352,6 +4404,7 @@ impl IvmRuntime {
                 group_keys,
                 group_exprs,
                 value_column,
+                value_expr,
                 statistic,
                 filter,
                 having,
@@ -4362,6 +4415,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
                 statistic: *statistic,
                 filter: filter.clone(),
                 having: having.clone(),
@@ -4374,6 +4428,7 @@ impl IvmRuntime {
                 group_keys,
                 group_exprs,
                 value_column,
+                value_expr,
                 filter,
                 having,
             } => SpecView::Median(MedianView {
@@ -4383,6 +4438,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
                 refresh_interval_ms,
@@ -4861,7 +4917,11 @@ impl IvmRuntime {
     /// by the group keys, exactly like the value-count refresh).
     pub async fn refresh_variance(&self, view: &VarianceView) -> Result<Option<i64>> {
         self.register_variance_view(view).await?;
-        variance_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        variance_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.refresh_recomputed(&parts).await
@@ -4870,7 +4930,11 @@ impl IvmRuntime {
     /// Refresh a median view.
     pub async fn refresh_median(&self, view: &MedianView) -> Result<Option<i64>> {
         self.register_median_view(view).await?;
-        median_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        median_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.refresh_recomputed(&parts).await
@@ -5092,7 +5156,11 @@ impl IvmRuntime {
     /// Rebuild a variance view from the full source state.
     pub async fn rebuild_variance(&self, view: &VarianceView) -> Result<i64> {
         self.register_variance_view(view).await?;
-        variance_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        variance_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.rebuild_recomputed(&parts).await
@@ -5101,7 +5169,11 @@ impl IvmRuntime {
     /// Rebuild a median view from the full source state.
     pub async fn rebuild_median(&self, view: &MedianView) -> Result<i64> {
         self.register_median_view(view).await?;
-        median_result_type(&field_type(&view.source.schema, &view.value_column)?)?;
+        median_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.rebuild_recomputed(&parts).await
