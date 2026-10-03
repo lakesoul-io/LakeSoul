@@ -1,0 +1,83 @@
+# LEFT lookup join: every fact row keeps its referenced dimension value (or
+# NULL); the dimension is keyed by the join key.
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=L1,op=insert; id=2,jk=b,lv=L2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: jk=a,rv=10,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITTI rowsort
+SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a L1 10
+2 b L2 NULL
+
+# A new dimension row fills the previously NULL match.
+statement ok
+/*ivm-append __SRC2__: jk=b,rv=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTI rowsort
+SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a L1 10
+2 b L2 20
+
+# A dimension delete resets the referencing facts to NULL.
+statement ok
+/*ivm-append __SRC2__: jk=a,rv=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTI rowsort
+SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a L1 NULL
+2 b L2 20
+
+# A fact join-key change moves it to another match.
+statement ok
+/*ivm-append __SRC__: id=1,jk=b,lv=L1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTI rowsort
+SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 b L1 20
+2 b L2 20
+
+# A fact delete removes its row.
+statement ok
+/*ivm-append __SRC__: id=2,jk=b,lv=L2,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTI rowsort
+SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 b L1 20

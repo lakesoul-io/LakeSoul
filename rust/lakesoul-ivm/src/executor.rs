@@ -35,9 +35,9 @@ use crate::metadata::StateRole;
 use crate::runtime::{
     IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, array_agg_expr_mv_schema_for,
     array_agg_mv_schema_for, distinct_agg_mv_schema_for, join_view_schema_for,
-    keyed_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    keyed_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_mv_schema_for, row_expr_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     value_count_state_expr_schema_for, value_count_state_schema_for,
     variance_mv_schema_for, window_columns_mv_schema_for,
@@ -472,6 +472,26 @@ fn expected_mv_schema(
                 value_column.as_deref(),
                 value_expr.as_deref(),
                 *average,
+            )?
+        }
+        ViewSpec::LookupJoin {
+            left_table_id,
+            right_table_id,
+            join_keys,
+            left_value,
+            right_value,
+            ..
+        } => {
+            let left = find_table(tables, left_table_id)?;
+            let right = find_table(tables, right_table_id)?;
+            lookup_join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &left.primary_keys,
+                &right.primary_keys,
+                join_keys,
+                left_value,
+                right_value,
             )?
         }
         ViewSpec::Variance {
