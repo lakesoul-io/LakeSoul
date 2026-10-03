@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`；其它聚合族的 `GROUP BY` 表达式（当前仅 SUM/COUNT 家族） | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
-| 连接/集合 | 其它外连接（RIGHT/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 连接/集合 | CROSS join；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
@@ -1672,6 +1672,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   新左行匹配未匹配右行、左删除、rebuild，逐步与 SQL FULL JOIN 对拍）、`full_join.slt`
   （SQL 入口端到端）、analyzer 单测（形状 + 未 keyed 拒绝）。
   全量 IVM 套件 36 个测试二进制 / 229 个测试通过。
+
+### 10.37 RIGHT JOIN（PR-31）
+
+- **能力**：`A RIGHT JOIN B` 与 `B LEFT JOIN A` 等价，本 PR 在分析器直接把两侧交换后复用
+  `LookupJoin` / `LeftJoin`：
+  - 原左表以连接键为主键（lookup 唯一）→ 交换后仍走 `LookupJoin`；
+  - 否则两侧 keyed → 交换后走 pair-keyed `LeftJoin`（未匹配的右侧→左主键别名保留、原左表
+    主键别名可空）。
+- **约定**：输出列仍按"保留侧在左"的方向命名（`left_value` = 被保留侧 payload）；
+  schema/运行时零新增（复用 PR-28/29 的两种左连接实现）。
+- **analyzer**：`JoinType::Left`/`Right` 共用 `analyze_outer_join(kind, ...)` 助手；
+  非等值条件、未 keyed 明确报错。
+- **测试**：analyzer 单测（lookup 与 pair-keyed 两种交换结果）、`right_join.slt`
+  （维度行保留、同一维度多事实、事实删除/换键、NULL 填充，SQL 入口端到端）。
+  全量 IVM 套件 36 个测试二进制 / 231 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

@@ -1,0 +1,69 @@
+# RIGHT join: every right (dimension) row keeps its referencing left rows, or
+# a NULL-padded pair.
+
+statement ok
+/*ivm-append __SRC2__: jk=a,rv=100,op=insert; jk=b,rv=101,op=insert*/
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=L1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l RIGHT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TITI rowsort
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100 L1 1
+b 101 NULL NULL
+
+# A second fact row referencing the same dimension row adds a pair.
+statement ok
+/*ivm-append __SRC__: id=2,jk=a,lv=L2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l RIGHT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TITI rowsort
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100 L1 1
+a 100 L2 2
+b 101 NULL NULL
+
+# A fact delete removes its pair.
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=L1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l RIGHT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TITI rowsort
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100 L2 2
+b 101 NULL NULL
+
+# A fact join-key change moves its pair to the other dimension row.
+statement ok
+/*ivm-append __SRC__: id=2,jk=b,lv=L2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l RIGHT JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TITI rowsort
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100 NULL NULL
+b 101 L2 2

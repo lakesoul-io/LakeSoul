@@ -2230,48 +2230,32 @@ fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("left join with non-equality conditions"));
             }
-            let (left_value, right_value) = join_values(
+            analyze_outer_join(
+                "LEFT",
                 projection,
-                left_alias.as_deref(),
-                right_alias.as_deref(),
                 left,
                 right,
-                &join_keys,
-            )?;
-            // A right side keyed by the join keys makes every left row match at
-            // most once; otherwise the pairs are kept keyed by both identities.
-            let lookup = {
-                let mut expected = right.primary_keys.clone();
-                expected.sort();
-                let mut keys = join_keys.clone();
-                keys.sort();
-                !expected.is_empty() && expected == keys
-            };
-            if lookup {
-                Ok(ViewSpec::LookupJoin {
-                    view_id: request.view_id.clone(),
-                    left_table_id: left.table_id.clone(),
-                    right_table_id: right.table_id.clone(),
-                    output_table_id: request.mv_table_id.clone(),
-                    join_keys,
-                    left_value,
-                    right_value,
-                })
-            } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
-                Ok(ViewSpec::LeftJoin {
-                    view_id: request.view_id.clone(),
-                    left_table_id: left.table_id.clone(),
-                    right_table_id: right.table_id.clone(),
-                    output_table_id: request.mv_table_id.clone(),
-                    join_keys,
-                    left_value,
-                    right_value,
-                })
-            } else {
-                Err(unsupported(
-                    "LEFT JOIN needs keyed sources (or a right source keyed by the join keys)",
-                ))
+                left_alias.as_deref(),
+                right_alias.as_deref(),
+                join_keys,
+                request,
+            )
+        }
+        JoinType::Right => {
+            if !conditions.is_empty() {
+                return Err(unsupported("right join with non-equality conditions"));
             }
+            // `A RIGHT JOIN B` keeps every row of `B`, i.e. `B LEFT JOIN A`.
+            analyze_outer_join(
+                "RIGHT",
+                projection,
+                right,
+                left,
+                right_alias.as_deref(),
+                left_alias.as_deref(),
+                join_keys,
+                request,
+            )
         }
         JoinType::Full => {
             if !conditions.is_empty() {
@@ -2438,6 +2422,56 @@ fn union_branch(
 }
 
 /// The table of one join input, plus its alias when it has one.
+/// An outer join that keeps every row of `left`: a lookup join when the right
+/// side is keyed by the join keys (at most one match per left row), otherwise
+/// a pair-keyed left join over two keyed sources.
+#[allow(clippy::too_many_arguments)]
+fn analyze_outer_join(
+    kind: &str,
+    projection: Option<&Projection>,
+    left: &IvmTable,
+    right: &IvmTable,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    join_keys: Vec<String>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let (left_value, right_value) =
+        join_values(projection, left_alias, right_alias, left, right, &join_keys)?;
+    let lookup = {
+        let mut expected = right.primary_keys.clone();
+        expected.sort();
+        let mut keys = join_keys.clone();
+        keys.sort();
+        !expected.is_empty() && expected == keys
+    };
+    if lookup {
+        Ok(ViewSpec::LookupJoin {
+            view_id: request.view_id.clone(),
+            left_table_id: left.table_id.clone(),
+            right_table_id: right.table_id.clone(),
+            output_table_id: request.mv_table_id.clone(),
+            join_keys,
+            left_value,
+            right_value,
+        })
+    } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
+        Ok(ViewSpec::LeftJoin {
+            view_id: request.view_id.clone(),
+            left_table_id: left.table_id.clone(),
+            right_table_id: right.table_id.clone(),
+            output_table_id: request.mv_table_id.clone(),
+            join_keys,
+            left_value,
+            right_value,
+        })
+    } else {
+        Err(unsupported(format!(
+            "{kind} JOIN needs keyed sources (or a right source keyed by the join keys)"
+        )))
+    }
+}
+
 fn join_input<'a>(
     plan: &'a LogicalPlan,
     tables: &'a HashMap<String, IvmTable>,
@@ -4707,6 +4741,53 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_right_join() {
+        // `A RIGHT JOIN B` keeps B's rows: the swapped lookup join.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from src a right join dim b on a.k = b.k",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::LookupJoin {
+                view_id: "view_1".to_string(),
+                left_table_id: "table_dim".to_string(),
+                right_table_id: "table_src".to_string(),
+                output_table_id: "table_mv".to_string(),
+                join_keys: vec!["k".to_string()],
+                left_value: "v".to_string(),
+                right_value: "v".to_string(),
+            }
+        );
+
+        // When the swapped right side is not keyed by the join keys the
+        // pair-keyed left join is used.
+        let dim = {
+            let mut table = source_table("dim");
+            table.primary_keys = vec!["v".to_string()];
+            table
+        };
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from dim b right join src a on a.k = b.k",
+            vec![source_table("src"), dim],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin {
+            left_table_id,
+            right_table_id,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left join spec");
+        };
+        assert_eq!(left_table_id, "table_src");
+        assert_eq!(right_table_id, "table_dim");
     }
 
     #[tokio::test]
