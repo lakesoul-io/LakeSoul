@@ -263,6 +263,10 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The summed column; `None` means `SUM(0)`, i.e. count only.
         value_column: Option<String>,
         /// The summed expression, when the argument is not a plain column
@@ -621,6 +625,9 @@ pub struct SumCountView {
     pub mv: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The summed column; `None` counts rows only.
     pub value_column: Option<String>,
     /// The summed expression when the argument is not a plain column
@@ -659,6 +666,7 @@ impl SumCountView {
             source,
             mv,
             group_keys: vec![group_key.into()],
+            group_exprs: Vec::new(),
             value_column,
             value_expr: None,
             count_column: None,
@@ -683,6 +691,7 @@ impl SumCountView {
             source,
             mv,
             group_keys,
+            group_exprs: Vec::new(),
             value_column,
             value_expr: None,
             count_column: None,
@@ -713,6 +722,13 @@ impl SumCountView {
         self
     }
 
+    /// Group by rendered expressions parallel to the group keys
+    /// (`SELECT v % 10 AS bucket ... GROUP BY bucket`).
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
     /// Materialize the non-NULL count of `count_column` (a `COUNT(column)`
     /// aggregate).
     pub fn with_count_column(mut self, count_column: impl Into<String>) -> Self {
@@ -740,6 +756,7 @@ impl SumCountView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             value_expr: self.value_expr.clone(),
             count_column: self.count_column.clone(),
@@ -3073,6 +3090,66 @@ fn key_fields(source_schema: &Schema, group_keys: &[String]) -> Result<Vec<Arc<F
 
 /// The schema of a `SUM`/`COUNT` materialized view, deriving the key and sum
 /// types from the source schema.
+/// The materialized key fields of a view: plain source columns or planned
+/// group expressions.
+fn group_key_fields(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+) -> Result<Vec<arrow_schema::FieldRef>> {
+    if group_exprs.is_empty() {
+        return key_fields(source_schema, group_keys);
+    }
+    if group_exprs.len() != group_keys.len() {
+        return Err(report!("the group needs one expression per key column"));
+    }
+    group_keys
+        .iter()
+        .zip(group_exprs)
+        .map(|(key, expression)| {
+            if source_schema.field_with_name(key).is_ok() {
+                return Err(report!(
+                    "a computed group key must not reuse the source column {key}"
+                ));
+            }
+            let (data_type, nullable) = expression_type(source_schema, expression)?;
+            Ok(Arc::new(Field::new(key, data_type, nullable)) as arrow_schema::FieldRef)
+        })
+        .collect()
+}
+
+/// The schema of a `SUM`/`COUNT` view with optional group and value
+/// expressions.
+#[allow(clippy::too_many_arguments)]
+pub fn sum_count_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+    average: bool,
+) -> Result<SchemaRef> {
+    let key_fields = group_key_fields(source_schema, group_keys, group_exprs)?;
+    let sum_type = match (value_expr, value_column) {
+        (Some(value_expr), _) => {
+            let (data_type, _) = expression_type(source_schema, value_expr)?;
+            if average {
+                avg_result_type(&data_type)?;
+            }
+            sum_result_type(&data_type)?
+        }
+        (None, Some(column)) => {
+            let value_type = field_type(source_schema, column)?;
+            if average {
+                avg_result_type(&value_type)?;
+            }
+            sum_result_type(&value_type)?
+        }
+        (None, None) => DataType::Int64,
+    };
+    sum_count_schema_for(key_fields, sum_type, average)
+}
+
 pub fn sum_count_mv_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
@@ -3082,7 +3159,7 @@ pub fn sum_count_mv_schema_for(
         Some(column) => sum_result_type(&field_type(source_schema, column)?)?,
         None => DataType::Int64,
     };
-    sum_count_schema_for(source_schema, group_keys, sum_type, false)
+    sum_count_schema_for(key_fields(source_schema, group_keys)?, sum_type, false)
 }
 
 /// The schema of a `SUM`/`COUNT` view whose value is a rendered expression
@@ -3098,18 +3175,16 @@ pub fn sum_expr_mv_schema_for(
     if average {
         avg_result_type(&data_type)?;
     }
-    sum_count_schema_for(source_schema, group_keys, sum_type, average)
+    sum_count_schema_for(key_fields(source_schema, group_keys)?, sum_type, average)
 }
 
 /// The schema of a `SUM`/`COUNT` (`average` adds the AVG column) view given
 /// the summed type.
 fn sum_count_schema_for(
-    source_schema: &Schema,
-    group_keys: &[String],
+    mut fields: Vec<arrow_schema::FieldRef>,
     sum_type: DataType,
     average: bool,
 ) -> Result<SchemaRef> {
-    let mut fields = key_fields(source_schema, group_keys)?;
     // An all-NULL group sums to NULL.
     fields.push(Arc::new(Field::new(IVM_SUM_COLUMN, sum_type, true)));
     fields.push(Arc::new(Field::new(
@@ -3153,7 +3228,7 @@ pub fn avg_mv_schema_for(
     let value_type = field_type(source_schema, value_column)?;
     avg_result_type(&value_type)?;
     let sum_type = sum_result_type(&value_type)?;
-    sum_count_schema_for(source_schema, group_keys, sum_type, true)
+    sum_count_schema_for(key_fields(source_schema, group_keys)?, sum_type, true)
 }
 
 /// The schema of a value-count state table, deriving the key and value types
@@ -3371,6 +3446,7 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 value_expr,
                 count_column,
@@ -3383,6 +3459,7 @@ impl IvmRuntime {
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 value_expr: value_expr.clone(),
                 count_column: count_column.clone(),
@@ -3820,7 +3897,14 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let delta_batches = view.source.read_files(window.added_files).await?;
+        let delta_batches = project_group_keys(
+            &context,
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )
+        .await?;
         let keyed = !view.source.primary_keys.is_empty();
         // The window only touches the delta groups (plus the previous groups
         // of the changed rows), so the old state and the MV are read pruned to
@@ -3834,10 +3918,20 @@ impl IvmRuntime {
         )?;
         let old_batches = if keyed {
             let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
-            let batches = view
-                .source
-                .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
-                .await?;
+            let batches = project_group_keys(
+                &context,
+                view.source
+                    .read_as_of_filtered(
+                        &self.client,
+                        window.before_timestamp,
+                        pk_filters,
+                    )
+                    .await?,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )
+            .await?;
             register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
             batches
         } else {
@@ -3853,21 +3947,29 @@ impl IvmRuntime {
             .await?
             .collect()
             .await?;
-        let filters = key_filters(&view.group_keys, &groups)?;
+        // A computed group key cannot prune the source reads.
+        let filters = if view.group_exprs.is_empty() {
+            key_filters(&view.group_keys, &groups)?
+        } else {
+            Vec::new()
+        };
 
         register_table(&context, "delta", delta_batches, &view.source.schema)?;
         if keyed {
             register_table(&context, "old", old_batches, &view.source.schema)?;
         }
         if view.having.is_some() {
-            register_table(
+            let batches = project_group_keys(
                 &context,
-                "src",
                 view.source
                     .read_current_filtered(&self.client, filters.clone())
                     .await?,
                 &view.source.schema,
-            )?;
+                &view.group_keys,
+                &view.group_exprs,
+            )
+            .await?;
+            register_table(&context, "src", batches, &view.source.schema)?;
         }
         register_table(
             &context,
@@ -4606,7 +4708,15 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let batches = project_group_keys(
+            &context,
+            baseline.batches,
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )
+        .await?;
+        register_table(&context, "src", batches, &view.source.schema)?;
         let rebuild_keyed = !view.source.primary_keys.is_empty();
         for batch in context
             .sql(&sum_count_rebuild_sql(view, rebuild_keyed, epoch))
@@ -6984,6 +7094,41 @@ fn value_count_value_type(view: &ValueCountView<'_>) -> Result<DataType> {
     }
 }
 
+/// Project the computed group keys into a batch set, so the aggregate SQL can
+/// group by the keys by name.
+async fn project_group_keys(
+    context: &SessionContext,
+    batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+    group_keys: &[String],
+    group_exprs: &[String],
+) -> Result<Vec<RecordBatch>> {
+    if group_exprs.is_empty() {
+        return Ok(batches);
+    }
+    let df_schema = DFSchema::try_from(schema.as_ref().clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    let mut frame = dataframe(context, batches, schema)?;
+    for (key, expression) in group_keys.iter().zip(group_exprs) {
+        let expression = context
+            .state()
+            .create_logical_expr(expression, &df_schema)
+            .map_err(|error| {
+                report!("invalid group expression {expression:?}: {error}")
+            })?;
+        frame = frame.with_column(key.as_str(), expression)?;
+    }
+    let projected_schema = Arc::new(frame.schema().as_arrow().clone());
+    let mut batches = frame
+        .collect()
+        .await
+        .map_err(|error| report!("projecting group keys: {error}"))?;
+    if batches.is_empty() {
+        batches.push(RecordBatch::new_empty(projected_schema));
+    }
+    Ok(batches)
+}
+
 /// The rendered SQL of the summed value of a `SUM`/`COUNT` view: a quoted
 /// column or a stored expression.
 fn sum_count_value_sql(view: &SumCountView) -> Option<String> {
@@ -6997,7 +7142,10 @@ fn sum_count_value_sql(view: &SumCountView) -> Option<String> {
 /// Validate a `SUM`/`COUNT` view: the group keys, the value/count columns and
 /// the `HAVING` predicate.
 fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
-    validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+    if view.group_exprs.is_empty() {
+        validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
+    }
+    group_key_fields(&view.source.schema, &view.group_keys, &view.group_exprs)?;
     validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
     if let Some(value_expr) = &view.value_expr {
         if view.value_column.is_some() {

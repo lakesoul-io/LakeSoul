@@ -34,9 +34,10 @@ use lakesoul_ivm::{
     WindowFunction, array_agg_mv_schema_for, avg_mv_schema_for,
     distinct_agg_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -676,6 +677,24 @@ fn sqllogic_aggregate_filter() {
         include_str!("slt/aggregate_filter.slt"),
         avg_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v").unwrap(),
         group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_group_expression() {
+    run_script_for_mv(
+        "groupexpr",
+        include_str!("slt/group_expr.slt"),
+        sum_count_groups_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["bucket"]),
+            &group_keys(&["v % 10"]),
+            Some("v"),
+            None,
+            false,
+        )
+        .unwrap(),
+        group_keys(&["bucket"]),
     );
 }
 

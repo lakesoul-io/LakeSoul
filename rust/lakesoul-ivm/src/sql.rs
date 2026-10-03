@@ -94,7 +94,7 @@ pub fn analyze_select(
                         "computed columns above an aggregate are not supported",
                     ));
                 }
-                analyze_aggregate(aggregate, &[], tables, request)?
+                analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
             }
             LogicalPlan::Window(window) => {
                 analyze_window(projection, window, tables, request)?
@@ -114,7 +114,13 @@ pub fn analyze_select(
                             "computed columns above an aggregate are not supported",
                         ));
                     }
-                    analyze_aggregate(aggregate, &having, tables, request)?
+                    analyze_aggregate(
+                        aggregate,
+                        Some(projection),
+                        &having,
+                        tables,
+                        request,
+                    )?
                 } else {
                     match try_analyze_top_k(Some(projection), filter, tables, request)? {
                         Some(spec) => spec,
@@ -134,14 +140,14 @@ pub fn analyze_select(
             // The projection above an aggregate may be optimized away (e.g.
             // for MIN/MAX), leaving a bare `Filter -> Aggregate` plan.
             if let Some((aggregate, having)) = having_aggregate(plan) {
-                analyze_aggregate(aggregate, &having, tables, request)?
+                analyze_aggregate(aggregate, None, &having, tables, request)?
             } else {
                 analyze_row(plan, tables, request)?
             }
         }
         LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
         LogicalPlan::Aggregate(aggregate) => {
-            analyze_aggregate(aggregate, &[], tables, request)?
+            analyze_aggregate(aggregate, None, &[], tables, request)?
         }
         LogicalPlan::Join(join) => analyze_join(join, None, tables, request)?,
         LogicalPlan::Union(union) => analyze_union(union, None, tables, request)?,
@@ -200,6 +206,7 @@ fn analyze_distinct_rows(
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
         group_keys,
+        group_exprs: Vec::new(),
         value_column: None,
         value_expr: None,
         count_column: None,
@@ -406,6 +413,15 @@ fn render_having(
     if exprs.is_empty() {
         return Ok(None);
     }
+    // A group expression is referenced by the name of its output field.
+    let mut group_aliases = HashMap::new();
+    for (index, key) in group_keys.iter().enumerate() {
+        if let Some(field) = aggregate.schema.fields().get(index)
+            && field.name() != key
+        {
+            group_aliases.insert(field.name().clone(), key.clone());
+        }
+    }
     let hoisted = hoisted_expressions(&aggregate.input);
     let mut mapping: HashMap<String, String> = HashMap::new();
     let group_count = aggregate.group_expr.len();
@@ -438,7 +454,14 @@ fn render_having(
         .collect::<std::collections::HashSet<_>>();
     let mut parts = Vec::with_capacity(exprs.len());
     for expr in exprs {
-        let rewritten = rewrite_having(expr, columns, &mapping, &group_keys, &hoisted)?;
+        let rewritten = rewrite_having(
+            expr,
+            columns,
+            &mapping,
+            &group_keys,
+            &group_aliases,
+            &hoisted,
+        )?;
         parts.push(render_filter(&rewritten)?);
     }
     Ok(Some(parts.join(" AND ")))
@@ -463,11 +486,17 @@ fn rewrite_having(
     columns: HavingColumns<'_>,
     mapping: &HashMap<String, String>,
     group_keys: &std::collections::HashSet<&str>,
+    group_aliases: &HashMap<String, String>,
     hoisted: &HashMap<String, Expr>,
 ) -> Result<Expr> {
     expr.clone()
         .transform_down(|node| match node {
             Expr::Column(column) if !group_keys.contains(column.name.as_str()) => {
+                if let Some(key) = group_aliases.get(&column.name) {
+                    return Ok(Transformed::yes(Expr::Column(Column::from_name(
+                        key.clone(),
+                    ))));
+                }
                 match mapping.get(&column.name) {
                     Some(mv_column) => Ok(Transformed::yes(Expr::Column(
                         Column::from_name(mv_column.clone()),
@@ -892,6 +921,7 @@ fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<Agg
 
 fn analyze_aggregate(
     aggregate: &Aggregate,
+    projection: Option<&Projection>,
     having_exprs: &[Expr],
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
@@ -910,13 +940,34 @@ fn analyze_aggregate(
     let source = &source;
 
     let mut group_keys = Vec::with_capacity(aggregate.group_expr.len());
+    let mut group_exprs = Vec::with_capacity(aggregate.group_expr.len());
     for expr in &aggregate.group_expr {
-        group_keys.push(
-            column_name(expr).ok_or_else(|| {
-                unsupported("GROUP BY expressions must be plain columns")
-            })?,
-        );
+        // The select alias names the materialized key column.
+        let alias = projection.and_then(|projection| projection_alias(projection, expr));
+        let mut inner = expr;
+        while let Expr::Alias(nested) = inner {
+            inner = &nested.expr;
+        }
+        match inner {
+            Expr::Column(column) => {
+                group_keys.push(alias.unwrap_or_else(|| column.name.clone()));
+                group_exprs.push(column.name.clone());
+            }
+            other => {
+                let name = alias
+                    .ok_or_else(|| unsupported("GROUP BY expressions need an alias"))?;
+                let resolved = resolve_hoisted(other, &hoisted_exprs);
+                group_keys.push(name);
+                group_exprs.push(render_filter(&resolved)?);
+            }
+        }
     }
+    // A plain column grouping stays compact.
+    let group_exprs = if group_keys == group_exprs {
+        Vec::new()
+    } else {
+        group_exprs
+    };
 
     // `SELECT DISTINCT` plans as a group-by without aggregate functions; the
     // count-only sum/count shape drops groups as soon as their count reaches
@@ -933,6 +984,7 @@ fn analyze_aggregate(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
+            group_exprs,
             value_column: None,
             value_expr: None,
             count_column: None,
@@ -1477,6 +1529,7 @@ fn analyze_aggregate(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
+            group_exprs,
             value_column,
             value_expr,
             count_column,
@@ -2671,6 +2724,7 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
+                group_exprs: Vec::new(),
                 value_column: Some("v".to_string()),
                 value_expr: None,
                 count_column: None,
@@ -2736,6 +2790,7 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
+                group_exprs: Vec::new(),
                 value_column: None,
                 value_expr: Some("(v * 2)".to_string()),
                 count_column: None,
@@ -3012,6 +3067,7 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["g".to_string()],
+                group_exprs: Vec::new(),
                 value_column: None,
                 value_expr: None,
                 count_column: Some("v".to_string()),
@@ -3081,6 +3137,60 @@ mod tests {
             panic!("expected a sum/count spec");
         };
         assert!(group_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyzes_group_expressions() {
+        let analyzed =
+            analyze("select v % 10 as bucket, sum(v) from src group by bucket")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount {
+            group_keys,
+            group_exprs,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+        assert_eq!(value_column, Some("v".to_string()));
+
+        // A plain key mixed with an expression keeps both entries.
+        let analyzed =
+            analyze("select g, v % 10 as bucket, sum(v) from src group by g, bucket")
+                .await
+                .unwrap();
+        let ViewSpec::SumCount {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["g".to_string(), "(v % 10)".to_string()]);
+
+        // HAVING over the group alias maps onto the key column.
+        let analyzed = analyze(
+            "select v % 10 as bucket, sum(v) from src group by bucket having bucket > 2",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount { having, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("bucket > 2"));
+
+        // A group expression needs an alias.
+        assert!(
+            analyze("select v % 10, sum(v) from src group by v % 10")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -3345,6 +3455,7 @@ mod tests {
             source_table_id: "table_src".to_string(),
             mv_table_id: "table_mv".to_string(),
             group_keys: vec!["g".to_string()],
+            group_exprs: Vec::new(),
             value_column: None,
             value_expr: None,
             count_column: None,
