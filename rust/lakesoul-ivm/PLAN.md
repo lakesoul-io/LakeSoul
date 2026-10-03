@@ -1081,7 +1081,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN/STRING_AGG）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
+| 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE`、`GROUP BY` 表达式 | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
 | 连接/集合 | 外连接（LEFT/RIGHT/FULL/CROSS）；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
@@ -1578,6 +1578,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   差分 oracle（`MIN(v * 2)` 随机负载全量对比）、analyzer 单测（表达式/条件聚合/HAVING
   同参数映射与不同参数拒绝）。
   全量 IVM 套件 36 个测试二进制 / 214 个测试通过。
+
+### 10.32 STRING_AGG/ARRAY_AGG 的参数表达式（PR-26）
+
+- **能力**：`STRING_AGG(CAST(v AS TEXT), '|' ORDER BY k)`、`ARRAY_AGG(v * 2 ORDER BY k)`
+  等直接物化；字符串聚合保留用户写的 CAST（数值转字符串的常见用法）。
+- **spec/typed**：`ViewSpec::StringAgg/ArrayAgg` 与 typed view 的 `value_column` 变为
+  `Option<String>` 并新增 `value_expr`（互斥；构建器 `with_value_expr`）。派生列名：纯列为
+  `string_agg_<col>` / `array_agg_<col>`，表达式为 `string_agg_value` / `array_agg_value`
+  （`string_agg_output_column` / `array_agg_output_column`）。
+- **schema/运行时**：新增 `string_agg_expr_mv_schema_for` / `array_agg_expr_mv_schema_for`
+  （规划表达式：字符串类型校验 / 任意类型 → `List<type>`）；`parts()` 统一用
+  `aggregate_value_sql`，refresh/rebuild 用 `aggregate_value_type` 校验。
+- **analyzer**：两个分支改用 `value_argument(..., strip_cast=false)`；STRING_AGG 的 HAVING
+  改为结构化比对参数（值 + delimiter + order），不再只看列名。
+- **测试**：`string_agg_expr.slt`（CAST 值的 bootstrap/更新/删除 + HAVING 同 cast 重建）、
+  两个差分 oracle（`STRING_AGG(CAST(v AS VARCHAR), '|')`、`ARRAY_AGG(v * 2)`）、analyzer
+  单测（cast 保留、array_agg 表达式）。
+  全量 IVM 套件 36 个测试二进制 / 218 个测试通过。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

@@ -36,7 +36,7 @@ use crate::runtime::{
     CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
     SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
-    WindowFunction, string_agg_column,
+    WindowFunction, string_agg_output_column,
 };
 use crate::table::IvmTable;
 
@@ -384,7 +384,7 @@ enum HavingColumns<'a> {
     Median,
     /// `string_agg_<value>` for a `STRING_AGG` view.
     StringAgg {
-        value_column: &'a str,
+        value: &'a AggValue,
         delimiter: &'a str,
         order_by: &'a [String],
     },
@@ -600,16 +600,16 @@ fn having_column(
             }
         }
         HavingColumns::StringAgg {
-            value_column,
+            value,
             delimiter,
             order_by,
         } => {
             if function_filter.is_some() || function.params.distinct {
                 return Err(not_materialized(name));
             }
-            let same_value = matches!(function.params.args.as_slice(), [value, _]
-                if column_of(value)
-                    .map(|column| column.name == value_column)
+            let same_value = matches!(function.params.args.as_slice(), [value_arg, _]
+                if value_argument(value_arg, hoisted, false)
+                    .map(|parsed| parsed == *value)
                     .unwrap_or(false));
             let same_delimiter = matches!(function.params.args.as_slice(), [_, delimiter_arg]
                 if render_string_literal(delimiter_arg).as_deref() == Some(delimiter));
@@ -617,7 +617,10 @@ fn having_column(
                 .map(|items| items.as_slice() == order_by)
                 .unwrap_or(false);
             if name == "string_agg" && same_value && same_delimiter && same_order {
-                Ok(string_agg_column(value_column))
+                Ok(string_agg_output_column(match value {
+                    AggValue::Column(column) => Some(column.as_str()),
+                    AggValue::Expr(_) => None,
+                }))
             } else {
                 Err(not_materialized(name))
             }
@@ -947,9 +950,9 @@ fn analyze_aggregate(
     let mut variance: Option<(VarianceKind, String)> = None;
     let mut median: Option<String> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
-    let mut string_agg: Option<(String, String, Vec<String>)> = None;
+    let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
     // `(value column, rendered aggregate ordering)`.
-    let mut array_agg: Option<(String, Vec<String>)> = None;
+    let mut array_agg: Option<(AggValue, Vec<String>)> = None;
     let mut min_max: Option<(MinMaxKind, AggValue)> = None;
     let mut distinct: Option<(DistinctAggKind, String)> = None;
     // `(aggregate name, FILTER predicate, whether it is a value aggregate)`.
@@ -1201,17 +1204,13 @@ fn analyze_aggregate(
                         "STRING_AGG takes a value column and a delimiter",
                     ));
                 };
-                let value_column = column_of(value)
-                    .map(|column| column.name.clone())
-                    .ok_or_else(|| {
-                        unsupported("STRING_AGG values must be plain string columns")
-                    })?;
+                let string_value = value_argument(value, &hoisted_exprs, false)?;
                 let delimiter =
                     render_string_literal(delimiter_arg).ok_or_else(|| {
                         unsupported("STRING_AGG delimiter must be a string literal")
                     })?;
                 let order_by = render_order_items(&function.params.order_by)?;
-                string_agg = Some((value_column, delimiter, order_by));
+                string_agg = Some((string_value, delimiter, order_by));
                 aggregate_filters.push((name, function_filter, false));
             }
             ("array_agg", false) => {
@@ -1235,13 +1234,9 @@ fn analyze_aggregate(
                 let [value] = function.params.args.as_slice() else {
                     return Err(unsupported("ARRAY_AGG takes a value column"));
                 };
-                let value_column = column_of(value)
-                    .map(|column| column.name.clone())
-                    .ok_or_else(|| {
-                        unsupported("ARRAY_AGG values must be plain columns")
-                    })?;
+                let array_value = value_argument(value, &hoisted_exprs, false)?;
                 let order_by = render_order_items(&function.params.order_by)?;
-                array_agg = Some((value_column, order_by));
+                array_agg = Some((array_value, order_by));
                 aggregate_filters.push((name, function_filter, false));
             }
             _ => {
@@ -1351,17 +1346,17 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
-    } else if let Some((value_column, order_by)) = &array_agg {
+    } else if let Some((_, order_by)) = &array_agg {
         if !having_exprs.is_empty() {
             return Err(unsupported("HAVING with ARRAY_AGG"));
         }
-        let _ = (value_column, order_by);
+        let _ = order_by;
         None
-    } else if let Some((value_column, delimiter, order_by)) = &string_agg {
+    } else if let Some((value, delimiter, order_by)) = &string_agg {
         render_having(
             having_exprs,
             HavingColumns::StringAgg {
-                value_column,
+                value,
                 delimiter,
                 order_by,
             },
@@ -1400,23 +1395,33 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if let Some((value_column, order_by)) = array_agg {
+    } else if let Some((value, order_by)) = array_agg {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
         ViewSpec::ArrayAgg {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column,
+            value_expr,
             order_by,
             filter,
         }
-    } else if let Some((value_column, delimiter, order_by)) = string_agg {
+    } else if let Some((value, delimiter, order_by)) = string_agg {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
         ViewSpec::StringAgg {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
             value_column,
+            value_expr,
             delimiter,
             order_by,
             filter,
@@ -2689,7 +2694,8 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["k".to_string()],
-                value_column: "g".to_string(),
+                value_column: Some("g".to_string()),
+                value_expr: None,
                 order_by: vec!["v".to_string()],
                 filter: None,
             }
@@ -2854,7 +2860,8 @@ mod tests {
                 source_table_id: "table_src".to_string(),
                 mv_table_id: "table_mv".to_string(),
                 group_keys: vec!["k".to_string()],
-                value_column: "g".to_string(),
+                value_column: Some("g".to_string()),
+                value_expr: None,
                 delimiter: "','".to_string(),
                 order_by: vec!["v".to_string()],
                 filter: None,
@@ -3074,6 +3081,48 @@ mod tests {
             panic!("expected a sum/count spec");
         };
         assert!(group_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyzes_agg_argument_expressions() {
+        // STRING_AGG over a cast keeps the cast, so numbers can be joined.
+        let analyzed = analyze_optimized(
+            "select g, string_agg(cast(v as varchar), '|' order by k) from src group by g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::StringAgg {
+            value_column,
+            value_expr,
+            delimiter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a string_agg spec");
+        };
+        assert_eq!(value_column, None);
+        assert!(
+            value_expr
+                .as_deref()
+                .is_some_and(|expr| expr.to_uppercase().contains("CAST"))
+        );
+        assert_eq!(delimiter, "'|'");
+
+        // ARRAY_AGG over an arithmetic expression.
+        let analyzed =
+            analyze("select g, array_agg(v * 2 order by k) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::ArrayAgg {
+            value_column,
+            value_expr,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an array_agg spec");
+        };
+        assert_eq!(value_column, None);
+        assert_eq!(value_expr.as_deref(), Some("(v * 2)"));
     }
 
     #[tokio::test]

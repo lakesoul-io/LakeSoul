@@ -18,12 +18,13 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
-    array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_mv_schema_for,
-    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    array_agg_expr_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
+    distinct_agg_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_mv_schema_for, sum_expr_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, variance_mv_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -375,6 +376,44 @@ async fn oracle_array_agg_matches_full_recompute() {
         "SELECT g, ARRAY_AGG(v ORDER BY k) AS array_agg_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
         "SELECT g, array_agg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_array_agg_expr_matches_full_recompute() {
+    run_oracle(
+        "arrayaggexpr",
+        1,
+        array_agg_expr_mv_schema_for(&source_schema(), &["g".to_string()], "v * 2")
+            .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, ARRAY_AGG(v * 2 ORDER BY k) FROM __SRC__ GROUP BY g",
+        "SELECT g, ARRAY_AGG(v * 2 ORDER BY k) AS array_agg_value FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, array_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_string_agg_expr_matches_full_recompute() {
+    // The concatenated value is an expression (a cast), not a plain column.
+    run_oracle(
+        "stringaggexpr",
+        1,
+        string_agg_expr_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            "CAST(v AS VARCHAR)",
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY k) FROM __SRC__ \
+         GROUP BY g",
+        "SELECT g, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY k) AS string_agg_value \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, string_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
