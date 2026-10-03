@@ -336,6 +336,25 @@ pub enum ViewSpec {
         /// The payload column of the right source; NULL without a match.
         right_value: String,
     },
+    /// `FULL JOIN` over two keyed sources: all matching pairs plus the
+    /// unmatched rows of either side (NULL-padded).
+    FullJoin {
+        /// The view id.
+        view_id: String,
+        /// The left source table id (keyed).
+        left_table_id: String,
+        /// The right source table id (keyed).
+        right_table_id: String,
+        /// The output table id, keyed by both row identities.
+        output_table_id: String,
+        /// The equi-join keys, present in both sources.
+        #[serde(default, alias = "join_key", deserialize_with = "de_group_keys")]
+        join_keys: Vec<String>,
+        /// The payload column of the left source; NULL without a match.
+        left_value: String,
+        /// The payload column of the right source; NULL without a match.
+        right_value: String,
+    },
     /// `LEFT JOIN` lookup: every left row with the right row its join keys
     /// reference (or NULL).
     ///
@@ -631,6 +650,7 @@ impl ViewSpec {
             | ViewSpec::Join { view_id, .. }
             | ViewSpec::LookupJoin { view_id, .. }
             | ViewSpec::LeftJoin { view_id, .. }
+            | ViewSpec::FullJoin { view_id, .. }
             | ViewSpec::MinMax { view_id, .. }
             | ViewSpec::DistinctAgg { view_id, .. }
             | ViewSpec::Window { view_id, .. }
@@ -652,6 +672,7 @@ enum SpecView {
     Join(JoinView),
     LookupJoin(LookupJoinView),
     LeftJoin(LeftJoinView),
+    FullJoin(FullJoinView),
     MinMax(MinMaxView),
     DistinctAgg(DistinctAggView),
     Window(WindowView),
@@ -1000,7 +1021,7 @@ pub fn keyed_join_view_schema_for(
         join_keys,
         left_value,
         right_value,
-        false,
+        JoinSchema::Inner,
     )
 }
 
@@ -1023,11 +1044,42 @@ pub fn left_join_view_schema_for(
         join_keys,
         left_value,
         right_value,
-        true,
+        JoinSchema::Left,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The schema of a [`FullJoinView`] output: both payloads and both row
+/// identities are nullable.
+pub fn full_join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+    join_keys: &[String],
+    left_value: &str,
+    right_value: &str,
+) -> Result<SchemaRef> {
+    keyed_join_schema_for(
+        left_schema,
+        right_schema,
+        left_primary_keys,
+        right_primary_keys,
+        join_keys,
+        left_value,
+        right_value,
+        JoinSchema::Full,
+    )
+}
+
+/// Which nullability an outer pair-keyed join keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JoinSchema {
+    Inner,
+    Left,
+    Full,
+}
+
 fn keyed_join_schema_for(
     left_schema: &Schema,
     right_schema: &Schema,
@@ -1036,7 +1088,7 @@ fn keyed_join_schema_for(
     join_keys: &[String],
     left_value: &str,
     right_value: &str,
-    left_join: bool,
+    outer: JoinSchema,
 ) -> Result<SchemaRef> {
     if left_primary_keys.is_empty() || right_primary_keys.is_empty() {
         return Err(report!(
@@ -1049,21 +1101,22 @@ fn keyed_join_schema_for(
         fields.push(Arc::new(Field::new(
             key,
             field.data_type().clone(),
-            left_join && field.is_nullable(),
+            outer != JoinSchema::Inner && field.is_nullable(),
         )));
     }
     fields.push(Arc::new(Field::new(
         "left_value",
         field_type(left_schema, left_value)?,
-        left_schema
-            .field_with_name(left_value)
-            .map(|field| field.is_nullable())
-            .unwrap_or(true),
+        outer != JoinSchema::Inner
+            || left_schema
+                .field_with_name(left_value)
+                .map(|field| field.is_nullable())
+                .unwrap_or(true),
     )));
     fields.push(Arc::new(Field::new(
         "right_value",
         field_type(right_schema, right_value)?,
-        left_join
+        outer != JoinSchema::Inner
             || right_schema
                 .field_with_name(right_value)
                 .map(|field| field.is_nullable())
@@ -1074,7 +1127,7 @@ fn keyed_join_schema_for(
         fields.push(Arc::new(Field::new(
             left_pk_alias(key),
             field.data_type().clone(),
-            false,
+            outer != JoinSchema::Inner,
         )));
     }
     for key in right_primary_keys {
@@ -1082,7 +1135,7 @@ fn keyed_join_schema_for(
         fields.push(Arc::new(Field::new(
             right_pk_alias(key),
             field.data_type().clone(),
-            left_join,
+            outer != JoinSchema::Inner,
         )));
     }
     fields.push(Arc::new(Field::new(
@@ -1254,6 +1307,95 @@ impl LeftJoinView {
 
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::LeftJoin {
+            view_id: self.view_id.clone(),
+            left_table_id: self.left.table_id.clone(),
+            right_table_id: self.right.table_id.clone(),
+            output_table_id: self.output.table_id.clone(),
+            join_keys: self.join_keys.clone(),
+            left_value: self.left_value.clone(),
+            right_value: self.right_value.clone(),
+        }
+    }
+}
+
+/// A `FULL JOIN` view over two keyed sources: the matching pairs plus the
+/// unmatched rows of either side (NULL-padded).
+#[derive(Debug, Clone)]
+pub struct FullJoinView {
+    /// The view id.
+    pub view_id: String,
+    /// The left source (keyed/upsert).
+    pub left: IvmTable,
+    /// The right source (keyed/upsert).
+    pub right: IvmTable,
+    /// The output table, keyed by both row identities.
+    pub output: IvmTable,
+    /// The equi-join keys, present in both sources.
+    pub join_keys: Vec<String>,
+    /// The payload column of the left source.
+    pub left_value: String,
+    /// The payload column of the right source.
+    pub right_value: String,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl FullJoinView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        left: IvmTable,
+        right: IvmTable,
+        output: IvmTable,
+        join_key: impl Into<String>,
+        left_value: impl Into<String>,
+        right_value: impl Into<String>,
+    ) -> Self {
+        Self::new_with_join_keys(
+            view_id,
+            left,
+            right,
+            output,
+            vec![join_key.into()],
+            left_value,
+            right_value,
+        )
+    }
+
+    /// A new view over several equi-join keys.
+    pub fn new_with_join_keys(
+        view_id: impl Into<String>,
+        left: IvmTable,
+        right: IvmTable,
+        output: IvmTable,
+        join_keys: Vec<String>,
+        left_value: impl Into<String>,
+        right_value: impl Into<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            left,
+            right,
+            output,
+            join_keys,
+            left_value: left_value.into(),
+            right_value: right_value.into(),
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn parts(&self) -> PairJoin<'_> {
+        PairJoin {
+            join_keys: &self.join_keys,
+            left_value: &self.left_value,
+            right_value: &self.right_value,
+            left_primary_keys: &self.left.primary_keys,
+            right_primary_keys: &self.right.primary_keys,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::FullJoin {
             view_id: self.view_id.clone(),
             left_table_id: self.left.table_id.clone(),
             right_table_id: self.right.table_id.clone(),
@@ -1454,6 +1596,21 @@ fn lookup_join_output_columns(view: &LookupJoinView) -> Vec<Expr> {
         .chain(std::iter::once(col("right_value")))
         .chain(view.left.primary_keys.iter().map(|key| col(key.as_str())))
         .collect()
+}
+
+/// Validate that a full join view can be maintained.
+fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
+    let left = LeftJoinView {
+        view_id: view.view_id.clone(),
+        left: view.left.clone(),
+        right: view.right.clone(),
+        output: view.output.clone(),
+        join_keys: view.join_keys.clone(),
+        left_value: view.left_value.clone(),
+        right_value: view.right_value.clone(),
+        refresh_interval_ms: view.refresh_interval_ms,
+    };
+    validate_left_join_view(&left)
 }
 
 /// Validate that a left join view can be maintained.
@@ -3989,6 +4146,24 @@ impl IvmRuntime {
                 right_value: right_value.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::FullJoin {
+                view_id,
+                left_table_id,
+                right_table_id,
+                output_table_id,
+                join_keys,
+                left_value,
+                right_value,
+            } => SpecView::FullJoin(FullJoinView {
+                view_id: view_id.clone(),
+                left: self.open_table_by_id(left_table_id).await?,
+                right: self.open_table_by_id(right_table_id).await?,
+                output: self.open_table_by_id(output_table_id).await?,
+                join_keys: join_keys.clone(),
+                left_value: left_value.clone(),
+                right_value: right_value.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::LookupJoin {
                 view_id,
                 left_table_id,
@@ -4248,6 +4423,7 @@ impl IvmRuntime {
             SpecView::Join(view) => self.refresh_join(&view).await,
             SpecView::LookupJoin(view) => self.refresh_lookup_join(&view).await,
             SpecView::LeftJoin(view) => self.refresh_left_join(&view).await,
+            SpecView::FullJoin(view) => self.refresh_full_join(&view).await,
             SpecView::MinMax(view) => self.refresh_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
             SpecView::Window(view) => self.refresh_window(&view).await,
@@ -4271,6 +4447,7 @@ impl IvmRuntime {
             SpecView::Join(view) => self.rebuild_join(&view).await,
             SpecView::LookupJoin(view) => self.rebuild_lookup_join(&view).await,
             SpecView::LeftJoin(view) => self.rebuild_left_join(&view).await,
+            SpecView::FullJoin(view) => self.rebuild_full_join(&view).await,
             SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
             SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
             SpecView::Window(view) => self.rebuild_window(&view).await,
@@ -5034,12 +5211,14 @@ impl IvmRuntime {
                 right_now,
                 &view.parts(),
                 JoinType::Inner,
+                false,
             )?
             .union(keyed_join_projection(
                 left_now,
                 right_rows,
                 &view.parts(),
                 JoinType::Inner,
+                false,
             )?)?
             .distinct()?;
 
@@ -5690,11 +5869,16 @@ impl IvmRuntime {
             &key_names,
             None,
         )?;
-        let inserts =
-            keyed_join_projection(left_rows, right_now, &view.parts(), JoinType::Left)?
-                .select(keyed_join_output_columns(&view.parts()))?
-                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let inserts = keyed_join_projection(
+            left_rows,
+            right_now,
+            &view.parts(),
+            JoinType::Left,
+            false,
+        )?
+        .select(keyed_join_output_columns(&view.parts()))?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let deletes = mv
             .join(
                 affected,
@@ -5800,13 +5984,18 @@ impl IvmRuntime {
             dataframe(&context, right_baseline.batches, &view.right.schema)?,
             change_column(&view.right),
         )?;
-        for batch in
-            keyed_join_projection(left_now, right_now, &view.parts(), JoinType::Left)?
-                .select(keyed_join_output_columns(&view.parts()))?
-                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                .collect()
-                .await?
+        for batch in keyed_join_projection(
+            left_now,
+            right_now,
+            &view.parts(),
+            JoinType::Left,
+            false,
+        )?
+        .select(keyed_join_output_columns(&view.parts()))?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+        .collect()
+        .await?
         {
             if batch.num_rows() > 0 {
                 commit_ids.extend(view.output.append_batch(&self.client, batch).await?);
@@ -5829,6 +6018,385 @@ impl IvmRuntime {
 
     /// Persist a left join view spec (idempotent).
     pub async fn register_left_join_view(&self, view: &LeftJoinView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.output)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a full join view: rewrite the pairs of the affected left rows
+    /// and of the affected right rows (including their NULL-padded rows).
+    pub async fn refresh_full_join(&self, view: &FullJoinView) -> Result<Option<i64>> {
+        self.register_full_join_view(view).await?;
+        validate_full_join_view(view)?;
+        self.ensure_unpartitioned(&view.left).await?;
+        self.ensure_unpartitioned(&view.right).await?;
+
+        let left_window = self
+            .collect_source_window(&view.view_id, &view.left)
+            .await?;
+        let right_window = self
+            .collect_source_window(&view.view_id, &view.right)
+            .await?;
+        if left_window.added_files.is_empty() && right_window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let identity = left_window
+            .identity
+            .iter()
+            .chain(right_window.identity.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.output)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, left_window.cursors)
+                    .await?;
+                self.advance_cursors(&view.view_id, right_window.cursors)
+                    .await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        let left_now = filter_deletes(
+            dataframe(
+                &context,
+                view.left.read_current(&self.client).await?,
+                &view.left.schema,
+            )?,
+            change_column(&view.left),
+        )?;
+        let right_now = filter_deletes(
+            dataframe(
+                &context,
+                view.right.read_current(&self.client).await?,
+                &view.right.schema,
+            )?,
+            change_column(&view.right),
+        )?;
+        let mv = dataframe(
+            &context,
+            view.output.read_current(&self.client).await?,
+            &view.output.schema,
+        )?;
+
+        let left_key_names = view
+            .left
+            .primary_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let left_key_exprs = view
+            .left
+            .primary_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let left_alias_names = view
+            .left
+            .primary_keys
+            .iter()
+            .map(|key| left_pk_alias(key))
+            .collect::<Vec<_>>();
+        let left_alias_refs = left_alias_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let right_key_names = view
+            .right
+            .primary_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let right_key_exprs = view
+            .right
+            .primary_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let right_alias_names = view
+            .right
+            .primary_keys
+            .iter()
+            .map(|key| right_pk_alias(key))
+            .collect::<Vec<_>>();
+        let right_alias_refs = right_alias_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let join_key_names = view
+            .join_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let join_key_exprs = view
+            .join_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+
+        let mut affected_left = left_now
+            .clone()
+            .select(left_key_exprs.clone())?
+            .limit(0, None)?;
+        let mut affected_right = right_now
+            .clone()
+            .select(right_key_exprs.clone())?
+            .limit(0, None)?;
+        if !left_window.added_files.is_empty() {
+            let delta_left = dataframe(
+                &context,
+                view.left
+                    .read_files(left_window.added_files.clone())
+                    .await?,
+                &view.left.schema,
+            )?;
+            affected_left = affected_left.union(
+                delta_left
+                    .clone()
+                    .select(left_key_exprs.clone())?
+                    .distinct()?,
+            )?;
+            let changed_keys = delta_left.select(join_key_exprs.clone())?.distinct()?;
+            affected_right = affected_right.union(
+                right_now
+                    .clone()
+                    .join(
+                        changed_keys,
+                        JoinType::LeftSemi,
+                        &join_key_names,
+                        &join_key_names,
+                        None,
+                    )?
+                    .select(right_key_exprs.clone())?,
+            )?;
+        }
+        if !right_window.added_files.is_empty() {
+            let delta_right = dataframe(
+                &context,
+                view.right
+                    .read_files(right_window.added_files.clone())
+                    .await?,
+                &view.right.schema,
+            )?;
+            affected_right = affected_right.union(
+                delta_right
+                    .clone()
+                    .select(right_key_exprs.clone())?
+                    .distinct()?,
+            )?;
+            let changed_keys = delta_right.select(join_key_exprs)?.distinct()?;
+            affected_left = affected_left.union(
+                left_now
+                    .clone()
+                    .join(
+                        changed_keys,
+                        JoinType::LeftSemi,
+                        &join_key_names,
+                        &join_key_names,
+                        None,
+                    )?
+                    .select(left_key_exprs.clone())?,
+            )?;
+        }
+        let affected_left = affected_left.distinct()?;
+        let affected_right = affected_right.distinct()?;
+
+        // Rewrite all pairs of the affected rows on either side; identical
+        // pairs are deduplicated.
+        let left_rows = left_now.clone().join(
+            affected_left.clone(),
+            JoinType::LeftSemi,
+            &left_key_names,
+            &left_key_names,
+            None,
+        )?;
+        let right_rows = right_now.clone().join(
+            affected_right.clone(),
+            JoinType::LeftSemi,
+            &right_key_names,
+            &right_key_names,
+            None,
+        )?;
+        let left_pairs = keyed_join_projection(
+            left_rows,
+            right_now,
+            &view.parts(),
+            JoinType::Left,
+            false,
+        )?;
+        let right_pairs = keyed_join_projection(
+            left_now,
+            right_rows,
+            &view.parts(),
+            JoinType::Right,
+            true,
+        )?;
+        let inserts = left_pairs
+            .union(right_pairs)?
+            .distinct()?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let deletes = mv
+            .clone()
+            .join(
+                affected_left,
+                JoinType::LeftSemi,
+                &left_alias_refs,
+                &left_key_names,
+                None,
+            )?
+            .select(keyed_join_output_columns(&view.parts()))?
+            .union(
+                mv.join(
+                    affected_right,
+                    JoinType::LeftSemi,
+                    &right_alias_refs,
+                    &right_key_names,
+                    None,
+                )?
+                .select(keyed_join_output_columns(&view.parts()))?,
+            )?
+            .distinct()?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+
+        let pair_keys = left_alias_names
+            .into_iter()
+            .chain(right_alias_names)
+            .collect::<Vec<_>>();
+        let mut sort_exprs = pair_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        for batch in inserts
+            .union(deletes)?
+            .sort_by(sort_exprs)?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.output.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.output).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, left_window.cursors)
+            .await?;
+        self.advance_cursors(&view.view_id, right_window.cursors)
+            .await?;
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a full join view from the full source state.
+    pub async fn rebuild_full_join(&self, view: &FullJoinView) -> Result<i64> {
+        self.register_full_join_view(view).await?;
+        validate_full_join_view(view)?;
+        self.ensure_unpartitioned(&view.left).await?;
+        self.ensure_unpartitioned(&view.right).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.output.truncate(&self.client).await?;
+
+        let left_baseline = self.source_baseline(&view.left).await?;
+        let right_baseline = self.source_baseline(&view.right).await?;
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.output).await?;
+        let mut to_versions = left_baseline.to_versions;
+        to_versions.extend(right_baseline.to_versions);
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, left_baseline.cursors)
+                    .await?;
+                self.advance_cursors(&view.view_id, right_baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        let left_now = filter_deletes(
+            dataframe(&context, left_baseline.batches, &view.left.schema)?,
+            change_column(&view.left),
+        )?;
+        let right_now = filter_deletes(
+            dataframe(&context, right_baseline.batches, &view.right.schema)?,
+            change_column(&view.right),
+        )?;
+        let left_pairs = keyed_join_projection(
+            left_now.clone(),
+            right_now.clone(),
+            &view.parts(),
+            JoinType::Left,
+            false,
+        )?;
+        let right_pairs = keyed_join_projection(
+            left_now,
+            right_now,
+            &view.parts(),
+            JoinType::Right,
+            true,
+        )?;
+        for batch in left_pairs
+            .union(right_pairs)?
+            .distinct()?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.output.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.output).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, left_baseline.cursors)
+            .await?;
+        self.advance_cursors(&view.view_id, right_baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Persist a full join view spec (idempotent).
+    pub async fn register_full_join_view(&self, view: &FullJoinView) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.output)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
@@ -6439,7 +7007,7 @@ impl IvmRuntime {
                     dataframe(&context, right_baseline.batches, &view.right.schema)?,
                     change_column(&view.right),
                 )?;
-                keyed_join_projection(left, right, &view.parts(), JoinType::Inner)?
+                keyed_join_projection(left, right, &view.parts(), JoinType::Inner, false)?
                     .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             } else {
@@ -7876,6 +8444,7 @@ fn keyed_join_projection(
     right: DataFrame,
     parts: &PairJoin<'_>,
     join_type: JoinType,
+    keys_from_right: bool,
 ) -> Result<DataFrame> {
     let mut left_columns = parts
         .join_keys
@@ -7915,11 +8484,20 @@ fn keyed_join_projection(
         .collect::<Vec<_>>();
     let joined = left.join(right, join_type, &key_names, &right_key_refs, None)?;
 
-    let mut output = parts
-        .join_keys
-        .iter()
-        .map(|key| col(key.as_str()))
-        .collect::<Vec<_>>();
+    // An unmatched right row carries its join key on the right side.
+    let mut output = if keys_from_right {
+        parts
+            .join_keys
+            .iter()
+            .map(|key| col(format!("__right_{key}")).alias(key.as_str()))
+            .collect::<Vec<_>>()
+    } else {
+        parts
+            .join_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>()
+    };
     output.push(col("left_value"));
     output.push(col("right_value"));
     for key in parts.left_primary_keys {
