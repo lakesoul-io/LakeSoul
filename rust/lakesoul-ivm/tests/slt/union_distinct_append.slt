@@ -1,0 +1,85 @@
+# UNION (distinct) of two append-only CDC sources: the signed delta of each
+# branch adjusts the occurrence counts, so delete markers remove rows.
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert; k=2,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=10,op=insert; k=3,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 2
+2 b 20 1
+3 a 30 1
+
+# A delete marker retracts one copy of the duplicated row.
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 1
+2 b 20 1
+3 a 30 1
+
+# A delete plus an insert replaces a row.
+statement ok
+/*ivm-append __SRC1__: k=2,g=b,v=20,op=delete; k=2,g=b,v=25,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 1
+2 b 25 1
+3 a 30 1
+
+# Per-branch predicates rebuild the view from the current source states.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ WHERE v > 15 UNION SELECT k, g, v FROM __SRC2__ WHERE v > 15
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 b 25 1
+3 a 30 1
+
+# Rows below the branch predicate are ignored incrementally too.
+statement ok
+/*ivm-append __SRC2__: k=4,g=a,v=10,op=insert; k=5,g=c,v=35,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ WHERE v > 15 UNION SELECT k, g, v FROM __SRC2__ WHERE v > 15
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 b 25 1
+3 a 30 1
+5 c 35 1

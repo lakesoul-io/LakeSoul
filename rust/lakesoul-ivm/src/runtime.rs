@@ -635,6 +635,20 @@ pub enum ViewSpec {
         /// The materialized view table id.
         mv_table_id: String,
     },
+    /// `UNION` (distinct) of several sources with the same schema: every
+    /// distinct row with its occurrence count.
+    ///
+    /// The materialized view keeps one row per distinct value together with
+    /// the number of contributing source rows; a refresh adjusts the count by
+    /// the signed delta and drops the row when the count reaches zero.
+    UnionDistinct {
+        /// The view id.
+        view_id: String,
+        /// The sources, in output order.
+        sources: Vec<UnionSourceSpec>,
+        /// The materialized view table id.
+        mv_table_id: String,
+    },
     /// The top `limit` rows of every group, ordered by `order_keys`.
     TopK {
         /// The view id.
@@ -681,6 +695,7 @@ impl ViewSpec {
             | ViewSpec::SemiAnti { view_id, .. }
             | ViewSpec::Row { view_id, .. }
             | ViewSpec::UnionAll { view_id, .. }
+            | ViewSpec::UnionDistinct { view_id, .. }
             | ViewSpec::TopK { view_id, .. } => view_id,
         }
     }
@@ -703,6 +718,7 @@ enum SpecView {
     SemiAnti(SemiAntiView),
     Row(RowView),
     UnionAll(UnionAllView),
+    UnionDistinct(UnionDistinctView),
     TopK(TopKView),
 }
 
@@ -3413,6 +3429,46 @@ impl UnionAllView {
     }
 }
 
+/// A `UNION` (distinct) view over sources with the same schema.
+///
+/// The materialized view holds one row per distinct value plus its occurrence
+/// count ([`IVM_COUNT_COLUMN`]); rows are keyed by the union columns.
+#[derive(Debug, Clone)]
+pub struct UnionDistinctView {
+    /// The view id.
+    pub view_id: String,
+    /// The sources, in output order.
+    pub sources: Vec<UnionSource>,
+    /// The materialized view table.
+    pub mv: IvmTable,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl UnionDistinctView {
+    /// A new union-distinct view over `sources`.
+    pub fn new(
+        view_id: impl Into<String>,
+        sources: Vec<UnionSource>,
+        mv: IvmTable,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            sources,
+            mv,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::UnionDistinct {
+            view_id: self.view_id.clone(),
+            sources: self.sources.iter().map(UnionSource::to_spec).collect(),
+            mv_table_id: self.mv.table_id.clone(),
+        }
+    }
+}
+
 /// The top `limit` rows of every group, ordered by `order_keys`.
 ///
 /// Ties are broken by the source primary keys, so the result is deterministic
@@ -3824,6 +3880,37 @@ pub fn union_all_mv_schema_for(source_schema: &Schema) -> Result<SchemaRef> {
         false,
     )));
     Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`UnionDistinctView`] materialized view: the data columns
+/// (every source column except the CDC change column) plus the occurrence
+/// count, the row kind and the epoch.
+pub fn union_distinct_mv_schema_for(
+    source_schema: &Schema,
+    change_column: Option<&str>,
+) -> SchemaRef {
+    let mut fields = source_schema
+        .fields()
+        .iter()
+        .filter(|field| Some(field.name().as_str()) != change_column)
+        .cloned()
+        .collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        IVM_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Arc::new(Schema::new(fields))
 }
 
 /// The schema of a [`TopKView`] materialized view: the projected source
@@ -4566,6 +4653,25 @@ impl IvmRuntime {
                     refresh_interval_ms,
                 })
             }
+            ViewSpec::UnionDistinct {
+                view_id,
+                sources,
+                mv_table_id,
+            } => {
+                let mut opened = Vec::with_capacity(sources.len());
+                for source in sources {
+                    opened.push(UnionSource {
+                        table: self.open_table_by_id(&source.table_id).await?,
+                        filter: source.filter.clone(),
+                    });
+                }
+                SpecView::UnionDistinct(UnionDistinctView {
+                    view_id: view_id.clone(),
+                    sources: opened,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    refresh_interval_ms,
+                })
+            }
             ViewSpec::TopK {
                 view_id,
                 source_table_id,
@@ -4611,6 +4717,7 @@ impl IvmRuntime {
             SpecView::SemiAnti(view) => self.refresh_semi_anti(&view).await,
             SpecView::Row(view) => self.refresh_row(&view).await,
             SpecView::UnionAll(view) => self.refresh_union_all(&view).await,
+            SpecView::UnionDistinct(view) => self.refresh_union_distinct(&view).await,
             SpecView::TopK(view) => self.refresh_top_k(&view).await,
         }
     }
@@ -4635,6 +4742,7 @@ impl IvmRuntime {
             SpecView::SemiAnti(view) => self.rebuild_semi_anti(&view).await,
             SpecView::Row(view) => self.rebuild_row(&view).await,
             SpecView::UnionAll(view) => self.rebuild_union_all(&view).await,
+            SpecView::UnionDistinct(view) => self.rebuild_union_distinct(&view).await,
             SpecView::TopK(view) => self.rebuild_top_k(&view).await,
         }
     }
@@ -5289,6 +5397,19 @@ impl IvmRuntime {
 
     /// Persist a union-all view spec (idempotent).
     pub async fn register_union_all_view(&self, view: &UnionAllView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Persist a union-distinct view spec (idempotent).
+    pub async fn register_union_distinct_view(
+        &self,
+        view: &UnionDistinctView,
+    ) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
@@ -7939,6 +8060,174 @@ impl IvmRuntime {
             .collect()
             .await?
         {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        for baseline in &baselines {
+            self.advance_cursors(&view.view_id, baseline.cursors.clone())
+                .await?;
+        }
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
+    }
+
+    /// Refresh a union-distinct view over keyed or append-only sources.
+    ///
+    /// A keyed source contributes its new values (`+1`) and the as-of values
+    /// of its changed primary keys (`-1`), so updates and deletes retract the
+    /// old distinct rows; an append-only source contributes a signed count of
+    /// its delta rows (only a CDC column can make it negative).
+    pub async fn refresh_union_distinct(
+        &self,
+        view: &UnionDistinctView,
+    ) -> Result<Option<i64>> {
+        self.register_union_distinct_view(view).await?;
+        validate_union_distinct_view(view)?;
+        for source in &view.sources {
+            self.ensure_unpartitioned(&source.table).await?;
+        }
+
+        let mut windows = Vec::new();
+        for source in &view.sources {
+            windows.push(
+                self.collect_source_window(&view.view_id, &source.table)
+                    .await?,
+            );
+        }
+        if windows.iter().all(|window| window.added_files.is_empty()) {
+            return Ok(None);
+        }
+        let identity = windows
+            .iter()
+            .flat_map(|window| window.identity.iter().cloned())
+            .collect::<Vec<_>>();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                for window in &windows {
+                    self.advance_cursors(&view.view_id, window.cursors.clone())
+                        .await?;
+                }
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+        let keyed = !view.sources[0].table.primary_keys.is_empty();
+
+        let context = SessionContext::new();
+        for (index, source) in view.sources.iter().enumerate() {
+            let table = &source.table;
+            let delta = table.read_files(windows[index].added_files.clone()).await?;
+            if keyed {
+                let pk_filters = key_filters(&table.primary_keys, &delta)?;
+                let before = table
+                    .read_as_of_filtered(
+                        &self.client,
+                        windows[index].before_timestamp,
+                        pk_filters,
+                    )
+                    .await?;
+                register_table(&context, &format!("old{index}"), before, &table.schema)?;
+            }
+            register_table(&context, &format!("src{index}"), delta, &table.schema)?;
+        }
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        let sql = union_distinct_refresh_sql(view, keyed, epoch)?;
+        for batch in context.sql(&sql).await?.collect().await? {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        for window in &windows {
+            self.advance_cursors(&view.view_id, window.cursors.clone())
+                .await?;
+        }
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a union-distinct view from the full source states.
+    pub async fn rebuild_union_distinct(&self, view: &UnionDistinctView) -> Result<i64> {
+        self.register_union_distinct_view(view).await?;
+        validate_union_distinct_view(view)?;
+        for source in &view.sources {
+            self.ensure_unpartitioned(&source.table).await?;
+        }
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let mut baselines = Vec::new();
+        for source in &view.sources {
+            baselines.push(self.source_baseline(&source.table).await?);
+        }
+        let to_versions = baselines
+            .iter()
+            .flat_map(|baseline| baseline.to_versions.iter().cloned())
+            .collect::<Vec<_>>();
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                for baseline in &baselines {
+                    self.advance_cursors(&view.view_id, baseline.cursors.clone())
+                        .await?;
+                }
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        for (index, source) in view.sources.iter().enumerate() {
+            register_table(
+                &context,
+                &format!("src{index}"),
+                baselines[index].batches.clone(),
+                &source.table.schema,
+            )?;
+        }
+        let sql = union_distinct_rebuild_sql(view, epoch)?;
+        for batch in context.sql(&sql).await?.collect().await? {
             if batch.num_rows() > 0 {
                 commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
@@ -10717,6 +11006,245 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
                 if field.is_nullable() {
                     return Err(report!(
                         "union all view {}: key column {key} must be non-nullable",
+                        view.view_id
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The union columns of a union-distinct view.
+fn union_distinct_columns(view: &UnionDistinctView) -> Result<Vec<String>> {
+    view.sources
+        .first()
+        .map(|source| {
+            let change = source.table.cdc_column.as_deref();
+            source
+                .table
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .filter(|name| Some(name.as_str()) != change)
+                .collect()
+        })
+        .ok_or_else(|| report!("union view {} has no sources", view.view_id))
+}
+
+/// The per-source occurrence deltas of a union-distinct refresh.
+fn union_distinct_delta_ctes(
+    view: &UnionDistinctView,
+    columns: &[String],
+    keyed: bool,
+) -> Result<String> {
+    let cols = quoted_list(columns);
+    let mut ctes = Vec::with_capacity(view.sources.len());
+    for (index, source) in view.sources.iter().enumerate() {
+        let table = &source.table;
+        let change = change_column(table);
+        let filter = source.filter.as_deref();
+        let new_table = format!("src{index}");
+        if keyed {
+            let new_filter = format!(
+                "{}{}",
+                source_delete_filter(&new_table, change),
+                filter_clause(filter),
+            );
+            let old_table = format!("old{index}");
+            let old_filter = format!(
+                "{}{}",
+                source_delete_filter(&old_table, change),
+                filter_clause(filter),
+            );
+            let pk_match =
+                key_join_condition(&old_table, &new_table, &table.primary_keys);
+            ctes.push(format!(
+                "d{index} as (select {cols}, count(1) as dcount from {new_table} \
+                 where {new_filter} group by {cols} \
+                 union all \
+                 select {cols}, -count(1) as dcount from {old_table} \
+                 where {old_filter} \
+                   and exists (select 1 from {new_table} where {pk_match}) \
+                 group by {cols})",
+            ));
+        } else {
+            let count = match change {
+                Some(_) => format!(
+                    "sum(case when {} then -1 else 1 end)",
+                    source_retract_condition(&new_table, change)
+                ),
+                None => "count(1)".to_string(),
+            };
+            ctes.push(format!(
+                "d{index} as (select {cols}, {count} as dcount from {new_table}{} \
+                 group by {cols})",
+                filter_where(filter),
+            ));
+        }
+    }
+    Ok(ctes.join(", "))
+}
+
+/// The SQL of a union-distinct refresh: the signed occurrence delta is added
+/// to the active counts, the affected keys are rewritten (delete then insert)
+/// and rows whose count drops to zero disappear.
+fn union_distinct_refresh_sql(
+    view: &UnionDistinctView,
+    keyed: bool,
+    epoch: i64,
+) -> Result<String> {
+    let columns = union_distinct_columns(view)?;
+    let cols = quoted_list(&columns);
+    let count = quote_ident(IVM_COUNT_COLUMN);
+    let ctes = union_distinct_delta_ctes(view, &columns, keyed)?;
+    let delta = view
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("select * from d{index}"))
+        .collect::<Vec<_>>()
+        .join(" union all ");
+    let merged_columns = columns
+        .iter()
+        .map(|column| {
+            let quoted = quote_ident(column);
+            format!("coalesce(c.{quoted}, a.{quoted}) as {quoted}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mv_columns = columns
+        .iter()
+        .map(|column| format!("mv.{}", quote_ident(column)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let counts_to_active = key_join_condition_null_safe("c", "a", &columns);
+    let mv_to_counts = key_join_condition_null_safe("mv", "c", &columns);
+    let kinds = IVM_ROW_KINDS_COLUMN;
+    let epoch_column = IVM_EPOCH_COLUMN;
+    Ok(format!(
+        "with {ctes}, \
+         counts as (select {cols}, sum(dcount) as dcount from ({delta}) delta \
+                    group by {cols}), \
+         active as (select * from mv where \"{kinds}\" = 'insert' \
+                    and \"{epoch_column}\" <> {epoch}), \
+         merged as (select {merged_columns}, \
+                    coalesce(a.{count}, 0) + c.dcount as {count} \
+                    from counts c left join active a on {counts_to_active}), \
+         deletes as (select {mv_columns}, mv.{count}, 'delete' as \"{kinds}\", \
+                     {epoch} as \"{epoch_column}\" \
+                     from mv where \"{kinds}\" = 'insert' \
+                       and exists (select 1 from counts c where {mv_to_counts})), \
+         inserts as (select {cols}, {count}, 'insert' as \"{kinds}\", \
+                     {epoch} as \"{epoch_column}\" \
+                     from merged where {count} >= 1) \
+         select * from deletes union all select * from inserts \
+         order by {cols}, \"{kinds}\"",
+    ))
+}
+
+/// The SQL of a union-distinct rebuild: the occurrence counts over the full
+/// current source states.
+fn union_distinct_rebuild_sql(view: &UnionDistinctView, epoch: i64) -> Result<String> {
+    let columns = union_distinct_columns(view)?;
+    let cols = quoted_list(&columns);
+    let count = quote_ident(IVM_COUNT_COLUMN);
+    let keyed = !view.sources[0].table.primary_keys.is_empty();
+    let mut parts = Vec::with_capacity(view.sources.len());
+    for (index, source) in view.sources.iter().enumerate() {
+        let table = &source.table;
+        let change = change_column(table);
+        let table_name = format!("src{index}");
+        if keyed {
+            // The baseline is merged by key, so the surviving rows count once.
+            let where_clause = format!(
+                " where {}{}",
+                source_delete_filter(&table_name, change),
+                filter_clause(source.filter.as_deref()),
+            );
+            parts.push(format!(
+                "select {cols}, count(1) as dcount from {table_name}{where_clause} \
+                 group by {cols}"
+            ));
+        } else {
+            // An append-only CDC source keeps every marker, so the markers
+            // are aggregated with their sign (like the SUM/COUNT rebuild).
+            let count = match change {
+                Some(_) => format!(
+                    "sum(case when {} then -1 else 1 end)",
+                    source_retract_condition(&table_name, change)
+                ),
+                None => "count(1)".to_string(),
+            };
+            parts.push(format!(
+                "select {cols}, {count} as dcount from {table_name}{} \
+                 group by {cols}",
+                filter_where(source.filter.as_deref()),
+            ));
+        }
+    }
+    let kinds = IVM_ROW_KINDS_COLUMN;
+    let epoch_column = IVM_EPOCH_COLUMN;
+    Ok(format!(
+        "with totals as ({totals}), \
+         counts as (select {cols}, sum(dcount) as dcount from totals group by {cols}) \
+         select {cols}, dcount as {count}, 'insert' as \"{kinds}\", \
+         {epoch} as \"{epoch_column}\" from counts where dcount >= 1",
+        totals = parts.join(" union all "),
+    ))
+}
+
+/// Validate that a union-distinct view can be maintained.
+fn validate_union_distinct_view(view: &UnionDistinctView) -> Result<()> {
+    if view.sources.len() < 2 {
+        return Err(report!(
+            "union view {} needs at least two sources",
+            view.view_id
+        ));
+    }
+    let keyed = !view.sources[0].table.primary_keys.is_empty();
+    let first = &view.sources[0].table.schema;
+    for source in &view.sources {
+        if let Some(filter) = &source.filter {
+            let context = SessionContext::new();
+            parse_filter(&context, &source.table.schema, filter)?;
+        }
+        let table = &source.table;
+        if table.schema.fields().len() != first.fields().len()
+            || table
+                .schema
+                .fields()
+                .iter()
+                .zip(first.fields())
+                .any(|(left, right)| {
+                    left.name() != right.name() || left.data_type() != right.data_type()
+                })
+        {
+            return Err(report!(
+                "union view {}: source {} does not have the same schema",
+                view.view_id,
+                table.table_name
+            ));
+        }
+        if keyed != !table.primary_keys.is_empty() {
+            return Err(report!(
+                "union view {}: sources must be all keyed or all append-only",
+                view.view_id
+            ));
+        }
+        if keyed {
+            for key in &table.primary_keys {
+                let field = table.schema.field_with_name(key).map_err(|_| {
+                    report!(
+                        "union view {}: key column {key} is not in source {}",
+                        view.view_id,
+                        table.table_name
+                    )
+                })?;
+                if field.is_nullable() {
+                    return Err(report!(
+                        "union view {}: key column {key} must be non-nullable",
                         view.view_id
                     ));
                 }

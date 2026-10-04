@@ -24,8 +24,9 @@ use lakesoul_ivm::{
     min_max_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    variance_groups_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
@@ -1041,6 +1042,24 @@ async fn oracle_variance_group_expr_matches_full_recompute() {
         "SELECT v % 10 AS bucket, VAR_SAMP(v) AS variance_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
         "SELECT bucket, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_union_distinct_matches_full_recompute() {
+    // Two keyed sources unioned with deduplication: the MV keeps the
+    // occurrence counts, so the reference counts the unioned logical rows.
+    run_oracle(
+        "uniondistinct",
+        2,
+        union_distinct_mv_schema_for(&source_schema(), Some(CHANGE_COLUMN)),
+        vec!["k".to_string(), "g".to_string(), "v".to_string()],
+        "SELECT k, g, v FROM __SRC__ UNION SELECT k, g, v FROM __SRC1__",
+        "SELECT k, g, v, count(*) AS count_v FROM (SELECT k, g, v FROM __SRC__ \
+         WHERE op <> 'delete' UNION ALL SELECT k, g, v FROM __SRC1__ \
+         WHERE op <> 'delete') t GROUP BY k, g, v",
+        "SELECT k, g, v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

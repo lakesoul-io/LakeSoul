@@ -191,6 +191,9 @@ fn analyze_distinct_rows(
     let Distinct::All(input) = distinct else {
         return Err(unsupported("DISTINCT ON"));
     };
+    if let LogicalPlan::Union(union) = peel(input) {
+        return analyze_union_distinct(union, tables, request);
+    }
     let (source, filter) = collect_filtered_source(input, tables, "SELECT DISTINCT")?;
     let group_keys = input
         .schema()
@@ -909,6 +912,13 @@ fn analyze_aggregate(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
+    // `SELECT ... UNION SELECT ...` deduplicates the union output; the
+    // optimizer plans it as a bare group-by over every union column.
+    if aggregate.aggr_expr.is_empty()
+        && let LogicalPlan::Union(union) = peel(&aggregate.input)
+    {
+        return analyze_union_distinct(union, tables, request);
+    }
     let hoisted_exprs = hoisted_expressions(&aggregate.input);
     // The optimizer rewrites a single DISTINCT aggregate into an inner
     // grouping over `(group keys, value)` and an outer `count(alias)` /
@@ -2379,6 +2389,47 @@ fn analyze_union(
     })
 }
 
+/// A `UNION` (distinct) view: `SELECT ... UNION SELECT ...` deduplicates the
+/// union output.  The optimizer plans it as a group-by over every column (the
+/// raw plan keeps a `Distinct` node), so the analyzer accepts both shapes.
+fn analyze_union_distinct(
+    union: &Union,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let mut sources = Vec::with_capacity(union.inputs.len());
+    for input in &union.inputs {
+        sources.push(union_distinct_branch(peel(input), tables)?);
+    }
+    if sources.len() < 2 {
+        return Err(unsupported("UNION needs at least two branches"));
+    }
+    for (source, _) in &sources[1..] {
+        if source.schema != sources[0].0.schema {
+            return Err(unsupported("UNION branches must have identical schemas"));
+        }
+    }
+    let keyed = !sources[0].0.primary_keys.is_empty();
+    for (source, _) in &sources {
+        if keyed != !source.primary_keys.is_empty() {
+            return Err(unsupported(
+                "UNION branches must be all keyed or all append-only",
+            ));
+        }
+    }
+    Ok(ViewSpec::UnionDistinct {
+        view_id: request.view_id.clone(),
+        sources: sources
+            .into_iter()
+            .map(|(table, filter)| UnionSourceSpec {
+                table_id: table.table_id,
+                filter,
+            })
+            .collect(),
+        mv_table_id: request.mv_table_id.clone(),
+    })
+}
+
 /// The source of one UNION ALL branch, with the branch filter.  The branch
 /// must select every source column in order.
 fn union_branch(
@@ -2400,6 +2451,38 @@ fn union_branch(
     {
         return Err(unsupported(
             "UNION ALL branches must select all source columns in order",
+        ));
+    }
+    Ok((source, filter))
+}
+
+/// The source of one `UNION` (distinct) branch: it must select every data
+/// column in order.  The CDC change column is maintained internally and is
+/// therefore not part of the distinct key.
+fn union_distinct_branch(
+    plan: &LogicalPlan,
+    tables: &HashMap<String, IvmTable>,
+) -> Result<(IvmTable, Option<String>)> {
+    let (source, filter) = collect_filtered_source(plan, tables, "a UNION branch")?;
+    let change = source.cdc_column.as_deref();
+    let expected = source
+        .schema
+        .fields()
+        .iter()
+        .filter(|field| Some(field.name().as_str()) != change)
+        .cloned()
+        .collect::<Vec<_>>();
+    let branch_fields = plan.schema().fields();
+    if branch_fields.len() != expected.len()
+        || branch_fields
+            .iter()
+            .zip(expected.iter())
+            .any(|(left, right)| {
+                left.name() != right.name() || left.data_type() != right.data_type()
+            })
+    {
+        return Err(unsupported(
+            "UNION branches must select every data column in order",
         ));
     }
     Ok((source, filter))
@@ -3229,6 +3312,54 @@ mod tests {
             panic!("expected a sum/count spec");
         };
         assert!(group_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyzes_union_distinct() {
+        // `UNION` deduplicates the whole union row; the source fixture is
+        // keyed, so this covers the keyed branch.
+        let analyzed = analyze("select k, g, v from src union select k, g, v from src")
+            .await
+            .unwrap();
+        let ViewSpec::UnionDistinct { sources, .. } = analyzed.spec else {
+            panic!("expected a union-distinct spec");
+        };
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].table_id, "table_src");
+        assert_eq!(sources[1].table_id, "table_src");
+        assert!(sources.iter().all(|source| source.filter.is_none()));
+
+        // Per-branch predicates are kept.
+        let analyzed = analyze(
+            "select k, g, v from src where v > 5 \
+             union select k, g, v from src where v < 3",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::UnionDistinct { sources, .. } = analyzed.spec else {
+            panic!("expected a union-distinct spec");
+        };
+        assert!(sources.iter().all(|source| source.filter.is_some()));
+
+        // A UNION of a keyed and an append-only branch is rejected.
+        let ctx = SessionContext::new();
+        for name in ["src", "src2"] {
+            let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+            ctx.register_table(name, Arc::new(table)).unwrap();
+        }
+        let plan = ctx
+            .sql("select k, g, v from src union select k, g, v from src2")
+            .await
+            .unwrap()
+            .logical_plan()
+            .clone();
+        let mut append_only = source_table("src2");
+        append_only.primary_keys.clear();
+        let tables = HashMap::from([
+            ("src".to_string(), source_table("src")),
+            ("src2".to_string(), append_only),
+        ]);
+        assert!(analyze_select(&plan, &tables, &request()).is_err());
     }
 
     #[tokio::test]

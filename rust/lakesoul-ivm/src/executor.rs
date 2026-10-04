@@ -39,8 +39,9 @@ use crate::runtime::{
     median_groups_mv_schema_for, min_max_expr_mv_schema_for, min_max_mv_schema_for,
     row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    value_count_state_expr_schema_for, value_count_state_schema_for,
-    variance_groups_mv_schema_for, window_columns_mv_schema_for,
+    union_distinct_mv_schema_for, value_count_state_expr_schema_for,
+    value_count_state_schema_for, variance_groups_mv_schema_for,
+    window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
@@ -682,6 +683,16 @@ fn expected_mv_schema(
             )?
             .schema,
         )?,
+        ViewSpec::UnionDistinct { sources, .. } => {
+            let source = find_table(
+                tables,
+                sources
+                    .first()
+                    .map(|source| source.table_id.as_str())
+                    .ok_or_else(|| rootcause::report!("UNION view without sources"))?,
+            )?;
+            union_distinct_mv_schema_for(&source.schema, source.cdc_column.as_deref())
+        }
         ViewSpec::Join {
             left_table_id,
             right_table_id,

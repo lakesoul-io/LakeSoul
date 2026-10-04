@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE` | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
-| 连接/集合 | CROSS join；三表及以上 join；`UNION`（去重）；UNION 分支投影裁剪/改名；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 连接/集合 | CROSS join；三表及以上 join；UNION 分支投影裁剪/改名（去重已支持）；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
@@ -1723,6 +1723,31 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `variance_expr.slt`（`VAR_POP(v * 2)`：bootstrap/删除/更新/HAVING rebuild/增量）、
   两个差分 oracle（variance/median 的表达式参数）。
   全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）242 个测试通过、0 失败。
+
+### 10.40 UNION 去重（PR-34）
+
+- **能力**：`SELECT ... UNION SELECT ...`（去重）。MV 每行保存一个 distinct 值及其出现次数
+  （`count_v`）；刷新按带符号 delta 调整计数，计数降到 0 的行从 MV 删除。
+- **spec/typed**：新增 `ViewSpec::UnionDistinct` + `UnionDistinctView`（复用
+  `UnionSource`/`UnionSourceSpec`）；MV schema
+  `union_distinct_mv_schema_for(schema, change_column)` = 数据列（不含 CDC change 列）
+  + `count_v` + rowKinds + epoch，主键为数据列。
+- **analyzer**：`UNION` 的优化计划是 `Aggregate(groupBy=全部列, aggr=[]) -> Union`，原始计划是
+  `Distinct(Union)`，两种形状都识别；分支必须按顺序选择**全部数据列**（CDC change 列由内部
+  维护、不进入 distinct key）；要求分支 schema 一致且全部 keyed 或全部 append-only。
+- **运行时**：
+  - append-only 分支：delta 与 rebuild 都按
+    `sum(case when op in ('delete','update_before') then -1 else 1 end)` 聚合（无 CDC 列则
+    `count(1)`），与 SUM/COUNT 的 append-only 重建约定一致。
+  - keyed 分支：新值 +1（排除 retract 行）、变更主键的 as-of 旧值 -1（复用 sum_count 的
+    `key_filters` + as-of 读）；rebuild 对 merge-on-read 基线 `count(1)`（去掉 tombstone）。
+  - 刷新 SQL 把 delta 计数与当前 active 计数合并，受影响 key 先 delete 再 insert；失败重试时
+    本 epoch 的部分写入不计入基线但会被 delete 清理，重放幂等。
+- **测试**：analyzer（keyed 形状、per-branch 谓词、混合 keyed/append-only 拒绝）、
+  `union_distinct.slt`（keyed 两源：跨源重复计数、更新/删除/重新插入、谓词 rebuild、增量）、
+  `union_distinct_append.slt`（append-only CDC 两源：delete 标记、delete+insert 替换、
+  谓词 rebuild、增量）、差分 oracle（两 keyed 源 vs 全量 union + count）。
+  全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）246 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
