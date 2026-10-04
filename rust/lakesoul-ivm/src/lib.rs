@@ -4,6 +4,10 @@
 
 //! LakeSoul incremental materialized view runtime.
 //!
+//! See [README.md](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-ivm/README.md)
+//! for the SQL entry contract, the supported query shapes and the derived
+//! column names.
+//!
 //! This crate builds the IVM layer on top of the LakeSoul metadata primitives:
 //! an `ivm` PostgreSQL schema for view specs and cursors, internal LakeSoul
 //! tables for materialized views and state, and a refresh engine that consumes

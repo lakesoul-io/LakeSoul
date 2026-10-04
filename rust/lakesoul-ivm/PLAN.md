@@ -1094,7 +1094,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 1. **PR-1**：W0 + W1 + H1/H2 + 聚合类 slt/oracle（一个 PR）。
 2. **PR-2**：W2 + 窗口/TOP-K/UNION slt/oracle。
 3. 后续单独立项：HAVING、AVG、SELECT DISTINCT、窗口扩展、外连接/多表 join、
-   子查询/CTE、M5 文档与指标（复用 #959 观测）。
+   子查询/CTE、M5 文档与指标（复用 #959 观测）。文档部分见 §10.42（已完成）。
 
 ### 10.7 PR-1 实施记录（W0 + W1 + H1/H2）
 
@@ -1764,6 +1764,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `window_order_expr.slt`（bootstrap/更新改变桶序/删除压缩/谓词 rebuild/平局由主键打破）、
   差分 oracle（窗口 `ORDER BY v % 10`、`STRING_AGG(... order by v % 10, k)`）。
   全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）250 个测试通过、0 失败。
+
+### 10.42 M5 文档：`rust/lakesoul-ivm/README.md`（PR-36）
+
+- **内容**：面向使用者的 README：
+  - 分层结构（runtime / sql+executor / provider）与 SQL 入口语义（`INSERT INTO` 增量维护、
+    `INSERT OVERWRITE` 全量、目标表必须存在且 schema 匹配、定义变化触发 rebuild、action）；
+  - 支持形状总表（投影/过滤、`SELECT DISTINCT`、SUM/COUNT/AVG、MIN/MAX、DISTINCT 聚合、
+    VAR/STDDEV、MEDIAN、STRING_AGG、ARRAY_AGG、窗口、TOP-K、内连接/lookup/LEFT/FULL/RIGHT、
+    UNION ALL、UNION、semi/anti）与派生列名表（`sum_v`/`count_v`/`avg_v`/`__ivm_*` 等）；
+  - 源约定（keyed vs append-only、CDC change 列、retention 约束）、逻辑读
+    （provider 的 Current/AsOf/AtVersions/Raw 模式）、刷新语义（游标/epoch/重放/rebuild）、
+    Rust API 示例、限制清单与测试命令。
+- **同步**：`lib.rs` 顶部文档加 README 链接；PLAN §10.6 的 M5 条目标注文档已完成
+  （指标/观测复用 #959 仍留待后续）。
+- **验证**：纯文档改动，全量 IVM 套件保持（lib + 37 个集成测试二进制 + doctest）
+  250 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
