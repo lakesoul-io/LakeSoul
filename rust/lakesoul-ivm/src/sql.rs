@@ -1742,18 +1742,31 @@ fn window_function_spec(
             .map(column_name)
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| unsupported("PARTITION BY expressions must be columns"))?;
-        let expr_order = params
-            .order_by
-            .iter()
-            .map(|sort| column_name(&sort.expr))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
-        let expr_order_by = params
-            .order_by
-            .iter()
-            .zip(expr_order.iter())
-            .map(|(sort, column)| render_order_key(column, sort.asc, sort.nulls_first))
-            .collect::<Vec<_>>();
+        let mut expr_order = Vec::with_capacity(params.order_by.len());
+        let mut expr_order_by = Vec::with_capacity(params.order_by.len());
+        for sort in &params.order_by {
+            match column_name(&sort.expr) {
+                Some(column) => {
+                    expr_order_by.push(render_order_key(
+                        &column,
+                        sort.asc,
+                        sort.nulls_first,
+                    ));
+                    expr_order.push(column);
+                }
+                None => {
+                    // A rendered expression: the keys hold the plain
+                    // expression (for validation), the ordering adds the
+                    // direction and wraps the expression in parentheses.
+                    expr_order_by.push(render_order_expr(
+                        &sort.expr,
+                        sort.asc,
+                        sort.nulls_first,
+                    )?);
+                    expr_order.push(render_filter(&sort.expr)?);
+                }
+            }
+        }
         match (&partition_keys, &order_keys, &order_by) {
             (Some(partition), Some(order), Some(rendered)) => {
                 if partition != &expr_partition
@@ -1822,12 +1835,22 @@ fn quote_order_identifier(column: &str) -> String {
 fn render_order_items(order_by: &[SortExpr]) -> Result<Vec<String>> {
     order_by
         .iter()
-        .map(|sort| {
-            let column = column_name(&sort.expr)
-                .ok_or_else(|| unsupported("ORDER BY expressions must be columns"))?;
-            Ok(render_order_key(&column, sort.asc, sort.nulls_first))
+        .map(|sort| match column_name(&sort.expr) {
+            Some(column) => Ok(render_order_key(&column, sort.asc, sort.nulls_first)),
+            None => render_order_expr(&sort.expr, sort.asc, sort.nulls_first),
         })
         .collect()
+}
+
+/// Render one `ORDER BY` item whose expression is not a plain column.
+fn render_order_expr(expr: &Expr, asc: bool, nulls_first: bool) -> Result<String> {
+    let rendered = render_filter(expr)?;
+    Ok(match (asc, nulls_first) {
+        (true, false) => format!("({rendered})"),
+        (true, true) => format!("({rendered}) asc nulls first"),
+        (false, false) => format!("({rendered}) desc nulls last"),
+        (false, true) => format!("({rendered}) desc nulls first"),
+    })
 }
 
 /// Render a string literal argument (`','`).
@@ -3500,6 +3523,86 @@ mod tests {
         };
         assert_eq!(group_keys, vec!["g".to_string(), "bucket".to_string()]);
         assert_eq!(group_exprs, vec!["g".to_string(), "(v % 10)".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn analyzes_window_order_expressions() {
+        // ORDER BY may be a scalar expression: the keys keep the plain
+        // expression (for validation) and the ordering adds the direction.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v % 10) as rn from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            order_keys,
+            order_by,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(order_keys, vec!["(v % 10)".to_string()]);
+        assert_eq!(order_by, vec!["((v % 10))".to_string()]);
+
+        // A mixed list of plain columns and expressions.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v % 10 desc, k) as rn from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Window {
+            order_keys,
+            order_by,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a window spec");
+        };
+        assert_eq!(order_keys, vec!["(v % 10)".to_string(), "k".to_string()]);
+        assert_eq!(
+            order_by,
+            vec!["((v % 10)) desc nulls first".to_string(), "k".to_string()]
+        );
+
+        // The aggregate ordering of STRING_AGG/ARRAY_AGG accepts expressions
+        // the same way.
+        let analyzed =
+            analyze("select g, string_agg(g, ',' order by v % 10) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::StringAgg { order_by, .. } = analyzed.spec else {
+            panic!("expected a string_agg spec");
+        };
+        assert_eq!(order_by, vec!["((v % 10))".to_string()]);
+
+        let analyzed =
+            analyze("select g, array_agg(g order by v % 10, k) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::ArrayAgg { order_by, .. } = analyzed.spec else {
+            panic!("expected an array_agg spec");
+        };
+        assert_eq!(order_by, vec!["((v % 10))".to_string(), "k".to_string()]);
+
+        // The same ordering parser drives TOP-K.
+        let analyzed = analyze(
+            "select k, v from (select k, g, v, \
+             row_number() over (partition by g order by v % 10) as rn from src) t \
+             where rn <= 3",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::TopK {
+            order_keys,
+            order_by,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(order_keys, vec!["(v % 10)".to_string()]);
+        assert_eq!(order_by, vec!["((v % 10))".to_string()]);
     }
 
     #[tokio::test]

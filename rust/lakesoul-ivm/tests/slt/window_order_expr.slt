@@ -1,0 +1,86 @@
+# A window ordering over an expression (`v % 10`); the source primary keys
+# break ROW_NUMBER ties.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=23,op=insert; k=3,g=a,v=35,op=insert; k=4,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 1
+2 2
+3 3
+4 1
+
+# An update changes the expression value and reshuffles the ranks.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=99,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 1
+2 3
+3 2
+4 1
+
+# A delete compresses the ranks.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 2
+3 1
+4 1
+
+# A changing definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 2
+3 1
+4 1
+
+# Equal expression values fall back to the source primary keys.
+statement ok
+/*ivm-append __SRC__: k=5,g=b,v=47,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10) FROM __SRC__ WHERE v > 5
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, "row_number" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 2
+3 1
+4 1
+5 2

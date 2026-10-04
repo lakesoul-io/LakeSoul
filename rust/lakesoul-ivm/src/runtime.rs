@@ -9993,9 +9993,15 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
         }
     }
     for column in &view.order_keys {
-        view.source.schema.field_with_name(column).map_err(|_| {
+        if view.source.schema.field_with_name(column).is_ok() {
+            continue;
+        }
+        // A computed ordering item is a rendered expression over the source.
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
-                "window view {}: order column {column} is not in the source",
+                "window view {}: order column {column} is not in the source \
+                 and not a valid expression: {error}",
                 view.view_id
             )
         })?;
@@ -11328,10 +11334,24 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
             ));
         }
     }
-    for column in view.group_keys.iter().chain(view.order_keys.iter()) {
+    for column in &view.group_keys {
         view.source.schema.field_with_name(column).map_err(|_| {
             report!(
                 "top-k view {}: column {column} is not in the source",
+                view.view_id
+            )
+        })?;
+    }
+    for column in &view.order_keys {
+        if view.source.schema.field_with_name(column).is_ok() {
+            continue;
+        }
+        // A computed ordering item is a rendered expression over the source.
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, column).map_err(|error| {
+            report!(
+                "top-k view {}: order column {column} is not in the source \
+                 and not a valid expression: {error}",
                 view.view_id
             )
         })?;
