@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE` | 随需求做 |
-| 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr）；`ORDER BY` 表达式 | 随需求做 |
+| 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr） | 随需求做 |
 | 连接/集合 | CROSS join；三表及以上 join；UNION 分支投影裁剪/改名（去重已支持）；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
@@ -1748,6 +1748,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `union_distinct_append.slt`（append-only CDC 两源：delete 标记、delete+insert 替换、
   谓词 rebuild、增量）、差分 oracle（两 keyed 源 vs 全量 union + count）。
   全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）246 个测试通过、0 失败。
+
+### 10.41 ORDER BY 表达式（窗口/TOP-K 与 STRING_AGG/ARRAY_AGG）（PR-35）
+
+- **能力**：窗口（含 TOP-K）的 `ORDER BY` 与 `STRING_AGG`/`ARRAY_AGG` 的聚合内 `ORDER BY`
+  接受标量表达式，例如 `row_number() over (partition by g order by v % 10)`、
+  `string_agg(x, ',' order by v % 10, k)`。
+- **analyzer**：窗口/TOP-K 的排序项逐项解析——普通列保留列名；表达式把 `render_filter` 文本
+  存入 `order_keys`（用于校验），`order_by` 额外包一层括号并带方向
+  （`(v % 10) desc nulls first`）；聚合排序走扩展后的 `render_order_items`。
+- **运行时**：`order_keys` 校验由"必须是源列"放宽为"源列或可用 `parse_filter` 解析的表达式"
+  （`validate_window_view` 与 `validate_top_k_view` 各一处）；`order_items` 无需改动
+  （表达式时 `order_by` 非空，不会被当作标识符引用）。
+- **测试**：analyzer（窗口、混合方向、STRING_AGG/ARRAY_AGG、TOP-K）、
+  `window_order_expr.slt`（bootstrap/更新改变桶序/删除压缩/谓词 rebuild/平局由主键打破）、
+  差分 oracle（窗口 `ORDER BY v % 10`、`STRING_AGG(... order by v % 10, k)`）。
+  全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）250 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

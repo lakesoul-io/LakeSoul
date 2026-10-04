@@ -907,6 +907,22 @@ fn sqllogic_string_agg() {
 }
 
 #[test]
+fn sqllogic_window_order_expression() {
+    run_script_for_mv(
+        "windoworderexpr",
+        include_str!("slt/window_order_expr.slt"),
+        window_columns_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            &[WindowColumn::new(WindowFunction::RowNumber)],
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_desc() {
     let schema = nullable_source_schema();
     run_script_for_source(

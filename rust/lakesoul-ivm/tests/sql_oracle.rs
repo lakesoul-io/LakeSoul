@@ -577,6 +577,55 @@ async fn oracle_window_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_window_order_expr_matches_full_recompute() {
+    // The ordering key is a rendered expression; the runtime appends the
+    // primary keys to the ordering to break ties.
+    run_oracle(
+        "windoworderexpr",
+        1,
+        window_ranking_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &["k".to_string()],
+            WindowFunction::RowNumber,
+        )
+        .unwrap(),
+        vec!["g".to_string(), "k".to_string()],
+        "SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10) \
+         FROM __SRC__",
+        "SELECT g, k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10, k) \
+             AS \"row_number\" \
+         FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT g, k, \"row_number\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_string_agg_order_expr_matches_full_recompute() {
+    // The aggregate ordering mixes a rendered expression with a plain column,
+    // which keeps the concatenation deterministic.
+    run_oracle(
+        "stringaggorderexpr",
+        1,
+        string_agg_expr_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            "CAST(v AS VARCHAR)",
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY v % 10, k) \
+         FROM __SRC__ WHERE v > 30 GROUP BY g",
+        "SELECT g, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY v % 10, k) \
+             AS string_agg_value \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, string_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_desc_window_matches_full_recompute() {
     // The runtime appends the primary keys to the descending ordering, so the
     // reference uses `v DESC, k`.
