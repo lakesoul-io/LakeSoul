@@ -1991,6 +1991,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `lookup_join_filter.slt`（bootstrap、进入/离开过滤、维度更新流入、过滤变化 rebuild）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）282 个测试通过、0 失败。
 
+### 10.55 INNER JOIN 双侧过滤（PR-49）
+
+- **能力**：inner join 的两侧都可以带 `WHERE`（`... JOIN dim d ON ... WHERE f.amount > 0 AND d.active`）。
+  优化器把谓词下推到 join 之下（`Filter` 或扫描下推过滤），analyzer 将其保留在 `ViewSpec::Join`
+  的 `left_filter`/`right_filter`；行的进入/离开过滤由主键受影响集自然处理（delta 主键/键不过滤，
+  当前状态与 pair 投影按过滤后的两侧重算）。
+- **运行时**：keyed 路径过滤 `left_now`/`right_now`；append-only 路径过滤 delta 与 as-of before
+  状态；`rebuild_join` 过滤基线。`apply_side_filter`/`filtered_frame` 两个辅助函数统一处理。
+- **语义说明**：FULL JOIN + 单侧过滤会被 DataFusion 改写为 LEFT/RIGHT join（NULL 侧行被过滤掉），
+  因而走进 lookup/inner 支持路径；跨侧谓词（`a.v > b.v`）改写为 inner join + 非等值条件 → 仍明确拒绝。
+  SEMI/ANTI 的侧过滤下推后仍明确拒绝。
+- **拒绝范围收窄**：`rejects_filtered_join_inputs` 现在只覆盖 semi/anti 与 CROSS JOIN 的跨侧谓词；
+  新增 `analyzes_filtered_inner_join_inputs`（双侧过滤 + 过滤派生表）。
+- **测试**：analyzer、`join_filters.slt`（bootstrap、左右行进入/离开过滤、删除、过滤变化 rebuild）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）284 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

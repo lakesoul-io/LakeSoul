@@ -64,7 +64,7 @@ used as row identities must be non-nullable.
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
-| Inner join | `JOIN` on equality keys, both sides keyed or both append-only | join keys, `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| Inner join | `JOIN` on equality keys, both sides keyed or both append-only, optional side filters | join keys, `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name) | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed | `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed | as the inner join, with nullable unmatched identities |
@@ -89,6 +89,9 @@ Supported within the shapes above:
   change column cannot be part of a `UNION` output;
 * **semi/anti joins** through correlated `EXISTS` / `NOT EXISTS` / `IN`
   subqueries, including extra comparison conditions between the two sides;
+* an **inner join** may filter either side (`WHERE fact.amount > 0 AND
+  dim.active`): the optimizer pushes the predicates below the join and a row
+  entering or leaving its filter adds or retracts its pairs;
 * a **lookup `LEFT JOIN`** may reference a differently named right key
   (`ON fact.dim_id = dim.id`) and may filter the fact side
   (`WHERE fact.amount > 0`), as long as the right source is keyed by its side
@@ -238,9 +241,10 @@ the backlog):
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
   join keys, differently named keys outside the lookup `LEFT JOIN`, and
   multiple payload columns per side;
-* a join input with a `WHERE` clause (or a filtered derived table), except the
-  left side of a lookup `LEFT JOIN`: the optimizer pushes the filter below the
-  join and the analyzer rejects the shape instead of ignoring the predicate;
+* a join input with a `WHERE` clause (or a filtered derived table) outside an
+  inner join or the left side of a lookup `LEFT JOIN`: the optimizer pushes
+  the filter below the join and the analyzer rejects the shape instead of
+  ignoring the predicate;
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /

@@ -2303,11 +2303,6 @@ fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("inner join with non-equality conditions"));
             }
-            if left_filter.is_some() || right_filter.is_some() {
-                return Err(unsupported(
-                    "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-                ));
-            }
             if !same_names {
                 return Err(unsupported(
                     "differently named join keys are only supported by a lookup LEFT JOIN",
@@ -2329,6 +2324,8 @@ fn analyze_join(
                 join_keys,
                 left_value,
                 right_value,
+                left_filter,
+                right_filter,
             })
         }
         JoinType::Left => {
@@ -5740,6 +5737,8 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                left_filter: None,
+                right_filter: None,
             }
         );
     }
@@ -5782,22 +5781,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_filtered_inner_join_inputs() {
+        // Both sides of an inner join can be filtered; the predicates are
+        // pushed below the join and kept on the spec.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v from src a join src b on a.k = b.k \
+             where a.v > 1 and b.v > 2",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            left_filter,
+            right_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+        assert_eq!(
+            normalized(right_filter.as_deref()).as_deref(),
+            Some("v > 2")
+        );
+
+        // The same through a filtered derived table.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v from (select * from src where v > 1) a \
+             join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join { left_filter, .. } = analyzed.spec else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+    }
+
+    #[tokio::test]
     async fn rejects_filtered_join_inputs() {
-        // A WHERE clause on a join side is pushed below the join and is not
-        // maintained yet: the analyzer must reject it rather than ignore the
+        // SEMI/ANTI join side filters are pushed below the join and are not
+        // maintained: the analyzer must reject them rather than ignore the
         // filter.
         assert!(
             analyze_optimized(
-                "select a.k, a.v, b.v from src a join src b on a.k = b.k where a.v > 1",
+                "select a.v from src a left semi join src b on a.k = b.k where a.v > 1",
             )
             .await
             .is_err()
         );
-        // The same through a filtered derived table.
         assert!(
             analyze_optimized(
-                "select a.k, a.v, b.v from (select * from src where v > 1) a \
-                 join src b on a.k = b.k",
+                "select a.v from src a left anti join src b on a.k = b.k where a.v > 1",
             )
             .await
             .is_err()
