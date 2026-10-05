@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
 | 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE` | 随需求做 |
 | 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr） | 随需求做 |
-| 连接/集合 | CROSS join；三表及以上 join；UNION 分支投影裁剪/改名（去重已支持）；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
+| 连接/集合 | CROSS join；三表及以上 join；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
 | 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
 | 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
 | 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
@@ -1780,6 +1780,31 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （指标/观测复用 #959 仍留待后续）。
 - **验证**：纯文档改动，全量 IVM 套件保持（lib + 37 个集成测试二进制 + doctest）
   250 个测试通过、0 失败。
+
+### 10.43 UNION 分支投影裁剪/改名（PR-37）
+
+- **能力**：`UNION ALL`/`UNION` 的分支可以做列裁剪、改名与计算列（各分支输出
+  schema 的名称与类型需一致），例如
+  `SELECT k, g, v * 2 AS amount FROM a UNION ALL SELECT k, g, v AS amount FROM b`。
+- **spec/typed**：`UnionSourceSpec`/`UnionSource` 增加 `columns`（输出列，空=全部源列）
+  与 `exprs`（与 `columns` 平行的渲染表达式，空=全部普通列）；新增
+  `union_output_schema_for(source_schema, columns, exprs)`；
+  `union_distinct_mv_schema_for` 改为接收分支输出 schema；typed
+  `UnionSource::with_projection`。
+- **analyzer**：`union_branch` 复用行投影解析（`collect_row`），并校验各分支输出 schema
+  一致（名+类型）；keyed 的 `UNION ALL` 分支必须把主键作为普通列保留（否则运行时的
+  pair 匹配失效）；`UNION` 分支不得投影 CDC change 列（含表达式引用，逐表达式解析检查）。
+- **运行时**：
+  - `UNION ALL`：每分支按 `columns`/`exprs` 构建 DataFrame 投影（表达式经
+    `create_logical_expr` 解析并 alias 到输出列）；append-only CDC 源的标记翻译为 MV 的
+    `rowKinds`（`delete`/`update_before` → `delete`），即使 CDC 列不在投影里逻辑读也能过滤；
+    rebuild 路径同样使用投影。
+  - `UNION`：每分支先在子查询里投影再做计数聚合（append-only 的带符号计数在投影内计算，
+    keyed 的新/旧两侧各自投影），rebuild 同理。
+- **测试**：analyzer（append-only 投影/改名/计算列、keyed 丢主键拒绝、UNION 投影与 CDC
+  列拒绝）、`union_projection.slt`（keyed 两源：计算列、更新/删除/谓词 rebuild/增量）、
+  差分 oracle（keyed `UNION` 投影 + 计数）。
+  全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）253 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

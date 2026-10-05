@@ -25,7 +25,7 @@ use lakesoul_ivm::{
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    variance_groups_mv_schema_for, variance_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
     window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
@@ -1096,13 +1096,45 @@ async fn oracle_variance_group_expr_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_union_distinct_projection_matches_full_recompute() {
+    // The distinct key is a projected subset (renamed), so updates to the
+    // other columns must not change the occurrence counts.
+    run_oracle(
+        "uniondistinctproj",
+        2,
+        union_distinct_mv_schema_for(
+            &union_output_schema_for(
+                &source_schema(),
+                &["id".to_string(), "name".to_string()],
+                &["k".to_string(), "g".to_string()],
+            )
+            .unwrap(),
+        ),
+        vec!["id".to_string(), "name".to_string()],
+        "SELECT k AS id, g AS name FROM __SRC__ UNION SELECT k AS id, g AS name FROM __SRC1__",
+        "SELECT k AS id, g AS name, count(*) AS count_v FROM (SELECT k, g FROM __SRC__ \
+         WHERE op <> 'delete' UNION ALL SELECT k, g FROM __SRC1__ \
+         WHERE op <> 'delete') t GROUP BY k, g",
+        "SELECT id, name, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_union_distinct_matches_full_recompute() {
     // Two keyed sources unioned with deduplication: the MV keeps the
     // occurrence counts, so the reference counts the unioned logical rows.
     run_oracle(
         "uniondistinct",
         2,
-        union_distinct_mv_schema_for(&source_schema(), Some(CHANGE_COLUMN)),
+        union_distinct_mv_schema_for(
+            &union_output_schema_for(
+                &source_schema(),
+                &["k".to_string(), "g".to_string(), "v".to_string()],
+                &[],
+            )
+            .unwrap(),
+        ),
         vec!["k".to_string(), "g".to_string(), "v".to_string()],
         "SELECT k, g, v FROM __SRC__ UNION SELECT k, g, v FROM __SRC1__",
         "SELECT k, g, v, count(*) AS count_v FROM (SELECT k, g, v FROM __SRC__ \

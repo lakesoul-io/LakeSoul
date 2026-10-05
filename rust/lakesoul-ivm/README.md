@@ -67,8 +67,8 @@ used as row identities must be non-nullable.
 | Inner join | `JOIN` on equality keys, both sides keyed or both append-only | join keys, `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed | as the inner join, with nullable unmatched identities |
-| UNION ALL | `SELECT ... UNION ALL SELECT ...` | source columns, `__ivm_source`, kinds, epoch |
-| UNION | `SELECT ... UNION SELECT ...` | data columns (the CDC column is excluded), `count_v`, kinds, epoch |
+| UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
+| UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | runtime/typed views (plans with `LeftSemi`/`LeftAnti`) | left columns, kinds, epoch |
 
 Supported within the shapes above:
@@ -82,6 +82,10 @@ Supported within the shapes above:
   aggregates (`ORDER BY v % 10`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
   operations;
+* **set-operation projections**: union branches may prune, rename and compute
+  columns as long as every branch has the same output schema; a keyed
+  `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
+  change column cannot be part of a `UNION` output;
 * window `PARTITION BY`/`ORDER BY` columns or expressions, custom frames,
   `FILTER (WHERE ...)` and `IGNORE NULLS`. All window columns of one statement
   share the same clause.
@@ -204,8 +208,6 @@ the backlog):
   statement (all window columns share one clause);
 * `CROSS` join, three or more table joins, non-equality join keys, differently
   named join keys and multiple payload columns per side;
-* `UNION` branches that project or rename a subset of the columns (branches
-  must select every data column in order);
 * subqueries / CTEs and derived tables containing aggregates or windows;
 * `GROUPING SETS` / `ROLLUP` / `CUBE`, `COUNT(DISTINCT a, b)`;
 * `SELECT DISTINCT ON`.

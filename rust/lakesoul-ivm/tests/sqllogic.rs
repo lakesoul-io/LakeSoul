@@ -39,7 +39,7 @@ use lakesoul_ivm::{
     string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    variance_groups_mv_schema_for, variance_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
     window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
@@ -1574,6 +1574,27 @@ fn sqllogic_right_join() {
 }
 
 #[test]
+fn sqllogic_union_projection() {
+    let schema = source_schema();
+    let output = union_output_schema_for(
+        &schema,
+        &group_keys(&["k", "g", "amount"]),
+        &group_keys(&["k", "g", "(v * 2)"]),
+    )
+    .unwrap();
+    run_script_for_sources(
+        "unionprojection",
+        include_str!("slt/union_projection.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+        ],
+        union_all_mv_schema_for(&output).unwrap(),
+        group_keys(&[IVM_SOURCE_COLUMN, "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_union_distinct() {
     let schema = source_schema();
     run_script_for_sources(
@@ -1583,7 +1604,10 @@ fn sqllogic_union_distinct() {
             SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
             SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
         ],
-        union_distinct_mv_schema_for(&schema, Some(CHANGE_COLUMN)),
+        union_distinct_mv_schema_for(
+            &union_output_schema_for(&schema, &group_keys(&["k", "g", "v"]), &[])
+                .unwrap(),
+        ),
         group_keys(&["k", "g", "v"]),
     );
 }
@@ -1598,7 +1622,10 @@ fn sqllogic_union_distinct_append_only() {
             SltSource::append_only_cdc("__SRC1__", schema.clone()),
             SltSource::append_only_cdc("__SRC2__", schema.clone()),
         ],
-        union_distinct_mv_schema_for(&schema, Some(CHANGE_COLUMN)),
+        union_distinct_mv_schema_for(
+            &union_output_schema_for(&schema, &group_keys(&["k", "g", "v"]), &[])
+                .unwrap(),
+        ),
         group_keys(&["k", "g", "v"]),
     );
 }

@@ -1,0 +1,83 @@
+# UNION ALL with per-branch projections: computed and pruned columns are
+# allowed as long as the output schemas match (keyed branches must keep their
+# primary keys as plain columns).
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert; k=2,g=b,v=3,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=3,g=c,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v * 2 AS amount FROM __SRC1__ UNION ALL SELECT k, g, v AS amount FROM __SRC2__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITII rowsort
+SELECT k, g, amount, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 20 0
+2 b 6 0
+3 c 7 1
+
+# An update retracts the old projected row.
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v * 2 AS amount FROM __SRC1__ UNION ALL SELECT k, g, v AS amount FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, amount, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 30 0
+2 b 6 0
+3 c 7 1
+
+# A delete removes the projected row.
+statement ok
+/*ivm-append __SRC1__: k=2,g=b,v=3,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v * 2 AS amount FROM __SRC1__ UNION ALL SELECT k, g, v AS amount FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, amount, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 30 0
+3 c 7 1
+
+# Per-branch predicates rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v * 2 AS amount FROM __SRC1__ WHERE v > 10 UNION ALL SELECT k, g, v AS amount FROM __SRC2__ WHERE v > 10
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITII rowsort
+SELECT k, g, amount, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 30 0
+
+# Incremental rows must pass their branch predicate.
+statement ok
+/*ivm-append __SRC2__: k=4,g=d,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v * 2 AS amount FROM __SRC1__ WHERE v > 10 UNION ALL SELECT k, g, v AS amount FROM __SRC2__ WHERE v > 10
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, amount, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 30 0
+4 d 12 1
