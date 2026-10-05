@@ -1895,6 +1895,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   限制条目改为标量子查询。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）269 个测试通过、0 失败。
 
+### 10.49 MIN/MAX 与 DISTINCT 的 GROUP BY 表达式（PR-43）
+
+- **能力**：`GROUP BY <expr>` 从 SumCount 与 recompute 家族推广到 value-count 家族
+  （MIN/MAX、`COUNT/SUM(DISTINCT)`）。
+- **spec/typed**：`ViewSpec::MinMax`/`DistinctAgg` 增加 `group_exprs`；typed view 同步
+  字段 + `with_group_exprs`；`ValueCountView` 携带 `group_exprs`。
+- **schema**：新增 `min_max_groups_mv_schema_for` / `distinct_agg_groups_mv_schema_for` /
+  `value_count_groups_state_schema_for`（键字段走 `group_key_fields`，状态表与 MV 都支持
+  计算键）；旧函数委托空表达式；executor 统一走 groups 版本。
+- **运行时**：`refresh_value_count`/`rebuild_value_count` 把计算键投影进 delta/old/src 批次
+  （`project_group_keys`），计算键无法裁剪时跳过 `key_filters` 剪枝，`affected` 注册用
+  `key_schema_for`。
+- **analyzer**：DISTINCT 的优化器分组拆分（inner `group by keys, value` + outer count）
+  在计算键下会把键 hoist 为 `group_alias_N`——`distinct_split` 现在把「外层引用的别名」
+  识别为分组键，`analyze_aggregate` 把这些别名合并进 hoisted 表达式映射，从而还原出
+  `bucket = (v % 10)` 的键/表达式。
+- **测试**：analyzer（MIN/MAX、DISTINCT、普通列与表达式混合）、`min_max_group_expr.slt`
+  （跨桶更新、删除清空分组、MIN→MAX 重建、增量）、`distinct_group_expr.slt`（distinct 值
+  更新、删除降计数、跨桶移动）、两个差分 oracle。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）274 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

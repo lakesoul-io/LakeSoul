@@ -32,15 +32,16 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, array_agg_mv_schema_for, avg_mv_schema_for,
-    cross_join_view_schema_for, distinct_agg_mv_schema_for, full_join_view_schema_for,
+    cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
+    distinct_agg_mv_schema_for, full_join_view_schema_for,
     keyed_join_output_primary_keys, left_join_view_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, row_expr_mv_schema_for,
+    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -1741,6 +1742,41 @@ fn sqllogic_union_append_where() {
         ],
         union_all_mv_schema_for(&source).unwrap(),
         Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_min_max_group_expression() {
+    run_script_for_mv(
+        "minmaxgroupexpr",
+        include_str!("slt/min_max_group_expr.slt"),
+        min_max_groups_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["bucket"]),
+            &group_keys(&["(v % 10)"]),
+            Some("v"),
+            None,
+            MinMaxKind::Min,
+        )
+        .unwrap(),
+        group_keys(&["bucket"]),
+    );
+}
+
+#[test]
+fn sqllogic_distinct_group_expression() {
+    run_script_for_mv(
+        "distinctgroupexpr",
+        include_str!("slt/distinct_group_expr.slt"),
+        distinct_agg_groups_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["bucket"]),
+            &group_keys(&["(v % 10)"]),
+            "g",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        group_keys(&["bucket"]),
     );
 }
 

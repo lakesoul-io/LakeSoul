@@ -793,10 +793,20 @@ fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, S
         return Ok(None);
     }
     // The inner grouping repeats the outer keys plus one aliased value.
+    let outer = aggregate
+        .group_expr
+        .iter()
+        .map(|expr| format!("{expr}"))
+        .collect::<Vec<_>>();
     let mut alias: Option<(String, String)> = None;
     let mut others = Vec::new();
     for expr in &inner.group_expr {
         match expr {
+            // A hoisted group expression keeps its alias in the inner
+            // grouping; the outer grouping references that alias.
+            Expr::Alias(inner_alias) if outer.contains(&inner_alias.name) => {
+                others.push(inner_alias.name.clone());
+            }
             Expr::Alias(inner_alias) => {
                 if alias.is_some() {
                     return Ok(None);
@@ -809,11 +819,6 @@ fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, S
             other => others.push(format!("{other}")),
         }
     }
-    let outer = aggregate
-        .group_expr
-        .iter()
-        .map(|expr| format!("{expr}"))
-        .collect::<Vec<_>>();
     let Some((alias, value_column)) = alias else {
         return Ok(None);
     };
@@ -922,11 +927,23 @@ fn analyze_aggregate(
     {
         return analyze_union_distinct(union, tables, request);
     }
-    let hoisted_exprs = hoisted_expressions(&aggregate.input);
+    let mut hoisted_exprs = hoisted_expressions(&aggregate.input);
     // The optimizer rewrites a single DISTINCT aggregate into an inner
     // grouping over `(group keys, value)` and an outer `count(alias)` /
     // `sum(alias)`.
     let distinct_split = distinct_split(aggregate)?;
+    // The DISTINCT split hoists a computed group key into the inner grouping
+    // aliased as `group_alias_N`; the outer grouping references that alias, so
+    // resolve it back to its expression.
+    if let Some((inner, _, _)) = &distinct_split {
+        for expr in &inner.group_expr {
+            if let Expr::Alias(alias) = expr {
+                hoisted_exprs
+                    .entry(alias.name.clone())
+                    .or_insert((*alias.expr).clone());
+            }
+        }
+    }
     let input = match &distinct_split {
         Some((inner, _, _)) => &inner.input,
         None => &aggregate.input,
@@ -944,6 +961,13 @@ fn analyze_aggregate(
             inner = &nested.expr;
         }
         match inner {
+            Expr::Column(column) if hoisted_exprs.contains_key(&column.name) => {
+                let name = alias
+                    .ok_or_else(|| unsupported("GROUP BY expressions need an alias"))?;
+                let resolved = resolve_hoisted(inner, &hoisted_exprs);
+                group_keys.push(name);
+                group_exprs.push(render_filter(&resolved)?);
+            }
             Expr::Column(column) => {
                 group_keys.push(alias.unwrap_or_else(|| column.name.clone()));
                 group_exprs.push(column.name.clone());
@@ -1512,6 +1536,7 @@ fn analyze_aggregate(
             mv_table_id: request.mv_table_id.clone(),
             state_table_id: request.state_table()?,
             group_keys,
+            group_exprs,
             value_column,
             agg,
             filter,
@@ -1528,6 +1553,7 @@ fn analyze_aggregate(
             mv_table_id: request.mv_table_id.clone(),
             state_table_id: request.state_table()?,
             group_keys,
+            group_exprs,
             value_column,
             value_expr,
             min_max,
@@ -3545,6 +3571,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_value_count_group_expressions() {
+        // MIN/MAX and DISTINCT carry computed group keys like the other
+        // aggregate families.
+        let analyzed =
+            analyze("select v % 10 as bucket, min(v) from src group by bucket")
+                .await
+                .unwrap();
+        let ViewSpec::MinMax {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a min/max spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+
+        let analyzed = analyze(
+            "select v % 10 as bucket, count(distinct g) from src group by bucket",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::DistinctAgg {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["(v % 10)".to_string()]);
+
+        // A plain key stays compact next to an expression.
+        let analyzed =
+            analyze("select g, v % 10 as bucket, max(v) from src group by g, bucket")
+                .await
+                .unwrap();
+        let ViewSpec::MinMax {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a min/max spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "bucket".to_string()]);
+        assert_eq!(group_exprs, vec!["g".to_string(), "(v % 10)".to_string()]);
+    }
+
+    #[tokio::test]
     async fn analyzes_semi_anti_subqueries() {
         // `WHERE EXISTS` / `NOT EXISTS` / `IN` decorrelate into LeftSemi /
         // LeftAnti joins over a correlated subquery alias.
@@ -4073,6 +4151,7 @@ mod tests {
                 mv_table_id: "table_mv".to_string(),
                 state_table_id: "table_state".to_string(),
                 group_keys: vec!["g".to_string()],
+                group_exprs: Vec::new(),
                 value_column: Some("v".to_string()),
                 value_expr: None,
                 min_max: MinMaxKind::Max,

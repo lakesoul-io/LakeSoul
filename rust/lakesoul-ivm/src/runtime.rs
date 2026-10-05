@@ -417,6 +417,10 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The min/max column; `None` when the argument is an expression.
         value_column: Option<String>,
         /// The rendered min/max expression.
@@ -447,6 +451,10 @@ pub enum ViewSpec {
         /// The group key columns.
         #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
         group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
         /// The distinct value column.
         value_column: String,
         /// Whether the distinct count or the distinct sum is maintained.
@@ -1377,6 +1385,8 @@ struct ValueCountView<'a> {
     mv: &'a IvmTable,
     state: &'a IvmTable,
     group_keys: &'a [String],
+    /// The rendered group expressions, parallel to `group_keys`.
+    group_exprs: &'a [String],
     value_column: Option<&'a str>,
     value_expr: Option<&'a str>,
     agg: ValueAgg,
@@ -1996,6 +2006,9 @@ pub struct MinMaxView {
     pub state: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The min/max value column; `None` when the argument is an expression.
     pub value_column: Option<String>,
     /// The rendered min/max value expression.
@@ -2027,6 +2040,7 @@ impl MinMaxView {
             mv,
             state,
             group_keys: vec![group_key.into()],
+            group_exprs: Vec::new(),
             value_column: Some(value_column.into()),
             value_expr: None,
             min_max,
@@ -2052,6 +2066,7 @@ impl MinMaxView {
             mv,
             state,
             group_keys,
+            group_exprs: Vec::new(),
             value_column: Some(value_column.into()),
             value_expr: None,
             min_max,
@@ -2080,6 +2095,12 @@ impl MinMaxView {
         self
     }
 
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::MinMax {
             view_id: self.view_id.clone(),
@@ -2087,6 +2108,7 @@ impl MinMaxView {
             mv_table_id: self.mv.table_id.clone(),
             state_table_id: self.state.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             value_expr: self.value_expr.clone(),
             min_max: self.min_max,
@@ -2114,6 +2136,9 @@ pub struct DistinctAggView {
     pub state: IvmTable,
     /// The group key columns.
     pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to
+    /// [`Self::group_keys`]; empty means every key is a plain column.
+    pub group_exprs: Vec<String>,
     /// The distinct value column.
     pub value_column: String,
     /// Whether the distinct count or the distinct sum is maintained.
@@ -2143,6 +2168,7 @@ impl DistinctAggView {
             mv,
             state,
             group_keys: vec![group_key.into()],
+            group_exprs: Vec::new(),
             value_column: value_column.into(),
             agg,
             filter: None,
@@ -2167,6 +2193,7 @@ impl DistinctAggView {
             mv,
             state,
             group_keys,
+            group_exprs: Vec::new(),
             value_column: value_column.into(),
             agg,
             filter: None,
@@ -2187,6 +2214,12 @@ impl DistinctAggView {
         self
     }
 
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::DistinctAgg {
             view_id: self.view_id.clone(),
@@ -2194,6 +2227,7 @@ impl DistinctAggView {
             mv_table_id: self.mv.table_id.clone(),
             state_table_id: self.state.table_id.clone(),
             group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
             agg: self.agg,
             filter: self.filter.clone(),
@@ -4385,8 +4419,37 @@ pub fn value_count_state_schema_for(
     value_count_state_with_value(
         source_schema,
         group_keys,
+        &[],
         value_field.data_type().clone(),
         value_field.is_nullable(),
+    )
+}
+
+/// The value-count state schema of a view with group expressions and an
+/// optional value column/expression.
+pub fn value_count_groups_state_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+) -> Result<SchemaRef> {
+    let (value_type, value_nullable) = match (value_expr, value_column) {
+        (Some(expression), _) => expression_type(source_schema, expression)?,
+        (None, Some(column)) => {
+            let field = source_schema.field_with_name(column)?;
+            (field.data_type().clone(), field.is_nullable())
+        }
+        (None, None) => {
+            return Err(report!("the value-count view has no value"));
+        }
+    };
+    value_count_state_with_value(
+        source_schema,
+        group_keys,
+        group_exprs,
+        value_type,
+        value_nullable,
     )
 }
 
@@ -4398,17 +4461,18 @@ pub fn value_count_state_expr_schema_for(
     value_expr: &str,
 ) -> Result<SchemaRef> {
     let (data_type, nullable) = expression_type(source_schema, value_expr)?;
-    value_count_state_with_value(source_schema, group_keys, data_type, nullable)
+    value_count_state_with_value(source_schema, group_keys, &[], data_type, nullable)
 }
 
 /// The value-count state schema given the value type.
 fn value_count_state_with_value(
     source_schema: &Schema,
     group_keys: &[String],
+    group_exprs: &[String],
     value_type: DataType,
     value_nullable: bool,
 ) -> Result<SchemaRef> {
-    let mut fields = key_fields(source_schema, group_keys)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(
         IVM_VALUE_COLUMN,
         value_type,
@@ -4451,17 +4515,19 @@ pub fn value_count_mv_schema_for(
             true,
         ),
     };
-    value_count_mv_with_value(source_schema, group_keys, value_type, value_nullable)
+    value_count_mv_with_value(source_schema, group_keys, &[], value_type, value_nullable)
 }
 
-/// The value-count materialized view schema given the value type.
+/// The value-count materialized view schema given the value type and group
+/// expressions.
 fn value_count_mv_with_value(
     source_schema: &Schema,
     group_keys: &[String],
+    group_exprs: &[String],
     value_type: DataType,
     value_nullable: bool,
 ) -> Result<SchemaRef> {
-    let mut fields = key_fields(source_schema, group_keys)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
     fields.push(Arc::new(Field::new(
         IVM_VALUE_COLUMN,
         value_type,
@@ -4501,7 +4567,66 @@ pub fn min_max_expr_mv_schema_for(
 ) -> Result<SchemaRef> {
     let _ = kind;
     let (value_type, _) = expression_type(source_schema, value_expr)?;
-    value_count_mv_with_value(source_schema, group_keys, value_type, true)
+    value_count_mv_with_value(source_schema, group_keys, &[], value_type, true)
+}
+
+/// The schema of a [`MinMaxView`] materialized view with group expressions and
+/// an optional value column/expression.
+pub fn min_max_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+    kind: MinMaxKind,
+) -> Result<SchemaRef> {
+    let (value_type, value_nullable) = match (value_expr, value_column) {
+        (Some(expression), _) => {
+            let (data_type, _) = expression_type(source_schema, expression)?;
+            (data_type, true)
+        }
+        (None, Some(column)) => {
+            let field = source_schema.field_with_name(column)?;
+            (field.data_type().clone(), true)
+        }
+        (None, None) => {
+            return Err(report!("the min/max view has no value"));
+        }
+    };
+    let _ = kind;
+    value_count_mv_with_value(
+        source_schema,
+        group_keys,
+        group_exprs,
+        value_type,
+        value_nullable,
+    )
+}
+
+/// The schema of a [`DistinctAggView`] materialized view with group
+/// expressions.
+pub fn distinct_agg_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: &str,
+    kind: DistinctAggKind,
+) -> Result<SchemaRef> {
+    // A distinct count is an integer, a distinct sum keeps the numeric type.
+    let (value_type, value_nullable) = match kind {
+        DistinctAggKind::Count => (DataType::Int64, false),
+        DistinctAggKind::Sum => (
+            sum_result_type(&field_type(source_schema, value_column)?)?,
+            true,
+        ),
+    };
+    value_count_mv_with_value(
+        source_schema,
+        group_keys,
+        group_exprs,
+        value_type,
+        value_nullable,
+    )
 }
 
 /// The schema of a [`DistinctAggView`] materialized view, deriving the types
@@ -4706,6 +4831,7 @@ impl IvmRuntime {
                 mv_table_id,
                 state_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 value_expr,
                 min_max,
@@ -4717,6 +4843,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 state: self.open_table_by_id(state_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 value_expr: value_expr.clone(),
                 min_max: *min_max,
@@ -4730,6 +4857,7 @@ impl IvmRuntime {
                 mv_table_id,
                 state_table_id,
                 group_keys,
+                group_exprs,
                 value_column,
                 agg,
                 filter,
@@ -4740,6 +4868,7 @@ impl IvmRuntime {
                 mv: self.open_table_by_id(mv_table_id).await?,
                 state: self.open_table_by_id(state_table_id).await?,
                 group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
                 agg: *agg,
                 filter: filter.clone(),
@@ -7383,6 +7512,7 @@ impl IvmRuntime {
             mv: &view.mv,
             state: &view.state,
             group_keys: &view.group_keys,
+            group_exprs: &view.group_exprs,
             value_column: view.value_column.as_deref(),
             value_expr: view.value_expr.as_deref(),
             filter: view.filter.as_deref(),
@@ -7405,6 +7535,7 @@ impl IvmRuntime {
             mv: &view.mv,
             state: &view.state,
             group_keys: &view.group_keys,
+            group_exprs: &view.group_exprs,
             value_column: Some(&view.value_column),
             value_expr: None,
             filter: view.filter.as_deref(),
@@ -7764,7 +7895,10 @@ impl IvmRuntime {
         &self,
         view: &ValueCountView<'_>,
     ) -> Result<Option<i64>> {
-        validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        if view.group_exprs.is_empty() {
+            validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        }
+        group_key_fields(&view.source.schema, view.group_keys, view.group_exprs)?;
         validate_having(view.view_id, &view.mv.schema, view.having)?;
         let value_type = value_count_value_type(view)?;
         view.agg.result_type(&value_type)?;
@@ -7789,7 +7923,14 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let delta_batches = view.source.read_files(window.added_files).await?;
+        let delta_batches = project_group_keys(
+            &context,
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+            view.group_keys,
+            view.group_exprs,
+        )
+        .await?;
         let keyed = !view.source.primary_keys.is_empty();
         // As in the SUM/COUNT path, only the delta groups (and the previous
         // groups of the changed rows) can change, so the old state, the value
@@ -7803,10 +7944,20 @@ impl IvmRuntime {
         )?;
         let old_batches = if keyed {
             let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
-            let batches = view
-                .source
-                .read_as_of_filtered(&self.client, window.before_timestamp, pk_filters)
-                .await?;
+            let batches = project_group_keys(
+                &context,
+                view.source
+                    .read_as_of_filtered(
+                        &self.client,
+                        window.before_timestamp,
+                        pk_filters,
+                    )
+                    .await?,
+                &view.source.schema,
+                view.group_keys,
+                view.group_exprs,
+            )
+            .await?;
             register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
             batches
         } else {
@@ -7822,7 +7973,12 @@ impl IvmRuntime {
             .await?
             .collect()
             .await?;
-        let filters = key_filters(view.group_keys, &groups)?;
+        // A computed group key cannot prune the reads.
+        let filters = if view.group_exprs.is_empty() {
+            key_filters(view.group_keys, &groups)?
+        } else {
+            Vec::new()
+        };
 
         register_table(&context, "delta", delta_batches, &view.source.schema)?;
         if keyed {
@@ -7872,7 +8028,7 @@ impl IvmRuntime {
             &context,
             "affected",
             affected,
-            &key_schema(&view.source.schema, view.group_keys)?,
+            &key_schema_for(&view.source.schema, view.group_keys, view.group_exprs)?,
         )?;
         register_table(
             &context,
@@ -8025,6 +8181,7 @@ impl IvmRuntime {
             mv: &view.mv,
             state: &view.state,
             group_keys: &view.group_keys,
+            group_exprs: &view.group_exprs,
             value_column: view.value_column.as_deref(),
             value_expr: view.value_expr.as_deref(),
             filter: view.filter.as_deref(),
@@ -8044,6 +8201,7 @@ impl IvmRuntime {
             mv: &view.mv,
             state: &view.state,
             group_keys: &view.group_keys,
+            group_exprs: &view.group_exprs,
             value_column: Some(&view.value_column),
             value_expr: None,
             filter: view.filter.as_deref(),
@@ -9015,7 +9173,10 @@ impl IvmRuntime {
     /// Both the value-count state table and the MV are truncated and refilled
     /// from the current source state, published as `rebuild:<generation>`.
     async fn rebuild_value_count(&self, view: &ValueCountView<'_>) -> Result<i64> {
-        validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        if view.group_exprs.is_empty() {
+            validate_group_keys(view.source, view.group_keys, view.view_id)?;
+        }
+        group_key_fields(&view.source.schema, view.group_keys, view.group_exprs)?;
         validate_having(view.view_id, &view.mv.schema, view.having)?;
         let value_type = value_count_value_type(view)?;
         view.agg.result_type(&value_type)?;
@@ -9053,7 +9214,15 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let baseline_batches = project_group_keys(
+            &context,
+            baseline.batches,
+            &view.source.schema,
+            view.group_keys,
+            view.group_exprs,
+        )
+        .await?;
+        register_table(&context, "src", baseline_batches, &view.source.schema)?;
         let state_sql = if view.source.primary_keys.is_empty() {
             let retract = source_retract_condition("src", change_column(view.source));
             let plain_where = filter_where(view.filter);
@@ -9822,10 +9991,17 @@ fn avg_result_type(value_type: &DataType) -> Result<DataType> {
     })
 }
 
-fn key_schema(source_schema: &Schema, group_keys: &[String]) -> Result<SchemaRef> {
-    Ok(Arc::new(Schema::new(key_fields(
+/// The schema of the projected group keys of a view, computed expressions
+/// included.
+fn key_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+) -> Result<SchemaRef> {
+    Ok(Arc::new(Schema::new(group_key_fields(
         source_schema,
         group_keys,
+        group_exprs,
     )?)))
 }
 

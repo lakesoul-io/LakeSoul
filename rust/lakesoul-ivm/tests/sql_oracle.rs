@@ -19,9 +19,10 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
-    array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_mv_schema_for,
-    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_groups_mv_schema_for,
+    distinct_agg_mv_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
@@ -295,6 +296,54 @@ async fn run_oracle_with(
         );
     }
     assert!(mv_rows > 0, "{tag}: the view stayed empty for every round");
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_min_max_group_expr_matches_full_recompute() {
+    // MIN over a computed group key.
+    run_oracle(
+        "minmaxgroupexpr",
+        1,
+        min_max_groups_mv_schema_for(
+            &source_schema(),
+            &["bucket".to_string()],
+            &["v % 10".to_string()],
+            Some("v"),
+            None,
+            MinMaxKind::Min,
+        )
+        .unwrap(),
+        vec!["bucket".to_string()],
+        "SELECT v % 10 AS bucket, MIN(v) FROM __SRC__ WHERE v > 30 GROUP BY bucket",
+        "SELECT v % 10 AS bucket, MIN(v) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
+        "SELECT bucket, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_distinct_group_expr_matches_full_recompute() {
+    // COUNT(DISTINCT) over a computed group key.
+    run_oracle(
+        "distinctgroupexpr",
+        1,
+        distinct_agg_groups_mv_schema_for(
+            &source_schema(),
+            &["bucket".to_string()],
+            &["v % 10".to_string()],
+            "g",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        vec!["bucket".to_string()],
+        "SELECT v % 10 AS bucket, COUNT(DISTINCT g) FROM __SRC__ \
+         WHERE v > 30 GROUP BY bucket",
+        "SELECT v % 10 AS bucket, COUNT(DISTINCT g) AS value FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
+        "SELECT bucket, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
 }
 
 #[test_log::test(tokio::test)]
