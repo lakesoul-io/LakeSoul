@@ -1882,6 +1882,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   rebuild，逐步与 SQL cross join 对拍）、`cross_join.slt`（SQL 入口端到端）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）265 个测试通过、0 失败。
 
+### 10.48 SQL 入口的 SEMI/ANTI join（EXISTS/IN）（PR-42）
+
+- **能力**：`WHERE [NOT] EXISTS (SELECT ...)` 与 `IN (SELECT ...)` 经优化器去关联后计划为
+  `LeftSemi`/`LeftAnti` join，直接复用运行时已有的 `SemiAntiView`（右侧可为 keyed 或
+  append-only 源、支持等值键 + 额外比较条件、输出左侧列子集）。
+- **实现**：无需运行时改动；补齐 SQL 入口的验证与文档。注意：分析器在**优化计划**上接受该
+  形状（原始计划因子查询过滤报错，但 executor 始终分析优化计划）。
+- **测试**：analyzer（EXISTS/NOT EXISTS/IN、额外比较条件）、`semi_anti.slt`（bootstrap、
+  右侧启用/禁用组、左侧进入/离开、IN 等价定义走增量、切到 NOT EXISTS rebuild、反向增量）、
+  两个差分 oracle（semi join 按非唯一键匹配、anti join）。README 的支持形状表更新为 SQL 写法，
+  限制条目改为标量子查询。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）269 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

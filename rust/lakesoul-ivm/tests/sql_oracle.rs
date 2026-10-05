@@ -21,7 +21,7 @@ use lakesoul_ivm::{
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_mv_schema_for,
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_mv_schema_for, string_agg_expr_mv_schema_for,
+    min_max_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
@@ -295,6 +295,42 @@ async fn run_oracle_with(
         );
     }
     assert!(mv_rows > 0, "{tag}: the view stayed empty for every round");
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_semi_join_matches_full_recompute() {
+    // `WHERE EXISTS` decorrelates into a LeftSemi join.
+    run_oracle(
+        "semijoin",
+        2,
+        semi_anti_mv_schema_for(&source_schema(), &["k".to_string(), "g".to_string()])
+            .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g FROM __SRC__ f \
+         WHERE EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.g = f.g)",
+        "SELECT k, g FROM __SRC__ f \
+         WHERE EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.g = f.g)",
+        "SELECT k, g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_anti_join_matches_full_recompute() {
+    // `WHERE NOT EXISTS` decorrelates into a LeftAnti join.
+    run_oracle(
+        "antijoin",
+        2,
+        semi_anti_mv_schema_for(&source_schema(), &["k".to_string(), "g".to_string()])
+            .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g FROM __SRC__ f \
+         WHERE NOT EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.k = f.k)",
+        "SELECT k, g FROM __SRC__ f \
+         WHERE NOT EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.k = f.k)",
+        "SELECT k, g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
 }
 
 #[test_log::test(tokio::test)]
