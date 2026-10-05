@@ -395,9 +395,13 @@ pub enum ViewSpec {
         right_table_id: String,
         /// The output table id, keyed by the left primary keys.
         output_table_id: String,
-        /// The equi-join keys, which are the right source's primary keys.
+        /// The left equi-join keys; the output key columns.
         #[serde(default, alias = "join_key", deserialize_with = "de_group_keys")]
         join_keys: Vec<String>,
+        /// The right equi-join keys, parallel to `join_keys`; empty means the
+        /// keys share their names with the left side.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        right_keys: Vec<String>,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source; NULL without a match.
@@ -1667,8 +1671,11 @@ pub struct LookupJoinView {
     pub right: IvmTable,
     /// The output table, keyed by the left primary keys.
     pub output: IvmTable,
-    /// The equi-join keys, which are the right source's primary keys.
+    /// The left equi-join keys; the output key columns.
     pub join_keys: Vec<String>,
+    /// The right equi-join keys, parallel to [`Self::join_keys`]; empty means
+    /// the keys share their names with the left side.
+    pub right_keys: Vec<String>,
     /// The payload column of the left source.
     pub left_value: String,
     /// The payload column of the right source.
@@ -1715,10 +1722,27 @@ impl LookupJoinView {
             right,
             output,
             join_keys,
+            right_keys: Vec::new(),
             left_value: left_value.into(),
             right_value: right_value.into(),
             refresh_interval_ms: 0,
         }
+    }
+
+    /// The right-side join keys: [`Self::right_keys`] or, when empty, the
+    /// left key names.
+    pub fn right_join_keys(&self) -> &[String] {
+        if self.right_keys.is_empty() {
+            &self.join_keys
+        } else {
+            &self.right_keys
+        }
+    }
+
+    /// The right source's join keys when they differ from the left ones.
+    pub fn with_right_keys(mut self, right_keys: Vec<String>) -> Self {
+        self.right_keys = right_keys;
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -1728,6 +1752,7 @@ impl LookupJoinView {
             right_table_id: self.right.table_id.clone(),
             output_table_id: self.output.table_id.clone(),
             join_keys: self.join_keys.clone(),
+            right_keys: self.right_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
         }
@@ -1807,9 +1832,12 @@ fn lookup_join_projection(
     let left = left.select(left_columns)?;
 
     let mut right_columns = view
-        .join_keys
+        .right_join_keys()
         .iter()
-        .map(|key| col(key.as_str()).alias(format!("__right_{key}")))
+        .zip(&view.join_keys)
+        .map(|(right_key, left_key)| {
+            col(right_key.as_str()).alias(format!("__right_{left_key}"))
+        })
         .collect::<Vec<_>>();
     right_columns.push(col(view.right_value.as_str()).alias("right_value"));
     let right = right.select(right_columns)?;
@@ -1964,9 +1992,15 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
             view.view_id
         ));
     }
+    if !view.right_keys.is_empty() && view.right_keys.len() != view.join_keys.len() {
+        return Err(report!(
+            "lookup join view {}: the right keys must match the join keys",
+            view.view_id
+        ));
+    }
     let mut expected = view.right.primary_keys.clone();
     expected.sort();
-    let mut keys = view.join_keys.clone();
+    let mut keys = view.right_join_keys().to_vec();
     keys.sort();
     if expected != keys {
         return Err(report!(
@@ -1981,6 +2015,8 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
                 view.view_id
             )
         })?;
+    }
+    for key in view.right_join_keys() {
         view.right.schema.field_with_name(key).map_err(|_| {
             report!(
                 "lookup join view {}: join key {key} is not in the right source",
@@ -5157,6 +5193,7 @@ impl IvmRuntime {
                 right_table_id,
                 output_table_id,
                 join_keys,
+                right_keys,
                 left_value,
                 right_value,
             } => SpecView::LookupJoin(LookupJoinView {
@@ -5165,6 +5202,7 @@ impl IvmRuntime {
                 right: self.open_table_by_id(right_table_id).await?,
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
+                right_keys: right_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 refresh_interval_ms,
@@ -6709,12 +6747,17 @@ impl IvmRuntime {
             )?;
             let changed_keys = delta_right
                 .select(
-                    view.join_keys
+                    view.right_join_keys()
                         .iter()
                         .map(|key| col(key.as_str()))
                         .collect::<Vec<_>>(),
                 )?
                 .distinct()?;
+            let right_key_names = view
+                .right_join_keys()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
             affected = affected.union(
                 left_now
                     .clone()
@@ -6722,7 +6765,7 @@ impl IvmRuntime {
                         changed_keys,
                         JoinType::LeftSemi,
                         &join_key_names,
-                        &join_key_names,
+                        &right_key_names,
                         None,
                     )?
                     .select(key_exprs.clone())?,
