@@ -2887,6 +2887,11 @@ fn join_input<'a>(
         let source = resolve_table(tables, &scan.table_name)?;
         return Ok((source, Some(alias.alias.table().to_string())));
     }
+    if matches!(peel(plan), LogicalPlan::Filter(_)) {
+        return Err(unsupported(
+            "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+        ));
+    }
     let LogicalPlan::TableScan(scan) = peel(plan) else {
         return Err(unsupported("join input must be a table"));
     };
@@ -5697,6 +5702,37 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_filtered_join_inputs() {
+        // A WHERE clause on a join side is pushed below the join and is not
+        // maintained yet: the analyzer must reject it rather than ignore the
+        // filter.
+        assert!(
+            analyze_optimized(
+                "select a.k, a.v, b.v from src a join src b on a.k = b.k where a.v > 1",
+            )
+            .await
+            .is_err()
+        );
+        // The same through a filtered derived table.
+        assert!(
+            analyze_optimized(
+                "select a.k, a.v, b.v from (select * from src where v > 1) a \
+                 join src b on a.k = b.k",
+            )
+            .await
+            .is_err()
+        );
+        // A cross-side predicate on a CROSS JOIN stays unsupported.
+        assert!(
+            analyze_optimized(
+                "select a.v, b.v from src a cross join src b where a.v < b.v"
+            )
+            .await
+            .is_err()
         );
     }
 

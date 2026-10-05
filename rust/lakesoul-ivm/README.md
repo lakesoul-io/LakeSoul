@@ -236,12 +236,21 @@ the backlog):
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
   join keys, differently named keys outside the lookup `LEFT JOIN`, and
   multiple payload columns per side;
+* a join input with a `WHERE` clause (or a filtered derived table): the
+  optimizer pushes the filter below the join and the analyzer rejects the
+  shape instead of ignoring the predicate;
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
-* `GROUPING SETS` / `ROLLUP` / `CUBE`, `COUNT(DISTINCT a, b)`;
-* `SELECT DISTINCT ON`.
+* `GROUPING SETS` / `ROLLUP` / `CUBE`, `COUNT(DISTINCT a, b)` and
+  `SELECT DISTINCT ON`: the planner produces plans for them, but the runtime
+  does not maintain those shapes yet;
+* retractions in a `UNION ALL` over an **append-only CDC** source: the delete
+  markers become MV tombstones (hidden from logical reads), but the matching
+  insert rows cannot be retracted because an append-only source has no row
+  identity to match them with. Use keyed sources when the union must
+  retract.
 
 ## Tests
 
