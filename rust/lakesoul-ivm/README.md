@@ -90,7 +90,9 @@ Supported within the shapes above:
 * **semi/anti joins** through correlated `EXISTS` / `NOT EXISTS` / `IN`
   subqueries, including extra comparison conditions between the two sides;
 * a **lookup `LEFT JOIN`** may reference a differently named right key
-  (`ON fact.dim_id = dim.id`), as long as the right source is keyed by it;
+  (`ON fact.dim_id = dim.id`) and may filter the fact side
+  (`WHERE fact.amount > 0`), as long as the right source is keyed by its side
+  of the keys;
 * **CTEs and derived tables** that the planner can inline (`WITH ... SELECT`,
   `SELECT ... FROM (SELECT ...) t`), including CTEs whose body aggregates or
   windows; the view is maintained as the inlined shape;
@@ -236,9 +238,9 @@ the backlog):
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
   join keys, differently named keys outside the lookup `LEFT JOIN`, and
   multiple payload columns per side;
-* a join input with a `WHERE` clause (or a filtered derived table): the
-  optimizer pushes the filter below the join and the analyzer rejects the
-  shape instead of ignoring the predicate;
+* a join input with a `WHERE` clause (or a filtered derived table), except the
+  left side of a lookup `LEFT JOIN`: the optimizer pushes the filter below the
+  join and the analyzer rejects the shape instead of ignoring the predicate;
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /

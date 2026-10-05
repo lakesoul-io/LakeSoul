@@ -2237,8 +2237,14 @@ fn analyze_join(
             "a CROSS JOIN with a WHERE clause is not supported",
         ));
     }
-    let (left, left_alias) = join_input(&join.left, tables)?;
-    let (right, right_alias) = join_input(&join.right, tables)?;
+    let left_input = join_input(&join.left, tables)?;
+    let right_input = join_input(&join.right, tables)?;
+    let left = left_input.table;
+    let right = right_input.table;
+    let (left_alias, right_alias) =
+        (left_input.alias.as_deref(), right_input.alias.as_deref());
+    let left_filter = left_input.filter.clone();
+    let right_filter = right_input.filter.clone();
 
     // The equality keys as (left, right) name pairs; differently named keys
     // are supported by the lookup join.
@@ -2254,20 +2260,8 @@ fn analyze_join(
     if let Some(filter) = &join.filter {
         for conjunct in split_conjunction(filter) {
             if let Some((first, second)) = equi_columns(conjunct) {
-                let first_side = side_of(
-                    first,
-                    left_alias.as_deref(),
-                    right_alias.as_deref(),
-                    left,
-                    right,
-                );
-                let second_side = side_of(
-                    second,
-                    left_alias.as_deref(),
-                    right_alias.as_deref(),
-                    left,
-                    right,
-                );
+                let first_side = side_of(first, left_alias, right_alias, left, right);
+                let second_side = side_of(second, left_alias, right_alias, left, right);
                 let (left_column, right_column) = match (first_side, second_side) {
                     (Some(Side::Left), Some(Side::Right)) => (first, second),
                     (Some(Side::Right), Some(Side::Left)) => (second, first),
@@ -2279,13 +2273,8 @@ fn analyze_join(
                 };
                 key_pairs.push((left_column.name.clone(), right_column.name.clone()));
             } else {
-                let (left_column, right_column, op) = column_compare(
-                    conjunct,
-                    left_alias.as_deref(),
-                    right_alias.as_deref(),
-                    left,
-                    right,
-                )?;
+                let (left_column, right_column, op) =
+                    column_compare(conjunct, left_alias, right_alias, left, right)?;
                 conditions.push(SemiAntiCondition {
                     left_column,
                     right_column,
@@ -2314,6 +2303,11 @@ fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("inner join with non-equality conditions"));
             }
+            if left_filter.is_some() || right_filter.is_some() {
+                return Err(unsupported(
+                    "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+                ));
+            }
             if !same_names {
                 return Err(unsupported(
                     "differently named join keys are only supported by a lookup LEFT JOIN",
@@ -2321,8 +2315,8 @@ fn analyze_join(
             }
             let (left_value, right_value) = join_values(
                 projection,
-                left_alias.as_deref(),
-                right_alias.as_deref(),
+                left_alias,
+                right_alias,
                 left,
                 right,
                 &join_keys,
@@ -2346,10 +2340,12 @@ fn analyze_join(
                 projection,
                 left,
                 right,
-                left_alias.as_deref(),
-                right_alias.as_deref(),
+                left_alias,
+                right_alias,
                 join_keys,
                 right_keys,
+                left_filter,
+                right_filter,
                 request,
             )
         }
@@ -2364,16 +2360,23 @@ fn analyze_join(
                 projection,
                 right,
                 left,
-                right_alias.as_deref(),
-                left_alias.as_deref(),
+                right_alias,
+                left_alias,
                 right_keys,
                 join_keys,
+                right_filter,
+                left_filter,
                 request,
             )
         }
         JoinType::Full => {
             if !conditions.is_empty() {
                 return Err(unsupported("full join with non-equality conditions"));
+            }
+            if left_filter.is_some() || right_filter.is_some() {
+                return Err(unsupported(
+                    "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+                ));
             }
             if !same_names {
                 return Err(unsupported(
@@ -2385,8 +2388,8 @@ fn analyze_join(
             }
             let (left_value, right_value) = join_values(
                 projection,
-                left_alias.as_deref(),
-                right_alias.as_deref(),
+                left_alias,
+                right_alias,
                 left,
                 right,
                 &join_keys,
@@ -2402,6 +2405,11 @@ fn analyze_join(
             })
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
+            if left_filter.is_some() || right_filter.is_some() {
+                return Err(unsupported(
+                    "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+                ));
+            }
             let output_columns = match projection {
                 Some(projection) => {
                     if !is_plain_projection(projection) {
@@ -2414,15 +2422,14 @@ fn analyze_join(
                         let column = column_of(expr).ok_or_else(|| {
                             unsupported("semi/anti output must be plain columns")
                         })?;
-                        let on_left = side_of(
-                            column,
-                            left_alias.as_deref(),
-                            right_alias.as_deref(),
-                            left,
-                            right,
-                        ) == Some(Side::Left)
-                            || (left.schema.field_with_name(&column.name).is_ok()
-                                && right.schema.field_with_name(&column.name).is_err());
+                        let on_left =
+                            side_of(column, left_alias, right_alias, left, right)
+                                == Some(Side::Left)
+                                || (left.schema.field_with_name(&column.name).is_ok()
+                                    && right
+                                        .schema
+                                        .field_with_name(&column.name)
+                                        .is_err());
                         if !on_left {
                             return Err(unsupported(format!(
                                 "semi/anti join output column {} is not a left column",
@@ -2733,22 +2740,24 @@ fn analyze_cross_join(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let (left, left_alias) = join_input(&join.left, tables)?;
-    let (right, right_alias) = join_input(&join.right, tables)?;
+    let left = join_input(&join.left, tables)?;
+    let right = join_input(&join.right, tables)?;
+    if left.filter.is_some() || right.filter.is_some() {
+        return Err(unsupported(
+            "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+        ));
+    }
+    let (left, left_alias) = (left.table, left.alias.as_deref());
+    let (right, right_alias) = (right.table, right.alias.as_deref());
     if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
         return Err(unsupported(
             "a cross join needs primary keys on both sources",
         ));
     }
     let (left_value, right_value) = match projection {
-        Some(projection) => join_values(
-            Some(projection),
-            left_alias.as_deref(),
-            right_alias.as_deref(),
-            left,
-            right,
-            &[],
-        )?,
+        Some(projection) => {
+            join_values(Some(projection), left_alias, right_alias, left, right, &[])?
+        }
         None => {
             // The optimizer drops the projection when the pruned join output
             // is exactly the select list: every column of the output belongs
@@ -2757,13 +2766,7 @@ fn analyze_cross_join(
             let mut right_value = None;
             for field in join.schema.fields() {
                 let column = datafusion::common::Column::new_unqualified(field.name());
-                match side_of(
-                    &column,
-                    left_alias.as_deref(),
-                    right_alias.as_deref(),
-                    left,
-                    right,
-                ) {
+                match side_of(&column, left_alias, right_alias, left, right) {
                     Some(Side::Left) => {
                         if left_value.replace(field.name().clone()).is_some() {
                             return Err(unsupported(
@@ -2820,6 +2823,8 @@ fn analyze_outer_join(
     right_alias: Option<&str>,
     join_keys: Vec<String>,
     right_keys: Vec<String>,
+    left_filter: Option<String>,
+    right_filter: Option<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
     // Same-named keys stay compact (the right keys default to the left ones).
@@ -2850,6 +2855,11 @@ fn analyze_outer_join(
         !expected.is_empty() && expected == keys
     };
     if lookup {
+        if right_filter.is_some() {
+            return Err(unsupported(
+                "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+            ));
+        }
         Ok(ViewSpec::LookupJoin {
             view_id: request.view_id.clone(),
             left_table_id: left.table_id.clone(),
@@ -2857,9 +2867,14 @@ fn analyze_outer_join(
             output_table_id: request.mv_table_id.clone(),
             join_keys,
             right_keys,
+            left_filter,
             left_value,
             right_value,
         })
+    } else if left_filter.is_some() || right_filter.is_some() {
+        Err(unsupported(
+            "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
+        ))
     } else if !right_keys.is_empty() {
         Err(unsupported(
             "differently named join keys are only supported by a lookup LEFT JOIN",
@@ -2881,27 +2896,46 @@ fn analyze_outer_join(
     }
 }
 
+/// One join input: the source table, its alias and an optional side filter.
+struct JoinInput<'a> {
+    table: &'a IvmTable,
+    alias: Option<String>,
+    filter: Option<String>,
+}
+
 fn join_input<'a>(
     plan: &'a LogicalPlan,
     tables: &'a HashMap<String, IvmTable>,
-) -> Result<(&'a IvmTable, Option<String>)> {
-    if let LogicalPlan::SubqueryAlias(alias) = plan {
-        let LogicalPlan::TableScan(scan) = peel(&alias.input) else {
-            return Err(unsupported("join input must be a table"));
-        };
-        let source = resolve_table(tables, &scan.table_name)?;
-        return Ok((source, Some(alias.alias.table().to_string())));
+) -> Result<JoinInput<'a>> {
+    let alias = if let LogicalPlan::SubqueryAlias(alias) = plan {
+        Some(alias.alias.table().to_string())
+    } else {
+        None
+    };
+    let input = match plan {
+        LogicalPlan::SubqueryAlias(alias) => &alias.input,
+        other => other,
+    };
+    // A side filter is pushed below the join as a `Filter` (or into the
+    // scan's pushed filters).
+    let mut filter = None;
+    let mut node = peel(input);
+    if let LogicalPlan::Filter(predicate) = node {
+        filter = Some(render_filter(&predicate.predicate)?);
+        node = peel(&predicate.input);
     }
-    if matches!(peel(plan), LogicalPlan::Filter(_)) {
-        return Err(unsupported(
-            "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-        ));
-    }
-    let LogicalPlan::TableScan(scan) = peel(plan) else {
+    let LogicalPlan::TableScan(scan) = node else {
         return Err(unsupported("join input must be a table"));
     };
+    if let Some(pushed) = scan_filter(&scan.filters)? {
+        filter = Some(combine_filter(filter, pushed));
+    }
     let source = resolve_table(tables, &scan.table_name)?;
-    Ok((source, None))
+    Ok(JoinInput {
+        table: source,
+        alias,
+        filter,
+    })
 }
 
 fn column_of(expr: &Expr) -> Option<&Column> {
@@ -5794,6 +5828,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                left_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
@@ -5848,10 +5883,22 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: vec!["rk".to_string()],
+                left_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
         );
+
+        // A left-side filter is kept for the lookup join.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v from src a left join src b on a.k = b.k where a.v > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin { left_filter, .. } = analyzed.spec else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
 
         // Differently named keys are rejected elsewhere.
         assert!(
@@ -5894,6 +5941,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                left_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
