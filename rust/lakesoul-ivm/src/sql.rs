@@ -1030,7 +1030,7 @@ fn analyze_aggregate(
     // `(value column, rendered aggregate ordering)`.
     let mut array_agg: Option<(AggValue, Vec<String>)> = None;
     let mut min_max: Option<(MinMaxKind, AggValue)> = None;
-    let mut distinct: Option<(DistinctAggKind, String)> = None;
+    let mut distinct: Option<(DistinctAggKind, Vec<String>)> = None;
     // `(aggregate name, FILTER predicate, whether it is a value aggregate)`.
     let mut aggregate_filters: Vec<(&str, Option<String>, bool)> = Vec::new();
     for expr in &aggregate.aggr_expr {
@@ -1089,12 +1089,12 @@ fn analyze_aggregate(
                 } else {
                     DistinctAggKind::Sum
                 };
-                distinct = Some((kind, value_column.clone()));
+                distinct = Some((kind, vec![value_column.clone()]));
                 continue;
             }
         }
         match (name, function.params.distinct) {
-            ("count", true) | ("sum", true) => {
+            ("count", true) => {
                 if count
                     || sum.is_some()
                     || avg.is_some()
@@ -1107,12 +1107,39 @@ fn analyze_aggregate(
                         "mixing DISTINCT aggregates with other aggregates",
                     ));
                 }
-                let kind = if name == "count" {
-                    DistinctAggKind::Count
-                } else {
-                    DistinctAggKind::Sum
-                };
-                distinct = Some((kind, single_column_arg(&function.params.args)?));
+                let value_columns = multi_column_args(&function.params.args)?;
+                if value_columns.len() > 1 {
+                    if function_filter.is_some() {
+                        return Err(unsupported(
+                            "FILTER over a multi-column COUNT(DISTINCT) is not maintained",
+                        ));
+                    }
+                    if group_keys.is_empty() {
+                        return Err(unsupported(
+                            "a multi-column COUNT(DISTINCT) needs a GROUP BY",
+                        ));
+                    }
+                }
+                distinct = Some((DistinctAggKind::Count, value_columns));
+                aggregate_filters.push((name, function_filter, false));
+            }
+            ("sum", true) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                {
+                    return Err(unsupported(
+                        "mixing DISTINCT aggregates with other aggregates",
+                    ));
+                }
+                distinct = Some((
+                    DistinctAggKind::Sum,
+                    vec![single_column_arg(&function.params.args)?],
+                ));
                 aggregate_filters.push((name, function_filter, false));
             }
             ("count", false) => {
@@ -1399,17 +1426,26 @@ fn analyze_aggregate(
         }
     }
 
-    let having = if let Some((agg, value_column)) = &distinct {
-        render_having(
-            having_exprs,
-            HavingColumns::Distinct {
-                kind: *agg,
-                value_column,
-                alias: distinct_split.as_ref().map(|(_, alias, _)| alias.as_str()),
-            },
-            aggregate,
-            &group_keys,
-        )?
+    let having = if let Some((agg, value_columns)) = &distinct {
+        if value_columns.len() > 1 {
+            if !having_exprs.is_empty() {
+                return Err(unsupported(
+                    "HAVING with a multi-column COUNT(DISTINCT) is not maintained",
+                ));
+            }
+            None
+        } else {
+            render_having(
+                having_exprs,
+                HavingColumns::Distinct {
+                    kind: *agg,
+                    value_column: &value_columns[0],
+                    alias: distinct_split.as_ref().map(|(_, alias, _)| alias.as_str()),
+                },
+                aggregate,
+                &group_keys,
+            )?
+        }
     } else if let Some((min_max, value)) = &min_max {
         render_having(
             having_exprs,
@@ -1534,7 +1570,18 @@ fn analyze_aggregate(
             filter,
             having,
         }
-    } else if let Some((agg, value_column)) = distinct {
+    } else if let Some((agg, distinct_columns)) = distinct {
+        let mut distinct_columns = distinct_columns;
+        let value_column = distinct_columns.remove(0);
+        // A single-column distinct is maintained through the value-count
+        // state table; a multi-column one recomputes the affected groups.
+        let value_columns = if distinct_columns.is_empty() {
+            Vec::new()
+        } else {
+            let mut all = vec![value_column.clone()];
+            all.extend(distinct_columns);
+            all
+        };
         ViewSpec::DistinctAgg {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
@@ -1543,6 +1590,7 @@ fn analyze_aggregate(
             group_keys,
             group_exprs,
             value_column,
+            value_columns,
             agg,
             filter,
             having,
@@ -3131,6 +3179,17 @@ fn is_plain_projection(projection: &Projection) -> bool {
         .all(|expr| column_name(expr).is_some())
 }
 
+/// The plain columns of every argument of a multi-column aggregate
+/// (`COUNT(DISTINCT a, b)`).
+fn multi_column_args(args: &[Expr]) -> Result<Vec<String>> {
+    if args.is_empty() {
+        return Err(unsupported("COUNT(DISTINCT ...) needs an argument"));
+    }
+    args.iter()
+        .map(|arg| single_column_arg(std::slice::from_ref(arg)))
+        .collect()
+}
+
 fn single_column_arg(args: &[Expr]) -> Result<String> {
     match args {
         [expr] => column_name(expr)
@@ -4365,6 +4424,44 @@ mod tests {
             panic!("expected a distinct spec");
         };
         assert_eq!(agg, DistinctAggKind::Sum);
+    }
+
+    #[tokio::test]
+    async fn analyzes_multi_column_distinct_aggregates() {
+        let analyzed =
+            analyze_optimized("select g, count(distinct v, k) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::DistinctAgg {
+            agg,
+            value_column,
+            value_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(agg, DistinctAggKind::Count);
+        assert_eq!(value_column, "v");
+        assert_eq!(value_columns, vec!["v".to_string(), "k".to_string()]);
+
+        // A multi-column distinct count cannot carry HAVING or FILTER.
+        assert!(
+            analyze_optimized(
+                "select g, count(distinct v, k) from src group by g \
+                 having count(distinct v, k) > 1",
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            analyze_optimized(
+                "select g, count(distinct v, k) filter (where v > 1) from src \
+                 group by g",
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -5765,7 +5862,7 @@ mod tests {
             let error = analyze_optimized(sql).await.unwrap_err().to_string();
             assert!(error.contains("GROUPING SETS"), "{sql}: {error}");
         }
-        // Multiple DISTINCT arguments are rejected.
+        // A multi-column DISTINCT needs a GROUP BY.
         assert!(
             analyze_optimized("select count(distinct g, v) from src")
                 .await

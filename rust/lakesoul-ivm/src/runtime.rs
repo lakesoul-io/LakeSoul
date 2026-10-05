@@ -470,6 +470,13 @@ pub enum ViewSpec {
         group_exprs: Vec<String>,
         /// The distinct value column.
         value_column: String,
+        /// The distinct value columns of a multi-column
+        /// `COUNT(DISTINCT a, b)`; empty for the single-column shape, which
+        /// uses `value_column` and the value-count state table. A
+        /// multi-column distinct count has no signed per-value state and is
+        /// maintained by recomputing the affected groups.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        value_columns: Vec<String>,
         /// Whether the distinct count or the distinct sum is maintained.
         agg: DistinctAggKind,
         /// An optional filter the contributing rows must satisfy.
@@ -2240,6 +2247,9 @@ pub struct DistinctAggView {
     pub group_exprs: Vec<String>,
     /// The distinct value column.
     pub value_column: String,
+    /// The distinct value columns of a multi-column `COUNT(DISTINCT a, b)`;
+    /// empty for the single-column shape, which uses [`Self::value_column`].
+    pub value_columns: Vec<String>,
     /// Whether the distinct count or the distinct sum is maintained.
     pub agg: DistinctAggKind,
     /// An optional filter the contributing rows must satisfy.
@@ -2269,6 +2279,7 @@ impl DistinctAggView {
             group_keys: vec![group_key.into()],
             group_exprs: Vec::new(),
             value_column: value_column.into(),
+            value_columns: Vec::new(),
             agg,
             filter: None,
             having: None,
@@ -2294,11 +2305,22 @@ impl DistinctAggView {
             group_keys,
             group_exprs: Vec::new(),
             value_column: value_column.into(),
+            value_columns: Vec::new(),
             agg,
             filter: None,
             having: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Maintain a multi-column `COUNT(DISTINCT a, b)` by recomputing the
+    /// affected groups; the first column is kept as the primary value column.
+    pub fn with_value_columns(mut self, value_columns: Vec<String>) -> Self {
+        if let Some(first) = value_columns.first() {
+            self.value_column = first.clone();
+        }
+        self.value_columns = value_columns;
+        self
     }
 
     /// Only rows matching `filter` contribute to the view.
@@ -2319,6 +2341,26 @@ impl DistinctAggView {
         self
     }
 
+    /// The recompute description of a multi-column distinct count.
+    fn recompute_parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
+            aggregate_call: format!(
+                "count(distinct {})",
+                quoted_list(&self.value_columns)
+            ),
+            // The distinct-count MV column matches the value-count schema.
+            column: IVM_VALUE_COLUMN.to_string(),
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+            distinct_columns: Some(&self.value_columns),
+        }
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::DistinctAgg {
             view_id: self.view_id.clone(),
@@ -2328,6 +2370,7 @@ impl DistinctAggView {
             group_keys: self.group_keys.clone(),
             group_exprs: self.group_exprs.clone(),
             value_column: self.value_column.clone(),
+            value_columns: self.value_columns.clone(),
             agg: self.agg,
             filter: self.filter.clone(),
             having: self.having.clone(),
@@ -2720,6 +2763,10 @@ struct RecomputeParts<'a> {
     aggregate_call: String,
     /// The MV column holding the statistic.
     column: String,
+    /// The distinct value columns of a multi-column `COUNT(DISTINCT a, b)`:
+    /// the aggregate is the count of distinct tuples among the affected
+    /// group's rows, computed over a `SELECT DISTINCT` subquery.
+    distinct_columns: Option<&'a [String]>,
     filter: Option<&'a str>,
     having: Option<&'a str>,
 }
@@ -2743,6 +2790,7 @@ impl VarianceView {
             column: self.statistic.column_name().to_string(),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
+            distinct_columns: None,
         }
     }
 }
@@ -2765,6 +2813,7 @@ impl MedianView {
             column: IVM_MEDIAN_COLUMN.to_string(),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
+            distinct_columns: None,
         }
     }
 }
@@ -2954,6 +3003,7 @@ impl StringAggView {
             column: string_agg_output_column(self.value_column.as_deref()),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
+            distinct_columns: None,
         }
     }
 
@@ -3162,6 +3212,7 @@ impl ArrayAggView {
             column: array_agg_output_column(self.value_column.as_deref()),
             filter: self.filter.as_deref(),
             having: None,
+            distinct_columns: None,
         }
     }
 
@@ -5306,6 +5357,7 @@ impl IvmRuntime {
                 group_keys,
                 group_exprs,
                 value_column,
+                value_columns,
                 agg,
                 filter,
                 having,
@@ -5317,6 +5369,7 @@ impl IvmRuntime {
                 group_keys: group_keys.clone(),
                 group_exprs: group_exprs.clone(),
                 value_column: value_column.clone(),
+                value_columns: value_columns.clone(),
                 agg: *agg,
                 filter: filter.clone(),
                 having: having.clone(),
@@ -8045,6 +8098,14 @@ impl IvmRuntime {
         view: &DistinctAggView,
     ) -> Result<Option<i64>> {
         self.register_distinct_agg_view(view).await?;
+        // A multi-column distinct count has no signed per-value state (a row
+        // contributes a tuple, not a value), so the affected groups are
+        // recomputed from their current source rows.
+        if view.value_columns.len() > 1 {
+            let parts = view.recompute_parts();
+            validate_recompute_view(&parts)?;
+            return self.refresh_recomputed(&parts).await;
+        }
         self.refresh_value_count(&ValueCountView {
             view_id: &view.view_id,
             source: &view.source,
@@ -8873,6 +8934,11 @@ impl IvmRuntime {
     /// state.
     pub async fn rebuild_distinct_agg(&self, view: &DistinctAggView) -> Result<i64> {
         self.register_distinct_agg_view(view).await?;
+        if view.value_columns.len() > 1 {
+            let parts = view.recompute_parts();
+            validate_recompute_view(&parts)?;
+            return self.rebuild_recomputed(&parts).await;
+        }
         self.rebuild_value_count(&ValueCountView {
             view_id: &view.view_id,
             source: &view.source,
@@ -11403,6 +11469,39 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
     )
 }
 
+/// The `group_now` SELECT of a recomputed-aggregate refresh/rebuild: the
+/// recomputed statistic per group over `src_from`.
+///
+/// A multi-column distinct count cannot run as DataFusion's
+/// `count(DISTINCT a, b)` (the aggregate is not implemented), so it counts the
+/// non-NULL tuples of a deduplicated subquery instead.
+fn recompute_group_now_sql(
+    parts: &RecomputeParts<'_>,
+    keys: &str,
+    column: &str,
+    src_from: &str,
+) -> String {
+    match parts.distinct_columns {
+        Some(distinct) => {
+            let distinct_list = quoted_list(distinct);
+            let not_null = distinct
+                .iter()
+                .map(|column| format!("{} is not null", quote_ident(column)))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            format!(
+                "select {keys}, count(case when {not_null} then 1 end) as {column} \
+                 from (select distinct {keys}, {distinct_list} from {src_from}) \
+                 group by {keys}"
+            )
+        }
+        None => format!(
+            "select {keys}, {} as {column} from {src_from} group by {keys}",
+            parts.aggregate_call
+        ),
+    }
+}
+
 /// SQL for one recomputed-aggregate refresh window: recompute the affected
 /// groups from their current source rows.
 fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
@@ -11425,9 +11524,11 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
         .having
         .map(|having| format!(" and ({having})"))
         .unwrap_or_default();
+    let group_now = recompute_group_now_sql(parts, &keys, &column, &src_from);
+    let _ = agg;
     format!(
         "with affected as ({affected}), \
-         group_now as (select {keys}, {agg} as {column} from {src_from} group by {keys}), \
+         group_now as ({group_now}), \
          already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
          deletes as (select {keys}, {column}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
@@ -11458,9 +11559,11 @@ fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     } else {
         format!("src{}", filter_where(parts.filter))
     };
+    let group_now = recompute_group_now_sql(parts, &keys, &column, &src_from);
+    let _ = agg;
     let rebuild = format!(
-        "select {keys}, {agg} as {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-         from {src_from} group by {keys}"
+        "select {keys}, {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from ({group_now}) t"
     );
     match parts.having {
         Some(having) => format!("select * from ({rebuild}) t where {having}"),

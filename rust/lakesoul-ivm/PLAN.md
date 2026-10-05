@@ -2007,6 +2007,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：analyzer、`join_filters.slt`（bootstrap、左右行进入/离开过滤、删除、过滤变化 rebuild）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）284 个测试通过、0 失败。
 
+### 10.56 多列 COUNT(DISTINCT a, b)（PR-50）
+
+- **能力**：`SELECT g, COUNT(DISTINCT a, b) FROM src GROUP BY g`；优化计划保留为单个
+  Aggregate（不像单列那样 split），analyzer 将参数列保存为 `DistinctAgg.value_columns`。
+- **运行时**：多列 distinct 没有可合并的「签名值状态」；DataFusion 的
+  `count(DISTINCT a, b)` 计划可生成但**执行未实现**（`COUNT DISTINCT with multiple arguments`），
+  因此 `refresh_distinct_agg`/`rebuild_distinct_agg` 走 recompute 家族：按受影响分组从当前源
+  重算。`RecomputeParts` 增加 `distinct_columns`，SQL 生成改为对
+  `select distinct 分组键, 值列... from src [where ...]` 的 `count(case when 值列均非空 then 1 end)`，
+  既保留 SQL 的 NULL 语义（任一列为 NULL 的元组不计数），又让「所有元组为 NULL」的分组保留 0。
+- **明确拒绝**：多列 distinct + `HAVING`、+ `FILTER`、或**无 GROUP BY**（全局聚合）→ 明确报错
+  （recompute 家族的全局聚合另属 backlog）；analyzer 测试同步更新 `rejects_unmaintained_shapes`。
+- **测试**：analyzer（spec 的 `value_columns`、HAVING/FILTER/全局拒绝）、
+  `multi_distinct.slt`（bootstrap、重复元组、跨分组移动、元组坍缩、删除到空分组、分组回归、
+  定义变化 rebuild）。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）__COUNT__ 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

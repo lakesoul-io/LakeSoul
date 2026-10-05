@@ -1,0 +1,144 @@
+# A multi-column COUNT(DISTINCT a, b): the optimized plan keeps it as one
+# aggregate, and the affected groups are recomputed from their current source
+# rows, so duplicate tuples, updates and deletes move the count.
+
+statement ok
+/*ivm-append __SRC__: id=1,g=a,a=1,b=1,op=insert; id=2,g=a,a=1,b=1,op=insert; id=3,g=a,a=1,b=2,op=insert; id=4,g=b,a=1,b=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 1
+
+# A new tuple raises the count and a duplicate tuple keeps it.
+statement ok
+/*ivm-append __SRC__: id=5,g=a,a=2,b=1,op=insert; id=6,g=a,a=1,b=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3
+b 1
+
+# A row moving into another group turns a new tuple and can empty its old
+# group.
+statement ok
+/*ivm-append __SRC__: id=4,g=a,a=2,b=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3
+
+# An update that collapses a tuple lowers the count.
+statement ok
+/*ivm-append __SRC__: id=3,g=a,a=2,b=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+
+# Deleting one of the rows that share a tuple keeps the count.
+statement ok
+/*ivm-append __SRC__: id=5,g=a,a=2,b=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+
+# Deleting the last row with a tuple drops it; an emptied group disappears.
+statement ok
+/*ivm-append __SRC__: id=4,g=a,a=2,b=1,op=delete; id=3,g=a,a=2,b=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1
+
+statement ok
+/*ivm-append __SRC__: id=2,g=a,a=1,b=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+statement ok
+/*ivm-append __SRC__: id=6,g=a,a=1,b=1,op=delete; id=1,g=a,a=1,b=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# New rows bring an emptied group back.
+statement ok
+/*ivm-append __SRC__: id=7,g=b,a=1,b=1,op=insert; id=8,g=b,a=1,b=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT a, b) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 2
+
+# A changed distinct tuple rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT b, a) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 2
