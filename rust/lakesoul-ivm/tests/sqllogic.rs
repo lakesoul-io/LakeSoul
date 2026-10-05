@@ -34,11 +34,11 @@ use lakesoul_ivm::{
     WindowFunction, WindowGroupSpec, array_agg_mv_schema_for, avg_mv_schema_for,
     cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
     distinct_agg_mv_schema_for, full_join_view_schema_for,
-    keyed_join_output_primary_keys, left_join_view_schema_for,
-    lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_window_mv_schema_for,
-    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
@@ -1518,6 +1518,41 @@ fn sqllogic_top_k_where() {
         include_str!("slt/top_k_where.slt"),
         top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_join_filters() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "joinfilters",
+        include_str!("slt/join_filters.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rid"])),
+        ],
+        keyed_join_view_schema_for(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["rid"]),
+            &group_keys(&["jk"]),
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
     );
 }
 
