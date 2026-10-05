@@ -34,12 +34,12 @@ use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
     IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, array_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, full_join_view_schema_for, join_view_schema_for,
-    keyed_join_view_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
-    median_groups_mv_schema_for, min_max_expr_mv_schema_for, min_max_mv_schema_for,
-    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
-    sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for,
+    cross_join_view_schema_for, distinct_agg_mv_schema_for, full_join_view_schema_for,
+    join_view_schema_for, keyed_join_view_schema_for, left_join_view_schema_for,
+    lookup_join_view_schema_for, median_groups_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_mv_schema_for, row_expr_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
     value_count_state_expr_schema_for, value_count_state_schema_for,
     variance_groups_mv_schema_for, window_columns_mv_schema_for,
 };
@@ -740,6 +740,24 @@ fn expected_mv_schema(
             let output =
                 union_output_schema_for(&source.schema, &spec.columns, &spec.exprs)?;
             union_distinct_mv_schema_for(&output)
+        }
+        ViewSpec::CrossJoin {
+            left_table_id,
+            right_table_id,
+            left_value,
+            right_value,
+            ..
+        } => {
+            let left = find_table(tables, left_table_id)?;
+            let right = find_table(tables, right_table_id)?;
+            cross_join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &left.primary_keys,
+                &right.primary_keys,
+                left_value,
+                right_value,
+            )?
         }
         ViewSpec::Join {
             left_table_id,

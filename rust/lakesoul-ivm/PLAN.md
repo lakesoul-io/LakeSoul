@@ -1862,6 +1862,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   断言 bootstrap、两次 incremental（applied/noop）、rebuild 生命周期下的计数与直方图观测次数。
   全量 IVM 套件（lib + 38 个集成测试二进制 + doctest）262 个测试通过、0 失败。
 
+### 10.47 CROSS JOIN（PR-41）
+
+- **能力**：两侧 keyed 的 `CROSS JOIN`（含 `FROM a, b` 逗号写法，DataFusion 计划为
+  `Join { on: [], join_type: Inner }`）；输出按左侧主键别名 + 右侧主键别名组成 pair 键，
+  payload 为两侧各一列。
+- **spec/typed**：新增 `ViewSpec::CrossJoin` + `CrossJoinView`（left/right/output、
+  left_value、right_value）与 `cross_join_view_schema_for`（无连接键；两侧主键别名非空）；
+  运行时复用 `keyed_join_projection`/`PairJoin`（`join_keys` 为空时改用
+  `LogicalPlanBuilder::cross_join`）。
+- **analyzer**：`on` 为空且无 filter 的内连接走 `analyze_cross_join`（要求两侧 keyed）；
+  payload 从 SELECT 列表解析，若优化器把投影下推掉则从 join 输出 schema 推导（要求命名
+  不歧义）；带 `WHERE` 的 cross join 明确报错。
+- **运行时**：刷新把「左侧变更主键 × 当前右侧」与「当前左侧 × 右侧变更主键」两路 pair
+  union + distinct（同一窗口两侧都变时去重），删除受影响 identity 的旧 pair
+  （delete + insert 幂等，无需 epoch 守卫）；rebuild 用两侧基线做全量叉积。
+- **测试**：analyzer（cross join 与逗号写法、要求 keyed、带 WHERE 拒绝）、typed
+  `tests/cross_join.rs`（bootstrap、左右插入/更新/删除、同一窗口两侧同时变更、no-op 刷新、
+  rebuild，逐步与 SQL cross join 对拍）、`cross_join.slt`（SQL 入口端到端）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）265 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
