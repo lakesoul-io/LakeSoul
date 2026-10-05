@@ -19,6 +19,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DFSchema, ScalarValue};
 use datafusion::logical_expr::ExprSchemable;
+use datafusion::logical_expr::when;
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
@@ -243,6 +244,14 @@ pub struct UnionSourceSpec {
     /// An optional filter the source rows must satisfy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// The projected output columns; empty means the branch selects its source
+    /// columns in schema order (the CDC change column excluded for `UNION`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
+    /// The rendered projection expressions, parallel to `columns`; empty means
+    /// every column is a plain source column.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exprs: Vec<String>,
 }
 
 /// The persisted description of a view.
@@ -3380,6 +3389,11 @@ pub struct UnionSource {
     pub table: IvmTable,
     /// An optional filter the source rows must satisfy.
     pub filter: Option<String>,
+    /// The projected output columns; empty means every source column.
+    pub columns: Vec<String>,
+    /// The rendered projection expressions, parallel to `columns`; empty means
+    /// every column is a plain source column.
+    pub exprs: Vec<String>,
 }
 
 impl UnionSource {
@@ -3388,6 +3402,8 @@ impl UnionSource {
         Self {
             table,
             filter: None,
+            columns: Vec::new(),
+            exprs: Vec::new(),
         }
     }
 
@@ -3397,10 +3413,20 @@ impl UnionSource {
         self
     }
 
+    /// Project the branch onto `columns` (`exprs` parallel and empty when
+    /// every column is a plain source column).
+    pub fn with_projection(mut self, columns: Vec<String>, exprs: Vec<String>) -> Self {
+        self.columns = columns;
+        self.exprs = exprs;
+        self
+    }
+
     fn to_spec(&self) -> UnionSourceSpec {
         UnionSourceSpec {
             table_id: self.table.table_id.clone(),
             filter: self.filter.clone(),
+            columns: self.columns.clone(),
+            exprs: self.exprs.clone(),
         }
     }
 }
@@ -3882,19 +3908,38 @@ pub fn union_all_mv_schema_for(source_schema: &Schema) -> Result<SchemaRef> {
     Ok(Arc::new(Schema::new(fields)))
 }
 
-/// The schema of a [`UnionDistinctView`] materialized view: the data columns
-/// (every source column except the CDC change column) plus the occurrence
-/// count, the row kind and the epoch.
-pub fn union_distinct_mv_schema_for(
+/// The output schema of one union branch: the projected columns (or every
+/// source column when the projection is empty), with the projected types.
+pub fn union_output_schema_for(
     source_schema: &Schema,
-    change_column: Option<&str>,
-) -> SchemaRef {
-    let mut fields = source_schema
-        .fields()
-        .iter()
-        .filter(|field| Some(field.name().as_str()) != change_column)
-        .cloned()
-        .collect::<Vec<_>>();
+    columns: &[String],
+    exprs: &[String],
+) -> Result<SchemaRef> {
+    if !exprs.is_empty() && exprs.len() != columns.len() {
+        return Err(report!(
+            "a union projection needs one expression per column"
+        ));
+    }
+    if columns.is_empty() {
+        return Ok(Arc::new(source_schema.clone()));
+    }
+    if exprs.is_empty() {
+        return project_schema(source_schema, columns);
+    }
+    let mut fields = Vec::with_capacity(columns.len());
+    for (column, expression) in columns.iter().zip(exprs) {
+        let (data_type, nullable) = expression_type(source_schema, expression)?;
+        fields
+            .push(Arc::new(Field::new(column, data_type, nullable))
+                as arrow_schema::FieldRef);
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`UnionDistinctView`] materialized view: the branch output
+/// columns plus the occurrence count, the row kind and the epoch.
+pub fn union_distinct_mv_schema_for(source_schema: &Schema) -> SchemaRef {
+    let mut fields = source_schema.fields().iter().cloned().collect::<Vec<_>>();
     fields.push(Arc::new(Field::new(
         IVM_COUNT_COLUMN,
         DataType::Int64,
@@ -4644,6 +4689,8 @@ impl IvmRuntime {
                     opened.push(UnionSource {
                         table: self.open_table_by_id(&source.table_id).await?,
                         filter: source.filter.clone(),
+                        columns: source.columns.clone(),
+                        exprs: source.exprs.clone(),
                     });
                 }
                 SpecView::UnionAll(UnionAllView {
@@ -4663,6 +4710,8 @@ impl IvmRuntime {
                     opened.push(UnionSource {
                         table: self.open_table_by_id(&source.table_id).await?,
                         filter: source.filter.clone(),
+                        columns: source.columns.clone(),
+                        exprs: source.exprs.clone(),
                     });
                 }
                 SpecView::UnionDistinct(UnionDistinctView {
@@ -7885,23 +7934,36 @@ impl IvmRuntime {
                     Some(filter) => rows.filter(filter.clone())?,
                     None => rows,
                 };
-                inserts.push(rows.select(union_all_projection(table, index)?)?);
+                inserts.push(
+                    rows.select(union_source_projection(&context, source, None, index)?)?,
+                );
                 changed.push(affected);
             } else {
-                let delta = match &filter {
+                let rows = match &filter {
                     Some(filter) => delta.filter(filter.clone())?,
                     None => delta,
                 };
-                inserts.push(delta.select(union_all_projection(table, index)?)?);
+                // An append-only CDC source keeps its markers: translate them
+                // into the MV row kinds, so logical reads drop the retractions
+                // even when the CDC column is not part of the projection.
+                let kinds = match change_column(table) {
+                    Some(column) => {
+                        let retract = col(column)
+                            .in_list(vec![lit("delete"), lit("update_before")], false);
+                        when(retract, lit("delete")).otherwise(lit("insert"))?
+                    }
+                    None => lit("insert"),
+                };
+                let mut projection =
+                    union_source_projection(&context, source, None, index)?;
+                projection.push(kinds.alias(IVM_ROW_KINDS_COLUMN));
+                inserts.push(rows.select(projection)?);
             }
         }
 
-        let output_exprs = view.sources[0]
-            .table
-            .schema
-            .fields()
+        let output_exprs = union_branch_columns(&view.sources[0], None)
             .iter()
-            .map(|field| col(field.name().as_str()))
+            .map(|column| col(column.as_str()))
             .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
             .collect::<Vec<_>>();
 
@@ -7955,9 +8017,9 @@ impl IvmRuntime {
                 }
             }
         } else {
+            // The append-only frames already carry the MV column order (the
+            // output columns, the source index, the row kind).
             for batch in union_frames(inserts)?
-                .select(output_exprs)?
-                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
                 .collect()
                 .await?
@@ -8043,14 +8105,13 @@ impl IvmRuntime {
                 }
                 None => rows,
             };
-            frames.push(rows.select(union_all_projection(table, index)?)?);
+            frames.push(
+                rows.select(union_source_projection(&context, source, None, index)?)?,
+            );
         }
-        let output_exprs = view.sources[0]
-            .table
-            .schema
-            .fields()
+        let output_exprs = union_branch_columns(&view.sources[0], None)
             .iter()
-            .map(|field| col(field.name().as_str()))
+            .map(|column| col(column.as_str()))
             .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
             .collect::<Vec<_>>();
         for batch in union_frames(frames)?
@@ -11025,18 +11086,22 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
 fn union_distinct_columns(view: &UnionDistinctView) -> Result<Vec<String>> {
     view.sources
         .first()
-        .map(|source| {
-            let change = source.table.cdc_column.as_deref();
-            source
-                .table
-                .schema
-                .fields()
-                .iter()
-                .map(|field| field.name().clone())
-                .filter(|name| Some(name.as_str()) != change)
-                .collect()
-        })
+        .map(|source| union_branch_columns(source, source.table.cdc_column.as_deref()))
         .ok_or_else(|| report!("union view {} has no sources", view.view_id))
+}
+
+/// `select <projection>` of one union-distinct branch: the canonical output
+/// columns with the branch's rendered expressions (empty means plain columns).
+fn union_distinct_projection_sql(columns: &[String], exprs: &[String]) -> String {
+    if exprs.is_empty() {
+        return quoted_list(columns);
+    }
+    columns
+        .iter()
+        .zip(exprs)
+        .map(|(column, expression)| format!("{expression} as {}", quote_ident(column)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The per-source occurrence deltas of a union-distinct refresh.
@@ -11052,6 +11117,7 @@ fn union_distinct_delta_ctes(
         let change = change_column(table);
         let filter = source.filter.as_deref();
         let new_table = format!("src{index}");
+        let projection = union_distinct_projection_sql(columns, &source.exprs);
         if keyed {
             let new_filter = format!(
                 "{}{}",
@@ -11067,27 +11133,34 @@ fn union_distinct_delta_ctes(
             let pk_match =
                 key_join_condition(&old_table, &new_table, &table.primary_keys);
             ctes.push(format!(
-                "d{index} as (select {cols}, count(1) as dcount from {new_table} \
-                 where {new_filter} group by {cols} \
+                "d{index} as (select {cols}, count(1) as dcount from \
+                 (select {projection} from {new_table} where {new_filter}) p{index} \
+                 group by {cols} \
                  union all \
-                 select {cols}, -count(1) as dcount from {old_table} \
-                 where {old_filter} \
-                   and exists (select 1 from {new_table} where {pk_match}) \
+                 select {cols}, -count(1) as dcount from \
+                 (select {projection} from {old_table} where {old_filter} \
+                    and exists (select 1 from {new_table} where {pk_match})) o{index} \
                  group by {cols})",
             ));
         } else {
-            let count = match change {
-                Some(_) => format!(
-                    "sum(case when {} then -1 else 1 end)",
-                    source_retract_condition(&new_table, change)
-                ),
-                None => "count(1)".to_string(),
-            };
-            ctes.push(format!(
-                "d{index} as (select {cols}, {count} as dcount from {new_table}{} \
-                 group by {cols})",
-                filter_where(filter),
-            ));
+            match change {
+                Some(_) => {
+                    let retract = source_retract_condition(&new_table, change);
+                    ctes.push(format!(
+                        "d{index} as (select {cols}, sum(dcount) as dcount from \
+                         (select {projection}, \
+                                 case when {retract} then -1 else 1 end as dcount \
+                          from {new_table}{}) p{index} group by {cols})",
+                        filter_where(filter),
+                    ));
+                }
+                None => ctes.push(format!(
+                    "d{index} as (select {cols}, count(1) as dcount from \
+                     (select {projection} from {new_table}{}) p{index} \
+                     group by {cols})",
+                    filter_where(filter),
+                )),
+            }
         }
     }
     Ok(ctes.join(", "))
@@ -11162,32 +11235,41 @@ fn union_distinct_rebuild_sql(view: &UnionDistinctView, epoch: i64) -> Result<St
         let table = &source.table;
         let change = change_column(table);
         let table_name = format!("src{index}");
+        let filter = source.filter.as_deref();
+        let projection = union_distinct_projection_sql(&columns, &source.exprs);
         if keyed {
             // The baseline is merged by key, so the surviving rows count once.
             let where_clause = format!(
                 " where {}{}",
                 source_delete_filter(&table_name, change),
-                filter_clause(source.filter.as_deref()),
+                filter_clause(filter),
             );
             parts.push(format!(
-                "select {cols}, count(1) as dcount from {table_name}{where_clause} \
+                "select {cols}, count(1) as dcount from \
+                 (select {projection} from {table_name}{where_clause}) p{index} \
                  group by {cols}"
             ));
         } else {
             // An append-only CDC source keeps every marker, so the markers
             // are aggregated with their sign (like the SUM/COUNT rebuild).
-            let count = match change {
-                Some(_) => format!(
-                    "sum(case when {} then -1 else 1 end)",
-                    source_retract_condition(&table_name, change)
-                ),
-                None => "count(1)".to_string(),
-            };
-            parts.push(format!(
-                "select {cols}, {count} as dcount from {table_name}{} \
-                 group by {cols}",
-                filter_where(source.filter.as_deref()),
-            ));
+            match change {
+                Some(_) => {
+                    let retract = source_retract_condition(&table_name, change);
+                    parts.push(format!(
+                        "select {cols}, sum(dcount) as dcount from \
+                         (select {projection}, \
+                                 case when {retract} then -1 else 1 end as dcount \
+                          from {table_name}{}) p{index} group by {cols}",
+                        filter_where(filter),
+                    ));
+                }
+                None => parts.push(format!(
+                    "select {cols}, count(1) as dcount from \
+                     (select {projection} from {table_name}{}) p{index} \
+                     group by {cols}",
+                    filter_where(filter),
+                )),
+            }
         }
     }
     let kinds = IVM_ROW_KINDS_COLUMN;
@@ -11261,13 +11343,57 @@ fn validate_union_distinct_view(view: &UnionDistinctView) -> Result<()> {
 }
 
 /// Frames of the projection of a source onto `(columns..., __ivm_source)`.
-fn union_all_projection(source: &IvmTable, index: usize) -> Result<Vec<Expr>> {
-    let mut exprs = source
+/// The output columns of a union branch: the projection, or the source's data
+/// columns when the branch selects everything (`change_column` is excluded
+/// when set).
+fn union_branch_columns(
+    source: &UnionSource,
+    change_column: Option<&str>,
+) -> Vec<String> {
+    if !source.columns.is_empty() {
+        return source.columns.clone();
+    }
+    source
+        .table
         .schema
         .fields()
         .iter()
-        .map(|field| col(field.name().as_str()))
-        .collect::<Vec<_>>();
+        .map(|field| field.name().clone())
+        .filter(|name| Some(name.as_str()) != change_column)
+        .collect()
+}
+
+/// The DataFrame projection of one `UNION ALL` branch: the projected columns
+/// plus the source index.
+fn union_source_projection(
+    context: &SessionContext,
+    source: &UnionSource,
+    change_column: Option<&str>,
+    index: usize,
+) -> Result<Vec<Expr>> {
+    let columns = union_branch_columns(source, change_column);
+    let mut exprs = if source.exprs.is_empty() {
+        columns
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>()
+    } else {
+        let df_schema = DFSchema::try_from(source.table.schema.as_ref().clone())
+            .map_err(|error| report!("invalid source schema: {error}"))?;
+        columns
+            .iter()
+            .zip(&source.exprs)
+            .map(|(column, expression)| {
+                let expression = context
+                    .state()
+                    .create_logical_expr(expression, &df_schema)
+                    .map_err(|error| {
+                        report!("invalid union projection {expression:?}: {error}")
+                    })?;
+                Ok(expression.alias(column))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
     exprs.push(lit(index as i32).alias(IVM_SOURCE_COLUMN));
     Ok(exprs)
 }
