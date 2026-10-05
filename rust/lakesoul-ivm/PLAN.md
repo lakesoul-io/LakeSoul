@@ -1827,6 +1827,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **验证**：全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）258 个测试通过、
   0 失败。
 
+### 10.45 CTE / 派生表支持与验证（PR-39）
+
+- **能力**：`WITH` 与派生表在优化器内联后按内层形状维护
+  （`WITH filtered AS (SELECT ... WHERE ...) SELECT g, SUM(v) FROM filtered GROUP BY g`、
+  `SELECT ... FROM (SELECT ...) t`）；CTE 体内可以含聚合/窗口，只要外层是普通列引用
+  （如 `WITH totals AS (SELECT g, SUM(v) AS s ...) SELECT g, s FROM totals`）。
+- **入口修复**：`IvmSqlExecutor` 的关系收集器现在记录查询里的 CTE 别名
+  （`pre_visit_query`），引用 CTE 的单段关系不再被当成表打开——此前
+  `INSERT INTO mv WITH x AS (...) SELECT ...` 会报 `table default.x not found`。
+- **非目标**（仍在限制清单）：标量/相关子查询、聚合之上的计算列
+  （`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`）。
+- **测试**：analyzer（CTE 过滤体、聚合体、派生表、窗口派生表）、`cte.slt`
+  （bootstrap、进入过滤的更新、删除、阈值变化 rebuild、增量、派生表等价定义走增量）、
+  差分 oracle（CTE vs `WHERE` 参考）。全量 IVM 套件（lib + 37 个集成测试二进制 +
+  doctest）261 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

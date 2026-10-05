@@ -298,6 +298,23 @@ async fn run_oracle_with(
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_cte_matches_full_recompute() {
+    // A CTE is inlined by the planner; the view sees the filtered source.
+    run_oracle(
+        "cte",
+        1,
+        sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v")).unwrap(),
+        vec!["g".to_string()],
+        "WITH filtered AS (SELECT g, v FROM __SRC__ WHERE v > 30) \
+         SELECT g, SUM(v) FROM filtered GROUP BY g",
+        "SELECT g, SUM(v) AS sum_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g",
+        "SELECT g, sum_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_group_expr_matches_full_recompute() {
     // The group key is a rendered expression instead of a plain column.
     run_oracle(

@@ -1745,6 +1745,17 @@ fn sqllogic_union_append_where() {
 }
 
 #[test]
+fn sqllogic_cte() {
+    run_script_for_mv(
+        "cte",
+        include_str!("slt/cte.slt"),
+        sum_count_mv_schema_for(&source_schema(), &group_keys(&["g"]), Some("v"))
+            .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
 fn sqllogic_errors() {
     run_script_for_mv(
         "errors",

@@ -4022,6 +4022,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_ctes_and_derived_tables() {
+        // The optimizer inlines plain CTEs, so they analyze as their inner
+        // plan (the executor always analyzes the optimized plan).
+        let analyzed = analyze_optimized(
+            "with filtered as (select g, v from src where v > 5) \
+             select g, sum(v) from filtered group by g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount {
+            group_keys, filter, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert!(filter.is_some());
+
+        // A CTE whose body is an aggregate keeps the aggregate shape.
+        let analyzed = analyze_optimized(
+            "with totals as (select g, sum(v) as s from src group by g) \
+             select g, s from totals",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::SumCount { .. }));
+
+        // A derived table with a predicate feeds the aggregate.
+        let analyzed = analyze_optimized(
+            "select t.g, sum(t.v) from (select g, v from src where v > 5) t \
+             group by t.g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount { filter, .. } = analyzed.spec else {
+            panic!("expected a sum/count spec");
+        };
+        assert!(filter.is_some());
+
+        // A window under a derived table keeps the window shape.
+        let analyzed = analyze_optimized(
+            "select g, rn from (select g, row_number() over (partition by g order by v) as rn from src) t",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::Window { .. }));
+    }
+
+    #[tokio::test]
     async fn analyzes_select_distinct() {
         // The raw and the optimized plan describe the same count-only shape.
         let expected = ViewSpec::SumCount {
