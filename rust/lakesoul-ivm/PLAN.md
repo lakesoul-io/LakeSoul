@@ -1948,6 +1948,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap/NULL 填充/维度更新/删除回 NULL/事实换键/删除）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）278 个测试通过、0 失败。
 
+### 10.52 缺口固化：带过滤的 join 输入与已知语义限制（PR-46）
+
+- **探针结论**：join 一侧的 `WHERE` 会被优化器下推到 join 之下（`Filter` 包住扫描），
+  带过滤的派生表同理；跨侧谓词进入 `join.filter`。这些形状此前均被拒绝，且**不会静默忽略**谓词。
+- **改动**：
+  - `join_input` 对 `Filter` 输入给出明确错误（"a join input with a WHERE clause (or a filtered
+    derived table) is not supported yet"）；
+  - 新增 `rejects_filtered_join_inputs` 回归测试（普通 join 侧过滤、过滤派生表、CROSS JOIN 跨侧
+    谓词），把"拒绝而非静默出错"的行为固定下来；
+  - README 限制清单补充：带过滤的 join 输入；`GROUPING SETS/ROLLUP/CUBE`、`COUNT(DISTINCT a,b)`、
+    `SELECT DISTINCT ON`（上游计划可产生但运行时不维护）；append-only CDC 源的 `UNION ALL`
+    删除标记无法撤回原始 insert 行（无行标识），需要撤回时应用 keyed 源。
+- **验证**：全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）279 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
