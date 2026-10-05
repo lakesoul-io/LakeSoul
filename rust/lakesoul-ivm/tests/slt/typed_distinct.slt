@@ -1,0 +1,61 @@
+# COUNT(DISTINCT decimal) grouped by a boolean key: NULL values are not
+# distinct values and the decimal column is the state key.
+
+statement ok
+/*ivm-append __SRC__: k=1,v=10.5,flag=true,d=12.34,day=1,op=insert; k=2,v=null,flag=true,d=null,day=1,op=insert; k=3,v=3.25,flag=false,d=1.00,day=2,op=insert; k=4,v=7.75,flag=false,d=2.50,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, COUNT(DISTINCT d) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ?I rowsort
+SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 2
+true 1
+
+# A value already present in another group becomes distinct in this one.
+statement ok
+/*ivm-append __SRC__: k=5,v=1.0,flag=true,d=1.00,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, COUNT(DISTINCT d) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?I rowsort
+SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 2
+true 2
+
+# Deleting a row removes the value when its last occurrence leaves.
+statement ok
+/*ivm-append __SRC__: k=3,v=3.25,flag=false,d=1.00,day=2,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, COUNT(DISTINCT d) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?I rowsort
+SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 1
+true 2
+
+# A predicate rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT flag, COUNT(DISTINCT d) FROM __SRC__ WHERE flag = true GROUP BY flag
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ?I rowsort
+SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+true 2

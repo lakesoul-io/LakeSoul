@@ -1,0 +1,74 @@
+# MIN/MAX over nullable Decimal values grouped by a date key. The definition
+# changes from MIN to MAX (same MV schema), which rebuilds the view.
+
+statement ok
+/*ivm-append __SRC__: k=1,v=10.5,flag=true,d=12.34,day=1,op=insert; k=2,v=null,flag=true,d=null,day=1,op=insert; k=3,v=3.25,flag=false,d=1.00,day=2,op=insert; k=4,v=7.75,flag=false,d=2.50,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT day, MIN(d) FROM __SRC__ GROUP BY day
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ?? rowsort
+SELECT day, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1970-01-02 12.34
+1970-01-03 1.00
+
+# A smaller value becomes the minimum.
+statement ok
+/*ivm-append __SRC__: k=5,v=1.0,flag=false,d=0.50,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT day, MIN(d) FROM __SRC__ GROUP BY day
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?? rowsort
+SELECT day, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1970-01-02 12.34
+1970-01-03 0.50
+
+# Switching to MAX rebuilds the view with the same schema.
+statement ok
+INSERT INTO __MV__ SELECT day, MAX(d) FROM __SRC__ GROUP BY day
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ?? rowsort
+SELECT day, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1970-01-02 12.34
+1970-01-03 2.50
+
+# Deleting the maximum falls back to the next value.
+statement ok
+/*ivm-append __SRC__: k=4,v=7.75,flag=false,d=2.50,day=2,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT day, MAX(d) FROM __SRC__ GROUP BY day
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?? rowsort
+SELECT day, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1970-01-02 12.34
+1970-01-03 1.00
+
+# A per-group predicate rebuilds the view (the January 3rd values are below it).
+statement ok
+INSERT INTO __MV__ SELECT day, MAX(d) FROM __SRC__ WHERE d > 1.00 GROUP BY day
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ?? rowsort
+SELECT day, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1970-01-02 12.34
