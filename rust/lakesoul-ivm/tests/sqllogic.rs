@@ -31,17 +31,18 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, array_agg_mv_schema_for, avg_mv_schema_for,
+    WindowFunction, WindowGroupSpec, array_agg_mv_schema_for, avg_mv_schema_for,
     cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
     distinct_agg_mv_schema_for, full_join_view_schema_for,
     keyed_join_output_primary_keys, left_join_view_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_groups_mv_schema_for, min_max_mv_schema_for, row_expr_mv_schema_for,
-    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_window_mv_schema_for,
+    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
@@ -1777,6 +1778,47 @@ fn sqllogic_distinct_group_expression() {
         )
         .unwrap(),
         group_keys(&["bucket"]),
+    );
+}
+
+#[test]
+fn sqllogic_multi_window() {
+    let groups = vec![
+        WindowGroupSpec {
+            partition_keys: group_keys(&["v"]),
+            order_keys: Vec::new(),
+            order_by: Vec::new(),
+            columns: vec![WindowColumn {
+                function: WindowFunction::Sum,
+                value_column: Some("v".to_string()),
+                window_args: None,
+                window_filter: None,
+                ignore_nulls: false,
+                window_frame: None,
+                column: "cnt".to_string(),
+            }],
+        },
+        WindowGroupSpec {
+            partition_keys: group_keys(&["g"]),
+            order_keys: group_keys(&["v"]),
+            order_by: Vec::new(),
+            columns: vec![WindowColumn {
+                function: WindowFunction::RowNumber,
+                value_column: None,
+                window_args: None,
+                window_filter: None,
+                ignore_nulls: false,
+                window_frame: None,
+                column: "rn".to_string(),
+            }],
+        },
+    ];
+    run_script_for_mv(
+        "multiwindow",
+        include_str!("slt/multi_window.slt"),
+        multi_window_mv_schema_for(&source_schema(), &group_keys(&["k"]), &groups)
+            .unwrap(),
+        group_keys(&["k"]),
     );
 }
 

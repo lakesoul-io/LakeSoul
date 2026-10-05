@@ -1916,6 +1916,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   更新、删除降计数、跨桶移动）、两个差分 oracle。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）274 个测试通过、0 失败。
 
+### 10.50 窗口链式多 clause（不同 PARTITION BY/ORDER BY）（PR-44）
+
+- **能力**：一条语句里的多个窗口若 clause 不同（优化器计划为链式 `WindowAggr`，中间可能有投影），
+  按 `ViewSpec::MultiWindow` 维护：MV 以源主键为键，把各 clause 的分区键物化为值列，再加所有
+  窗口列。
+- **spec/typed**：新增 `WindowGroupSpec`（partition/order/order_by/columns）与
+  `ViewSpec::MultiWindow` + `MultiWindowView`；schema `multi_window_mv_schema_for`。
+- **运行时**：刷新 SQL 一条完成——`affected`（delta 主键 ∪ 各 clause 分区变化的 MV 行）→
+  `computed`（单条 SELECT 里对源表同时计算各 clause 的窗口表达式，复用抽出的
+  `window_over_base` tie-breaker 逻辑）→ 受影响 identity 的 delete + insert（epoch 去重）；
+  rebuild 对全量源计算；校验复用抽出的 `validate_window_column`。
+- **analyzer**：`analyze_window` 沿 `peel` 收集链上的所有 Window 节点（允许中间投影），逐节点
+  复用 `window_function_spec`（对顶层 projection 解析别名），单 clause 仍走原有 `ViewSpec::Window`。
+- **测试**：analyzer（两种不同 clause、单 clause 仍为 Window）、`multi_window.slt`（两个不同
+  clause：更新/删除/谓词 rebuild/增量）、差分 oracle。README 支持清单更新、限制条目删除。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）277 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

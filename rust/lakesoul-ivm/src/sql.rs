@@ -39,7 +39,7 @@ use crate::runtime::{
     CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
     SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
-    WindowFunction, string_agg_output_column, union_output_schema_for,
+    WindowFunction, WindowGroupSpec, string_agg_output_column, union_output_schema_for,
 };
 use crate::table::IvmTable;
 
@@ -1595,34 +1595,77 @@ fn analyze_window(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let (source, filter) = collect_filtered_source(&window.input, tables, "a window")?;
+    // A statement with several window clauses plans as chained `WindowAggr`
+    // nodes (with an intermediate projection when the upper clause needs the
+    // lower columns); collect the chain down to the source.
+    let mut chain = vec![window];
+    let mut node = peel(&window.input);
+    loop {
+        let inner = match node {
+            LogicalPlan::Projection(projection) => peel(&projection.input),
+            other => other,
+        };
+        let LogicalPlan::Window(inner) = inner else {
+            break;
+        };
+        chain.push(inner);
+        node = peel(&inner.input);
+    }
+    let (source, filter) = collect_filtered_source(node, tables, "a window")?;
     // Selecting a window expression itself (aliased or not) is fine;
     // computing on top of it would be silently dropped otherwise.
+    let window_exprs = chain
+        .iter()
+        .flat_map(|window| window.window_expr.iter())
+        .collect::<Vec<_>>();
     for expr in &projection.expr {
         let mut inner = expr;
         while let Expr::Alias(alias) = inner {
             inner = &alias.expr;
         }
-        if column_name(inner).is_none() && !window.window_expr.contains(inner) {
+        if column_name(inner).is_none() && !window_exprs.contains(&inner) {
             return Err(unsupported(
                 "computed columns above a window function are not supported",
             ));
         }
     }
-    let WindowParts {
-        partition_keys,
-        order_keys,
-        order_by,
-        columns,
-    } = window_function_spec(window, Some(projection))?;
-    Ok(ViewSpec::Window {
+    // Every clause is parsed against the top projection, which names the
+    // materialized columns.
+    let parts = chain
+        .iter()
+        .map(|window| window_function_spec(window, Some(projection)))
+        .collect::<Result<Vec<_>>>()?;
+    if parts.len() == 1 {
+        let WindowParts {
+            partition_keys,
+            order_keys,
+            order_by,
+            columns,
+        } = parts.into_iter().next().expect("length checked");
+        return Ok(ViewSpec::Window {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            partition_keys,
+            order_keys,
+            order_by,
+            columns,
+            filter,
+        });
+    }
+    Ok(ViewSpec::MultiWindow {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
-        partition_keys,
-        order_keys,
-        order_by,
-        columns,
+        windows: parts
+            .into_iter()
+            .map(|parts| WindowGroupSpec {
+                partition_keys: parts.partition_keys,
+                order_keys: parts.order_keys,
+                order_by: parts.order_by,
+                columns: parts.columns,
+            })
+            .collect(),
         filter,
     })
 }
@@ -3571,6 +3614,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_multi_window_clauses() {
+        // Different clauses chain into several WindowAggr nodes; the top node
+        // is the last select item.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v) as rn, \
+             sum(v) over (partition by v) as cnt from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiWindow { windows, .. } = analyzed.spec else {
+            panic!("expected a multi-window spec");
+        };
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].partition_keys, vec!["v".to_string()]);
+        assert!(windows[0].order_keys.is_empty());
+        assert_eq!(windows[0].columns.len(), 1);
+        assert_eq!(windows[0].columns[0].column, "cnt");
+        assert_eq!(windows[1].partition_keys, vec!["g".to_string()]);
+        assert_eq!(windows[1].order_keys, vec!["v".to_string()]);
+        assert_eq!(windows[1].columns[0].column, "rn");
+
+        // Different partitions put an intermediate projection between the
+        // clauses.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v) as rn, \
+             sum(v) over (partition by v order by k) as cnt from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiWindow { windows, .. } = analyzed.spec else {
+            panic!("expected a multi-window spec");
+        };
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].partition_keys, vec!["v".to_string()]);
+        assert_eq!(windows[0].order_keys, vec!["k".to_string()]);
+        assert_eq!(windows[1].partition_keys, vec!["g".to_string()]);
+        assert_eq!(windows[1].order_keys, vec!["v".to_string()]);
+
+        // One shared clause stays a plain window view.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v) as rn, \
+             rank() over (partition by g order by v) as rk from src",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::Window { .. }));
+    }
+
+    #[tokio::test]
     async fn analyzes_value_count_group_expressions() {
         // MIN/MAX and DISTINCT carry computed group keys like the other
         // aggregate families.
@@ -5486,15 +5578,14 @@ mod tests {
                 .await
                 .is_err()
         );
-        // Multiple windows with different partitionings are not maintained
-        // yet.
-        assert!(
-            analyze(
-                "select k, row_number() over (partition by g order by v), rank() over (partition by k order by v) from src"
-            )
-            .await
-            .is_err()
-        );
+        // Multiple windows with different partitionings chain into a
+        // multi-window view.
+        let analyzed = analyze(
+            "select k, row_number() over (partition by g order by v), rank() over (partition by k order by v) from src",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::MultiWindow { .. }));
         // Repeated functions need distinct column names (an alias).
         assert!(
             analyze(

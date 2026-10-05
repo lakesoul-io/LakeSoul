@@ -708,6 +708,23 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
     },
+    /// Several window clauses (the chained `WindowAggr` nodes of one
+    /// statement) over one source: every clause's window columns keyed by the
+    /// source primary keys, with each clause's partition keys materialized as
+    /// value columns.
+    MultiWindow {
+        /// The view id.
+        view_id: String,
+        /// The source table id (keyed).
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The window clauses, in select-list order.
+        windows: Vec<WindowGroupSpec>,
+        /// An optional filter applied before windowing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+    },
 }
 
 impl ViewSpec {
@@ -731,6 +748,7 @@ impl ViewSpec {
             | ViewSpec::Row { view_id, .. }
             | ViewSpec::UnionAll { view_id, .. }
             | ViewSpec::UnionDistinct { view_id, .. }
+            | ViewSpec::MultiWindow { view_id, .. }
             | ViewSpec::TopK { view_id, .. } => view_id,
         }
     }
@@ -756,6 +774,7 @@ impl ViewSpec {
             ViewSpec::UnionAll { .. } => "union_all",
             ViewSpec::UnionDistinct { .. } => "union_distinct",
             ViewSpec::TopK { .. } => "top_k",
+            ViewSpec::MultiWindow { .. } => "multi_window",
         }
     }
 }
@@ -780,6 +799,7 @@ enum SpecView {
     UnionAll(UnionAllView),
     UnionDistinct(UnionDistinctView),
     TopK(TopKView),
+    MultiWindow(MultiWindowView),
 }
 
 /// A `SUM`/`COUNT` view over a source table.
@@ -3233,6 +3253,77 @@ impl WindowColumn {
     }
 }
 
+/// One window clause of a [`MultiWindowView`]: the partition and ordering
+/// shared by its columns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowGroupSpec {
+    /// The `PARTITION BY` columns.
+    #[serde(default)]
+    pub partition_keys: Vec<String>,
+    /// The `ORDER BY` columns.
+    #[serde(default)]
+    pub order_keys: Vec<String>,
+    /// The rendered `ORDER BY` items, when they differ from the plain
+    /// ascending `order_keys`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order_by: Vec<String>,
+    /// The window columns sharing this clause.
+    pub columns: Vec<WindowColumn>,
+}
+
+/// A window view over several clauses with different `PARTITION BY`/`ORDER BY`
+/// (chained `WindowAggr` nodes).
+#[derive(Debug, Clone)]
+pub struct MultiWindowView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table; it must have a primary key.
+    pub source: IvmTable,
+    /// The materialized view table, keyed by the source primary keys.
+    pub mv: IvmTable,
+    /// The window clauses, in select-list order.
+    pub windows: Vec<WindowGroupSpec>,
+    /// An optional filter applied before windowing.
+    pub filter: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl MultiWindowView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        windows: Vec<WindowGroupSpec>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            windows,
+            filter: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::MultiWindow {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            windows: self.windows.clone(),
+            filter: self.filter.clone(),
+        }
+    }
+}
+
 /// A window view over a source table.
 ///
 /// The materialized view stores one row per source row — keyed by the
@@ -3889,6 +3980,275 @@ pub fn window_columns_mv_schema_for(
         false,
     )));
     Ok(Arc::new(Schema::new(fields)))
+}
+/// The schema of a [`MultiWindowView`] materialized view: the source primary
+/// keys, the union of the clauses' partition keys and one column per window
+/// function.
+pub fn multi_window_mv_schema_for(
+    source_schema: &Schema,
+    source_primary_keys: &[String],
+    windows: &[WindowGroupSpec],
+) -> Result<SchemaRef> {
+    let mut fields = key_fields(source_schema, source_primary_keys)?;
+    let mut seen = source_primary_keys
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    for group in windows {
+        for key in &group.partition_keys {
+            if seen.insert(key.clone()) {
+                fields.push(Arc::new(source_schema.field_with_name(key)?.clone()));
+            }
+        }
+    }
+    for group in windows {
+        for column in &group.columns {
+            let (data_type, nullable) = window_column_type(source_schema, column)?;
+            fields.push(Arc::new(Field::new(&column.column, data_type, nullable)));
+        }
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The MV output columns of a multi-window view in schema order: the primary
+/// keys, the union of the partition keys (first seen) and the window columns.
+fn multi_window_output_columns(view: &MultiWindowView) -> Vec<String> {
+    let mut columns = view.source.primary_keys.clone();
+    let mut seen = columns
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    for group in &view.windows {
+        for key in &group.partition_keys {
+            if seen.insert(key.clone()) {
+                columns.push(key.clone());
+            }
+        }
+    }
+    for group in &view.windows {
+        for column in &group.columns {
+            columns.push(column.column.clone());
+        }
+    }
+    columns
+}
+
+/// The `computed` CTE of a multi-window view: every clause's window functions
+/// over the current source state, in MV column order.
+fn multi_window_computed_cte(view: &MultiWindowView, source_alias: &str) -> String {
+    let mut fields = view
+        .source
+        .primary_keys
+        .iter()
+        .map(|key| quote_ident(key))
+        .collect::<Vec<_>>();
+    let mut seen = view
+        .source
+        .primary_keys
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    for group in &view.windows {
+        for key in &group.partition_keys {
+            if seen.insert(key.clone()) {
+                fields.push(quote_ident(key));
+            }
+        }
+    }
+    for group in &view.windows {
+        let over_base = window_over_base(
+            &view.source.primary_keys,
+            &group.partition_keys,
+            &group.order_keys,
+            &group.order_by,
+            &group.columns,
+        );
+        for column in &group.columns {
+            let frame = if column.function.uses_frame() {
+                column
+                    .window_frame
+                    .as_deref()
+                    .map(|frame| format!(" {frame}"))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let expr = window_column_expr(column, &format!("{over_base}{frame}"));
+            fields.push(format!("{expr} as {}", quote_ident(&column.column)));
+        }
+    }
+    let filter = format!(
+        "{}{}",
+        source_delete_filter(source_alias, change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
+    format!(
+        "computed as (select {} from {source_alias} where {filter})",
+        fields.join(", ")
+    )
+}
+
+/// The `affected` CTE of a multi-window refresh: the primary keys in the delta
+/// plus the rows whose partition changed in any clause.
+fn multi_window_affected_cte(view: &MultiWindowView) -> String {
+    let pks = quoted_list(&view.source.primary_keys);
+    let mv_pks = view
+        .source
+        .primary_keys
+        .iter()
+        .map(|key| format!("m.{}", quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut parts = vec![format!("select distinct {pks} from delta")];
+    for group in &view.windows {
+        if group.partition_keys.is_empty() {
+            // A global window depends on every row.
+            parts.push(format!("select distinct {mv_pks} from mv m"));
+            continue;
+        }
+        let condition = key_join_condition_null_safe("m", "d", &group.partition_keys);
+        parts.push(format!(
+            "select distinct {mv_pks} from mv m \
+             where exists (select 1 from delta d where {condition})"
+        ));
+    }
+    format!("affected as ({})", parts.join(" union "))
+}
+
+/// The SQL of a multi-window refresh: the affected identities are rewritten
+/// (delete then insert) from the current window values.
+fn multi_window_refresh_sql(view: &MultiWindowView, epoch: i64) -> String {
+    let pks = quoted_list(&view.source.primary_keys);
+    let columns = quoted_list(&multi_window_output_columns(view));
+    let affected = multi_window_affected_cte(view);
+    let computed = multi_window_computed_cte(view, "src");
+    let pk_match_computed = key_join_condition("c", "a", &view.source.primary_keys);
+    let pk_match_mv = key_join_condition("mv", "a", &view.source.primary_keys);
+    format!(
+        "with {affected}, {computed}, \
+         already as (select distinct {pks} from mv \
+                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
+         inserts as (select c.*, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from computed c \
+                     where exists (select 1 from affected a where {pk_match_computed}) \
+                       and not exists (select 1 from already a where {pk_match_computed})), \
+         deletes as (select {columns}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                     from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch} \
+                       and exists (select 1 from affected a where {pk_match_mv})) \
+         select * from deletes union all select * from inserts \
+         order by {pks}, \"rowKinds\""
+    )
+}
+
+/// The SQL of a multi-window rebuild: every clause over the full source state.
+fn multi_window_rebuild_sql(view: &MultiWindowView, epoch: i64) -> String {
+    let computed = multi_window_computed_cte(view, "src");
+    format!(
+        "with {computed} \
+         select *, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" from computed"
+    )
+}
+
+/// Validate that a multi-window view can be maintained.
+fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
+    if let Some(filter) = &view.filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
+    if view.windows.is_empty() {
+        return Err(report!(
+            "window view {} needs at least one window clause",
+            view.view_id
+        ));
+    }
+    if view.source.primary_keys.is_empty() {
+        return Err(report!(
+            "window view {} needs a source with a primary key",
+            view.view_id
+        ));
+    }
+    for key in &view.source.primary_keys {
+        let field = view.source.schema.field_with_name(key).map_err(|_| {
+            report!(
+                "window view {}: key column {key} is not in the source",
+                view.view_id
+            )
+        })?;
+        if field.is_nullable() {
+            return Err(report!(
+                "window view {}: key column {key} must be non-nullable",
+                view.view_id
+            ));
+        }
+    }
+    let mut names = std::collections::HashSet::new();
+    for group in &view.windows {
+        if group.columns.is_empty() {
+            return Err(report!(
+                "window view {}: every window clause needs a column",
+                view.view_id
+            ));
+        }
+        for column in &group.partition_keys {
+            view.source.schema.field_with_name(column).map_err(|_| {
+                report!(
+                    "window view {}: partition column {column} is not in the source",
+                    view.view_id
+                )
+            })?;
+        }
+        for column in &group.order_keys {
+            if view.source.schema.field_with_name(column).is_ok() {
+                continue;
+            }
+            let context = SessionContext::new();
+            parse_filter(&context, &view.source.schema, column).map_err(|error| {
+                report!(
+                    "window view {}: order column {column} is not in the source \
+                     and not a valid expression: {error}",
+                    view.view_id
+                )
+            })?;
+        }
+        if !group.order_by.is_empty() && group.order_by.len() != group.order_keys.len() {
+            return Err(report!(
+                "window view {}: the rendered ordering must match the order keys",
+                view.view_id
+            ));
+        }
+        for column in &group.columns {
+            if column.column.is_empty() {
+                return Err(report!(
+                    "window view {}: window columns need a name",
+                    view.view_id
+                ));
+            }
+            if !names.insert(column.column.clone()) {
+                return Err(report!(
+                    "window view {}: duplicate window column {}",
+                    view.view_id,
+                    column.column
+                ));
+            }
+            validate_window_column(
+                &view.view_id,
+                &view.source,
+                &group.order_keys,
+                column,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// The arrow type and nullability of one window column.
@@ -5067,6 +5427,20 @@ impl IvmRuntime {
                     refresh_interval_ms,
                 })
             }
+            ViewSpec::MultiWindow {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                windows,
+                filter,
+            } => SpecView::MultiWindow(MultiWindowView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                windows: windows.clone(),
+                filter: filter.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::TopK {
                 view_id,
                 source_table_id,
@@ -5118,6 +5492,7 @@ impl IvmRuntime {
             Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
             Ok(SpecView::UnionDistinct(view)) => self.refresh_union_distinct(&view).await,
             Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+            Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
             Err(error) => Err(error),
         };
         crate::observability::record_refresh(
@@ -5154,6 +5529,7 @@ impl IvmRuntime {
             Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
             Ok(SpecView::UnionDistinct(view)) => self.rebuild_union_distinct(&view).await,
             Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
+            Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
             Err(error) => Err(error),
         };
         if result.is_ok() {
@@ -7629,6 +8005,148 @@ impl IvmRuntime {
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
+    }
+
+    /// Persist a multi-window view spec (idempotent).
+    pub async fn register_multi_window_view(&self, view: &MultiWindowView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a multi-window view: every clause is recomputed over the current
+    /// source state for the rows whose identities changed, and the affected MV
+    /// rows are rewritten.
+    pub async fn refresh_multi_window(
+        &self,
+        view: &MultiWindowView,
+    ) -> Result<Option<i64>> {
+        self.register_multi_window_view(view).await?;
+        validate_multi_window_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "delta",
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        register_table(
+            &context,
+            "src",
+            view.source.read_current(&self.client).await?,
+            &view.source.schema,
+        )?;
+        for batch in context
+            .sql(&multi_window_refresh_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a multi-window view from the full source state.
+    pub async fn rebuild_multi_window(&self, view: &MultiWindowView) -> Result<i64> {
+        self.register_multi_window_view(view).await?;
+        validate_multi_window_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        for batch in context
+            .sql(&multi_window_rebuild_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
     }
 
     /// Refresh a value-count view.
@@ -10850,71 +11368,75 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
                 column.column
             ));
         }
-        // Ranking and value functions need an ordering; aggregates may span
-        // the whole partition (empty order keys).
-        if !column.function.is_aggregate() && view.order_keys.is_empty() {
+        validate_window_column(&view.view_id, &view.source, &view.order_keys, column)?;
+    }
+    Ok(())
+}
+
+/// Validate one window column against the source and the clause it belongs to.
+fn validate_window_column(
+    view_id: &str,
+    source: &IvmTable,
+    order_keys: &[String],
+    column: &WindowColumn,
+) -> Result<()> {
+    // Ranking and value functions need an ordering; aggregates may span
+    // the whole partition (empty order keys).
+    if !column.function.is_aggregate() && order_keys.is_empty() {
+        return Err(report!(
+            "window view {view_id}: {} needs order keys",
+            column.function.sql_name()
+        ));
+    }
+    if let Some(filter) = &column.window_filter {
+        if !column.function.is_aggregate() {
             return Err(report!(
-                "window view {}: {} needs order keys",
-                view.view_id,
-                column.function.sql_name()
+                "window view {view_id}: FILTER needs an aggregate window function"
             ));
         }
-        if let Some(filter) = &column.window_filter {
-            if !column.function.is_aggregate() {
-                return Err(report!(
-                    "window view {}: FILTER needs an aggregate window function",
-                    view.view_id
-                ));
-            }
-            let context = SessionContext::new();
-            parse_filter(&context, &view.source.schema, filter)?;
+        let context = SessionContext::new();
+        parse_filter(&context, &source.schema, filter)?;
+    }
+    match column.function {
+        WindowFunction::Sum => {
+            let value = column.value_column.as_deref().ok_or_else(|| {
+                report!("window view {view_id}: SUM needs a value column")
+            })?;
+            let field = source.schema.field_with_name(value).map_err(|_| {
+                report!(
+                    "window view {view_id}: value column {value} is not in the source"
+                )
+            })?;
+            sum_result_type(field.data_type())?;
         }
-        match column.function {
-            WindowFunction::Sum => {
-                let value = column.value_column.as_deref().ok_or_else(|| {
-                    report!("window view {}: SUM needs a value column", view.view_id)
-                })?;
-                let field = view.source.schema.field_with_name(value).map_err(|_| {
+        WindowFunction::Count => {
+            if let Some(value) = column.value_column.as_deref() {
+                source.schema.field_with_name(value).map_err(|_| {
                     report!(
-                        "window view {}: value column {value} is not in the source",
-                        view.view_id
-                    )
-                })?;
-                sum_result_type(field.data_type())?;
-            }
-            WindowFunction::Count => {
-                if let Some(value) = column.value_column.as_deref() {
-                    view.source.schema.field_with_name(value).map_err(|_| {
-                        report!(
-                            "window view {}: value column {value} is not in the source",
-                            view.view_id
-                        )
-                    })?;
-                }
-            }
-            function if function.is_value() => {
-                let value = column.value_column.as_deref().ok_or_else(|| {
-                    report!(
-                        "window view {}: {} needs a value column",
-                        view.view_id,
-                        function.sql_name()
-                    )
-                })?;
-                view.source.schema.field_with_name(value).map_err(|_| {
-                    report!(
-                        "window view {}: value column {value} is not in the source",
-                        view.view_id
+                        "window view {view_id}: value column {value} is not in the source"
                     )
                 })?;
             }
-            function => {
-                if column.value_column.is_some() {
-                    return Err(report!(
-                        "window view {}: {} does not take a value column",
-                        view.view_id,
-                        function.sql_name()
-                    ));
-                }
+        }
+        function if function.is_value() => {
+            let value = column.value_column.as_deref().ok_or_else(|| {
+                report!(
+                    "window view {view_id}: {} needs a value column",
+                    function.sql_name()
+                )
+            })?;
+            source.schema.field_with_name(value).map_err(|_| {
+                report!(
+                    "window view {view_id}: value column {value} is not in the source"
+                )
+            })?;
+        }
+        function => {
+            if column.value_column.is_some() {
+                return Err(report!(
+                    "window view {view_id}: {} does not take a value column",
+                    function.sql_name()
+                ));
             }
         }
     }
@@ -10935,31 +11457,13 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         format!("{parts}, ")
     };
     let pks = quoted_list(&view.source.primary_keys);
-    let mut order = order_items(&view.order_by, &view.order_keys);
-    if !view.columns.is_empty()
-        && view
-            .columns
-            .iter()
-            .all(|column| column.function.breaks_ties_with_primary_keys())
-    {
-        order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
-    }
-    let order_clause = if order.is_empty() {
-        String::new()
-    } else {
-        format!("order by {}", order.join(", "))
-    };
-    let part_clause = if view.partition_keys.is_empty() {
-        String::new()
-    } else {
-        format!("partition by {parts}")
-    };
-    let over_base = match (part_clause.is_empty(), order_clause.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => order_clause,
-        (false, true) => part_clause,
-        (false, false) => format!("{part_clause} {order_clause}"),
-    };
+    let over_base = window_over_base(
+        &view.source.primary_keys,
+        &view.partition_keys,
+        &view.order_keys,
+        &view.order_by,
+        &view.columns,
+    );
     let computed = view
         .columns
         .iter()
@@ -10987,6 +11491,42 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         "computed as (select {pks}, {keys_select}{computed} \
          from {source_alias} where {filter})"
     )
+}
+
+/// The `over (...)` base of one window clause: the partition, the ordering and
+/// the primary-key tie-breaker when every column needs one.
+fn window_over_base(
+    source_primary_keys: &[String],
+    partition_keys: &[String],
+    order_keys: &[String],
+    order_by: &[String],
+    columns: &[WindowColumn],
+) -> String {
+    let parts = quoted_list(partition_keys);
+    let mut order = order_items(order_by, order_keys);
+    if !columns.is_empty()
+        && columns
+            .iter()
+            .all(|column| column.function.breaks_ties_with_primary_keys())
+    {
+        order.extend(source_primary_keys.iter().map(|key| quote_ident(key)));
+    }
+    let order_clause = if order.is_empty() {
+        String::new()
+    } else {
+        format!("order by {}", order.join(", "))
+    };
+    let part_clause = if partition_keys.is_empty() {
+        String::new()
+    } else {
+        format!("partition by {parts}")
+    };
+    match (part_clause.is_empty(), order_clause.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => order_clause,
+        (false, true) => part_clause,
+        (false, false) => format!("{part_clause} {order_clause}"),
+    }
 }
 
 /// One window column's expression inside the `computed` CTE.

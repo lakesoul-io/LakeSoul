@@ -1,0 +1,79 @@
+# Two window clauses with different PARTITION BY/ORDER BY in one statement.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=10,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn, SUM(v) OVER (PARTITION BY v) AS cnt FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIII rowsort
+SELECT k, v, g, cnt, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 a 20 1
+2 20 a 20 2
+3 10 b 20 1
+
+# An update changes both clauses: the row number of its group and the sum of
+# the old and the new partition.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn, SUM(v) OVER (PARTITION BY v) AS cnt FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT k, v, g, cnt, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 a 20 2
+2 5 a 5 1
+3 10 b 20 1
+
+# A delete leaves the row number partition and shrinks the sum partition.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn, SUM(v) OVER (PARTITION BY v) AS cnt FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT k, v, g, cnt, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 5 a 5 1
+3 10 b 10 1
+
+# A predicate rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn, SUM(v) OVER (PARTITION BY v) AS cnt FROM __SRC__ WHERE v > 6
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIIII rowsort
+SELECT k, v, g, cnt, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 10 b 10 1
+
+# An incremental row inside the definition.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn, SUM(v) OVER (PARTITION BY v) AS cnt FROM __SRC__ WHERE v > 6
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT k, v, g, cnt, rn FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 10 b 10 1
+4 30 b 30 2
