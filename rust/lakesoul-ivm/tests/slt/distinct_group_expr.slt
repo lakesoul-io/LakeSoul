@@ -1,0 +1,65 @@
+# COUNT(DISTINCT) over a computed group key.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=7,op=insert; k=4,g=a,v=17,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, COUNT(DISTINCT g) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 1
+7 2
+
+# An update of the distinct value moves a group's count.
+statement ok
+/*ivm-append __SRC__: k=4,g=c,v=17,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, COUNT(DISTINCT g) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 1
+7 2
+
+# A delete lowers it.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, COUNT(DISTINCT g) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 1
+7 1
+
+# A row moving to another bucket.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=11,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, COUNT(DISTINCT g) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 1
+1 1
+7 1

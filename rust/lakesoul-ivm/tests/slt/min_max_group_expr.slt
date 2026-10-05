@@ -1,0 +1,79 @@
+# MIN/MAX over a computed group key: the bucket is `v % 10`, so an update can
+# move a row between groups.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=7,op=insert; k=4,g=b,v=17,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, MIN(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT bucket, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 10
+7 7
+
+# An update moves a row into another bucket.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=45,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, MIN(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 10
+5 45
+7 7
+
+# A delete empties a bucket.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, MIN(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+5 45
+7 7
+
+# Switching to MAX rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, MAX(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT bucket, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+5 45
+7 17
+
+# An incremental row inside the new definition.
+statement ok
+/*ivm-append __SRC__: k=5,g=b,v=27,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT v % 10 AS bucket, MAX(v) FROM __SRC__ GROUP BY bucket
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT bucket, "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+5 45
+7 27
