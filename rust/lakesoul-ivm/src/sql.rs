@@ -2152,6 +2152,17 @@ fn analyze_join(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
+    // `FROM a, b` / `CROSS JOIN` plans as an inner join without an `ON`
+    // clause; a residual filter would need a non-equi condition and stays
+    // unsupported.
+    if join.on.is_empty() && join.join_type == JoinType::Inner {
+        if join.filter.is_none() {
+            return analyze_cross_join(join, projection, tables, request);
+        }
+        return Err(unsupported(
+            "a CROSS JOIN with a WHERE clause is not supported",
+        ));
+    }
     let (left, left_alias) = join_input(&join.left, tables)?;
     let (right, right_alias) = join_input(&join.right, tables)?;
 
@@ -2626,6 +2637,88 @@ fn union_distinct_branch(
 }
 
 /// The table of one join input, plus its alias when it has one.
+/// A `CROSS JOIN` of two keyed sources: every pair of rows, keyed by both row
+/// identities.
+fn analyze_cross_join(
+    join: &Join,
+    projection: Option<&Projection>,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let (left, left_alias) = join_input(&join.left, tables)?;
+    let (right, right_alias) = join_input(&join.right, tables)?;
+    if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
+        return Err(unsupported(
+            "a cross join needs primary keys on both sources",
+        ));
+    }
+    let (left_value, right_value) = match projection {
+        Some(projection) => join_values(
+            Some(projection),
+            left_alias.as_deref(),
+            right_alias.as_deref(),
+            left,
+            right,
+            &[],
+        )?,
+        None => {
+            // The optimizer drops the projection when the pruned join output
+            // is exactly the select list: every column of the output belongs
+            // to one side, one of them is the payload of that side.
+            let mut left_value = None;
+            let mut right_value = None;
+            for field in join.schema.fields() {
+                let column = datafusion::common::Column::new_unqualified(field.name());
+                match side_of(
+                    &column,
+                    left_alias.as_deref(),
+                    right_alias.as_deref(),
+                    left,
+                    right,
+                ) {
+                    Some(Side::Left) => {
+                        if left_value.replace(field.name().clone()).is_some() {
+                            return Err(unsupported(
+                                "a cross join takes one left payload column",
+                            ));
+                        }
+                    }
+                    Some(Side::Right) => {
+                        if right_value.replace(field.name().clone()).is_some() {
+                            return Err(unsupported(
+                                "a cross join takes one right payload column",
+                            ));
+                        }
+                    }
+                    None => {
+                        return Err(unsupported(format!(
+                            "cross join output column {} is ambiguous; use distinct names \
+                             or aliases",
+                            field.name()
+                        )));
+                    }
+                }
+            }
+            (
+                left_value.ok_or_else(|| {
+                    unsupported("a cross join needs a left payload column")
+                })?,
+                right_value.ok_or_else(|| {
+                    unsupported("a cross join needs a right payload column")
+                })?,
+            )
+        }
+    };
+    Ok(ViewSpec::CrossJoin {
+        view_id: request.view_id.clone(),
+        left_table_id: left.table_id.clone(),
+        right_table_id: right.table_id.clone(),
+        output_table_id: request.mv_table_id.clone(),
+        left_value,
+        right_value,
+    })
+}
+
 /// An outer join that keeps every row of `left`: a lookup join when the right
 /// side is keyed by the join keys (at most one match per left row), otherwise
 /// a pair-keyed left join over two keyed sources.
@@ -3449,6 +3542,54 @@ mod tests {
             panic!("expected a sum/count spec");
         };
         assert!(group_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyzes_cross_joins() {
+        // `CROSS JOIN` / `FROM a, b` plans as an inner join without `ON`.
+        // The two sides need distinguishable column names (the payloads are
+        // resolved by schema membership).
+        let mut right = source_table("b");
+        right.schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("rg", DataType::Utf8, false),
+            Field::new("rv", DataType::Int64, false),
+        ]));
+        let analyzed = analyze_multi(
+            "select a.v, b.rv from a cross join b",
+            vec![source_table("a"), right.clone()],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::CrossJoin {
+            left_value,
+            right_value,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a cross join spec");
+        };
+        assert_eq!(left_value, "v");
+        assert_eq!(right_value, "rv");
+
+        // Both sources must be keyed.
+        let mut left = source_table("a");
+        left.primary_keys.clear();
+        assert!(
+            analyze_multi(
+                "select a.v, b.rv from a cross join b",
+                vec![left, right.clone()]
+            )
+            .await
+            .is_err()
+        );
+
+        // The comma spelling is the same shape.
+        let analyzed =
+            analyze_multi("select a.v, b.rv from a, b", vec![source_table("a"), right])
+                .await
+                .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::CrossJoin { .. }));
     }
 
     #[tokio::test]

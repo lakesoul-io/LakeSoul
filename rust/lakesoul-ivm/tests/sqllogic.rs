@@ -32,7 +32,7 @@ use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, array_agg_mv_schema_for, avg_mv_schema_for,
-    distinct_agg_mv_schema_for, full_join_view_schema_for,
+    cross_join_view_schema_for, distinct_agg_mv_schema_for, full_join_view_schema_for,
     keyed_join_output_primary_keys, left_join_view_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
@@ -1741,6 +1741,38 @@ fn sqllogic_union_append_where() {
         ],
         union_all_mv_schema_for(&source).unwrap(),
         Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_cross_join() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "crossjoin",
+        include_str!("slt/cross_join.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", left.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", right.clone(), group_keys(&["rid"])),
+        ],
+        cross_join_view_schema_for(
+            &left,
+            &right,
+            &group_keys(&["id"]),
+            &group_keys(&["rid"]),
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
     );
 }
 

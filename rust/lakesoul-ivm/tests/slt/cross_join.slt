@@ -1,0 +1,90 @@
+# CROSS JOIN of two keyed sources: the MV carries every pair with the hidden
+# identities of both rows.
+
+statement ok
+/*ivm-append __SRC1__: id=1,lv=a,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=10,rv=100,op=insert; rid=11,rv=101,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100 1 10
+a 101 1 11
+
+# A new left row pairs with every right row.
+statement ok
+/*ivm-append __SRC1__: id=2,lv=b,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 100 1 10
+a 101 1 11
+b 100 2 10
+b 101 2 11
+
+# An update rewrites the pairs of the updated row.
+statement ok
+/*ivm-append __SRC1__: id=1,lv=c,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 100 2 10
+b 101 2 11
+c 100 1 10
+c 101 1 11
+
+# A right delete removes the pairs referencing it.
+statement ok
+/*ivm-append __SRC2__: rid=11,rv=101,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 100 2 10
+c 100 1 10
+
+# A new right row pairs with every left row.
+statement ok
+/*ivm-append __SRC2__: rid=12,rv=102,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 100 2 10
+b 102 2 12
+c 100 1 10
+c 102 1 12
