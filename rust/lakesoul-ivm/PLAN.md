@@ -1933,6 +1933,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   clause：更新/删除/谓词 rebuild/增量）、差分 oracle。README 支持清单更新、限制条目删除。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）277 个测试通过、0 失败。
 
+### 10.51 LOOKUP JOIN 的异名键（PR-45）
+
+- **能力**：lookup `LEFT JOIN` 允许左右键不同名（`ON f.dim_id = d.id`）；右表仍须以自己的连接键
+  为主键。
+- **spec/typed**：`ViewSpec::LookupJoin` 增加 `right_keys`（空=与左键同名）；`LookupJoinView`
+  同步字段、`with_right_keys` 与 `right_join_keys()`。
+- **运行时**：`lookup_join_projection` 右侧按 `right_join_keys` 选择并别名 `__right_{左键}`；
+  刷新时 delta 右侧取右键、左表与变更键的 semi join 使用（左键, 右键）；校验比较右表主键与右键。
+- **analyzer**：连接键收集改为 (左,右) 名对（`on` 与 filter 等值条件都按 `side_of` 归位）；
+  内/全/semi/anti 仍要求同名并给出明确错误；LEFT/RIGHT 分支把键对传入 `analyze_outer_join`
+  （RIGHT 交换两侧时同时交换键），同名键保持 `right_keys` 为空以保持定义紧凑。
+- **测试**：analyzer（异名 lookup 接受、同名保持紧凑、异名 inner 拒绝）、`lookup_join_names.slt`
+  （bootstrap/NULL 填充/维度更新/删除回 NULL/事实换键/删除）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）278 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

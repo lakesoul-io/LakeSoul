@@ -2235,52 +2235,44 @@ fn analyze_join(
     let (left, left_alias) = join_input(&join.left, tables)?;
     let (right, right_alias) = join_input(&join.right, tables)?;
 
-    let mut join_keys = Vec::new();
+    // The equality keys as (left, right) name pairs; differently named keys
+    // are supported by the lookup join.
+    let mut key_pairs = Vec::new();
     let mut conditions = Vec::new();
     for (left_expr, right_expr) in &join.on {
         let left_column = column_of(left_expr)
             .ok_or_else(|| unsupported("join keys must be plain columns"))?;
         let right_column = column_of(right_expr)
             .ok_or_else(|| unsupported("join keys must be plain columns"))?;
-        if left_column.name != right_column.name {
-            return Err(unsupported(format!(
-                "join keys must have the same name on both sides ({} vs {})",
-                left_column.name, right_column.name
-            )));
-        }
-        join_keys.push(left_column.name.clone());
+        key_pairs.push((left_column.name.clone(), right_column.name.clone()));
     }
     if let Some(filter) = &join.filter {
         for conjunct in split_conjunction(filter) {
-            if let Some((left_column, right_column)) = equi_columns(conjunct) {
-                if left_column.name != right_column.name {
-                    return Err(unsupported(format!(
-                        "join keys must have the same name on both sides ({} vs {})",
-                        left_column.name, right_column.name
-                    )));
-                }
-                let side = side_of(
-                    left_column,
+            if let Some((first, second)) = equi_columns(conjunct) {
+                let first_side = side_of(
+                    first,
                     left_alias.as_deref(),
                     right_alias.as_deref(),
                     left,
                     right,
-                )
-                .or_else(|| {
-                    side_of(
-                        right_column,
-                        left_alias.as_deref(),
-                        right_alias.as_deref(),
-                        left,
-                        right,
-                    )
-                });
-                if side.is_none() {
-                    return Err(unsupported(
-                        "join conditions between the same side are not supported",
-                    ));
-                }
-                join_keys.push(left_column.name.clone());
+                );
+                let second_side = side_of(
+                    second,
+                    left_alias.as_deref(),
+                    right_alias.as_deref(),
+                    left,
+                    right,
+                );
+                let (left_column, right_column) = match (first_side, second_side) {
+                    (Some(Side::Left), Some(Side::Right)) => (first, second),
+                    (Some(Side::Right), Some(Side::Left)) => (second, first),
+                    _ => {
+                        return Err(unsupported(
+                            "join conditions between the same side are not supported",
+                        ));
+                    }
+                };
+                key_pairs.push((left_column.name.clone(), right_column.name.clone()));
             } else {
                 let (left_column, right_column, op) = column_compare(
                     conjunct,
@@ -2297,16 +2289,30 @@ fn analyze_join(
             }
         }
     }
-    if join_keys.is_empty() {
+    if key_pairs.is_empty() {
         return Err(unsupported("join without an equality key"));
     }
-    join_keys.sort();
-    join_keys.dedup();
+    key_pairs.sort();
+    key_pairs.dedup();
+    let join_keys = key_pairs
+        .iter()
+        .map(|(left, _)| left.clone())
+        .collect::<Vec<_>>();
+    let right_keys = key_pairs
+        .iter()
+        .map(|(_, right)| right.clone())
+        .collect::<Vec<_>>();
+    let same_names = join_keys == right_keys;
 
     match join.join_type {
         JoinType::Inner => {
             if !conditions.is_empty() {
                 return Err(unsupported("inner join with non-equality conditions"));
+            }
+            if !same_names {
+                return Err(unsupported(
+                    "differently named join keys are only supported by a lookup LEFT JOIN",
+                ));
             }
             let (left_value, right_value) = join_values(
                 projection,
@@ -2338,6 +2344,7 @@ fn analyze_join(
                 left_alias.as_deref(),
                 right_alias.as_deref(),
                 join_keys,
+                right_keys,
                 request,
             )
         }
@@ -2345,7 +2352,8 @@ fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("right join with non-equality conditions"));
             }
-            // `A RIGHT JOIN B` keeps every row of `B`, i.e. `B LEFT JOIN A`.
+            // `A RIGHT JOIN B` keeps every row of `B`, i.e. `B LEFT JOIN A`;
+            // the swapped sides swap their key names too.
             analyze_outer_join(
                 "RIGHT",
                 projection,
@@ -2353,6 +2361,7 @@ fn analyze_join(
                 left,
                 right_alias.as_deref(),
                 left_alias.as_deref(),
+                right_keys,
                 join_keys,
                 request,
             )
@@ -2360,6 +2369,11 @@ fn analyze_join(
         JoinType::Full => {
             if !conditions.is_empty() {
                 return Err(unsupported("full join with non-equality conditions"));
+            }
+            if !same_names {
+                return Err(unsupported(
+                    "differently named join keys are only supported by a lookup LEFT JOIN",
+                ));
             }
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
                 return Err(unsupported("FULL JOIN needs a primary key on both sources"));
@@ -2800,14 +2814,33 @@ fn analyze_outer_join(
     left_alias: Option<&str>,
     right_alias: Option<&str>,
     join_keys: Vec<String>,
+    right_keys: Vec<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
+    // Same-named keys stay compact (the right keys default to the left ones).
+    let right_keys = if join_keys == right_keys {
+        Vec::new()
+    } else {
+        right_keys
+    };
+    let effective_right_keys = if right_keys.is_empty() {
+        join_keys.clone()
+    } else {
+        right_keys.clone()
+    };
+    // The join keys never become payloads, under either name.
+    let mut key_names = join_keys.clone();
+    for key in &effective_right_keys {
+        if !key_names.contains(key) {
+            key_names.push(key.clone());
+        }
+    }
     let (left_value, right_value) =
-        join_values(projection, left_alias, right_alias, left, right, &join_keys)?;
+        join_values(projection, left_alias, right_alias, left, right, &key_names)?;
     let lookup = {
         let mut expected = right.primary_keys.clone();
         expected.sort();
-        let mut keys = join_keys.clone();
+        let mut keys = effective_right_keys;
         keys.sort();
         !expected.is_empty() && expected == keys
     };
@@ -2818,9 +2851,14 @@ fn analyze_outer_join(
             right_table_id: right.table_id.clone(),
             output_table_id: request.mv_table_id.clone(),
             join_keys,
+            right_keys,
             left_value,
             right_value,
         })
+    } else if !right_keys.is_empty() {
+        Err(unsupported(
+            "differently named join keys are only supported by a lookup LEFT JOIN",
+        ))
     } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
         Ok(ViewSpec::LeftJoin {
             view_id: request.view_id.clone(),
@@ -5677,6 +5715,7 @@ mod tests {
                 right_table_id: "table_src".to_string(),
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
+                right_keys: Vec::new(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
@@ -5706,6 +5745,44 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
+        );
+
+        // The right key may have a different name: a lookup join by a
+        // foreign key.
+        let mut names = source_table("dim");
+        names.schema = Arc::new(Schema::new(vec![
+            Field::new("rk", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        names.primary_keys = vec!["rk".to_string()];
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from src a left join dim b on a.k = b.rk",
+            vec![source_table("src"), names.clone()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            analyzed.spec,
+            ViewSpec::LookupJoin {
+                view_id: "view_1".to_string(),
+                left_table_id: "table_src".to_string(),
+                right_table_id: "table_dim".to_string(),
+                output_table_id: "table_mv".to_string(),
+                join_keys: vec!["k".to_string()],
+                right_keys: vec!["rk".to_string()],
+                left_value: "v".to_string(),
+                right_value: "v".to_string(),
+            }
+        );
+
+        // Differently named keys are rejected elsewhere.
+        assert!(
+            analyze_multi(
+                "select a.k, a.v, b.v from src a join dim b on a.k = b.rk",
+                vec![source_table("src"), names],
+            )
+            .await
+            .is_err()
         );
 
         // An unkeyed side is rejected.
@@ -5738,6 +5815,7 @@ mod tests {
                 right_table_id: "table_src".to_string(),
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
+                right_keys: Vec::new(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }

@@ -65,7 +65,7 @@ used as row identities must be non-nullable.
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
 | Inner join | `JOIN` on equality keys, both sides keyed or both append-only | join keys, `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
-| Lookup join | `LEFT JOIN` where the right side is keyed by the join keys | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
+| Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name) | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed | `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed | as the inner join, with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
@@ -89,6 +89,8 @@ Supported within the shapes above:
   change column cannot be part of a `UNION` output;
 * **semi/anti joins** through correlated `EXISTS` / `NOT EXISTS` / `IN`
   subqueries, including extra comparison conditions between the two sides;
+* a **lookup `LEFT JOIN`** may reference a differently named right key
+  (`ON fact.dim_id = dim.id`), as long as the right source is keyed by it;
 * **CTEs and derived tables** that the planner can inline (`WITH ... SELECT`,
   `SELECT ... FROM (SELECT ...) t`), including CTEs whose body aggregates or
   windows; the view is maintained as the inlined shape;
@@ -232,8 +234,8 @@ the backlog):
   through the IO layer yet, and the join / row / union / TOP-K views reject them
   explicitly. Supporting them needs a dedicated change (see the backlog);
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
-  join keys, differently named join keys and multiple payload columns per
-  side;
+  join keys, differently named keys outside the lookup `LEFT JOIN`, and
+  multiple payload columns per side;
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
