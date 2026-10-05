@@ -70,7 +70,7 @@ used as row identities must be non-nullable.
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed | as the inner join, with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
-| Semi / anti join | runtime/typed views (plans with `LeftSemi`/`LeftAnti`) | left columns, kinds, epoch |
+| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` | the projected left columns, kinds, epoch |
 
 Supported within the shapes above:
 
@@ -87,6 +87,8 @@ Supported within the shapes above:
   columns as long as every branch has the same output schema; a keyed
   `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
   change column cannot be part of a `UNION` output;
+* **semi/anti joins** through correlated `EXISTS` / `NOT EXISTS` / `IN`
+  subqueries, including extra comparison conditions between the two sides;
 * **CTEs and derived tables** that the planner can inline (`WITH ... SELECT`,
   `SELECT ... FROM (SELECT ...) t`), including CTEs whose body aggregates or
   windows; the view is maintained as the inlined shape;
@@ -232,9 +234,10 @@ the backlog):
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
   join keys, differently named join keys and multiple payload columns per
   side;
-* scalar and correlated subqueries (`(SELECT ...)` in the select list or a
-  predicate) and computed columns above an aggregate
-  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`);
+* scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
+  e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
+  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
+  `IN` subqueries are supported as semi/anti joins;
 * `GROUPING SETS` / `ROLLUP` / `CUBE`, `COUNT(DISTINCT a, b)`;
 * `SELECT DISTINCT ON`.
 

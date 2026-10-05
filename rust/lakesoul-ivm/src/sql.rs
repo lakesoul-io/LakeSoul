@@ -3545,6 +3545,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_semi_anti_subqueries() {
+        // `WHERE EXISTS` / `NOT EXISTS` / `IN` decorrelate into LeftSemi /
+        // LeftAnti joins over a correlated subquery alias.
+        let analyzed = analyze_multi(
+            "select a.k, a.g from a where exists (select 1 from b where b.k = a.k)",
+            vec![source_table("a"), source_table("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            join_keys,
+            conditions,
+            output_columns,
+            anti,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert!(conditions.is_empty());
+        assert_eq!(output_columns, vec!["k".to_string(), "g".to_string()]);
+        assert!(!anti);
+
+        let analyzed = analyze_multi(
+            "select a.k, a.g from a where not exists (select 1 from b where b.k = a.k)",
+            vec![source_table("a"), source_table("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti { anti, .. } = analyzed.spec else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(anti);
+
+        let analyzed = analyze_multi(
+            "select a.k, a.g from a where a.k in (select b.k from b)",
+            vec![source_table("a"), source_table("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti { anti, .. } = analyzed.spec else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(!anti);
+
+        // An extra comparison condition is kept.
+        let analyzed = analyze_multi(
+            "select a.k, a.g from a where exists \
+             (select 1 from b where b.k = a.k and b.v > a.v)",
+            vec![source_table("a"), source_table("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti { conditions, .. } = analyzed.spec else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(!conditions.is_empty());
+    }
+
+    #[tokio::test]
     async fn analyzes_cross_joins() {
         // `CROSS JOIN` / `FROM a, b` plans as an inner join without `ON`.
         // The two sides need distinguishable column names (the payloads are

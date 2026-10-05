@@ -36,7 +36,7 @@ use lakesoul_ivm::{
     keyed_join_output_primary_keys, left_join_view_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
@@ -1741,6 +1741,31 @@ fn sqllogic_union_append_where() {
         ],
         union_all_mv_schema_for(&source).unwrap(),
         Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_semi_anti() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Int64, false),
+        arrow::datatypes::Field::new("x", DataType::Int64, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Int64, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "semianti",
+        include_str!("slt/semi_anti.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", left.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", right.clone(), group_keys(&["rk"])),
+        ],
+        semi_anti_mv_schema_for(&left, &group_keys(&["k", "g", "x"])).unwrap(),
+        group_keys(&["k"]),
     );
 }
 
