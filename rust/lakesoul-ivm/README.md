@@ -86,6 +86,9 @@ Supported within the shapes above:
   columns as long as every branch has the same output schema; a keyed
   `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
   change column cannot be part of a `UNION` output;
+* **CTEs and derived tables** that the planner can inline (`WITH ... SELECT`,
+  `SELECT ... FROM (SELECT ...) t`), including CTEs whose body aggregates or
+  windows; the view is maintained as the inlined shape;
 * window `PARTITION BY`/`ORDER BY` columns or expressions, custom frames,
   `FILTER (WHERE ...)` and `IGNORE NULLS`. All window columns of one statement
   share the same clause.
@@ -208,7 +211,9 @@ the backlog):
   statement (all window columns share one clause);
 * `CROSS` join, three or more table joins, non-equality join keys, differently
   named join keys and multiple payload columns per side;
-* subqueries / CTEs and derived tables containing aggregates or windows;
+* scalar and correlated subqueries (`(SELECT ...)` in the select list or a
+  predicate) and computed columns above an aggregate
+  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`);
 * `GROUPING SETS` / `ROLLUP` / `CUBE`, `COUNT(DISTINCT a, b)`;
 * `SELECT DISTINCT ON`.
 

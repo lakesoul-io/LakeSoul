@@ -1,0 +1,87 @@
+# A WITH clause is inlined by the planner, so the view is maintained as the
+# underlying shape (here a filtered SUM/COUNT).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ WITH filtered AS (SELECT g, v FROM __SRC__ WHERE v > 5) SELECT g, SUM(v) FROM filtered GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+b 7
+
+# An update enters the filter.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=8,op=insert*/
+
+statement ok
+INSERT INTO __MV__ WITH filtered AS (SELECT g, v FROM __SRC__ WHERE v > 5) SELECT g, SUM(v) FROM filtered GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 18
+b 7
+
+# A delete leaves the filtered CTE.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ WITH filtered AS (SELECT g, v FROM __SRC__ WHERE v > 5) SELECT g, SUM(v) FROM filtered GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 18
+
+# A changed CTE threshold rebuilds the view.
+statement ok
+INSERT INTO __MV__ WITH filtered AS (SELECT g, v FROM __SRC__ WHERE v > 15) SELECT g, SUM(v) FROM filtered GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# An incremental row inside the new definition.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ WITH filtered AS (SELECT g, v FROM __SRC__ WHERE v > 15) SELECT g, SUM(v) FROM filtered GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 20
+
+# A derived table instead of a CTE is the same view definition, so the
+# statement consumes the (empty) delta without rebuilding.
+statement ok
+INSERT INTO __MV__ SELECT t.g, SUM(t.v) FROM (SELECT g, v FROM __SRC__ WHERE v > 15) t GROUP BY t.g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 20

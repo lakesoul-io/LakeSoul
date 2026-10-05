@@ -27,7 +27,7 @@ use datafusion::catalog::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
-    ObjectName, ObjectNamePart, Statement, TableObject, Visit, Visitor,
+    ObjectName, ObjectNamePart, Query, Statement, TableObject, Visit, Visitor,
 };
 
 use crate::error::Result;
@@ -133,9 +133,7 @@ impl IvmSqlExecutor {
         // Open every relation the SELECT references and, without a caller
         // session, register it in an internal one.
         let mut relations = Vec::new();
-        let _ = source.visit(&mut RelationCollector {
-            names: &mut relations,
-        });
+        let _ = source.visit(&mut RelationCollector::new(&mut relations));
         let session = self.session.clone().unwrap_or_default();
         let mut tables = HashMap::new();
         for relation in relations {
@@ -425,12 +423,43 @@ fn split_object_name(name: &ObjectName) -> Result<(String, String)> {
 
 struct RelationCollector<'a> {
     names: &'a mut Vec<ObjectName>,
+    /// The CTE aliases in scope; a reference to one of them is not a table.
+    ctes: Vec<String>,
+}
+
+impl RelationCollector<'_> {
+    fn new(names: &mut Vec<ObjectName>) -> RelationCollector<'_> {
+        RelationCollector {
+            names,
+            ctes: Vec::new(),
+        }
+    }
 }
 
 impl Visitor for RelationCollector<'_> {
     type Break = ();
 
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+        if let Some(with) = &query.with {
+            for cte in &with.cte_tables {
+                self.ctes.push(cte.alias.name.value.clone());
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
     fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<()> {
+        // A single-part name that matches a CTE alias refers to the CTE, not
+        // to a table.
+        if relation.0.len() == 1
+            && let Some(ObjectNamePart::Identifier(identifier)) = relation.0.first()
+            && self
+                .ctes
+                .iter()
+                .any(|cte| cte.eq_ignore_ascii_case(&identifier.value))
+        {
+            return ControlFlow::Continue(());
+        }
         self.names.push(relation.clone());
         ControlFlow::Continue(())
     }
