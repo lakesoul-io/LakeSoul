@@ -1,0 +1,81 @@
+# UNION ALL over Float64, Decimal and Date columns.
+
+statement ok
+/*ivm-append __SRC1__: k=1,v=10.5,flag=true,d=12.34,day=1,op=insert; k=2,v=null,flag=true,d=null,day=2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=3,v=3.25,flag=false,d=1.00,day=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v, d, day FROM __SRC1__ UNION ALL SELECT k, v, d, day FROM __SRC2__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IR??I rowsort
+SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10.5 12.34 1970-01-02 0
+2 NULL NULL 1970-01-03 0
+3 3.25 1.00 1970-01-02 1
+
+# An update retracts the old projected row and inserts the new one.
+statement ok
+/*ivm-append __SRC1__: k=2,v=5.5,flag=true,d=2.50,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v, d, day FROM __SRC1__ UNION ALL SELECT k, v, d, day FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR??I rowsort
+SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10.5 12.34 1970-01-02 0
+2 5.5 2.50 1970-01-03 0
+3 3.25 1.00 1970-01-02 1
+
+# A delete removes the branch row.
+statement ok
+/*ivm-append __SRC2__: k=3,v=3.25,flag=false,d=1.00,day=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v, d, day FROM __SRC1__ UNION ALL SELECT k, v, d, day FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR??I rowsort
+SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10.5 12.34 1970-01-02 0
+2 5.5 2.50 1970-01-03 0
+
+# Per-branch predicates rebuild the view.
+statement ok
+INSERT INTO __MV__ SELECT k, v, d, day FROM __SRC1__ WHERE v > 6 UNION ALL SELECT k, v, d, day FROM __SRC2__ WHERE v > 6
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IR??I rowsort
+SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10.5 12.34 1970-01-02 0
+
+# An incremental row must pass its branch predicate.
+statement ok
+/*ivm-append __SRC1__: k=4,v=7.75,flag=true,d=3.50,day=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v, d, day FROM __SRC1__ WHERE v > 6 UNION ALL SELECT k, v, d, day FROM __SRC2__ WHERE v > 6
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IR??I rowsort
+SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10.5 12.34 1970-01-02 0
+4 7.75 3.50 1970-01-04 0

@@ -1962,6 +1962,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
     删除标记无法撤回原始 insert 行（无行标识），需要撤回时应用 keyed 源。
 - **验证**：全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）279 个测试通过、0 失败。
 
+### 10.53 加固：GROUPING SETS 明确报错、未维护形状回归测试与 UNION 类型覆盖（PR-47）
+
+- **报错改进**：`GROUP BY ROLLUP/CUBE/GROUPING SETS` 此前落到"GROUP BY expressions need an
+  alias"的含糊错误；分组键解析现在先识别 `Expr::GroupingSet`，明确返回
+  "GROUPING SETS / ROLLUP / CUBE are not supported yet"。
+- **回归测试**：新增 `rejects_unmaintained_shapes`，固定以下形状为"明确拒绝而非静默出错"——
+  聚合之上的计算列/标量子查询、三种 grouping set、多参数 `COUNT(DISTINCT a, b)`、
+  `DISTINCT ON`（计划为 `first_value` 聚合）。
+- **类型覆盖**：新增 `union_types.slt`——`UNION ALL` 跨越 Float64/Decimal128/Date32 列
+  （keyed 源，投影保留主键），覆盖 bootstrap、更新、删除、分支谓词 rebuild 与增量，
+  补齐 joins/union 的类型矩阵缺口。
+- **验证**：全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）281 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
