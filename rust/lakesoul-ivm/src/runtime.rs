@@ -402,6 +402,9 @@ pub enum ViewSpec {
         /// keys share their names with the left side.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         right_keys: Vec<String>,
+        /// An optional filter the contributing left rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_filter: Option<String>,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source; NULL without a match.
@@ -1676,6 +1679,8 @@ pub struct LookupJoinView {
     /// The right equi-join keys, parallel to [`Self::join_keys`]; empty means
     /// the keys share their names with the left side.
     pub right_keys: Vec<String>,
+    /// An optional filter the contributing left rows must satisfy.
+    pub left_filter: Option<String>,
     /// The payload column of the left source.
     pub left_value: String,
     /// The payload column of the right source.
@@ -1723,6 +1728,7 @@ impl LookupJoinView {
             output,
             join_keys,
             right_keys: Vec::new(),
+            left_filter: None,
             left_value: left_value.into(),
             right_value: right_value.into(),
             refresh_interval_ms: 0,
@@ -1739,6 +1745,12 @@ impl LookupJoinView {
         }
     }
 
+    /// Only left rows matching `filter` contribute to the view.
+    pub fn with_left_filter(mut self, filter: impl Into<String>) -> Self {
+        self.left_filter = Some(filter.into());
+        self
+    }
+
     /// The right source's join keys when they differ from the left ones.
     pub fn with_right_keys(mut self, right_keys: Vec<String>) -> Self {
         self.right_keys = right_keys;
@@ -1753,6 +1765,7 @@ impl LookupJoinView {
             output_table_id: self.output.table_id.clone(),
             join_keys: self.join_keys.clone(),
             right_keys: self.right_keys.clone(),
+            left_filter: self.left_filter.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
         }
@@ -1985,6 +1998,10 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
             "lookup join view {} needs at least one join key",
             view.view_id
         ));
+    }
+    if let Some(filter) = &view.left_filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.left.schema, filter)?;
     }
     if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
         return Err(report!(
@@ -5194,6 +5211,7 @@ impl IvmRuntime {
                 output_table_id,
                 join_keys,
                 right_keys,
+                left_filter,
                 left_value,
                 right_value,
             } => SpecView::LookupJoin(LookupJoinView {
@@ -5203,6 +5221,7 @@ impl IvmRuntime {
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
                 right_keys: right_keys.clone(),
+                left_filter: left_filter.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 refresh_interval_ms,
@@ -6681,7 +6700,7 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
+        let mut left_now = filter_deletes(
             dataframe(
                 &context,
                 view.left.read_current(&self.client).await?,
@@ -6689,6 +6708,10 @@ impl IvmRuntime {
             )?,
             change_column(&view.left),
         )?;
+        if let Some(filter) = view.left_filter.as_deref() {
+            left_now =
+                left_now.filter(parse_filter(&context, &view.left.schema, filter)?)?;
+        }
         let right_now = filter_deletes(
             dataframe(
                 &context,
@@ -6868,10 +6891,14 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
+        let mut left_now = filter_deletes(
             dataframe(&context, left_baseline.batches, &view.left.schema)?,
             change_column(&view.left),
         )?;
+        if let Some(filter) = view.left_filter.as_deref() {
+            left_now =
+                left_now.filter(parse_filter(&context, &view.left.schema, filter)?)?;
+        }
         let right_now = filter_deletes(
             dataframe(&context, right_baseline.batches, &view.right.schema)?,
             change_column(&view.right),

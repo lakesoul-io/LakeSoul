@@ -1975,6 +1975,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   补齐 joins/union 的类型矩阵缺口。
 - **验证**：全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）281 个测试通过、0 失败。
 
+### 10.54 LOOKUP JOIN 的左侧过滤（PR-48）
+
+- **能力**：lookup `LEFT JOIN` 的**左侧**可以带 `WHERE`（`... WHERE f.amount > 0`）；过滤后的左侧行
+  进入/离开视图由主键受影响集自然处理（delta 主键含所有变更行，投影按过滤后的当前左侧状态重算）。
+  右侧过滤会被优化器改写为 inner join（其它 join 形状）→ 仍明确拒绝。
+- **spec/typed**：`ViewSpec::LookupJoin` 增加 `left_filter`；`LookupJoinView` +
+  `with_left_filter`；校验解析该谓词。
+- **analyzer**：`join_input` 现在返回 `JoinInput { table, alias, filter }`（识别左侧的 `Filter` 与
+  扫描下推过滤，渲染为无限定列名）；lookup 情形保留左过滤、拒绝右过滤；inner/full/semi/anti 与
+  CROSS JOIN 对任何一侧过滤都给出原有明确错误（不会静默忽略谓词）。
+- **运行时**：刷新与重建把左过滤应用到当前左侧状态（delta 的受影响主键提取不过滤，保证离开过滤的
+  行也能撤回其 pair）。
+- **测试**：analyzer（lookup 左过滤被保留；inner/full/semi/anti 与 CROSS 的过滤仍拒绝）、
+  `lookup_join_filter.slt`（bootstrap、进入/离开过滤、维度更新流入、过滤变化 rebuild）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）282 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
