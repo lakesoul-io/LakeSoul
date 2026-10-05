@@ -170,6 +170,25 @@ ordinary table.
 * One writer per view: refreshes of the same view serialize through the epoch
   protocol.
 
+## Observability
+
+The runtime and the SQL entry emit [`metrics`](https://docs.rs/metrics)
+counters and histograms, so any recorder (for example the Prometheus exporter
+used by the IO layer) can export them:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `lakesoul_ivm_statements_total` | `action` (`bootstrap` / `incremental` / `rebuild` / `overwrite` / `error`) | maintenance statements |
+| `lakesoul_ivm_statement_duration_seconds` | `action` | statement duration |
+| `lakesoul_ivm_refreshes_total` | `kind`, `result` (`applied` / `noop`) | view refreshes |
+| `lakesoul_ivm_refresh_duration_seconds` | `kind` | refresh duration |
+| `lakesoul_ivm_rebuilds_total` | `kind` | full rebuilds |
+| `lakesoul_ivm_rebuild_duration_seconds` | `kind` | rebuild duration |
+| `lakesoul_ivm_epochs_total` | `kind` | committed epochs |
+
+The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
+`union_distinct`, ...); view and table ids are never used as labels.
+
 ## Rust API
 
 ```rust

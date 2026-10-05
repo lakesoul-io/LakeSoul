@@ -65,6 +65,18 @@ pub enum IvmExecutionAction {
     Overwrite,
 }
 
+impl IvmExecutionAction {
+    /// A stable lowercase label for the action, used by the metrics.
+    pub fn label(self) -> &'static str {
+        match self {
+            IvmExecutionAction::Bootstrap => "bootstrap",
+            IvmExecutionAction::Incremental => "incremental",
+            IvmExecutionAction::Rebuild => "rebuild",
+            IvmExecutionAction::Overwrite => "overwrite",
+        }
+    }
+}
+
 impl fmt::Display for IvmExecutionAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -118,6 +130,17 @@ impl IvmSqlExecutor {
 
     /// Execute one incremental statement.
     pub async fn execute(&self, sql: &str) -> Result<IvmExecution> {
+        let started = std::time::Instant::now();
+        let result = self.execute_inner(sql).await;
+        let action = match &result {
+            Ok(execution) => execution.action.label(),
+            Err(_) => "error",
+        };
+        crate::observability::record_statement(action, started.elapsed());
+        result
+    }
+
+    async fn execute_inner(&self, sql: &str) -> Result<IvmExecution> {
         let insert = parse_insert(sql)?;
         let (namespace, table_name) = split_object_name(insert_target(&insert)?)?;
         let mv = self.runtime.open_table(&table_name, &namespace).await?;

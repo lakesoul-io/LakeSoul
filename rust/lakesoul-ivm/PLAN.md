@@ -1094,7 +1094,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 1. **PR-1**：W0 + W1 + H1/H2 + 聚合类 slt/oracle（一个 PR）。
 2. **PR-2**：W2 + 窗口/TOP-K/UNION slt/oracle。
 3. 后续单独立项：HAVING、AVG、SELECT DISTINCT、窗口扩展、外连接/多表 join、
-   子查询/CTE、M5 文档与指标（复用 #959 观测）。文档部分见 §10.42（已完成）。
+   子查询/CTE、M5 文档与指标（复用 #959 观测）。文档见 §10.42、指标见 §10.46（均已完成）。
 
 ### 10.7 PR-1 实施记录（W0 + W1 + H1/H2）
 
@@ -1842,6 +1842,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap、进入过滤的更新、删除、阈值变化 rebuild、增量、派生表等价定义走增量）、
   差分 oracle（CTE vs `WHERE` 参考）。全量 IVM 套件（lib + 37 个集成测试二进制 +
   doctest）261 个测试通过、0 失败。
+
+### 10.46 M5 指标 / 观测（PR-40）
+
+- **能力**：IVM 运行时与 SQL 入口通过 `metrics` crate 输出低基数指标（沿用 lakesoul-io
+  的 `lakesoul_*` 命名，任意 recorder 可导出，例如 Prometheus exporter）：
+  - `lakesoul_ivm_statements_total{action}` /
+    `lakesoul_ivm_statement_duration_seconds{action}`（executor，含 `action=error`）；
+  - `lakesoul_ivm_refreshes_total{kind,result}` /
+    `lakesoul_ivm_refresh_duration_seconds{kind}`（`refresh_spec`，`result` 为
+    `applied`/`noop`）；
+  - `lakesoul_ivm_rebuilds_total{kind}` / `lakesoul_ivm_rebuild_duration_seconds{kind}`
+    （`rebuild_spec`）；
+  - `lakesoul_ivm_epochs_total{kind}`（已提交 epoch）。
+- **实现**：新模块 `observability.rs`（`Once` 注册描述 + 记录函数）；
+  `ViewSpec::kind()` 提供视图种类标签；`IvmExecutionAction::label()`；
+  `IvmSqlExecutor::execute` 拆出 `execute_inner` 后计时并记录。
+- **测试**：`tests/metrics.rs` 用本地 recorder（最小 `Recorder`/`CounterFn`/`HistogramFn` 实现）
+  断言 bootstrap、两次 incremental（applied/noop）、rebuild 生命周期下的计数与直方图观测次数。
+  全量 IVM 套件（lib + 38 个集成测试二进制 + doctest）262 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

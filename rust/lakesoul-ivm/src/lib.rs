@@ -76,6 +76,7 @@
 pub mod error;
 pub mod executor;
 pub mod metadata;
+mod observability;
 mod provider;
 pub mod runtime;
 pub mod sql;

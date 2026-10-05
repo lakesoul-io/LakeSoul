@@ -708,6 +708,29 @@ impl ViewSpec {
             | ViewSpec::TopK { view_id, .. } => view_id,
         }
     }
+
+    /// A stable label for the view kind, used by the metrics.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ViewSpec::SumCount { .. } => "sum_count",
+            ViewSpec::Variance { .. } => "variance",
+            ViewSpec::Median { .. } => "median",
+            ViewSpec::StringAgg { .. } => "string_agg",
+            ViewSpec::ArrayAgg { .. } => "array_agg",
+            ViewSpec::Join { .. } => "join",
+            ViewSpec::LookupJoin { .. } => "lookup_join",
+            ViewSpec::LeftJoin { .. } => "left_join",
+            ViewSpec::FullJoin { .. } => "full_join",
+            ViewSpec::MinMax { .. } => "min_max",
+            ViewSpec::DistinctAgg { .. } => "distinct_agg",
+            ViewSpec::Window { .. } => "window",
+            ViewSpec::SemiAnti { .. } => "semi_anti",
+            ViewSpec::Row { .. } => "row",
+            ViewSpec::UnionAll { .. } => "union_all",
+            ViewSpec::UnionDistinct { .. } => "union_distinct",
+            ViewSpec::TopK { .. } => "top_k",
+        }
+    }
 }
 
 /// A typed view reconstructed from a persisted [`ViewSpec`].
@@ -4750,50 +4773,68 @@ impl IvmRuntime {
     /// id.  The spec is the only state needed to drive a refresh from any
     /// process; the registered refresh interval is preserved.
     pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
-        match self.spec_view(spec).await? {
-            SpecView::SumCount(view) => self.refresh_sum_count(&view).await,
-            SpecView::Variance(view) => self.refresh_variance(&view).await,
-            SpecView::Median(view) => self.refresh_median(&view).await,
-            SpecView::StringAgg(view) => self.refresh_string_agg(&view).await,
-            SpecView::ArrayAgg(view) => self.refresh_array_agg(&view).await,
-            SpecView::Join(view) => self.refresh_join(&view).await,
-            SpecView::LookupJoin(view) => self.refresh_lookup_join(&view).await,
-            SpecView::LeftJoin(view) => self.refresh_left_join(&view).await,
-            SpecView::FullJoin(view) => self.refresh_full_join(&view).await,
-            SpecView::MinMax(view) => self.refresh_min_max(&view).await,
-            SpecView::DistinctAgg(view) => self.refresh_distinct_agg(&view).await,
-            SpecView::Window(view) => self.refresh_window(&view).await,
-            SpecView::SemiAnti(view) => self.refresh_semi_anti(&view).await,
-            SpecView::Row(view) => self.refresh_row(&view).await,
-            SpecView::UnionAll(view) => self.refresh_union_all(&view).await,
-            SpecView::UnionDistinct(view) => self.refresh_union_distinct(&view).await,
-            SpecView::TopK(view) => self.refresh_top_k(&view).await,
-        }
+        let kind = spec.kind();
+        let started = std::time::Instant::now();
+        let view = self.spec_view(spec).await;
+        let result = match view {
+            Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
+            Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
+            Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
+            Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
+            Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
+            Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
+            Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
+            Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
+            Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
+            Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
+            Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
+            Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
+            Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
+            Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
+            Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
+            Ok(SpecView::UnionDistinct(view)) => self.refresh_union_distinct(&view).await,
+            Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+            Err(error) => Err(error),
+        };
+        crate::observability::record_refresh(
+            kind,
+            matches!(result, Ok(Some(_))),
+            started.elapsed(),
+        );
+        result
     }
 
     /// Rebuild a view from its persisted [`ViewSpec`]: the full source state is
     /// recomputed, the MV is replaced and the cursors are reset to the current
     /// source versions.
     pub async fn rebuild_spec(&self, spec: &ViewSpec) -> Result<i64> {
-        match self.spec_view(spec).await? {
-            SpecView::SumCount(view) => self.rebuild_sum_count(&view).await,
-            SpecView::Variance(view) => self.rebuild_variance(&view).await,
-            SpecView::Median(view) => self.rebuild_median(&view).await,
-            SpecView::StringAgg(view) => self.rebuild_string_agg(&view).await,
-            SpecView::ArrayAgg(view) => self.rebuild_array_agg(&view).await,
-            SpecView::Join(view) => self.rebuild_join(&view).await,
-            SpecView::LookupJoin(view) => self.rebuild_lookup_join(&view).await,
-            SpecView::LeftJoin(view) => self.rebuild_left_join(&view).await,
-            SpecView::FullJoin(view) => self.rebuild_full_join(&view).await,
-            SpecView::MinMax(view) => self.rebuild_min_max(&view).await,
-            SpecView::DistinctAgg(view) => self.rebuild_distinct_agg(&view).await,
-            SpecView::Window(view) => self.rebuild_window(&view).await,
-            SpecView::SemiAnti(view) => self.rebuild_semi_anti(&view).await,
-            SpecView::Row(view) => self.rebuild_row(&view).await,
-            SpecView::UnionAll(view) => self.rebuild_union_all(&view).await,
-            SpecView::UnionDistinct(view) => self.rebuild_union_distinct(&view).await,
-            SpecView::TopK(view) => self.rebuild_top_k(&view).await,
+        let kind = spec.kind();
+        let started = std::time::Instant::now();
+        let view = self.spec_view(spec).await;
+        let result = match view {
+            Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
+            Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
+            Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
+            Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
+            Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
+            Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
+            Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
+            Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
+            Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
+            Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
+            Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
+            Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
+            Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
+            Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
+            Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
+            Ok(SpecView::UnionDistinct(view)) => self.rebuild_union_distinct(&view).await,
+            Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
+            Err(error) => Err(error),
+        };
+        if result.is_ok() {
+            crate::observability::record_rebuild(kind, started.elapsed());
         }
+        result
     }
 
     /// Persist a sum/count view spec (idempotent).
