@@ -1694,6 +1694,24 @@ fn sqllogic_right_join() {
 }
 
 #[test]
+fn sqllogic_union_types() {
+    let schema = typed_source_schema();
+    let output =
+        union_output_schema_for(&schema, &group_keys(&["k", "v", "d", "day"]), &[])
+            .unwrap();
+    run_script_for_sources(
+        "uniontypes",
+        include_str!("slt/union_types.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+        ],
+        union_all_mv_schema_for(&output).unwrap(),
+        group_keys(&[IVM_SOURCE_COLUMN, "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_union_projection() {
     let schema = source_schema();
     let output = union_output_schema_for(

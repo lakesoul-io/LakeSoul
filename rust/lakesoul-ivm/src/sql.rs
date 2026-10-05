@@ -960,6 +960,11 @@ fn analyze_aggregate(
         while let Expr::Alias(nested) = inner {
             inner = &nested.expr;
         }
+        if matches!(inner, Expr::GroupingSet(_)) {
+            return Err(unsupported(
+                "GROUPING SETS / ROLLUP / CUBE are not supported yet",
+            ));
+        }
         match inner {
             Expr::Column(column) if hoisted_exprs.contains_key(&column.name) => {
                 let name = alias
@@ -5702,6 +5707,43 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unmaintained_shapes() {
+        // A computed column (or scalar subquery) above an aggregate.
+        assert!(
+            analyze_optimized("select g, sum(v) + 1 from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze_optimized("select g, (select max(v) from src) from src group by g",)
+                .await
+                .is_err()
+        );
+        // GROUPING SETS have a dedicated message.
+        for sql in [
+            "select g, sum(v) from src group by rollup(g)",
+            "select g, sum(v) from src group by cube(g)",
+            "select g, sum(v) from src group by grouping sets ((g), ())",
+        ] {
+            let error = analyze_optimized(sql).await.unwrap_err().to_string();
+            assert!(error.contains("GROUPING SETS"), "{sql}: {error}");
+        }
+        // Multiple DISTINCT arguments are rejected.
+        assert!(
+            analyze_optimized("select count(distinct g, v) from src")
+                .await
+                .is_err()
+        );
+        // DISTINCT ON plans as first_value aggregates, which are not
+        // maintained.
+        assert!(
+            analyze_optimized("select distinct on (g) g, v from src")
+                .await
+                .is_err()
         );
     }
 
