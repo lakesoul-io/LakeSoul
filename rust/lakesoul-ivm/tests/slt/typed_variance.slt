@@ -1,0 +1,60 @@
+# VAR_SAMP over Float64 values grouped by a boolean key.
+
+statement ok
+/*ivm-append __SRC__: k=1,v=10,flag=true,d=12.34,day=1,op=insert; k=2,v=20,flag=true,d=null,day=1,op=insert; k=3,v=3,flag=false,d=1.00,day=2,op=insert; k=4,v=7,flag=false,d=2.50,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, VAR_SAMP(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ?R rowsort
+SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 8.0
+true 50.0
+
+# An update changes the sample.
+statement ok
+/*ivm-append __SRC__: k=2,v=30,flag=true,d=null,day=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, VAR_SAMP(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?R rowsort
+SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 8.0
+true 200.0
+
+# A delete leaves a single value and a NULL sample.
+statement ok
+/*ivm-append __SRC__: k=1,v=10,flag=true,d=12.34,day=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, VAR_SAMP(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?R rowsort
+SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 8.0
+true NULL
+
+# A predicate rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT flag, VAR_SAMP(v) FROM __SRC__ WHERE flag = false GROUP BY flag
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ?R rowsort
+SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 8.0

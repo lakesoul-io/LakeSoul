@@ -1,0 +1,90 @@
+# SUM/COUNT/AVG over nullable Float64 values grouped by a boolean key:
+# NULL values contribute to neither the sum nor the non-NULL count.
+
+statement ok
+/*ivm-append __SRC__: k=1,v=10.5,flag=true,d=12.34,day=1,op=insert; k=2,v=null,flag=true,d=null,day=1,op=insert; k=3,v=3.25,flag=false,d=1.00,day=2,op=insert; k=4,v=7.75,flag=false,d=2.50,day=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, SUM(v), COUNT(v), AVG(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ?RIIR rowsort
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 11.0 2 2 5.5
+true 10.5 2 1 10.5
+
+# A NULL becomes a value and joins the sum and the non-NULL count.
+statement ok
+/*ivm-append __SRC__: k=2,v=5.5,flag=true,d=null,day=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, SUM(v), COUNT(v), AVG(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?RIIR rowsort
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 11.0 2 2 5.5
+true 16.0 2 2 8.0
+
+# A delete removes a value.
+statement ok
+/*ivm-append __SRC__: k=1,v=10.5,flag=true,d=12.34,day=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, SUM(v), COUNT(v), AVG(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?RIIR rowsort
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+false 11.0 2 2 5.5
+true 5.5 1 1 5.5
+
+# Emptying a group drops it.
+statement ok
+/*ivm-append __SRC__: k=3,v=3.25,flag=false,d=1.00,day=2,op=delete; k=4,v=7.75,flag=false,d=2.50,day=2,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, SUM(v), COUNT(v), AVG(v) FROM __SRC__ GROUP BY flag
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?RIIR rowsort
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+true 5.5 1 1 5.5
+
+# HAVING over the average rebuilds the view (the group is filtered out).
+statement ok
+INSERT INTO __MV__ SELECT flag, SUM(v), COUNT(v), AVG(v) FROM __SRC__ GROUP BY flag HAVING AVG(v) > 6
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ?RIIR rowsort
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# An update inside the HAVING definition recomputes the group.
+statement ok
+/*ivm-append __SRC__: k=2,v=20.0,flag=true,d=null,day=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT flag, SUM(v), COUNT(v), AVG(v) FROM __SRC__ GROUP BY flag HAVING AVG(v) > 6
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ?RIIR rowsort
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+true 20.0 1 1 20.0

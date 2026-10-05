@@ -1806,6 +1806,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   差分 oracle（keyed `UNION` 投影 + 计数）。
   全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）253 个测试通过、0 失败。
 
+### 10.44 类型覆盖：Float64 / Decimal / Date / Boolean（PR-38）
+
+- **动机**：运行时对类型是泛化的，但此前只有行视图有 `row_types.slt` 的系统覆盖；
+  聚合、DISTINCT、MIN/MAX、窗口与重算家族的 Float64/Decimal128/Date32/Boolean
+  路径缺少验证。
+- **新增 slt**（复用 `typed_source_schema`：k Int64、v Float64 可空、flag Boolean、
+  d Decimal128(10,2) 可空、day Date32、op）：
+  - `typed_sum_avg.slt`：`SUM/COUNT/AVG(v)` 按 Boolean 分组——NULL 不计入 sum 与非空计数
+    （`__ivm_nonnull_count`）、删除清空分组、HAVING rebuild 与增量；
+  - `typed_min_max.slt`：`MIN/MAX(d)` 按 Date32 分组——Decimal 比较、MIN→MAX 定义变化重建
+    （同 schema）、删除最大值回退、谓词 rebuild；
+  - `typed_distinct.slt`：`COUNT(DISTINCT d)` 按 Boolean 分组——Decimal 状态键与跨分组
+    重复值；
+  - `typed_window.slt`：`ROW_NUMBER() ... PARTITION BY flag ORDER BY d DESC, day`——
+    Boolean 分区、可空 Decimal 排序（DESC 默认 NULLS FIRST）、Date tie-break、更新/删除/
+    谓词 rebuild/增量；
+  - `typed_variance.slt`：`VAR_SAMP(v)` 按 Boolean 分组——重算家族的 Float64 与单值
+    NULL 样本。
+- **验证**：全量 IVM 套件（lib + 37 个集成测试二进制 + doctest）258 个测试通过、
+  0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

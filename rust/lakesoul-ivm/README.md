@@ -218,7 +218,9 @@ The crate has three test layers:
 
 * SQL entry end-to-end scripts (`tests/slt/*.slt`) driven by `tests/sqllogic.rs`;
 * differential oracles against full recomputes (`tests/sql_oracle.rs`);
-* typed runtime tests (e.g. `tests/join_keyed.rs`, `tests/window_refresh.rs`).
+* typed runtime tests (e.g. `tests/join_keyed.rs`, `tests/window_refresh.rs`);
+* typed coverage for `Float64` / `Decimal128` / `Date32` / `Boolean` inputs
+  (`tests/slt/typed_*.slt`), including NULL handling and the non-NULL count.
 
 ```sh
 # PostgreSQL is required; the tests use the LAKESOUL_PG_* environment.

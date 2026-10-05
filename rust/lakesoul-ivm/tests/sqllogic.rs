@@ -863,6 +863,90 @@ fn sqllogic_row_typed_append() {
 }
 
 #[test]
+fn sqllogic_typed_sum_avg() {
+    let schema = typed_source_schema();
+    run_script_for_source(
+        "typedsumavg",
+        include_str!("slt/typed_sum_avg.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        avg_mv_schema_for(&schema, &group_keys(&["flag"]), "v").unwrap(),
+        group_keys(&["flag"]),
+    );
+}
+
+#[test]
+fn sqllogic_typed_min_max() {
+    let schema = typed_source_schema();
+    run_script_for_source(
+        "typedminmax",
+        include_str!("slt/typed_min_max.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        min_max_mv_schema_for(&schema, &group_keys(&["day"]), "d", MinMaxKind::Min)
+            .unwrap(),
+        group_keys(&["day"]),
+    );
+}
+
+#[test]
+fn sqllogic_typed_distinct() {
+    let schema = typed_source_schema();
+    run_script_for_source(
+        "typeddistinct",
+        include_str!("slt/typed_distinct.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        distinct_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["flag"]),
+            "d",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        group_keys(&["flag"]),
+    );
+}
+
+#[test]
+fn sqllogic_typed_variance() {
+    let schema = typed_source_schema();
+    run_script_for_source(
+        "typedvariance",
+        include_str!("slt/typed_variance.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        variance_mv_schema_for(
+            &schema,
+            &group_keys(&["flag"]),
+            "v",
+            VarianceKind::VarSamp,
+        )
+        .unwrap(),
+        group_keys(&["flag"]),
+    );
+}
+
+#[test]
+fn sqllogic_typed_window() {
+    let schema = typed_source_schema();
+    run_script_for_source(
+        "typedwindow",
+        include_str!("slt/typed_window.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        window_columns_mv_schema_for(
+            &schema,
+            &group_keys(&["flag"]),
+            &group_keys(&["k"]),
+            &[WindowColumn::new(WindowFunction::RowNumber)],
+        )
+        .unwrap(),
+        group_keys(&["flag", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_array_agg() {
     run_script_for_mv(
         "arrayagg",
