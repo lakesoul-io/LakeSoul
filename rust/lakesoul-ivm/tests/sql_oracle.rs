@@ -18,11 +18,11 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
-    array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
+    WindowGroupSpec, array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_groups_mv_schema_for,
     distinct_agg_mv_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    multi_window_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
@@ -296,6 +296,55 @@ async fn run_oracle_with(
         );
     }
     assert!(mv_rows > 0, "{tag}: the view stayed empty for every round");
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_window_clauses_matches_full_recompute() {
+    // Two window clauses with different partition/order in one statement.
+    let groups = vec![
+        WindowGroupSpec {
+            partition_keys: vec!["v".to_string()],
+            order_keys: Vec::new(),
+            order_by: Vec::new(),
+            columns: vec![WindowColumn {
+                function: WindowFunction::Sum,
+                value_column: Some("v".to_string()),
+                window_args: None,
+                window_filter: None,
+                ignore_nulls: false,
+                window_frame: None,
+                column: "cnt".to_string(),
+            }],
+        },
+        WindowGroupSpec {
+            partition_keys: vec!["g".to_string()],
+            order_keys: vec!["v".to_string()],
+            order_by: Vec::new(),
+            columns: vec![WindowColumn {
+                function: WindowFunction::RowNumber,
+                value_column: None,
+                window_args: None,
+                window_filter: None,
+                ignore_nulls: false,
+                window_frame: None,
+                column: "rn".to_string(),
+            }],
+        },
+    ];
+    run_oracle(
+        "multiwindowclauses",
+        1,
+        multi_window_mv_schema_for(&source_schema(), &["k".to_string()], &groups)
+            .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn, \
+                SUM(v) OVER (PARTITION BY v) AS cnt FROM __SRC__",
+        "SELECT k, v, g, SUM(v) OVER (PARTITION BY v) AS cnt, \
+                ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn \
+         FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT k, v, g, cnt, rn FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
 }
 
 #[test_log::test(tokio::test)]

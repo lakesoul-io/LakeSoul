@@ -93,8 +93,10 @@ Supported within the shapes above:
   `SELECT ... FROM (SELECT ...) t`), including CTEs whose body aggregates or
   windows; the view is maintained as the inlined shape;
 * window `PARTITION BY`/`ORDER BY` columns or expressions, custom frames,
-  `FILTER (WHERE ...)` and `IGNORE NULLS`. All window columns of one statement
-  share the same clause.
+  `FILTER (WHERE ...)` and `IGNORE NULLS`;
+* **several window clauses** with different `PARTITION BY`/`ORDER BY` in one
+  statement (chained windows): the MV is then keyed by the source primary keys
+  and materializes each clause's partition keys as value columns.
 
 ### Derived column names
 
@@ -229,8 +231,6 @@ the backlog):
 * range-partitioned source tables: the reads do not carry the partition values
   through the IO layer yet, and the join / row / union / TOP-K views reject them
   explicitly. Supporting them needs a dedicated change (see the backlog);
-* several window clauses with different `PARTITION BY`/`ORDER BY` in one
-  statement (all window columns share one clause);
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
   join keys, differently named join keys and multiple payload columns per
   side;

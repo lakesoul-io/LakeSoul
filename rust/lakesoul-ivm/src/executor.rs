@@ -37,9 +37,10 @@ use crate::runtime::{
     cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
     full_join_view_schema_for, join_view_schema_for, keyed_join_view_schema_for,
     left_join_view_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
-    min_max_groups_mv_schema_for, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
+    min_max_groups_mv_schema_for, multi_window_mv_schema_for, row_expr_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
     window_columns_mv_schema_for,
 };
@@ -675,6 +676,14 @@ fn expected_mv_schema(
             value_column,
             *agg,
         )?,
+        ViewSpec::MultiWindow {
+            source_table_id,
+            windows,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            multi_window_mv_schema_for(&source.schema, &source.primary_keys, windows)?
+        }
         ViewSpec::Window {
             source_table_id,
             partition_keys,
