@@ -1098,6 +1098,34 @@ fn sqllogic_select_distinct_rows() {
 }
 
 #[test]
+fn sqllogic_multi_distinct() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, true),
+        arrow::datatypes::Field::new("a", DataType::Int64, true),
+        arrow::datatypes::Field::new("b", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "multidistinct",
+        include_str!("slt/multi_distinct.slt"),
+        vec![SltSource::keyed(
+            "__SRC__",
+            schema.clone(),
+            group_keys(&["id"]),
+        )],
+        distinct_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            "a",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
 fn sqllogic_distinct_agg() {
     run_script_for_mv(
         "distinct",

@@ -57,7 +57,7 @@ used as row identities must be non-nullable.
 | SELECT DISTINCT | `SELECT DISTINCT c, ... FROM src [WHERE p]` | the distinct columns, `count_v`, kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]` | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
 | MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k` | keys, `value`, kinds, epoch (+ value-count state table) |
-| COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k` | keys, `value`, kinds, epoch (+ state) |
+| COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
@@ -79,6 +79,10 @@ Supported within the shapes above:
 * **aggregate arguments** may be scalar expressions for all value aggregates,
   including `SUM(v * 2)`, `VAR_SAMP(v * 2)` and
   `STRING_AGG(CAST(v AS VARCHAR), '|')`;
+* a **multi-column `COUNT(DISTINCT a, b)`** counts distinct tuples per group:
+  the affected groups are recomputed from their current source rows (like the
+  other unmergeable aggregates), so duplicates, updates and deletes move the
+  count; it needs a `GROUP BY` and does not support `HAVING` or `FILTER`;
 * **ordering** may be a scalar expression in windows, TOP-K and the ordered
   aggregates (`ORDER BY v % 10`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
