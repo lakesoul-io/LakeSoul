@@ -2072,6 +2072,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （进入过滤产生 NULL 填充对、键变更、右更新、离开过滤撤回、重建）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）292 个测试通过、0 失败。
 
+### 10.60 非等值 join 条件（pair payload 谓词）（PR-54）
+
+- **能力**：inner join 的额外非等值条件（`ON l.k = r.k AND l.amount < r.limit`）与 CROSS JOIN 的跨侧谓词
+  （`WHERE l.lo <= r.hi`）都作为 **pair 谓词**维护：仅物化满足谓词的 pair，任一 payload 变化会增删受影响
+  pair；条件变化（含方向翻转）触发 rebuild。
+- **analyzer**：`render_pair_conditions` 把 `join.filter` 的非等值比较渲染为 `left_value <op> right_value`
+  （只允许两侧分别对应各自 payload 列，其它列明确拒绝）；`CROSS JOIN + WHERE` 不再整体拒绝而是交给
+  `analyze_cross_join` 解析跨侧谓词。`rejects_unsupported_join_and_union_shapes` 相应收窄（改为非 payload 条件）。
+- **spec/typed**：`ViewSpec::Join`/`ViewSpec::CrossJoin` 增加 `pair_filter`；typed builder `with_pair_filter`。
+- **运行时**：`PairJoin` 增加 `pair_filter`；`keyed_join_projection`（keyed 路径）与 `join_projection`
+  （append-only 路径）在输出投影前对 join 结果应用该谓词；新的 `apply_pair_filter` 用 join 结果 schema 解析；
+  校验器按 payload 列类型解析谓词。受影响 pair 逻辑不变（谓词是两行身份的纯函数）。
+- **测试**：analyzer（inner theta、cross theta、非 payload 条件拒绝）、`theta_join.slt`、
+  `cross_theta_join.slt`（bootstrap、payload 变化增删 pair、删除、条件变化 rebuild）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）295 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
