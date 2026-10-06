@@ -70,7 +70,7 @@ used as row identities must be non-nullable.
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed | as the inner join, with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
-| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` | the projected left columns, kinds, epoch |
+| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters | the projected left columns, kinds, epoch |
 
 Supported within the shapes above:
 
@@ -92,7 +92,10 @@ Supported within the shapes above:
   `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
   change column cannot be part of a `UNION` output;
 * **semi/anti joins** through correlated `EXISTS` / `NOT EXISTS` / `IN`
-  subqueries, including extra comparison conditions between the two sides;
+  subqueries, including extra comparison conditions between the two sides and
+  filters on either side (the outer `WHERE` filters the left source and a
+  subquery predicate the right source): a row entering or leaving either
+  filter gains or loses its match;
 * an **inner join** may filter either side (`WHERE fact.amount > 0 AND
   dim.active`): the optimizer pushes the predicates below the join and a row
   entering or leaving its filter adds or retracts its pairs;
@@ -252,16 +255,16 @@ the backlog):
   with equality and keep one row per left row, so the shapes are rejected
   rather than silently returning different rows;
 * a join input with a `WHERE` clause (or a filtered derived table) outside an
-  inner join or the left side of a lookup `LEFT JOIN`: the optimizer pushes
-  the filter below the join and the analyzer rejects the shape instead of
-  ignoring the predicate;
+  inner join, a semi/anti join or the left side of a lookup `LEFT JOIN`: the
+  optimizer pushes the filter below the join and the analyzer rejects the
+  shape instead of ignoring the predicate;
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
-* `GROUPING SETS` / `ROLLUP` / `CUBE`, `COUNT(DISTINCT a, b)` and
-  `SELECT DISTINCT ON`: the planner produces plans for them, but the runtime
-  does not maintain those shapes yet;
+* `GROUPING SETS` / `ROLLUP` / `CUBE` and `SELECT DISTINCT ON`: the planner
+  produces plans for them, but the runtime does not maintain those shapes
+  yet;
 * retractions in a `UNION ALL` over an **append-only CDC** source: the delete
   markers become MV tombstones (hidden from logical reads), but the matching
   insert rows cannot be retracted because an append-only source has no row

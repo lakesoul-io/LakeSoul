@@ -1,0 +1,128 @@
+# A filtered semi join: the outer WHERE filters the fact side and the
+# subquery's predicate the dimension side. Rows entering or leaving either
+# filter gain or lose their match.
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=10,x=1,op=insert; k=2,g=10,x=5,op=insert; k=3,g=20,x=2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rk=100,g=10,rv=20,op=insert; rk=200,g=20,rv=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 10 5
+
+# A fact row entering its filter becomes visible.
+statement ok
+/*ivm-append __SRC1__: k=1,g=10,x=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 7
+2 10 5
+
+# A dimension row entering its filter enables more fact rows.
+statement ok
+/*ivm-append __SRC2__: rk=200,g=20,rv=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 7
+2 10 5
+3 20 2
+
+# A fact row leaving its filter disappears.
+statement ok
+/*ivm-append __SRC1__: k=2,g=10,x=0,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10 7
+3 20 2
+
+# A dimension row leaving its filter disables its fact rows.
+statement ok
+/*ivm-append __SRC2__: rk=100,g=10,rv=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 20 2
+
+# A fact key change moves the match.
+statement ok
+/*ivm-append __SRC1__: k=1,g=20,x=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 20 7
+3 20 2
+
+# A dimension delete disables its fact rows.
+statement ok
+/*ivm-append __SRC2__: rk=200,g=20,rv=50,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x > 1 AND EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 10)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# Changed filters rebuild the view, and the ANTI variant keeps the fact rows
+# without a match.
+statement ok
+INSERT INTO __MV__ SELECT f.k, f.g, f.x FROM __SRC1__ f WHERE f.x >= 0 AND NOT EXISTS (SELECT 1 FROM __SRC2__ d WHERE d.g = f.g AND d.rv > 0)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query III rowsort
+SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 20 7
+3 20 2

@@ -2460,11 +2460,6 @@ fn analyze_join(
             })
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
-            if left_filter.is_some() || right_filter.is_some() {
-                return Err(unsupported(
-                    "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-                ));
-            }
             let output_columns = match projection {
                 Some(projection) => {
                     if !is_plain_projection(projection) {
@@ -2514,6 +2509,8 @@ fn analyze_join(
                 conditions,
                 output_columns,
                 anti: join.join_type == JoinType::LeftAnti,
+                left_filter,
+                right_filter,
             })
         }
         other => Err(unsupported(format!("join type {other:?}"))),
@@ -2971,13 +2968,32 @@ fn join_input<'a>(
         LogicalPlan::SubqueryAlias(alias) => &alias.input,
         other => other,
     };
-    // A side filter is pushed below the join as a `Filter` (or into the
-    // scan's pushed filters).
+    // A side filter is pushed below the join as a `Filter`; column pruning
+    // may add a plain projection above it. Scan-level filters land in the
+    // scan's pushed filters.
     let mut filter = None;
     let mut node = peel(input);
-    if let LogicalPlan::Filter(predicate) = node {
-        filter = Some(render_filter(&predicate.predicate)?);
-        node = peel(&predicate.input);
+    loop {
+        match node {
+            LogicalPlan::Filter(predicate) => {
+                filter =
+                    Some(combine_filter(filter, render_filter(&predicate.predicate)?));
+                node = peel(&predicate.input);
+            }
+            LogicalPlan::Projection(projection) => {
+                if !projection
+                    .expr
+                    .iter()
+                    .all(|expr| matches!(expr, Expr::Column(_)))
+                {
+                    return Err(unsupported(
+                        "join input must be a table or a plain column projection",
+                    ));
+                }
+                node = peel(&projection.input);
+            }
+            _ => break,
+        }
     }
     let LogicalPlan::TableScan(scan) = node else {
         return Err(unsupported("join input must be a table"));
@@ -5888,6 +5904,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_filtered_semi_anti_inputs() {
+        // The outer WHERE filters the left side and the subquery predicate
+        // the right side; both are pushed below the semi/anti join.
+        let analyzed = analyze_multi(
+            "select a.k, a.v from a where a.v > 1 \
+             and exists (select 1 from b where b.k = a.k and b.v > 2)",
+            vec![source_table("a"), source_table("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            left_filter,
+            right_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+        assert_eq!(
+            normalized(right_filter.as_deref()).as_deref(),
+            Some("v > 2")
+        );
+
+        // The `IN` form with filters on both sides.
+        let analyzed = analyze_multi(
+            "select a.k from a where a.v > 5 \
+             and a.k in (select b.k from b where b.v > 2)",
+            vec![source_table("a"), source_table("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            left_filter,
+            right_filter,
+            anti,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(!anti);
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 5"));
+        assert_eq!(
+            normalized(right_filter.as_deref()).as_deref(),
+            Some("v > 2")
+        );
+    }
+
+    #[tokio::test]
     async fn rejects_set_operations() {
         // INTERSECT/EXCEPT plan as null-aware semi/anti joins: the maintained
         // semi/anti views match with equality and keep one row per left row,
@@ -5951,23 +6017,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_filtered_join_inputs() {
-        // SEMI/ANTI join side filters are pushed below the join and are not
-        // maintained: the analyzer must reject them rather than ignore the
-        // filter.
-        assert!(
-            analyze_optimized(
-                "select a.v from src a left semi join src b on a.k = b.k where a.v > 1",
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            analyze_optimized(
-                "select a.v from src a left anti join src b on a.k = b.k where a.v > 1",
-            )
-            .await
-            .is_err()
-        );
+        // The same through an EXISTS subquery whose sides carry filters is
+        // maintained (see `analyzes_filtered_semi_anti_inputs`).
         // A cross-side predicate on a CROSS JOIN stays unsupported.
         assert!(
             analyze_optimized(
@@ -6189,6 +6240,8 @@ mod tests {
                 conditions: Vec::new(),
                 output_columns: vec!["k".to_string(), "v".to_string()],
                 anti: false,
+                left_filter: None,
+                right_filter: None,
             }
         );
 

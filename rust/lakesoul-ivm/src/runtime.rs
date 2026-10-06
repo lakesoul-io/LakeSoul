@@ -660,6 +660,12 @@ pub enum ViewSpec {
         output_columns: Vec<String>,
         /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
         anti: bool,
+        /// An optional filter the contributing left rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_filter: Option<String>,
+        /// An optional filter the contributing right rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_filter: Option<String>,
     },
     /// A projection (and optional filter) of one source.
     Row {
@@ -3689,6 +3695,10 @@ pub struct SemiAntiView {
     pub output_columns: Vec<String>,
     /// `true` for `ANTI` (rows without a match), `false` for `SEMI`.
     pub anti: bool,
+    /// An optional filter the contributing left rows must satisfy.
+    pub left_filter: Option<String>,
+    /// An optional filter the contributing right rows must satisfy.
+    pub right_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -3725,8 +3735,22 @@ impl SemiAntiView {
             conditions,
             output_columns: Vec::new(),
             anti,
+            left_filter: None,
+            right_filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only left rows matching `filter` contribute to the view.
+    pub fn with_left_filter(mut self, filter: impl Into<String>) -> Self {
+        self.left_filter = Some(filter.into());
+        self
+    }
+
+    /// Only right rows matching `filter` contribute to the view.
+    pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
+        self.right_filter = Some(filter.into());
+        self
     }
 
     /// Materialize only `output_columns` of the left source (the left primary
@@ -3746,6 +3770,8 @@ impl SemiAntiView {
             conditions: self.conditions.clone(),
             output_columns: self.output_columns.clone(),
             anti: self.anti,
+            left_filter: self.left_filter.clone(),
+            right_filter: self.right_filter.clone(),
         }
     }
 }
@@ -5498,6 +5524,8 @@ impl IvmRuntime {
                 conditions,
                 output_columns,
                 anti,
+                left_filter,
+                right_filter,
             } => SpecView::SemiAnti(SemiAntiView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -5507,6 +5535,8 @@ impl IvmRuntime {
                 conditions: conditions.clone(),
                 output_columns: output_columns.clone(),
                 anti: *anti,
+                left_filter: left_filter.clone(),
+                right_filter: right_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Row {
@@ -8403,11 +8433,27 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        // Project both sides to the columns the view actually needs.
-        let left_projection =
-            project_schema(&view.left.schema, &semi_anti_left_columns(view))?;
-        let right_projection =
-            project_schema(&view.right.schema, &semi_anti_right_columns(view))?;
+        // Project both sides to the columns the view actually needs (the
+        // side filters included).
+        let context = SessionContext::new();
+        let mut left_columns = semi_anti_left_columns(view);
+        if let Some(filter) = view.left_filter.as_deref() {
+            for column in filter_columns(&context, &view.left.schema, filter)? {
+                if !left_columns.contains(&column) {
+                    left_columns.push(column);
+                }
+            }
+        }
+        let mut right_columns = semi_anti_right_columns(view);
+        if let Some(filter) = view.right_filter.as_deref() {
+            for column in filter_columns(&context, &view.right.schema, filter)? {
+                if !right_columns.contains(&column) {
+                    right_columns.push(column);
+                }
+            }
+        }
+        let left_projection = project_schema(&view.left.schema, &left_columns)?;
+        let right_projection = project_schema(&view.right.schema, &right_columns)?;
 
         let delta_left = view
             .left
@@ -8458,13 +8504,23 @@ impl IvmRuntime {
             dataframe(&context, right_before, &right_projection)?,
             change_column(&view.right),
         )?;
-        let left_now = filter_deletes(
-            dataframe(&context, left_now, &left_projection)?,
-            change_column(&view.left),
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, left_now, &left_projection)?,
+                change_column(&view.left),
+            )?,
+            &left_projection,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(&context, right_now, &right_projection)?,
-            change_column(&view.right),
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, right_now, &right_projection)?,
+                change_column(&view.right),
+            )?,
+            &right_projection,
+            view.right_filter.as_deref(),
         )?;
         let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
 
@@ -9069,13 +9125,23 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left = filter_deletes(
-            dataframe(&context, left_baseline.batches, &view.left.schema)?,
-            change_column(&view.left),
+        let left = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                change_column(&view.left),
+            )?,
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right = filter_deletes(
-            dataframe(&context, right_baseline.batches, &view.right.schema)?,
-            change_column(&view.right),
+        let right = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                change_column(&view.right),
+            )?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let join_type = if view.anti {
             JoinType::LeftAnti
@@ -12298,6 +12364,15 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             }
         }
     }
+    if view.left_filter.is_some() || view.right_filter.is_some() {
+        let context = SessionContext::new();
+        if let Some(filter) = &view.left_filter {
+            parse_filter(&context, &view.left.schema, filter)?;
+        }
+        if let Some(filter) = &view.right_filter {
+            parse_filter(&context, &view.right.schema, filter)?;
+        }
+    }
     Ok(())
 }
 
@@ -12446,6 +12521,20 @@ fn semi_anti_join(
         .map(|(_, right)| right.as_str())
         .collect::<Vec<_>>();
     Ok(left.join(right, join_type, &left_on, &right_on, filter)?)
+}
+
+/// The plain columns a rendered filter references.
+fn filter_columns(
+    context: &SessionContext,
+    schema: &SchemaRef,
+    filter: &str,
+) -> Result<Vec<String>> {
+    let expression = parse_filter(context, schema, filter)?;
+    Ok(expression
+        .column_refs()
+        .into_iter()
+        .map(|column| column.name.clone())
+        .collect())
 }
 
 /// Parse a persisted filter predicate into a logical expression.
