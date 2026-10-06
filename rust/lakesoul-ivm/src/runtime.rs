@@ -318,6 +318,10 @@ pub enum ViewSpec {
         /// The equi-join keys, present in both sources.
         #[serde(default, alias = "join_key", deserialize_with = "de_group_keys")]
         join_keys: Vec<String>,
+        /// The right source's key columns when they differ from the left
+        /// ones; empty means the keys share their names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        right_keys: Vec<String>,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source.
@@ -1035,6 +1039,9 @@ pub struct JoinView {
     /// The equi-join keys, present in both sources (any equality-comparable
     /// types).
     pub join_keys: Vec<String>,
+    /// The right source's key columns when they differ from the left ones;
+    /// empty means the keys share their names.
+    pub right_keys: Vec<String>,
     /// The payload column of the left source (any type).
     pub left_value: String,
     /// The payload column of the right source (any type).
@@ -1088,6 +1095,7 @@ impl JoinView {
             right,
             output,
             join_keys,
+            right_keys: Vec::new(),
             left_value: left_value.into(),
             right_value: right_value.into(),
             left_filter: None,
@@ -1109,6 +1117,12 @@ impl JoinView {
         self
     }
 
+    /// The right source's join keys when they differ from the left ones.
+    pub fn with_right_keys(mut self, right_keys: Vec<String>) -> Self {
+        self.right_keys = right_keys;
+        self
+    }
+
     /// Only joined pairs matching `filter` (over `left_value` /
     /// `right_value`) contribute to the view.
     pub fn with_pair_filter(mut self, filter: impl Into<String>) -> Self {
@@ -1123,6 +1137,7 @@ impl JoinView {
             right_table_id: self.right.table_id.clone(),
             output_table_id: self.output.table_id.clone(),
             join_keys: self.join_keys.clone(),
+            right_keys: self.right_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             left_filter: self.left_filter.clone(),
@@ -1664,6 +1679,7 @@ impl FullJoinView {
     fn parts(&self) -> PairJoin<'_> {
         PairJoin {
             join_keys: &self.join_keys,
+            right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
@@ -1774,6 +1790,7 @@ impl CrossJoinView {
     fn parts(&self) -> PairJoin<'_> {
         PairJoin {
             join_keys: &[],
+            right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
@@ -5374,6 +5391,7 @@ impl IvmRuntime {
                 right_table_id,
                 output_table_id,
                 join_keys,
+                right_keys,
                 left_value,
                 right_value,
                 left_filter,
@@ -5385,6 +5403,7 @@ impl IvmRuntime {
                 right: self.open_table_by_id(right_table_id).await?,
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
+                right_keys: right_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 left_filter: left_filter.clone(),
@@ -10614,16 +10633,27 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
             parse_filter(&context, &view.right.schema, filter)?;
         }
     }
-    for key in &view.join_keys {
+    let right_keys = if view.right_keys.is_empty() {
+        &view.join_keys
+    } else {
+        &view.right_keys
+    };
+    if right_keys.len() != view.join_keys.len() {
+        return Err(report!(
+            "join view {}: right_keys must be parallel to join_keys",
+            view.view_id
+        ));
+    }
+    for (key, right_key) in view.join_keys.iter().zip(right_keys) {
         let left = view.left.schema.field_with_name(key).map_err(|_| {
             report!(
                 "join view {}: join key {key} is not in the left source",
                 view.view_id
             )
         })?;
-        let right = view.right.schema.field_with_name(key).map_err(|_| {
+        let right = view.right.schema.field_with_name(right_key).map_err(|_| {
             report!(
-                "join view {}: join key {key} is not in the right source",
+                "join view {}: join key {right_key} is not in the right source",
                 view.view_id
             )
         })?;
@@ -10726,6 +10756,16 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
 ///
 /// The right side's key columns are aliased before the join because DataFusion
 /// rejects duplicate qualified fields for the same name.
+/// The right source's join key columns of a pair join (the left names when
+/// the keys share them).
+fn effective_right_keys<'a>(parts: &'a PairJoin<'_>) -> &'a [String] {
+    if parts.right_keys.is_empty() {
+        parts.join_keys
+    } else {
+        parts.right_keys
+    }
+}
+
 /// Apply a pair filter (over `left_value` / `right_value`) to the joined
 /// pairs before the output projection.
 fn apply_pair_filter(joined: DataFrame, filter: Option<&str>) -> Result<DataFrame> {
@@ -10752,11 +10792,18 @@ fn join_projection(
         .iter()
         .map(|key| col(key.as_str()))
         .collect::<Vec<_>>();
-    let right_keys = view
-        .join_keys
-        .iter()
-        .map(|key| col(key.as_str()).alias(format!("__right_{key}")))
-        .collect::<Vec<_>>();
+    let right_keys = if view.right_keys.is_empty() {
+        view.join_keys
+            .iter()
+            .map(|key| col(key.as_str()).alias(format!("__right_{key}")))
+            .collect::<Vec<_>>()
+    } else {
+        view.right_keys
+            .iter()
+            .zip(view.join_keys.iter())
+            .map(|(right, left)| col(right.as_str()).alias(format!("__right_{left}")))
+            .collect::<Vec<_>>()
+    };
     let mut left_columns = left_keys.clone();
     left_columns.push(col(view.left_value.as_str()).alias("left_value"));
     let left = left.select(left_columns)?;
@@ -10840,10 +10887,10 @@ fn keyed_join_projection(
     }
     let left = left.select(left_columns)?;
 
-    let mut right_columns = parts
-        .join_keys
+    let mut right_columns = effective_right_keys(parts)
         .iter()
-        .map(|key| col(key.as_str()).alias(format!("__right_{key}")))
+        .zip(parts.join_keys.iter())
+        .map(|(right, left)| col(right.as_str()).alias(format!("__right_{left}")))
         .collect::<Vec<_>>();
     right_columns.push(col(parts.right_value).alias("right_value"));
     for key in parts.right_primary_keys {
@@ -10926,6 +10973,8 @@ fn keyed_join_output_columns(
 /// The shape of a pair-keyed join used by the projection helpers.
 struct PairJoin<'a> {
     join_keys: &'a [String],
+    /// The right source's key columns when they differ from `join_keys`.
+    right_keys: &'a [String],
     left_value: &'a str,
     right_value: &'a str,
     left_primary_keys: &'a [String],
@@ -10939,6 +10988,7 @@ impl JoinView {
     fn parts(&self) -> PairJoin<'_> {
         PairJoin {
             join_keys: &self.join_keys,
+            right_keys: &self.right_keys,
             left_value: &self.left_value,
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
@@ -10952,6 +11002,7 @@ impl LeftJoinView {
     fn parts(&self) -> PairJoin<'_> {
         PairJoin {
             join_keys: &self.join_keys,
+            right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,

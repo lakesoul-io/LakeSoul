@@ -1,0 +1,81 @@
+# An inner join with differently named keys (`ON f.jk = r.rk`): the MV keeps
+# the left key names and both key columns stay out of the payloads.
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=10,lv=100,op=insert; id=2,jk=20,lv=200,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=5,rk=10,rv=1,op=insert; rid=6,rk=30,rv=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, r.rv FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIII rowsort
+SELECT "__left_pk_id", "__right_pk_rid", jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 10 100 1
+
+# A fact key change moves its pair.
+statement ok
+/*ivm-append __SRC__: id=2,jk=30,lv=200,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, r.rv FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT "__left_pk_id", "__right_pk_rid", jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 10 100 1
+2 6 30 200 3
+
+# A dimension key change rewrites its pairs on both sides.
+statement ok
+/*ivm-append __SRC2__: rid=6,rk=10,rv=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, r.rv FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT "__left_pk_id", "__right_pk_rid", jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 10 100 1
+1 6 10 100 3
+
+# A delete removes the row's pairs.
+statement ok
+/*ivm-append __SRC__: id=1,jk=10,lv=100,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, r.rv FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT "__left_pk_id", "__right_pk_rid", jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# New rows and a changed definition rebuild the view.
+statement ok
+/*ivm-append __SRC__: id=3,jk=10,lv=300,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, r.rv FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk WHERE f.lv > 10
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIIII rowsort
+SELECT "__left_pk_id", "__right_pk_rid", jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 5 10 300 1
+3 6 10 300 3
