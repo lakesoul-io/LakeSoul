@@ -1,0 +1,108 @@
+# A filtered pair-keyed LEFT JOIN: the fact rows leaving or entering the
+# filter keep or lose their matches (or their NULL-padded pair).
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=keep,op=insert; id=2,jk=b,lv=skip,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=10,jk=a,rv=100,op=insert; rid=11,jk=c,rv=101,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'skip'
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a keep 100 10
+
+# A fact row entering the filter with no match gets a NULL-padded pair.
+statement ok
+/*ivm-append __SRC__: id=2,jk=b,lv=ok,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'skip'
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a keep 100 10
+2 b ok NULL NULL
+
+# A key change moves the match.
+statement ok
+/*ivm-append __SRC__: id=1,jk=c,lv=keep,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'skip'
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 c keep 101 11
+2 b ok NULL NULL
+
+# A right update flows into the filtered fact rows.
+statement ok
+/*ivm-append __SRC2__: rid=11,jk=c,rv=111,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'skip'
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 c keep 111 11
+2 b ok NULL NULL
+
+# A fact row leaving the filter retracts its pair.
+statement ok
+/*ivm-append __SRC__: id=1,jk=c,lv=skip,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'skip'
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 b ok NULL NULL
+
+# A delete removes the last pair.
+statement ok
+/*ivm-append __SRC__: id=2,jk=b,lv=ok,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'skip'
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# A changed filter rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON l.jk = r.jk WHERE l.lv <> 'none'
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITTII rowsort
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 c skip 111 11

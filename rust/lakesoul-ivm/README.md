@@ -66,8 +66,8 @@ used as row identities must be non-nullable.
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
 | Inner join | `JOIN` on equality keys, both sides keyed or both append-only, optional side filters | join keys, `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name) | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
-| CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed | `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
-| LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed | as the inner join, with nullable unmatched identities |
+| CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters | `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, optional filters on the preserved side | as the inner join, with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters | the projected left columns, kinds, epoch |
@@ -96,9 +96,10 @@ Supported within the shapes above:
   filters on either side (the outer `WHERE` filters the left source and a
   subquery predicate the right source): a row entering or leaving either
   filter gains or loses its match;
-* an **inner join** may filter either side (`WHERE fact.amount > 0 AND
-  dim.active`): the optimizer pushes the predicates below the join and a row
-  entering or leaving its filter adds or retracts its pairs;
+* an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
+  filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
+  keeps the predicates pushed below the join and a row entering or leaving
+  its filter adds, retracts or NULL-pads its pairs;
 * a **lookup `LEFT JOIN`** may reference a differently named right key
   (`ON fact.dim_id = dim.id`) and may filter the fact side
   (`WHERE fact.amount > 0`), as long as the right source is keyed by its side
@@ -255,9 +256,10 @@ the backlog):
   with equality and keep one row per left row, so the shapes are rejected
   rather than silently returning different rows;
 * a join input with a `WHERE` clause (or a filtered derived table) outside an
-  inner join, a semi/anti join or the left side of a lookup `LEFT JOIN`: the
-  optimizer pushes the filter below the join and the analyzer rejects the
-  shape instead of ignoring the predicate;
+  inner join, a cross join, a semi/anti join or the preserved side of a
+  `LEFT JOIN`: the optimizer pushes the filter below the join and the analyzer
+  rejects the shape instead of ignoring the predicate (a right-side `WHERE`
+  on a `LEFT JOIN` becomes an inner join and is maintained as one);
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /

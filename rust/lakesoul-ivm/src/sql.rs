@@ -2794,11 +2794,8 @@ fn analyze_cross_join(
 ) -> Result<ViewSpec> {
     let left = join_input(&join.left, tables)?;
     let right = join_input(&join.right, tables)?;
-    if left.filter.is_some() || right.filter.is_some() {
-        return Err(unsupported(
-            "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-        ));
-    }
+    let left_filter = left.filter.clone();
+    let right_filter = right.filter.clone();
     let (left, left_alias) = (left.table, left.alias.as_deref());
     let (right, right_alias) = (right.table, right.alias.as_deref());
     if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
@@ -2859,6 +2856,8 @@ fn analyze_cross_join(
         output_table_id: request.mv_table_id.clone(),
         left_value,
         right_value,
+        left_filter,
+        right_filter,
     })
 }
 
@@ -2923,10 +2922,6 @@ fn analyze_outer_join(
             left_value,
             right_value,
         })
-    } else if left_filter.is_some() || right_filter.is_some() {
-        Err(unsupported(
-            "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-        ))
     } else if !right_keys.is_empty() {
         Err(unsupported(
             "differently named join keys are only supported by a lookup LEFT JOIN",
@@ -2940,6 +2935,8 @@ fn analyze_outer_join(
             join_keys,
             left_value,
             right_value,
+            left_filter,
+            right_filter,
         })
     } else {
         Err(unsupported(format!(
@@ -5904,6 +5901,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_filtered_pair_joins() {
+        // A CROSS JOIN may filter either side; the right fixture keeps the
+        // column names distinguishable.
+        let mut right = source_table("b");
+        right.schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("rg", DataType::Utf8, false),
+            Field::new("rv", DataType::Int64, false),
+        ]));
+        let analyzed = analyze_multi(
+            "select a.v, b.rv from a cross join b where a.v > 1 and b.rv > 2",
+            vec![source_table("a"), right.clone()],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::CrossJoin {
+            left_filter,
+            right_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a cross join spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+        assert_eq!(
+            normalized(right_filter.as_deref()).as_deref(),
+            Some("rv > 2")
+        );
+
+        // A pair-keyed LEFT JOIN keeps its left-side filter (a right-side
+        // WHERE would become an inner join); the right source must not be
+        // keyed by the join keys for the pair shape.
+        let mut pair_right = source_table("b");
+        pair_right.primary_keys = vec!["v".to_string()];
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from a left join b on a.k = b.k where a.v > 1",
+            vec![source_table("a"), pair_right],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin {
+            left_filter,
+            right_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left join spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+        assert!(right_filter.is_none());
+    }
+
+    #[tokio::test]
     async fn analyzes_filtered_semi_anti_inputs() {
         // The outer WHERE filters the left side and the subquery predicate
         // the right side; both are pushed below the semi/anti join.
@@ -6074,6 +6124,8 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                left_filter: None,
+                right_filter: None,
             }
         );
 

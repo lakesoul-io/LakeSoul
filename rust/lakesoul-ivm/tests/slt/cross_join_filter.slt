@@ -1,0 +1,121 @@
+# A filtered CROSS JOIN: rows entering or leaving either side's filter add or
+# retract their pairs.
+
+statement ok
+/*ivm-append __SRC1__: id=1,lv=keep,op=insert; id=2,lv=skip,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=10,rv=100,op=insert; rid=11,rv=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'skip' AND r.rv > 10
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+keep 100 1 10
+
+# A left row entering its filter pairs with every passing right row.
+statement ok
+/*ivm-append __SRC1__: id=2,lv=ok,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'skip' AND r.rv > 10
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+keep 100 1 10
+ok 100 2 10
+
+# A right row entering its filter pairs with every passing left row.
+statement ok
+/*ivm-append __SRC2__: rid=11,rv=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'skip' AND r.rv > 10
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+keep 100 1 10
+keep 20 1 11
+ok 100 2 10
+ok 20 2 11
+
+# A left row leaving its filter retracts its pairs.
+statement ok
+/*ivm-append __SRC1__: id=1,lv=skip,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'skip' AND r.rv > 10
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+ok 100 2 10
+ok 20 2 11
+
+# A right row leaving its filter retracts its pairs.
+statement ok
+/*ivm-append __SRC2__: rid=10,rv=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'skip' AND r.rv > 10
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+ok 20 2 11
+
+# A delete under a passing filter retracts its pair.
+statement ok
+/*ivm-append __SRC1__: id=2,lv=ok,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'skip' AND r.rv > 10
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+# Changed filters rebuild the view.
+statement ok
+/*ivm-append __SRC1__: id=3,lv=keep,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=12,rv=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv <> 'none' AND r.rv > 0
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TIII rowsort
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+keep 1 3 10
+keep 20 3 11
+keep 50 3 12
+skip 1 1 10
+skip 20 1 11
+skip 50 1 12
