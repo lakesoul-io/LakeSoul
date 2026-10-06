@@ -2057,6 +2057,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap、左/右行进入与离开过滤、键变更、右删除、过滤变化 rebuild + ANTI 变体）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）289 个测试通过、0 失败。
 
+### 10.59 CROSS JOIN 与 pair-keyed LEFT JOIN 的侧过滤（PR-53）
+
+- **能力**：`CROSS JOIN` 任一侧、pair-keyed `LEFT JOIN`（右侧非 join key 主键）的保留侧都可带
+  `WHERE`；进入/离开过滤的行会新增/撤回其 pair（LEFT JOIN 无匹配时保持 NULL 填充对）。
+  至此除 FULL JOIN（优化器会把单侧过滤重写为 LEFT/RIGHT）与「右侧过滤会被改写成 inner join」
+  的情形外，所有被支持的 join 形状都支持侧过滤。
+- **analyzer**：`analyze_cross_join` 不再拒绝侧过滤；`analyze_outer_join` 的 pair 分支把
+  `left_filter`/`right_filter` 写入 `ViewSpec::LeftJoin`（RIGHT 分支交换后自然复用）。
+- **运行时**：`ViewSpec::CrossJoin`/`ViewSpec::LeftJoin` 增加过滤字段（typed builder 同步）；
+  刷新对当前 `left_now`/`right_now` 应用过滤（delta 受影响标识不应用），重建过滤基线；校验解析谓词。
+- **测试**：analyzer（`analyzes_filtered_pair_joins`：cross 双侧、pair-left 左过滤）、
+  `cross_join_filter.slt`（双侧进出过滤、删除、过滤变化 rebuild）、`left_join_filter.slt`
+  （进入过滤产生 NULL 填充对、键变更、右更新、离开过滤撤回、重建）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）292 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

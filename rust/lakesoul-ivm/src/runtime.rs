@@ -350,6 +350,12 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source; NULL without a match.
         right_value: String,
+        /// An optional filter the contributing left rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_filter: Option<String>,
+        /// An optional filter the contributing right rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_filter: Option<String>,
     },
     /// `CROSS JOIN` of two keyed sources: every pair of rows, keyed by both
     /// row identities. A change on either side rewrites only the pairs of the
@@ -367,6 +373,12 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source.
         right_value: String,
+        /// An optional filter the contributing left rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_filter: Option<String>,
+        /// An optional filter the contributing right rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_filter: Option<String>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -1482,6 +1494,10 @@ pub struct LeftJoinView {
     pub left_value: String,
     /// The payload column of the right source.
     pub right_value: String,
+    /// An optional filter the contributing left rows must satisfy.
+    pub left_filter: Option<String>,
+    /// An optional filter the contributing right rows must satisfy.
+    pub right_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1526,8 +1542,22 @@ impl LeftJoinView {
             join_keys,
             left_value: left_value.into(),
             right_value: right_value.into(),
+            left_filter: None,
+            right_filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only left rows matching `filter` contribute to the view.
+    pub fn with_left_filter(mut self, filter: impl Into<String>) -> Self {
+        self.left_filter = Some(filter.into());
+        self
+    }
+
+    /// Only right rows matching `filter` contribute to the view.
+    pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
+        self.right_filter = Some(filter.into());
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -1539,6 +1569,8 @@ impl LeftJoinView {
             join_keys: self.join_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            left_filter: self.left_filter.clone(),
+            right_filter: self.right_filter.clone(),
         }
     }
 }
@@ -1650,6 +1682,10 @@ pub struct CrossJoinView {
     pub left_value: String,
     /// The payload column of the right source.
     pub right_value: String,
+    /// An optional filter the contributing left rows must satisfy.
+    pub left_filter: Option<String>,
+    /// An optional filter the contributing right rows must satisfy.
+    pub right_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1671,8 +1707,22 @@ impl CrossJoinView {
             output,
             left_value: left_value.into(),
             right_value: right_value.into(),
+            left_filter: None,
+            right_filter: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Only left rows matching `filter` contribute to the view.
+    pub fn with_left_filter(mut self, filter: impl Into<String>) -> Self {
+        self.left_filter = Some(filter.into());
+        self
+    }
+
+    /// Only right rows matching `filter` contribute to the view.
+    pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
+        self.right_filter = Some(filter.into());
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -1683,6 +1733,8 @@ impl CrossJoinView {
             output_table_id: self.output.table_id.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            left_filter: self.left_filter.clone(),
+            right_filter: self.right_filter.clone(),
         }
     }
 
@@ -1932,6 +1984,8 @@ fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
         join_keys: view.join_keys.clone(),
         left_value: view.left_value.clone(),
         right_value: view.right_value.clone(),
+        left_filter: None,
+        right_filter: None,
         refresh_interval_ms: view.refresh_interval_ms,
     };
     validate_left_join_view(&left)
@@ -1969,6 +2023,15 @@ fn validate_cross_join_view(view: &CrossJoinView) -> Result<()> {
                 view.view_id
             )
         })?;
+    }
+    if view.left_filter.is_some() || view.right_filter.is_some() {
+        let context = SessionContext::new();
+        if let Some(filter) = &view.left_filter {
+            parse_filter(&context, &view.left.schema, filter)?;
+        }
+        if let Some(filter) = &view.right_filter {
+            parse_filter(&context, &view.right.schema, filter)?;
+        }
     }
     Ok(())
 }
@@ -2027,6 +2090,15 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
     }
     field_type(&view.left.schema, &view.left_value)?;
     field_type(&view.right.schema, &view.right_value)?;
+    if view.left_filter.is_some() || view.right_filter.is_some() {
+        let context = SessionContext::new();
+        if let Some(filter) = &view.left_filter {
+            parse_filter(&context, &view.left.schema, filter)?;
+        }
+        if let Some(filter) = &view.right_filter {
+            parse_filter(&context, &view.right.schema, filter)?;
+        }
+    }
     Ok(())
 }
 
@@ -5283,6 +5355,8 @@ impl IvmRuntime {
                 join_keys,
                 left_value,
                 right_value,
+                left_filter,
+                right_filter,
             } => SpecView::LeftJoin(LeftJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -5291,6 +5365,8 @@ impl IvmRuntime {
                 join_keys: join_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                left_filter: left_filter.clone(),
+                right_filter: right_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::FullJoin {
@@ -5340,6 +5416,8 @@ impl IvmRuntime {
                 output_table_id,
                 left_value,
                 right_value,
+                left_filter,
+                right_filter,
             } => SpecView::CrossJoin(CrossJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -5347,6 +5425,8 @@ impl IvmRuntime {
                 output: self.open_table_by_id(output_table_id).await?,
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                left_filter: left_filter.clone(),
+                right_filter: right_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::MinMax {
@@ -7133,21 +7213,31 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
-            dataframe(
-                &context,
-                view.left.read_current(&self.client).await?,
-                &view.left.schema,
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.left.read_current(&self.client).await?,
+                    &view.left.schema,
+                )?,
+                change_column(&view.left),
             )?,
-            change_column(&view.left),
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(
-                &context,
-                view.right.read_current(&self.client).await?,
-                &view.right.schema,
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.right.read_current(&self.client).await?,
+                    &view.right.schema,
+                )?,
+                change_column(&view.right),
             )?,
-            change_column(&view.right),
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let mv = dataframe(
             &context,
@@ -7345,13 +7435,23 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
-            dataframe(&context, left_baseline.batches, &view.left.schema)?,
-            change_column(&view.left),
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                change_column(&view.left),
+            )?,
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(&context, right_baseline.batches, &view.right.schema)?,
-            change_column(&view.right),
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                change_column(&view.right),
+            )?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         for batch in keyed_join_projection(
             &context,
@@ -7822,21 +7922,31 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
         let context = SessionContext::new();
 
-        let left_now = filter_deletes(
-            dataframe(
-                &context,
-                view.left.read_current(&self.client).await?,
-                &view.left.schema,
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.left.read_current(&self.client).await?,
+                    &view.left.schema,
+                )?,
+                change_column(&view.left),
             )?,
-            change_column(&view.left),
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(
-                &context,
-                view.right.read_current(&self.client).await?,
-                &view.right.schema,
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.right.read_current(&self.client).await?,
+                    &view.right.schema,
+                )?,
+                change_column(&view.right),
             )?,
-            change_column(&view.right),
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let mv = dataframe(
             &context,
@@ -8052,13 +8162,23 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
-            dataframe(&context, left_baseline.batches, &view.left.schema)?,
-            change_column(&view.left),
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                change_column(&view.left),
+            )?,
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(&context, right_baseline.batches, &view.right.schema)?,
-            change_column(&view.right),
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                change_column(&view.right),
+            )?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let parts = view.parts();
         let inserts = keyed_join_projection(
