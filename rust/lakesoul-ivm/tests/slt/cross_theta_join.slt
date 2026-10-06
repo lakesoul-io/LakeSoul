@@ -1,0 +1,64 @@
+# A CROSS JOIN with a cross-side predicate materializes only the satisfying
+# pairs.
+
+statement ok
+/*ivm-append __SRC1__: id=1,lv=5,op=insert; id=2,lv=50,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=10,rv=10,op=insert; rid=11,rv=100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv < r.rv
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIII rowsort
+SELECT "__left_pk_id", left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 10 10
+1 5 100 11
+2 50 100 11
+
+# A right payload change retracts its failing pairs.
+statement ok
+/*ivm-append __SRC2__: rid=10,rv=0,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv < r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIII rowsort
+SELECT "__left_pk_id", left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 100 11
+2 50 100 11
+
+# A delete removes the row's pairs.
+statement ok
+/*ivm-append __SRC1__: id=2,lv=50,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv < r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIII rowsort
+SELECT "__left_pk_id", left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 100 11
+
+# A changed predicate rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rv FROM __SRC1__ l CROSS JOIN __SRC2__ r WHERE l.lv > r.rv
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIII rowsort
+SELECT "__left_pk_id", left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 5 0 10

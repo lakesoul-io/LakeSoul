@@ -2055,6 +2055,73 @@ fn sqllogic_cross_join() {
 }
 
 #[test]
+fn sqllogic_theta_join() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "thetajoin",
+        include_str!("slt/theta_join.slt"),
+        vec![
+            SltSource::keyed("__SRC__", left.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", right.clone(), group_keys(&["rid"])),
+        ],
+        keyed_join_view_schema_for(
+            &left,
+            &right,
+            &group_keys(&["id"]),
+            &group_keys(&["rid"]),
+            &group_keys(&["jk"]),
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
+    );
+}
+
+#[test]
+fn sqllogic_cross_theta_join() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "crosstheta",
+        include_str!("slt/cross_theta_join.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", left.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", right.clone(), group_keys(&["rid"])),
+        ],
+        cross_join_view_schema_for(
+            &left,
+            &right,
+            &group_keys(&["id"]),
+            &group_keys(&["rid"]),
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
+    );
+}
+
+#[test]
 fn sqllogic_cross_join_filter() {
     let left = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("id", DataType::Int64, false),

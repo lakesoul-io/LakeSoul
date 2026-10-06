@@ -2288,12 +2288,8 @@ fn analyze_join(
     // clause; a residual filter would need a non-equi condition and stays
     // unsupported.
     if join.on.is_empty() && join.join_type == JoinType::Inner {
-        if join.filter.is_none() {
-            return analyze_cross_join(join, projection, tables, request);
-        }
-        return Err(unsupported(
-            "a CROSS JOIN with a WHERE clause is not supported",
-        ));
+        // A residual filter is a cross-side predicate over the pair payloads.
+        return analyze_cross_join(join, projection, tables, request);
     }
     let left_input = join_input(&join.left, tables)?;
     let right_input = join_input(&join.right, tables)?;
@@ -2358,9 +2354,6 @@ fn analyze_join(
 
     match join.join_type {
         JoinType::Inner => {
-            if !conditions.is_empty() {
-                return Err(unsupported("inner join with non-equality conditions"));
-            }
             if !same_names {
                 return Err(unsupported(
                     "differently named join keys are only supported by a lookup LEFT JOIN",
@@ -2374,6 +2367,12 @@ fn analyze_join(
                 right,
                 &join_keys,
             )?;
+            let pair_filter = render_pair_conditions(
+                &conditions,
+                &left_value,
+                &right_value,
+                "inner join",
+            )?;
             Ok(ViewSpec::Join {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
@@ -2384,6 +2383,7 @@ fn analyze_join(
                 right_value,
                 left_filter,
                 right_filter,
+                pair_filter,
             })
         }
         JoinType::Left => {
@@ -2849,6 +2849,22 @@ fn analyze_cross_join(
             )
         }
     };
+    let pair_filter = match &join.filter {
+        Some(filter) => {
+            let mut conditions = Vec::new();
+            for conjunct in split_conjunction(filter) {
+                let (left_column, right_column, op) =
+                    column_compare(conjunct, left_alias, right_alias, left, right)?;
+                conditions.push(SemiAntiCondition {
+                    left_column,
+                    right_column,
+                    op,
+                });
+            }
+            render_pair_conditions(&conditions, &left_value, &right_value, "cross join")?
+        }
+        None => None,
+    };
     Ok(ViewSpec::CrossJoin {
         view_id: request.view_id.clone(),
         left_table_id: left.table_id.clone(),
@@ -2858,6 +2874,7 @@ fn analyze_cross_join(
         right_value,
         left_filter,
         right_filter,
+        pair_filter,
     })
 }
 
@@ -3012,6 +3029,53 @@ fn column_of(expr: &Expr) -> Option<&Column> {
         Expr::Alias(alias) => column_of(&alias.expr),
         _ => None,
     }
+}
+
+/// The SQL operator of a comparison.
+fn compare_op_sql(op: CompareOp) -> &'static str {
+    match op {
+        CompareOp::Eq => "=",
+        CompareOp::Ne => "<>",
+        CompareOp::Lt => "<",
+        CompareOp::Le => "<=",
+        CompareOp::Gt => ">",
+        CompareOp::Ge => ">=",
+    }
+}
+
+/// Render non-equality join conditions over the pair payload aliases
+/// (`left_value` / `right_value`).
+///
+/// Each condition must compare the two payload columns, so the runtime can
+/// evaluate it on the joined pair; conditions over other columns cannot be
+/// evaluated because those columns are not materialized.
+fn render_pair_conditions(
+    conditions: &[SemiAntiCondition],
+    left_value: &str,
+    right_value: &str,
+    shape: &str,
+) -> Result<Option<String>> {
+    if conditions.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = Vec::with_capacity(conditions.len());
+    for condition in conditions {
+        let op = if condition.left_column == left_value
+            && condition.right_column == right_value
+        {
+            condition.op
+        } else if condition.left_column == right_value
+            && condition.right_column == left_value
+        {
+            flip(condition.op)
+        } else {
+            return Err(unsupported(format!(
+                "a {shape} condition must compare the left and right payload columns"
+            )));
+        };
+        parts.push(format!("left_value {} right_value", compare_op_sql(op),));
+    }
+    Ok(Some(parts.join(" AND ")))
 }
 
 /// `col = col` equality, used for join keys.
@@ -5859,6 +5923,7 @@ mod tests {
                 right_value: "v".to_string(),
                 left_filter: None,
                 right_filter: None,
+                pair_filter: None,
             }
         );
     }
@@ -5897,6 +5962,62 @@ mod tests {
             analyze_optimized("select distinct on (g) g, v from src")
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_theta_joins() {
+        // An inner join's non-equality condition over the payloads becomes a
+        // pair filter on the joined pair.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v from src a join src b on a.k = b.k and a.v < b.v",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            pair_filter,
+            left_filter,
+            right_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(
+            normalized(pair_filter.as_deref()).as_deref(),
+            Some("left_value < right_value")
+        );
+        assert!(left_filter.is_none() && right_filter.is_none());
+
+        // A cross join's residual cross-side predicate is a pair filter too.
+        let mut right = source_table("b");
+        right.schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("rg", DataType::Utf8, false),
+            Field::new("rv", DataType::Int64, false),
+        ]));
+        let analyzed = analyze_multi(
+            "select a.v, b.rv from a cross join b where a.v < b.rv",
+            vec![source_table("a"), right],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::CrossJoin { pair_filter, .. } = analyzed.spec else {
+            panic!("expected a cross join spec");
+        };
+        assert_eq!(
+            normalized(pair_filter.as_deref()).as_deref(),
+            Some("left_value < right_value")
+        );
+
+        // A condition over a column the pair does not carry is rejected.
+        assert!(
+            analyze_optimized(
+                "select a.k, a.v, b.v from src a join src b \
+                 on a.k = b.k and a.g < b.g",
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -6402,10 +6523,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        // Inner joins take no extra conditions.
+        // Inner joins take no extra conditions over columns the pair does
+        // not carry (payload comparisons are maintained, see
+        // `analyzes_theta_joins`).
         assert!(
             analyze_optimized(
-                "select a.k, a.v, b.v from src a join src b on a.k = b.k and a.v > b.v"
+                "select a.k, a.v, b.v from src a join src b on a.k = b.k and a.g < b.g"
             )
             .await
             .is_err()

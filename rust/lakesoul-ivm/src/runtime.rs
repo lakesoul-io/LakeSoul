@@ -328,6 +328,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// An optional filter over the joined pair's payload columns
+        /// (`left_value` / `right_value`), for non-equality join conditions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pair_filter: Option<String>,
     },
     /// `LEFT JOIN` over two keyed sources: every left row with all its
     /// matching right rows (a NULL-padded row when nothing matches).
@@ -379,6 +383,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// An optional filter over the joined pair's payload columns
+        /// (`left_value` / `right_value`), for cross-side join predicates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pair_filter: Option<String>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -1035,6 +1043,9 @@ pub struct JoinView {
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
     pub right_filter: Option<String>,
+    /// An optional filter over the joined pair's payload columns
+    /// (`left_value` / `right_value`); non-equality join conditions.
+    pub pair_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1081,6 +1092,7 @@ impl JoinView {
             right_value: right_value.into(),
             left_filter: None,
             right_filter: None,
+            pair_filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1097,6 +1109,13 @@ impl JoinView {
         self
     }
 
+    /// Only joined pairs matching `filter` (over `left_value` /
+    /// `right_value`) contribute to the view.
+    pub fn with_pair_filter(mut self, filter: impl Into<String>) -> Self {
+        self.pair_filter = Some(filter.into());
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Join {
             view_id: self.view_id.clone(),
@@ -1108,6 +1127,7 @@ impl JoinView {
             right_value: self.right_value.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
+            pair_filter: self.pair_filter.clone(),
         }
     }
 }
@@ -1648,6 +1668,7 @@ impl FullJoinView {
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            pair_filter: None,
         }
     }
 
@@ -1686,6 +1707,9 @@ pub struct CrossJoinView {
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
     pub right_filter: Option<String>,
+    /// An optional filter over the joined pair's payload columns
+    /// (`left_value` / `right_value`); cross-side predicates.
+    pub pair_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1709,6 +1733,7 @@ impl CrossJoinView {
             right_value: right_value.into(),
             left_filter: None,
             right_filter: None,
+            pair_filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -1725,6 +1750,13 @@ impl CrossJoinView {
         self
     }
 
+    /// Only joined pairs matching `filter` (over `left_value` /
+    /// `right_value`) contribute to the view.
+    pub fn with_pair_filter(mut self, filter: impl Into<String>) -> Self {
+        self.pair_filter = Some(filter.into());
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::CrossJoin {
             view_id: self.view_id.clone(),
@@ -1735,6 +1767,7 @@ impl CrossJoinView {
             right_value: self.right_value.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
+            pair_filter: self.pair_filter.clone(),
         }
     }
 
@@ -1745,6 +1778,7 @@ impl CrossJoinView {
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            pair_filter: self.pair_filter.as_deref(),
         }
     }
 }
@@ -2032,6 +2066,15 @@ fn validate_cross_join_view(view: &CrossJoinView) -> Result<()> {
         if let Some(filter) = &view.right_filter {
             parse_filter(&context, &view.right.schema, filter)?;
         }
+    }
+    if let Some(filter) = &view.pair_filter {
+        validate_pair_filter(
+            &view.left,
+            &view.left_value,
+            &view.right,
+            &view.right_value,
+            filter,
+        )?;
     }
     Ok(())
 }
@@ -5335,6 +5378,7 @@ impl IvmRuntime {
                 right_value,
                 left_filter,
                 right_filter,
+                pair_filter,
             } => SpecView::Join(JoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -5345,6 +5389,7 @@ impl IvmRuntime {
                 right_value: right_value.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                pair_filter: pair_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::LeftJoin {
@@ -5418,6 +5463,7 @@ impl IvmRuntime {
                 right_value,
                 left_filter,
                 right_filter,
+                pair_filter,
             } => SpecView::CrossJoin(CrossJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -5427,6 +5473,7 @@ impl IvmRuntime {
                 right_value: right_value.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                pair_filter: pair_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::MinMax {
@@ -10533,6 +10580,23 @@ fn ensure_append_only(source: &IvmTable, view_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a pair filter against the payload columns of the two sources.
+fn validate_pair_filter(
+    left: &IvmTable,
+    left_value: &str,
+    right: &IvmTable,
+    right_value: &str,
+    filter: &str,
+) -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("left_value", field_type(&left.schema, left_value)?, true),
+        Field::new("right_value", field_type(&right.schema, right_value)?, true),
+    ]));
+    let context = SessionContext::new();
+    parse_filter(&context, &schema, filter)?;
+    Ok(())
+}
+
 /// Validate that a join view can be maintained.
 fn validate_join_view(view: &JoinView) -> Result<()> {
     if view.join_keys.is_empty() {
@@ -10646,6 +10710,15 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
             view.view_id
         ));
     }
+    if let Some(filter) = &view.pair_filter {
+        validate_pair_filter(
+            &view.left,
+            &view.left_value,
+            &view.right,
+            &view.right_value,
+            filter,
+        )?;
+    }
     Ok(())
 }
 
@@ -10653,6 +10726,22 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
 ///
 /// The right side's key columns are aliased before the join because DataFusion
 /// rejects duplicate qualified fields for the same name.
+/// Apply a pair filter (over `left_value` / `right_value`) to the joined
+/// pairs before the output projection.
+fn apply_pair_filter(joined: DataFrame, filter: Option<&str>) -> Result<DataFrame> {
+    match filter {
+        Some(filter) => {
+            let context = SessionContext::new();
+            let expression = context
+                .state()
+                .create_logical_expr(filter, joined.schema())
+                .map_err(|error| report!("invalid pair filter {filter:?}: {error}"))?;
+            Ok(joined.filter(expression)?)
+        }
+        None => Ok(joined),
+    }
+}
+
 fn join_projection(
     left: DataFrame,
     right: DataFrame,
@@ -10690,6 +10779,7 @@ fn join_projection(
         .map(String::as_str)
         .collect::<Vec<_>>();
     let joined = left.join(right, JoinType::Inner, &key_names, &right_key_refs, None)?;
+    let joined = apply_pair_filter(joined, view.pair_filter.as_deref())?;
 
     let mut output = view
         .join_keys
@@ -10786,6 +10876,7 @@ fn keyed_join_projection(
     } else {
         left.join(right, join_type, &key_names, &right_key_refs, None)?
     };
+    let joined = apply_pair_filter(joined, parts.pair_filter)?;
 
     // An unmatched right row carries its join key on the right side.
     let mut output = if keys_from_right {
@@ -10839,6 +10930,9 @@ struct PairJoin<'a> {
     right_value: &'a str,
     left_primary_keys: &'a [String],
     right_primary_keys: &'a [String],
+    /// An optional filter over `left_value` / `right_value` the joined pair
+    /// must satisfy (a non-equality join condition).
+    pair_filter: Option<&'a str>,
 }
 
 impl JoinView {
@@ -10849,6 +10943,7 @@ impl JoinView {
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            pair_filter: self.pair_filter.as_deref(),
         }
     }
 }
@@ -10861,6 +10956,7 @@ impl LeftJoinView {
             right_value: &self.right_value,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            pair_filter: None,
         }
     }
 }
