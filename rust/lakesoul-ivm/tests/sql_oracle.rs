@@ -1518,3 +1518,60 @@ async fn oracle_semi_anti_filters_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_intersect_matches_full_recompute() {
+    // INTERSECT over unique, non-nullable tuples is maintained by the semi
+    // join; the seeds make both sides share a tuple.
+    let schema = source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(5i64)),
+        (0, 1, "g1", Some(7)),
+        (0, 2, "g2", Some(9)),
+        (1, 0, "g0", Some(5)),
+        (1, 1, "g1", Some(7)),
+        (1, 2, "g2", Some(9)),
+    ];
+    let keys = vec!["k".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "intersect",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC1__",
+        "(SELECT k, v FROM __SRC__ WHERE op <> 'delete') \
+         INTERSECT (SELECT k, v FROM __SRC1__ WHERE op <> 'delete')",
+        "SELECT k, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_except_matches_full_recompute() {
+    // EXCEPT over unique, non-nullable tuples is maintained by the anti join.
+    let schema = source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(5i64)),
+        (0, 1, "g1", Some(7)),
+        (1, 0, "g0", Some(5)),
+        (1, 1, "g2", Some(8)),
+    ];
+    let keys = vec!["k".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "except",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, v FROM __SRC__ EXCEPT SELECT k, v FROM __SRC1__",
+        "(SELECT k, v FROM __SRC__ WHERE op <> 'delete') \
+         EXCEPT (SELECT k, v FROM __SRC1__ WHERE op <> 'delete')",
+        "SELECT k, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

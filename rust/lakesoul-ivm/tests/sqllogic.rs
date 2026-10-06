@@ -2055,6 +2055,26 @@ fn sqllogic_cross_join() {
 }
 
 #[test]
+fn sqllogic_set_ops() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "setops",
+        include_str!("slt/set_ops.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+        ],
+        semi_anti_mv_schema_for(&schema, &group_keys(&["k", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_inner_join_names() {
     let fact = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("id", DataType::Int64, false),

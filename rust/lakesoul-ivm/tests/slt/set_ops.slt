@@ -1,0 +1,149 @@
+# INTERSECT / EXCEPT over keyed sources whose join columns are non-nullable
+# and unique per row: the semi/anti maintenance coincides with the set
+# operations. The definitions cycle through the distinct and ALL variants.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=b,v=20,op=insert; k=3,g=c,v=30,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=10,op=insert; k=2,g=b,v=99,op=insert; k=4,g=d,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+
+# A left update can add a tuple to the intersection.
+statement ok
+/*ivm-append __SRC__: k=2,g=b,v=99,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+2 99
+
+# A right update drops a tuple from the intersection.
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=11,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 99
+
+# A new matching right row adds the tuple.
+statement ok
+/*ivm-append __SRC2__: k=3,g=c,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 99
+3 30
+
+# Deletes on either side remove the tuple.
+statement ok
+/*ivm-append __SRC__: k=2,g=b,v=99,op=delete*/
+
+statement ok
+/*ivm-append __SRC2__: k=4,g=d,v=40,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 30
+
+# EXCEPT rebuilds the view with the same schema.
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ EXCEPT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+
+# A left update entering the right set removes it from the exception.
+statement ok
+/*ivm-append __SRC__: k=3,g=c,v=11,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ EXCEPT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+3 11
+
+# INTERSECT ALL and EXCEPT ALL share the maintenance.
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT ALL SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+statement ok
+/*ivm-append __SRC2__: k=3,g=c,v=11,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT ALL SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 11
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ EXCEPT ALL SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
