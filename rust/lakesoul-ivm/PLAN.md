@@ -2114,6 +2114,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `inner_join_names.slt`（bootstrap、事实键变更、维度键变更、删除、定义变化 rebuild）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）297 个测试通过、0 失败。
 
+### 10.63 新形状的差分 oracle 覆盖（PR-57）
+
+- **oracle 差分层**：为近几轮新增的 join/聚合形状补随机差分测试（每轮随机增删改 + 全量重算对照 +
+  幂等重放）：
+  - `oracle_inner_join_names`：异名 inner 键（`a.k = b.v`）；
+  - `oracle_theta_join`：inner join + pair 非等值条件 + 侧过滤；
+  - `oracle_multi_distinct`：多列 `COUNT(DISTINCT v, k)`（参照实现因 DataFusion 不执行多参数
+    count distinct，改用等价拼接表达式）；
+  - `oracle_semi_anti_filters`：semi join 双侧过滤。
+- **harness 扩展**：随机轮次前可注入初始行（`run_oracle_seeded` + `SeedRow`），否则随机数据很难
+  产生「两源共享键」或「键值恰好相等」的匹配，视图恒为空；`run_oracle_with` 委托给种子版本
+  （空种子保持原行为）。
+- **未覆盖**：cross join 的跨侧谓词随机 oracle 因两侧列名相同（schema 共享）会触发 payload 歧义，
+  暂由 slt 覆盖。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）301 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
