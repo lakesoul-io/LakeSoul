@@ -2129,6 +2129,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **未覆盖**：cross join 的跨侧谓词随机 oracle 因两侧列名相同（schema 共享）会触发 payload 歧义，
   暂由 slt 覆盖。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）301 个测试通过、0 失败。
 
+### 10.64 INTERSECT/EXCEPT 的受控子集（PR-58）
+
+- **能力**：`INTERSECT`/`EXCEPT`（distinct 与 `ALL` 变体）在**语义等价子集**上维护：所有 join 列在两侧
+  均不可空（NULL 永不出现，空值感知等价性退化为等值）且左行在 join 元组上唯一（左主键被 join 列覆盖，
+  因而 `min(cl, cr)`/`cl - cr` 退化为存在性）。该子集也覆盖不可空列上的空值感知 `EXISTS` 谓词。
+- **analyzer**：`analyze_set_operation` 替换原先的整体拒绝；剥掉 distinct 变体左输入的 no-op
+  `Aggregate`（要求其分组列与 join 列集合一致、无聚合）；提取 `semi_anti_output_columns` 供普通
+  semi/anti 分支与集合运算共用；不满足守卫的形状（可空列、主键未覆盖、distinct 分组列不一致、
+  空值感知 inner join、残余条件）仍明确拒绝。
+- **运行时**：无需改动（复用 `SemiAnti`）。
+- **测试**：analyzer（4 个变体 + 空值感知 EXISTS 正向；4 类拒绝）、`set_ops.slt`（bootstrap、左/右更新、
+  新匹配行、删两侧、EXCEPT/INTERSECT ALL/EXCEPT ALL 的定义循环）、两个种子 oracle
+  （`oracle_intersect`/`oracle_except`，与 DataFusion 原生集合运算差分对照）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）305 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

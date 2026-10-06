@@ -71,6 +71,7 @@ used as row identities must be non-nullable.
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters | the projected left columns, kinds, epoch |
+| INTERSECT / EXCEPT | over non-nullable, unique-per-row join columns (the distinct and `ALL` variants) | the projected left columns, kinds, epoch |
 
 Supported within the shapes above:
 
@@ -97,6 +98,11 @@ Supported within the shapes above:
   filters on either side (the outer `WHERE` filters the left source and a
   subquery predicate the right source): a row entering or leaving either
   filter gains or loses its match;
+* **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
+  semi/anti semantics coincide with the set operation: every join column is
+  non-nullable on both sides (so NULL never matches) and the left rows are
+  unique per join tuple (their primary key is covered), which also covers
+  null-aware `IS NOT DISTINCT FROM` semi/anti predicates over such columns;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -256,12 +262,12 @@ the backlog):
   than the pair payloads (a pair carries `left_value` / `right_value`), join
   keys outside the equality support, differently named keys outside inner
   joins and the lookup `LEFT JOIN`, and multiple payload columns per side;
-* `INTERSECT`/`EXCEPT` (either the set operations or their `ALL` variants) and
-  null-aware join predicates (`IS NOT DISTINCT FROM`): both plan as
-  *null-aware* joins — a NULL row matches a NULL row, and the `ALL` variants
-  also count the matches on both sides — while the maintained joins compare
-  with equality and keep one row per left row, so the shapes are rejected
-  rather than silently returning different rows;
+* `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
+  outside the maintained subset: they plan as *null-aware* joins — a NULL row
+  matches a NULL row, and the `ALL` variants also count the matches on both
+  sides — while the maintained joins compare with equality and keep one row
+  per left row, so the unsafe shapes are rejected rather than silently
+  returning different rows;
 * a join input with a `WHERE` clause (or a filtered derived table) outside an
   inner join, a cross join, a semi/anti join or the preserved side of a
   `LEFT JOIN`: the optimizer pushes the filter below the join and the analyzer
