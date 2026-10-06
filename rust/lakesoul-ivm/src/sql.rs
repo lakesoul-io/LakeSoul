@@ -391,6 +391,8 @@ enum HavingColumns<'a> {
         /// The placeholder column of a split distinct aggregate (`alias1`).
         alias: Option<&'a str>,
     },
+    /// `value` for a multi-column `COUNT(DISTINCT a, b)` view.
+    MultiDistinct { columns: &'a [String] },
     /// `variance_v` / `stddev_v` for a variance view.
     Variance { statistic: VarianceKind },
     /// `median_v` for a median view.
@@ -680,6 +682,24 @@ fn having_column(
                 && function.params.args.len() == 1
             {
                 Ok(statistic.column_name().to_string())
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::MultiDistinct { columns } => {
+            let matches = name == "count"
+                && function.params.distinct
+                && function.params.args.len() == columns.len()
+                && function
+                    .params
+                    .args
+                    .iter()
+                    .zip(columns)
+                    .all(|(arg, column)| {
+                        aggregate_column_of(arg) == Some(column.as_str())
+                    });
+            if matches {
+                Ok(IVM_VALUE_COLUMN.to_string())
             } else {
                 Err(not_materialized(name))
             }
@@ -1428,12 +1448,14 @@ fn analyze_aggregate(
 
     let having = if let Some((agg, value_columns)) = &distinct {
         if value_columns.len() > 1 {
-            if !having_exprs.is_empty() {
-                return Err(unsupported(
-                    "HAVING with a multi-column COUNT(DISTINCT) is not maintained",
-                ));
-            }
-            None
+            render_having(
+                having_exprs,
+                HavingColumns::MultiDistinct {
+                    columns: value_columns,
+                },
+                aggregate,
+                &group_keys,
+            )?
         } else {
             render_having(
                 having_exprs,
@@ -4532,15 +4554,19 @@ mod tests {
         assert_eq!(value_column, "v");
         assert_eq!(value_columns, vec!["v".to_string(), "k".to_string()]);
 
-        // A multi-column distinct count cannot carry HAVING or FILTER.
-        assert!(
-            analyze_optimized(
-                "select g, count(distinct v, k) from src group by g \
-                 having count(distinct v, k) > 1",
-            )
-            .await
-            .is_err()
-        );
+        // HAVING over the multi-column count maps to the `value` column.
+        let analyzed = analyze_optimized(
+            "select g, count(distinct v, k) from src group by g \
+             having count(distinct v, k) > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::DistinctAgg { having, .. } = analyzed.spec else {
+            panic!("expected a distinct spec");
+        };
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("value > 1"));
+
+        // A multi-column distinct count cannot carry FILTER.
         assert!(
             analyze_optimized(
                 "select g, count(distinct v, k) filter (where v > 1) from src \

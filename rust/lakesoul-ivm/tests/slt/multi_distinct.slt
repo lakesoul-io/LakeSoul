@@ -142,3 +142,34 @@ query IT rowsort
 SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
 b 2
+
+# A HAVING over the multi-column count keeps only the groups above the
+# threshold; a group crossing it enters incrementally.
+statement ok
+/*ivm-append __SRC__: id=9,g=a,a=3,b=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT b, a) FROM __SRC__ GROUP BY g HAVING COUNT(DISTINCT b, a) > 1
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+b 2
+
+statement ok
+/*ivm-append __SRC__: id=10,g=a,a=3,b=4,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, COUNT(DISTINCT b, a) FROM __SRC__ GROUP BY g HAVING COUNT(DISTINCT b, a) > 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 2

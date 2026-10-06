@@ -2088,6 +2088,17 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `cross_theta_join.slt`（bootstrap、payload 变化增删 pair、删除、条件变化 rebuild）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）295 个测试通过、0 失败。
 
+### 10.61 多列 COUNT(DISTINCT) 的 HAVING（PR-55）
+
+- **能力**：多列 distinct 视图支持 `HAVING COUNT(DISTINCT a, b) > n`（此前明确拒绝）；分组跨越阈值
+  时增量进入/离开 MV。
+- **analyzer**：`HavingColumns` 新增 `MultiDistinct { columns }`，`having_column` 精确匹配
+  `count(distinct <columns...>)` 并映射到 MV 的 `value` 列；多列分支改为调用 `render_having`。
+  `FILTER` 仍明确拒绝（与 recompute 家族一致）。
+- **测试**：analyzer（HAVING 渲染为 `value > 1`，FILTER 仍拒绝）、`multi_distinct.slt` 追加
+  HAVING 定义（rebuild）与分组跨阈值（incremental）。全量 IVM 套件（lib + 39 个集成测试二进制 +
+  doctest）295 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
