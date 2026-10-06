@@ -2055,6 +2055,16 @@ fn sqllogic_cross_join() {
 }
 
 #[test]
+fn sqllogic_global_sum() {
+    run_script_for_mv(
+        "globalsum",
+        include_str!("slt/global_sum.slt"),
+        avg_mv_schema_for(&source_schema(), &[], "v").unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
 fn sqllogic_set_ops() {
     let schema = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("k", DataType::Int64, false),

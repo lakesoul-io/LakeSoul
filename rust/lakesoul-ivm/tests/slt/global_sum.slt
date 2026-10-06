@@ -1,0 +1,86 @@
+# A global aggregate (no GROUP BY): the single MV row is recomputed over the
+# whole source.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIR rowsort
+SELECT sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+30 2 2 15.0
+
+# Updates change the aggregate.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=25,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIR rowsort
+SELECT sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+35 2 2 17.5
+
+# Deletes down to an empty source keep the single row with NULLs.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete; k=2,g=a,v=25,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIR rowsort
+SELECT sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+NULL 0 0 NULL
+
+# New rows revive the aggregate.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIR rowsort
+SELECT sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+50 1 1 50.0
+
+# A HAVING filters the single row out and back in.
+statement ok
+INSERT INTO __MV__ SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__ HAVING SUM(v) > 100
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIIR rowsort
+SELECT sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=80,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__ HAVING SUM(v) > 100
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIR rowsort
+SELECT sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+130 2 2 65.0
