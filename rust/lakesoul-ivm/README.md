@@ -285,7 +285,9 @@ the backlog):
 The crate has three test layers:
 
 * SQL entry end-to-end scripts (`tests/slt/*.slt`) driven by `tests/sqllogic.rs`;
-* differential oracles against full recomputes (`tests/sql_oracle.rs`);
+* differential oracles against full recomputes (`tests/sql_oracle.rs`),
+  including the join shapes (differently named inner keys, non-equality pair
+  conditions) and the filtered semi/anti and multi-column distinct views;
 * typed runtime tests (e.g. `tests/join_keyed.rs`, `tests/window_refresh.rs`);
 * typed coverage for `Float64` / `Decimal128` / `Date32` / `Boolean` inputs
   (`tests/slt/typed_*.slt` and `union_types.slt`), including NULL handling and

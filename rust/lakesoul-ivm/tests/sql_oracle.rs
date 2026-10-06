@@ -20,7 +20,8 @@ use lakesoul_ivm::{
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
     WindowGroupSpec, array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
+    distinct_agg_mv_schema_for, keyed_join_output_primary_keys,
+    keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
     multi_window_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
@@ -160,6 +161,40 @@ async fn run_oracle_with(
     reference: &str,
     mv_query: &str,
 ) {
+    run_oracle_seeded(
+        tag,
+        source_count,
+        schema,
+        nullable_values,
+        &[],
+        mv_schema,
+        mv_primary_keys,
+        definition,
+        reference,
+        mv_query,
+    )
+    .await;
+}
+
+/// One initial row of a seeded oracle: `(source index, key, group, value)`.
+type SeedRow = (usize, i64, &'static str, Option<i64>);
+
+/// Run a differential oracle with initial rows in the sources, so joins on
+/// keys or values that the random rounds would rarely produce still have
+/// matches.
+#[allow(clippy::too_many_arguments)]
+async fn run_oracle_seeded(
+    tag: &str,
+    source_count: usize,
+    schema: SchemaRef,
+    nullable_values: bool,
+    seed_rows: &[SeedRow],
+    mv_schema: SchemaRef,
+    mv_primary_keys: Vec<String>,
+    definition: &str,
+    reference: &str,
+    mv_query: &str,
+) {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -230,6 +265,15 @@ async fn run_oracle_with(
     let mut live: Vec<Vec<(i64, String, Option<i64>)>> = vec![Vec::new(); source_count];
     let mut next_key = 0i64;
     let mut mv_rows = 0usize;
+    for (source_index, key, group, value) in seed_rows {
+        let rows = vec![(*key, (*group).to_string(), *value, "insert")];
+        sources[*source_index]
+            .append_batch(executor.runtime().client(), batch(&rows, &schema))
+            .await
+            .unwrap();
+        live[*source_index].push((*key, (*group).to_string(), *value));
+        next_key = next_key.max(*key + 1);
+    }
 
     for round in 0..10 {
         let mutations = 1 + rng.range(3) as usize;
@@ -1364,6 +1408,113 @@ async fn oracle_union_all_where_matches_full_recompute() {
          UNION ALL SELECT k, g, v, 1 AS __ivm_source FROM __SRC1__ \
          WHERE op <> 'delete' AND g <> 'g2'",
         "SELECT k, g, v, __ivm_source FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_inner_join_names_matches_full_recompute() {
+    // A differently named inner join key (`a.k = b.v`); the MV keeps the left
+    // key name and both key columns stay out of the payloads.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(0i64)),
+        (0, 1, "g1", Some(1)),
+        (1, 2, "g0", Some(0)),
+        (1, 3, "g1", Some(1)),
+    ];
+    run_oracle_seeded(
+        "joininnames",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        keyed_join_view_schema_for(&schema, &schema, &keys, &keys, &keys, "g", "g")
+            .unwrap(),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.k, a.g, b.g FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.v",
+        "SELECT a.k, a.g, b.g, a.k AS lpk, b.k AS rpk FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.k = b.v \
+         WHERE a.op <> 'delete' AND b.op <> 'delete'",
+        "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_theta_join_matches_full_recompute() {
+    // An inner join with a non-equality pair condition and a side filter.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(50i64)),
+        (0, 1, "g1", Some(10)),
+        (1, 0, "g0", Some(20)),
+        (1, 1, "g1", Some(60)),
+    ];
+    run_oracle_seeded(
+        "thetajoin",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        keyed_join_view_schema_for(&schema, &schema, &keys, &keys, &keys, "v", "v")
+            .unwrap(),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.k, a.v, b.v FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
+         WHERE a.v > 20 AND a.v > b.v",
+        "SELECT a.k, a.v, b.v, a.k AS lpk, b.k AS rpk FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.k = b.k WHERE a.op <> 'delete' \
+         AND b.op <> 'delete' AND a.v > 20 AND a.v > b.v",
+        "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_distinct_matches_full_recompute() {
+    // The multi-column distinct count recomputes its affected groups. The
+    // reference cannot run the multi-argument aggregate (DataFusion does not
+    // execute it), so it counts the equivalent concatenated tuples.
+    let schema = source_schema();
+    run_oracle(
+        "multidistinct",
+        1,
+        distinct_agg_groups_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            "v",
+            DistinctAggKind::Count,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, COUNT(DISTINCT v, k) FROM __SRC__ GROUP BY g",
+        "SELECT g, COUNT(DISTINCT CAST(v AS VARCHAR) || '/' || CAST(k AS VARCHAR)) AS value \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_semi_anti_filters_matches_full_recompute() {
+    // Filters on both sides of an EXISTS subquery.
+    run_oracle(
+        "semifilters",
+        2,
+        semi_anti_mv_schema_for(&source_schema(), &["k".to_string(), "g".to_string()])
+            .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g FROM __SRC__ f WHERE f.v > 10 \
+         AND EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.g = f.g AND d.v > 10)",
+        "SELECT k, g FROM __SRC__ f WHERE f.op <> 'delete' AND f.v > 10 \
+         AND EXISTS (SELECT 1 FROM __SRC1__ d \
+                     WHERE d.op <> 'delete' AND d.g = f.g AND d.v > 10)",
+        "SELECT k, g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
