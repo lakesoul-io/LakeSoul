@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, ScalarValue, TableReference};
+use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue, TableReference};
 use datafusion::logical_expr::expr::{AggregateFunction, NullTreatment};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
@@ -2274,6 +2274,16 @@ fn analyze_join(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
+    // `INTERSECT`/`EXCEPT` plan as null-aware joins (a NULL row matches a
+    // NULL row), and `IS NOT DISTINCT FROM` predicates are null-aware too.
+    // The maintained joins compare with equality (a NULL key never matches)
+    // and the set operations also need the per-row match counts, so these
+    // shapes are rejected instead of silently producing different rows.
+    if join.null_equality == NullEquality::NullEqualsNull {
+        return Err(unsupported(
+            "INTERSECT/EXCEPT (or a null-aware join predicate) is not maintained",
+        ));
+    }
     // `FROM a, b` / `CROSS JOIN` plans as an inner join without an `ON`
     // clause; a residual filter would need a non-equi condition and stays
     // unsupported.
@@ -5875,6 +5885,31 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_set_operations() {
+        // INTERSECT/EXCEPT plan as null-aware semi/anti joins: the maintained
+        // semi/anti views match with equality and keep one row per left row,
+        // which differs from the set-operation semantics (NULL rows match,
+        // and the ALL variants count the matches on both sides).
+        for sql in [
+            "select k, v from src intersect select k, v from dim",
+            "select k, v from src except select k, v from dim",
+            "select k, v from src intersect all select k, v from dim",
+            "select k, v from src except all select k, v from dim",
+            "select a.k, b.v from src a join dim b \
+             on a.k is not distinct from b.k",
+            "select k from src where exists (select 1 from dim \
+             where dim.k is not distinct from src.k)",
+        ] {
+            let error =
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("INTERSECT/EXCEPT"), "{sql}: {error}");
+        }
     }
 
     #[tokio::test]

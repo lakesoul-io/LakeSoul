@@ -245,6 +245,12 @@ the backlog):
 * `CROSS JOIN` with a `WHERE` clause, three or more table joins, non-equality
   join keys, differently named keys outside the lookup `LEFT JOIN`, and
   multiple payload columns per side;
+* `INTERSECT`/`EXCEPT` (either the set operations or their `ALL` variants) and
+  null-aware join predicates (`IS NOT DISTINCT FROM`): both plan as
+  *null-aware* joins — a NULL row matches a NULL row, and the `ALL` variants
+  also count the matches on both sides — while the maintained joins compare
+  with equality and keep one row per left row, so the shapes are rejected
+  rather than silently returning different rows;
 * a join input with a `WHERE` clause (or a filtered derived table) outside an
   inner join or the left side of a lookup `LEFT JOIN`: the optimizer pushes
   the filter below the join and the analyzer rejects the shape instead of

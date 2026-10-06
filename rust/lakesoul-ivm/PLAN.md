@@ -2021,7 +2021,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （recompute 家族的全局聚合另属 backlog）；analyzer 测试同步更新 `rejects_unmaintained_shapes`。
 - **测试**：analyzer（spec 的 `value_columns`、HAVING/FILTER/全局拒绝）、
   `multi_distinct.slt`（bootstrap、重复元组、跨分组移动、元组坍缩、删除到空分组、分组回归、
-  定义变化 rebuild）。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）__COUNT__ 个测试通过、0 失败。
+  定义变化 rebuild）。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）286 个测试通过、0 失败。
+
+### 10.57 集合运算/空值感知 join 的明确拒绝（PR-51）
+
+- **背景（正确性修复）**：`INTERSECT ALL`/`EXCEPT ALL` 会被 DataFusion 计划为
+  `LeftSemi/LeftAnti Join`，与 `IN`/`EXISTS` 形状相同（此前 analyzer 会**静默按 semi/anti 维护**），
+  但语义不同：集合运算把 NULL 视为相等（`null_equality = NullEqualsNull`），且 `ALL` 变体需要
+  `min(cl, cr)` / `cl - cr` 的计数语义；`IS NOT DISTINCT FROM` 谓词同样计划为空值感知 join。
+  维护的 semi/anti 视图用等值比较（NULL 永不匹配）且每个左行保留一行，会给出**错误结果**。
+- **修复**：`analyze_join` 在任何 join 形状判断之前检查 `join.null_equality`，对
+  `NullEqualsNull` 明确报错（"INTERSECT/EXCEPT (or a null-aware join predicate) is not maintained"）。
+  该检查同时让 `INTERSECT`/`EXCEPT`（distinct，左输入为 Aggregate）在进入 `join_input` 之前获得
+  清晰错误。
+- **测试**：`rejects_set_operations` 覆盖 `INTERSECT`、`EXCEPT`、两个 `ALL` 变体、
+  `IS NOT DISTINCT FROM` 内连接与空值感知 `EXISTS`。
+- **backlog 更新**：集合运算若要支持需引入空值感知匹配（`IS NOT DISTINCT FROM`）与按行计数状态；
+  全局聚合（无 GROUP BY）目前在运行时被 "needs at least one group key" 明确拒绝，支持它需要
+  跨聚合家族改造（记录在案）。
+- **验证**：全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）287 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
