@@ -2099,6 +2099,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   HAVING 定义（rebuild）与分组跨阈值（incremental）。全量 IVM 套件（lib + 39 个集成测试二进制 +
   doctest）295 个测试通过、0 失败。
 
+### 10.62 INNER JOIN 异名连接键（PR-56）
+
+- **能力**：inner join 支持两侧键名不同（`ON f.dim_id = d.id`），此前仅 lookup LEFT JOIN 支持；
+  MV 输出保留左侧键名，两侧键列都不作为 payload。
+- **spec/typed**：`ViewSpec::Join`/`JoinView` 增加 `right_keys`（空=同名），typed builder `with_right_keys`；
+  `PairJoin` 携带 `right_keys`。
+- **analyzer**：Inner 分支不再拒绝异名键；payload 排除两侧键名（`key_names` 并集）；FULL JOIN 仍拒绝
+  （错误信息更新为「仅 inner join 与 lookup LEFT JOIN 支持」）。`analyzes_lookup_left_join` 的
+  「异名键被拒绝」断言改为 FULL JOIN 形态。
+- **运行时**：`keyed_join_projection` 与 `join_projection`（append-only）按 `right_keys` 投影右侧键列
+  （仍别名为 `__right_<左键名>`）；校验器按 `right_keys` 检查右侧列与类型（长度需与 `join_keys` 平行）。
+- **测试**：analyzer（异名 inner 的 join_keys/right_keys/payload；同名保持紧凑）、
+  `inner_join_names.slt`（bootstrap、事实键变更、维度键变更、删除、定义变化 rebuild）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）297 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

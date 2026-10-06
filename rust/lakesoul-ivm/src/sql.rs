@@ -2376,10 +2376,13 @@ fn analyze_join(
 
     match join.join_type {
         JoinType::Inner => {
-            if !same_names {
-                return Err(unsupported(
-                    "differently named join keys are only supported by a lookup LEFT JOIN",
-                ));
+            // Differently named keys join on both names but output the left
+            // ones; the right names are not payloads either.
+            let mut key_names = join_keys.clone();
+            for key in &right_keys {
+                if !key_names.contains(key) {
+                    key_names.push(key.clone());
+                }
             }
             let (left_value, right_value) = join_values(
                 projection,
@@ -2387,8 +2390,9 @@ fn analyze_join(
                 right_alias,
                 left,
                 right,
-                &join_keys,
+                &key_names,
             )?;
+            let right_keys = if same_names { Vec::new() } else { right_keys };
             let pair_filter = render_pair_conditions(
                 &conditions,
                 &left_value,
@@ -2401,6 +2405,7 @@ fn analyze_join(
                 right_table_id: right.table_id.clone(),
                 output_table_id: request.mv_table_id.clone(),
                 join_keys,
+                right_keys,
                 left_value,
                 right_value,
                 left_filter,
@@ -2457,7 +2462,8 @@ fn analyze_join(
             }
             if !same_names {
                 return Err(unsupported(
-                    "differently named join keys are only supported by a lookup LEFT JOIN",
+                    "differently named join keys are only supported by inner joins \
+                     and lookup LEFT JOINs",
                 ));
             }
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
@@ -5945,6 +5951,7 @@ mod tests {
                 right_table_id: "table_src".to_string(),
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
+                right_keys: Vec::new(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 left_filter: None,
@@ -5989,6 +5996,49 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_inner_join_with_right_key_names() {
+        // An inner join may use differently named keys; the output keeps the
+        // left names and neither key name is a payload.
+        let mut right = source_table("b");
+        right.primary_keys = vec!["rk".to_string()];
+        right.schema = Arc::new(Schema::new(vec![
+            Field::new("rk", DataType::Int64, false),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let analyzed = analyze_multi(
+            "select a.g, b.v from a join b on a.k = b.rk",
+            vec![source_table("a"), right],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            join_keys,
+            right_keys,
+            left_value,
+            right_value,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert_eq!(right_keys, vec!["rk".to_string()]);
+        assert_eq!(left_value, "g");
+        assert_eq!(right_value, "v");
+
+        // Same-named keys keep the compact form.
+        let analyzed =
+            analyze_optimized("select a.k, a.v, b.v from src a join src b on a.k = b.k")
+                .await
+                .unwrap();
+        let ViewSpec::Join { right_keys, .. } = analyzed.spec else {
+            panic!("expected an inner join spec");
+        };
+        assert!(right_keys.is_empty());
     }
 
     #[tokio::test]
@@ -6316,10 +6366,11 @@ mod tests {
         };
         assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
 
-        // Differently named keys are rejected elsewhere.
+        // Differently named keys are rejected outside inner joins and
+        // lookup LEFT JOINs.
         assert!(
             analyze_multi(
-                "select a.k, a.v, b.v from src a join dim b on a.k = b.rk",
+                "select a.k, a.v, b.v from src a full join dim b on a.k = b.rk",
                 vec![source_table("src"), names],
             )
             .await

@@ -64,7 +64,7 @@ used as row identities must be non-nullable.
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
-| Inner join | `JOIN` on equality keys, both sides keyed or both append-only, optional side filters and payload conditions | join keys, `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| Inner join | `JOIN` on equality keys (the two sides may name them differently), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name) | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates | `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, optional filters on the preserved side | as the inner join, with nullable unmatched identities |
@@ -105,8 +105,9 @@ Supported within the shapes above:
   l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`): the condition
   is evaluated on each joined pair, so a payload change adds or retracts the
   affected pairs;
-* a **lookup `LEFT JOIN`** may reference a differently named right key
-  (`ON fact.dim_id = dim.id`) and may filter the fact side
+* an **inner join** and a **lookup `LEFT JOIN`** may reference differently
+  named right keys (`ON fact.dim_id = dim.id`);
+* a **lookup `LEFT JOIN`** may filter the fact side
   (`WHERE fact.amount > 0`), as long as the right source is keyed by its side
   of the keys;
 * **CTEs and derived tables** that the planner can inline (`WITH ... SELECT`,
@@ -253,8 +254,8 @@ the backlog):
   explicitly. Supporting them needs a dedicated change (see the backlog);
 * three or more table joins, non-equality join conditions over columns other
   than the pair payloads (a pair carries `left_value` / `right_value`), join
-  keys outside the equality support, differently named keys outside the
-  lookup `LEFT JOIN`, and multiple payload columns per side;
+  keys outside the equality support, differently named keys outside inner
+  joins and the lookup `LEFT JOIN`, and multiple payload columns per side;
 * `INTERSECT`/`EXCEPT` (either the set operations or their `ALL` variants) and
   null-aware join predicates (`IS NOT DISTINCT FROM`): both plan as
   *null-aware* joins — a NULL row matches a NULL row, and the `ALL` variants
