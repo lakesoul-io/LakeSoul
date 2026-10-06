@@ -1997,6 +1997,32 @@ fn sqllogic_semi_anti() {
 }
 
 #[test]
+fn sqllogic_semi_anti_filter() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Int64, false),
+        arrow::datatypes::Field::new("x", DataType::Int64, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, false),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "semiantifilter",
+        include_str!("slt/semi_anti_filter.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", left.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", right.clone(), group_keys(&["rk"])),
+        ],
+        semi_anti_mv_schema_for(&left, &group_keys(&["k", "g", "x"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_cross_join() {
     let left = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("id", DataType::Int64, false),

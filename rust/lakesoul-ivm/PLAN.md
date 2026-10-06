@@ -2041,6 +2041,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   跨聚合家族改造（记录在案）。
 - **验证**：全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）287 个测试通过、0 失败。
 
+### 10.58 SEMI/ANTI JOIN 双侧过滤（PR-52）
+
+- **能力**：semi/anti（`EXISTS`/`NOT EXISTS`/`IN`）两侧都可带谓词：外层 `WHERE f.x > 1` 过滤左源，
+  子查询内的谓词（`d.rv > 10`）过滤右源；任一过滤的进入/离开都会使匹配生效或失效。
+- **analyzer**：`join_input` 扩展为可穿透**列裁剪的 `Projection`**（仅接受纯列投影，拒绝别名/
+  计算投影），且允许 `Projection`/`Filter` 任意交错；semi/anti 分支不再拒绝侧过滤，写入
+  `ViewSpec::SemiAnti` 的 `left_filter`/`right_filter`。副作用：带侧过滤的 CROSS JOIN 现在给出
+  「a join input with a WHERE clause ...」的准确错误（此前是 join input must be a table）。
+- **运行时**：`SemiAntiView` 增加过滤字段与 builder；刷新时两侧投影按需补上过滤列
+  （新 `filter_columns` 辅助从谓词提取列）；当前状态（`left_now`/`right_now`）应用过滤，
+  delta/as-of-before 不应用（作为受影响集的超集，安全）；重建同样过滤基线；校验解析谓词。
+- **测试**：analyzer（`analyzes_filtered_semi_anti_inputs`：EXISTS 与 IN 两侧过滤；
+  `rejects_filtered_join_inputs` 仅保留 CROSS JOIN 跨侧谓词）、`semi_anti_filter.slt`
+  （bootstrap、左/右行进入与离开过滤、键变更、右删除、过滤变化 rebuild + ANTI 变体）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）289 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
