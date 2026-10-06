@@ -82,7 +82,8 @@ Supported within the shapes above:
 * a **multi-column `COUNT(DISTINCT a, b)`** counts distinct tuples per group:
   the affected groups are recomputed from their current source rows (like the
   other unmergeable aggregates), so duplicates, updates and deletes move the
-  count; it needs a `GROUP BY` and does not support `HAVING` or `FILTER`;
+  count; it needs a `GROUP BY`, supports `HAVING` over the count and does not
+  support `FILTER`;
 * **ordering** may be a scalar expression in windows, TOP-K and the ordered
   aggregates (`ORDER BY v % 10`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
