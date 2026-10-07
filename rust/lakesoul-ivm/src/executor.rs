@@ -44,6 +44,7 @@ use crate::runtime::{
     string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
     union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
+    wide_join_view_schema_for, wide_keyed_join_view_schema_for,
     window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
@@ -827,18 +828,30 @@ fn expected_mv_schema(
             right_table_id,
             left_value,
             right_value,
+            output_columns,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            cross_join_view_schema_for(
-                &left.schema,
-                &right.schema,
-                &left.primary_keys,
-                &right.primary_keys,
-                left_value,
-                right_value,
-            )?
+            if output_columns.is_empty() {
+                cross_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    left_value,
+                    right_value,
+                )?
+            } else {
+                wide_keyed_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    &[],
+                    output_columns,
+                )?
+            }
         }
         ViewSpec::Join {
             left_table_id,
@@ -846,27 +859,52 @@ fn expected_mv_schema(
             join_keys,
             left_value,
             right_value,
+            output_columns,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
             match (left.primary_keys.is_empty(), right.primary_keys.is_empty()) {
-                (false, false) => keyed_join_view_schema_for(
-                    &left.schema,
-                    &right.schema,
-                    &left.primary_keys,
-                    &right.primary_keys,
-                    join_keys,
-                    left_value,
-                    right_value,
-                )?,
-                (true, true) => join_view_schema_for(
-                    &left.schema,
-                    &right.schema,
-                    join_keys,
-                    left_value,
-                    right_value,
-                )?,
+                (false, false) => {
+                    if output_columns.is_empty() {
+                        keyed_join_view_schema_for(
+                            &left.schema,
+                            &right.schema,
+                            &left.primary_keys,
+                            &right.primary_keys,
+                            join_keys,
+                            left_value,
+                            right_value,
+                        )?
+                    } else {
+                        wide_keyed_join_view_schema_for(
+                            &left.schema,
+                            &right.schema,
+                            &left.primary_keys,
+                            &right.primary_keys,
+                            join_keys,
+                            output_columns,
+                        )?
+                    }
+                }
+                (true, true) => {
+                    if output_columns.is_empty() {
+                        join_view_schema_for(
+                            &left.schema,
+                            &right.schema,
+                            join_keys,
+                            left_value,
+                            right_value,
+                        )?
+                    } else {
+                        wide_join_view_schema_for(
+                            &left.schema,
+                            &right.schema,
+                            join_keys,
+                            output_columns,
+                        )?
+                    }
+                }
                 _ => {
                     return Err(rootcause::report!(
                         "a join view needs both sources keyed or both append-only"

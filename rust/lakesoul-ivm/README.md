@@ -69,9 +69,9 @@ used as row identities must be non-nullable.
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
-| Inner join | `JOIN` on equality keys (the two sides may name them differently), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name) | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
-| CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates | `left_value`, `right_value`, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, optional filters on the preserved side | as the inner join, with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
@@ -137,6 +137,13 @@ Supported within the shapes above:
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
   its filter adds, retracts or NULL-pads its pairs;
+* **wide join outputs**: an inner join or a cross join may select more than
+  one column per side; each becomes an MV column under its select alias (or
+  source name), at least one column per side is required, and a non-equality
+  condition may compare any two materialized columns (`ON l.k = r.k AND
+  l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`); the compact
+  single-payload `left_value` / `right_value` shape stays for the outer and
+  lookup joins, and for one payload per side;
 * **non-equality join conditions over the payloads** (`ON l.k = r.k AND
   l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`): the condition
   is evaluated on each joined pair, so a payload change adds or retracts the
@@ -288,10 +295,11 @@ the backlog):
 * range-partitioned source tables: the reads do not carry the partition values
   through the IO layer yet, and the join / row / union / TOP-K views reject them
   explicitly. Supporting them needs a dedicated change (see the backlog);
-* three or more table joins, non-equality join conditions over columns other
-  than the pair payloads (a pair carries `left_value` / `right_value`), join
-  keys outside the equality support, differently named keys outside inner
-  joins and the lookup `LEFT JOIN`, and multiple payload columns per side;
+* three or more table joins, non-equality join conditions over columns that
+  the join does not materialize (a pair carries `left_value` / `right_value`
+  or the wide output columns), join keys outside the equality support,
+  differently named keys outside inner joins and the lookup `LEFT JOIN`, and
+  multiple payload columns per side for the outer and lookup joins;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: they plan as *null-aware* joins — a NULL row
   matches a NULL row, and the `ALL` variants also count the matches on both

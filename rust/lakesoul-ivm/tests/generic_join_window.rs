@@ -14,7 +14,8 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IVM_ROW_NUMBER_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
-    JoinView, WindowView, join_view_schema_for, window_mv_schema_for,
+    JoinOutputColumn, JoinSide, JoinView, WindowView, join_view_schema_for,
+    wide_join_view_schema_for, window_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -513,4 +514,290 @@ async fn window_with_string_partition_and_order_keys() {
         .await
         .unwrap();
     drop(dir);
+}
+
+fn wide_left_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Utf8, false),
+        Field::new("sub", DataType::Utf8, false),
+        Field::new("lv", DataType::Utf8, false),
+        Field::new("ln", DataType::Int32, false),
+    ]))
+}
+
+fn wide_right_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Utf8, false),
+        Field::new("sub", DataType::Utf8, false),
+        Field::new("rv", DataType::Int32, false),
+        Field::new("rn", DataType::Int32, false),
+    ]))
+}
+
+fn wide_left_batch(rows: &[(&str, &str, &str, i32)]) -> RecordBatch {
+    RecordBatch::try_new(
+        wide_left_schema(),
+        vec![
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(Int32Array::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+fn wide_right_batch(rows: &[(&str, &str, i32, i32)]) -> RecordBatch {
+    RecordBatch::try_new(
+        wide_right_schema(),
+        vec![
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(Int32Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(Int32Array::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+async fn wide_join_rows(
+    runtime: &IvmRuntime,
+    output: &IvmTable,
+) -> Vec<(String, String, String, i32, i32, i32)> {
+    let mut rows = Vec::new();
+    for batch in output.read_current(runtime.client()).await.unwrap() {
+        let text = |index: usize| {
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+        };
+        let int = |index: usize| {
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+        };
+        for row in 0..batch.num_rows() {
+            rows.push((
+                text(0).value(row).to_string(),
+                text(1).value(row).to_string(),
+                text(2).value(row).to_string(),
+                int(3).value(row),
+                int(4).value(row),
+                int(5).value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn wide_append_only_join_with_multiple_payloads() {
+    // More than one payload column per side materializes the select columns in
+    // the MV; the append-only inclusion-exclusion delta still yields
+    // `L_now ⋈ R_now`.
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let left = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_wide_join_left_{suffix}"),
+            table_path(&dir, "left"),
+            wide_left_schema(),
+        ))
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_wide_join_right_{suffix}"),
+            table_path(&dir, "right"),
+            wide_right_schema(),
+        ))
+        .await
+        .unwrap();
+    let join_keys = vec!["k".to_string(), "sub".to_string()];
+    let output_columns = vec![
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: "lv".to_string(),
+            name: "lv".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: "ln".to_string(),
+            name: "ln".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: "rv".to_string(),
+            name: "rv".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: "rn".to_string(),
+            name: "rn".to_string(),
+        },
+    ];
+    let output = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_wide_join_out_{suffix}"),
+            table_path(&dir, "out"),
+            wide_join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &join_keys,
+                &output_columns,
+            )
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let view = JoinView::new_with_join_keys(
+        format!("wide_join_{suffix}"),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        join_keys,
+        "lv",
+        "rv",
+    )
+    .with_output_columns(output_columns);
+
+    left.append_batch(
+        runtime.client(),
+        wide_left_batch(&[
+            ("a", "x", "L1", 1),
+            ("a", "y", "L2", 2),
+            ("b", "x", "L3", 3),
+        ]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert!(wide_join_rows(&runtime, &output).await.is_empty());
+
+    right
+        .append_batch(
+            runtime.client(),
+            wide_right_batch(&[("a", "x", 10, 100), ("b", "x", 30, 300)]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        wide_join_rows(&runtime, &output).await,
+        vec![
+            (
+                "a".to_string(),
+                "x".to_string(),
+                "L1".to_string(),
+                1,
+                10,
+                100
+            ),
+            (
+                "b".to_string(),
+                "x".to_string(),
+                "L3".to_string(),
+                3,
+                30,
+                300
+            ),
+        ]
+    );
+
+    // A left delta joins the right state before the window.
+    left.append_batch(runtime.client(), wide_left_batch(&[("a", "x", "L4", 4)]))
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        wide_join_rows(&runtime, &output).await,
+        vec![
+            (
+                "a".to_string(),
+                "x".to_string(),
+                "L1".to_string(),
+                1,
+                10,
+                100
+            ),
+            (
+                "a".to_string(),
+                "x".to_string(),
+                "L4".to_string(),
+                4,
+                10,
+                100
+            ),
+            (
+                "b".to_string(),
+                "x".to_string(),
+                "L3".to_string(),
+                3,
+                30,
+                300
+            ),
+        ]
+    );
+
+    // A right delta without a match adds nothing.
+    right
+        .append_batch(runtime.client(), wide_right_batch(&[("c", "x", 40, 400)]))
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(wide_join_rows(&runtime, &output).await.len(), 3);
+
+    // Both deltas in one window are covered by the delta-times-delta term.
+    left.append_batch(runtime.client(), wide_left_batch(&[("b", "y", "L6", 6)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), wide_right_batch(&[("b", "y", 60, 600)]))
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        wide_join_rows(&runtime, &output).await,
+        vec![
+            (
+                "a".to_string(),
+                "x".to_string(),
+                "L1".to_string(),
+                1,
+                10,
+                100
+            ),
+            (
+                "a".to_string(),
+                "x".to_string(),
+                "L4".to_string(),
+                4,
+                10,
+                100
+            ),
+            (
+                "b".to_string(),
+                "x".to_string(),
+                "L3".to_string(),
+                3,
+                30,
+                300
+            ),
+            (
+                "b".to_string(),
+                "y".to_string(),
+                "L6".to_string(),
+                6,
+                60,
+                600
+            ),
+        ]
+    );
 }

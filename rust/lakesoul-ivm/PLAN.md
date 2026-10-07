@@ -2288,6 +2288,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （18 个函数对全量重算，逐组一致）、GROUPING oracle。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）345 个测试通过、0 失败。
 
+### 10.75 宽投影 join（每侧多列 payload）（PR-69）
+
+- **spec/typed 扩展**：`JoinSide`/`JoinOutputColumn { side, column, name }`；`ViewSpec::Join` /
+  `ViewSpec::CrossJoin`、`JoinView`/`CrossJoinView` 新增 `output_columns`（空 = 既有紧凑形态
+  `left_value`/`right_value`，完全向后兼容）；`PairJoin` 增加 `output_columns`（Left/Full 传空）。
+- **投影**：宽形态下中间列为 `__left_<name>`/`__right_<name>`，最终输出按选择顺序物化为 `name`
+  （取 SELECT 别名，否则源列名）；紧凑形态逐字节不变。键位对齐（`keyed_join_output_columns`）、
+  schema（`wide_join_view_schema_for` / `wide_keyed_join_view_schema_for`）、校验
+  （`wide_output_fields`、`validate_wide_pair_filter`）与执行器期望 schema 同步；DELETE/重放/rebuild
+  逻辑不感知 payload，无需改动。
+- **analyzer**：`join_payloads` 统一分类 SELECT 列表（跳过 join 键、解析侧别、别名做列名），
+  单侧 1 列走紧凑、其余走宽；投影被优化器裁剪时（`Projection` 消失）用 `DFSchema` 限定字段名
+  重建（`join_payloads_from_fields`，内连接因此也支持该形态）；每侧至少一列、列名唯一（运行期
+  再兜底），宽形态的非等值条件渲染为 `"__left_x" < "__right_y"`（`render_wide_pair_conditions`）。
+- **范围**：内连接（keyed + append-only）与 CROSS JOIN 支持宽投影；LEFT/FULL/RIGHT/lookup 暂保持
+  紧凑形态（明确报“one payload column”类错误）。
+- **测试**：analyzer（宽内连接列名/顺序/pair filter、宽 cross、每侧缺列拒绝）、`wide_join.slt` 与
+  `cross_join_wide.slt`（增删改与重建）、`generic_join_window` 追加 append-only 宽 join（三个
+  inclusion-exclusion 项各覆盖）、`oracle_wide_inner_join_matches_full_recompute`（带侧过滤的逐轮差分）。
+  README 形状表/限制清单同步。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）351 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

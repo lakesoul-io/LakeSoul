@@ -328,6 +328,10 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source.
         right_value: String,
+        /// The wide output columns beyond the join keys; empty means the
+        /// compact `left_value` / `right_value` shape.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_columns: Vec<JoinOutputColumn>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -335,7 +339,8 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
         /// An optional filter over the joined pair's payload columns
-        /// (`left_value` / `right_value`), for non-equality join conditions.
+        /// (`left_value` / `right_value` or the wide output columns), for
+        /// non-equality join conditions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pair_filter: Option<String>,
     },
@@ -383,6 +388,10 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source.
         right_value: String,
+        /// The wide output columns; empty means the compact
+        /// `left_value` / `right_value` shape.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_columns: Vec<JoinOutputColumn>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -390,7 +399,7 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
         /// An optional filter over the joined pair's payload columns
-        /// (`left_value` / `right_value`), for cross-side join predicates.
+        /// (or the wide output columns), for cross-side join predicates.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pair_filter: Option<String>,
     },
@@ -1213,6 +1222,28 @@ pub fn sum_count_mv_schema(group_key: &str) -> SchemaRef {
     ]))
 }
 
+/// Which side of a join an output column comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinSide {
+    /// The left (driving) source.
+    Left,
+    /// The right source.
+    Right,
+}
+
+/// One payload column of a wide join output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinOutputColumn {
+    /// The source side the column comes from.
+    pub side: JoinSide,
+    /// The source column name.
+    pub column: String,
+    /// The materialized view column name (the select alias, or the source
+    /// column name).
+    pub name: String,
+}
+
 /// An inner equi-join view over two append-only sources.
 ///
 /// The output is append-only: as long as both sides only grow, every joined
@@ -1247,6 +1278,8 @@ pub struct JoinView {
     /// An optional filter over the joined pair's payload columns
     /// (`left_value` / `right_value`); non-equality join conditions.
     pub pair_filter: Option<String>,
+    /// The wide output columns; empty means the compact payload shape.
+    pub output_columns: Vec<JoinOutputColumn>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1292,6 +1325,7 @@ impl JoinView {
             right_keys: Vec::new(),
             left_value: left_value.into(),
             right_value: right_value.into(),
+            output_columns: Vec::new(),
             left_filter: None,
             right_filter: None,
             pair_filter: None,
@@ -1317,6 +1351,12 @@ impl JoinView {
         self
     }
 
+    /// Materialize a wide output instead of the single payload per side.
+    pub fn with_output_columns(mut self, output_columns: Vec<JoinOutputColumn>) -> Self {
+        self.output_columns = output_columns;
+        self
+    }
+
     /// Only joined pairs matching `filter` (over `left_value` /
     /// `right_value`) contribute to the view.
     pub fn with_pair_filter(mut self, filter: impl Into<String>) -> Self {
@@ -1334,6 +1374,7 @@ impl JoinView {
             right_keys: self.right_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             pair_filter: self.pair_filter.clone(),
@@ -1507,6 +1548,131 @@ pub fn cross_join_view_schema_for(
         right_field.data_type().clone(),
         right_field.is_nullable(),
     )));
+    for key in left_primary_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            left_pk_alias(key),
+            field.data_type().clone(),
+            false,
+        )));
+    }
+    for key in right_primary_keys {
+        let field = right_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            right_pk_alias(key),
+            field.data_type().clone(),
+            false,
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The fields of a wide join output, in order.
+fn wide_output_fields(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    output_columns: &[JoinOutputColumn],
+) -> Result<Vec<Arc<Field>>> {
+    let mut names = std::collections::HashSet::new();
+    let mut fields = Vec::with_capacity(output_columns.len());
+    for column in output_columns {
+        if !names.insert(column.name.as_str()) {
+            return Err(report!(
+                "join output column {} is materialized twice",
+                column.name
+            ));
+        }
+        let schema = match column.side {
+            JoinSide::Left => left_schema,
+            JoinSide::Right => right_schema,
+        };
+        let field = schema.field_with_name(&column.column).map_err(|_| {
+            report!(
+                "join output column {} is not in the {} source",
+                column.column,
+                match column.side {
+                    JoinSide::Left => "left",
+                    JoinSide::Right => "right",
+                }
+            )
+        })?;
+        fields.push(Arc::new(Field::new(
+            column.name.clone(),
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+    }
+    Ok(fields)
+}
+
+/// The schema of a wide append-only [`JoinView`] output: the join keys, the
+/// wide output columns and the epoch.
+pub fn wide_join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    join_keys: &[String],
+    output_columns: &[JoinOutputColumn],
+) -> Result<SchemaRef> {
+    let mut fields = Vec::new();
+    for key in join_keys {
+        fields.push(Arc::new(Field::new(
+            key,
+            field_type(left_schema, key)?,
+            false,
+        )));
+    }
+    fields.extend(wide_output_fields(
+        left_schema,
+        right_schema,
+        output_columns,
+    )?);
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a wide keyed [`JoinView`] or [`CrossJoinView`] output: the
+/// join keys, the wide output columns, both row identities, the row kind and
+/// the epoch.
+pub fn wide_keyed_join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+    join_keys: &[String],
+    output_columns: &[JoinOutputColumn],
+) -> Result<SchemaRef> {
+    if left_primary_keys.is_empty() || right_primary_keys.is_empty() {
+        return Err(report!(
+            "a keyed join view needs primary keys on both sources"
+        ));
+    }
+    let mut fields = Vec::new();
+    for key in join_keys {
+        fields.push(Arc::new(Field::new(
+            key,
+            field_type(left_schema, key)?,
+            false,
+        )));
+    }
+    fields.extend(wide_output_fields(
+        left_schema,
+        right_schema,
+        output_columns,
+    )?);
     for key in left_primary_keys {
         let field = left_schema.field_with_name(key)?;
         fields.push(Arc::new(Field::new(
@@ -1876,6 +2042,7 @@ impl FullJoinView {
             right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
+            output_columns: &[],
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
@@ -1920,6 +2087,8 @@ pub struct CrossJoinView {
     /// An optional filter over the joined pair's payload columns
     /// (`left_value` / `right_value`); cross-side predicates.
     pub pair_filter: Option<String>,
+    /// The wide output columns; empty means the compact payload shape.
+    pub output_columns: Vec<JoinOutputColumn>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1941,6 +2110,7 @@ impl CrossJoinView {
             output,
             left_value: left_value.into(),
             right_value: right_value.into(),
+            output_columns: Vec::new(),
             left_filter: None,
             right_filter: None,
             pair_filter: None,
@@ -1960,6 +2130,12 @@ impl CrossJoinView {
         self
     }
 
+    /// Materialize a wide output instead of the single payload per side.
+    pub fn with_output_columns(mut self, output_columns: Vec<JoinOutputColumn>) -> Self {
+        self.output_columns = output_columns;
+        self
+    }
+
     /// Only joined pairs matching `filter` (over `left_value` /
     /// `right_value`) contribute to the view.
     pub fn with_pair_filter(mut self, filter: impl Into<String>) -> Self {
@@ -1975,6 +2151,7 @@ impl CrossJoinView {
             output_table_id: self.output.table_id.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             pair_filter: self.pair_filter.clone(),
@@ -1987,6 +2164,7 @@ impl CrossJoinView {
             right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
+            output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: self.pair_filter.as_deref(),
@@ -2370,6 +2548,9 @@ fn validate_cross_join_view(view: &CrossJoinView) -> Result<()> {
             )
         })?;
     }
+    if !view.output_columns.is_empty() {
+        wide_output_fields(&view.left.schema, &view.right.schema, &view.output_columns)?;
+    }
     if view.left_filter.is_some() || view.right_filter.is_some() {
         let context = SessionContext::new();
         if let Some(filter) = &view.left_filter {
@@ -2380,13 +2561,22 @@ fn validate_cross_join_view(view: &CrossJoinView) -> Result<()> {
         }
     }
     if let Some(filter) = &view.pair_filter {
-        validate_pair_filter(
-            &view.left,
-            &view.left_value,
-            &view.right,
-            &view.right_value,
-            filter,
-        )?;
+        if view.output_columns.is_empty() {
+            validate_pair_filter(
+                &view.left,
+                &view.left_value,
+                &view.right,
+                &view.right_value,
+                filter,
+            )?;
+        } else {
+            validate_wide_pair_filter(
+                &view.left,
+                &view.right,
+                &view.output_columns,
+                filter,
+            )?;
+        }
     }
     Ok(())
 }
@@ -6775,6 +6965,7 @@ impl IvmRuntime {
                 right_keys,
                 left_value,
                 right_value,
+                output_columns,
                 left_filter,
                 right_filter,
                 pair_filter,
@@ -6787,6 +6978,7 @@ impl IvmRuntime {
                 right_keys: right_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 pair_filter: pair_filter.clone(),
@@ -6861,6 +7053,7 @@ impl IvmRuntime {
                 output_table_id,
                 left_value,
                 right_value,
+                output_columns,
                 left_filter,
                 right_filter,
                 pair_filter,
@@ -6871,6 +7064,7 @@ impl IvmRuntime {
                 output: self.open_table_by_id(output_table_id).await?,
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 pair_filter: pair_filter.clone(),
@@ -12552,6 +12746,33 @@ fn validate_pair_filter(
     Ok(())
 }
 
+/// Validate a pair filter over a wide join's output columns; the filter
+/// references the intermediate `__left_*` / `__right_*` names.
+fn validate_wide_pair_filter(
+    left: &IvmTable,
+    right: &IvmTable,
+    output_columns: &[JoinOutputColumn],
+    filter: &str,
+) -> Result<()> {
+    let mut fields = Vec::with_capacity(output_columns.len());
+    for column in output_columns {
+        let (schema, alias) = match column.side {
+            JoinSide::Left => {
+                (&left.schema, join_side_alias(JoinSide::Left, &column.name))
+            }
+            JoinSide::Right => (
+                &right.schema,
+                join_side_alias(JoinSide::Right, &column.name),
+            ),
+        };
+        fields.push(Field::new(alias, field_type(schema, &column.column)?, true));
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let context = SessionContext::new();
+    parse_filter(&context, &schema, filter)?;
+    Ok(())
+}
+
 /// Validate that a join view can be maintained.
 fn validate_join_view(view: &JoinView) -> Result<()> {
     if view.join_keys.is_empty() {
@@ -12600,8 +12821,12 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
             ));
         }
     }
-    field_type(&view.left.schema, &view.left_value)?;
-    field_type(&view.right.schema, &view.right_value)?;
+    if view.output_columns.is_empty() {
+        field_type(&view.left.schema, &view.left_value)?;
+        field_type(&view.right.schema, &view.right_value)?;
+    } else {
+        wide_output_fields(&view.left.schema, &view.right.schema, &view.output_columns)?;
+    }
 
     if join_is_keyed(view) {
         if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
@@ -12627,15 +12852,26 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
                 }
             }
         }
-        let expected = keyed_join_view_schema_for(
-            &view.left.schema,
-            &view.right.schema,
-            &view.left.primary_keys,
-            &view.right.primary_keys,
-            &view.join_keys,
-            &view.left_value,
-            &view.right_value,
-        )?;
+        let expected = if view.output_columns.is_empty() {
+            keyed_join_view_schema_for(
+                &view.left.schema,
+                &view.right.schema,
+                &view.left.primary_keys,
+                &view.right.primary_keys,
+                &view.join_keys,
+                &view.left_value,
+                &view.right_value,
+            )?
+        } else {
+            wide_keyed_join_view_schema_for(
+                &view.left.schema,
+                &view.right.schema,
+                &view.left.primary_keys,
+                &view.right.primary_keys,
+                &view.join_keys,
+                &view.output_columns,
+            )?
+        };
         for field in expected.fields() {
             let actual =
                 view.output
@@ -12677,13 +12913,22 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
         ));
     }
     if let Some(filter) = &view.pair_filter {
-        validate_pair_filter(
-            &view.left,
-            &view.left_value,
-            &view.right,
-            &view.right_value,
-            filter,
-        )?;
+        if view.output_columns.is_empty() {
+            validate_pair_filter(
+                &view.left,
+                &view.left_value,
+                &view.right,
+                &view.right_value,
+                filter,
+            )?;
+        } else {
+            validate_wide_pair_filter(
+                &view.left,
+                &view.right,
+                &view.output_columns,
+                filter,
+            )?;
+        }
     }
     Ok(())
 }
@@ -12700,6 +12945,19 @@ fn effective_right_keys<'a>(parts: &'a PairJoin<'_>) -> &'a [String] {
     } else {
         parts.right_keys
     }
+}
+
+/// The intermediate column name of a wide join output on one side.
+pub(crate) fn join_side_alias(side: JoinSide, name: &str) -> String {
+    match side {
+        JoinSide::Left => format!("__left_{name}"),
+        JoinSide::Right => format!("__right_{name}"),
+    }
+}
+
+/// The intermediate name of a wide output column in a pair filter.
+pub(crate) fn wide_pair_alias(column: &JoinOutputColumn) -> String {
+    quote_ident(&join_side_alias(column.side, &column.name))
 }
 
 /// Apply a pair filter (over `left_value` / `right_value`) to the joined
@@ -12723,6 +12981,7 @@ fn join_projection(
     right: DataFrame,
     view: &JoinView,
 ) -> Result<DataFrame> {
+    let wide = !view.output_columns.is_empty();
     let left_keys = view
         .join_keys
         .iter()
@@ -12741,10 +13000,36 @@ fn join_projection(
             .collect::<Vec<_>>()
     };
     let mut left_columns = left_keys.clone();
-    left_columns.push(col(view.left_value.as_str()).alias("left_value"));
+    if wide {
+        for column in view
+            .output_columns
+            .iter()
+            .filter(|column| column.side == JoinSide::Left)
+        {
+            left_columns.push(
+                col(column.column.as_str())
+                    .alias(join_side_alias(JoinSide::Left, &column.name)),
+            );
+        }
+    } else {
+        left_columns.push(col(view.left_value.as_str()).alias("left_value"));
+    }
     let left = left.select(left_columns)?;
     let mut right_columns = right_keys;
-    right_columns.push(col(view.right_value.as_str()).alias("right_value"));
+    if wide {
+        for column in view
+            .output_columns
+            .iter()
+            .filter(|column| column.side == JoinSide::Right)
+        {
+            right_columns.push(
+                col(column.column.as_str())
+                    .alias(join_side_alias(JoinSide::Right, &column.name)),
+            );
+        }
+    } else {
+        right_columns.push(col(view.right_value.as_str()).alias("right_value"));
+    }
     let right = right.select(right_columns)?;
 
     let key_names = view
@@ -12769,8 +13054,17 @@ fn join_projection(
         .iter()
         .map(|key| col(key.as_str()))
         .collect::<Vec<_>>();
-    output.push(col("left_value"));
-    output.push(col("right_value"));
+    if wide {
+        for column in &view.output_columns {
+            output.push(
+                col(join_side_alias(column.side, &column.name).as_str())
+                    .alias(column.name.as_str()),
+            );
+        }
+    } else {
+        output.push(col("left_value"));
+        output.push(col("right_value"));
+    }
     Ok(joined.select(output)?)
 }
 
@@ -12812,12 +13106,26 @@ fn keyed_join_projection(
     join_type: JoinType,
     keys_from_right: bool,
 ) -> Result<DataFrame> {
+    let wide = !parts.output_columns.is_empty();
     let mut left_columns = parts
         .join_keys
         .iter()
         .map(|key| col(key.as_str()))
         .collect::<Vec<_>>();
-    left_columns.push(col(parts.left_value).alias("left_value"));
+    if wide {
+        for column in parts
+            .output_columns
+            .iter()
+            .filter(|column| column.side == JoinSide::Left)
+        {
+            left_columns.push(
+                col(column.column.as_str())
+                    .alias(join_side_alias(JoinSide::Left, &column.name)),
+            );
+        }
+    } else {
+        left_columns.push(col(parts.left_value).alias("left_value"));
+    }
     for key in parts.left_primary_keys {
         left_columns.push(col(key.as_str()).alias(left_pk_alias(key)));
     }
@@ -12828,7 +13136,20 @@ fn keyed_join_projection(
         .zip(parts.join_keys.iter())
         .map(|(right, left)| col(right.as_str()).alias(format!("__right_{left}")))
         .collect::<Vec<_>>();
-    right_columns.push(col(parts.right_value).alias("right_value"));
+    if wide {
+        for column in parts
+            .output_columns
+            .iter()
+            .filter(|column| column.side == JoinSide::Right)
+        {
+            right_columns.push(
+                col(column.column.as_str())
+                    .alias(join_side_alias(JoinSide::Right, &column.name)),
+            );
+        }
+    } else {
+        right_columns.push(col(parts.right_value).alias("right_value"));
+    }
     for key in parts.right_primary_keys {
         right_columns.push(col(key.as_str()).alias(right_pk_alias(key)));
     }
@@ -12875,8 +13196,17 @@ fn keyed_join_projection(
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>()
     };
-    output.push(col("left_value"));
-    output.push(col("right_value"));
+    if wide {
+        for column in parts.output_columns {
+            output.push(
+                col(join_side_alias(column.side, &column.name).as_str())
+                    .alias(column.name.as_str()),
+            );
+        }
+    } else {
+        output.push(col("left_value"));
+        output.push(col("right_value"));
+    }
     for key in parts.left_primary_keys {
         output.push(col(left_pk_alias(key)));
     }
@@ -12895,8 +13225,14 @@ fn keyed_join_output_columns(
         .iter()
         .map(|key| col(key.as_str()))
         .collect::<Vec<_>>();
-    output.push(col("left_value"));
-    output.push(col("right_value"));
+    if parts.output_columns.is_empty() {
+        output.push(col("left_value"));
+        output.push(col("right_value"));
+    } else {
+        for column in parts.output_columns {
+            output.push(col(column.name.as_str()));
+        }
+    }
     for key in parts.left_primary_keys {
         output.push(col(left_pk_alias(key).as_str()));
     }
@@ -12913,6 +13249,8 @@ struct PairJoin<'a> {
     right_keys: &'a [String],
     left_value: &'a str,
     right_value: &'a str,
+    /// The wide output columns; empty means the compact payload shape.
+    output_columns: &'a [JoinOutputColumn],
     left_primary_keys: &'a [String],
     right_primary_keys: &'a [String],
     /// An optional filter over `left_value` / `right_value` the joined pair
@@ -12927,6 +13265,7 @@ impl JoinView {
             right_keys: &self.right_keys,
             left_value: &self.left_value,
             right_value: &self.right_value,
+            output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: self.pair_filter.as_deref(),
@@ -12941,6 +13280,7 @@ impl LeftJoinView {
             right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
+            output_columns: &[],
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,

@@ -1,0 +1,81 @@
+# A wide inner join materializes several columns per side under their select
+# names (plus the hidden pair identities).
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=10,lv=100,op=insert; id=2,jk=20,lv=200,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=5,rk=10,rv=1,op=insert; rid=6,rk=30,rv=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, f.id, r.rv AS rv, r.rid AS rid FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIIIII rowsort
+SELECT jk, lv, id, rv, rid, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 100 1 1 5 1 5
+
+# A fact key change moves its pair.
+statement ok
+/*ivm-append __SRC__: id=2,jk=30,lv=200,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, f.id, r.rv AS rv, r.rid AS rid FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT jk, lv, id, rv, rid, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 100 1 1 5 1 5
+30 200 2 3 6 2 6
+
+# A dimension payload change rewrites its pair.
+statement ok
+/*ivm-append __SRC2__: rid=6,rk=30,rv=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, f.id, r.rv AS rv, r.rid AS rid FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT jk, lv, id, rv, rid, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 100 1 1 5 1 5
+30 200 2 7 6 2 6
+
+# A delete retracts the row's pairs.
+statement ok
+/*ivm-append __SRC__: id=1,jk=10,lv=100,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, f.id, r.rv AS rv, r.rid AS rid FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT jk, lv, id, rv, rid, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+30 200 2 7 6 2 6
+
+# A filtered definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: id=3,jk=30,lv=300,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT f.jk, f.lv, f.id, r.rv AS rv, r.rid AS rid FROM __SRC__ f JOIN __SRC2__ r ON f.jk = r.rk WHERE f.lv > 250
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIIIIII rowsort
+SELECT jk, lv, id, rv, rid, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+30 300 3 7 6 3 6
