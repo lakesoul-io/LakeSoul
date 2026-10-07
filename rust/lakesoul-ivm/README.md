@@ -62,6 +62,7 @@ used as row identities must be non-nullable.
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
 | BOOL_AND / BOOL_OR | `SELECT k, BOOL_AND(flag) FROM src GROUP BY k` over a Boolean column or expression | keys, `bool_and_<v>` / `bool_or_<v>` (`bool_and_value` for expressions), kinds, epoch |
+| APPROX_DISTINCT | `SELECT k, APPROX_DISTINCT(v) FROM src GROUP BY k` | keys, `approx_distinct_<v>` (`approx_distinct_value` for expressions, `UInt64`), kinds, epoch |
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
@@ -83,6 +84,9 @@ Supported within the shapes above:
   every set, so a row moving in or out of a set (including the grand total)
   updates it; only `SUM`/`COUNT`/`AVG` over plain key columns and keyed
   sources are maintained;
+* **`APPROX_DISTINCT`**: the affected groups are recomputed from their
+  current rows, and DataFusion's sketch update is order independent, so the
+  estimate is consistent with a full rebuild;
 * **`BOOL_AND` / `BOOL_OR`** over booleans (a column or an expression such as
   `flag OR backup`): the affected groups are recomputed from their current
   rows, so NULL inputs are ignored exactly like DataFusion's implementation;

@@ -39,8 +39,8 @@ use crate::runtime::{
     BoolAggKind, CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
     IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
     MinMaxKind, SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
-    WindowFunction, WindowGroupSpec, bool_agg_output_column, string_agg_output_column,
-    union_output_schema_for,
+    WindowFunction, WindowGroupSpec, approx_distinct_output_column,
+    bool_agg_output_column, string_agg_output_column, union_output_schema_for,
 };
 use crate::table::IvmTable;
 
@@ -405,6 +405,8 @@ enum HavingColumns<'a> {
     Variance { statistic: VarianceKind },
     /// `median_v` for a median view.
     Median,
+    /// `approx_distinct_<value>` for an APPROX_DISTINCT view.
+    ApproxDistinct { value: &'a AggValue },
     /// `bool_and_<value>` / `bool_or_<value>` for a BOOL_AND/BOOL_OR view.
     BoolAgg {
         kind: BoolAggKind,
@@ -675,6 +677,23 @@ fn having_column(
                 .unwrap_or(false);
             if name == "string_agg" && same_value && same_delimiter && same_order {
                 Ok(string_agg_output_column(match value {
+                    AggValue::Column(column) => Some(column.as_str()),
+                    AggValue::Expr(_) => None,
+                }))
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::ApproxDistinct { .. } if function_filter.is_some() => {
+            Err(not_materialized(name))
+        }
+        HavingColumns::ApproxDistinct { value } => {
+            if name == "approx_distinct"
+                && !function.params.distinct
+                && function.params.args.len() == 1
+                && value_matches(value, false)
+            {
+                Ok(approx_distinct_output_column(match value {
                     AggValue::Column(column) => Some(column.as_str()),
                     AggValue::Expr(_) => None,
                 }))
@@ -1284,6 +1303,7 @@ fn analyze_aggregate(
     let mut avg: Option<AggValue> = None;
     let mut variance: Option<(VarianceKind, AggValue)> = None;
     let mut bool_agg: Option<(BoolAggKind, AggValue)> = None;
+    let mut approx_distinct: Option<AggValue> = None;
     let mut median: Option<AggValue> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
@@ -1361,6 +1381,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1391,6 +1412,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1417,6 +1439,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                 {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
@@ -1443,6 +1466,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1467,6 +1491,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1492,6 +1517,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1521,6 +1547,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1541,6 +1568,30 @@ fn analyze_aggregate(
                 variance = Some((statistic, value));
                 aggregate_filters.push((name, function_filter, false));
             }
+            ("approx_distinct", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                    || string_agg.is_some()
+                    || array_agg.is_some()
+                    || bool_agg.is_some()
+                    || approx_distinct.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                let [arg] = function.params.args.as_slice() else {
+                    return Err(unsupported(
+                        "approx_distinct takes exactly one argument",
+                    ));
+                };
+                let value = value_argument(arg, &hoisted_exprs, false)?;
+                approx_distinct = Some(value);
+                aggregate_filters.push((name, function_filter, false));
+            }
             ("bool_and", false) | ("bool_or", false) => {
                 if count
                     || sum.is_some()
@@ -1552,6 +1603,7 @@ fn analyze_aggregate(
                     || string_agg.is_some()
                     || array_agg.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1576,6 +1628,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1595,6 +1648,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1627,6 +1681,7 @@ fn analyze_aggregate(
                     || variance.is_some()
                     || median.is_some()
                     || bool_agg.is_some()
+                    || approx_distinct.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1702,6 +1757,7 @@ fn analyze_aggregate(
             || variance.is_some()
             || median.is_some()
             || bool_agg.is_some()
+            || approx_distinct.is_some()
             || min_max.is_some()
             || distinct.is_some())
     {
@@ -1783,6 +1839,13 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some(value) = &approx_distinct {
+        render_having(
+            having_exprs,
+            HavingColumns::ApproxDistinct { value },
+            aggregate,
+            &group_keys,
+        )?
     } else if let Some((kind, value)) = &bool_agg {
         render_having(
             having_exprs,
@@ -1825,6 +1888,22 @@ fn analyze_aggregate(
             value_column,
             value_expr,
             statistic,
+            filter,
+            having,
+        }
+    } else if let Some(value) = approx_distinct {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
+        ViewSpec::ApproxDistinct {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            group_exprs,
+            value_column,
+            value_expr,
             filter,
             having,
         }
@@ -6528,6 +6607,56 @@ mod tests {
             )
             .await
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_approx_distinct() {
+        let analyzed =
+            analyze_optimized("select g, approx_distinct(v) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::ApproxDistinct { value_column, .. } = analyzed.spec else {
+            panic!("expected an approx-distinct spec");
+        };
+        assert_eq!(value_column.as_deref(), Some("v"));
+
+        // HAVING maps to the derived column.
+        let analyzed = analyze_optimized(
+            "select g, approx_distinct(v) from src group by g \
+             having approx_distinct(v) > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::ApproxDistinct { having, .. } = analyzed.spec else {
+            panic!("expected an approx-distinct spec");
+        };
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("approx_distinct_v > 1")
+        );
+
+        // A value expression is kept.
+        let analyzed =
+            analyze_optimized("select g, approx_distinct(v * 2) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::ApproxDistinct {
+            value_column,
+            value_expr,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an approx-distinct spec");
+        };
+        assert!(value_column.is_none());
+        assert!(value_expr.is_some());
+
+        // Mixing with other aggregates is rejected.
+        assert!(
+            analyze_optimized("select g, approx_distinct(v), sum(v) from src group by g")
+                .await
+                .is_err()
         );
     }
 

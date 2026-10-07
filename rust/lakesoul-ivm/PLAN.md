@@ -2243,6 +2243,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   进出）随机差分 oracle；多轮多种子深跑（`ROUNDS=30`，5 个种子）未再发现其它问题。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）334 个测试通过、0 失败。
 
+### 10.72 APPROX_DISTINCT（PR-66）
+
+- **能力**：`APPROX_DISTINCT(v)`（列或表达式，可带 WHERE/HAVING，含无 GROUP BY 的全局形态）分组维护；
+  沿用 recompute 家族。DataFusion 的 HLL sketch 更新与行序无关，因此增量（按受影响分组重算）与全量
+  rebuild 的结果**完全一致**（多个种子 oracle 验证；小基数下估计恰好精确）。
+- **spec/typed/schema**：`ViewSpec::ApproxDistinct` + `ApproxDistinctView`、`approx_distinct_output_column`
+  （`approx_distinct_<v>`/`approx_distinct_value`）、`approx_distinct_mv_schema_for`/`_groups_`（UInt64，
+  可空以容纳全 NULL 分组）；`HavingColumns::ApproxDistinct` 映射 HAVING；执行器/分发/导出同步。
+- **测试**：analyzer（列/表达式、HAVING 映射、与其它聚合混用拒绝）、`approx_distinct.slt`
+  （bootstrap、新值上升、删除下降、过滤定义 rebuild）、随机差分 oracle（多种子）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）337 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

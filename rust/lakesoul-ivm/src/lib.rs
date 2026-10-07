@@ -91,8 +91,8 @@ pub use metadata::{
 };
 pub use provider::{IvmReadMode, IvmTableProvider};
 pub use runtime::{
-    ArrayAggView, BoolAggKind, BoolAggView, CompareOp, CrossJoinView, DistinctAggKind,
-    DistinctAggView, FullJoinView, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
+    ApproxDistinctView, ArrayAggView, BoolAggKind, BoolAggView, CompareOp, CrossJoinView,
+    DistinctAggKind, DistinctAggView, FullJoinView, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
     IVM_CUME_DIST_COLUMN, IVM_DENSE_RANK_COLUMN, IVM_FIRST_VALUE_COLUMN,
     IVM_GROUPING_COLUMN, IVM_LAG_COLUMN, IVM_LAST_VALUE_COLUMN, IVM_LEAD_COLUMN,
     IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_NTH_VALUE_COLUMN, IVM_NTILE_COLUMN,
@@ -102,7 +102,8 @@ pub use runtime::{
     MinMaxKind, MinMaxView, MultiWindowView, RowView, SemiAntiCondition, SemiAntiView,
     StringAggView, SumCountView, TopKView, UnionAllView, UnionDistinctView, UnionSource,
     UnionSourceSpec, ValueResultKind, VarianceKind, VarianceView, ViewSpec, WindowColumn,
-    WindowFunction, WindowGroupSpec, WindowView, array_agg_column,
+    WindowFunction, WindowGroupSpec, WindowView, approx_distinct_groups_mv_schema_for,
+    approx_distinct_mv_schema_for, approx_distinct_output_column, array_agg_column,
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, array_agg_output_column, avg_mv_schema_for,
     bool_agg_groups_mv_schema_for, bool_agg_mv_schema_for, bool_agg_output_column,
