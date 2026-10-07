@@ -16,10 +16,11 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
-    MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
-    WindowGroupSpec, array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
-    array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_groups_mv_schema_for,
+    BoolAggKind, DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor,
+    IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
+    WindowFunction, WindowGroupSpec, array_agg_expr_mv_schema_for,
+    array_agg_groups_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
+    bool_agg_groups_mv_schema_for, distinct_agg_groups_mv_schema_for,
     distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
@@ -1761,6 +1762,31 @@ async fn oracle_grouping_sets_matches_full_recompute() {
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY ROLLUP(g)",
         "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_bool_agg_matches_full_recompute() {
+    // A grouped BOOL_AND over a derived boolean expression, recomputed from
+    // the affected groups.
+    run_oracle(
+        "boolagg",
+        1,
+        bool_agg_groups_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            None,
+            Some("(v > 1)"),
+            BoolAggKind::BoolAnd,
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, BOOL_AND(v > 1) FROM __SRC__ WHERE v > 10 GROUP BY g",
+        "SELECT g, BOOL_AND(v > 1) AS flag FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 10 GROUP BY g",
+        "SELECT g, bool_and_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

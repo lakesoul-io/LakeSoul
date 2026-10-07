@@ -29,11 +29,12 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor,
-    IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, WindowGroupSpec, array_agg_mv_schema_for, avg_mv_schema_for,
-    cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, full_join_view_schema_for, grouping_sets_mv_schema_for,
+    BoolAggKind, DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime,
+    IvmSqlExecutor, IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind,
+    WindowColumn, WindowFunction, WindowGroupSpec, array_agg_mv_schema_for,
+    avg_mv_schema_for, bool_agg_mv_schema_for, cross_join_view_schema_for,
+    distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
+    full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
@@ -2072,6 +2073,49 @@ fn sqllogic_global_distinct() {
         distinct_agg_mv_schema_for(&source_schema(), &[], "v", DistinctAggKind::Count)
             .unwrap(),
         Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_bool_agg() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("flag", DataType::Boolean, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_source(
+        "boolagg",
+        include_str!("slt/bool_agg.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        bool_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            "flag",
+            BoolAggKind::BoolAnd,
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_bool_or() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("flag", DataType::Boolean, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_source(
+        "boolor",
+        include_str!("slt/bool_or.slt"),
+        schema.clone(),
+        group_keys(&["k"]),
+        bool_agg_mv_schema_for(&schema, &group_keys(&["g"]), "flag", BoolAggKind::BoolOr)
+            .unwrap(),
+        group_keys(&["g"]),
     );
 }
 

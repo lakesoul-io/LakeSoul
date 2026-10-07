@@ -1,0 +1,64 @@
+# BOOL_OR over a Boolean column.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,flag=true,op=insert; k=2,g=a,flag=false,op=insert; k=3,g=b,flag=false,op=insert; k=4,g=b,flag=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, BOOL_OR(flag) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query T? rowsort
+SELECT g, bool_or_flag FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a true
+b false
+
+# An update flips the group.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,flag=true,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, BOOL_OR(flag) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query T? rowsort
+SELECT g, bool_or_flag FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a true
+b true
+
+# Removing the only true value flips the group back.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,flag=true,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, BOOL_OR(flag) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query T? rowsort
+SELECT g, bool_or_flag FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a false
+b true
+
+# A filtered definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: k=5,g=c,flag=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, BOOL_OR(flag) FROM __SRC__ WHERE flag IS NOT NULL GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query T? rowsort
+SELECT g, bool_or_flag FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a false
+b true
