@@ -1,0 +1,46 @@
+# Global SUM(DISTINCT v); the value column is nullable, so this uses its own
+# MV schema.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=10,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(DISTINCT v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+30
+
+# Deleting the last copy of a value drops it from the sum.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(DISTINCT v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10
+
+# The empty source keeps the NULL row.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete; k=2,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT SUM(DISTINCT v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+NULL

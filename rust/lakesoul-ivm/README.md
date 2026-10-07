@@ -56,8 +56,8 @@ used as row identities must be non-nullable.
 | Projection / filter | `SELECT [expr AS c, ...] FROM src [WHERE p]` | projected columns, `rowKinds`, `__ivm_epoch` |
 | SELECT DISTINCT | `SELECT DISTINCT c, ... FROM src [WHERE p]` | the distinct columns, `count_v`, kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
-| MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k` | keys, `value`, kinds, epoch (+ value-count state table) |
-| COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
+| MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k`; without a `GROUP BY` a global MIN/MAX | keys, `value`, kinds, epoch (+ value-count state table) |
+| COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; globally without a `GROUP BY`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
@@ -75,9 +75,10 @@ used as row identities must be non-nullable.
 
 Supported within the shapes above:
 
-* **global aggregates**: `SELECT SUM(v), COUNT(*), AVG(v) FROM src` without a
-  `GROUP BY` keeps a single-row MV that is recomputed on every refresh (the
-  other aggregate families still need a `GROUP BY`);
+* **global aggregates**: `SUM`/`COUNT`/`AVG`, `MIN`/`MAX` and
+  `COUNT(DISTINCT)`/`SUM(DISTINCT)` without a `GROUP BY` keep a single-row MV
+  that is recomputed on every refresh (the variance, median and ordered
+  aggregate families still need a `GROUP BY`);
 * **group keys** may be scalar expressions with a `SELECT` alias
   (`SELECT v % 10 AS bucket, SUM(v) ... GROUP BY bucket`);
 * **aggregate arguments** may be scalar expressions for all value aggregates,

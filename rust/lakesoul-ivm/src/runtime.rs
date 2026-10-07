@@ -8883,7 +8883,8 @@ impl IvmRuntime {
         &self,
         view: &ValueCountView<'_>,
     ) -> Result<Option<i64>> {
-        if view.group_exprs.is_empty() {
+        // An empty key list is a global aggregate over the whole source.
+        if view.group_exprs.is_empty() && !view.group_keys.is_empty() {
             validate_group_keys(view.source, view.group_keys, view.view_id)?;
         }
         group_key_fields(&view.source.schema, view.group_keys, view.group_exprs)?;
@@ -8909,6 +8910,33 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+
+        if view.group_keys.is_empty() {
+            // A global aggregate has no groups to prune and its MV is a
+            // single row without a primary key, so the aggregate is
+            // recomputed over the current source and the MV is rewritten
+            // wholesale.
+            let context = SessionContext::new();
+            register_table(
+                &context,
+                "src",
+                view.source.read_current(&self.client).await?,
+                &view.source.schema,
+            )?;
+            view.mv.truncate(&self.client).await?;
+            let sql = value_count_global_sql(view, epoch);
+            for batch in context.sql(&sql).await?.collect().await? {
+                if batch.num_rows() > 0 {
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+            let mv_versions = output_partition_versions(&self.client, view.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            self.advance_cursors(view.view_id, window.cursors).await?;
+            return Ok(Some(epoch));
+        }
 
         let context = SessionContext::new();
         let delta_batches = project_group_keys(
@@ -10196,7 +10224,8 @@ impl IvmRuntime {
     /// Both the value-count state table and the MV are truncated and refilled
     /// from the current source state, published as `rebuild:<generation>`.
     async fn rebuild_value_count(&self, view: &ValueCountView<'_>) -> Result<i64> {
-        if view.group_exprs.is_empty() {
+        // An empty key list is a global aggregate over the whole source.
+        if view.group_exprs.is_empty() && !view.group_keys.is_empty() {
             validate_group_keys(view.source, view.group_keys, view.view_id)?;
         }
         group_key_fields(&view.source.schema, view.group_keys, view.group_exprs)?;
@@ -10235,6 +10264,33 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+
+        if view.group_keys.is_empty() {
+            // A global aggregate is recomputed over the baseline into the
+            // single MV row (the state table stays empty).
+            let context = SessionContext::new();
+            register_table(
+                &context,
+                "src",
+                view.source.read_current(&self.client).await?,
+                &view.source.schema,
+            )?;
+            let sql = value_count_global_sql(view, epoch);
+            for batch in context.sql(&sql).await?.collect().await? {
+                if batch.num_rows() > 0 {
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+            let mv_versions = output_partition_versions(&self.client, view.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            self.advance_cursors(view.view_id, baseline.cursors).await?;
+            self.metadata
+                .set_view_status(view.view_id, "active")
+                .await?;
+            return Ok(epoch);
+        }
 
         let context = SessionContext::new();
         let baseline_batches = project_group_keys(
@@ -11292,6 +11348,32 @@ fn key_join_condition_null_safe(left: &str, right: &str, keys: &[String]) -> Str
 
 /// The rendered value of a value-count view: a quoted column or a stored
 /// expression.
+/// The recompute SQL of a global `MIN`/`MAX`/`DISTINCT` view: one row over
+/// the whole current source.
+fn value_count_global_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
+    let value = value_count_value_sql(view);
+    let aggregate = match view.agg {
+        ValueAgg::Min => format!("min({value})"),
+        ValueAgg::Max => format!("max({value})"),
+        ValueAgg::DistinctCount => format!("count(distinct {value})"),
+        ValueAgg::DistinctSum => format!("sum(distinct {value})"),
+    };
+    let src_where = format!(
+        "{}{}",
+        source_delete_filter("src", change_column(view.source)),
+        filter_clause(view.filter),
+    );
+    let row = format!(
+        "select {aggregate} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from src where {src_where}",
+        quote_ident(IVM_VALUE_COLUMN),
+    );
+    match view.having {
+        Some(having) => format!("select * from ({row}) t where {having}"),
+        None => row,
+    }
+}
+
 fn value_count_value_sql(view: &ValueCountView<'_>) -> String {
     view.value_expr
         .map(str::to_string)
