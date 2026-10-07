@@ -40,7 +40,8 @@ use crate::runtime::{
     IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
     MinMaxKind, SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
     WindowFunction, WindowGroupSpec, approx_distinct_output_column,
-    bool_agg_output_column, string_agg_output_column, union_output_schema_for,
+    approx_percentile_output_column, bool_agg_output_column, string_agg_output_column,
+    union_output_schema_for,
 };
 use crate::table::IvmTable;
 
@@ -407,6 +408,11 @@ enum HavingColumns<'a> {
     Median,
     /// `approx_distinct_<value>` for an APPROX_DISTINCT view.
     ApproxDistinct { value: &'a AggValue },
+    /// `approx_percentile_cont_<value>` for an APPROX_PERCENTILE_CONT view.
+    ApproxPercentile {
+        value: &'a AggValue,
+        percentile: &'a str,
+    },
     /// `bool_and_<value>` / `bool_or_<value>` for a BOOL_AND/BOOL_OR view.
     BoolAgg {
         kind: BoolAggKind,
@@ -677,6 +683,34 @@ fn having_column(
                 .unwrap_or(false);
             if name == "string_agg" && same_value && same_delimiter && same_order {
                 Ok(string_agg_output_column(match value {
+                    AggValue::Column(column) => Some(column.as_str()),
+                    AggValue::Expr(_) => None,
+                }))
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::ApproxPercentile { .. } if function_filter.is_some() => {
+            Err(not_materialized(name))
+        }
+        HavingColumns::ApproxPercentile { value, percentile } => {
+            // The aggregate takes two arguments, so compare the value and the
+            // percentile separately.
+            let first_matches = function.params.args.first().is_some_and(|arg| {
+                value_argument(arg, hoisted, true)
+                    .map(|parsed| parsed == *value)
+                    .unwrap_or(false)
+            });
+            let percentile_matches = function.params.args.get(1).is_some_and(|p| {
+                render_filter(p).is_ok_and(|rendered| rendered == *percentile)
+            });
+            let matches = name == "approx_percentile_cont"
+                && !function.params.distinct
+                && function.params.args.len() == 2
+                && first_matches
+                && percentile_matches;
+            if matches {
+                Ok(approx_percentile_output_column(match value {
                     AggValue::Column(column) => Some(column.as_str()),
                     AggValue::Expr(_) => None,
                 }))
@@ -1304,6 +1338,7 @@ fn analyze_aggregate(
     let mut variance: Option<(VarianceKind, AggValue)> = None;
     let mut bool_agg: Option<(BoolAggKind, AggValue)> = None;
     let mut approx_distinct: Option<AggValue> = None;
+    let mut approx_percentile: Option<(AggValue, String)> = None;
     let mut median: Option<AggValue> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
@@ -1382,6 +1417,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1413,6 +1449,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1440,6 +1477,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                 {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
@@ -1467,6 +1505,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1492,6 +1531,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1518,6 +1558,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1548,6 +1589,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1568,6 +1610,38 @@ fn analyze_aggregate(
                 variance = Some((statistic, value));
                 aggregate_filters.push((name, function_filter, false));
             }
+            ("approx_percentile_cont", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                    || string_agg.is_some()
+                    || array_agg.is_some()
+                    || bool_agg.is_some()
+                    || approx_distinct.is_some()
+                    || approx_percentile.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                let [arg, percentile] = function.params.args.as_slice() else {
+                    return Err(unsupported(
+                        "approx_percentile_cont takes a value and a percentile",
+                    ));
+                };
+                if !matches!(percentile, Expr::Literal(..)) {
+                    return Err(unsupported(
+                        "APPROX_PERCENTILE_CONT needs a literal percentile",
+                    ));
+                }
+                // The planner coerces the value to Float64; drop that cast like
+                // SUM/AVG so a plain column stays a column.
+                let value = sum_value_argument(arg, &hoisted_exprs)?;
+                approx_percentile = Some((value, render_filter(percentile)?));
+                aggregate_filters.push((name, function_filter, false));
+            }
             ("approx_distinct", false) => {
                 if count
                     || sum.is_some()
@@ -1580,6 +1654,7 @@ fn analyze_aggregate(
                     || array_agg.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1604,6 +1679,7 @@ fn analyze_aggregate(
                     || array_agg.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1629,6 +1705,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1649,6 +1726,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1682,6 +1760,7 @@ fn analyze_aggregate(
                     || median.is_some()
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
+                    || approx_percentile.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1758,6 +1837,7 @@ fn analyze_aggregate(
             || median.is_some()
             || bool_agg.is_some()
             || approx_distinct.is_some()
+            || approx_percentile.is_some()
             || min_max.is_some()
             || distinct.is_some())
     {
@@ -1839,6 +1919,13 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some((value, percentile)) = &approx_percentile {
+        render_having(
+            having_exprs,
+            HavingColumns::ApproxPercentile { value, percentile },
+            aggregate,
+            &group_keys,
+        )?
     } else if let Some(value) = &approx_distinct {
         render_having(
             having_exprs,
@@ -1888,6 +1975,23 @@ fn analyze_aggregate(
             value_column,
             value_expr,
             statistic,
+            filter,
+            having,
+        }
+    } else if let Some((value, percentile)) = approx_percentile {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
+        ViewSpec::ApproxPercentile {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            group_exprs,
+            value_column,
+            value_expr,
+            percentile,
             filter,
             having,
         }
@@ -6604,6 +6708,58 @@ mod tests {
             analyze_optimized(
                 "select a.k, a.v, b.v from src a join src b \
                  on a.k = b.k and a.g < b.g",
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_approx_percentile() {
+        let analyzed = analyze_optimized(
+            "select g, approx_percentile_cont(v, 0.5) from src group by g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::ApproxPercentile {
+            percentile,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an approx-percentile spec");
+        };
+        assert_eq!(percentile, "0.5");
+        assert_eq!(value_column.as_deref(), Some("v"));
+
+        // HAVING maps to the derived column.
+        let analyzed = analyze_optimized(
+            "select g, approx_percentile_cont(v, 0.5) from src group by g \
+             having approx_percentile_cont(v, 0.5) > 10.0",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::ApproxPercentile { having, .. } = analyzed.spec else {
+            panic!("expected an approx-percentile spec");
+        };
+        assert!(
+            having
+                .as_deref()
+                .is_some_and(|having| having.contains("approx_percentile_cont_v")),
+            "{having:?}"
+        );
+
+        // The percentile must be a literal and mixing is rejected.
+        assert!(
+            analyze_optimized(
+                "select g, approx_percentile_cont(v, v) from src group by g"
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            analyze_optimized(
+                "select g, approx_percentile_cont(v, 0.5), sum(v) from src group by g"
             )
             .await
             .is_err()

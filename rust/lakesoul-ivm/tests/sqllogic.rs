@@ -32,9 +32,10 @@ use lakesoul_ivm::{
     BoolAggKind, DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime,
     IvmSqlExecutor, IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind,
     WindowColumn, WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
-    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
-    cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, full_join_view_schema_for, grouping_sets_mv_schema_for,
+    approx_percentile_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
+    bool_agg_mv_schema_for, cross_join_view_schema_for,
+    distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
+    full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
@@ -2073,6 +2074,17 @@ fn sqllogic_global_distinct() {
         distinct_agg_mv_schema_for(&source_schema(), &[], "v", DistinctAggKind::Count)
             .unwrap(),
         Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_approx_percentile() {
+    run_script_for_mv(
+        "approxpercentile",
+        include_str!("slt/approx_percentile.slt"),
+        approx_percentile_mv_schema_for(&source_schema(), &group_keys(&["g"]), "v")
+            .unwrap(),
+        group_keys(&["g"]),
     );
 }
 

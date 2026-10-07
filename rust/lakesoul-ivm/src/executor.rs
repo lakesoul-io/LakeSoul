@@ -34,14 +34,15 @@ use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
     IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, approx_distinct_groups_mv_schema_for,
-    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
-    cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
-    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_for,
-    keyed_join_view_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
-    median_groups_mv_schema_for, min_max_groups_mv_schema_for,
-    multi_window_mv_schema_for, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
+    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
+    bool_agg_groups_mv_schema_for, cross_join_view_schema_for,
+    distinct_agg_groups_mv_schema_for, full_join_view_schema_for,
+    grouping_sets_mv_schema_for, join_view_schema_for, keyed_join_view_schema_for,
+    left_join_view_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
+    min_max_groups_mv_schema_for, multi_window_mv_schema_for, row_expr_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
     window_columns_mv_schema_for,
 };
@@ -717,6 +718,20 @@ fn expected_mv_schema(
             value_expr,
             ..
         } => approx_distinct_groups_mv_schema_for(
+            &find_table(tables, source_table_id)?.schema,
+            group_keys,
+            group_exprs,
+            value_column.as_deref(),
+            value_expr.as_deref(),
+        )?,
+        ViewSpec::ApproxPercentile {
+            source_table_id,
+            group_keys,
+            group_exprs,
+            value_column,
+            value_expr,
+            ..
+        } => approx_percentile_groups_mv_schema_for(
             &find_table(tables, source_table_id)?.schema,
             group_keys,
             group_exprs,

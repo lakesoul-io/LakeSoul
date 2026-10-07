@@ -2255,6 +2255,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap、新值上升、删除下降、过滤定义 rebuild）、随机差分 oracle（多种子）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）337 个测试通过、0 失败。
 
+### 10.73 APPROX_PERCENTILE_CONT（PR-67）
+
+- **能力**：`APPROX_PERCENTILE_CONT(v, p)`（p 为字面量；列或表达式；可带 WHERE/HAVING）分组维护，沿用
+  recompute 家族。t-digest 与 HLL 一样与行序无关（探针验证：升序/降序/打乱结果一致；多种子 oracle
+  与全量重算逐组一致）。
+- **spec/typed/schema**：`ViewSpec::ApproxPercentile` + `ApproxPercentileView`、
+  `approx_percentile_output_column`（`approx_percentile_cont_<v>`）、`approx_percentile_mv_schema_for`/
+  `_groups_`（Float64 可空）；analyzer 剥离优化器的 Float64 数值强制转换（与 SUM/AVG 一致，参数保持
+  列名）；`HavingColumns::ApproxPercentile` 分别比较取值与百分位字面量；执行器/分发/导出同步。
+- **测试**：analyzer（字面量校验、HAVING 映射、非字面量与被混用拒绝）、`approx_percentile.slt`
+  （bootstrap、大值上移中位数、过滤定义 rebuild）、随机差分 oracle（多种子）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）340 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

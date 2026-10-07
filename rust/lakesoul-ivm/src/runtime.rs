@@ -641,6 +641,38 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// `group_key`, `APPROX_PERCENTILE_CONT(value, percentile)` over the
+    /// source rows; the statistic is recomputed from the affected groups.
+    ApproxPercentile {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
+        /// The value column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_column: Option<String>,
+        /// A rendered value expression; mutually exclusive with
+        /// `value_column`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
+        /// The rendered percentile literal (e.g. `0.5`).
+        percentile: String,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// `STRING_AGG(value, delimiter ORDER BY keys)` over a source, maintained
     /// by recomputing the affected groups.
     StringAgg {
@@ -892,6 +924,7 @@ impl ViewSpec {
             | ViewSpec::Median { view_id, .. }
             | ViewSpec::BoolAgg { view_id, .. }
             | ViewSpec::ApproxDistinct { view_id, .. }
+            | ViewSpec::ApproxPercentile { view_id, .. }
             | ViewSpec::StringAgg { view_id, .. }
             | ViewSpec::ArrayAgg { view_id, .. }
             | ViewSpec::Join { view_id, .. }
@@ -920,6 +953,7 @@ impl ViewSpec {
             ViewSpec::Median { .. } => "median",
             ViewSpec::BoolAgg { .. } => "bool_agg",
             ViewSpec::ApproxDistinct { .. } => "approx_distinct",
+            ViewSpec::ApproxPercentile { .. } => "approx_percentile",
             ViewSpec::StringAgg { .. } => "string_agg",
             ViewSpec::ArrayAgg { .. } => "array_agg",
             ViewSpec::Join { .. } => "join",
@@ -948,6 +982,7 @@ enum SpecView {
     Median(MedianView),
     BoolAgg(BoolAggView),
     ApproxDistinct(ApproxDistinctView),
+    ApproxPercentile(ApproxPercentileView),
     StringAgg(StringAggView),
     ArrayAgg(ArrayAggView),
     Join(JoinView),
@@ -3340,6 +3375,203 @@ pub fn approx_distinct_mv_schema_for(
     value_column: &str,
 ) -> Result<SchemaRef> {
     approx_distinct_groups_mv_schema_for(
+        source_schema,
+        group_keys,
+        &[],
+        Some(value_column),
+        None,
+    )
+}
+
+/// The derived column of an [`ApproxPercentileView`] materialized view.
+pub fn approx_percentile_output_column(value_column: Option<&str>) -> String {
+    match value_column {
+        Some(column) => format!("approx_percentile_cont_{column}"),
+        None => "approx_percentile_cont_value".to_string(),
+    }
+}
+
+/// An `APPROX_PERCENTILE_CONT(value, percentile)` view over a source table.
+///
+/// The statistic is recomputed from the affected groups' current rows like
+/// the other unmergeable aggregates; DataFusion's sketch update is order
+/// independent, so the result matches a full rebuild.
+#[derive(Debug, Clone)]
+pub struct ApproxPercentileView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the statistic.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to [`Self::group_keys`].
+    pub group_exprs: Vec<String>,
+    /// The value column; `None` when the argument is an expression.
+    pub value_column: Option<String>,
+    /// The rendered value expression.
+    pub value_expr: Option<String>,
+    /// The percentile (a SQL float literal such as `0.5`).
+    pub percentile: String,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized column.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl ApproxPercentileView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+        percentile: impl Into<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys: vec![group_key.into()],
+            group_exprs: Vec::new(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
+            percentile: percentile.into(),
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        percentile: impl Into<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            group_exprs: Vec::new(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
+            percentile: percentile.into(),
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    /// Aggregate over a rendered scalar expression.
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::ApproxPercentile {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
+            value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
+            percentile: self.percentile.clone(),
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
+            aggregate_call: format!(
+                "approx_percentile_cont({}, {})",
+                aggregate_value_sql(
+                    self.value_column.as_deref(),
+                    self.value_expr.as_deref()
+                ),
+                self.percentile
+            ),
+            column: approx_percentile_output_column(self.value_column.as_deref()),
+            distinct_columns: None,
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        }
+    }
+}
+
+/// The schema of an [`ApproxPercentileView`] materialized view with optional
+/// group and value expressions. The approximate percentile is a `Float64`
+/// (nullable because an empty group has no percentile).
+pub fn approx_percentile_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+) -> Result<SchemaRef> {
+    aggregate_value_type(source_schema, value_column, value_expr)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
+    fields.push(Arc::new(Field::new(
+        approx_percentile_output_column(value_column),
+        DataType::Float64,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of an [`ApproxPercentileView`] materialized view deriving the
+/// types from the source schema.
+pub fn approx_percentile_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+) -> Result<SchemaRef> {
+    approx_percentile_groups_mv_schema_for(
         source_schema,
         group_keys,
         &[],
@@ -6452,6 +6684,30 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::ApproxPercentile {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                group_exprs,
+                value_column,
+                value_expr,
+                percentile,
+                filter,
+                having,
+            } => SpecView::ApproxPercentile(ApproxPercentileView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
+                value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
+                percentile: percentile.clone(),
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::StringAgg {
                 view_id,
                 source_table_id,
@@ -6656,6 +6912,9 @@ impl IvmRuntime {
             Ok(SpecView::ApproxDistinct(view)) => {
                 self.refresh_approx_distinct(&view).await
             }
+            Ok(SpecView::ApproxPercentile(view)) => {
+                self.refresh_approx_percentile(&view).await
+            }
             Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
             Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
@@ -6697,6 +6956,9 @@ impl IvmRuntime {
             Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
             Ok(SpecView::ApproxDistinct(view)) => {
                 self.rebuild_approx_distinct(&view).await
+            }
+            Ok(SpecView::ApproxPercentile(view)) => {
+                self.rebuild_approx_percentile(&view).await
             }
             Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
             Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
@@ -7477,6 +7739,51 @@ impl IvmRuntime {
         view: &ApproxDistinctView,
     ) -> Result<i64> {
         self.register_approx_distinct_view(view).await?;
+        aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
+    /// Persist an approximate-percentile view spec (idempotent).
+    pub async fn register_approx_percentile_view(
+        &self,
+        view: &ApproxPercentileView,
+    ) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh an `APPROX_PERCENTILE_CONT` view.
+    pub async fn refresh_approx_percentile(
+        &self,
+        view: &ApproxPercentileView,
+    ) -> Result<Option<i64>> {
+        self.register_approx_percentile_view(view).await?;
+        aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Rebuild an `APPROX_PERCENTILE_CONT` view from the full source state.
+    pub async fn rebuild_approx_percentile(
+        &self,
+        view: &ApproxPercentileView,
+    ) -> Result<i64> {
+        self.register_approx_percentile_view(view).await?;
         aggregate_value_type(
             &view.source.schema,
             view.value_column.as_deref(),

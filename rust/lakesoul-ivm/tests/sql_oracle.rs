@@ -19,13 +19,14 @@ use lakesoul_ivm::{
     BoolAggKind, DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor,
     IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
-    array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
-    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
-    distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
-    grouping_sets_mv_schema_for, keyed_join_output_primary_keys,
-    keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_window_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    approx_percentile_mv_schema_for, array_agg_expr_mv_schema_for,
+    array_agg_groups_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
+    bool_agg_groups_mv_schema_for, distinct_agg_groups_mv_schema_for,
+    distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
+    keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_window_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
@@ -1883,6 +1884,25 @@ async fn oracle_approx_distinct_matches_full_recompute() {
         "SELECT g, APPROX_DISTINCT(v) AS approx_distinct_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 10 GROUP BY g",
         "SELECT g, approx_distinct_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_approx_percentile_matches_full_recompute() {
+    // The percentile sketch update is order independent, so every recomputed
+    // group matches DataFusion's full recompute.
+    run_oracle(
+        "approxpercentile",
+        1,
+        approx_percentile_mv_schema_for(&source_schema(), &["g".to_string()], "v")
+            .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) FROM __SRC__ WHERE v > 10 \
+         GROUP BY g",
+        "SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) AS approx_percentile_cont_v \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY g",
+        "SELECT g, approx_percentile_cont_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
