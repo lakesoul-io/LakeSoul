@@ -57,6 +57,7 @@ used as row identities must be non-nullable.
 | SELECT DISTINCT | `SELECT DISTINCT c, ... FROM src [WHERE p]` | the distinct columns, `count_v`, kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
 | MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k`; without a `GROUP BY` a global MIN/MAX | keys, `value`, kinds, epoch (+ value-count state table) |
+| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` with `SUM`/`COUNT`/`AVG` over a keyed source | `__ivm_grouping`, every flat key (nullable), `sum_v`, `count_v`, `__ivm_nonnull_count` (+ `avg_v`), kinds, epoch |
 | COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; globally without a `GROUP BY`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
@@ -75,6 +76,12 @@ used as row identities must be non-nullable.
 
 Supported within the shapes above:
 
+* **`GROUPING SETS` / `ROLLUP` / `CUBE`**: every grouping set is
+  materialized in one MV keyed by `(__ivm_grouping, keys...)` — the keys a set
+  does not group by are NULL — and a refresh recomputes the affected groups of
+  every set, so a row moving in or out of a set (including the grand total)
+  updates it; only `SUM`/`COUNT`/`AVG` over plain key columns and keyed
+  sources are maintained;
 * **global aggregates**: every supported aggregate without a `GROUP BY`
   (`SUM`/`COUNT`/`AVG`, `MIN`/`MAX`, `COUNT(DISTINCT)`/`SUM(DISTINCT)` and the
   variance, median, `STRING_AGG` and `ARRAY_AGG` families) keeps a single-row
@@ -282,9 +289,9 @@ the backlog):
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
-* `GROUPING SETS` / `ROLLUP` / `CUBE` and `SELECT DISTINCT ON`: the planner
-  produces plans for them, but the runtime does not maintain those shapes
-  yet;
+* `SELECT DISTINCT ON` and the grouping-set shapes outside the maintained
+  subset (aggregates other than `SUM`/`COUNT`/`AVG`, key expressions, and
+  append-only sources);
 * retractions in a `UNION ALL` over an **append-only CDC** source: the delete
   markers become MV tombstones (hidden from logical reads), but the matching
   insert rows cannot be retracted because an append-only source has no row

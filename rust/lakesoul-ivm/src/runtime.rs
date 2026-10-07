@@ -67,6 +67,8 @@ pub const IVM_STDDEV_COLUMN: &str = "stddev_v";
 pub const IVM_MEDIAN_COLUMN: &str = "median_v";
 /// The source index column of a [`UnionAllView`] materialized view.
 pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
+/// The grouping-set index of a `GROUPING SETS` row.
+pub const IVM_GROUPING_COLUMN: &str = "__ivm_grouping";
 /// The internal rank column of a [`TopKView`] computation (not materialized).
 const IVM_TOP_K_RANK_COLUMN: &str = "__ivm_rank";
 /// The rank column of a `RANK()` [`WindowView`] materialized view.
@@ -691,6 +693,47 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
     },
+    /// `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` over a keyed source with
+    /// `SUM`/`COUNT`/`AVG`: the MV keeps one row per (grouping index, key
+    /// tuple), and the keys a set does not group by are NULL.
+    GroupingSets {
+        /// The view id.
+        view_id: String,
+        /// The source table id (keyed).
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The flat key columns, in the aggregate's output order.
+        group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
+        /// Each grouping set as indices into `group_keys`.
+        groupings: Vec<Vec<usize>>,
+        /// The summed column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_column: Option<String>,
+        /// A rendered value expression; mutually exclusive with
+        /// `value_column`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
+        /// A `COUNT(column)` column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count_column: Option<String>,
+        /// The shared aggregate `FILTER (WHERE ...)` predicate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aggregate_filter: Option<String>,
+        /// Whether the MV also carries `avg_v`.
+        #[serde(default)]
+        average: bool,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the MV columns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// A projection (and optional filter) of one source.
     Row {
         /// The view id.
@@ -795,6 +838,7 @@ impl ViewSpec {
             | ViewSpec::DistinctAgg { view_id, .. }
             | ViewSpec::Window { view_id, .. }
             | ViewSpec::SemiAnti { view_id, .. }
+            | ViewSpec::GroupingSets { view_id, .. }
             | ViewSpec::Row { view_id, .. }
             | ViewSpec::UnionAll { view_id, .. }
             | ViewSpec::UnionDistinct { view_id, .. }
@@ -820,6 +864,7 @@ impl ViewSpec {
             ViewSpec::DistinctAgg { .. } => "distinct_agg",
             ViewSpec::Window { .. } => "window",
             ViewSpec::SemiAnti { .. } => "semi_anti",
+            ViewSpec::GroupingSets { .. } => "grouping_sets",
             ViewSpec::Row { .. } => "row",
             ViewSpec::UnionAll { .. } => "union_all",
             ViewSpec::UnionDistinct { .. } => "union_distinct",
@@ -845,6 +890,7 @@ enum SpecView {
     DistinctAgg(DistinctAggView),
     Window(WindowView),
     SemiAnti(SemiAntiView),
+    GroupingSets(GroupingSetsView),
     Row(RowView),
     UnionAll(UnionAllView),
     UnionDistinct(UnionDistinctView),
@@ -2023,6 +2069,74 @@ fn lookup_join_output_columns(view: &LookupJoinView) -> Vec<Expr> {
         .chain(std::iter::once(col("right_value")))
         .chain(view.left.primary_keys.iter().map(|key| col(key.as_str())))
         .collect()
+}
+
+/// Validate that a grouping-sets view can be maintained.
+fn validate_grouping_sets_view(view: &GroupingSetsView) -> Result<()> {
+    if view.groupings.is_empty() {
+        return Err(report!(
+            "grouping sets view {} needs at least one grouping set",
+            view.view_id
+        ));
+    }
+    for set in &view.groupings {
+        for index in set {
+            if *index >= view.group_keys.len() {
+                return Err(report!(
+                    "grouping sets view {}: key index {index} is out of range",
+                    view.view_id
+                ));
+            }
+        }
+    }
+    if view.group_exprs.is_empty() {
+        for key in &view.group_keys {
+            view.source.schema.field_with_name(key).map_err(|_| {
+                report!(
+                    "grouping sets view {}: key column {key} is not in the source",
+                    view.view_id
+                )
+            })?;
+        }
+    } else {
+        group_key_fields(&view.source.schema, &view.group_keys, &view.group_exprs)?;
+    }
+    if view.source.primary_keys.is_empty() {
+        return Err(report!(
+            "grouping sets view {} needs a keyed source",
+            view.view_id
+        ));
+    }
+    validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
+    if view.value_expr.is_some() && view.value_column.is_some() {
+        return Err(report!(
+            "grouping sets view {}: a value column and a value expression are \
+             mutually exclusive",
+            view.view_id
+        ));
+    }
+    if let Some(expression) = &view.value_expr {
+        let (data_type, _) = expression_type(&view.source.schema, expression)?;
+        if view.average {
+            avg_result_type(&data_type)?;
+        }
+        sum_result_type(&data_type)?;
+    } else if let Some(column) = &view.value_column {
+        let value_type = field_type(&view.source.schema, column)?;
+        if view.average {
+            avg_result_type(&value_type)?;
+        }
+        sum_result_type(&value_type)?;
+    }
+    if let Some(filter) = &view.filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
+    if let Some(filter) = &view.aggregate_filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.source.schema, filter)?;
+    }
+    Ok(())
 }
 
 /// Validate that a full join view can be maintained.
@@ -3908,6 +4022,136 @@ impl SemiAntiView {
     }
 }
 
+/// A `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` view over a keyed source with
+/// the `SUM`/`COUNT`/`AVG` aggregates.
+///
+/// Every grouping set is maintained over the same MV: a row carries its
+/// grouping index and the flat key columns, and the keys a set does not group
+/// by are NULL, so rows of different sets never collide.
+#[derive(Debug, Clone)]
+pub struct GroupingSetsView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (keyed).
+    pub source: IvmTable,
+    /// The materialized view table, created from
+    /// [`grouping_sets_mv_schema_for`].
+    pub mv: IvmTable,
+    /// The flat key columns.
+    pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to [`Self::group_keys`].
+    pub group_exprs: Vec<String>,
+    /// Each grouping set as indices into [`Self::group_keys`].
+    pub groupings: Vec<Vec<usize>>,
+    /// The summed column.
+    pub value_column: Option<String>,
+    /// A rendered value expression; mutually exclusive with
+    /// [`Self::value_column`].
+    pub value_expr: Option<String>,
+    /// A `COUNT(column)` column.
+    pub count_column: Option<String>,
+    /// The shared aggregate `FILTER (WHERE ...)` predicate.
+    pub aggregate_filter: Option<String>,
+    /// Whether the view also materializes `AVG`.
+    pub average: bool,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized columns.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl GroupingSetsView {
+    /// A new view over `group_keys` with the given grouping sets.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        groupings: Vec<Vec<usize>>,
+        value_column: Option<String>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            group_exprs: Vec::new(),
+            groupings,
+            value_column,
+            value_expr: None,
+            count_column: None,
+            aggregate_filter: None,
+            average: false,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
+    /// Sum a rendered expression instead of a column.
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
+    /// Also maintain `COUNT(column)`.
+    pub fn with_count_column(mut self, count_column: impl Into<String>) -> Self {
+        self.count_column = Some(count_column.into());
+        self
+    }
+
+    /// Filter the aggregates with a predicate over the source rows.
+    pub fn with_aggregate_filter(mut self, filter: impl Into<String>) -> Self {
+        self.aggregate_filter = Some(filter.into());
+        self
+    }
+
+    /// Also materialize `AVG`.
+    pub fn with_average(mut self, average: bool) -> Self {
+        self.average = average;
+        self
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::GroupingSets {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
+            groupings: self.groupings.clone(),
+            value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
+            count_column: self.count_column.clone(),
+            aggregate_filter: self.aggregate_filter.clone(),
+            average: self.average,
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+}
+
 /// A projection (and optional filter) of one source.
 ///
 /// A keyed source is maintained with `delete(old) + insert(current)` per
@@ -4975,6 +5219,62 @@ pub fn sum_count_groups_mv_schema_for(
     sum_count_schema_for(key_fields, sum_type, average)
 }
 
+/// The schema of a [`GroupingSetsView`] materialized view: the grouping index,
+/// every flat key (forced nullable, because a set that does not group by a key
+/// materializes NULL there) and the SUM/COUNT/AVG columns.
+pub fn grouping_sets_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+    average: bool,
+) -> Result<SchemaRef> {
+    let mut fields: Vec<arrow_schema::FieldRef> = vec![Arc::new(Field::new(
+        IVM_GROUPING_COLUMN,
+        DataType::Int64,
+        false,
+    ))];
+    if group_exprs.is_empty() {
+        for key in group_keys {
+            let field = source_schema.field_with_name(key)?;
+            fields.push(Arc::new(Field::new(
+                key.clone(),
+                field.data_type().clone(),
+                true,
+            )));
+        }
+    } else {
+        if group_exprs.len() != group_keys.len() {
+            return Err(report!(
+                "grouping sets view: group_keys and group_exprs are not parallel"
+            ));
+        }
+        for (key, expression) in group_keys.iter().zip(group_exprs) {
+            let (data_type, _) = expression_type(source_schema, expression)?;
+            fields.push(Arc::new(Field::new(key.clone(), data_type, true)));
+        }
+    }
+    let sum_type = match (value_expr, value_column) {
+        (Some(value_expr), _) => {
+            let (data_type, _) = expression_type(source_schema, value_expr)?;
+            if average {
+                avg_result_type(&data_type)?;
+            }
+            sum_result_type(&data_type)?
+        }
+        (None, Some(column)) => {
+            let value_type = field_type(source_schema, column)?;
+            if average {
+                avg_result_type(&value_type)?;
+            }
+            sum_result_type(&value_type)?
+        }
+        (None, None) => DataType::Int64,
+    };
+    sum_count_schema_for(fields, sum_type, average)
+}
+
 pub fn sum_count_mv_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
@@ -5383,6 +5683,36 @@ impl IvmRuntime {
                 filter: filter.clone(),
                 having: having.clone(),
                 average: *average,
+                refresh_interval_ms,
+            }),
+            ViewSpec::GroupingSets {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                group_exprs,
+                groupings,
+                value_column,
+                value_expr,
+                count_column,
+                aggregate_filter,
+                average,
+                filter,
+                having,
+            } => SpecView::GroupingSets(GroupingSetsView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
+                groupings: groupings.clone(),
+                value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
+                count_column: count_column.clone(),
+                aggregate_filter: aggregate_filter.clone(),
+                average: *average,
+                filter: filter.clone(),
+                having: having.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Join {
@@ -5804,6 +6134,7 @@ impl IvmRuntime {
             Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
             Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
             Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
+            Ok(SpecView::GroupingSets(view)) => self.refresh_grouping_sets(&view).await,
             Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
             Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
             Ok(SpecView::UnionDistinct(view)) => self.refresh_union_distinct(&view).await,
@@ -5841,6 +6172,7 @@ impl IvmRuntime {
             Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
             Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
             Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
+            Ok(SpecView::GroupingSets(view)) => self.rebuild_grouping_sets(&view).await,
             Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
             Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
             Ok(SpecView::UnionDistinct(view)) => self.rebuild_union_distinct(&view).await,
@@ -6554,6 +6886,158 @@ impl IvmRuntime {
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await
+    }
+
+    /// Persist a grouping-sets view spec (idempotent).
+    pub async fn register_grouping_sets_view(
+        &self,
+        view: &GroupingSetsView,
+    ) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a grouping-sets view: the affected group tuples drive every
+    /// grouping set, which recomputes and rewrites its rows.
+    pub async fn refresh_grouping_sets(
+        &self,
+        view: &GroupingSetsView,
+    ) -> Result<Option<i64>> {
+        self.register_grouping_sets_view(view).await?;
+        validate_grouping_sets_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let record = match self
+            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "delta",
+            view.source.read_files(window.added_files).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "old",
+            view.source
+                .read_as_of(&self.client, window.before_timestamp)
+                .await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "src",
+            view.source.read_current(&self.client).await?,
+            &view.source.schema,
+        )?;
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        for batch in context
+            .sql(&grouping_sets_refresh_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
+    /// Rebuild a grouping-sets view from the full source state.
+    pub async fn rebuild_grouping_sets(&self, view: &GroupingSetsView) -> Result<i64> {
+        self.register_grouping_sets_view(view).await?;
+        validate_grouping_sets_view(view)?;
+        self.ensure_unpartitioned(&view.source).await?;
+
+        self.metadata
+            .set_view_status(&view.view_id, "rebuilding")
+            .await?;
+        let generation = self.metadata.bump_generation(&view.view_id).await?;
+        self.metadata.delete_cursors(&view.view_id).await?;
+        view.mv.truncate(&self.client).await?;
+
+        let baseline = self.source_baseline(&view.source).await?;
+        let mv_versions_before =
+            output_partition_versions(&self.client, &view.mv).await?;
+        let record = match self
+            .metadata
+            .begin_epoch(
+                &view.view_id,
+                &format!("rebuild:{generation}"),
+                &baseline.to_versions,
+                &mv_versions_before,
+            )
+            .await?
+        {
+            BeginEpoch::Committed(record) => {
+                self.advance_cursors(&view.view_id, baseline.cursors)
+                    .await?;
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(record.epoch);
+            }
+            BeginEpoch::Created(record) | BeginEpoch::Pending(record) => record,
+        };
+        let epoch = record.epoch;
+        let mut commit_ids = Vec::new();
+
+        let context = SessionContext::new();
+        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        for batch in context
+            .sql(&grouping_sets_rebuild_sql(view, epoch))
+            .await?
+            .collect()
+            .await?
+        {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, baseline.cursors)
+            .await?;
+        self.metadata
+            .set_view_status(&view.view_id, "active")
+            .await?;
+        Ok(epoch)
     }
 
     /// Persist a semi/anti join view spec (idempotent).
@@ -12075,6 +12559,232 @@ fn recompute_global_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
         Some(having) => format!("select * from ({row}) t where {having}"),
         None => row,
     }
+}
+
+/// The materialized columns of a grouping-sets MV, in schema order.
+fn grouping_sets_columns(view: &GroupingSetsView) -> Vec<String> {
+    let mut columns = vec![IVM_GROUPING_COLUMN.to_string()];
+    columns.extend(view.group_keys.iter().cloned());
+    columns.push(IVM_SUM_COLUMN.to_string());
+    columns.push(IVM_COUNT_COLUMN.to_string());
+    columns.push(IVM_NONNULL_COUNT_COLUMN.to_string());
+    if view.average {
+        columns.push(IVM_AVG_COLUMN.to_string());
+    }
+    columns
+}
+
+/// The rendered aggregate expressions of a grouping-sets view.
+fn grouping_sets_aggregates(view: &GroupingSetsView) -> (String, String, String) {
+    let value = match (&view.value_expr, &view.value_column) {
+        (Some(expression), _) => Some(expression.clone()),
+        (None, Some(column)) => Some(quote_ident(column)),
+        (None, None) => None,
+    };
+    let aggregate_filter = view
+        .aggregate_filter
+        .as_deref()
+        .map(|filter| format!(" filter (where {filter})"))
+        .unwrap_or_default();
+    let sum_expr = match &value {
+        Some(value) => format!("sum({value}){aggregate_filter}"),
+        None => "sum(0)".to_string(),
+    };
+    let nonnull_expr = match view
+        .count_column
+        .as_deref()
+        .map(quote_ident)
+        .or_else(|| value.clone())
+    {
+        Some(value) => format!("count({value}){aggregate_filter}"),
+        None => "count(1)".to_string(),
+    };
+    let avg_expr = format!(
+        "case when {nonnull_expr} > 0 then cast({sum_expr} as double) \
+               / cast({nonnull_expr} as double) else null end"
+    );
+    (sum_expr, nonnull_expr, avg_expr)
+}
+
+/// One grouping set's aggregate rows over the current `src`.
+fn grouping_sets_group_now(
+    view: &GroupingSetsView,
+    index: usize,
+    src_where: &str,
+) -> String {
+    let set = &view.groupings[index];
+    let keys = set
+        .iter()
+        .map(|key| view.group_keys[*key].clone())
+        .collect::<Vec<_>>();
+    let (sum_expr, nonnull_expr, avg_expr) = grouping_sets_aggregates(view);
+    let mut select = vec![format!("{index} as {}", quote_ident(IVM_GROUPING_COLUMN))];
+    for key in &view.group_keys {
+        if keys.contains(key) {
+            select.push(quote_ident(key));
+        } else {
+            select.push(format!("NULL as {}", quote_ident(key)));
+        }
+    }
+    select.push(format!("{sum_expr} as {}", quote_ident(IVM_SUM_COLUMN)));
+    select.push(format!("count(1) as {}", quote_ident(IVM_COUNT_COLUMN)));
+    select.push(format!(
+        "{nonnull_expr} as {}",
+        quote_ident(IVM_NONNULL_COUNT_COLUMN)
+    ));
+    if view.average {
+        select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+    }
+    let affected_filter = if keys.is_empty() {
+        " and exists (select 1 from affected)".to_string()
+    } else {
+        format!(
+            " and exists (select 1 from affected a where {})",
+            key_join_condition_null_safe("a", "src", &keys)
+        )
+    };
+    let group_now = format!(
+        "select {} from src where {src_where}{affected_filter}{}",
+        select.join(", "),
+        group_by_clause(&keys)
+    );
+    match view.having.as_deref() {
+        Some(having) => format!("select * from ({group_now}) t where ({having})"),
+        None => group_now,
+    }
+}
+
+/// One grouping set's current MV rows (matched by its grouped keys).
+fn grouping_sets_delete(view: &GroupingSetsView, index: usize, epoch: i64) -> String {
+    let set = &view.groupings[index];
+    let keys = set
+        .iter()
+        .map(|key| view.group_keys[*key].clone())
+        .collect::<Vec<_>>();
+    let affected = if keys.is_empty() {
+        "exists (select 1 from affected)".to_string()
+    } else {
+        format!(
+            "exists (select 1 from affected a where {})",
+            key_join_condition_null_safe("a", "mv", &keys)
+        )
+    };
+    let columns = quoted_list(&grouping_sets_columns(view));
+    format!(
+        "select {columns}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from mv where \"rowKinds\" = 'insert' and \"{epoch_column}\" <> {epoch} \
+           and {grouping} = {index} and {affected}",
+        epoch_column = IVM_EPOCH_COLUMN,
+        grouping = quote_ident(IVM_GROUPING_COLUMN),
+    )
+}
+
+/// One grouping set's recomputed rows, skipping the current epoch's writes.
+fn grouping_sets_insert(
+    view: &GroupingSetsView,
+    index: usize,
+    src_where: &str,
+    epoch: i64,
+) -> String {
+    let set = &view.groupings[index];
+    let keys = set
+        .iter()
+        .map(|key| view.group_keys[*key].clone())
+        .collect::<Vec<_>>();
+    let already = if keys.is_empty() {
+        "true".to_string()
+    } else {
+        key_join_condition_null_safe("m", "recomputed", &keys)
+    };
+    let group_now = grouping_sets_group_now(view, index, src_where);
+    let columns = quoted_list(&grouping_sets_columns(view));
+    format!(
+        "select {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from ({group_now}) recomputed \
+         where not exists (select 1 from mv m where m.\"rowKinds\" = 'insert' \
+             and m.\"{epoch_column}\" = {epoch} and m.{grouping} = {index} and ({already}))",
+        epoch_column = IVM_EPOCH_COLUMN,
+        grouping = quote_ident(IVM_GROUPING_COLUMN),
+    )
+}
+
+/// The refresh SQL of a grouping-sets view: the affected group tuples drive
+/// every set, which recomputes and rewrites its rows.
+fn grouping_sets_refresh_sql(view: &GroupingSetsView, epoch: i64) -> String {
+    let affected =
+        affected_groups_sql(&view.source, &view.group_keys, true, view.filter.as_deref());
+    let src_where = format!(
+        "{}{}",
+        source_delete_filter("src", change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
+    let mut branches = Vec::new();
+    for index in 0..view.groupings.len() {
+        branches.push(grouping_sets_delete(view, index, epoch));
+    }
+    for index in 0..view.groupings.len() {
+        branches.push(grouping_sets_insert(view, index, &src_where, epoch));
+    }
+    // Deletes must come before inserts of the same key, so the upsert keeps
+    // the recomputed row (like the SUM/COUNT path).
+    let mut order_keys = vec![IVM_GROUPING_COLUMN.to_string()];
+    order_keys.extend(view.group_keys.iter().cloned());
+    let order = quoted_list(&order_keys);
+    format!(
+        "with affected as ({affected}), combined as ({}) \
+         select * from combined order by {order}, \"rowKinds\"",
+        branches.join(" union all ")
+    )
+}
+
+/// The rebuild SQL of a grouping-sets view: every set is recomputed over the
+/// full source.
+fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
+    let src_where = format!(
+        "{}{}",
+        source_delete_filter("src", change_column(&view.source)),
+        filter_clause(view.filter.as_deref()),
+    );
+    let (sum_expr, nonnull_expr, avg_expr) = grouping_sets_aggregates(view);
+    let columns = quoted_list(&grouping_sets_columns(view));
+    let mut branches = Vec::new();
+    for (index, set) in view.groupings.iter().enumerate() {
+        let keys = set
+            .iter()
+            .map(|key| view.group_keys[*key].clone())
+            .collect::<Vec<_>>();
+        let mut select = vec![format!("{index} as {}", quote_ident(IVM_GROUPING_COLUMN))];
+        for key in &view.group_keys {
+            if keys.contains(key) {
+                select.push(quote_ident(key));
+            } else {
+                select.push(format!("NULL as {}", quote_ident(key)));
+            }
+        }
+        select.push(format!("{sum_expr} as {}", quote_ident(IVM_SUM_COLUMN)));
+        select.push(format!("count(1) as {}", quote_ident(IVM_COUNT_COLUMN)));
+        select.push(format!(
+            "{nonnull_expr} as {}",
+            quote_ident(IVM_NONNULL_COUNT_COLUMN)
+        ));
+        if view.average {
+            select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+        }
+        let rows = format!(
+            "select {} from src where {src_where}{}",
+            select.join(", "),
+            group_by_clause(&keys)
+        );
+        branches.push(match view.having.as_deref() {
+            Some(having) => format!("select * from ({rows}) t where ({having})"),
+            None => rows,
+        });
+    }
+    format!(
+        "with grouped as ({}) \
+         select {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" from grouped",
+        branches.join(" union all "),
+    )
 }
 
 /// SQL for a full recomputed-aggregate rebuild.

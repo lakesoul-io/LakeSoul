@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue, TableReference};
-use datafusion::logical_expr::expr::{AggregateFunction, NullTreatment};
+use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatment};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
@@ -175,6 +175,13 @@ fn having_aggregate(plan: &LogicalPlan) -> Option<(&Aggregate, Vec<Expr>)> {
     while let LogicalPlan::Filter(filter) = node {
         conjuncts.extend(split_conjunction(&filter.predicate).into_iter().cloned());
         node = peel(&filter.input);
+    }
+    // The optimizer may keep a plain projection between the filter and the
+    // aggregate (the projection only reorders the materialized columns).
+    if let LogicalPlan::Projection(projection) = node
+        && is_plain_projection(projection)
+    {
+        node = peel(&projection.input);
     }
     match node {
         LogicalPlan::Aggregate(aggregate) if !conjuncts.is_empty() => {
@@ -933,6 +940,202 @@ fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<Agg
     value_argument(arg, hoisted, true)
 }
 
+/// `GROUP BY GROUPING SETS` / `ROLLUP` / `CUBE` over a keyed source with the
+/// `SUM`/`COUNT`/`AVG` aggregates.
+///
+/// The flat key columns are the distinct grouping columns in first-seen
+/// order; every grouping set is recorded as indices into them, and the view
+/// materializes one row per (set index, key tuple) with NULLs for the keys a
+/// set does not group by.
+fn analyze_grouping_sets(
+    aggregate: &Aggregate,
+    having_exprs: &[Expr],
+    source: &IvmTable,
+    filter: Option<String>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    if source.primary_keys.is_empty() {
+        return Err(unsupported(
+            "GROUPING SETS / ROLLUP / CUBE need a keyed source",
+        ));
+    }
+    let mut grouping = None;
+    for expr in &aggregate.group_expr {
+        match strip_alias(expr) {
+            Expr::GroupingSet(sets) => {
+                if grouping.replace(sets.clone()).is_some() {
+                    return Err(unsupported(
+                        "several GROUPING SETS expressions in one GROUP BY",
+                    ));
+                }
+            }
+            _ => {
+                return Err(unsupported(
+                    "GROUP BY mixing plain keys with GROUPING SETS / ROLLUP / CUBE",
+                ));
+            }
+        }
+    }
+    let Some(grouping) = grouping else {
+        return Err(unsupported("GROUP BY without a grouping set"));
+    };
+    let member_sets: Vec<Vec<Expr>> = match &grouping {
+        GroupingSet::Rollup(exprs) => (0..=exprs.len())
+            .rev()
+            .map(|length| exprs[..length].to_vec())
+            .collect(),
+        GroupingSet::Cube(exprs) => {
+            let mut sets = Vec::new();
+            for mask in (0..1u64 << exprs.len()).rev() {
+                let mut set = Vec::new();
+                for (index, expr) in exprs.iter().enumerate() {
+                    if mask & (1 << index) != 0 {
+                        set.push(expr.clone());
+                    }
+                }
+                sets.push(set);
+            }
+            sets
+        }
+        GroupingSet::GroupingSets(sets) => sets.clone(),
+    };
+    // The flat keys, in first-seen order.
+    let mut group_keys: Vec<String> = Vec::new();
+    let mut groupings: Vec<Vec<usize>> = Vec::new();
+    for set in &member_sets {
+        let mut indices = Vec::with_capacity(set.len());
+        for expr in set {
+            let Expr::Column(column) = strip_alias(expr) else {
+                return Err(unsupported("GROUPING SETS keys must be plain columns"));
+            };
+            let index = match group_keys.iter().position(|key| key == &column.name) {
+                Some(index) => index,
+                None => {
+                    group_keys.push(column.name.clone());
+                    group_keys.len() - 1
+                }
+            };
+            if !indices.contains(&index) {
+                indices.push(index);
+            }
+        }
+        indices.sort_unstable();
+        groupings.push(indices);
+    }
+
+    let hoisted = hoisted_expressions(&aggregate.input);
+    let mut value: Option<AggValue> = None;
+    let mut count = false;
+    let mut count_column: Option<String> = None;
+    let mut average = false;
+    for expr in &aggregate.aggr_expr {
+        let mut inner = expr;
+        while let Expr::Alias(alias) = inner {
+            inner = &alias.expr;
+        }
+        let Expr::AggregateFunction(function) = inner else {
+            return Err(unsupported("non-aggregate expression in the select list"));
+        };
+        let name = function.func.name();
+        if function.params.distinct {
+            return Err(unsupported(format!(
+                "{name}(DISTINCT ...) with GROUPING SETS"
+            )));
+        }
+        if function.params.filter.is_some() {
+            return Err(unsupported("FILTER with GROUPING SETS is not maintained"));
+        }
+        if !function.params.order_by.is_empty() {
+            return Err(unsupported(format!("{name} with ORDER BY")));
+        }
+        match name {
+            "count" => {
+                let counts_all = function.params.args.is_empty()
+                    || matches!(function.params.args.as_slice(), [Expr::Literal(..)]);
+                if counts_all {
+                    if count {
+                        return Err(unsupported("duplicate COUNT aggregate"));
+                    }
+                    count = true;
+                } else {
+                    let [arg] = function.params.args.as_slice() else {
+                        return Err(unsupported("COUNT takes one argument"));
+                    };
+                    let column = match sum_value_argument(arg, &hoisted)? {
+                        AggValue::Column(column) => column,
+                        AggValue::Expr(_) => {
+                            return Err(unsupported(
+                                "COUNT over an expression with GROUPING SETS",
+                            ));
+                        }
+                    };
+                    if count_column
+                        .as_ref()
+                        .is_some_and(|existing| existing != &column)
+                    {
+                        return Err(unsupported("duplicate COUNT aggregate"));
+                    }
+                    count_column = Some(column);
+                }
+            }
+            "sum" | "avg" => {
+                let [arg] = function.params.args.as_slice() else {
+                    return Err(unsupported(format!("{name} takes one argument")));
+                };
+                let candidate = sum_value_argument(arg, &hoisted)?;
+                if let Some(existing) = &value
+                    && existing != &candidate
+                {
+                    return Err(unsupported("SUM/AVG over different arguments"));
+                }
+                value = Some(candidate);
+                if name == "avg" {
+                    average = true;
+                }
+            }
+            other => {
+                return Err(unsupported(format!(
+                    "aggregate function {other} with GROUPING SETS (only SUM/COUNT/AVG)"
+                )));
+            }
+        }
+    }
+    if value.is_none() && !count && count_column.is_none() {
+        return Err(unsupported("GROUPING SETS needs SUM/COUNT/AVG"));
+    }
+    let having = render_having(
+        having_exprs,
+        HavingColumns::SumCount {
+            value: value.as_ref(),
+            count_column: count_column.as_deref(),
+            average,
+            aggregate_filter: None,
+        },
+        aggregate,
+        &group_keys,
+    )?;
+    let (value_column, value_expr) = match value {
+        Some(AggValue::Column(column)) => (Some(column), None),
+        Some(AggValue::Expr(expression)) => (None, Some(expression)),
+        None => (None, None),
+    };
+    Ok(ViewSpec::GroupingSets {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys,
+        group_exprs: Vec::new(),
+        groupings,
+        value_column,
+        value_expr,
+        count_column,
+        aggregate_filter: None,
+        average,
+        filter,
+        having,
+    })
+}
+
 fn analyze_aggregate(
     aggregate: &Aggregate,
     projection: Option<&Projection>,
@@ -970,6 +1173,14 @@ fn analyze_aggregate(
     };
     let (source, filter) = collect_filtered_source(input, tables, "an aggregate")?;
     let source = &source;
+    // `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` has its own maintenance.
+    if aggregate
+        .group_expr
+        .iter()
+        .any(|expr| matches!(strip_alias(expr), Expr::GroupingSet(_)))
+    {
+        return analyze_grouping_sets(aggregate, having_exprs, source, filter, request);
+    }
 
     let mut group_keys = Vec::with_capacity(aggregate.group_expr.len());
     let mut group_exprs = Vec::with_capacity(aggregate.group_expr.len());
@@ -979,11 +1190,6 @@ fn analyze_aggregate(
         let mut inner = expr;
         while let Expr::Alias(nested) = inner {
             inner = &nested.expr;
-        }
-        if matches!(inner, Expr::GroupingSet(_)) {
-            return Err(unsupported(
-                "GROUPING SETS / ROLLUP / CUBE are not supported yet",
-            ));
         }
         match inner {
             Expr::Column(column) if hoisted_exprs.contains_key(&column.name) => {
@@ -3181,6 +3387,14 @@ fn join_input<'a>(
         alias,
         filter,
     })
+}
+
+/// The expression under any aliases.
+fn strip_alias(mut expr: &Expr) -> &Expr {
+    while let Expr::Alias(alias) = expr {
+        expr = &alias.expr;
+    }
+    expr
 }
 
 fn column_of(expr: &Expr) -> Option<&Column> {
@@ -6106,15 +6320,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        // GROUPING SETS have a dedicated message.
-        for sql in [
-            "select g, sum(v) from src group by rollup(g)",
-            "select g, sum(v) from src group by cube(g)",
-            "select g, sum(v) from src group by grouping sets ((g), ())",
-        ] {
-            let error = analyze_optimized(sql).await.unwrap_err().to_string();
-            assert!(error.contains("GROUPING SETS"), "{sql}: {error}");
-        }
         // A multi-column DISTINCT needs a GROUP BY.
         assert!(
             analyze_optimized("select count(distinct g, v) from src")
@@ -6223,6 +6428,102 @@ mod tests {
             analyze_optimized(
                 "select a.k, a.v, b.v from src a join src b \
                  on a.k = b.k and a.g < b.g",
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_grouping_sets_aggregates() {
+        let analyzed =
+            analyze_optimized("select g, sum(v), count(*) from src group by rollup(g)")
+                .await
+                .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            groupings,
+            value_column,
+            average,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert_eq!(groupings, vec![vec![0], vec![]]);
+        assert_eq!(value_column.as_deref(), Some("v"));
+        assert!(!average);
+
+        // CUBE of two keys expands to all four subsets.
+        let analyzed =
+            analyze_optimized("select g, v, sum(v) from src group by cube(g, v)")
+                .await
+                .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            groupings,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "v".to_string()]);
+        assert_eq!(groupings.len(), 4);
+        assert!(groupings.contains(&vec![0, 1]));
+        assert!(groupings.contains(&vec![0]));
+        assert!(groupings.contains(&vec![1]));
+        assert!(groupings.contains(&Vec::new()));
+
+        // Explicit sets with HAVING and AVG.
+        let analyzed = analyze_optimized(
+            "select g, sum(v) from src \
+             group by grouping sets ((g), ()) having sum(v) > 10",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            groupings, having, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(groupings, vec![vec![0], vec![]]);
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("sum_v > 10"));
+
+        let analyzed = analyze_optimized("select g, avg(v) from src group by rollup(g)")
+            .await
+            .unwrap();
+        let ViewSpec::GroupingSets { average, .. } = analyzed.spec else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert!(average);
+
+        // A plain key next to a ROLLUP is rewritten into the expanded sets.
+        let analyzed =
+            analyze_optimized("select g, v, sum(v) from src group by g, rollup(v)")
+                .await
+                .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            groupings,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "v".to_string()]);
+        assert_eq!(groupings, vec![vec![0], vec![0, 1]]);
+
+        // Only SUM/COUNT/AVG and plain columns are maintained.
+        assert!(
+            analyze_optimized("select g, min(v) from src group by rollup(g)")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze_optimized(
+                "select v + 1 as bucket, sum(v) from src group by rollup(v + 1)"
             )
             .await
             .is_err()
