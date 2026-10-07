@@ -673,6 +673,43 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// A deterministic scalar-aggregate function over the source rows:
+    /// `BIT_AND`/`BIT_OR`/`BIT_XOR`, `CORR`/`COVAR_*`, the `REGR_*` family,
+    /// `PERCENTILE_CONT` and the approximate medians/weighted percentiles.
+    /// The statistic is recomputed from the affected groups.
+    ComputedAgg {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
+        /// The SQL aggregate function name.
+        function: String,
+        /// The aggregate arguments, in order.
+        arguments: Vec<ComputedAggArg>,
+        /// The rendered percentile literal of the ordered-set / weighted
+        /// aggregates, appended after the arguments.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        percentile: Option<String>,
+        /// The MV column holding the statistic.
+        column: String,
+        /// The result type of the aggregate.
+        result: ComputedAggResult,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// `STRING_AGG(value, delimiter ORDER BY keys)` over a source, maintained
     /// by recomputing the affected groups.
     StringAgg {
@@ -825,6 +862,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
+        /// Materialized `GROUPING(key)` columns: the flat key index and the
+        /// output column name.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grouping_columns: Vec<GroupingColumn>,
         /// An optional `HAVING` predicate over the MV columns.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
@@ -925,6 +966,7 @@ impl ViewSpec {
             | ViewSpec::BoolAgg { view_id, .. }
             | ViewSpec::ApproxDistinct { view_id, .. }
             | ViewSpec::ApproxPercentile { view_id, .. }
+            | ViewSpec::ComputedAgg { view_id, .. }
             | ViewSpec::StringAgg { view_id, .. }
             | ViewSpec::ArrayAgg { view_id, .. }
             | ViewSpec::Join { view_id, .. }
@@ -954,6 +996,7 @@ impl ViewSpec {
             ViewSpec::BoolAgg { .. } => "bool_agg",
             ViewSpec::ApproxDistinct { .. } => "approx_distinct",
             ViewSpec::ApproxPercentile { .. } => "approx_percentile",
+            ViewSpec::ComputedAgg { .. } => "computed_agg",
             ViewSpec::StringAgg { .. } => "string_agg",
             ViewSpec::ArrayAgg { .. } => "array_agg",
             ViewSpec::Join { .. } => "join",
@@ -983,6 +1026,7 @@ enum SpecView {
     BoolAgg(BoolAggView),
     ApproxDistinct(ApproxDistinctView),
     ApproxPercentile(ApproxPercentileView),
+    ComputedAgg(ComputedAggView),
     StringAgg(StringAggView),
     ArrayAgg(ArrayAggView),
     Join(JoinView),
@@ -2173,6 +2217,39 @@ fn lookup_join_output_columns(view: &LookupJoinView) -> Vec<Expr> {
         .chain(std::iter::once(col("right_value")))
         .chain(view.left.primary_keys.iter().map(|key| col(key.as_str())))
         .collect()
+}
+
+/// Validate that a computed-aggregate view can be maintained.
+fn validate_computed_agg_view(view: &ComputedAggView) -> Result<()> {
+    if view.function.is_empty() {
+        return Err(report!(
+            "computed aggregate view {} has no function",
+            view.view_id
+        ));
+    }
+    if view.arguments.is_empty() {
+        return Err(report!(
+            "computed aggregate view {} has no arguments",
+            view.view_id
+        ));
+    }
+    for argument in &view.arguments {
+        match (&argument.expr, &argument.column) {
+            (Some(expression), _) => {
+                expression_type(&view.source.schema, expression)?;
+            }
+            (None, Some(column)) => {
+                field_type(&view.source.schema, column)?;
+            }
+            (None, None) => {
+                return Err(report!(
+                    "computed aggregate view {} has an empty argument",
+                    view.view_id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate that a grouping-sets view can be maintained.
@@ -3580,6 +3657,223 @@ pub fn approx_percentile_mv_schema_for(
     )
 }
 
+/// One argument of a [`ComputedAggView`]: a plain column or a rendered
+/// scalar expression.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputedAggArg {
+    /// The plain column, when the argument is a column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    /// The rendered expression, when the argument is not a plain column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+}
+
+impl ComputedAggArg {
+    /// The rendered SQL of the argument.
+    pub fn sql(&self) -> String {
+        match (&self.expr, &self.column) {
+            (Some(expression), _) => expression.clone(),
+            (None, Some(column)) => quote_ident(column),
+            (None, None) => String::new(),
+        }
+    }
+
+    /// The name used in the derived MV column.
+    pub fn label(&self) -> String {
+        match (&self.column, &self.expr) {
+            (Some(column), _) => column.clone(),
+            (None, Some(_)) => "value".to_string(),
+            (None, None) => "value".to_string(),
+        }
+    }
+}
+
+/// The result type of a [`ComputedAggView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputedAggResult {
+    /// The type of the first argument (`BIT_AND`/`BIT_OR`/`BIT_XOR`).
+    Value,
+    /// `Float64` (correlation, covariance, regression, percentiles).
+    Float64,
+    /// `UInt64` (`REGR_COUNT`).
+    UInt64,
+}
+
+/// A deterministic scalar-aggregate view over a source table.
+///
+/// The statistic is recomputed from the affected groups' current rows like
+/// the other unmergeable aggregates.
+#[derive(Debug, Clone)]
+pub struct ComputedAggView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the statistic.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to [`Self::group_keys`].
+    pub group_exprs: Vec<String>,
+    /// The SQL aggregate function name.
+    pub function: String,
+    /// The aggregate arguments, in order.
+    pub arguments: Vec<ComputedAggArg>,
+    /// The rendered percentile literal, when the aggregate takes one.
+    pub percentile: Option<String>,
+    /// The MV column holding the statistic.
+    pub column: String,
+    /// The result type of the aggregate.
+    pub result: ComputedAggResult,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized column.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl ComputedAggView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        function: impl Into<String>,
+        arguments: Vec<ComputedAggArg>,
+        column: impl Into<String>,
+        result: ComputedAggResult,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            group_exprs: Vec::new(),
+            function: function.into(),
+            arguments,
+            percentile: None,
+            column: column.into(),
+            result,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    /// The rendered percentile literal of an ordered-set aggregate.
+    pub fn with_percentile(mut self, percentile: impl Into<String>) -> Self {
+        self.percentile = Some(percentile.into());
+        self
+    }
+
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
+    /// The rendered aggregate call.
+    pub fn aggregate_call(&self) -> String {
+        let mut arguments = self
+            .arguments
+            .iter()
+            .map(ComputedAggArg::sql)
+            .collect::<Vec<_>>();
+        if let Some(percentile) = &self.percentile {
+            arguments.push(percentile.clone());
+        }
+        format!("{}({})", self.function, arguments.join(", "))
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::ComputedAgg {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
+            function: self.function.clone(),
+            arguments: self.arguments.clone(),
+            percentile: self.percentile.clone(),
+            column: self.column.clone(),
+            result: self.result,
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
+            aggregate_call: self.aggregate_call(),
+            column: self.column.clone(),
+            distinct_columns: None,
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        }
+    }
+}
+
+/// The schema of a [`ComputedAggView`] materialized view.
+pub fn computed_agg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    column: &str,
+    result: ComputedAggResult,
+    first_argument: Option<&ComputedAggArg>,
+) -> Result<SchemaRef> {
+    let data_type = match result {
+        ComputedAggResult::Value => {
+            let argument = first_argument
+                .ok_or_else(|| report!("the aggregate has no first argument"))?;
+            match (&argument.expr, &argument.column) {
+                (Some(expression), _) => expression_type(source_schema, expression)?.0,
+                (None, Some(name)) => field_type(source_schema, name)?,
+                (None, None) => {
+                    return Err(report!("the aggregate has no first argument"));
+                }
+            }
+        }
+        ComputedAggResult::Float64 => DataType::Float64,
+        ComputedAggResult::UInt64 => DataType::UInt64,
+    };
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
+    // Every aggregate is nullable: an empty group aggregates to NULL.
+    fields.push(Arc::new(Field::new(column, data_type, true)));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 #[derive(Debug, Clone)]
 pub struct MedianView {
     /// The view id.
@@ -4737,6 +5031,17 @@ impl SemiAntiView {
     }
 }
 
+/// A materialized `GROUPING(key)` column: the flat key index and the output
+/// column name. The value is `0` for the sets that group by the key and `1`
+/// for the sets that aggregate it away.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupingColumn {
+    /// The index of the key in the flat key list.
+    pub key: usize,
+    /// The output column name.
+    pub name: String,
+}
+
 /// A `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` view over a keyed source with
 /// the `SUM`/`COUNT`/`AVG` aggregates.
 ///
@@ -4769,6 +5074,8 @@ pub struct GroupingSetsView {
     pub aggregate_filter: Option<String>,
     /// Whether the view also materializes `AVG`.
     pub average: bool,
+    /// The materialized `GROUPING(key)` columns.
+    pub grouping_columns: Vec<GroupingColumn>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
@@ -4799,6 +5106,7 @@ impl GroupingSetsView {
             count_column: None,
             aggregate_filter: None,
             average: false,
+            grouping_columns: Vec::new(),
             filter: None,
             having: None,
             refresh_interval_ms: 0,
@@ -4836,6 +5144,15 @@ impl GroupingSetsView {
         self
     }
 
+    /// Materialize `GROUPING(key)` columns.
+    pub fn with_grouping_columns(
+        mut self,
+        grouping_columns: Vec<GroupingColumn>,
+    ) -> Self {
+        self.grouping_columns = grouping_columns;
+        self
+    }
+
     /// Only rows matching `filter` contribute to the view.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
@@ -4861,6 +5178,7 @@ impl GroupingSetsView {
             count_column: self.count_column.clone(),
             aggregate_filter: self.aggregate_filter.clone(),
             average: self.average,
+            grouping_columns: self.grouping_columns.clone(),
             filter: self.filter.clone(),
             having: self.having.clone(),
         }
@@ -5944,6 +6262,7 @@ pub fn grouping_sets_mv_schema_for(
     value_column: Option<&str>,
     value_expr: Option<&str>,
     average: bool,
+    grouping_columns: &[GroupingColumn],
 ) -> Result<SchemaRef> {
     let mut fields: Vec<arrow_schema::FieldRef> = vec![Arc::new(Field::new(
         IVM_GROUPING_COLUMN,
@@ -5987,7 +6306,22 @@ pub fn grouping_sets_mv_schema_for(
         }
         (None, None) => DataType::Int64,
     };
-    sum_count_schema_for(fields, sum_type, average)
+    let schema = sum_count_schema_for(fields, sum_type, average)?;
+    if grouping_columns.is_empty() {
+        return Ok(schema);
+    }
+    let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
+    let position = fields.len() - 2;
+    for (index, grouping) in grouping_columns.iter().enumerate() {
+        fields.insert(
+            position + index,
+            Arc::new(Field::new(grouping.name.clone(), DataType::Int32, false)),
+        );
+    }
+    Ok(Arc::new(Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    )))
 }
 
 pub fn sum_count_mv_schema_for(
@@ -6412,6 +6746,7 @@ impl IvmRuntime {
                 count_column,
                 aggregate_filter,
                 average,
+                grouping_columns,
                 filter,
                 having,
             } => SpecView::GroupingSets(GroupingSetsView {
@@ -6426,6 +6761,7 @@ impl IvmRuntime {
                 count_column: count_column.clone(),
                 aggregate_filter: aggregate_filter.clone(),
                 average: *average,
+                grouping_columns: grouping_columns.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
                 refresh_interval_ms,
@@ -6708,6 +7044,34 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::ComputedAgg {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                group_exprs,
+                function,
+                arguments,
+                percentile,
+                column,
+                result,
+                filter,
+                having,
+            } => SpecView::ComputedAgg(ComputedAggView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
+                function: function.clone(),
+                arguments: arguments.clone(),
+                percentile: percentile.clone(),
+                column: column.clone(),
+                result: *result,
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::StringAgg {
                 view_id,
                 source_table_id,
@@ -6915,6 +7279,7 @@ impl IvmRuntime {
             Ok(SpecView::ApproxPercentile(view)) => {
                 self.refresh_approx_percentile(&view).await
             }
+            Ok(SpecView::ComputedAgg(view)) => self.refresh_computed_agg(&view).await,
             Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
             Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
@@ -6960,6 +7325,7 @@ impl IvmRuntime {
             Ok(SpecView::ApproxPercentile(view)) => {
                 self.rebuild_approx_percentile(&view).await
             }
+            Ok(SpecView::ComputedAgg(view)) => self.rebuild_computed_agg(&view).await,
             Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
             Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
@@ -7789,6 +8155,37 @@ impl IvmRuntime {
             view.value_column.as_deref(),
             view.value_expr.as_deref(),
         )?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
+    /// Persist a computed-aggregate view spec (idempotent).
+    pub async fn register_computed_agg_view(&self, view: &ComputedAggView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a computed-aggregate view.
+    pub async fn refresh_computed_agg(
+        &self,
+        view: &ComputedAggView,
+    ) -> Result<Option<i64>> {
+        self.register_computed_agg_view(view).await?;
+        validate_computed_agg_view(view)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Rebuild a computed-aggregate view from the full source state.
+    pub async fn rebuild_computed_agg(&self, view: &ComputedAggView) -> Result<i64> {
+        self.register_computed_agg_view(view).await?;
+        validate_computed_agg_view(view)?;
         let parts = view.parts();
         validate_recompute_view(&parts)?;
         self.rebuild_recomputed(&parts).await
@@ -13496,7 +13893,25 @@ fn grouping_sets_columns(view: &GroupingSetsView) -> Vec<String> {
     if view.average {
         columns.push(IVM_AVG_COLUMN.to_string());
     }
+    for grouping in &view.grouping_columns {
+        columns.push(grouping.name.clone());
+    }
     columns
+}
+
+/// The rendered `GROUPING(key)` constants of one grouping set.
+fn grouping_set_constants(
+    view: &GroupingSetsView,
+    index: usize,
+) -> Vec<(String, String)> {
+    let set = &view.groupings[index];
+    view.grouping_columns
+        .iter()
+        .map(|grouping| {
+            let value = if set.contains(&grouping.key) { 0 } else { 1 };
+            (grouping.name.clone(), value.to_string())
+        })
+        .collect()
 }
 
 /// The rendered aggregate expressions of a grouping-sets view.
@@ -13559,6 +13974,9 @@ fn grouping_sets_group_now(
     ));
     if view.average {
         select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+    }
+    for (name, value) in grouping_set_constants(view, index) {
+        select.push(format!("cast({value} as int) as {}", quote_ident(&name)));
     }
     let affected_filter = if keys.is_empty() {
         " and exists (select 1 from affected)".to_string()
@@ -13694,6 +14112,9 @@ fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
         ));
         if view.average {
             select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+        }
+        for (name, value) in grouping_set_constants(view, index) {
+            select.push(format!("cast({value} as int) as {}", quote_ident(&name)));
         }
         let rows = format!(
             "select {} from src where {src_where}{}",

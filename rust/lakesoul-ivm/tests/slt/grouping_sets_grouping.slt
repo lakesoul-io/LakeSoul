@@ -1,0 +1,64 @@
+# GROUPING(key) columns are materialized per grouping set: 0 for the sets that
+# group by the key and 1 for the sets that aggregate it away.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, GROUPING(g) AS is_total, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, is_total, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 30 2
+0 b 0 5 1
+1 NULL 1 35 3
+
+# An update moves the detail and the total rows.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, GROUPING(g) AS is_total, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, is_total, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 50 2
+0 b 0 5 1
+1 NULL 1 55 3
+
+# Deleting the last row of a group removes its detail row.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=5,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, GROUPING(g) AS is_total, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, is_total, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 50 2
+1 NULL 1 50 2
+
+# A filtered definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, GROUPING(g) AS is_total, SUM(v), COUNT(*) FROM __SRC__ WHERE v > 10 GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, is_total, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 40 1
+1 NULL 1 40 1

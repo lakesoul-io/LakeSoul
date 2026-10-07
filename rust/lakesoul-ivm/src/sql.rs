@@ -36,9 +36,10 @@ use arrow_schema::Schema;
 
 use crate::error::Result;
 use crate::runtime::{
-    BoolAggKind, CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
-    IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    MinMaxKind, SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
+    BoolAggKind, CompareOp, ComputedAggArg, ComputedAggResult, DistinctAggKind,
+    GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
+    IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
+    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
     WindowFunction, WindowGroupSpec, approx_distinct_output_column,
     approx_percentile_output_column, bool_agg_output_column, string_agg_output_column,
     union_output_schema_for,
@@ -94,7 +95,14 @@ pub fn analyze_select(
     let spec = match plan {
         LogicalPlan::Projection(projection) => match peel(&projection.input) {
             LogicalPlan::Aggregate(aggregate) => {
-                if !is_plain_projection(projection) {
+                // A `GROUPING()` column is a computed column over the grouping
+                // sets, which the grouping-sets analyzer materializes.
+                let grouping_projection = aggregate
+                    .group_expr
+                    .iter()
+                    .any(|expr| matches!(strip_alias(expr), Expr::GroupingSet(_)))
+                    && is_grouping_projection(projection);
+                if !is_plain_projection(projection) && !grouping_projection {
                     return Err(unsupported(
                         "computed columns above an aggregate are not supported",
                     ));
@@ -114,7 +122,11 @@ pub fn analyze_select(
                 // `HAVING` is one or more filters directly above the
                 // aggregate; a filter on a window rank column is top-k.
                 if let Some((aggregate, having)) = having_aggregate(&projection.input) {
-                    if !is_plain_projection(projection) {
+                    let grouping_projection =
+                        aggregate.group_expr.iter().any(|expr| {
+                            matches!(strip_alias(expr), Expr::GroupingSet(_))
+                        }) && is_grouping_projection(projection);
+                    if !is_plain_projection(projection) && !grouping_projection {
                         return Err(unsupported(
                             "computed columns above an aggregate are not supported",
                         ));
@@ -413,6 +425,12 @@ enum HavingColumns<'a> {
         value: &'a AggValue,
         percentile: &'a str,
     },
+    /// `<function>_<args>` for a computed-aggregate view.
+    ComputedAgg {
+        function: &'a str,
+        arguments: &'a [ComputedAggArg],
+        percentile: Option<&'a str>,
+    },
     /// `bool_and_<value>` / `bool_or_<value>` for a BOOL_AND/BOOL_OR view.
     BoolAgg {
         kind: BoolAggKind,
@@ -686,6 +704,42 @@ fn having_column(
                     AggValue::Column(column) => Some(column.as_str()),
                     AggValue::Expr(_) => None,
                 }))
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::ComputedAgg { .. } if function_filter.is_some() => {
+            Err(not_materialized(name))
+        }
+        HavingColumns::ComputedAgg {
+            function: expected_function,
+            arguments,
+            percentile,
+        } => {
+            let argument_matches = function.params.args.len()
+                == arguments.len() + usize::from(percentile.is_some())
+                && arguments
+                    .iter()
+                    .zip(&function.params.args)
+                    .all(|(expected, arg)| computed_arg_matches(expected, arg, hoisted));
+            let percentile_matches = percentile.is_none_or(|expected| {
+                function.params.args.last().is_some_and(|literal| {
+                    render_filter(literal).is_ok_and(|rendered| rendered == expected)
+                })
+            });
+            if name == expected_function
+                && !function.params.distinct
+                && argument_matches
+                && percentile_matches
+            {
+                Ok(format!(
+                    "{name}_{}",
+                    arguments
+                        .iter()
+                        .map(ComputedAggArg::label)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                ))
             } else {
                 Err(not_materialized(name))
             }
@@ -1026,6 +1080,96 @@ fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<Agg
     value_argument(arg, hoisted, true)
 }
 
+/// The flat key index of a `GROUPING(key)` projection column: the optimizer
+/// rewrites it to `CAST(__grouping_id & <single bit> AS Int32)`.
+fn grouping_bit(expr: &Expr, keys: usize) -> Option<usize> {
+    let Expr::Cast(cast) = expr else {
+        return None;
+    };
+    let Expr::BinaryExpr(binary) = cast.expr.as_ref() else {
+        return None;
+    };
+    if binary.op != Operator::BitwiseAnd {
+        return None;
+    }
+    let (mask, column) = match (&*binary.left, &*binary.right) {
+        (Expr::Literal(mask, _), Expr::Column(column)) => (mask, column),
+        (Expr::Column(column), Expr::Literal(mask, _)) => (mask, column),
+        _ => return None,
+    };
+    if column.name != "__grouping_id" {
+        return None;
+    }
+    let mask = match mask {
+        ScalarValue::UInt8(Some(mask)) => u64::from(*mask),
+        ScalarValue::UInt16(Some(mask)) => u64::from(*mask),
+        ScalarValue::UInt32(Some(mask)) => u64::from(*mask),
+        ScalarValue::UInt64(Some(mask)) => *mask,
+        _ => return None,
+    };
+    if mask.count_ones() != 1 {
+        return None;
+    }
+    let bit = mask.trailing_zeros() as usize;
+    (bit < keys).then_some(bit)
+}
+
+/// Whether every non-plain projection column is a `GROUPING()` rewrite (an
+/// expression over the hidden grouping id).
+fn is_grouping_projection(projection: &Projection) -> bool {
+    projection.expr.iter().all(|expr| {
+        column_of(expr).is_some() || expr_mentions_grouping_id(strip_alias(expr))
+    })
+}
+
+/// Whether an expression references the hidden grouping id.
+fn expr_mentions_grouping_id(expr: &Expr) -> bool {
+    let mut found = false;
+    let _ = expr.apply(|node| {
+        if let Expr::Column(column) = node
+            && column.name == "__grouping_id"
+        {
+            found = true;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
+}
+
+/// The shape of a deterministic scalar aggregate maintained by the computed
+/// aggregate family: `(arguments, takes a percentile literal, result type)`.
+fn computed_agg_shape(name: &str) -> Option<(usize, bool, ComputedAggResult)> {
+    Some(match name {
+        "bit_and" | "bit_or" | "bit_xor" => (1, false, ComputedAggResult::Value),
+        "corr" | "covar_samp" | "covar_pop" => (2, false, ComputedAggResult::Float64),
+        "regr_slope" | "regr_intercept" | "regr_r2" | "regr_avgx" | "regr_avgy"
+        | "regr_sxx" | "regr_syy" | "regr_sxy" => (2, false, ComputedAggResult::Float64),
+        "regr_count" => (2, false, ComputedAggResult::UInt64),
+        "percentile_cont" => (1, true, ComputedAggResult::Float64),
+        "approx_median" => (1, false, ComputedAggResult::Float64),
+        "approx_percentile_cont_with_weight" => (2, true, ComputedAggResult::Float64),
+        _ => return None,
+    })
+}
+
+/// Whether an aggregate argument matches a stored computed-aggregate argument.
+fn computed_arg_matches(
+    expected: &ComputedAggArg,
+    arg: &Expr,
+    hoisted: &HashMap<String, Expr>,
+) -> bool {
+    match sum_value_argument(arg, hoisted) {
+        Ok(AggValue::Column(column)) => {
+            expected.column.as_deref() == Some(column.as_str()) && expected.expr.is_none()
+        }
+        Ok(AggValue::Expr(expression)) => {
+            expected.expr.as_deref() == Some(expression.as_str())
+                && expected.column.is_none()
+        }
+        Err(_) => false,
+    }
+}
+
 /// `GROUP BY GROUPING SETS` / `ROLLUP` / `CUBE` over a keyed source with the
 /// `SUM`/`COUNT`/`AVG` aggregates.
 ///
@@ -1035,6 +1179,7 @@ fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<Agg
 /// set does not group by.
 fn analyze_grouping_sets(
     aggregate: &Aggregate,
+    projection: Option<&Projection>,
     having_exprs: &[Expr],
     source: &IvmTable,
     filter: Option<String>,
@@ -1205,12 +1350,48 @@ fn analyze_grouping_sets(
         Some(AggValue::Expr(expression)) => (None, Some(expression)),
         None => (None, None),
     };
+    // `GROUPING(key)` is rewritten to a projection over the hidden
+    // `__grouping_id`; materialize the supported single-key shape per set.
+    let mut grouping_columns = Vec::new();
+    if let Some(projection) = projection {
+        for expr in &projection.expr {
+            let inner = strip_alias(expr);
+            let Some(key) = grouping_bit(inner, group_keys.len()) else {
+                if expr_mentions_grouping_id(inner) {
+                    return Err(unsupported(
+                        "only a single-key GROUPING(key) column is maintained",
+                    ));
+                }
+                continue;
+            };
+            // The optimizer auto-names an unaliased `GROUPING()` column after
+            // the SQL expression; fall back to a plain derived name then.
+            let name = match expr {
+                Expr::Alias(alias)
+                    if alias.name.chars().all(|character| {
+                        character.is_alphanumeric() || character == '_'
+                    }) =>
+                {
+                    alias.name.clone()
+                }
+                _ => format!("grouping_{}", group_keys[key]),
+            };
+            if grouping_columns
+                .iter()
+                .any(|column: &GroupingColumn| column.name == name)
+            {
+                return Err(unsupported("duplicate GROUPING() column"));
+            }
+            grouping_columns.push(GroupingColumn { key, name });
+        }
+    }
     Ok(ViewSpec::GroupingSets {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
         group_keys,
         group_exprs: Vec::new(),
+        grouping_columns,
         groupings,
         value_column,
         value_expr,
@@ -1222,6 +1403,7 @@ fn analyze_grouping_sets(
     })
 }
 
+#[allow(clippy::type_complexity)]
 fn analyze_aggregate(
     aggregate: &Aggregate,
     projection: Option<&Projection>,
@@ -1265,7 +1447,14 @@ fn analyze_aggregate(
         .iter()
         .any(|expr| matches!(strip_alias(expr), Expr::GroupingSet(_)))
     {
-        return analyze_grouping_sets(aggregate, having_exprs, source, filter, request);
+        return analyze_grouping_sets(
+            aggregate,
+            projection,
+            having_exprs,
+            source,
+            filter,
+            request,
+        );
     }
 
     let mut group_keys = Vec::with_capacity(aggregate.group_expr.len());
@@ -1339,6 +1528,13 @@ fn analyze_aggregate(
     let mut bool_agg: Option<(BoolAggKind, AggValue)> = None;
     let mut approx_distinct: Option<AggValue> = None;
     let mut approx_percentile: Option<(AggValue, String)> = None;
+    let mut computed_agg: Option<(
+        String,
+        Vec<ComputedAggArg>,
+        Option<String>,
+        ComputedAggResult,
+        String,
+    )> = None;
     let mut median: Option<AggValue> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
@@ -1418,6 +1614,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1450,6 +1647,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1478,6 +1676,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                 {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
@@ -1506,6 +1705,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1532,6 +1732,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1559,6 +1760,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1590,6 +1792,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1623,6 +1826,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1655,6 +1859,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1680,6 +1885,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1706,6 +1912,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1727,6 +1934,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1761,6 +1969,7 @@ fn analyze_aggregate(
                     || bool_agg.is_some()
                     || approx_distinct.is_some()
                     || approx_percentile.is_some()
+                    || computed_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1779,6 +1988,68 @@ fn analyze_aggregate(
                 let array_value = value_argument(value, &hoisted_exprs, false)?;
                 let order_by = render_order_items(&function.params.order_by)?;
                 array_agg = Some((array_value, order_by));
+                aggregate_filters.push((name, function_filter, false));
+            }
+            (name, false) if computed_agg_shape(name).is_some() => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                    || string_agg.is_some()
+                    || array_agg.is_some()
+                    || bool_agg.is_some()
+                    || approx_distinct.is_some()
+                    || approx_percentile.is_some()
+                    || computed_agg.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                let (arity, percentile_literal, result) =
+                    computed_agg_shape(name).expect("checked above");
+                let expected = arity + usize::from(percentile_literal);
+                if function.params.args.len() != expected {
+                    return Err(unsupported(format!(
+                        "{name} takes {expected} argument(s)"
+                    )));
+                }
+                let mut arguments = Vec::with_capacity(arity);
+                for arg in &function.params.args[..arity] {
+                    let value = sum_value_argument(arg, &hoisted_exprs)?;
+                    arguments.push(match value {
+                        AggValue::Column(column) => ComputedAggArg {
+                            column: Some(column),
+                            expr: None,
+                        },
+                        AggValue::Expr(expression) => ComputedAggArg {
+                            column: None,
+                            expr: Some(expression),
+                        },
+                    });
+                }
+                let percentile = if percentile_literal {
+                    let literal = &function.params.args[arity];
+                    if !matches!(literal, Expr::Literal(..)) {
+                        return Err(unsupported(format!(
+                            "{name} needs a literal percentile"
+                        )));
+                    }
+                    Some(render_filter(literal)?)
+                } else {
+                    None
+                };
+                let column = format!(
+                    "{name}_{}",
+                    arguments
+                        .iter()
+                        .map(ComputedAggArg::label)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                );
+                computed_agg =
+                    Some((name.to_string(), arguments, percentile, result, column));
                 aggregate_filters.push((name, function_filter, false));
             }
             _ => {
@@ -1838,6 +2109,7 @@ fn analyze_aggregate(
             || bool_agg.is_some()
             || approx_distinct.is_some()
             || approx_percentile.is_some()
+            || computed_agg.is_some()
             || min_max.is_some()
             || distinct.is_some())
     {
@@ -1919,6 +2191,17 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some((function, arguments, percentile, _, _)) = &computed_agg {
+        render_having(
+            having_exprs,
+            HavingColumns::ComputedAgg {
+                function,
+                arguments,
+                percentile: percentile.as_deref(),
+            },
+            aggregate,
+            &group_keys,
+        )?
     } else if let Some((value, percentile)) = &approx_percentile {
         render_having(
             having_exprs,
@@ -1975,6 +2258,21 @@ fn analyze_aggregate(
             value_column,
             value_expr,
             statistic,
+            filter,
+            having,
+        }
+    } else if let Some((function, arguments, percentile, result, column)) = computed_agg {
+        ViewSpec::ComputedAgg {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            group_exprs,
+            function,
+            arguments,
+            percentile,
+            column,
+            result,
             filter,
             having,
         }
@@ -6715,6 +7013,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_computed_aggregates() {
+        let cases = [
+            ("select g, bit_and(v) from src group by g", "bit_and_v"),
+            ("select g, bit_or(v) from src group by g", "bit_or_v"),
+            ("select g, bit_xor(v) from src group by g", "bit_xor_v"),
+            ("select g, corr(v, k) from src group by g", "corr_v_k"),
+            (
+                "select g, covar_samp(v, k) from src group by g",
+                "covar_samp_v_k",
+            ),
+            (
+                "select g, covar_pop(v, k) from src group by g",
+                "covar_pop_v_k",
+            ),
+            (
+                "select g, regr_slope(v, k) from src group by g",
+                "regr_slope_v_k",
+            ),
+            (
+                "select g, regr_intercept(v, k) from src group by g",
+                "regr_intercept_v_k",
+            ),
+            (
+                "select g, regr_count(v, k) from src group by g",
+                "regr_count_v_k",
+            ),
+            ("select g, regr_r2(v, k) from src group by g", "regr_r2_v_k"),
+            (
+                "select g, regr_avgx(v, k) from src group by g",
+                "regr_avgx_v_k",
+            ),
+            (
+                "select g, regr_avgy(v, k) from src group by g",
+                "regr_avgy_v_k",
+            ),
+            (
+                "select g, regr_sxx(v, k) from src group by g",
+                "regr_sxx_v_k",
+            ),
+            (
+                "select g, regr_syy(v, k) from src group by g",
+                "regr_syy_v_k",
+            ),
+            (
+                "select g, regr_sxy(v, k) from src group by g",
+                "regr_sxy_v_k",
+            ),
+            (
+                "select g, percentile_cont(v, 0.5) from src group by g",
+                "percentile_cont_v",
+            ),
+            (
+                "select g, approx_median(v) from src group by g",
+                "approx_median_v",
+            ),
+            (
+                "select g, approx_percentile_cont_with_weight(v, k, 0.5) \
+                 from src group by g",
+                "approx_percentile_cont_with_weight_v_k",
+            ),
+        ];
+        for (sql, column) in cases {
+            let analyzed = analyze_optimized(sql)
+                .await
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            let ViewSpec::ComputedAgg {
+                column: analyzed_column,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("{sql}: expected a computed aggregate spec");
+            };
+            assert_eq!(analyzed_column, column, "{sql}");
+        }
+
+        // HAVING maps to the derived column.
+        let analyzed = analyze_optimized(
+            "select g, bit_and(v) from src group by g having bit_and(v) > 0",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::ComputedAgg { having, .. } = analyzed.spec else {
+            panic!("expected a computed aggregate spec");
+        };
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("bit_and_v > 0")
+        );
+
+        // Literal percentiles and mixing are validated (an arity mismatch is
+        // already rejected by the planner).
+        assert!(
+            analyze_optimized("select g, percentile_cont(v, k) from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze_optimized("select g, bit_and(v), sum(v) from src group by g")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_approx_percentile() {
         let analyzed = analyze_optimized(
             "select g, approx_percentile_cont(v, 0.5) from src group by g",
@@ -6941,6 +7343,41 @@ mod tests {
         };
         assert_eq!(group_keys, vec!["g".to_string(), "v".to_string()]);
         assert_eq!(groupings, vec![vec![0], vec![0, 1]]);
+
+        // GROUPING(key) columns are materialized per set.
+        let analyzed = analyze_optimized(
+            "select g, grouping(g) as is_total, sum(v) from src \
+             group by grouping sets ((g), ())",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            grouping_columns, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(
+            grouping_columns,
+            vec![GroupingColumn {
+                key: 0,
+                name: "is_total".to_string(),
+            }]
+        );
+        // An unaliased GROUPING() column falls back to a plain derived name.
+        let analyzed = analyze_optimized(
+            "select g, grouping(g), sum(v) from src \
+             group by grouping sets ((g), ())",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            grouping_columns, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(grouping_columns[0].name, "grouping_g");
 
         // Only SUM/COUNT/AVG and plain columns are maintained.
         assert!(

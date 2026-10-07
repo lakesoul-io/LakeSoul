@@ -2268,6 +2268,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap、大值上移中位数、过滤定义 rebuild）、随机差分 oracle（多种子）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）340 个测试通过、0 失败。
 
+### 10.74 SQL 函数补全：标量聚合族 + GROUPING()（PR-68）
+
+- **确定性标量聚合族**（通用 spec `ViewSpec::ComputedAgg` + `ComputedAggView`，参数为「列/表达式」对，
+  可带百分位字面量；结果类型 `Value`/`Float64`/`UInt64`）：
+  - `BIT_AND`/`BIT_OR`/`BIT_XOR(v)`（结果同首参类型）；
+  - `CORR`/`COVAR_SAMP`/`COVAR_POP(y, x)`、`REGR_SLOPE`/`REGR_INTERCEPT`/`REGR_COUNT`/`REGR_R2`/
+    `REGR_AVGX`/`REGR_AVGY`/`REGR_SXX`/`REGR_SYY`/`REGR_SXY(y, x)`（Float64，`REGR_COUNT` 为 UInt64）；
+  - `PERCENTILE_CONT(v, p)`（精确分位）、`APPROX_MEDIAN(v)`、`APPROX_PERCENTILE_CONT_WITH_WEIGHT(v, w, p)`。
+  维护沿用 recompute 家族（按受影响分组重算），列名 `<function>_<参数标签...>`；HAVING 由
+  `HavingColumns::ComputedAgg` 逐参数匹配；执行器 schema/分发同步。
+- **GROUPING()**：`GROUPING(key)` 被优化器改写为隐藏列 `__grouping_id` 上的按位表达式；分组集
+  analyzer 识别单键掩码形态并物化为 **每集合常量列**（集合包含该键→0，聚合掉→1），列名取显式别名或
+  `grouping_<key>`；`Projection→Aggregate` 的纯列检查对分组集投影放宽；多键/复合 `GROUPING()` 仍明确拒绝。
+- **明确拒绝**：`ANY_VALUE`、聚合形态的 `FIRST_VALUE`/`LAST_VALUE`/`NTH_VALUE` 等顺序相关函数仍按
+  “aggregate function …” 报错（不静默）。
+- **测试**：analyzer（18 个函数 + 列名 + HAVING + 非字面量百分位/混用拒绝；GROUPING 正反向）、
+  `bit_agg.slt`、`grouping_sets_grouping.slt`（明细/总计与 GROUPING 标记、增删改、重建）、表驱动 oracle
+  （18 个函数对全量重算，逐组一致）、GROUPING oracle。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）345 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

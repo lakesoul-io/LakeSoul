@@ -63,7 +63,8 @@ used as row identities must be non-nullable.
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
 | BOOL_AND / BOOL_OR | `SELECT k, BOOL_AND(flag) FROM src GROUP BY k` over a Boolean column or expression | keys, `bool_and_<v>` / `bool_or_<v>` (`bool_and_value` for expressions), kinds, epoch |
 | APPROX_DISTINCT | `SELECT k, APPROX_DISTINCT(v) FROM src GROUP BY k` | keys, `approx_distinct_<v>` (`approx_distinct_value` for expressions, `UInt64`), kinds, epoch |
-| APPROX_PERCENTILE_CONT | `SELECT k, APPROX_PERCENTILE_CONT(v, 0.5) FROM src GROUP BY k` | keys, `approx_percentile_cont_<v>` (`Float64`), kinds, epoch |
+| APPROX_PERCENTILE_CONT | `SELECT k, APPROX_PERCENTILE_CONT(v, 0.5) FROM src GROUP BY k`; also `APPROX_MEDIAN(v)` and the weighted `APPROX_PERCENTILE_CONT_WITH_WEIGHT(v, w, p)` | keys, `approx_percentile_cont_<v>` (`Float64`), kinds, epoch |
+| Scalar aggregates | `BIT_AND`/`BIT_OR`/`BIT_XOR(v)`; `CORR`/`COVAR_SAMP`/`COVAR_POP(y, x)`; `REGR_SLOPE`/`REGR_INTERCEPT`/`REGR_COUNT`/`REGR_R2`/`REGR_AVGX`/`REGR_AVGY`/`REGR_SXX`/`REGR_SYY`/`REGR_SXY(y, x)`; `PERCENTILE_CONT(v, p)` | keys, `<function>_<arguments>` (the value type for the bit aggregates, `Float64`/`UInt64` otherwise), kinds, epoch |
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
@@ -83,8 +84,10 @@ Supported within the shapes above:
   materialized in one MV keyed by `(__ivm_grouping, keys...)` — the keys a set
   does not group by are NULL — and a refresh recomputes the affected groups of
   every set, so a row moving in or out of a set (including the grand total)
-  updates it; only `SUM`/`COUNT`/`AVG` over plain key columns and keyed
-  sources are maintained;
+  updates it; a `GROUPING(key)` column is materialized per set (0 for the sets
+  that group by the key, 1 for the sets that aggregate it away, named after
+  its alias or `grouping_<key>`); only `SUM`/`COUNT`/`AVG` over plain key
+  columns and keyed sources are maintained;
 * **`APPROX_DISTINCT`** and **`APPROX_PERCENTILE_CONT(v, p)`** (a literal
   percentile): the affected groups are recomputed from their current rows, and
   DataFusion's sketch updates are order independent, so the estimates are
@@ -92,6 +95,11 @@ Supported within the shapes above:
 * **`BOOL_AND` / `BOOL_OR`** over booleans (a column or an expression such as
   `flag OR backup`): the affected groups are recomputed from their current
   rows, so NULL inputs are ignored exactly like DataFusion's implementation;
+* **deterministic scalar aggregates**: `BIT_AND`/`BIT_OR`/`BIT_XOR`,
+  `CORR`/`COVAR_SAMP`/`COVAR_POP`, the `REGR_*` family, `PERCENTILE_CONT`,
+  `APPROX_MEDIAN` and the weighted approximate percentile: the affected groups
+  are recomputed from their current rows (order-independent accumulators), so
+  an incremental refresh matches a full rebuild;
 * **global aggregates**: every supported aggregate without a `GROUP BY`
   (`SUM`/`COUNT`/`AVG`, `MIN`/`MAX`, `COUNT(DISTINCT)`/`SUM(DISTINCT)` and the
   variance, median, `STRING_AGG` and `ARRAY_AGG` families) keeps a single-row
