@@ -1,0 +1,45 @@
+# APPROX_PERCENTILE_CONT over a group: the sketch is recomputed from the
+# affected groups.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=a,v=30,op=insert; k=4,g=a,v=40,op=insert; k=5,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TR rowsort
+SELECT g, approx_percentile_cont_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 25.0
+b 5.0
+
+# A large new value moves the median up.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,v=1000,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TR rowsort
+SELECT g, approx_percentile_cont_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 30.0
+b 5.0
+
+# A filtered definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) FROM __SRC__ WHERE v > 20 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TR rowsort
+SELECT g, approx_percentile_cont_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 40.0
