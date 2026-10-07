@@ -2230,6 +2230,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （NULL 忽略、更新翻转、分组消失、过滤定义 rebuild）、随机差分 oracle（表达式参数 + WHERE）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）332 个测试通过、0 失败。
 
+### 10.71 oracle 种子可变 + GROUPING SETS 覆盖扩展（PR-65）
+
+- **bug 修复（由新覆盖发现）**：`render_having` 用 `aggregate.group_expr.len()` 定位聚合输出列，但
+  GROUPING SETS 的聚合 schema 在分组列与聚合列之间还有隐藏的 `__grouping_id` 列 → HAVING 的映射
+  整体错位（`HAVING SUM(v)` 被映射到 `avg_v`，导致分组集 HAVING 过滤错误）。改为从 schema **末尾**
+  定位聚合输出（`fields.len() - aggr_expr.len()`），对所有 HAVING 路径生效；既有 HAVING 测试全绿。
+- **测试基建**：oracle 的随机流可配置（`IVM_ORACLE_SEED`/`IVM_ORACLE_ROUNDS`），每个 oracle 把 tag
+  混入种子保证单次运行覆盖不同数据流；自定义种子的稀疏数据（参考结果全程为空）不再触发
+  “view stayed empty” 断言（每轮仍与全量重算对照）。默认种子下断言保持不变。
+- **覆盖扩展**：GROUPING SETS 增加 CUBE（两键：明细 + 两个单键小计 + 总计）与 HAVING+AVG（阈值
+  进出）随机差分 oracle；多轮多种子深跑（`ROUNDS=30`，5 个种子）未再发现其它问题。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）334 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

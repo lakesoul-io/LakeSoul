@@ -445,7 +445,14 @@ fn render_having(
     }
     let hoisted = hoisted_expressions(&aggregate.input);
     let mut mapping: HashMap<String, String> = HashMap::new();
-    let group_count = aggregate.group_expr.len();
+    // Hidden columns (for example the grouping-set id) may sit between the
+    // group columns and the aggregates, so the aggregate outputs are located
+    // from the end of the schema.
+    let aggregate_offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
     for (index, aggr) in aggregate.aggr_expr.iter().enumerate() {
         let mut inner = aggr;
         while let Expr::Alias(alias) = inner {
@@ -457,7 +464,7 @@ fn render_having(
         if let Ok(column) = having_column(function, columns, &hoisted) {
             // The HAVING filter refers to the aggregate by the name of its
             // output field.
-            if let Some(field) = aggregate.schema.fields().get(group_count + index) {
+            if let Some(field) = aggregate.schema.fields().get(aggregate_offset + index) {
                 mapping.insert(field.name().clone(), column.clone());
             }
             // The HAVING filter refers to the aggregate by the name the

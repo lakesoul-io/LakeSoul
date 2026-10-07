@@ -309,7 +309,11 @@ The crate has three test layers:
 * SQL entry end-to-end scripts (`tests/slt/*.slt`) driven by `tests/sqllogic.rs`;
 * differential oracles against full recomputes (`tests/sql_oracle.rs`),
   including the join shapes (differently named inner keys, non-equality pair
-  conditions) and the filtered semi/anti and multi-column distinct views;
+  conditions) and the filtered semi/anti and multi-column distinct views. The
+  mutation stream is deterministic per oracle; vary it with
+  `IVM_ORACLE_SEED=7 IVM_ORACLE_ROUNDS=30 cargo test -p lakesoul-ivm --test
+  sql_oracle` (a custom seed whose data stays empty no longer fails the
+  coverage guard);
 * typed runtime tests (e.g. `tests/join_keyed.rs`, `tests/window_refresh.rs`);
 * typed coverage for `Float64` / `Decimal128` / `Date32` / `Boolean` inputs
   (`tests/slt/typed_*.slt` and `union_types.slt`), including NULL handling and
