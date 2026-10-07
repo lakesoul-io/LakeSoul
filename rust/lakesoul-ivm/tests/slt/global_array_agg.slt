@@ -1,0 +1,60 @@
+# Global ARRAY_AGG (no GROUP BY).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT ARRAY_AGG(v ORDER BY k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query T rowsort
+SELECT array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+[10, 3]
+
+# An update reorders the list.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT ARRAY_AGG(v ORDER BY k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query T rowsort
+SELECT array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+[5, 3]
+
+# A delete removes its element.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=3,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT ARRAY_AGG(v ORDER BY k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query T rowsort
+SELECT array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+[5]
+
+# A filtered definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT ARRAY_AGG(v ORDER BY k) FROM __SRC__ WHERE v >= 7
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query T rowsort
+SELECT array_agg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+[7]

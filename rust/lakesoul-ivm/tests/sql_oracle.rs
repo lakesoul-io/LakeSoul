@@ -1624,3 +1624,34 @@ async fn oracle_global_distinct_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_variance_matches_full_recompute() {
+    // A global VAR_SAMP over the whole source.
+    run_oracle(
+        "globalvariance",
+        1,
+        variance_mv_schema_for(&source_schema(), &[], "v", VarianceKind::VarSamp)
+            .unwrap(),
+        Vec::new(),
+        "SELECT VAR_SAMP(v) FROM __SRC__",
+        "SELECT VAR_SAMP(v) AS variance_v FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_median_matches_full_recompute() {
+    // A global MEDIAN over the whole source.
+    run_oracle(
+        "globalmedian",
+        1,
+        median_mv_schema_for(&source_schema(), &[], "v").unwrap(),
+        Vec::new(),
+        "SELECT MEDIAN(v) FROM __SRC__",
+        "SELECT MEDIAN(v) AS median_v FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

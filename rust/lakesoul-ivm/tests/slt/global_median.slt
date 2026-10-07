@@ -1,0 +1,60 @@
+# Global MEDIAN (no GROUP BY).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT MEDIAN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query R rowsort
+SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20.0
+
+# An update changes the value set.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT MEDIAN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query R rowsort
+SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20.0
+
+# A delete moves the middle.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT MEDIAN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query R rowsort
+SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+30.0
+
+# A filtered definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT MEDIAN(v) FROM __SRC__ WHERE v > 20
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query R rowsort
+SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+45.0

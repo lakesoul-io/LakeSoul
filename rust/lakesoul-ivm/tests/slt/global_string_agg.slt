@@ -1,0 +1,60 @@
+# Global STRING_AGG (no GROUP BY).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=1,op=insert; k=2,g=b,v=1,op=insert; k=3,g=c,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT STRING_AGG(g, ',' ORDER BY k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query T rowsort
+SELECT string_agg_g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a,b,c
+
+# An update changes the value and keeps its position.
+statement ok
+/*ivm-append __SRC__: k=2,g=d,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT STRING_AGG(g, ',' ORDER BY k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query T rowsort
+SELECT string_agg_g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a,d,c
+
+# A delete removes its element.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT STRING_AGG(g, ',' ORDER BY k) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query T rowsort
+SELECT string_agg_g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+d,c
+
+# A filtered definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: k=4,g=e,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT STRING_AGG(g, ',' ORDER BY k) FROM __SRC__ WHERE k > 3
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query T rowsort
+SELECT string_agg_g FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+e
