@@ -1,0 +1,45 @@
+# BIT_AND over a group: the affected groups are recomputed.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=6,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, BIT_AND(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TI rowsort
+SELECT g, bit_and_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 7
+
+# An update changes the bitwise conjunction.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, BIT_AND(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, bit_and_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 0
+b 7
+
+# A filtered definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, BIT_AND(v) FROM __SRC__ WHERE v > 2 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TI rowsort
+SELECT g, bit_and_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 6
+b 7

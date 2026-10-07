@@ -29,11 +29,12 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    BoolAggKind, DistinctAggKind, IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime,
-    IvmSqlExecutor, IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind,
-    WindowColumn, WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
+    BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
+    IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
+    IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
+    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
     approx_percentile_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
-    bool_agg_mv_schema_for, cross_join_view_schema_for,
+    bool_agg_mv_schema_for, computed_agg_mv_schema_for, cross_join_view_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
@@ -2100,6 +2101,51 @@ fn sqllogic_approx_distinct() {
 }
 
 #[test]
+fn sqllogic_bit_agg() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "bitagg",
+        include_str!("slt/bit_agg.slt"),
+        computed_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &[],
+            "bit_and_v",
+            ComputedAggResult::Value,
+            Some(&ComputedAggArg {
+                column: Some("v".to_string()),
+                expr: None,
+            }),
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_grouping_sets_grouping() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "groupingsetsgrouping",
+        include_str!("slt/grouping_sets_grouping.slt"),
+        grouping_sets_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &[],
+            Some("v"),
+            None,
+            false,
+            &[GroupingColumn {
+                key: 0,
+                name: "is_total".to_string(),
+            }],
+        )
+        .unwrap(),
+        group_keys(&["__ivm_grouping", "g"]),
+    );
+}
+
+#[test]
 fn sqllogic_bool_agg() {
     let schema = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("k", DataType::Int64, false),
@@ -2155,6 +2201,7 @@ fn sqllogic_grouping_sets() {
             Some("v"),
             None,
             false,
+            &[],
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g"]),
@@ -2174,6 +2221,7 @@ fn sqllogic_grouping_sets_multi() {
             Some("v"),
             None,
             false,
+            &[],
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g", "v"]),

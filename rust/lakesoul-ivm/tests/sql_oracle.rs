@@ -16,12 +16,13 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    BoolAggKind, DistinctAggKind, IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor,
-    IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
-    approx_percentile_mv_schema_for, array_agg_expr_mv_schema_for,
-    array_agg_groups_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
-    bool_agg_groups_mv_schema_for, distinct_agg_groups_mv_schema_for,
+    BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
+    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, MinMaxKind,
+    PhysicalFormat, VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
+    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
+    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
     distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
@@ -1780,6 +1781,7 @@ async fn oracle_grouping_sets_matches_full_recompute() {
             Some("v"),
             None,
             false,
+            &[],
         )
         .unwrap(),
         vec!["__ivm_grouping".to_string(), "g".to_string()],
@@ -1830,6 +1832,7 @@ async fn oracle_grouping_sets_cube_matches_full_recompute() {
             Some("v"),
             None,
             false,
+            &[],
         )
         .unwrap(),
         vec![
@@ -1859,6 +1862,7 @@ async fn oracle_grouping_sets_having_matches_full_recompute() {
             Some("v"),
             None,
             true,
+            &[],
         )
         .unwrap(),
         vec!["__ivm_grouping".to_string(), "g".to_string()],
@@ -1903,6 +1907,227 @@ async fn oracle_approx_percentile_matches_full_recompute() {
         "SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) AS approx_percentile_cont_v \
          FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY g",
         "SELECT g, approx_percentile_cont_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+#[allow(clippy::type_complexity)]
+async fn oracle_computed_aggs_matches_full_recompute() {
+    // Every deterministic scalar aggregate recomputes the affected groups, so
+    // a refresh (and a rebuild) matches the full recompute.
+    let column = |name: &str| ComputedAggArg {
+        column: Some(name.to_string()),
+        expr: None,
+    };
+    let cases: Vec<(
+        &str,
+        &str,
+        ComputedAggResult,
+        Vec<ComputedAggArg>,
+        Option<&str>,
+        &str,
+    )> = vec![
+        (
+            "bitand",
+            "BIT_AND(v)",
+            ComputedAggResult::Value,
+            vec![column("v")],
+            None,
+            "bit_and_v",
+        ),
+        (
+            "bitor",
+            "BIT_OR(v)",
+            ComputedAggResult::Value,
+            vec![column("v")],
+            None,
+            "bit_or_v",
+        ),
+        (
+            "bitxor",
+            "BIT_XOR(v)",
+            ComputedAggResult::Value,
+            vec![column("v")],
+            None,
+            "bit_xor_v",
+        ),
+        (
+            "corr",
+            "CORR(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "corr_v_k",
+        ),
+        (
+            "covarsamp",
+            "COVAR_SAMP(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "covar_samp_v_k",
+        ),
+        (
+            "covarpop",
+            "COVAR_POP(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "covar_pop_v_k",
+        ),
+        (
+            "regrslope",
+            "REGR_SLOPE(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_slope_v_k",
+        ),
+        (
+            "regrintercept",
+            "REGR_INTERCEPT(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_intercept_v_k",
+        ),
+        (
+            "regrcount",
+            "REGR_COUNT(v, k)",
+            ComputedAggResult::UInt64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_count_v_k",
+        ),
+        (
+            "regrr2",
+            "REGR_R2(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_r2_v_k",
+        ),
+        (
+            "regravgx",
+            "REGR_AVGX(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_avgx_v_k",
+        ),
+        (
+            "regravgy",
+            "REGR_AVGY(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_avgy_v_k",
+        ),
+        (
+            "regrsxx",
+            "REGR_SXX(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_sxx_v_k",
+        ),
+        (
+            "regrsyy",
+            "REGR_SYY(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_syy_v_k",
+        ),
+        (
+            "regrsxy",
+            "REGR_SXY(v, k)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            None,
+            "regr_sxy_v_k",
+        ),
+        (
+            "pctcont",
+            "PERCENTILE_CONT(v, 0.5)",
+            ComputedAggResult::Float64,
+            vec![column("v")],
+            Some("0.5"),
+            "percentile_cont_v",
+        ),
+        (
+            "approxmedian",
+            "APPROX_MEDIAN(v)",
+            ComputedAggResult::Float64,
+            vec![column("v")],
+            None,
+            "approx_median_v",
+        ),
+        (
+            "pctweighted",
+            "APPROX_PERCENTILE_CONT_WITH_WEIGHT(v, k, 0.5)",
+            ComputedAggResult::Float64,
+            vec![column("v"), column("k")],
+            Some("0.5"),
+            "approx_percentile_cont_with_weight_v_k",
+        ),
+    ];
+    for (tag, call, result, args, _percentile, column_name) in cases {
+        let definition = format!("SELECT g, {call} FROM __SRC__ WHERE v > 10 GROUP BY g");
+        let reference = format!(
+            "SELECT g, {call} AS {column_name} FROM __SRC__ \
+             WHERE op <> 'delete' AND v > 10 GROUP BY g"
+        );
+        let query =
+            format!("SELECT g, {column_name} FROM __MV__ WHERE \"rowKinds\" = 'insert'");
+        run_oracle(
+            tag,
+            1,
+            computed_agg_mv_schema_for(
+                &source_schema(),
+                &["g".to_string()],
+                &[],
+                column_name,
+                result,
+                args.first(),
+            )
+            .unwrap(),
+            vec!["g".to_string()],
+            &definition,
+            &reference,
+            &query,
+        )
+        .await;
+    }
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_grouping_matches_full_recompute() {
+    // GROUPING(key) columns follow the grouping sets: 0 for the sets that
+    // group by the key and 1 for the sets that aggregate it away.
+    run_oracle(
+        "groupingsetsgrouping",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            Some("v"),
+            None,
+            false,
+            &[GroupingColumn {
+                key: 0,
+                name: "is_total".to_string(),
+            }],
+        )
+        .unwrap(),
+        vec!["__ivm_grouping".to_string(), "g".to_string()],
+        "SELECT g, GROUPING(g) AS is_total, SUM(v) FROM __SRC__ \
+         WHERE v > 10 GROUP BY ROLLUP(g)",
+        "SELECT g, GROUPING(g) AS is_total, SUM(v) AS sum_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 10 GROUP BY ROLLUP(g)",
+        "SELECT g, is_total, sum_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
