@@ -1,0 +1,61 @@
+# APPROX_DISTINCT over a group: the sketch is recomputed from the affected
+# groups, so deletes shrink the estimate.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=10,op=insert; k=3,g=a,v=20,op=insert; k=4,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_DISTINCT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TI rowsort
+SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 1
+
+# A new distinct value raises the estimate.
+statement ok
+/*ivm-append __SRC__: k=5,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_DISTINCT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 3
+b 1
+
+# Deleting the last copy of a value lowers it again.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_DISTINCT(v) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 2
+b 1
+
+# A filtered definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, APPROX_DISTINCT(v) FROM __SRC__ WHERE v > 10 GROUP BY g
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TI rowsort
+SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 1
