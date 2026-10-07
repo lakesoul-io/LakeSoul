@@ -1,0 +1,59 @@
+# UNION ALL of three keyed sources: every branch keeps its own source marker.
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert; k=2,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=c,v=30,op=insert*/
+
+statement ok
+/*ivm-append __SRC3__: k=3,g=d,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION ALL SELECT k, g, v FROM __SRC2__ UNION ALL SELECT k, g, v FROM __SRC3__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITII rowsort
+SELECT k, g, v, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 0
+1 c 30 1
+2 b 20 0
+3 d 40 2
+
+# An update in the third branch retracts and reinserts its row.
+statement ok
+/*ivm-append __SRC3__: k=3,g=d,v=45,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION ALL SELECT k, g, v FROM __SRC2__ UNION ALL SELECT k, g, v FROM __SRC3__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 0
+1 c 30 1
+2 b 20 0
+3 d 45 2
+
+# A delete in the second branch removes its row.
+statement ok
+/*ivm-append __SRC2__: k=1,g=c,v=30,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION ALL SELECT k, g, v FROM __SRC2__ UNION ALL SELECT k, g, v FROM __SRC3__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 0
+2 b 20 0
+3 d 45 2

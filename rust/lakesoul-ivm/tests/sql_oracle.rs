@@ -1655,3 +1655,86 @@ async fn oracle_global_median_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_union_all_branches_matches_full_recompute() {
+    // Three keyed sources unioned without deduplication.
+    run_oracle(
+        "unionallbranches",
+        3,
+        union_all_mv_schema_for(
+            &union_output_schema_for(
+                &source_schema(),
+                &["k".to_string(), "g".to_string(), "v".to_string()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        vec![IVM_SOURCE_COLUMN.to_string(), "k".to_string()],
+        "SELECT k, g, v FROM __SRC__ UNION ALL SELECT k, g, v FROM __SRC1__ \
+         UNION ALL SELECT k, g, v FROM __SRC2__",
+        "SELECT k, g, v, 0 AS __ivm_source FROM __SRC__ WHERE op <> 'delete' \
+         UNION ALL SELECT k, g, v, 1 AS __ivm_source FROM __SRC1__ WHERE op <> 'delete' \
+         UNION ALL SELECT k, g, v, 2 AS __ivm_source FROM __SRC2__ WHERE op <> 'delete'",
+        "SELECT k, g, v, __ivm_source FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_union_distinct_branches_matches_full_recompute() {
+    // Three keyed sources unioned with deduplication.
+    run_oracle(
+        "uniondistinctbranches",
+        3,
+        union_distinct_mv_schema_for(
+            &union_output_schema_for(
+                &source_schema(),
+                &["k".to_string(), "g".to_string(), "v".to_string()],
+                &[],
+            )
+            .unwrap(),
+        ),
+        vec!["k".to_string(), "g".to_string(), "v".to_string()],
+        "SELECT k, g, v FROM __SRC__ UNION SELECT k, g, v FROM __SRC1__ \
+         UNION SELECT k, g, v FROM __SRC2__",
+        "SELECT k, g, v, count(*) AS count_v FROM (SELECT k, g, v FROM __SRC__ \
+         WHERE op <> 'delete' UNION ALL SELECT k, g, v FROM __SRC1__ WHERE op <> 'delete' \
+         UNION ALL SELECT k, g, v FROM __SRC2__ WHERE op <> 'delete') t GROUP BY k, g, v",
+        "SELECT k, g, v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_string_agg_matches_full_recompute() {
+    // A global STRING_AGG over the whole source.
+    run_oracle(
+        "globalstringagg",
+        1,
+        string_agg_mv_schema_for(&source_schema(), &[], "g").unwrap(),
+        Vec::new(),
+        "SELECT STRING_AGG(g, ',' ORDER BY k) FROM __SRC__",
+        "SELECT STRING_AGG(g, ',' ORDER BY k) AS string_agg_g FROM __SRC__ \
+         WHERE op <> 'delete'",
+        "SELECT string_agg_g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_array_agg_matches_full_recompute() {
+    // A global ARRAY_AGG over the whole source.
+    run_oracle(
+        "globalarrayagg",
+        1,
+        array_agg_mv_schema_for(&source_schema(), &[], "v").unwrap(),
+        Vec::new(),
+        "SELECT ARRAY_AGG(v ORDER BY k) FROM __SRC__",
+        "SELECT ARRAY_AGG(v ORDER BY k) AS array_agg_v FROM __SRC__ \
+         WHERE op <> 'delete'",
+        "SELECT array_agg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

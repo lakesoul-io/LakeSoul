@@ -2076,6 +2076,43 @@ fn sqllogic_global_distinct() {
 }
 
 #[test]
+fn sqllogic_union_all_branches() {
+    let schema = source_schema();
+    let output =
+        union_output_schema_for(&schema, &group_keys(&["k", "g", "v"]), &[]).unwrap();
+    run_script_for_sources(
+        "unionallbranches",
+        include_str!("slt/union_all_branches.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC3__", schema.clone(), group_keys(&["k"])),
+        ],
+        union_all_mv_schema_for(&output).unwrap(),
+        group_keys(&[IVM_SOURCE_COLUMN, "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_union_distinct_branches() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "uniondistinctbranches",
+        include_str!("slt/union_distinct_branches.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC3__", schema.clone(), group_keys(&["k"])),
+        ],
+        union_distinct_mv_schema_for(
+            &union_output_schema_for(&schema, &group_keys(&["k", "g", "v"]), &[])
+                .unwrap(),
+        ),
+        group_keys(&["k", "g", "v"]),
+    );
+}
+
+#[test]
 fn sqllogic_global_variance() {
     run_script_for_mv(
         "globalvariance",
