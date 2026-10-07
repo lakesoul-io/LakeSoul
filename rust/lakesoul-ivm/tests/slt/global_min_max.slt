@@ -1,0 +1,75 @@
+# Global MIN (then MAX, same schema) without a GROUP BY.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT MIN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10
+
+# A smaller value becomes the minimum.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT MIN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+5
+
+# Deleting the minimum moves it.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=5,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT MIN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10
+
+# The empty source keeps the single NULL row.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete; k=2,g=a,v=30,op=delete; k=3,g=b,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT MIN(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+NULL
+
+# MAX rebuilds the view with the same schema.
+statement ok
+/*ivm-append __SRC__: k=5,g=c,v=7,op=insert; k=6,g=c,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT MAX(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query I rowsort
+SELECT "value" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+9

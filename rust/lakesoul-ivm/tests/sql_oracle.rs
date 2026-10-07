@@ -1593,3 +1593,34 @@ async fn oracle_global_sum_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_min_matches_full_recompute() {
+    // A global MIN over the whole source.
+    run_oracle(
+        "globalmin",
+        1,
+        min_max_mv_schema_for(&source_schema(), &[], "v", MinMaxKind::Min).unwrap(),
+        Vec::new(),
+        "SELECT MIN(v) FROM __SRC__",
+        "SELECT MIN(v) AS value FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT \"value\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_distinct_matches_full_recompute() {
+    // A global COUNT(DISTINCT v) over the whole source.
+    run_oracle(
+        "globaldistinct",
+        1,
+        distinct_agg_mv_schema_for(&source_schema(), &[], "v", DistinctAggKind::Count)
+            .unwrap(),
+        Vec::new(),
+        "SELECT COUNT(DISTINCT v) FROM __SRC__",
+        "SELECT COUNT(DISTINCT v) AS value FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT \"value\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

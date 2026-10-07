@@ -2055,6 +2055,38 @@ fn sqllogic_cross_join() {
 }
 
 #[test]
+fn sqllogic_global_min_max() {
+    run_script_for_mv(
+        "globalminmax",
+        include_str!("slt/global_min_max.slt"),
+        min_max_mv_schema_for(&source_schema(), &[], "v", MinMaxKind::Min).unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_global_distinct() {
+    run_script_for_mv(
+        "globaldistinct",
+        include_str!("slt/global_distinct.slt"),
+        distinct_agg_mv_schema_for(&source_schema(), &[], "v", DistinctAggKind::Count)
+            .unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_global_distinct_sum() {
+    run_script_for_mv(
+        "globaldistinctsum",
+        include_str!("slt/global_distinct_sum.slt"),
+        distinct_agg_mv_schema_for(&source_schema(), &[], "v", DistinctAggKind::Sum)
+            .unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
 fn sqllogic_global_sum() {
     run_script_for_mv(
         "globalsum",

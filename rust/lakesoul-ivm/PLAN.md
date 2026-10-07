@@ -2159,6 +2159,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_global_sum`（随机差分：SUM/COUNT/AVG 与全量重算对照）。全量 IVM 套件
   （lib + 39 个集成测试二进制 + doctest）307 个测试通过、0 失败。
 
+### 10.66 全局 MIN/MAX 与 DISTINCT（PR-60）
+
+- **能力**：`SELECT MIN(v) FROM src`、`MAX(v)`、`COUNT(DISTINCT v)`、`SUM(DISTINCT v)`（可带 WHERE/HAVING）
+  无 GROUP BY 的全局聚合，沿用 PR-59 的「单行 MV + 每次刷新整表重写」模式。
+- **运行时**：`refresh_value_count`/`rebuild_value_count` 的空 key 分支：读当前源/基线 → truncate MV →
+  新 `value_count_global_sql`（`min/max/count(distinct)/sum(distinct)` 直接作用于源列或表达式，可带 HAVING）
+  单行写入；value-count 状态表保持为空（全局聚合不需要增量状态，与多列 distinct 的做法一致）。
+  校验允许空 key。
+- **测试**：`global_min_max.slt`（MIN→MAX 定义变化 rebuild、删除移动最值、空源 NULL 行）、
+  `global_distinct.slt`（COUNT DISTINCT + 过滤定义 rebuild）、`global_distinct_sum.slt`
+  （SUM DISTINCT，注意其 value 列可空需独立 MV schema）、两个随机 oracle（global MIN / global COUNT DISTINCT）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）312 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
