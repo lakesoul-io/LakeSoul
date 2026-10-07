@@ -5993,6 +5993,33 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
+        if view.group_keys.is_empty() {
+            // A global aggregate has no groups to prune and its MV is a
+            // single row without a primary key, so the row is recomputed over
+            // the current source and the MV is rewritten wholesale.
+            let keyed = !view.source.primary_keys.is_empty();
+            let context = SessionContext::new();
+            register_table(
+                &context,
+                "src",
+                view.source.read_current(&self.client).await?,
+                &view.source.schema,
+            )?;
+            view.mv.truncate(&self.client).await?;
+            let sql = sum_count_rebuild_sql(view, keyed, epoch);
+            for batch in context.sql(&sql).await?.collect().await? {
+                if batch.num_rows() > 0 {
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+            let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            self.advance_cursors(&view.view_id, window.cursors).await?;
+            return Ok(Some(epoch));
+        }
+
         let context = SessionContext::new();
         let delta_batches = project_group_keys(
             &context,
@@ -11056,6 +11083,26 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// The `key, ` select prefix of a group key list; empty for a global
+/// aggregate.
+fn key_select(columns: &[String]) -> String {
+    if columns.is_empty() {
+        String::new()
+    } else {
+        format!("{}, ", quoted_list(columns))
+    }
+}
+
+/// The ` group by ...` suffix of a group key list; empty for a global
+/// aggregate.
+fn group_by_clause(columns: &[String]) -> String {
+    if columns.is_empty() {
+        String::new()
+    } else {
+        format!(" group by {}", quoted_list(columns))
+    }
+}
+
 fn quoted_list(columns: &[String]) -> String {
     columns
         .iter()
@@ -11309,7 +11356,8 @@ fn sum_count_value_sql(view: &SumCountView) -> Option<String> {
 /// Validate a `SUM`/`COUNT` view: the group keys, the value/count columns and
 /// the `HAVING` predicate.
 fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
-    if view.group_exprs.is_empty() {
+    // An empty key list is a global aggregate over the whole source.
+    if view.group_exprs.is_empty() && !view.group_keys.is_empty() {
         validate_group_keys(&view.source, &view.group_keys, &view.view_id)?;
     }
     group_key_fields(&view.source.schema, &view.group_keys, &view.group_exprs)?;
@@ -11592,10 +11640,11 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
 
 /// SQL for a full `SUM`/`COUNT` rebuild.
 fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String {
-    let keys = quoted_list(&view.group_keys);
     if !keyed {
         // Append-only CDC sources keep every marker in `src`, so the rebuild
         // aggregates them with their sign and keeps the net-positive groups.
+        let key_select = key_select(&view.group_keys);
+        let group_by = group_by_clause(&view.group_keys);
         let value = sum_count_value_sql(view);
         let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
             "src",
@@ -11615,11 +11664,11 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
             String::new()
         };
         let rebuild = format!(
-            "select {keys}, case when nonnull > 0 then dsum else null end as {}, \
+            "select {key_select}case when nonnull > 0 then dsum else null end as {}, \
                     dcount as {}, nonnull as {}{avg_rebuild}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-             from (select {keys}, {signed_sum} as dsum, {signed_count} as dcount, \
+             from (select {key_select}{signed_sum} as dsum, {signed_count} as dcount, \
                           {signed_nonnull} as nonnull \
-                   from src{plain_where} group by {keys}) \
+                   from src{plain_where}{group_by}) \
              where dcount > 0",
             quote_ident(IVM_SUM_COLUMN),
             quote_ident(IVM_COUNT_COLUMN),
@@ -11635,6 +11684,8 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         .as_deref()
         .map(|filter| format!(" filter (where {filter})"))
         .unwrap_or_default();
+    let key_select = key_select(&view.group_keys);
+    let group_by = group_by_clause(&view.group_keys);
     let value = sum_count_value_sql(view);
     let sum_expr = match &value {
         Some(value) => format!("sum({value}){aggregate_filter}"),
@@ -11664,8 +11715,8 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         String::new()
     };
     let rebuild = format!(
-        "select {keys}, {sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}{avg_rebuild}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-         from src where {src_where} group by {keys}",
+        "select {key_select}{sum_expr} as {}, count(1) as {}, {nonnull_expr} as {}{avg_rebuild}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from src where {src_where}{group_by}",
         quote_ident(IVM_SUM_COLUMN),
         quote_ident(IVM_COUNT_COLUMN),
         quote_ident(IVM_NONNULL_COUNT_COLUMN),

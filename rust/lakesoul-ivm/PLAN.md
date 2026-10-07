@@ -2144,6 +2144,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （`oracle_intersect`/`oracle_except`，与 DataFusion 原生集合运算差分对照）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）305 个测试通过、0 失败。
 
+### 10.65 全局聚合（无 GROUP BY，SUM/COUNT/AVG）（PR-59）
+
+- **能力**：`SELECT SUM(v), COUNT(*), AVG(v) FROM src [WHERE ...] [HAVING ...]` 无 GROUP BY 的全局聚合：
+  单行 MV（无主键）随每次刷新整行重写（重算 + truncate + 写入）；空源保持一行 `NULL/0`，HAVING 不满足时
+  MV 为空。
+- **运行时**：`validate_sum_count_view` 允许空 key 列表；`sum_count_rebuild_sql` 抽出
+  `key_select`/`group_by_clause` 支持空 key（grouped 行为不变）；`refresh_sum_count` 对空 key 走全局分支
+  （读当前源 → truncate MV → 重算 SQL 单行写入）。MV 无主键时 delete 标记无法按主键合并，因此必须
+  truncate 而不是 delete+insert。
+- **范围**：仅 SUM/COUNT/AVG 家族；其它聚合家族（MIN/MAX、DISTINCT、方差、中位数等）的全局聚合仍以
+  “needs at least one group key” 明确拒绝（README 记录）。
+- **测试**：`global_sum.slt`（bootstrap/更新/删空/复活/HAVING 重建与增量）、
+  `oracle_global_sum`（随机差分：SUM/COUNT/AVG 与全量重算对照）。全量 IVM 套件
+  （lib + 39 个集成测试二进制 + doctest）307 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

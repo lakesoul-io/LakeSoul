@@ -1575,3 +1575,21 @@ async fn oracle_except_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_sum_matches_full_recompute() {
+    // A global SUM/COUNT/AVG over the whole source: the single MV row is
+    // recomputed on every refresh.
+    run_oracle(
+        "globalsum",
+        1,
+        avg_mv_schema_for(&source_schema(), &[], "v").unwrap(),
+        Vec::new(),
+        "SELECT SUM(v), COUNT(*), AVG(v) FROM __SRC__",
+        "SELECT SUM(v) AS sum_v, COUNT(*) AS count_v, COUNT(v) AS nonnull, \
+         AVG(v) AS avg_v FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT sum_v, count_v, \"__ivm_nonnull_count\", avg_v FROM __MV__ \
+         WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
