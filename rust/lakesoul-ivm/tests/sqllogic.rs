@@ -33,7 +33,7 @@ use lakesoul_ivm::{
     IvmTable, IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
     WindowFunction, WindowGroupSpec, array_agg_mv_schema_for, avg_mv_schema_for,
     cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, full_join_view_schema_for,
+    distinct_agg_mv_schema_for, full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
@@ -2072,6 +2072,44 @@ fn sqllogic_global_distinct() {
         distinct_agg_mv_schema_for(&source_schema(), &[], "v", DistinctAggKind::Count)
             .unwrap(),
         Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_grouping_sets() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "groupingsets",
+        include_str!("slt/grouping_sets.slt"),
+        grouping_sets_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &[],
+            Some("v"),
+            None,
+            false,
+        )
+        .unwrap(),
+        group_keys(&["__ivm_grouping", "g"]),
+    );
+}
+
+#[test]
+fn sqllogic_grouping_sets_multi() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "groupingsetsmulti",
+        include_str!("slt/grouping_sets_multi.slt"),
+        grouping_sets_mv_schema_for(
+            &schema,
+            &group_keys(&["g", "v"]),
+            &[],
+            Some("v"),
+            None,
+            false,
+        )
+        .unwrap(),
+        group_keys(&["__ivm_grouping", "g", "v"]),
     );
 }
 

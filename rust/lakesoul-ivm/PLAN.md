@@ -2194,6 +2194,28 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   GROUPING SETS、三表 join/多 payload、标量/相关子查询、分区源表、极端类型与个别聚合函数。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）324 个测试通过、0 失败。
 
+### 10.69 GROUPING SETS / ROLLUP / CUBE（PR-63）
+
+- **能力**：`GROUP BY GROUPING SETS/ROLLUP/CUBE`（含 `GROUP BY g, ROLLUP(v)` 这类被优化器展开的混合写法）
+  在 keyed 源上维护 `SUM`/`COUNT(*)/COUNT(列)/AVG`（可带 WHERE/HAVING）；每个分组集物化在**同一张 MV**
+  里，以 `__ivm_grouping`（集合序号）+ 扁平键列（未分组的键为 NULL）为键；刷新按 `affected`（delta/old
+  的扁平键元组，复用 `affected_groups_sql`）对每个集合重算受影响分组，删除旧行并写入新行。
+- **spec/typed/schema**：`ViewSpec::GroupingSets` + `GroupingSetsView`（`new` + 各 builder）；
+  `grouping_sets_mv_schema_for`（`__ivm_grouping` 非空、所有键强制可空、SUM/COUNT/AVG 列）；
+  新增常量 `IVM_GROUPING_COLUMN` 并导出。
+- **analyzer**：`analyze_grouping_sets` 解析三种 GroupingSet 形态（ROLLUP 前缀集、CUBE 全子集、显式集合），
+  展平键为首见顺序并记录索引集合；聚合仅接受 SUM/COUNT/AVG（FILTER/DISTINCT/其它函数明确拒绝）；
+  key 必须为纯列；HAVING 复用 `HavingColumns::SumCount`。`having_aggregate` 扩展为可跳过 Filter 与
+  Aggregate 之间的纯投影（分组集的 HAVING 计划形态），`rejects_unmaintained_shapes` 移除旧的
+  “GROUPING SETS 明确拒绝”断言。
+- **运行时**：`refresh_grouping_sets`（读 delta/old/当前源/MV → 每集合的 delete/insert 分支 union all，
+  `order by 键, "rowKinds"` 保证同键删除先于插入，`already` 守卫按 epoch 幂等）与
+  `rebuild_grouping_sets`（每集合 `group by` 直算）；分发/指标/执行器 schema 同步。
+- **测试**：analyzer（ROLLUP、CUBE 子集、显式集合、HAVING、AVG、混合写法展开、三类拒绝）、
+  `grouping_sets.slt`/`grouping_sets_multi.slt`（明细/小计/总计、增删改、等价定义增量 vs 集合变化
+  rebuild）、随机差分 oracle（ROLLUP 与 DataFusion 原生重算对照）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）328 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

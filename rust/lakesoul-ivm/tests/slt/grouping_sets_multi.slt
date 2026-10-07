@@ -1,0 +1,57 @@
+# ROLLUP over two keys, then CUBE over the same keys: the flat key columns
+# stay (g, v), only the grouping sets change.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v, SUM(v) FROM __SRC__ GROUP BY ROLLUP(g, v)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 10 10 1
+0 a 20 20 1
+0 b 20 20 1
+1 a NULL 30 2
+1 b NULL 20 1
+2 NULL NULL 50 3
+
+# A delete removes its detail row and moves the subtotals.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v, SUM(v) FROM __SRC__ GROUP BY ROLLUP(g, v)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 20 20 1
+0 b 20 20 1
+1 a NULL 20 1
+1 b NULL 20 1
+2 NULL NULL 40 2
+
+# CUBE adds the per-value subtotals and rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, v, SUM(v) FROM __SRC__ GROUP BY CUBE(g, v)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 20 20 1
+0 b 20 20 1
+1 NULL 20 40 2
+2 a NULL 20 1
+2 b NULL 20 1
+3 NULL NULL 40 2

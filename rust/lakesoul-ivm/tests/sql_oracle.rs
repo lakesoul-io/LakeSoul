@@ -20,10 +20,11 @@ use lakesoul_ivm::{
     MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
     WindowGroupSpec, array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, keyed_join_output_primary_keys,
-    keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_window_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
+    keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_window_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
@@ -1735,6 +1736,31 @@ async fn oracle_global_array_agg_matches_full_recompute() {
         "SELECT ARRAY_AGG(v ORDER BY k) AS array_agg_v FROM __SRC__ \
          WHERE op <> 'delete'",
         "SELECT array_agg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_matches_full_recompute() {
+    // A ROLLUP over one key: the per-group rows and the grand total share the
+    // MV, distinguished by the grouping index.
+    run_oracle(
+        "groupingsets",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            Some("v"),
+            None,
+            false,
+        )
+        .unwrap(),
+        vec!["__ivm_grouping".to_string(), "g".to_string()],
+        "SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY ROLLUP(g)",
+        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
