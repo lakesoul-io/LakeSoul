@@ -1079,15 +1079,16 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 ### 10.5 不支持算子清单（backlog，按优先级）
 
+> 该表在 2026-10 按当前实现重写；已完成项见 §10.6 起的实施记录（0.x 未列）。
+
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 表达式/投影 | 其它聚合族的参数表达式（VARIANCE/MEDIAN）；多参数聚合（`COUNT(DISTINCT a, b)`） | 与 W0 基础设施复用，随需求做 |
-| 聚合/分组 | `GROUPING SETS/ROLLUP/CUBE` | 随需求做 |
-| 窗口 | 不同 `PARTITION BY`/`ORDER BY` 的多窗口（链式 WindowAggr） | 随需求做 |
-| 连接/集合 | CROSS join；三表及以上 join；join 非等值/异名键/每侧多 payload | 设计级扩展（join 树/条件列表） |
-| 子查询/CTE | 标量子查询、相关子查询、`WITH`、含聚合/窗口的派生表 | 低 |
-| 入口/表 | 多语句等已被拒绝；**分区源表**（`ensure_unpartitioned`） | 随需求做 |
-| 类型 | key/value 运行时已泛化，但 Float/DISTINCT、Decimal 聚合、Date/Timestamp 分组等缺系统验证 | 随 H1 补测 |
+| 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE`（当前明确拒绝）；同一语句混合多种聚合 kind | 设计级扩展（分组 id + 每集合重算 + 可空键） |
+| 连接/集合 | 三表及以上 join（join 树 / 中间视图）；每侧多 payload 列；`FULL JOIN` 的强制侧过滤（优化器会重写为 LEFT/RIGHT）；pair 谓词只能引用 payload 列 | 设计级扩展（多视图链 / 中间 MV） |
+| 子查询/CTE | 标量/相关子查询（依赖多视图链）；嵌套/不透明派生表 | 低，随多视图链一起做 |
+| 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
+| 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
+| 表达式 | 每个聚合族各自的小形状（如 `ANY_VALUE`、`BOOL_AND` 等新函数） | 按需接线 |
 
 ### 10.6 本轮 PR 拆分
 
@@ -2183,6 +2184,15 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`global_variance.slt`、`global_median.slt`、`global_string_agg.slt`、`global_array_agg.slt`
   （各含增量步骤 + 过滤定义 rebuild）、`oracle_global_variance`、`oracle_global_median`。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）318 个测试通过、0 失败。
+
+### 10.68 多分支 UNION 覆盖 + backlog 刷新（PR-62）
+
+- **测试**：三分支 `UNION ALL`/`UNION` 的 slt（分支增删改 + `__ivm_source` 标记）与随机差分 oracle
+  （3 源）；全局 `STRING_AGG`/`ARRAY_AGG` 的随机差分 oracle。此前的 2 分支测试未覆盖 3+ 分支
+  （实现本就支持单 Union 节点多输入，本轮以测试固化）。
+- **文档**：PLAN §10.5「不支持算子清单」按当前实现重写——已完成项移除，剩余缺口收敛为
+  GROUPING SETS、三表 join/多 payload、标量/相关子查询、分区源表、极端类型与个别聚合函数。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）324 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

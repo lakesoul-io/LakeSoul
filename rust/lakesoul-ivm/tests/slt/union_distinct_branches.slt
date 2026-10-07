@@ -1,0 +1,58 @@
+# UNION (distinct) of three keyed sources: duplicated rows carry the number of
+# copies across all branches.
+
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=insert; k=2,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=10,op=insert*/
+
+statement ok
+/*ivm-append __SRC3__: k=2,g=b,v=20,op=insert; k=3,g=c,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__ UNION SELECT k, g, v FROM __SRC3__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 2
+2 b 20 2
+3 c 30 1
+
+# A branch update moves its copy.
+statement ok
+/*ivm-append __SRC3__: k=3,g=c,v=35,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__ UNION SELECT k, g, v FROM __SRC3__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 2
+2 b 20 2
+3 c 35 1
+
+# A delete decrements the count.
+statement ok
+/*ivm-append __SRC1__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC1__ UNION SELECT k, g, v FROM __SRC2__ UNION SELECT k, g, v FROM __SRC3__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITII rowsort
+SELECT k, g, v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 1
+2 b 20 2
+3 c 35 1
