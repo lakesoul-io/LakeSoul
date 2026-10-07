@@ -61,6 +61,7 @@ used as row identities must be non-nullable.
 | COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; globally without a `GROUP BY`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
+| BOOL_AND / BOOL_OR | `SELECT k, BOOL_AND(flag) FROM src GROUP BY k` over a Boolean column or expression | keys, `bool_and_<v>` / `bool_or_<v>` (`bool_and_value` for expressions), kinds, epoch |
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
@@ -82,6 +83,9 @@ Supported within the shapes above:
   every set, so a row moving in or out of a set (including the grand total)
   updates it; only `SUM`/`COUNT`/`AVG` over plain key columns and keyed
   sources are maintained;
+* **`BOOL_AND` / `BOOL_OR`** over booleans (a column or an expression such as
+  `flag OR backup`): the affected groups are recomputed from their current
+  rows, so NULL inputs are ignored exactly like DataFusion's implementation;
 * **global aggregates**: every supported aggregate without a `GROUP BY`
   (`SUM`/`COUNT`/`AVG`, `MIN`/`MAX`, `COUNT(DISTINCT)`/`SUM(DISTINCT)` and the
   variance, median, `STRING_AGG` and `ARRAY_AGG` families) keeps a single-row

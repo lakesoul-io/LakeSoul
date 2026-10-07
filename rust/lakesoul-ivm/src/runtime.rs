@@ -578,6 +578,38 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
     },
+    /// `group_key`, `BOOL_AND(value)` or `BOOL_OR(value)` over the source
+    /// rows; the statistic is recomputed from the affected groups.
+    BoolAgg {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
+        /// The boolean value column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_column: Option<String>,
+        /// A rendered value expression; mutually exclusive with
+        /// `value_column`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_expr: Option<String>,
+        /// Whether `BOOL_AND` or `BOOL_OR` is maintained.
+        bool_agg: BoolAggKind,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
+    },
     /// `STRING_AGG(value, delimiter ORDER BY keys)` over a source, maintained
     /// by recomputing the affected groups.
     StringAgg {
@@ -827,6 +859,7 @@ impl ViewSpec {
             ViewSpec::SumCount { view_id, .. }
             | ViewSpec::Variance { view_id, .. }
             | ViewSpec::Median { view_id, .. }
+            | ViewSpec::BoolAgg { view_id, .. }
             | ViewSpec::StringAgg { view_id, .. }
             | ViewSpec::ArrayAgg { view_id, .. }
             | ViewSpec::Join { view_id, .. }
@@ -853,6 +886,7 @@ impl ViewSpec {
             ViewSpec::SumCount { .. } => "sum_count",
             ViewSpec::Variance { .. } => "variance",
             ViewSpec::Median { .. } => "median",
+            ViewSpec::BoolAgg { .. } => "bool_agg",
             ViewSpec::StringAgg { .. } => "string_agg",
             ViewSpec::ArrayAgg { .. } => "array_agg",
             ViewSpec::Join { .. } => "join",
@@ -879,6 +913,7 @@ enum SpecView {
     SumCount(SumCountView),
     Variance(VarianceView),
     Median(MedianView),
+    BoolAgg(BoolAggView),
     StringAgg(StringAggView),
     ArrayAgg(ArrayAggView),
     Join(JoinView),
@@ -2865,6 +2900,236 @@ fn median_result_type(value_type: &DataType) -> Result<DataType> {
 ///
 /// The median is recomputed from the affected groups' current source rows,
 /// which keeps the result identical to the native aggregate.
+/// The boolean aggregate a [`BoolAggView`] maintains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoolAggKind {
+    /// `BOOL_AND(value)`.
+    BoolAnd,
+    /// `BOOL_OR(value)`.
+    BoolOr,
+}
+
+impl BoolAggKind {
+    /// The SQL function name.
+    pub fn sql_name(self) -> &'static str {
+        match self {
+            BoolAggKind::BoolAnd => "bool_and",
+            BoolAggKind::BoolOr => "bool_or",
+        }
+    }
+}
+
+/// The derived column of a [`BoolAggView`] materialized view.
+pub fn bool_agg_output_column(kind: BoolAggKind, value_column: Option<&str>) -> String {
+    match value_column {
+        Some(column) => format!("{}_{column}", kind.sql_name()),
+        None => format!("{}_value", kind.sql_name()),
+    }
+}
+
+/// A `BOOL_AND(value)` / `BOOL_OR(value)` view over a source table.
+///
+/// The aggregate is recomputed from the affected groups' current rows, like
+/// the other unmergeable aggregates (NULL inputs are ignored by DataFusion's
+/// implementation).
+#[derive(Debug, Clone)]
+pub struct BoolAggView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table: the group keys and the statistic.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to [`Self::group_keys`].
+    pub group_exprs: Vec<String>,
+    /// The boolean value column; `None` when the argument is an expression.
+    pub value_column: Option<String>,
+    /// The rendered value expression.
+    pub value_expr: Option<String>,
+    /// `true` for `BOOL_AND`, `false` for `BOOL_OR`.
+    pub kind: BoolAggKind,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized column.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl BoolAggView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_key: impl Into<String>,
+        value_column: impl Into<String>,
+        kind: BoolAggKind,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys: vec![group_key.into()],
+            group_exprs: Vec::new(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
+            kind,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// A new view over several group key columns.
+    pub fn new_with_group_keys(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        value_column: impl Into<String>,
+        kind: BoolAggKind,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            group_exprs: Vec::new(),
+            value_column: Some(value_column.into()),
+            value_expr: None,
+            kind,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    /// Aggregate over a rendered scalar expression.
+    pub fn with_value_expr(mut self, value_expr: impl Into<String>) -> Self {
+        self.value_expr = Some(value_expr.into());
+        self.value_column = None;
+        self
+    }
+
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
+    fn to_spec(&self) -> ViewSpec {
+        ViewSpec::BoolAgg {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
+            value_column: self.value_column.clone(),
+            value_expr: self.value_expr.clone(),
+            bool_agg: self.kind,
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        }
+    }
+
+    fn parts(&self) -> RecomputeParts<'_> {
+        RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
+            aggregate_call: format!(
+                "{}({})",
+                self.kind.sql_name(),
+                aggregate_value_sql(
+                    self.value_column.as_deref(),
+                    self.value_expr.as_deref()
+                )
+            ),
+            column: bool_agg_output_column(self.kind, self.value_column.as_deref()),
+            distinct_columns: None,
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        }
+    }
+}
+
+/// The result type of `BOOL_AND`/`BOOL_OR`: only booleans are supported.
+fn bool_agg_result_type(value_type: &DataType) -> Result<()> {
+    match value_type {
+        DataType::Boolean => Ok(()),
+        other => Err(report!(
+            "BOOL_AND/BOOL_OR is not supported for value type {other}"
+        )),
+    }
+}
+
+/// The schema of a [`BoolAggView`] materialized view with optional group and
+/// value expressions.
+pub fn bool_agg_groups_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    value_column: Option<&str>,
+    value_expr: Option<&str>,
+    kind: BoolAggKind,
+) -> Result<SchemaRef> {
+    let value_type = aggregate_value_type(source_schema, value_column, value_expr)?;
+    bool_agg_result_type(&value_type)?;
+    let mut fields = group_key_fields(source_schema, group_keys, group_exprs)?;
+    fields.push(Arc::new(Field::new(
+        bool_agg_output_column(kind, value_column),
+        DataType::Boolean,
+        true,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`BoolAggView`] materialized view deriving the types from
+/// the source schema.
+pub fn bool_agg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    value_column: &str,
+    kind: BoolAggKind,
+) -> Result<SchemaRef> {
+    bool_agg_groups_mv_schema_for(
+        source_schema,
+        group_keys,
+        &[],
+        Some(value_column),
+        None,
+        kind,
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct MedianView {
     /// The view id.
@@ -5923,6 +6188,30 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::BoolAgg {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                group_exprs,
+                value_column,
+                value_expr,
+                bool_agg,
+                filter,
+                having,
+            } => SpecView::BoolAgg(BoolAggView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
+                value_column: value_column.clone(),
+                value_expr: value_expr.clone(),
+                kind: *bool_agg,
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::StringAgg {
                 view_id,
                 source_table_id,
@@ -6123,6 +6412,7 @@ impl IvmRuntime {
             Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
             Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
             Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
+            Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
             Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
             Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
@@ -6161,6 +6451,7 @@ impl IvmRuntime {
             Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
             Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
             Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
+            Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
             Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
             Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
@@ -6869,6 +7160,42 @@ impl IvmRuntime {
     }
 
     /// Persist a median view spec (idempotent).
+    /// Persist a boolean aggregate view spec (idempotent).
+    pub async fn register_bool_agg_view(&self, view: &BoolAggView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec())?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a `BOOL_AND`/`BOOL_OR` view.
+    pub async fn refresh_bool_agg(&self, view: &BoolAggView) -> Result<Option<i64>> {
+        self.register_bool_agg_view(view).await?;
+        bool_agg_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Rebuild a `BOOL_AND`/`BOOL_OR` view from the full source state.
+    pub async fn rebuild_bool_agg(&self, view: &BoolAggView) -> Result<i64> {
+        self.register_bool_agg_view(view).await?;
+        bool_agg_result_type(&aggregate_value_type(
+            &view.source.schema,
+            view.value_column.as_deref(),
+            view.value_expr.as_deref(),
+        )?)?;
+        let parts = view.parts();
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
     pub async fn register_median_view(&self, view: &MedianView) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;

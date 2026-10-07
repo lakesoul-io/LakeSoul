@@ -2216,6 +2216,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   rebuild）、随机差分 oracle（ROLLUP 与 DataFusion 原生重算对照）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）328 个测试通过、0 失败。
 
+### 10.70 BOOL_AND / BOOL_OR（PR-64）
+
+- **能力**：`BOOL_AND(flag)`/`BOOL_OR(flag)`（列或表达式，可带 WHERE/HAVING）分组维护；沿用
+  recompute 家族（按受影响分组从当前源重算），NULL 输入由 DataFusion 语义忽略，空分组/全 NULL 分组的
+  行为与全量重算一致。
+- **spec/typed/schema**：`ViewSpec::BoolAgg` + `BoolAggView`（`new`/`new_with_group_keys` + builder）、
+  `BoolAggKind`（`bool_and`/`bool_or`）、`bool_agg_output_column`（`bool_and_<v>`/`bool_and_value`）、
+  `bool_agg_mv_schema_for`/`bool_agg_groups_mv_schema_for`（Boolean 可空列）。
+- **analyzer**：聚合循环新增分支（单参数、无 DISTINCT/FILTER，混用检查覆盖全部家族）、
+  `HavingColumns::BoolAgg` 映射 HAVING 到派生列；执行器 schema 与分发/指标同步。
+- **测试**：analyzer（表达式参数、HAVING 映射、非 Boolean 拒绝）、`bool_agg.slt`/`bool_or.slt`
+  （NULL 忽略、更新翻转、分组消失、过滤定义 rebuild）、随机差分 oracle（表达式参数 + WHERE）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）332 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

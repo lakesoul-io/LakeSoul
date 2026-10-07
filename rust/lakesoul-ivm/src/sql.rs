@@ -36,10 +36,11 @@ use arrow_schema::Schema;
 
 use crate::error::Result;
 use crate::runtime::{
-    CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
-    IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
-    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
-    WindowFunction, WindowGroupSpec, string_agg_output_column, union_output_schema_for,
+    BoolAggKind, CompareOp, DistinctAggKind, IVM_AVG_COLUMN, IVM_COUNT_COLUMN,
+    IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
+    MinMaxKind, SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
+    WindowFunction, WindowGroupSpec, bool_agg_output_column, string_agg_output_column,
+    union_output_schema_for,
 };
 use crate::table::IvmTable;
 
@@ -404,6 +405,11 @@ enum HavingColumns<'a> {
     Variance { statistic: VarianceKind },
     /// `median_v` for a median view.
     Median,
+    /// `bool_and_<value>` / `bool_or_<value>` for a BOOL_AND/BOOL_OR view.
+    BoolAgg {
+        kind: BoolAggKind,
+        value: &'a AggValue,
+    },
     /// `string_agg_<value>` for a `STRING_AGG` view.
     StringAgg {
         value: &'a AggValue,
@@ -665,6 +671,26 @@ fn having_column(
                     AggValue::Column(column) => Some(column.as_str()),
                     AggValue::Expr(_) => None,
                 }))
+            } else {
+                Err(not_materialized(name))
+            }
+        }
+        HavingColumns::BoolAgg { .. } if function_filter.is_some() => {
+            Err(not_materialized(name))
+        }
+        HavingColumns::BoolAgg { kind, value } => {
+            if name == kind.sql_name()
+                && !function.params.distinct
+                && function.params.args.len() == 1
+                && value_matches(value, false)
+            {
+                Ok(bool_agg_output_column(
+                    kind,
+                    match value {
+                        AggValue::Column(column) => Some(column.as_str()),
+                        AggValue::Expr(_) => None,
+                    },
+                ))
             } else {
                 Err(not_materialized(name))
             }
@@ -1250,6 +1276,7 @@ fn analyze_aggregate(
     let mut sum: Option<AggValue> = None;
     let mut avg: Option<AggValue> = None;
     let mut variance: Option<(VarianceKind, AggValue)> = None;
+    let mut bool_agg: Option<(BoolAggKind, AggValue)> = None;
     let mut median: Option<AggValue> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
@@ -1326,6 +1353,7 @@ fn analyze_aggregate(
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1355,6 +1383,7 @@ fn analyze_aggregate(
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1380,6 +1409,7 @@ fn analyze_aggregate(
                     || distinct.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                 {
                     return Err(unsupported("mixing COUNT with other aggregate kinds"));
                 }
@@ -1405,6 +1435,7 @@ fn analyze_aggregate(
                     || distinct.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1428,6 +1459,7 @@ fn analyze_aggregate(
                     || distinct.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                 {
                     return Err(unsupported("mixing aggregate kinds"));
                 }
@@ -1452,6 +1484,7 @@ fn analyze_aggregate(
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1480,6 +1513,7 @@ fn analyze_aggregate(
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1500,12 +1534,41 @@ fn analyze_aggregate(
                 variance = Some((statistic, value));
                 aggregate_filters.push((name, function_filter, false));
             }
+            ("bool_and", false) | ("bool_or", false) => {
+                if count
+                    || sum.is_some()
+                    || avg.is_some()
+                    || variance.is_some()
+                    || median.is_some()
+                    || min_max.is_some()
+                    || distinct.is_some()
+                    || string_agg.is_some()
+                    || array_agg.is_some()
+                    || bool_agg.is_some()
+                {
+                    return Err(unsupported("mixing aggregate kinds"));
+                }
+                let [arg] = function.params.args.as_slice() else {
+                    return Err(unsupported(format!(
+                        "{name} takes exactly one argument"
+                    )));
+                };
+                let value = value_argument(arg, &hoisted_exprs, false)?;
+                let kind = if name == "bool_and" {
+                    BoolAggKind::BoolAnd
+                } else {
+                    BoolAggKind::BoolOr
+                };
+                bool_agg = Some((kind, value));
+                aggregate_filters.push((name, function_filter, false));
+            }
             ("median", false) => {
                 if count
                     || sum.is_some()
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                 {
@@ -1524,6 +1587,7 @@ fn analyze_aggregate(
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1555,6 +1619,7 @@ fn analyze_aggregate(
                     || avg.is_some()
                     || variance.is_some()
                     || median.is_some()
+                    || bool_agg.is_some()
                     || min_max.is_some()
                     || distinct.is_some()
                     || string_agg.is_some()
@@ -1629,6 +1694,7 @@ fn analyze_aggregate(
             || avg.is_some()
             || variance.is_some()
             || median.is_some()
+            || bool_agg.is_some()
             || min_max.is_some()
             || distinct.is_some())
     {
@@ -1710,6 +1776,13 @@ fn analyze_aggregate(
             aggregate,
             &group_keys,
         )?
+    } else if let Some((kind, value)) = &bool_agg {
+        render_having(
+            having_exprs,
+            HavingColumns::BoolAgg { kind: *kind, value },
+            aggregate,
+            &group_keys,
+        )?
     } else if median.is_some() {
         render_having(having_exprs, HavingColumns::Median, aggregate, &group_keys)?
     } else if sum.is_some() || count || count_column.is_some() || avg.is_some() {
@@ -1745,6 +1818,23 @@ fn analyze_aggregate(
             value_column,
             value_expr,
             statistic,
+            filter,
+            having,
+        }
+    } else if let Some((kind, value)) = bool_agg {
+        let (value_column, value_expr) = match value {
+            AggValue::Column(column) => (Some(column), None),
+            AggValue::Expr(expression) => (None, Some(expression)),
+        };
+        ViewSpec::BoolAgg {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            group_exprs,
+            value_column,
+            value_expr,
+            bool_agg: kind,
             filter,
             having,
         }
@@ -6430,6 +6520,51 @@ mod tests {
                  on a.k = b.k and a.g < b.g",
             )
             .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_bool_aggregates() {
+        // A boolean aggregate over an expression.
+        let analyzed = analyze_optimized("select g, bool_and(v > 1) from src group by g")
+            .await
+            .unwrap();
+        let ViewSpec::BoolAgg {
+            bool_agg,
+            value_column,
+            value_expr,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a bool-agg spec");
+        };
+        assert_eq!(bool_agg, BoolAggKind::BoolAnd);
+        assert!(value_column.is_none());
+        assert!(value_expr.is_some());
+
+        // HAVING maps to the derived column.
+        let analyzed = analyze_optimized(
+            "select g, bool_or(v > 1) from src group by g having bool_or(v > 1)",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::BoolAgg { having, .. } = analyzed.spec else {
+            panic!("expected a bool-agg spec");
+        };
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("bool_or_value")
+        );
+
+        // Only booleans are supported.
+        assert!(
+            crate::runtime::bool_agg_mv_schema_for(
+                &schema(),
+                &["g".to_string()],
+                "v",
+                BoolAggKind::BoolAnd,
+            )
             .is_err()
         );
     }
