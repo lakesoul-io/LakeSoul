@@ -75,10 +75,11 @@ used as row identities must be non-nullable.
 
 Supported within the shapes above:
 
-* **global aggregates**: `SUM`/`COUNT`/`AVG`, `MIN`/`MAX` and
-  `COUNT(DISTINCT)`/`SUM(DISTINCT)` without a `GROUP BY` keep a single-row MV
-  that is recomputed on every refresh (the variance, median and ordered
-  aggregate families still need a `GROUP BY`);
+* **global aggregates**: every supported aggregate without a `GROUP BY`
+  (`SUM`/`COUNT`/`AVG`, `MIN`/`MAX`, `COUNT(DISTINCT)`/`SUM(DISTINCT)` and the
+  variance, median, `STRING_AGG` and `ARRAY_AGG` families) keeps a single-row
+  MV that is recomputed on every refresh; an empty source keeps the single
+  aggregate row (`NULL`/`0`) and a failing `HAVING` leaves the MV empty;
 * **group keys** may be scalar expressions with a `SELECT` alias
   (`SELECT v % 10 AS bucket, SUM(v) ... GROUP BY bucket`);
 * **aggregate arguments** may be scalar expressions for all value aggregates,

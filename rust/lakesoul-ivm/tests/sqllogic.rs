@@ -2076,6 +2076,47 @@ fn sqllogic_global_distinct() {
 }
 
 #[test]
+fn sqllogic_global_variance() {
+    run_script_for_mv(
+        "globalvariance",
+        include_str!("slt/global_variance.slt"),
+        variance_mv_schema_for(&source_schema(), &[], "v", VarianceKind::VarSamp)
+            .unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_global_median() {
+    run_script_for_mv(
+        "globalmedian",
+        include_str!("slt/global_median.slt"),
+        median_mv_schema_for(&source_schema(), &[], "v").unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_global_string_agg() {
+    run_script_for_mv(
+        "globalstringagg",
+        include_str!("slt/global_string_agg.slt"),
+        string_agg_mv_schema_for(&source_schema(), &[], "g").unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
+fn sqllogic_global_array_agg() {
+    run_script_for_mv(
+        "globalarrayagg",
+        include_str!("slt/global_array_agg.slt"),
+        array_agg_mv_schema_for(&source_schema(), &[], "v").unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
 fn sqllogic_global_distinct_sum() {
     run_script_for_mv(
         "globaldistinctsum",

@@ -2172,6 +2172,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （SUM DISTINCT，注意其 value 列可空需独立 MV schema）、两个随机 oracle（global MIN / global COUNT DISTINCT）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）312 个测试通过、0 失败。
 
+### 10.67 全局方差/中位数/STRING_AGG/ARRAY_AGG（PR-61）
+
+- **能力**：recompute 家族（VAR/STDDEV/MEDIAN/STRING_AGG/ARRAY_AGG）的无 GROUP BY 全局聚合，沿用
+  PR-59/60 的「单行 MV + 每次刷新整表重写」；空源保留单行（聚合为 NULL，除 count 外），HAVING 不满足
+  时 MV 为空。至此所有受支持聚合的全局形态都可用。
+- **运行时**：`validate_recompute_view` 允许空 key；`refresh_recomputed`/`rebuild_recomputed` 增加全局
+  分支（读当前源/基线 → truncate MV → 新 `recompute_global_sql`：`{aggregate_call} as {column}` 直接
+  作用于源（含 ORDER BY 的 string/array agg）单行写入）。recompute 家族本无状态表，无需其它状态处理。
+- **测试**：`global_variance.slt`、`global_median.slt`、`global_string_agg.slt`、`global_array_agg.slt`
+  （各含增量步骤 + 过滤定义 rebuild）、`oracle_global_variance`、`oracle_global_median`。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）318 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -1,0 +1,60 @@
+# Global VAR_SAMP (no GROUP BY).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT VAR_SAMP(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query R rowsort
+SELECT variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+50.0
+
+# An update changes the sample.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT VAR_SAMP(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query R rowsort
+SELECT variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+200.0
+
+# A single row has no sample variance.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT VAR_SAMP(v) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query R rowsort
+SELECT variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+NULL
+
+# A filtered definition rebuilds the view.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT VAR_SAMP(v) FROM __SRC__ WHERE v >= 30
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query R rowsort
+SELECT variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+200.0

@@ -6295,6 +6295,33 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
+        if parts.group_keys.is_empty() {
+            // A global aggregate has no groups to prune and its MV is a
+            // single row without a primary key, so the aggregate is
+            // recomputed over the current source and the MV is rewritten
+            // wholesale.
+            let context = SessionContext::new();
+            register_table(
+                &context,
+                "src",
+                parts.source.read_current(&self.client).await?,
+                &parts.source.schema,
+            )?;
+            parts.mv.truncate(&self.client).await?;
+            let sql = recompute_global_sql(parts, epoch);
+            for batch in context.sql(&sql).await?.collect().await? {
+                if batch.num_rows() > 0 {
+                    commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+            let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            self.advance_cursors(parts.view_id, window.cursors).await?;
+            return Ok(Some(epoch));
+        }
+
         let context = SessionContext::new();
         let delta_batches = project_group_keys(
             &context,
@@ -6455,6 +6482,26 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+
+        if parts.group_keys.is_empty() {
+            // A global aggregate is recomputed over the baseline into the
+            // single MV row.
+            let context = SessionContext::new();
+            register_table(&context, "src", baseline.batches, &parts.source.schema)?;
+            let sql = recompute_global_sql(parts, epoch);
+            for batch in context.sql(&sql).await?.collect().await? {
+                if batch.num_rows() > 0 {
+                    commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+            let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            self.advance_cursors(parts.view_id, baseline.cursors)
+                .await?;
+            return Ok(epoch);
+        }
 
         let context = SessionContext::new();
         let batches = project_group_keys(
@@ -12010,6 +12057,26 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     )
 }
 
+/// The recompute SQL of a global aggregate: one row over the whole current
+/// source.
+fn recompute_global_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
+    let column = quote_ident(&parts.column);
+    let src_where = format!(
+        "{}{}",
+        source_delete_filter("src", change_column(parts.source)),
+        filter_clause(parts.filter),
+    );
+    let row = format!(
+        "select {} as {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         from src where {src_where}",
+        parts.aggregate_call
+    );
+    match parts.having {
+        Some(having) => format!("select * from ({row}) t where {having}"),
+        None => row,
+    }
+}
+
 /// SQL for a full recomputed-aggregate rebuild.
 fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     let keys = quoted_list(parts.group_keys);
@@ -12039,7 +12106,8 @@ fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
 
 /// Validate that a recomputed-aggregate view can be maintained.
 fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> {
-    if parts.group_exprs.is_empty() {
+    // An empty key list is a global aggregate over the whole source.
+    if parts.group_exprs.is_empty() && !parts.group_keys.is_empty() {
         validate_group_keys(parts.source, parts.group_keys, parts.view_id)?;
     }
     group_key_fields(
