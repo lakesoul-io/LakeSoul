@@ -263,7 +263,28 @@ async fn run_oracle_seeded(
     let insert_sql = format!("INSERT INTO {mv_name} {definition_sql}");
 
     let executor = IvmSqlExecutor::new(runtime).with_session(ctx.clone());
-    let mut rng = Lcg(42);
+    // The seed (and the round count) can be varied to hunt for bugs:
+    // `IVM_ORACLE_SEED=7 IVM_ORACLE_ROUNDS=30 cargo test -p lakesoul-ivm \
+    //  --test sql_oracle`. Every oracle mixes its tag into the seed so one run
+    // covers distinct mutation streams.
+    // A custom seed or round count may drive the random data into a sparse
+    // state (the reference itself never produces a row); the run is then
+    // vacuous rather than wrong, because every round still compares the view
+    // with the reference.
+    let custom_seed = std::env::var("IVM_ORACLE_SEED").is_ok()
+        || std::env::var("IVM_ORACLE_ROUNDS").is_ok();
+    let mut seed = std::env::var("IVM_ORACLE_SEED")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(42);
+    for byte in tag.bytes() {
+        seed = seed.wrapping_mul(31).wrapping_add(u64::from(byte));
+    }
+    let rounds = std::env::var("IVM_ORACLE_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(10);
+    let mut rng = Lcg(seed);
     let mut live: Vec<Vec<(i64, String, Option<i64>)>> = vec![Vec::new(); source_count];
     let mut next_key = 0i64;
     let mut mv_rows = 0usize;
@@ -277,7 +298,7 @@ async fn run_oracle_seeded(
         next_key = next_key.max(*key + 1);
     }
 
-    for round in 0..10 {
+    for round in 0..rounds {
         let mutations = 1 + rng.range(3) as usize;
         let mut rows_per_source: Vec<Vec<SourceRow>> = vec![Vec::new(); source_count];
         for _ in 0..mutations {
@@ -341,7 +362,10 @@ async fn run_oracle_seeded(
             execution.action, execution.definition_hash
         );
     }
-    assert!(mv_rows > 0, "{tag}: the view stayed empty for every round");
+    assert!(
+        mv_rows > 0 || custom_seed,
+        "{tag}: the view stayed empty for every round"
+    );
 }
 
 #[test_log::test(tokio::test)]
@@ -1787,6 +1811,61 @@ async fn oracle_bool_agg_matches_full_recompute() {
         "SELECT g, BOOL_AND(v > 1) AS flag FROM __SRC__ \
          WHERE op <> 'delete' AND v > 10 GROUP BY g",
         "SELECT g, bool_and_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_cube_matches_full_recompute() {
+    // A CUBE over two keys: detail rows, both per-key subtotals and the grand
+    // total share the MV.
+    run_oracle(
+        "groupingsetscube",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string(), "v".to_string()],
+            &[],
+            Some("v"),
+            None,
+            false,
+        )
+        .unwrap(),
+        vec![
+            "__ivm_grouping".to_string(),
+            "g".to_string(),
+            "v".to_string(),
+        ],
+        "SELECT g, v, SUM(v), COUNT(*) FROM __SRC__ GROUP BY CUBE(g, v)",
+        "SELECT g, v, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY CUBE(g, v)",
+        "SELECT g, v, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_having_matches_full_recompute() {
+    // A ROLLUP with AVG and a HAVING over the SUM: groups crossing the
+    // threshold appear and disappear.
+    run_oracle(
+        "groupingsetshaving",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            Some("v"),
+            None,
+            true,
+        )
+        .unwrap(),
+        vec!["__ivm_grouping".to_string(), "g".to_string()],
+        "SELECT g, SUM(v), AVG(v) FROM __SRC__ GROUP BY ROLLUP(g) \
+         HAVING SUM(v) > 50",
+        "SELECT g, SUM(v) AS sum_v, AVG(v) AS avg_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY ROLLUP(g) HAVING SUM(v) > 50",
+        "SELECT g, sum_v, avg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
