@@ -41,16 +41,16 @@ use lakesoul_ivm::{
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_lookup_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    multi_agg_mv_schema_for, multi_join_append_schema_for, multi_join_mv_schema_for,
+    multi_join_primary_keys, multi_window_mv_schema_for, row_expr_mv_schema_for,
+    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -2113,6 +2113,49 @@ fn sqllogic_wide_lookup_join() {
         )
         .unwrap(),
         group_keys(&["id"]),
+    );
+}
+
+#[test]
+fn sqllogic_mixed_aggregates() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "mixedaggs",
+        include_str!("slt/mixed_aggregates.slt"),
+        multi_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("min_v".to_string(), DataType::Int64),
+                ("max_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
+fn sqllogic_mixed_global_aggregates() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "mixedglobal",
+        include_str!("slt/mixed_global_aggregates.slt"),
+        multi_agg_mv_schema_for(
+            &schema,
+            &[],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("min_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        Vec::new(),
     );
 }
 

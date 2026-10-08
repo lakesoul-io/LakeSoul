@@ -64,6 +64,7 @@ used as row identities must be non-nullable.
 | BOOL_AND / BOOL_OR | `SELECT k, BOOL_AND(flag) FROM src GROUP BY k` over a Boolean column or expression | keys, `bool_and_<v>` / `bool_or_<v>` (`bool_and_value` for expressions), kinds, epoch |
 | APPROX_DISTINCT | `SELECT k, APPROX_DISTINCT(v) FROM src GROUP BY k` | keys, `approx_distinct_<v>` (`approx_distinct_value` for expressions, `UInt64`), kinds, epoch |
 | APPROX_PERCENTILE_CONT | `SELECT k, APPROX_PERCENTILE_CONT(v, 0.5) FROM src GROUP BY k`; also `APPROX_MEDIAN(v)` and the weighted `APPROX_PERCENTILE_CONT_WITH_WEIGHT(v, w, p)` | keys, `approx_percentile_cont_<v>` (`Float64`), kinds, epoch |
+| Mixed aggregates | `SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM src GROUP BY g` — any mix of the supported aggregate functions in one statement (a lone DISTINCT aggregate keeps its dedicated view; DISTINCT in a mix is rejected) | keys, one column per aggregate (`sum_v`, `min_v`, ...; COUNT(*) is `count`), kinds, epoch |
 | Scalar aggregates | `BIT_AND`/`BIT_OR`/`BIT_XOR(v)`; `CORR`/`COVAR_SAMP`/`COVAR_POP(y, x)`; `REGR_SLOPE`/`REGR_INTERCEPT`/`REGR_COUNT`/`REGR_R2`/`REGR_AVGX`/`REGR_AVGY`/`REGR_SXX`/`REGR_SYY`/`REGR_SXY(y, x)`; `PERCENTILE_CONT(v, p)` | keys, `<function>_<arguments>` (the value type for the bit aggregates, `Float64`/`UInt64` otherwise), kinds, epoch |
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
@@ -138,6 +139,12 @@ Supported within the shapes above:
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
   its filter adds, retracts or NULL-pads its pairs;
+* **mixed aggregate kinds**: a statement may combine the supported aggregate
+  functions (`SUM(v), MIN(v), MAX(v), COUNT(*)`, `AVG`, the variance family,
+  `MEDIAN`, `APPROX_DISTINCT`, `STRING_AGG`, `ARRAY_AGG`, the bit / regression
+  functions, ...) in one view; the affected groups are recomputed from their
+  current rows, and a SUM/COUNT/AVG-only mix keeps the incremental sum/count
+  view;
 * **multi-way inner joins** (three to eight sources): the join tree flattens
   into one chained inner join; a source without a key pair is cross joined
   (the chain's `FROM a, b, c` and mixed keyless steps) and the MV is keyed by

@@ -32,17 +32,18 @@ use datafusion::logical_expr::{
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::Unparser;
 
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Schema};
 
 use crate::error::Result;
 use crate::runtime::{
     BoolAggKind, CompareOp, ComputedAggArg, ComputedAggResult, DistinctAggKind,
     GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, JoinOutputColumn,
-    JoinSide, MinMaxKind, MultiJoinColumn, MultiJoinCondition, MultiJoinKey,
-    MultiJoinSource, SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec,
-    WindowColumn, WindowFunction, WindowGroupSpec, approx_distinct_output_column,
-    approx_percentile_output_column, bool_agg_output_column, string_agg_output_column,
+    JoinSide, MinMaxKind, MultiAggSpec, MultiJoinColumn, MultiJoinCondition,
+    MultiJoinKey, MultiJoinSource, SemiAntiCondition, UnionSourceSpec, VarianceKind,
+    ViewSpec, WindowColumn, WindowFunction, WindowGroupSpec,
+    approx_distinct_output_column, approx_percentile_output_column,
+    bool_agg_output_column, encode_data_type, string_agg_output_column,
     union_output_schema_for, wide_pair_alias,
 };
 use crate::table::IvmTable;
@@ -652,7 +653,7 @@ fn having_column(
                 "count" if !function.params.distinct => {
                     if counts_all {
                         Ok(IVM_COUNT_COLUMN.to_string())
-                    } else if count_column.is_some_and(&column_arg) {
+                    } else if count_column.is_some_and(column_arg) {
                         Ok(IVM_NONNULL_COUNT_COLUMN.to_string())
                     } else if let Some(AggValue::Column(column)) = value
                         && column_arg(column)
@@ -1420,6 +1421,21 @@ fn analyze_aggregate(
         return analyze_union_distinct(union, tables, request);
     }
     let mut hoisted_exprs = hoisted_expressions(&aggregate.input);
+    // A DISTINCT aggregate beside another aggregate optimizes into a nested
+    // grouping the general path does not model; reject it explicitly (a lone
+    // DISTINCT aggregate keeps its dedicated view).
+    if aggregate.aggr_expr.len() > 1
+        && aggregate.aggr_expr.iter().any(|expr| {
+            matches!(
+                strip_alias(expr),
+                Expr::AggregateFunction(function) if function.params.distinct
+            )
+        })
+    {
+        return Err(unsupported(
+            "a mixed statement does not maintain DISTINCT aggregates",
+        ));
+    }
     // The optimizer rewrites a single DISTINCT aggregate into an inner
     // grouping over `(group keys, value)` and an outer `count(alias)` /
     // `sum(alias)`.
@@ -1519,6 +1535,22 @@ fn analyze_aggregate(
             having: None,
             average: false,
         });
+    }
+
+    // Mixed aggregate kinds (e.g. `SUM(v), MIN(v)`) are recomputed with the
+    // general multi-aggregate view; a SUM/COUNT/AVG-only mix keeps the
+    // incremental sum/count view.
+    let selected = selected_aggregates(aggregate, projection);
+    if selected.len() > 1 && !single_family_shapes(&selected) {
+        return analyze_multi_agg(
+            aggregate,
+            group_keys,
+            group_exprs,
+            having_exprs,
+            source,
+            filter,
+            request,
+        );
     }
 
     let mut count = false;
@@ -4064,6 +4096,314 @@ fn classify_multi_conjunct(
     }
 }
 
+/// The aggregate expressions the select list references (the planner may add
+/// `HAVING`-only aggregates beside them).
+fn selected_aggregates<'a>(
+    aggregate: &'a Aggregate,
+    projection: Option<&Projection>,
+) -> Vec<&'a Expr> {
+    // The optimizer drops the projection when the pruned aggregate output is
+    // exactly the select list: every aggregate is selected then.
+    let Some(projection) = projection else {
+        return aggregate.aggr_expr.iter().collect();
+    };
+    let mut referenced_columns = Vec::new();
+    let mut referenced_exprs = Vec::new();
+    for expr in &projection.expr {
+        let inner = strip_alias(expr);
+        if let Some(column) = column_of(inner) {
+            referenced_columns.push(column.name.clone());
+        }
+        referenced_exprs.push(format!("{inner}"));
+    }
+    let offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
+    aggregate
+        .aggr_expr
+        .iter()
+        .enumerate()
+        .filter(|(index, expr)| {
+            let inner = strip_alias(expr);
+            aggregate
+                .schema
+                .fields()
+                .get(offset + index)
+                .is_some_and(|field| referenced_columns.contains(field.name()))
+                || referenced_exprs.contains(&format!("{inner}"))
+        })
+        .map(|(_, expr)| expr)
+        .collect()
+}
+
+/// Whether every aggregate fits the incremental `SUM`/`COUNT`/`AVG` view
+/// (at most one of each).
+fn single_family_shapes(aggregates: &[&Expr]) -> bool {
+    let mut sum = 0usize;
+    let mut count = 0usize;
+    let mut avg = 0usize;
+    for expr in aggregates {
+        let Expr::AggregateFunction(function) = strip_alias(expr) else {
+            return false;
+        };
+        if function.params.distinct {
+            return false;
+        }
+        match function.func.name() {
+            "sum" => sum += 1,
+            "count" => count += 1,
+            "avg" => avg += 1,
+            _ => return false,
+        }
+    }
+    sum <= 1 && count <= 1 && avg <= 1
+}
+
+/// The aggregate functions a mixed-statement view can recompute.
+fn multi_agg_supported(name: &str) -> bool {
+    matches!(
+        name,
+        "sum"
+            | "count"
+            | "avg"
+            | "min"
+            | "max"
+            | "var_samp"
+            | "var_pop"
+            | "stddev"
+            | "stddev_samp"
+            | "stddev_pop"
+            | "median"
+            | "approx_median"
+            | "string_agg"
+            | "array_agg"
+            | "bool_and"
+            | "bool_or"
+            | "approx_distinct"
+            | "approx_percentile_cont"
+            | "percentile_cont"
+            | "approx_percentile_cont_with_weight"
+    ) || computed_agg_shape(name).is_some()
+}
+
+/// Render an aggregate expression as executable SQL over the source columns.
+fn render_aggregate_call(expr: &Expr) -> Result<String> {
+    let stripped = strip_relations(expr.clone())?;
+    let ast = Unparser::default()
+        .expr_to_sql(&stripped)
+        .map_err(|error| unsupported(format!("aggregate {error}")))?;
+    Ok(ast.to_string())
+}
+
+/// The name fragment an aggregate argument contributes to the MV column.
+fn aggregate_arg_label(expr: &Expr) -> String {
+    match strip_alias(expr) {
+        Expr::Column(column) => column.name.clone(),
+        Expr::Cast(cast) => aggregate_arg_label(&cast.expr),
+        _ => "value".to_string(),
+    }
+}
+
+/// Render `HAVING` over a mixed-aggregate view: every aggregate reference is
+/// replaced by its materialized column.
+///
+/// The optimizer names an aggregate's output column after its expression
+/// (`sum(src.v)`), and a filter below the projection carries the aggregate
+/// itself, so both shapes are mapped.
+fn render_multi_agg_having(
+    having_exprs: &[Expr],
+    aggregate: &Aggregate,
+    group_keys: &[String],
+    aggregates: &[(String, String, DataType)],
+) -> Result<Option<String>> {
+    if having_exprs.is_empty() {
+        return Ok(None);
+    }
+    let mut group_aliases = HashMap::new();
+    for (index, key) in group_keys.iter().enumerate() {
+        if let Some(field) = aggregate.schema.fields().get(index)
+            && field.name() != key
+        {
+            group_aliases.insert(field.name().clone(), key.clone());
+        }
+    }
+    let group_set = group_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
+    let mut mapping: HashMap<String, String> = HashMap::new();
+    for (index, ((call, column, _), expr)) in
+        aggregates.iter().zip(&aggregate.aggr_expr).enumerate()
+    {
+        if let Some(field) = aggregate.schema.fields().get(offset + index) {
+            mapping.insert(field.name().clone(), column.clone());
+        }
+        let mut inner = expr;
+        while let Expr::Alias(alias) = inner {
+            inner = &alias.expr;
+        }
+        mapping.insert(format!("{inner}"), column.clone());
+        mapping.insert(cast_normalized(inner), column.clone());
+        mapping.insert(call.clone(), column.clone());
+    }
+    let mut parts = Vec::with_capacity(having_exprs.len());
+    for expr in having_exprs {
+        let rewritten = expr
+            .clone()
+            .transform_down(|node| match node {
+                Expr::Column(column) if !group_set.contains(column.name.as_str()) => {
+                    if let Some(key) = group_aliases.get(&column.name) {
+                        return Ok(Transformed::yes(Expr::Column(Column::from_name(
+                            key.clone(),
+                        ))));
+                    }
+                    match mapping.get(&column.name) {
+                        Some(mv_column) => Ok(Transformed::yes(Expr::Column(
+                            Column::from_name(mv_column.clone()),
+                        ))),
+                        None => Err(datafusion::error::DataFusionError::Plan(format!(
+                            "HAVING over {}, which the view does not materialize",
+                            column.name
+                        ))),
+                    }
+                }
+                Expr::AggregateFunction(function) => {
+                    let rendered =
+                        match render_aggregate_call(&Expr::AggregateFunction(function)) {
+                            Ok(rendered) => rendered,
+                            Err(error) => {
+                                return Err(datafusion::error::DataFusionError::Plan(
+                                    format!("HAVING {error}"),
+                                ));
+                            }
+                        };
+                    match mapping.get(&rendered) {
+                        Some(mv_column) => Ok(Transformed::yes(Expr::Column(
+                            Column::from_name(mv_column.clone()),
+                        ))),
+                        None => Err(datafusion::error::DataFusionError::Plan(format!(
+                            "HAVING over {rendered}, which the view does not materialize"
+                        ))),
+                    }
+                }
+                other => Ok(Transformed::no(other)),
+            })
+            .map(|transformed| transformed.data)
+            .map_err(|error| unsupported(format!("HAVING {error}")))?;
+        parts.push(render_filter(&rewritten)?);
+    }
+    Ok(Some(parts.join(" AND ")))
+}
+
+/// An aggregate view over one source with any mix of supported aggregate
+/// functions in a single statement (recomputed from the affected groups).
+#[allow(clippy::too_many_arguments)]
+fn analyze_multi_agg(
+    aggregate: &Aggregate,
+    group_keys: Vec<String>,
+    group_exprs: Vec<String>,
+    having_exprs: &[Expr],
+    source: &IvmTable,
+    filter: Option<String>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let mut aggregates: Vec<(String, String, DataType)> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
+        let inner = strip_alias(expr);
+        let Expr::AggregateFunction(function) = inner else {
+            return Err(unsupported("non-aggregate expression in the select list"));
+        };
+        let name = function.func.name();
+        if function.params.filter.is_some() {
+            return Err(unsupported(format!(
+                "aggregate FILTER over {name} is not maintained in a mixed statement"
+            )));
+        }
+        if !function.params.order_by.is_empty()
+            && !matches!(name, "string_agg" | "array_agg")
+        {
+            return Err(unsupported(
+                "an aggregate ordering is only supported inside STRING_AGG and ARRAY_AGG",
+            ));
+        }
+        if !multi_agg_supported(name) {
+            return Err(unsupported(format!("aggregate function {name}")));
+        }
+        let call = render_aggregate_call(inner)?;
+        if function.params.distinct
+            && (!matches!(name, "count" | "sum") || function.params.args.len() != 1)
+        {
+            return Err(unsupported(
+                "a mixed statement only maintains DISTINCT over a single argument",
+            ));
+        }
+        if name == "count" && function.params.args.len() > 1 {
+            return Err(unsupported("COUNT(...) needs a single argument"));
+        }
+        let column = if name == "count"
+            && !function.params.distinct
+            && matches!(call.as_str(), "count(1)" | "count(*)")
+        {
+            "count".to_string()
+        } else {
+            let labels = function
+                .params
+                .args
+                .iter()
+                .map(aggregate_arg_label)
+                .collect::<Vec<_>>()
+                .join("_");
+            if labels.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}_{labels}")
+            }
+        };
+        if names.contains(&column) {
+            return Err(unsupported(format!(
+                "aggregate column {column} is materialized twice; use distinct arguments"
+            )));
+        }
+        names.push(column.clone());
+        let data_type = aggregate
+            .schema
+            .field(aggregate.group_expr.len() + index)
+            .data_type()
+            .clone();
+        encode_data_type(&data_type)?;
+        aggregates.push((call, column, data_type));
+    }
+    let having =
+        render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
+    Ok(ViewSpec::MultiAgg {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys,
+        group_exprs,
+        aggregates: aggregates
+            .iter()
+            .map(|(call, column, data_type)| {
+                Ok(MultiAggSpec {
+                    call: call.clone(),
+                    column: column.clone(),
+                    result: encode_data_type(data_type)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        filter,
+        having,
+    })
+}
+
 /// A three-or-more-table inner join over keyed or append-only sources.
 fn analyze_multi_join(
     join: &Join,
@@ -5021,17 +5361,18 @@ mod tests {
         };
         assert_eq!(order_by, vec!["\"v\" desc nulls first".to_string()]);
 
-        // The aggregate ordering is required and mixing is rejected.
+        // The aggregate ordering is required for ARRAY_AGG; mixing with
+        // another kind recomputes through the multi-aggregate view.
         assert!(
             analyze("select k, array_agg(g) from src group by k")
                 .await
                 .is_err()
         );
-        assert!(
+        let mixed =
             analyze("select k, array_agg(g order by v), sum(v) from src group by k")
                 .await
-                .is_err()
-        );
+                .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]
@@ -5212,13 +5553,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            analyze(
-                "select k, string_agg(g, ',' order by v), sum(v) from src group by k"
-            )
-            .await
-            .is_err()
-        );
+        let mixed = analyze(
+            "select k, string_agg(g, ',' order by v), sum(v) from src group by k",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]
@@ -6648,12 +6988,12 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unsupported_avg() {
-        // AVG mixes with MIN/MAX or DISTINCT.
-        assert!(
-            analyze("select g, avg(v), min(v) from src group by g")
-                .await
-                .is_err()
-        );
+        // AVG mixes with MIN/MAX through the multi-aggregate view and rejects
+        // DISTINCT beside a plain aggregate.
+        let mixed = analyze("select g, avg(v), min(v) from src group by g")
+            .await
+            .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
         // AVG and SUM must share the value column.
         assert!(
             analyze("select g, avg(v), sum(k) from src group by g")
@@ -6766,12 +7106,11 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unsupported_shapes() {
-        // AVG does not mix with MIN/MAX.
-        assert!(
-            analyze("select g, avg(v), min(v) from src group by g")
-                .await
-                .is_err()
-        );
+        // AVG mixes with MIN/MAX through the multi-aggregate view.
+        let mixed = analyze("select g, avg(v), min(v) from src group by g")
+            .await
+            .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
         // DISTINCT ON has no view kind.
         assert!(
             analyze("select distinct on (g) k, g from src")
@@ -7564,6 +7903,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_mixed_aggregates() {
+        // Mixed aggregate kinds recompute through the multi-aggregate view.
+        let analyzed = analyze_optimized(
+            "select g, sum(v), min(v), count(*) from src group by g \
+             having sum(v) > 1 and min(v) < 9",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            group_keys,
+            aggregates,
+            having,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "sum_v".to_string(),
+                "min_v".to_string(),
+                "count".to_string(),
+            ]
+        );
+        assert_eq!(
+            normalized(having.as_deref()).as_deref(),
+            Some("sum_v > 1 AND min_v < 9")
+        );
+
+        // MIN, MAX and MEDIAN together.
+        let analyzed =
+            analyze_optimized("select g, min(v), max(v), median(v) from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "min_v".to_string(),
+                "max_v".to_string(),
+                "median_v".to_string(),
+            ]
+        );
+
+        // A SUM/COUNT/AVG-only mix keeps the incremental sum/count view.
+        let analyzed =
+            analyze_optimized("select g, sum(v), count(*), avg(v) from src group by g")
+                .await
+                .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::SumCount { .. }));
+
+        // DISTINCT aggregates and aggregate FILTER stay rejected in a mix.
+        assert!(
+            analyze_optimized("select g, count(distinct v), sum(v) from src group by g",)
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze_optimized(
+                "select g, sum(v) filter (where v > 1), min(v) from src group by g",
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            analyze_optimized(
+                "select g, count(distinct v, k), sum(v) from src group by g",
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_multi_cross_join() {
         // A keyless chain (`FROM a, b, c`) flattens into cross joins.
         let analyzed = analyze_optimized(
@@ -8025,11 +8448,10 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            analyze_optimized("select g, bit_and(v), sum(v) from src group by g")
-                .await
-                .is_err()
-        );
+        let mixed = analyze_optimized("select g, bit_and(v), sum(v) from src group by g")
+            .await
+            .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]
@@ -8075,13 +8497,12 @@ mod tests {
             .await
             .is_err()
         );
-        assert!(
-            analyze_optimized(
-                "select g, approx_percentile_cont(v, 0.5), sum(v) from src group by g"
-            )
-            .await
-            .is_err()
-        );
+        let mixed = analyze_optimized(
+            "select g, approx_percentile_cont(v, 0.5), sum(v) from src group by g",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]
@@ -8126,12 +8547,13 @@ mod tests {
         assert!(value_column.is_none());
         assert!(value_expr.is_some());
 
-        // Mixing with other aggregates is rejected.
-        assert!(
+        // Mixing with other aggregates recomputes through the
+        // multi-aggregate view.
+        let mixed =
             analyze_optimized("select g, approx_distinct(v), sum(v) from src group by g")
                 .await
-                .is_err()
-        );
+                .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]

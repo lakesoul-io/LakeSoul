@@ -1,0 +1,91 @@
+# A mixed aggregate statement (SUM/MIN/MAX/COUNT*) recomputed from the
+# affected groups.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TIIII rowsort
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 30 10 20 2
+b 5 5 5 1
+
+# An update changes every aggregate of its group.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIIII rowsort
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 15 5 10 2
+b 5 5 5 1
+
+# A group move rewrites both groups.
+statement ok
+/*ivm-append __SRC__: k=2,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIIII rowsort
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10 10 10 1
+b 12 5 7 2
+
+# A delete retracts its values; an emptied group disappears.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=5,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIIII rowsort
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10 10 10 1
+b 7 7 7 1
+
+statement ok
+/*ivm-append __SRC__: k=2,g=b,v=7,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM __SRC__ GROUP BY g
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TIIII rowsort
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10 10 10 1
+
+# A HAVING definition change rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM __SRC__ GROUP BY g HAVING MIN(v) > 5
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TIIII rowsort
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10 10 10 1

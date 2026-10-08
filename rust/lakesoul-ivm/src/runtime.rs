@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::common::{DFSchema, ScalarValue};
 use datafusion::logical_expr::ExprSchemable;
 use datafusion::logical_expr::when;
@@ -431,6 +431,35 @@ pub enum ViewSpec {
         /// The non-equality pair conditions.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         conditions: Vec<MultiJoinCondition>,
+    },
+    /// An aggregate view over one source with any mix of supported aggregate
+    /// functions in a single statement.
+    ///
+    /// The aggregates are recomputed from the affected groups' current rows
+    /// (like the other unmergeable aggregates), so the mix does not need a
+    /// shared incremental state.
+    MultiAgg {
+        /// The view id.
+        view_id: String,
+        /// The source table id.
+        source_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The group key columns.
+        #[serde(default, alias = "group_key", deserialize_with = "de_group_keys")]
+        group_keys: Vec<String>,
+        /// The rendered group expressions, parallel to `group_keys`; empty
+        /// means every key is a plain column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        group_exprs: Vec<String>,
+        /// The aggregates, in select order.
+        aggregates: Vec<MultiAggSpec>,
+        /// An optional filter the contributing rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        /// An optional `HAVING` predicate over the materialized columns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having: Option<String>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -1031,6 +1060,7 @@ impl ViewSpec {
             | ViewSpec::ArrayAgg { view_id, .. }
             | ViewSpec::Join { view_id, .. }
             | ViewSpec::MultiJoin { view_id, .. }
+            | ViewSpec::MultiAgg { view_id, .. }
             | ViewSpec::LookupJoin { view_id, .. }
             | ViewSpec::LeftJoin { view_id, .. }
             | ViewSpec::FullJoin { view_id, .. }
@@ -1062,6 +1092,7 @@ impl ViewSpec {
             ViewSpec::ArrayAgg { .. } => "array_agg",
             ViewSpec::Join { .. } => "join",
             ViewSpec::MultiJoin { .. } => "multi_join",
+            ViewSpec::MultiAgg { .. } => "multi_agg",
             ViewSpec::LookupJoin { .. } => "lookup_join",
             ViewSpec::LeftJoin { .. } => "left_join",
             ViewSpec::FullJoin { .. } => "full_join",
@@ -1093,6 +1124,7 @@ enum SpecView {
     ArrayAgg(ArrayAggView),
     Join(JoinView),
     MultiJoin(MultiJoinView),
+    MultiAgg(MultiAggView),
     LookupJoin(LookupJoinView),
     LeftJoin(LeftJoinView),
     FullJoin(FullJoinView),
@@ -1347,6 +1379,140 @@ pub struct MultiJoinCondition {
     pub op: CompareOp,
 }
 
+/// One aggregate of a [`ViewSpec::MultiAgg`] view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiAggSpec {
+    /// The rendered aggregate call over the source columns.
+    pub call: String,
+    /// The MV column holding the aggregate.
+    pub column: String,
+    /// The encoded result type of the aggregate.
+    pub result: String,
+}
+
+/// A portable encoding of the aggregate result types.
+pub(crate) fn encode_data_type(data_type: &DataType) -> Result<String> {
+    Ok(match data_type {
+        DataType::Boolean => "boolean".to_string(),
+        DataType::Int8 => "int8".to_string(),
+        DataType::Int16 => "int16".to_string(),
+        DataType::Int32 => "int32".to_string(),
+        DataType::Int64 => "int64".to_string(),
+        DataType::UInt8 => "uint8".to_string(),
+        DataType::UInt16 => "uint16".to_string(),
+        DataType::UInt32 => "uint32".to_string(),
+        DataType::UInt64 => "uint64".to_string(),
+        DataType::Float32 => "float32".to_string(),
+        DataType::Float64 => "float64".to_string(),
+        DataType::Utf8 => "utf8".to_string(),
+        DataType::LargeUtf8 => "largeutf8".to_string(),
+        DataType::Binary => "binary".to_string(),
+        DataType::LargeBinary => "largebinary".to_string(),
+        DataType::Date32 => "date32".to_string(),
+        DataType::Date64 => "date64".to_string(),
+        DataType::Timestamp(unit, timezone) => format!(
+            "timestamp:{}:{}",
+            match unit {
+                TimeUnit::Second => "s",
+                TimeUnit::Millisecond => "ms",
+                TimeUnit::Microsecond => "us",
+                TimeUnit::Nanosecond => "ns",
+            },
+            timezone.as_deref().unwrap_or("")
+        ),
+        DataType::Decimal128(precision, scale) => {
+            format!("decimal128:{precision}:{scale}")
+        }
+        DataType::Decimal256(precision, scale) => {
+            format!("decimal256:{precision}:{scale}")
+        }
+        DataType::List(field) => {
+            format!("list:{}", encode_data_type(field.data_type())?)
+        }
+        other => {
+            return Err(report!(
+                "the aggregate result type {other} is not supported"
+            ));
+        }
+    })
+}
+
+pub(crate) fn decode_data_type(text: &str) -> Result<DataType> {
+    Ok(match text {
+        "boolean" => DataType::Boolean,
+        "int8" => DataType::Int8,
+        "int16" => DataType::Int16,
+        "int32" => DataType::Int32,
+        "int64" => DataType::Int64,
+        "uint8" => DataType::UInt8,
+        "uint16" => DataType::UInt16,
+        "uint32" => DataType::UInt32,
+        "uint64" => DataType::UInt64,
+        "float32" => DataType::Float32,
+        "float64" => DataType::Float64,
+        "utf8" => DataType::Utf8,
+        "largeutf8" => DataType::LargeUtf8,
+        "binary" => DataType::Binary,
+        "largebinary" => DataType::LargeBinary,
+        "date32" => DataType::Date32,
+        "date64" => DataType::Date64,
+        other => {
+            if let Some(rest) = other.strip_prefix("timestamp:") {
+                let (unit, timezone) = rest
+                    .split_once(':')
+                    .ok_or_else(|| report!("invalid aggregate result type {other}"))?;
+                let unit = match unit {
+                    "s" => TimeUnit::Second,
+                    "ms" => TimeUnit::Millisecond,
+                    "us" => TimeUnit::Microsecond,
+                    "ns" => TimeUnit::Nanosecond,
+                    _ => {
+                        return Err(report!("invalid aggregate result type {other}"));
+                    }
+                };
+                let timezone = if timezone.is_empty() {
+                    None
+                } else {
+                    Some(Arc::from(timezone))
+                };
+                DataType::Timestamp(unit, timezone)
+            } else if let Some(rest) = other.strip_prefix("decimal128:") {
+                let (precision, scale) = rest
+                    .split_once(':')
+                    .ok_or_else(|| report!("invalid aggregate result type {other}"))?;
+                DataType::Decimal128(
+                    precision
+                        .parse()
+                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                    scale
+                        .parse()
+                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                )
+            } else if let Some(rest) = other.strip_prefix("decimal256:") {
+                let (precision, scale) = rest
+                    .split_once(':')
+                    .ok_or_else(|| report!("invalid aggregate result type {other}"))?;
+                DataType::Decimal256(
+                    precision
+                        .parse()
+                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                    scale
+                        .parse()
+                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                )
+            } else if let Some(inner) = other.strip_prefix("list:") {
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    decode_data_type(inner)?,
+                    true,
+                )))
+            } else {
+                return Err(report!("invalid aggregate result type {other}"));
+            }
+        }
+    })
+}
+
 /// The row identity column of a source in a multi-way join output.
 fn multi_join_pk_alias(source: usize, key: &str) -> String {
     format!("__pk{source}_{key}")
@@ -1442,6 +1608,40 @@ pub fn multi_join_append_schema_for(
     columns: &[MultiJoinColumn],
 ) -> Result<SchemaRef> {
     let mut fields = multi_join_output_fields(schemas, columns)?;
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a [`ViewSpec::MultiAgg`] materialized view: the group keys,
+/// one nullable column per aggregate, the row kind and the epoch.
+pub fn multi_agg_mv_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    columns: &[(String, DataType)],
+) -> Result<SchemaRef> {
+    if columns.is_empty() {
+        return Err(report!(
+            "a multi-aggregate view needs at least one aggregate"
+        ));
+    }
+    let mut fields = if group_keys.is_empty() && group_exprs.is_empty() {
+        Vec::new()
+    } else {
+        group_key_fields(source_schema, group_keys, group_exprs)?
+    };
+    for (name, data_type) in columns {
+        fields.push(Arc::new(Field::new(name.clone(), data_type.clone(), true)));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
     fields.push(Arc::new(Field::new(
         IVM_EPOCH_COLUMN,
         DataType::Int64,
@@ -2639,6 +2839,119 @@ impl MultiJoinView {
     }
 }
 
+/// An aggregate view over one source with any mix of supported aggregate
+/// functions in a single statement.
+#[derive(Debug, Clone)]
+pub struct MultiAggView {
+    /// The view id.
+    pub view_id: String,
+    /// The source table (append-only or keyed/upsert).
+    pub source: IvmTable,
+    /// The materialized view table.
+    pub mv: IvmTable,
+    /// The group key columns.
+    pub group_keys: Vec<String>,
+    /// The rendered group expressions, parallel to [`Self::group_keys`].
+    pub group_exprs: Vec<String>,
+    /// `(rendered call, MV column, result type)` per aggregate.
+    pub aggregates: Vec<(String, String, DataType)>,
+    /// An optional filter the contributing rows must satisfy.
+    pub filter: Option<String>,
+    /// An optional `HAVING` predicate over the materialized columns.
+    pub having: Option<String>,
+    /// The refresh interval hint persisted with the view.
+    pub refresh_interval_ms: i64,
+}
+
+impl MultiAggView {
+    /// A new view with no refresh interval hint.
+    pub fn new(
+        view_id: impl Into<String>,
+        source: IvmTable,
+        mv: IvmTable,
+        group_keys: Vec<String>,
+        aggregates: Vec<(String, String, DataType)>,
+    ) -> Self {
+        Self {
+            view_id: view_id.into(),
+            source,
+            mv,
+            group_keys,
+            group_exprs: Vec::new(),
+            aggregates,
+            filter: None,
+            having: None,
+            refresh_interval_ms: 0,
+        }
+    }
+
+    /// Group by rendered expressions parallel to the group keys.
+    pub fn with_group_exprs(mut self, group_exprs: Vec<String>) -> Self {
+        self.group_exprs = group_exprs;
+        self
+    }
+
+    /// Only rows matching `filter` contribute to the view.
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Only groups matching `having` stay in the view.
+    pub fn with_having(mut self, having: impl Into<String>) -> Self {
+        self.having = Some(having.into());
+        self
+    }
+
+    fn to_spec(&self) -> Result<ViewSpec> {
+        Ok(ViewSpec::MultiAgg {
+            view_id: self.view_id.clone(),
+            source_table_id: self.source.table_id.clone(),
+            mv_table_id: self.mv.table_id.clone(),
+            group_keys: self.group_keys.clone(),
+            group_exprs: self.group_exprs.clone(),
+            aggregates: self
+                .aggregates
+                .iter()
+                .map(|(call, column, data_type)| {
+                    Ok(MultiAggSpec {
+                        call: call.clone(),
+                        column: column.clone(),
+                        result: encode_data_type(data_type)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            filter: self.filter.clone(),
+            having: self.having.clone(),
+        })
+    }
+
+    fn parts(&self) -> Result<RecomputeParts<'_>> {
+        let (first_call, first_column, _) = self.aggregates.first().ok_or_else(|| {
+            report!("a multi-aggregate view needs at least one aggregate")
+        })?;
+        Ok(RecomputeParts {
+            view_id: &self.view_id,
+            source: &self.source,
+            mv: &self.mv,
+            group_keys: &self.group_keys,
+            group_exprs: &self.group_exprs,
+            aggregate_call: first_call.clone(),
+            column: first_column.clone(),
+            extra_aggregates: self.aggregates[1..]
+                .iter()
+                .map(|(call, column, _)| RecomputeAggregate {
+                    call: call.clone(),
+                    column: column.clone(),
+                })
+                .collect(),
+            distinct_columns: None,
+            filter: self.filter.as_deref(),
+            having: self.having.as_deref(),
+        })
+    }
+}
+
 /// A `LEFT JOIN` lookup view: every left row with the right row its join keys
 /// reference (or NULL).
 ///
@@ -3568,6 +3881,7 @@ impl DistinctAggView {
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
             distinct_columns: Some(&self.value_columns),
+            extra_aggregates: Vec::new(),
         }
     }
 
@@ -3990,6 +4304,7 @@ impl BoolAggView {
             distinct_columns: None,
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
+            extra_aggregates: Vec::new(),
         }
     }
 }
@@ -4184,6 +4499,7 @@ impl ApproxDistinctView {
                 )
             ),
             column: approx_distinct_output_column(self.value_column.as_deref()),
+            extra_aggregates: Vec::new(),
             distinct_columns: None,
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
@@ -4381,6 +4697,7 @@ impl ApproxPercentileView {
                 self.percentile
             ),
             column: approx_percentile_output_column(self.value_column.as_deref()),
+            extra_aggregates: Vec::new(),
             distinct_columns: None,
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
@@ -4604,6 +4921,7 @@ impl ComputedAggView {
             group_exprs: &self.group_exprs,
             aggregate_call: self.aggregate_call(),
             column: self.column.clone(),
+            extra_aggregates: Vec::new(),
             distinct_columns: None,
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
@@ -4789,6 +5107,15 @@ pub fn median_groups_mv_schema_for(
 /// The source and statistic of a "recomputed aggregate" view: the statistic
 /// cannot be merged from signed deltas, so a refresh recomputes the affected
 /// groups from their current source rows.
+/// One aggregate of a multi-aggregate recompute view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RecomputeAggregate {
+    /// The rendered aggregate call over the source columns.
+    call: String,
+    /// The MV column holding the aggregate.
+    column: String,
+}
+
 struct RecomputeParts<'a> {
     view_id: &'a str,
     source: &'a IvmTable,
@@ -4801,12 +5128,45 @@ struct RecomputeParts<'a> {
     aggregate_call: String,
     /// The MV column holding the statistic.
     column: String,
+    /// Additional aggregates materialized alongside the first one (mixed
+    /// aggregate kinds in one statement).
+    extra_aggregates: Vec<RecomputeAggregate>,
     /// The distinct value columns of a multi-column `COUNT(DISTINCT a, b)`:
     /// the aggregate is the count of distinct tuples among the affected
     /// group's rows, computed over a `SELECT DISTINCT` subquery.
     distinct_columns: Option<&'a [String]>,
     filter: Option<&'a str>,
     having: Option<&'a str>,
+}
+
+impl RecomputeParts<'_> {
+    /// Every aggregate of the view: the first one and the extras.
+    fn aggregates(&self) -> Vec<(&str, &str)> {
+        std::iter::once((self.aggregate_call.as_str(), self.column.as_str()))
+            .chain(
+                self.extra_aggregates.iter().map(|aggregate| {
+                    (aggregate.call.as_str(), aggregate.column.as_str())
+                }),
+            )
+            .collect()
+    }
+
+    /// The rendered `call as "column"` list.
+    fn aggregate_select(&self) -> String {
+        self.aggregates()
+            .iter()
+            .map(|(call, column)| format!("{call} as {}", quote_ident(column)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The quoted MV columns of every aggregate, in order.
+    fn aggregate_columns(&self) -> Vec<String> {
+        self.aggregates()
+            .iter()
+            .map(|(_, column)| quote_ident(column))
+            .collect()
+    }
 }
 
 impl VarianceView {
@@ -4829,6 +5189,7 @@ impl VarianceView {
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
             distinct_columns: None,
+            extra_aggregates: Vec::new(),
         }
     }
 }
@@ -4852,6 +5213,7 @@ impl MedianView {
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
             distinct_columns: None,
+            extra_aggregates: Vec::new(),
         }
     }
 }
@@ -5042,6 +5404,7 @@ impl StringAggView {
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
             distinct_columns: None,
+            extra_aggregates: Vec::new(),
         }
     }
 
@@ -5251,6 +5614,7 @@ impl ArrayAggView {
             filter: self.filter.as_deref(),
             having: None,
             distinct_columns: None,
+            extra_aggregates: Vec::new(),
         }
     }
 
@@ -7543,6 +7907,35 @@ impl IvmRuntime {
                 having: having.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::MultiAgg {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                group_keys,
+                group_exprs,
+                aggregates,
+                filter,
+                having,
+            } => SpecView::MultiAgg(MultiAggView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                group_keys: group_keys.clone(),
+                group_exprs: group_exprs.clone(),
+                aggregates: aggregates
+                    .iter()
+                    .map(|aggregate| {
+                        Ok((
+                            aggregate.call.clone(),
+                            aggregate.column.clone(),
+                            decode_data_type(&aggregate.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                filter: filter.clone(),
+                having: having.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::MultiJoin {
                 view_id,
                 mv_table_id,
@@ -8104,6 +8497,7 @@ impl IvmRuntime {
             Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
             Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
+            Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
             Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
             Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
             Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
@@ -8151,6 +8545,7 @@ impl IvmRuntime {
             Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
             Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
             Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
+            Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
             Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
             Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
             Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
@@ -12365,6 +12760,34 @@ impl IvmRuntime {
         Ok(epoch)
     }
 
+    /// Persist a multi-aggregate view spec (idempotent).
+    pub async fn register_multi_agg_view(&self, view: &MultiAggView) -> Result<()> {
+        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
+            .await?;
+        let spec = serde_json::to_value(view.to_spec()?)?;
+        self.metadata
+            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
+            .await
+    }
+
+    /// Refresh a multi-aggregate view from the affected groups.
+    pub async fn refresh_multi_agg(&self, view: &MultiAggView) -> Result<Option<i64>> {
+        self.register_multi_agg_view(view).await?;
+        validate_multi_agg_view(view)?;
+        let parts = view.parts()?;
+        validate_recompute_view(&parts)?;
+        self.refresh_recomputed(&parts).await
+    }
+
+    /// Rebuild a multi-aggregate view from the full source state.
+    pub async fn rebuild_multi_agg(&self, view: &MultiAggView) -> Result<i64> {
+        self.register_multi_agg_view(view).await?;
+        validate_multi_agg_view(view)?;
+        let parts = view.parts()?;
+        validate_recompute_view(&parts)?;
+        self.rebuild_recomputed(&parts).await
+    }
+
     /// Rebuild a `MIN`/`MAX` view from the full source state.
     pub async fn rebuild_min_max(&self, view: &MinMaxView) -> Result<i64> {
         self.register_min_max_view(view).await?;
@@ -14454,6 +14877,32 @@ fn multi_join_frame(
     Ok(current.select(output)?)
 }
 
+/// Validate that a multi-aggregate view can be maintained.
+fn validate_multi_agg_view(view: &MultiAggView) -> Result<()> {
+    if view.aggregates.is_empty() {
+        return Err(report!(
+            "multi-aggregate view {} needs at least one aggregate",
+            view.view_id
+        ));
+    }
+    let mut names = std::collections::HashSet::new();
+    for (call, column, _) in &view.aggregates {
+        if call.is_empty() || column.is_empty() {
+            return Err(report!(
+                "multi-aggregate view {} has an empty aggregate",
+                view.view_id
+            ));
+        }
+        if !names.insert(column.as_str()) {
+            return Err(report!(
+                "multi-aggregate view {}: column {column} is materialized twice",
+                view.view_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validate that a multi-way join view can be maintained.
 fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
     let source_count = view.sources.len();
@@ -15515,11 +15964,11 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
 fn recompute_group_now_sql(
     parts: &RecomputeParts<'_>,
     keys: &str,
-    column: &str,
     src_from: &str,
 ) -> String {
     match parts.distinct_columns {
         Some(distinct) => {
+            let column = quote_ident(&parts.column);
             let distinct_list = quoted_list(distinct);
             let not_null = distinct
                 .iter()
@@ -15533,8 +15982,8 @@ fn recompute_group_now_sql(
             )
         }
         None => format!(
-            "select {keys}, {} as {column} from {src_from} group by {keys}",
-            parts.aggregate_call
+            "select {keys}, {} from {src_from} group by {keys}",
+            parts.aggregate_select()
         ),
     }
 }
@@ -15543,7 +15992,7 @@ fn recompute_group_now_sql(
 /// groups from their current source rows.
 fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     let keys = quoted_list(parts.group_keys);
-    let column = quote_ident(&parts.column);
+    let columns = parts.aggregate_columns().join(", ");
     let agg = &parts.aggregate_call;
     let keyed = !parts.source.primary_keys.is_empty();
     let src_from = if keyed {
@@ -15561,17 +16010,17 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
         .having
         .map(|having| format!(" and ({having})"))
         .unwrap_or_default();
-    let group_now = recompute_group_now_sql(parts, &keys, &column, &src_from);
+    let group_now = recompute_group_now_sql(parts, &keys, &src_from);
     let _ = agg;
     format!(
         "with affected as ({affected}), \
          group_now as ({group_now}), \
          already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-         deletes as (select {keys}, {column}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         deletes as (select {keys}, {columns}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from active s \
                      where exists (select 1 from affected a where {active_match})), \
-         inserts as (select {keys}, {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         inserts as (select {keys}, {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from group_now p \
                      where not exists (select 1 from already a where {already_match}){having}) \
          select * from deletes union all select * from inserts \
@@ -15584,16 +16033,15 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
 /// The recompute SQL of a global aggregate: one row over the whole current
 /// source.
 fn recompute_global_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
-    let column = quote_ident(&parts.column);
     let src_where = format!(
         "{}{}",
         source_delete_filter("src", change_column(parts.source)),
         filter_clause(parts.filter),
     );
     let row = format!(
-        "select {} as {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+        "select {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from src where {src_where}",
-        parts.aggregate_call
+        parts.aggregate_select()
     );
     match parts.having {
         Some(having) => format!("select * from ({row}) t where {having}"),
@@ -15854,7 +16302,7 @@ fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
 /// SQL for a full recomputed-aggregate rebuild.
 fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     let keys = quoted_list(parts.group_keys);
-    let column = quote_ident(&parts.column);
+    let columns = parts.aggregate_columns().join(", ");
     let agg = &parts.aggregate_call;
     let keyed = !parts.source.primary_keys.is_empty();
     let src_from = if keyed {
@@ -15866,10 +16314,10 @@ fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     } else {
         format!("src{}", filter_where(parts.filter))
     };
-    let group_now = recompute_group_now_sql(parts, &keys, &column, &src_from);
+    let group_now = recompute_group_now_sql(parts, &keys, &src_from);
     let _ = agg;
     let rebuild = format!(
-        "select {keys}, {column}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+        "select {keys}, {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from ({group_now}) t"
     );
     match parts.having {

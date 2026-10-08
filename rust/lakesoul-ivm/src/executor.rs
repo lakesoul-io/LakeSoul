@@ -36,10 +36,10 @@ use crate::runtime::{
     IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, approx_distinct_groups_mv_schema_for,
     approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
     bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    cross_join_view_schema_for, distinct_agg_groups_mv_schema_for,
+    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_for,
     keyed_join_view_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
-    median_groups_mv_schema_for, min_max_groups_mv_schema_for,
+    median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
     row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
@@ -859,6 +859,25 @@ fn expected_mv_schema(
             let output =
                 union_output_schema_for(&source.schema, &spec.columns, &spec.exprs)?;
             union_distinct_mv_schema_for(&output)
+        }
+        ViewSpec::MultiAgg {
+            source_table_id,
+            group_keys,
+            group_exprs,
+            aggregates,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let columns = aggregates
+                .iter()
+                .map(|aggregate| {
+                    Ok((
+                        aggregate.column.clone(),
+                        decode_data_type(&aggregate.result)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            multi_agg_mv_schema_for(&source.schema, group_keys, group_exprs, &columns)?
         }
         ViewSpec::MultiJoin {
             sources, columns, ..
