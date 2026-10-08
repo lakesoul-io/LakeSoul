@@ -757,7 +757,8 @@ fn computed_arg_matches(
     }
 }
 
-/// `GROUP BY GROUPING SETS` / `ROLLUP` / `CUBE` over a keyed source with the
+/// `GROUP BY GROUPING SETS` / `ROLLUP` / `CUBE` over a keyed or plain
+/// append-only source with the
 /// `SUM`/`COUNT`/`AVG` aggregates.
 ///
 /// The flat key columns are the distinct grouping columns in first-seen
@@ -772,9 +773,9 @@ fn analyze_grouping_sets(
     filter: Option<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    if source.primary_keys.is_empty() {
+    if source.primary_keys.is_empty() && source.cdc_column.is_some() {
         return Err(unsupported(
-            "GROUPING SETS / ROLLUP / CUBE need a keyed source",
+            "GROUPING SETS over an append-only changelog source (it cannot retract)",
         ));
     }
     let mut grouping = None;
@@ -817,19 +818,38 @@ fn analyze_grouping_sets(
         }
         GroupingSet::GroupingSets(sets) => sets.clone(),
     };
-    // The flat keys, in first-seen order.
+    // The flat keys, in first-seen order.  A computed key is named after its
+    // select alias and rendered for the source-side key projection.
     let mut group_keys: Vec<String> = Vec::new();
+    let mut group_exprs: Vec<String> = Vec::new();
     let mut groupings: Vec<Vec<usize>> = Vec::new();
     for set in &member_sets {
         let mut indices = Vec::with_capacity(set.len());
         for expr in set {
-            let Expr::Column(column) = strip_alias(expr) else {
-                return Err(unsupported("GROUPING SETS keys must be plain columns"));
+            let name = match strip_alias(expr) {
+                Expr::Column(column) => projection
+                    .and_then(|projection| projection_alias(projection, expr))
+                    .unwrap_or_else(|| column.name.clone()),
+                _ => projection
+                    .and_then(|projection| projection_alias(projection, expr))
+                    .ok_or_else(|| unsupported("GROUP BY expressions need an alias"))?,
             };
-            let index = match group_keys.iter().position(|key| key == &column.name) {
-                Some(index) => index,
+            let rendered = match strip_alias(expr) {
+                Expr::Column(column) => column.name.clone(),
+                other => render_filter(other)?,
+            };
+            let index = match group_keys.iter().position(|key| key == &name) {
+                Some(index) => {
+                    if group_exprs[index] != rendered {
+                        return Err(unsupported(format!(
+                            "GROUP BY key {name} maps to several expressions"
+                        )));
+                    }
+                    index
+                }
                 None => {
-                    group_keys.push(column.name.clone());
+                    group_keys.push(name);
+                    group_exprs.push(rendered);
                     group_keys.len() - 1
                 }
             };
@@ -839,6 +859,10 @@ fn analyze_grouping_sets(
         }
         indices.sort_unstable();
         groupings.push(indices);
+    }
+    // A plain column grouping stays compact.
+    if group_keys == group_exprs {
+        group_exprs.clear();
     }
 
     // A SUM/COUNT/AVG-only statement keeps the incremental layout; any other
@@ -869,7 +893,7 @@ fn analyze_grouping_sets(
             source_table_id: source.table_id.clone(),
             mv_table_id: request.mv_table_id.clone(),
             group_keys,
-            group_exprs: Vec::new(),
+            group_exprs,
             groupings,
             value_column: None,
             value_expr: None,
@@ -993,7 +1017,7 @@ fn analyze_grouping_sets(
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
         group_keys,
-        group_exprs: Vec::new(),
+        group_exprs,
         grouping_columns,
         groupings,
         value_column,
@@ -3689,6 +3713,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_grouping_sets_expressions() {
+        // A computed key is named after its select alias and rendered for the
+        // source-side key projection.
+        let analyzed = analyze_optimized(
+            "select v % 10 as bucket, sum(v) from src group by rollup(bucket)",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            group_exprs,
+            groupings,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["bucket".to_string()]);
+        assert_eq!(group_exprs.len(), 1);
+        assert!(group_exprs[0].contains("10"), "{group_exprs:?}");
+        assert_eq!(groupings, vec![vec![0usize], vec![]]);
+
+        // Plain columns and expressions mix; a plain column keeps its name.
+        let analyzed = analyze_optimized(
+            "select g, v % 10 as bucket, sum(v) from src \
+             group by grouping sets ((g, bucket), (g), ())",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            group_exprs,
+            groupings,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "bucket".to_string()]);
+        assert_eq!(group_exprs[0], "g");
+        assert!(group_exprs[1].contains("10"), "{group_exprs:?}");
+        assert_eq!(groupings, vec![vec![0, 1], vec![0], vec![]]);
+
+        // A renamed plain column keeps its projection alias.
+        let analyzed =
+            analyze_optimized("select g as grp, sum(v) from src group by cube(grp)")
+                .await
+                .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["grp".to_string()]);
+        assert_eq!(group_exprs, vec!["g".to_string()]);
+
+        // An append-only changelog source cannot retract superseded rows.
+        let mut append_only_cdc = source_table("src");
+        append_only_cdc.primary_keys.clear();
+        append_only_cdc.cdc_column = Some("op".to_string());
+        assert!(
+            analyze_multi(
+                "select g, sum(v) from src group by rollup(g)",
+                vec![append_only_cdc],
+            )
+            .await
+            .is_err()
+        );
+
+        // A computed key needs an alias.
+        assert!(
+            analyze_optimized("select v % 10, sum(v) from src group by rollup(v % 10)",)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_distinct_on() {
         // `DISTINCT ON (...) ... ORDER BY` plans as FIRST_VALUE aggregates;
         // the source primary keys are appended to the ordering so the picked
@@ -4222,17 +4327,11 @@ mod tests {
         assert_eq!(grouping_columns[0].name, "grouping_g");
 
         // Any supported aggregate mix is maintained (see
-        // analyzes_grouping_sets_mixed_aggregates); plain columns only.
+        // analyzes_grouping_sets_mixed_aggregates); computed keys are covered
+        // by analyzes_grouping_sets_expressions.
         let mixed = analyze_optimized("select g, min(v) from src group by rollup(g)")
             .await
             .unwrap();
         assert!(matches!(mixed.spec, ViewSpec::GroupingSets { .. }));
-        assert!(
-            analyze_optimized(
-                "select v + 1 as bucket, sum(v) from src group by rollup(v + 1)"
-            )
-            .await
-            .is_err()
-        );
     }
 }

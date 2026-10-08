@@ -271,9 +271,9 @@ fn validate_grouping_sets_view(view: &GroupingSetsView) -> Result<()> {
     } else {
         group_key_fields(&view.source.schema, &view.group_keys, &view.group_exprs)?;
     }
-    if view.source.primary_keys.is_empty() {
+    if view.source.primary_keys.is_empty() && view.source.cdc_column.is_some() {
         return Err(report!(
-            "grouping sets view {} needs a keyed source",
+            "grouping sets view {}: an append-only changelog source is not maintained",
             view.view_id
         ));
     }
@@ -613,7 +613,8 @@ impl DistinctAggView {
     }
 }
 
-/// A `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` view over a keyed source with
+/// A `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` view over a keyed or plain
+/// append-only source with
 /// the `SUM`/`COUNT`/`AVG` aggregates.
 ///
 /// Every grouping set is maintained over the same MV: a row carries its
@@ -2053,8 +2054,13 @@ fn grouping_sets_insert(
 /// The refresh SQL of a grouping-sets view: the affected group tuples drive
 /// every set, which recomputes and rewrites its rows.
 fn grouping_sets_refresh_sql(view: &GroupingSetsView, epoch: i64) -> String {
-    let affected =
-        affected_groups_sql(&view.source, &view.group_keys, true, view.filter.as_deref());
+    let keyed = !view.source.primary_keys.is_empty();
+    let affected = affected_groups_sql(
+        &view.source,
+        &view.group_keys,
+        keyed,
+        view.filter.as_deref(),
+    );
     let src_where = format!(
         "{}{}",
         source_delete_filter("src", change_column(&view.source)),
@@ -2375,21 +2381,42 @@ impl IvmRuntime {
         register_table(
             &context,
             "delta",
-            view.source.read_files(window.added_files).await?,
+            project_group_keys(
+                &context,
+                view.source.read_files(window.added_files).await?,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )
+            .await?,
             &view.source.schema,
         )?;
         register_table(
             &context,
             "old",
-            view.source
-                .read_as_of(&self.client, window.before_timestamp)
-                .await?,
+            project_group_keys(
+                &context,
+                view.source
+                    .read_as_of(&self.client, window.before_timestamp)
+                    .await?,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )
+            .await?,
             &view.source.schema,
         )?;
         register_table(
             &context,
             "src",
-            view.source.read_current(&self.client).await?,
+            project_group_keys(
+                &context,
+                view.source.read_current(&self.client).await?,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )
+            .await?,
             &view.source.schema,
         )?;
         register_table(
@@ -2457,7 +2484,19 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        register_table(
+            &context,
+            "src",
+            project_group_keys(
+                &context,
+                baseline.batches,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )
+            .await?,
+            &view.source.schema,
+        )?;
         for batch in context
             .sql(&grouping_sets_rebuild_sql(view, epoch))
             .await?

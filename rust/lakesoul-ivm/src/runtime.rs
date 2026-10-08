@@ -1357,7 +1357,11 @@ fn group_key_fields(
         .iter()
         .zip(group_exprs)
         .map(|(key, expression)| {
-            if source_schema.field_with_name(key).is_ok() {
+            if let Ok(field) = source_schema.field_with_name(key) {
+                // A plain column among computed keys is its own expression.
+                if expression == key {
+                    return Ok(Arc::new(field.clone()) as arrow_schema::FieldRef);
+                }
                 return Err(report!(
                     "a computed group key must not reuse the source column {key}"
                 ));
