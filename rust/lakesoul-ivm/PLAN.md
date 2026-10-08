@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 聚合/分组 | 同一语句混合多种聚合 kind（如 `SUM(v), MIN(v)` 同组，现按 kind 拒绝） | 设计级扩展（多聚合通用 spec：按受影响分组重算每个聚合） |
+| 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE` 里的非 SUM/COUNT/AVG 聚合与键表达式 | 设计级扩展（每集合多聚合重算） |
 | 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的可空键/重复计数放宽；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | 标量/相关子查询（依赖多视图链）；嵌套/不透明派生表 | 低，随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
@@ -2395,6 +2395,29 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：analyzer（纯交叉链与混合链）、`multi_cross_join.slt`（三源交叉的增删改）、
   `oracle_multi_cross_join_matches_full_recompute`（随机轮差分）。README 形状表/限制清单与
   §10.5 backlog 同步刷新。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）364 个测试通过、0 失败。
+
+### 10.81 同一语句混合多种聚合 kind（PR-75）
+
+- **触发**：`analyze_aggregate` 取**选择列表引用**的聚合（裁剪投影为 None 时即全部），
+  若 >1 且不是「至多一个 SUM/COUNT/AVG」的组合则路由到 `analyze_multi_agg`；
+  HAVING 额外引入的计划聚合仍由原 family 路径处理，保持「HAVING 必须引用已物化聚合」的报错。
+  混合语句中的 DISTINCT 聚合（优化器会改写成嵌套分组）在 `distinct_split` 之前明确拒绝。
+- **spec/typed**：`ViewSpec::MultiAgg` + `MultiAggSpec { call, column, result }`（result 为可移植类型编码
+  `encode_data_type`/`decode_data_type`，覆盖数值/字符串/时间/Decimal/List）+ `MultiAggView`
+  （`aggregates: Vec<(call, column, DataType)>`）；schema helper `multi_agg_mv_schema_for`
+  支持分组与全局（空键）两种形态；执行器期望 schema 同步。
+- **维护**：复用 recompute 家族——`RecomputeParts` 增加 `extra_aggregates`，三个 SQL 构造器
+  （group_now/refresh/rebuild/global）改为多列列表；`refresh_recomputed`/`rebuild_recomputed`
+  未改动即可支持 N 个聚合（受影响分组重算 + 删除/插入）。
+- **列命名**：`<函数>_<参数标签>`（如 `sum_v`、`min_v`、`bit_and_v`），`COUNT(*)` 物化为 `count`；
+  重名明确报错。HAVING 通过「输出字段名/表达式显示/渲染调用」三重映射到 MV 列。
+- **支持集**：SUM/COUNT/AVG/MIN/MAX/方差族/MEDIAN/APPROX_*/STRING_AGG/ARRAY_AGG/BOOL_*/分位/位与回归族；
+  FILTER、多参数 DISTINCT 明确拒绝。
+- **测试**：analyzer（SUM+MIN+COUNT+HAVING、MIN+MAX+MEDIAN、单族回退、DISTINCT/FILTER 拒绝；
+  更新 5 处旧的“混合即拒绝”断言为 MultiAgg）、`mixed_aggregates.slt`（键组增删改、组消失、
+  HAVING 重建）、`mixed_global_aggregates.slt`（全局混合）、
+  `oracle_mixed_aggregates_matches_full_recompute`（随机轮差分）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）368 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

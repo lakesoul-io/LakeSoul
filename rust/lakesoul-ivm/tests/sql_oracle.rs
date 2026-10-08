@@ -27,8 +27,8 @@ use lakesoul_ivm::{
     grouping_sets_mv_schema_for, keyed_join_output_primary_keys,
     keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
@@ -2375,6 +2375,38 @@ async fn oracle_multi_cross_join_matches_full_recompute() {
          WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
         "SELECT k, bk, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
          FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_mixed_aggregates_matches_full_recompute() {
+    // A mixed SUM/MIN/MAX/COUNT statement, recomputed from the affected
+    // groups.
+    let schema = source_schema();
+    run_oracle(
+        "mixedaggs",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("min_v".to_string(), DataType::Int64),
+                ("max_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) AS s, MIN(v) AS mn, MAX(v) AS mx, COUNT(*) AS c \
+         FROM __SRC__ WHERE v > 10 GROUP BY g",
+        "SELECT g, SUM(v) AS sum_v, MIN(v) AS min_v, MAX(v) AS max_v, \
+         COUNT(*) AS \"count\" FROM __SRC__ WHERE op <> 'delete' AND v > 10 \
+         GROUP BY g",
+        "SELECT g, sum_v, min_v, max_v, \"count\" FROM __MV__ \
+         WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
