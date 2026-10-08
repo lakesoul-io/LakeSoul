@@ -2443,6 +2443,34 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **验证**：顶层条目名集合与拆分前完全一致（无遗漏/新增）；fmt、clippy 干净；
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）368 个测试通过、0 失败。
 
+### 10.83 sql.rs 按算子模块化拆分（PR-77）
+
+- **动机**：`src/sql.rs` 9.4k 行（其中 4.2k 为单测），按 SQL 算子拆分到 `src/sql/` 子模块；
+  `analyze_select` 等公共入口保持在父模块，外部路径不变。
+- **模块划分**：
+  - `sql.rs`（父，~0.9k）：`AnalyzeRequest`/`AnalyzedView`、`analyze_select` 分发、
+    `definition_hash`、过滤与表达式共享助手（`render_filter`/`strip_relations`/`validate_filter`、
+    `column_of`/`strip_alias`/`projection_alias`、`collect_filtered_source`、`having_aggregate`、
+    `compare_op` 等）与入口类测试。
+  - `sql/aggregates.rs`（~3.9k）：`analyze_aggregate`、`HAVING` 渲染/重写、`GROUPING SETS`、
+    混合聚合，以及 29 个聚合单测。
+  - `sql/joins.rs`（~1.9k）：pair join（inner/lookup/pair-keyed left/right/full/cross、宽投影、
+    pair 谓词）+ semi/anti 分支与 19 个 join 单测。
+  - `sql/multi_join.rs`（~0.4k）：join 树展平（后序、无键 CROSS 步骤、侧过滤/条件分类）。
+  - `sql/set_ops.rs`（~0.2k）：INTERSECT/EXCEPT；`sql/unions.rs`（~0.5k）：UNION ALL/UNION。
+  - `sql/windows.rs`（~1.3k）：窗口/链式窗口/TOP-K 与序号渲染；`sql/rows.rs`（~0.2k）：行投影/
+    SELECT DISTINCT。
+  - `sql/test_helpers.rs`（~0.1k，`#[cfg(test)] pub(crate) mod`）：`schema`/`source_table`/`plan`/
+    `analyze*`/`normalized` 等共享 fixture，各模块的单测子模块通过 `use crate::sql::test_helpers::*;`
+    复用（原 94 个测试按算子随模块迁移）。
+- **可见性**：父模块以私有 `use self::<mod>::*;` 汇聚子模块；跨模块调用的分析函数
+  （`analyze_aggregate`/`analyze_join`/`analyze_multi_join`/`analyze_set_operation`/`analyze_union*`/
+  `analyze_window`/`try_analyze_top_k`/`analyze_row`/`analyze_distinct_rows`/`is_grouping_projection`/
+  `join_input`+`JoinInput` 字段/`semi_anti_output_columns`/`render_order_key`/`render_order_expr`）
+  标注 `pub(super)`。
+- **验证**：条目名集合与拆分前完全一致；fmt/clippy 干净；全量 IVM 套件
+  （lib + 39 个集成测试二进制 + doctest）368 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
