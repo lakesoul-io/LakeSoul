@@ -1,0 +1,84 @@
+# A lookup LEFT JOIN over a filtered right input: a fact whose dimension row
+# is filtered out keeps NULLs, and a dimension row entering or leaving the
+# filter fills or resets them.
+
+statement ok
+/*ivm-append __SRC__: id=1,jk=a,lv=L1,op=insert; id=2,jk=b,lv=L2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: jk=a,rv=10,op=insert; jk=b,rv=3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN (SELECT * FROM __SRC2__ WHERE rv > 5) r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TTII rowsort
+SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a L1 10 1
+b L2 NULL 2
+
+# A dimension row entering the filter fills the previously NULL match.
+statement ok
+/*ivm-append __SRC2__: jk=b,rv=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN (SELECT * FROM __SRC2__ WHERE rv > 5) r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTII rowsort
+SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a L1 10 1
+b L2 20 2
+
+# A dimension row leaving the filter resets the referencing facts to NULL.
+statement ok
+/*ivm-append __SRC2__: jk=a,rv=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN (SELECT * FROM __SRC2__ WHERE rv > 5) r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTII rowsort
+SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a L1 NULL 1
+b L2 20 2
+
+# A new fact joins the filtered dimension state.
+statement ok
+/*ivm-append __SRC__: id=3,jk=a,lv=L3,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN (SELECT * FROM __SRC2__ WHERE rv > 5) r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTII rowsort
+SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a L1 NULL 1
+a L3 NULL 3
+b L2 20 2
+
+# A changed filter rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC__ l LEFT JOIN (SELECT * FROM __SRC2__ WHERE rv > 0) r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TTII rowsort
+SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a L1 1 1
+a L3 1 3
+b L2 20 2

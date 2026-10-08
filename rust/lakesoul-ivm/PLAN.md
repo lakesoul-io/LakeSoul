@@ -2370,6 +2370,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `full_join_names_filter.slt`（异名键 FULL 的增删与带过滤重建）。README 形状表/限制清单同步。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）360 个测试通过、0 失败。
 
+### 10.79 lookup LEFT JOIN 的右侧输入过滤（PR-73）
+
+- **spec/typed**：`ViewSpec::LookupJoin`/`LookupJoinView` 新增 `right_filter`（serde 省略）与
+  `with_right_filter`；`to_spec`/`spec_view`/执行器路径同步。
+- **运行时**：`refresh_lookup_join`/`rebuild_lookup_join` 的 `right_now` 经 `apply_side_filter`
+  过滤；受影响键仍取自**未过滤**的 delta（进入/离开过滤区都会重写引用它的左侧行），
+  重写投影使用过滤后的 `right_now`，因此匹配被过滤掉的左侧行保持 NULL。校验器解析过滤表达式。
+- **analyzer**：移除 lookup 右侧过滤的拒绝，改由 `join_input` 收集并透传；至此所有 join 形态的
+  输入过滤（inner/cross/semi-anti/LEFT/RIGHT/FULL/lookup，任一侧）均已支持，README 限制清单
+  对应条目删除。
+- **测试**：analyzer（lookup 右侧 derived table 过滤）、`lookup_join_right_filter.slt`
+  （维度行进入/离开过滤区导致 NULL 填充/补齐、新事实行、过滤变化重建）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）361 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -2117,6 +2117,40 @@ fn sqllogic_wide_lookup_join() {
 }
 
 #[test]
+fn sqllogic_lookup_join_right_filter() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("jk", DataType::Utf8, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "lookupjoinrightfilter",
+        include_str!("slt/lookup_join_right_filter.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["jk"])),
+        ],
+        lookup_join_view_schema_for(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["jk"]),
+            &group_keys(&["jk"]),
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        group_keys(&["id"]),
+    );
+}
+
+#[test]
 fn sqllogic_full_join_names_filter() {
     let fact = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("id", DataType::Int64, false),
