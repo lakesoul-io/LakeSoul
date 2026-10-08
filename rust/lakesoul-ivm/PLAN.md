@@ -1083,7 +1083,6 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE` 的键表达式与 append-only 源 | 设计级扩展 |
 | 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的可空键/重复计数放宽；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | 相关标量子查询（规划为带聚合右输入的 semi join）；嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
@@ -2529,6 +2528,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap、子查询表增删驱动全量重算、源更新走 delta、阈值下降后回插）、
   `oracle_scalar_subquery_matches_full_recompute`（双源随机轮差分，另跑 seed 3/17/91 × 25 轮）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）378 个测试通过、0 失败。
+
+### 10.87 `GROUPING SETS`/`ROLLUP`/`CUBE` 支持键表达式与普通 append-only 源（PR-81）
+
+- **键表达式**：`GROUP BY ROLLUP(g, v % 10 AS bucket)` —— 每个集合项可为普通列或带别名的表达式；
+  分析器按集合项复用名字/表达式约定（普通列沿用列名，表达式取 select 别名并以 `render_filter`
+  渲染，`group_keys == group_exprs` 时压缩为空以保持既有 spec 不变）；未起别名的表达式明确报错。
+- **运行时**：`group_key_fields` 放宽为「表达式等于键名且键名是源列」的普通列沿用源字段
+  （混合键中普通列不再被误判为复用列名），其余命名冲突仍然拒绝；`refresh_grouping_sets` /
+  `rebuild_grouping_sets` 用 `project_group_keys` 投影 delta/old/src 后再注册，使 SQL 能引用
+  计算键。
+- **append-only 源**：`affected` 按源是否有主键选择 `affected_groups_sql(keyed)`；普通
+  append-only（无 change 列）可维护；带删除/更新标记的 append-only changelog 无法在被重算的
+  当前态里回收旧行，因此分析器与校验器都**明确拒绝**（错误信息注明 cannot retract）。
+- **测试**：analyzer（ROLLUP 单计算键、混合 `GROUPING SETS ((g, bucket), (g), ())`、重命名普通列、
+  未别名报错、append-only changelog 拒绝；更新一处旧断言）、`grouping_sets_expr.slt`
+  （混合键 ROLLUP 的更新/整组删除/新组）、`grouping_sets_append.slt`（普通 append-only + 计算键
+  CUBE 的追加/过滤重建）、`oracle_grouping_sets_expression_keys_matches_full_recompute`
+  （另跑 seed 5/23/77 × 25 轮）。全量 IVM 套件 382 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

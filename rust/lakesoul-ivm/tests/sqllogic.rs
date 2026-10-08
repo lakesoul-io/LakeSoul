@@ -2153,6 +2153,53 @@ fn sqllogic_grouping_sets_multi() {
 }
 
 #[test]
+fn sqllogic_grouping_sets_expressions() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "groupingsetsexprs",
+        include_str!("slt/grouping_sets_expr.slt"),
+        grouping_sets_mv_schema_for(
+            &schema,
+            &group_keys(&["g", "bucket"]),
+            &["g".to_string(), "(v % 10)".to_string()],
+            Some("v"),
+            None,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+        group_keys(&["__ivm_grouping", "g", "bucket"]),
+    );
+}
+
+#[test]
+fn sqllogic_grouping_sets_append() {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, false),
+    ]));
+    run_script_for_sources(
+        "groupingsetsappend",
+        include_str!("slt/grouping_sets_append.slt"),
+        vec![SltSource::append_only("__SRC__", schema.clone())],
+        grouping_sets_mv_schema_for(
+            &schema,
+            &group_keys(&["bucket"]),
+            &["(v % 10)".to_string()],
+            Some("v"),
+            None,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+        group_keys(&["__ivm_grouping", "bucket"]),
+    );
+}
+
+#[test]
 fn sqllogic_distinct_on() {
     let schema = source_schema();
     run_script_for_mv(

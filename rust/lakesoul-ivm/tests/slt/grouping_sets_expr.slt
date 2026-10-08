@@ -1,0 +1,76 @@
+# ROLLUP over a plain key and a computed key: the buckets are recomputed from
+# the source expressions, while the grouping index selects the sets.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=23,op=insert; k=3,g=b,v=17,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v % 10 AS bucket, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g, bucket)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 10 1
+0 a 3 23 1
+0 b 7 17 1
+1 a NULL 33 2
+1 b NULL 17 1
+2 NULL NULL 50 3
+
+# An update moves the value into another bucket.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v % 10 AS bucket, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g, bucket)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 40 2
+0 b 7 17 1
+1 a NULL 40 2
+1 b NULL 17 1
+2 NULL NULL 57 3
+
+# Deleting the last row of a group removes its detail rows at every level.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=17,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v % 10 AS bucket, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g, bucket)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 40 2
+1 a NULL 40 2
+2 NULL NULL 40 2
+
+# A new row creates its buckets again.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=35,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v % 10 AS bucket, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g, bucket)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 0 40 2
+0 b 5 35 1
+1 a NULL 40 2
+1 b NULL 35 1
+2 NULL NULL 75 3

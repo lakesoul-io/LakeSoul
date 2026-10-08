@@ -2500,3 +2500,35 @@ async fn oracle_scalar_subquery_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_expression_keys_matches_full_recompute() {
+    // A ROLLUP over one plain key and one computed key.
+    run_oracle(
+        "gsexpr",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string(), "bucket".to_string()],
+            &["g".to_string(), "(v % 10)".to_string()],
+            Some("v"),
+            None,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+        vec![
+            "__ivm_grouping".to_string(),
+            "g".to_string(),
+            "bucket".to_string(),
+        ],
+        "SELECT g, v % 10 AS bucket, SUM(v), COUNT(*) FROM __SRC__ \
+         GROUP BY ROLLUP(g, bucket)",
+        "SELECT g, v % 10 AS bucket, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY ROLLUP(g, bucket)",
+        "SELECT g, bucket, sum_v, count_v FROM __MV__ \
+         WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
