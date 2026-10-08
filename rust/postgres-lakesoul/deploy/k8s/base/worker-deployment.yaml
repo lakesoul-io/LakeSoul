@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  # Two workers is the phase-one minimum distribution; scale to 3 to run the
+  # acceptance scenario "worker count grows, snapshot follows" in
+  # rust/postgres-lakesoul/deploy/k8s/README.md.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lakesoul
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lakesoul
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: lakesoul-worker
+      containers:
+        - name: lakesoul-worker
+          image: lakesoul-k8s:local
+          imagePullPolicy: IfNotPresent
+          command: ["/app/lakesoul-worker"]
+          args: []
+          envFrom:
+            - configMapRef:
+                name: lakesoul-config
+          env:
+            - name: LAKESOUL_WAREHOUSE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: warehouse
+                  optional: false
+            - name: AWS_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-endpoint
+                  optional: false
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-access-key-id
+                  optional: false
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-secret-access-key
+                  optional: false
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: metrics
+              containerPort: 19091
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 40Gi

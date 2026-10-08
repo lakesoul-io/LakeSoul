@@ -120,7 +120,7 @@ metrics-exporter-prometheus = "0.16"
 # cache
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 # cli
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive", "env"] }
 atomic_refcell = "0.1.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["clock", "unstable-locales"] }

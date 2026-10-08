@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+# The coordinator's worker discovery reads the mounted service account token
+# (rotated by Kubernetes) and the in-cluster CA on every refresh.
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+# Workers never call the Kubernetes API in this phase: token auto-mount off
+# (discovery is a coordinator concern).
+automountServiceAccountToken: false
+---
+# Discovery API access is namespaced and read-only: only the EndpointSlices
+# of the worker Service in the same namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lakesoul-coordinator-discovery
+  namespace: lakesoul
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lakesoul-coordinator-discovery
+  namespace: lakesoul
+subjects:
+  - kind: ServiceAccount
+    name: lakesoul-coordinator
+    namespace: lakesoul
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lakesoul-coordinator-discovery

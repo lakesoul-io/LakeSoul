@@ -38,6 +38,7 @@ thiserror.workspace = true
 metrics-exporter-prometheus = { workspace = true }
 rustls-pki-types = "1"
 bytes.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

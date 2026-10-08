@@ -39,15 +39,19 @@ use tracing::info;
 )]
 struct Args {
     /// Bind address.
-    #[arg(long, default_value = "0.0.0.0")]
+    #[arg(long, env = "LAKESOUL_WORKER_BIND", default_value = "0.0.0.0")]
     bind: String,
 
     /// gRPC port this worker serves on.
-    #[arg(long, default_value_t = 50051)]
+    #[arg(long, env = "LAKESOUL_WORKER_PORT", default_value_t = 50051)]
     port: u16,
 
     /// Address serving Prometheus metrics.
-    #[arg(long, default_value = "127.0.0.1:19091")]
+    #[arg(
+        long,
+        env = "LAKESOUL_WORKER_METRICS_ADDR",
+        default_value = "127.0.0.1:19091"
+    )]
     metrics_addr: SocketAddr,
 
     #[command(flatten)]

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Dedicated worker Service with a single NAMED `grpc` port: the coordinator's
+# EndpointSlice resolver selects the slice port by the name `grpc` and treats
+# a sole TCP port as a compatibility fallback, so the name makes the intent
+# explicit (no EndpointSlice is hand-written here: the Service's selector
+# wiring makes the API server create/maintain them).
+apiVersion: v1
+kind: Service
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: lakesoul
+    app.kubernetes.io/component: worker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: lakesoul
+    app.kubernetes.io/component: worker
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc

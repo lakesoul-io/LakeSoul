@@ -8,12 +8,26 @@
     nixpkgs-unstable.url =
       "github:NixOS/nixpkgs/nixos-unstable";
 
+    # Builds the Rust workspace (dependencies cached as their own derivation)
+    # for the container image in `packages.<system>.image`.
+    crane.url = "github:ipetkov/crane";
+
+    # The workspace tracks `rust-toolchain.toml` (`channel = "stable"`) and
+    # uses APIs newer than nixpkgs' rustc; the image build takes that channel
+    # from here.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
+      self,
       nixpkgs,
       nixpkgs-unstable,
+      crane,
+      rust-overlay,
       ...
     }:
     let
@@ -92,6 +106,9 @@
         pkg-config
 
         unstable.ty
+
+        kubectl
+        k9s
       ]);
 
       fhsPackages = formatterPackages ++ (with pkgs; [
@@ -161,6 +178,128 @@
 
       commonEnv = envFor pkgs.temurin-bin-17;
       fhsEnv = envFor pkgs.temurin-bin-11;
+
+      #
+      # Container image: postgres-lakesoul (coordinator) + lakesoul-worker
+      #
+      # Same layout as rust/postgres-lakesoul/deploy/Dockerfile (`/app/<bin>`,
+      # TMPDIR=/var/scratch, non-root), but the binaries keep their Nix glibc
+      # closure, so they run unchanged in the image.
+
+      # Channel from rust-toolchain.toml, minimal profile: the build needs
+      # neither rustfmt/clippy nor rust-analyzer.
+      rustToolchainFor = p:
+        (rust-overlay.lib.mkRustBin { } p).fromRustupToolchain {
+          inherit ((builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain) channel;
+          profile = "minimal";
+        };
+      craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainFor;
+
+      # Build inputs only, like the Dockerfile's COPY set and .dockerignore
+      # (deploy files don't invalidate the build); `.cargo` carries the
+      # repository rustflags (`+avx2`), so image binaries match local builds.
+      rustSrc = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.difference
+          (pkgs.lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust
+            ./python
+          ])
+          ./rust/postgres-lakesoul/deploy;
+      };
+
+      # 12 characters, like lakesoul-build-info's own `git rev-parse` fallback.
+      gitCommit =
+        if self ? rev then
+          builtins.substring 0 12 self.rev
+        else if self ? dirtyRev then
+          "${builtins.substring 0 12 self.dirtyRev}-dirty"
+        else
+          "unknown";
+
+      # Crane copies the files `cargo package -l` lists from the crate's own
+      # directory, so a workspace-inherited README (which `cargo package`
+      # places at the crate root) is silently dropped for git dependencies;
+      # vortex's `include_str!(.. CARGO_PKG_README ..)` then fails. Put the
+      # workspace README where the vendored crate expects it.
+      lakesoulVendorDir = craneLib.vendorCargoDeps {
+        src = rustSrc;
+        overrideVendorGitCheckout = _packages: drv: drv.overrideAttrs (old: {
+          preInstall = (old.preInstall or "") + ''
+            if [ -f README.md ]; then
+              find . -mindepth 2 -name Cargo.toml -print0 | while IFS= read -r -d "" toml; do
+                dir=$(dirname "$toml")
+                if grep -Eq '^readme(\.workspace *= *true| *= *\{ *workspace *= *true *\})' "$toml" \
+                  && [ ! -e "$dir/README.md" ]; then
+                  cp README.md "$dir/README.md"
+                fi
+              done
+            fi
+          '';
+        });
+      };
+
+      lakesoulCraneArgs = {
+        pname = "lakesoul";
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+        src = rustSrc;
+        cargoVendorDir = lakesoulVendorDir;
+        strictDeps = true;
+        doCheck = false;
+        # `.cargo/config.toml` points target-dir at rust/target; crane's
+        # artifact hooks expect the default.
+        CARGO_TARGET_DIR = "target";
+        cargoExtraArgs = "--locked -p lakesoul-datafusion --bin lakesoul-worker -p postgres-lakesoul --bin postgres-lakesoul";
+        nativeBuildInputs = with pkgs; [
+          protobuf
+          # vortex's build script generates FlatBuffers bindings with flatc.
+          flatbuffers
+          pkg-config
+          rustPlatform.bindgenHook
+        ];
+        FLATC = "${pkgs.flatbuffers}/bin/flatc";
+      };
+
+      lakesoulDeps = craneLib.buildDepsOnly (lakesoulCraneArgs // {
+        # Only `cargo build` artifacts are reused; skip the `cargo check` pass.
+        cargoCheckCommand = "true";
+      });
+
+      lakesoulBins = craneLib.buildPackage (lakesoulCraneArgs // {
+        cargoArtifacts = lakesoulDeps;
+        # Set here, not in the shared args: a new commit must not invalidate
+        # the cached dependency build.
+        LAKESOUL_GIT_COMMIT = gitCommit;
+      });
+
+      lakesoulImage = pkgs.dockerTools.streamLayeredImage {
+        name = "lakesoul-k8s";
+        tag = gitCommit;
+        contents = [
+          lakesoulBins
+          pkgs.cacert
+          pkgs.dockerTools.fakeNss
+        ];
+        # The k8s manifests run `/app/postgres-lakesoul` / `/app/lakesoul-worker`.
+        extraCommands = ''
+          mkdir -p app var/scratch tmp
+          chmod 1777 var/scratch tmp
+          ln -s ${lakesoulBins}/bin/postgres-lakesoul app/postgres-lakesoul
+          ln -s ${lakesoulBins}/bin/lakesoul-worker app/lakesoul-worker
+        '';
+        config = {
+          # `nobody` from fakeNss.
+          User = "65534:65534";
+          WorkingDir = "/app";
+          Env = [
+            "TMPDIR=/var/scratch"
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+          ];
+        };
+      };
     in
     {
       devShells.${system} = {
@@ -212,6 +351,12 @@
             profile = fhsEnv;
 
           }).env;
+      };
+
+      packages.${system} = {
+        lakesoul = lakesoulBins;
+        # `nix build .#image && ./result | docker load`
+        image = lakesoulImage;
       };
     };
 }

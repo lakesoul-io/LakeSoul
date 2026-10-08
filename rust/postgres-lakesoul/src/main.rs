@@ -10,8 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
 use lakesoul_common::misc::JiffTime;
-use lakesoul_datafusion::cli::CoreArgs;
-use lakesoul_datafusion::distributed::DistributedOptions;
+use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
     LogFormat, PrometheusMetricsConfig, TracingConfig, TracingGuard, init_tracing,
@@ -60,46 +59,41 @@ fn init_logger() -> Result<TracingGuard> {
 struct Cli {
     #[command(flatten)]
     pub core: CoreArgs,
+
+    #[command(flatten)]
+    pub distributed: DistributedArgs,
+
+    /// Bind address, defaults to the loopback interface; container/cluster
+    /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
+    #[clap(long, env = "LAKESOUL_PG_BIND", default_value = "127.0.0.1")]
+    bind: String,
+
     /// Port the server listens to, default to 5432
-    #[clap(short, long, default_value_t = 5432)]
+    #[clap(short, long, env = "LAKESOUL_PG_PORT", default_value_t = 5432)]
     port: u16,
+
     /// Address serving Prometheus metrics.
-    #[clap(long, default_value = "127.0.0.1:19090")]
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_METRICS_ADDR",
+        default_value = "127.0.0.1:19090"
+    )]
     metrics_addr: SocketAddr,
 
-    /// Distributed workers to plan against, comma separated; empty keeps every
-    /// session single-node
-    #[clap(long, value_delimiter = ',')]
-    distributed_workers: Vec<String>,
-
-    /// Fall back to single-node execution when the distributed planner fails
-    /// to plan a query, or plans one whose stages cannot be sent to a worker.
-    /// If disabled, that failure fails the query instead of silently running
-    /// it on the coordinator.
-    #[clap(long)]
-    distributed_fallback_local: bool,
-
-    /// Overrides the distributed planner's bytes-per-partition scan estimate.
-    /// Lower values fan a scan out over more tasks (and therefore workers);
-    /// scans whose estimated size stays below the default (16 MiB) per
-    /// partition are kept on the coordinator.
-    #[clap(long)]
-    distributed_bytes_per_partition: Option<usize>,
-
     /// Maximum number of concurrent connections, 0 for unlimited
-    #[clap(long, default_value_t = 0)]
+    #[clap(long, env = "LAKESOUL_PG_MAX_CONNECTIONS", default_value_t = 0)]
     max_connections: usize,
 
     /// Maximum number of concurrent statements per user, 0 for unlimited
-    #[clap(long, default_value_t = 0)]
+    #[clap(long, env = "LAKESOUL_PG_MAX_QUERIES_PER_USER", default_value_t = 0)]
     max_queries_per_user: usize,
 
     /// Maximum number of rows a statement may return, 0 for unlimited
-    #[clap(long, default_value_t = 0)]
+    #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_ROWS", default_value_t = 0)]
     max_result_rows: usize,
 
     /// Maximum encoded size a statement's result may reach, 0 for unlimited
-    #[clap(long, default_value_t = 0)]
+    #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_BYTES", default_value_t = 0)]
     max_result_bytes: usize,
 }
 
@@ -139,29 +133,24 @@ async fn main_inner(cli: Cli) -> Result<()> {
         warn!("initial catalog view load failed: {err}");
     }
 
-    let distributed = if cli.distributed_workers.is_empty() {
-        None
-    } else {
-        // TODO(jiax): add k8s
-        let mut options =
-            DistributedOptions::static_workers(cli.distributed_workers.clone());
-        options.fallback_to_local = cli.distributed_fallback_local;
-        options.bytes_per_partition = cli.distributed_bytes_per_partition;
+    // One resolver (and one discovery loop) per process: resolution built it
+    // once at start-up; `DistributedOptions::discovery` hands it to every
+    // session via WorkerDiscovery::Shared.
+    let distributed = cli.distributed.resolve_distributed_options().await?;
+    if let Some(options) = &distributed {
         info!(
-            "distributed planning enabled against {:?} (fallback_to_local={}, bytes_per_partition={:?})",
-            cli.distributed_workers,
-            options.fallback_to_local,
-            cli.distributed_bytes_per_partition,
+            "distributed planning enabled (fallback_to_local={}, bytes_per_partition={:?})",
+            options.fallback_to_local, options.bytes_per_partition,
         );
-        Some(options)
-    };
+    }
     let session_factory = match distributed {
         Some(options) => session_factory.with_distributed(options),
         None => session_factory,
     };
 
     info!(
-        "start serving on 127.0.0.1:{} (max_connections={}, max_queries_per_user={}, max_result_rows={}, max_result_bytes={})",
+        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_result_rows={}, max_result_bytes={})",
+        cli.bind,
         cli.port,
         cli.max_connections,
         cli.max_queries_per_user,
@@ -170,7 +159,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     );
 
     let server_opts = ServerOptions::new()
-        .with_host(String::from("127.0.0.1"))
+        .with_host(cli.bind.clone())
         .with_port(cli.port);
 
     let limits = ServerLimits::new(Limits {
@@ -198,4 +187,91 @@ fn main() -> Result<()> {
         .build()?;
     rt.block_on(main_inner(cli))?;
     Ok(())
+}
+#[cfg(test)]
+mod cli_probe_tests {
+    use super::*;
+
+    const PROBE_FILTER: &str = "pg_cli_probe";
+    const PROBE_ARGV: &str = "LAKESOUL_PG_CLI_PROBE_ARGV";
+    const PROBE_RESULT_PREFIX: &str = "LAKESOUL_PG_CLI_PROBE_RESULT ";
+
+    /// Single-line redacted CLI summary the parent test asserts on.
+    fn probe_result(cli: &Cli) -> serde_json::Value {
+        serde_json::json!({
+            "bind": cli.bind,
+            "port": cli.port,
+            "metrics_addr": cli.metrics_addr.to_string(),
+            "max_connections": cli.max_connections,
+        })
+    }
+
+    #[test]
+    #[ignore = "subprocess probe target; re-invoked by the priority tests"]
+    fn pg_cli_probe() {
+        let argv: Vec<String> =
+            serde_json::from_str(&std::env::var(PROBE_ARGV).expect("probe argv payload"))
+                .expect("probe argv json");
+        let cli =
+            Cli::try_parse_from(std::iter::once("pg-cli-probe".to_string()).chain(argv))
+                .expect("probe argv parse");
+        println!("{}{}", PROBE_RESULT_PREFIX, probe_result(&cli));
+    }
+
+    #[test]
+    fn pg_fields_follow_cli_beats_env_beats_default() {
+        let defaults = probe(&[], &[]);
+        assert_eq!(defaults["bind"], "127.0.0.1");
+        assert_eq!(defaults["port"], 5432);
+        assert_eq!(defaults["max_connections"], 0);
+
+        let via_env = probe(
+            &[
+                ("LAKESOUL_PG_BIND", "0.0.0.0"),
+                ("LAKESOUL_PG_PORT", "15432"),
+                ("LAKESOUL_PG_MAX_CONNECTIONS", "64"),
+            ],
+            &[],
+        );
+        assert_eq!(via_env["bind"], "0.0.0.0");
+        assert_eq!(via_env["port"], 15432);
+        assert_eq!(via_env["max_connections"], 64);
+
+        // Explicitly passed values that equal the defaults still beat env.
+        let via_cli = probe(
+            &[
+                ("LAKESOUL_PG_BIND", "0.0.0.0"),
+                ("LAKESOUL_PG_PORT", "15432"),
+            ],
+            &["--bind", "127.0.0.1", "--port", "5432"],
+        );
+        assert_eq!(via_cli["bind"], "127.0.0.1");
+        assert_eq!(via_cli["port"], 5432);
+    }
+
+    /// Runs the probe subprocess with a cleared environment plus `envs`.
+    fn probe(envs: &[(&str, &str)], args: &[&str]) -> serde_json::Value {
+        let exe = std::env::current_exe().unwrap();
+        let mut command = std::process::Command::new(exe);
+        command.env_clear();
+        command.env(PROBE_ARGV, serde_json::to_string(args).unwrap());
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command
+            .args([PROBE_FILTER, "--ignored", "--test-threads=1", "--nocapture"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // libtest interleaves captured output with progress lines; the
+        // marker can end up mid-line.
+        let line = stdout
+            .lines()
+            .find_map(|line| line.split_once(PROBE_RESULT_PREFIX).map(|(_, rest)| rest));
+        let Some(line) = line else {
+            panic!("probe printed no result\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        };
+        serde_json::from_str(line).unwrap()
+    }
 }
