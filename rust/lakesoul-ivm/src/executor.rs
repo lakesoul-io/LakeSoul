@@ -46,6 +46,7 @@ use crate::runtime::{
     union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
     wide_join_view_schema_for, wide_keyed_join_view_schema_for,
+    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
     window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
@@ -538,19 +539,31 @@ fn expected_mv_schema(
             join_keys,
             left_value,
             right_value,
+            output_columns,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            full_join_view_schema_for(
-                &left.schema,
-                &right.schema,
-                &left.primary_keys,
-                &right.primary_keys,
-                join_keys,
-                left_value,
-                right_value,
-            )?
+            if output_columns.is_empty() {
+                full_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    left_value,
+                    right_value,
+                )?
+            } else {
+                wide_outer_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    output_columns,
+                )?
+            }
         }
         ViewSpec::LeftJoin {
             left_table_id,
@@ -558,19 +571,31 @@ fn expected_mv_schema(
             join_keys,
             left_value,
             right_value,
+            output_columns,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            left_join_view_schema_for(
-                &left.schema,
-                &right.schema,
-                &left.primary_keys,
-                &right.primary_keys,
-                join_keys,
-                left_value,
-                right_value,
-            )?
+            if output_columns.is_empty() {
+                left_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    left_value,
+                    right_value,
+                )?
+            } else {
+                wide_outer_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    output_columns,
+                )?
+            }
         }
         ViewSpec::LookupJoin {
             left_table_id,
@@ -578,19 +603,30 @@ fn expected_mv_schema(
             join_keys,
             left_value,
             right_value,
+            output_columns,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            lookup_join_view_schema_for(
-                &left.schema,
-                &right.schema,
-                &left.primary_keys,
-                &right.primary_keys,
-                join_keys,
-                left_value,
-                right_value,
-            )?
+            if output_columns.is_empty() {
+                lookup_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    left_value,
+                    right_value,
+                )?
+            } else {
+                wide_lookup_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    join_keys,
+                    output_columns,
+                )?
+            }
         }
         ViewSpec::Variance {
             source_table_id,

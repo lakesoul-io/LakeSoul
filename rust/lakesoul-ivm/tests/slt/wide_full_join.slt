@@ -1,0 +1,68 @@
+# A wide FULL JOIN materializes several columns per side; unmatched rows of
+# either side keep NULLs on the other side.
+
+statement ok
+/*ivm-append __SRC1__: id=1,jk=10,lv=1,ln=11,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=5,jk=10,rv=5,rn=55,op=insert; rid=6,jk=20,rv=6,rn=66,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, l.ln, r.rv, r.rn FROM __SRC1__ l FULL JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIIIII rowsort
+SELECT jk, lv, ln, rv, rn, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 1 11 5 55 1 5
+20 NULL NULL 6 66 NULL 6
+
+# A new fact fills the unmatched right row.
+statement ok
+/*ivm-append __SRC1__: id=2,jk=20,lv=2,ln=22,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, l.ln, r.rv, r.rn FROM __SRC1__ l FULL JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT jk, lv, ln, rv, rn, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 1 11 5 55 1 5
+20 2 22 6 66 2 6
+
+# A dimension delete leaves its fact unmatched.
+statement ok
+/*ivm-append __SRC2__: rid=6,jk=20,rv=6,rn=66,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, l.ln, r.rv, r.rn FROM __SRC1__ l FULL JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT jk, lv, ln, rv, rn, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 1 11 5 55 1 5
+20 2 22 NULL NULL 2 NULL
+
+# A fact delete leaves its dimension row unmatched.
+statement ok
+/*ivm-append __SRC1__: id=1,jk=10,lv=1,ln=11,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, l.ln, r.rv, r.rn FROM __SRC1__ l FULL JOIN __SRC2__ r ON l.jk = r.jk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT jk, lv, ln, rv, rn, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 NULL NULL 5 55 NULL 5
+20 2 22 NULL NULL 2 NULL
