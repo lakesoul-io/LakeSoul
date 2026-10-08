@@ -1081,7 +1081,8 @@ pub(super) fn analyze_aggregate(
     // general multi-aggregate view; a SUM/COUNT/AVG-only mix keeps the
     // incremental sum/count view.
     let selected = selected_aggregates(aggregate, projection);
-    if selected.len() > 1 && !single_family_shapes(&selected) {
+    let first_value = selected.iter().any(|expr| is_first_value_aggregate(expr));
+    if first_value || (selected.len() > 1 && !single_family_shapes(&selected)) {
         return analyze_multi_agg(
             aggregate,
             group_keys,
@@ -2109,7 +2110,54 @@ fn multi_agg_supported(name: &str) -> bool {
             | "approx_percentile_cont"
             | "percentile_cont"
             | "approx_percentile_cont_with_weight"
+            | "first_value"
     ) || computed_agg_shape(name).is_some()
+}
+
+/// Whether an expression is a `FIRST_VALUE` aggregate (`DISTINCT ON` plans
+/// pick the first row per group with it).
+pub(super) fn is_first_value_aggregate(expr: &Expr) -> bool {
+    matches!(
+        strip_alias(expr),
+        Expr::AggregateFunction(function) if function.func.name() == "first_value"
+    )
+}
+
+/// Render `FIRST_VALUE(arg)` with the source primary keys appended to its
+/// ordering, so the picked row is deterministic for a keyed source.
+fn render_first_value_call(
+    function: &AggregateFunction,
+    source: &IvmTable,
+) -> Result<String> {
+    if function.params.args.len() != 1 {
+        return Err(unsupported("FIRST_VALUE needs a single argument"));
+    }
+    if source.primary_keys.is_empty() {
+        return Err(unsupported(
+            "FIRST_VALUE needs a source with a primary key so the picked row is deterministic",
+        ));
+    }
+    let argument = render_filter(&function.params.args[0])?;
+    let mut order = render_order_items(&function.params.order_by)?;
+    // The primary keys break ties, like the runtime appends them to a TOP-K
+    // ordering.
+    for key in &source.primary_keys {
+        let item = render_order_items(&[datafusion::logical_expr::SortExpr::new(
+            Expr::Column(Column::from_name(key.clone())),
+            true,
+            false,
+        )])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| unsupported("empty ordering"))?;
+        if !order.contains(&item) {
+            order.push(item);
+        }
+    }
+    Ok(format!(
+        "first_value({argument} order by {})",
+        order.join(", ")
+    ))
 }
 
 /// Render an aggregate expression as executable SQL over the source columns.
@@ -2252,16 +2300,28 @@ fn analyze_multi_agg(
             )));
         }
         if !function.params.order_by.is_empty()
-            && !matches!(name, "string_agg" | "array_agg")
+            && !matches!(name, "string_agg" | "array_agg" | "first_value")
         {
             return Err(unsupported(
-                "an aggregate ordering is only supported inside STRING_AGG and ARRAY_AGG",
+                "an aggregate ordering is only supported inside STRING_AGG, ARRAY_AGG and FIRST_VALUE",
             ));
         }
         if !multi_agg_supported(name) {
             return Err(unsupported(format!("aggregate function {name}")));
         }
-        let call = render_aggregate_call(inner)?;
+        // A `FIRST_VALUE` over a group key is the key itself.
+        if name == "first_value"
+            && function.params.args.len() == 1
+            && column_of(&function.params.args[0])
+                .is_some_and(|column| group_keys.contains(&column.name))
+        {
+            continue;
+        }
+        let call = if name == "first_value" {
+            render_first_value_call(function, source)?
+        } else {
+            render_aggregate_call(inner)?
+        };
         if function.params.distinct
             && (!matches!(name, "count" | "sum") || function.params.args.len() != 1)
         {
@@ -2304,6 +2364,11 @@ fn analyze_multi_agg(
             .clone();
         encode_data_type(&data_type)?;
         aggregates.push((call, column, data_type));
+    }
+    if aggregates.is_empty() {
+        return Err(unsupported(
+            "DISTINCT ON needs at least one non-key column; use SELECT DISTINCT for plain key deduplication",
+        ));
     }
     let having =
         render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
@@ -3475,6 +3540,89 @@ mod tests {
         );
         assert!(
             crate::runtime::avg_mv_schema_for(&schema(), &["g".to_string()], "v").is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_distinct_on() {
+        // `DISTINCT ON (...) ... ORDER BY` plans as FIRST_VALUE aggregates;
+        // the source primary keys are appended to the ordering so the picked
+        // row is deterministic.
+        let analyzed =
+            analyze_optimized("select distinct on (g) g, v from src order by g, v desc")
+                .await
+                .unwrap();
+        let ViewSpec::MultiAgg {
+            group_keys,
+            aggregates,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].column, "first_value_v");
+        assert!(
+            aggregates[0].call.starts_with("first_value(v order by "),
+            "{}",
+            aggregates[0].call
+        );
+        assert!(
+            aggregates[0].call.ends_with(", k)"),
+            "{}",
+            aggregates[0].call
+        );
+
+        // Without an ORDER BY the primary key ordering picks the row.
+        let analyzed = analyze_optimized("select distinct on (g) g, v from src")
+            .await
+            .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(aggregates[0].call, "first_value(v order by k)");
+
+        // Several picked columns, none of them the group key.
+        let analyzed =
+            analyze_optimized("select distinct on (g) g, k, v from src order by g, v")
+                .await
+                .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.clone())
+                .collect::<Vec<_>>(),
+            vec!["first_value_k".to_string(), "first_value_v".to_string(),]
+        );
+
+        // A key-only DISTINCT ON has nothing to pick.
+        assert!(
+            analyze_optimized("select distinct on (k) k from src")
+                .await
+                .is_err()
+        );
+
+        // An append-only source has no deterministic tie-break.
+        let mut append_only = source_table("dim");
+        append_only.primary_keys = Vec::new();
+        assert!(
+            analyze_multi(
+                "select distinct on (k) k, v from dim order by k, v",
+                vec![append_only],
+            )
+            .await
+            .is_err()
+        );
+
+        // A plain ORDER BY above an aggregate stays rejected.
+        assert!(
+            analyze_optimized("select g, sum(v) from src group by g order by g")
+                .await
+                .is_err()
         );
     }
 

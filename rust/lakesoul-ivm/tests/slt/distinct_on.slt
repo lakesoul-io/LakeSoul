@@ -1,0 +1,93 @@
+# DISTINCT ON (g) with an ORDER BY: one row per group, the one that sorts
+# first (ties break on the primary key).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert; k=3,g=b,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TI rowsort
+SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 20
+b 5
+
+# An update replaces the picked row.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 10
+b 5
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 30
+b 5
+
+# A delete hands the group to the next row.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=30,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5
+b 5
+
+# A new row can take over its group.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5
+b 50
+
+# A changed definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT DISTINCT ON (g) g, v FROM __SRC__ WHERE v >= 0 ORDER BY g, v DESC
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query TI rowsort
+SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+a 5
+b 50

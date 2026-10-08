@@ -103,6 +103,19 @@ pub fn analyze_select(
                 }
                 analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
             }
+            LogicalPlan::Sort(sort) => {
+                // `DISTINCT ON (...) ... ORDER BY` keeps the final ordering in
+                // a Sort above the aggregate; the ordering is not
+                // materialized, but the `FIRST_VALUE` aggregates under it
+                // define the picked rows.
+                if let LogicalPlan::Aggregate(aggregate) = peel(&sort.input)
+                    && aggregate.aggr_expr.iter().any(is_first_value_aggregate)
+                {
+                    analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
+                } else {
+                    return Err(unsupported("projection over a sort"));
+                }
+            }
             LogicalPlan::Window(window) => {
                 analyze_window(projection, window, tables, request)?
             }
@@ -795,13 +808,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        // DISTINCT ON plans as first_value aggregates, which are not
-        // maintained.
-        assert!(
-            analyze_optimized("select distinct on (g) g, v from src")
-                .await
-                .is_err()
-        );
+        // DISTINCT ON plans as first_value aggregates and is maintained by
+        // the recompute view (see analyzes_distinct_on).
+        let distinct_on = analyze_optimized("select distinct on (g) g, v from src")
+            .await
+            .unwrap();
+        assert!(matches!(distinct_on.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]

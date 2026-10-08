@@ -2410,3 +2410,27 @@ async fn oracle_mixed_aggregates_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_distinct_on_matches_full_recompute() {
+    // `DISTINCT ON (g) ... ORDER BY g, v DESC` picks the first row per group;
+    // the primary key breaks ties, so the pick is deterministic.
+    let schema = source_schema();
+    run_oracle(
+        "distincton",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[("first_value_v".to_string(), DataType::Int64)],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC",
+        "SELECT g, first_value(v ORDER BY v DESC NULLS FIRST, k) AS first_value_v \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, first_value_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

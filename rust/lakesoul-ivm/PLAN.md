@@ -2471,6 +2471,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **验证**：条目名集合与拆分前完全一致；fmt/clippy 干净；全量 IVM 套件
   （lib + 39 个集成测试二进制 + doctest）368 个测试通过、0 失败。
 
+### 10.84 `DISTINCT ON`（PR-78）
+
+- **计划形态**：优化器把 `SELECT DISTINCT ON (keys) ... [ORDER BY ...]` 规划为
+  `Aggregate(groupBy=keys, aggr=[first_value(col) ORDER BY ...])`（带 ORDER BY 时上方还有一个输出
+  `Sort`；无 ORDER BY 时为裸 `first_value`）。因此复用 10.81 的 **MultiAgg（按受影响分组重算）**
+  机制，无需新的 spec。
+- **确定性**：analyzer 渲染 `first_value(arg order by <用户排序>, <源主键 asc>)`——主键仅用于
+  并列打破（与 TOP-K 运行时追加主键一致），保证增量与全量重算结果一致；**仅支持有主键的源**，
+  append-only 源明确拒绝；`FIRST_VALUE` 参数为分组键的聚合被跳过（其值即键），全为键时明确拒绝
+  并提示改用 `SELECT DISTINCT`。
+- **入口**：`analyze_select` 新增 `Projection -> Sort -> Aggregate(first_value…)` 分支（仅在该形态下
+  接受顶层 Sort；普通聚合上的 ORDER BY 仍按原样拒绝）。
+- **支持集**：`multi_agg_supported` 增加 `first_value`，聚合内 ORDER BY 允许列表加入 `FIRST_VALUE`。
+- **测试**：analyzer（带/不带 ORDER BY、主键并列、多列、键-only 拒绝、append-only 拒绝、
+  普通 ORDER BY 仍拒绝；更新一处旧的“DISTINCT ON 拒绝”断言）、`distinct_on.slt`（选中行随更新/
+  删除/新增迁移、过滤重建重建）、`oracle_distinct_on_matches_full_recompute`（随机轮差分）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）371 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

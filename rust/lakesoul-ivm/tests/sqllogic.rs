@@ -2117,6 +2117,23 @@ fn sqllogic_wide_lookup_join() {
 }
 
 #[test]
+fn sqllogic_distinct_on() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "distincton",
+        include_str!("slt/distinct_on.slt"),
+        multi_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &[],
+            &[("first_value_v".to_string(), DataType::Int64)],
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
 fn sqllogic_mixed_aggregates() {
     let schema = source_schema();
     run_script_for_mv(
