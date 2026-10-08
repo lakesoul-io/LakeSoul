@@ -55,6 +55,7 @@ used as row identities must be non-nullable.
 |---|---|---|
 | Projection / filter | `SELECT [expr AS c, ...] FROM src [WHERE p]` | projected columns, `rowKinds`, `__ivm_epoch` |
 | SELECT DISTINCT | `SELECT DISTINCT c, ... FROM src [WHERE p]` | the distinct columns, `count_v`, kinds, epoch |
+| DISTINCT ON | `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` over a keyed source; the picked row is deterministic (the source primary keys break ties) | keys, one column per picked column (`first_value_v`), kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
 | MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k`; without a `GROUP BY` a global MIN/MAX | keys, `value`, kinds, epoch (+ value-count state table) |
 | GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` with `SUM`/`COUNT`/`AVG` over a keyed source | `__ivm_grouping`, every flat key (nullable), `sum_v`, `count_v`, `__ivm_nonnull_count` (+ `avg_v`), kinds, epoch |
@@ -139,6 +140,11 @@ Supported within the shapes above:
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
   its filter adds, retracts or NULL-pads its pairs;
+* **`DISTINCT ON`**: one row per grouping key, the first row of the ordering
+  (the source primary keys are appended as a deterministic tie-break; a
+  key-only `SELECT DISTINCT ON (key) key` is rejected with a hint to write
+  `SELECT DISTINCT` instead); the affected groups are recomputed from their
+  current rows;
 * **mixed aggregate kinds**: a statement may combine the supported aggregate
   functions (`SUM(v), MIN(v), MAX(v), COUNT(*)`, `AVG`, the variance family,
   `MEDIAN`, `APPROX_DISTINCT`, `STRING_AGG`, `ARRAY_AGG`, the bit / regression
@@ -327,9 +333,10 @@ the backlog):
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
-* `SELECT DISTINCT ON` and the grouping-set shapes outside the maintained
-  subset (aggregates other than `SUM`/`COUNT`/`AVG`, key expressions, and
-  append-only sources);
+* the grouping-set shapes outside the maintained subset (aggregates other
+  than `SUM`/`COUNT`/`AVG`, key expressions, and append-only sources), and
+  `DISTINCT ON` over an **append-only** source (there is no primary key to
+  break ties, so the picked row would not be deterministic);
 * retractions in a `UNION ALL` over an **append-only CDC** source: the delete
   markers become MV tombstones (hidden from logical reads), but the matching
   insert rows cannot be retracted because an append-only source has no row
