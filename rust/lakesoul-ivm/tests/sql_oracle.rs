@@ -2561,3 +2561,31 @@ async fn oracle_intersect_nullable_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_correlated_scalar_matches_full_recompute() {
+    // The threshold is the per-key average of the other table.
+    let schema = source_schema();
+    let keys = vec!["k".to_string(), "g".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "corrscalar",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+        ],
+        semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g, v FROM __SRC0__ s WHERE s.v > \
+         (SELECT avg(u.v) FROM __SRC1__ u WHERE u.k = s.k)",
+        "SELECT s.k, s.g, s.v FROM __SRC0__ s \
+         WHERE s.op <> 'delete' AND s.v > \
+         (SELECT avg(u.v) FROM __SRC1__ u WHERE u.op <> 'delete' AND u.k = s.k)",
+        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

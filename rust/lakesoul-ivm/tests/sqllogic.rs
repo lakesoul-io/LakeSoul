@@ -2772,6 +2772,26 @@ fn sqllogic_grouping_sets() {
 }
 
 #[test]
+fn sqllogic_correlated_scalar() {
+    let schema = source_schema();
+    let dim_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, false),
+    ]));
+    run_script_for_sources(
+        "corrscalar",
+        include_str!("slt/correlated_scalar.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::append_only("__DIM__", dim_schema),
+        ],
+        semi_anti_mv_schema_for(&schema, &group_keys(&["k", "g", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_set_ops_nullable() {
     let schema = nullable_source_schema();
     run_script_for_sources(

@@ -417,13 +417,13 @@ mod tests {
         assert!(filter.contains("k > 1"), "{filter}");
         assert_eq!(scalar.expect("scalar inputs").tables.len(), 1);
 
-        // Rejections: GROUP BY, a non-aggregate subquery, a select-list
-        // subquery and a correlated subquery (which plans as a semi join).
+        // Rejections: GROUP BY, a non-aggregate subquery and a select-list
+        // subquery.  A correlated one is a semi join against a per-key
+        // aggregate (see analyzes_correlated_scalar_subquery).
         for sql in [
             "select k from src where v > (select avg(v) from dim group by k)",
             "select k from src where v > (select v from dim)",
             "select k, (select max(v) from dim) as m from src",
-            "select k from src s where v > (select avg(u.v) from dim u where u.k = s.k)",
         ] {
             assert!(
                 analyze_multi(sql, vec![source_table("src"), source_table("dim")])
@@ -432,5 +432,12 @@ mod tests {
                 "{sql}"
             );
         }
+        let correlated = analyze_multi(
+            "select k from src s where v > (select avg(u.v) from dim u where u.k = s.k)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(correlated.spec, ViewSpec::SemiAnti { .. }));
     }
 }

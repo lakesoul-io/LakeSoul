@@ -32,6 +32,24 @@ pub(super) fn analyze_join(
     if join.null_equality == NullEquality::NullEqualsNull {
         return analyze_set_operation(join, projection, tables, request);
     }
+    // A correlated scalar subquery plans as a left-semi join against one
+    // aggregate row per correlated key.
+    if let Some((aggregate, subquery_projection)) = aggregate_input(&join.right) {
+        if join.join_type != JoinType::LeftSemi {
+            return Err(unsupported(
+                "a join against an aggregate input (a correlated scalar subquery) \
+                 is only maintained in a WHERE comparison",
+            ));
+        }
+        return analyze_correlated_scalar(
+            join,
+            aggregate,
+            subquery_projection,
+            projection,
+            tables,
+            request,
+        );
+    }
     // Three or more joined tables flatten into one chained inner join.
     if join_tree_has_multiple_sources(join) {
         return analyze_multi_join(join, projection, tables, request);
@@ -304,6 +322,9 @@ pub(super) fn analyze_join(
                 left_filter,
                 right_filter,
                 null_safe: false,
+                right_aggregate: None,
+                right_keys: Vec::new(),
+                match_predicate: None,
             })
         }
         other => Err(unsupported(format!("join type {other:?}"))),
@@ -316,6 +337,161 @@ pub(super) fn analyze_join(
 /// The left columns a semi/anti join materializes: the plain left columns the
 /// projection selects, or the left input's schema when the optimizer pruned
 /// the projection away.
+/// The aggregate node and its projection of a join input that is a derived
+/// aggregate (`SubqueryAlias -> Projection -> Aggregate`).
+fn aggregate_input(plan: &LogicalPlan) -> Option<(&Aggregate, &Projection)> {
+    let plan = peel(plan);
+    let LogicalPlan::Projection(projection) = plan else {
+        return None;
+    };
+    let inner = peel(&projection.input);
+    let LogicalPlan::Aggregate(aggregate) = inner else {
+        return None;
+    };
+    Some((aggregate, projection))
+}
+
+/// A correlated scalar subquery: `WHERE v OP (SELECT AGG(w) FROM dim u WHERE
+/// u.k = s.k)` is maintained as a semi join against one aggregate row per
+/// correlated key.
+fn analyze_correlated_scalar(
+    join: &Join,
+    aggregate: &Aggregate,
+    subquery_projection: &Projection,
+    projection: Option<&Projection>,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let filter = join
+        .filter
+        .as_ref()
+        .ok_or_else(|| unsupported("a scalar subquery comparison needs a filter"))?;
+    if aggregate.aggr_expr.len() != 1 {
+        return Err(unsupported("a scalar subquery with several aggregates"));
+    }
+    // The correlated keys are the aggregate's group columns.
+    let mut right_keys = Vec::new();
+    for expr in &aggregate.group_expr {
+        let column = column_of(expr).ok_or_else(|| {
+            unsupported("a correlated scalar subquery needs plain key columns")
+        })?;
+        right_keys.push(column.name.clone());
+    }
+    if right_keys.is_empty() {
+        return Err(unsupported("an uncorrelated scalar subquery"));
+    }
+    // The subquery returns one column: the projection field that is not a key.
+    let mut aggregate_columns = Vec::new();
+    for field in subquery_projection.schema.fields() {
+        if !right_keys.contains(field.name()) {
+            aggregate_columns.push(field.name().clone());
+        }
+    }
+    if aggregate_columns.len() != 1 {
+        return Err(unsupported("a scalar subquery must return one column"));
+    }
+    // The join pairs the correlated keys.
+    let mut join_keys = Vec::new();
+    let mut on_right_keys = Vec::new();
+    let mut right_qualifier = None;
+    for (left_expr, right_expr) in &join.on {
+        let left_column = column_of(left_expr)
+            .ok_or_else(|| unsupported("a scalar-subquery key must be a column"))?;
+        let right_column = column_of(right_expr)
+            .ok_or_else(|| unsupported("a scalar-subquery key must be a column"))?;
+        join_keys.push(left_column.name.clone());
+        on_right_keys.push(right_column.name.clone());
+        if right_column.relation.is_some() {
+            right_qualifier = right_column.relation.clone();
+        }
+    }
+    if join_keys.is_empty() {
+        return Err(unsupported("a scalar subquery needs a correlated key"));
+    }
+    let mut sorted_group = right_keys.clone();
+    sorted_group.sort();
+    sorted_group.dedup();
+    let mut sorted_on = on_right_keys;
+    sorted_on.sort();
+    sorted_on.dedup();
+    if sorted_group != sorted_on {
+        return Err(unsupported(
+            "a scalar subquery correlated on keys other than its grouping",
+        ));
+    }
+    let left_input = join_input(&join.left, tables)?;
+    let right_input = join_input(&aggregate.input, tables)?;
+    let left = left_input.table;
+    let right = right_input.table;
+    let (left_alias, right_alias) =
+        (left_input.alias.as_deref(), right_input.alias.as_deref());
+    let predicate =
+        render_match_predicate(filter, &aggregate_columns, right_qualifier.as_ref())?;
+    let call = render_expression(&aggregate.aggr_expr[0])?;
+    let output_columns =
+        semi_anti_output_columns(join, projection, left_alias, right_alias, left, right)?;
+    Ok(ViewSpec::SemiAnti {
+        view_id: request.view_id.clone(),
+        left_table_id: left.table_id.clone(),
+        right_table_id: right.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        join_keys,
+        conditions: Vec::new(),
+        output_columns,
+        anti: false,
+        left_filter: left_input.filter.clone(),
+        right_filter: right_input.filter.clone(),
+        null_safe: false,
+        right_aggregate: Some(call),
+        right_keys,
+        match_predicate: Some(predicate),
+    })
+}
+
+/// Render the comparison of a correlated scalar subquery: the aggregate
+/// output columns become [`IVM_RIGHT_AGG_COLUMN`] and the left columns lose
+/// their relation names.
+fn render_match_predicate(
+    filter: &Expr,
+    aggregate_columns: &[String],
+    right_qualifier: Option<&TableReference>,
+) -> Result<String> {
+    let mut right_column = None;
+    filter
+        .apply(|node| {
+            if let Expr::Column(column) = node
+                && column.relation.as_ref() == right_qualifier
+                && !aggregate_columns.contains(&column.name)
+                && right_column.is_none()
+            {
+                right_column = Some(column.name.clone());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .map_err(|error| unsupported(format!("a scalar subquery condition {error}")))?;
+    if let Some(column) = right_column {
+        return Err(unsupported(format!(
+            "a correlated condition over the right column {column}"
+        )));
+    }
+    let transformed = filter
+        .clone()
+        .transform_down(|node| match node {
+            Expr::Column(column) if aggregate_columns.contains(&column.name) => Ok(
+                Transformed::yes(Expr::Column(Column::from_name(IVM_RIGHT_AGG_COLUMN))),
+            ),
+            Expr::Column(column) if column.relation.is_some() => Ok(Transformed::yes(
+                Expr::Column(Column::from_name(column.name.clone())),
+            )),
+            other => Ok(Transformed::no(other)),
+        })
+        .map_err(|error| unsupported(format!("a scalar subquery condition {error}")))?;
+    let ast = Unparser::default()
+        .expr_to_sql(&transformed.data)
+        .map_err(|error| unsupported(format!("a scalar subquery condition {error}")))?;
+    Ok(ast.to_string())
+}
+
 pub(super) fn semi_anti_output_columns(
     join: &Join,
     projection: Option<&Projection>,
@@ -1884,6 +2060,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_correlated_scalar_subquery() {
+        // A correlated scalar subquery plans as a semi join against one
+        // aggregate row per correlated key.
+        let analyzed = analyze_multi(
+            "select k, v from src s where v > \
+             (select avg(u.v) from src u where u.k = s.k)",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            join_keys,
+            right_keys,
+            right_aggregate,
+            match_predicate,
+            anti,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert_eq!(right_keys, vec!["k".to_string()]);
+        assert!(!anti);
+        let call = right_aggregate.expect("aggregate call");
+        assert!(call.contains("avg"), "{call}");
+        let predicate = normalized(match_predicate.as_deref()).unwrap();
+        assert!(predicate.contains(IVM_RIGHT_AGG_COLUMN), "{predicate}");
+        assert!(predicate.contains('>'), "{predicate}");
+
+        // The correlated key may have another name and both sides may be
+        // computed.
+        let analyzed = analyze_multi(
+            "select k, v from src s where v * 2 > \
+             (select max(u.v) from src u where u.g = s.g) + 1",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            join_keys,
+            right_keys,
+            right_aggregate,
+            match_predicate,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(join_keys, vec!["g".to_string()]);
+        assert_eq!(right_keys, vec!["g".to_string()]);
+        assert!(right_aggregate.unwrap().contains("max"));
+        assert!(
+            normalized(match_predicate.as_deref())
+                .unwrap()
+                .contains(IVM_RIGHT_AGG_COLUMN)
+        );
+
+        // A subquery filter is kept; a select-list scalar subquery and the
+        // DISTINCT rewrite are not semi joins.
+        assert!(
+            analyze_multi(
+                "select k, v from src s where v > \
+                 (select avg(u.v) from src u where u.k = s.k and u.v > 1)",
+                vec![source_table("src")],
+            )
+            .await
+            .is_ok()
+        );
+        for sql in [
+            "select k, (select avg(u.v) from src u where u.k = s.k) as m from src s",
+            "select k, v from src s where v > \
+             (select count(distinct u.v) from src u where u.k = s.k)",
+        ] {
+            assert!(
+                analyze_multi(sql, vec![source_table("src")]).await.is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn analyzes_semi_and_anti_joins() {
         let analyzed = analyze_optimized(
             "select a.k, a.v from src a where exists (select 1 from src b where b.k = a.k)",
@@ -1904,6 +2162,9 @@ mod tests {
                 left_filter: None,
                 right_filter: None,
                 null_safe: false,
+                right_aggregate: None,
+                right_keys: Vec::new(),
+                match_predicate: None,
             }
         );
 

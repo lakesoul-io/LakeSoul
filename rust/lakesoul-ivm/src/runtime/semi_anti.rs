@@ -53,6 +53,16 @@ pub struct SemiAntiView {
     /// Whether a NULL join key matches another NULL join key (set operations
     /// and null-aware predicates).
     pub null_safe: bool,
+    /// An optional aggregate over the right source; when present the right
+    /// side contributes one value per join key (a correlated scalar subquery)
+    /// instead of a row match.
+    pub right_aggregate: Option<String>,
+    /// The right group keys, aligned with [`Self::join_keys`]; empty means the
+    /// same names as `join_keys`.
+    pub right_keys: Vec<String>,
+    /// The rendered comparison predicate over the left row and the aggregate
+    /// output column ([`IVM_RIGHT_AGG_COLUMN`]).
+    pub match_predicate: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -92,6 +102,9 @@ impl SemiAntiView {
             left_filter: None,
             right_filter: None,
             null_safe: false,
+            right_aggregate: None,
+            right_keys: Vec::new(),
+            match_predicate: None,
             refresh_interval_ms: 0,
         }
     }
@@ -115,6 +128,20 @@ impl SemiAntiView {
         self
     }
 
+    /// The right side is a per-join-key aggregate (a correlated scalar
+    /// subquery) instead of a row match.
+    pub fn with_right_aggregate(
+        mut self,
+        call: impl Into<String>,
+        right_keys: Vec<String>,
+        match_predicate: impl Into<String>,
+    ) -> Self {
+        self.right_aggregate = Some(call.into());
+        self.right_keys = right_keys;
+        self.match_predicate = Some(match_predicate.into());
+        self
+    }
+
     /// Materialize only `output_columns` of the left source (the left primary
     /// keys are added automatically).
     pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
@@ -135,6 +162,9 @@ impl SemiAntiView {
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             null_safe: self.null_safe,
+            right_aggregate: self.right_aggregate.clone(),
+            right_keys: self.right_keys.clone(),
+            match_predicate: self.match_predicate.clone(),
         }
     }
 }
@@ -210,16 +240,23 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             view.view_id
         ));
     }
-    for key in &view.join_keys {
-        view.left.schema.field_with_name(key).map_err(|_| {
+    let right_keys = right_join_keys(view);
+    if view.join_keys.len() != right_keys.len() {
+        return Err(report!(
+            "semi/anti view {}: the join needs one right key per left key",
+            view.view_id
+        ));
+    }
+    for (left_key, right_key) in view.join_keys.iter().zip(right_keys) {
+        view.left.schema.field_with_name(left_key).map_err(|_| {
             report!(
-                "semi/anti view {}: join key {key} is not in the left source",
+                "semi/anti view {}: join key {left_key} is not in the left source",
                 view.view_id
             )
         })?;
-        view.right.schema.field_with_name(key).map_err(|_| {
+        view.right.schema.field_with_name(right_key).map_err(|_| {
             report!(
-                "semi/anti view {}: join key {key} is not in the right source",
+                "semi/anti view {}: join key {right_key} is not in the right source",
                 view.view_id
             )
         })?;
@@ -273,6 +310,38 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             parse_filter(&context, &view.right.schema, filter)?;
         }
     }
+    match view.right_aggregate.as_deref() {
+        Some(call) => {
+            if view.anti || !view.conditions.is_empty() || view.null_safe {
+                return Err(report!(
+                    "semi/anti view {}: an aggregate right side only supports a \
+                     semi match",
+                    view.view_id
+                ));
+            }
+            let predicate = view.match_predicate.as_deref().ok_or_else(|| {
+                report!("semi/anti view {} has no aggregate predicate", view.view_id)
+            })?;
+            let context = SessionContext::new();
+            let aggregate_type = right_aggregate_type(&context, view)?;
+            let schema = match_schema(&view.left.schema, &aggregate_type)?;
+            parse_filter(&context, &schema, predicate).map_err(|error| {
+                report!(
+                    "semi/anti view {}: invalid aggregate {call:?}: {error}",
+                    view.view_id
+                )
+            })?;
+        }
+        None => {
+            if view.match_predicate.is_some() || !view.right_keys.is_empty() {
+                return Err(report!(
+                    "semi/anti view {}: an aggregate predicate without an \
+                     aggregate",
+                    view.view_id
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -318,6 +387,7 @@ fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
     for column in view
         .join_keys
         .iter()
+        .chain(view.right_keys.iter())
         .chain(
             view.conditions
                 .iter()
@@ -335,6 +405,133 @@ fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
         columns.push(change.to_string());
     }
     columns
+}
+
+/// The column the right aggregate output is aliased to; the match predicate
+/// refers to it by this name.
+pub const IVM_RIGHT_AGG_COLUMN: &str = "__ivm_right_agg";
+
+/// The right group keys of a scalar-subquery view, falling back to the shared
+/// join keys.
+fn right_join_keys(view: &SemiAntiView) -> &[String] {
+    if view.right_keys.is_empty() {
+        &view.join_keys
+    } else {
+        &view.right_keys
+    }
+}
+
+/// The logical type of the right aggregate output.
+fn right_aggregate_type(
+    context: &SessionContext,
+    view: &SemiAntiView,
+) -> Result<DataType> {
+    let call = view
+        .right_aggregate
+        .as_deref()
+        .ok_or_else(|| report!("semi/anti view {} has no aggregate", view.view_id))?;
+    let df_schema = DFSchema::try_from(view.right.schema.as_ref().clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    let expression = context
+        .state()
+        .create_logical_expr(call, &df_schema)
+        .map_err(|error| {
+            report!(
+                "semi/anti view {}: invalid aggregate {call:?}: {error}",
+                view.view_id
+            )
+        })?;
+    expression.get_type(&df_schema).map_err(|error| {
+        report!(
+            "semi/anti view {}: invalid aggregate {call:?}: {error}",
+            view.view_id
+        )
+    })
+}
+
+/// The left schema plus the aggregate output column, for parsing the match
+/// predicate.
+fn match_schema(left: &SchemaRef, aggregate_type: &DataType) -> Result<SchemaRef> {
+    let mut fields = left.fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        IVM_RIGHT_AGG_COLUMN,
+        aggregate_type.clone(),
+        true,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The left rows whose per-key right aggregate satisfies the match predicate:
+/// a correlated scalar subquery maintained as a semi join against one
+/// aggregate row per join key.
+fn semi_aggregate_match(
+    context: &SessionContext,
+    left: DataFrame,
+    right: DataFrame,
+    view: &SemiAntiView,
+) -> Result<DataFrame> {
+    let call = view
+        .right_aggregate
+        .as_deref()
+        .ok_or_else(|| report!("semi/anti view {} has no aggregate", view.view_id))?;
+    let predicate = view.match_predicate.as_deref().ok_or_else(|| {
+        report!("semi/anti view {} has no aggregate predicate", view.view_id)
+    })?;
+    let right_schema = right.schema().clone();
+    let aggregate = context
+        .state()
+        .create_logical_expr(call, &right_schema)
+        .map_err(|error| {
+            report!(
+                "semi/anti view {}: invalid aggregate {call:?}: {error}",
+                view.view_id
+            )
+        })?;
+    let group_exprs = right_join_keys(view)
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    let aggregated =
+        right.aggregate(group_exprs, vec![aggregate.alias(IVM_RIGHT_AGG_COLUMN)])?;
+    let aggregate_type = aggregated
+        .schema()
+        .field_with_name(None, IVM_RIGHT_AGG_COLUMN)
+        .map_err(|error| {
+            report!(
+                "semi/anti view {}: invalid aggregate {call:?}: {error}",
+                view.view_id
+            )
+        })?
+        .data_type()
+        .clone();
+    let schema = match_schema(&view.left.schema, &aggregate_type)?;
+    let df_schema = DFSchema::try_from(schema.as_ref().clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    let filter = context
+        .state()
+        .create_logical_expr(predicate, &df_schema)
+        .map_err(|error| {
+            report!(
+                "semi/anti view {}: invalid aggregate predicate {predicate:?}: {error}",
+                view.view_id
+            )
+        })?;
+    let left_keys = view
+        .join_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let right_keys = right_join_keys(view)
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    Ok(left.join(
+        aggregated,
+        JoinType::LeftSemi,
+        &left_keys,
+        &right_keys,
+        Some(filter),
+    )?)
 }
 
 /// The alias of a right column in a semi/anti join, so conditions can name
@@ -500,7 +697,23 @@ impl IvmRuntime {
                 }
             }
         }
+        if let Some(predicate) = view.match_predicate.as_deref() {
+            let aggregate_type = right_aggregate_type(&context, view)?;
+            let schema = match_schema(&view.left.schema, &aggregate_type)?;
+            for column in filter_columns(&context, &schema, predicate)? {
+                if column != IVM_RIGHT_AGG_COLUMN && !left_columns.contains(&column) {
+                    left_columns.push(column);
+                }
+            }
+        }
         let mut right_columns = semi_anti_right_columns(view);
+        if let Some(call) = view.right_aggregate.as_deref() {
+            for column in filter_columns(&context, &view.right.schema, call)? {
+                if !right_columns.contains(&column) {
+                    right_columns.push(column);
+                }
+            }
+        }
         if let Some(filter) = view.right_filter.as_deref() {
             for column in filter_columns(&context, &view.right.schema, filter)? {
                 if !right_columns.contains(&column) {
@@ -606,6 +819,60 @@ impl IvmRuntime {
         // an update and a changed equality key can drop an old match.
         let affected = if !right_changed {
             affected_from_left
+        } else if view.right_aggregate.is_some() {
+            // An aggregate input change re-evaluates the left rows of the
+            // changed join keys (their old keys included for a keyed right
+            // source).
+            let right_key_exprs = right_join_keys(view)
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let changed_keys = if view.right.primary_keys.is_empty() {
+                delta_right.clone().select(right_key_exprs.clone())?
+            } else {
+                let changed_pks = delta_right
+                    .clone()
+                    .select(
+                        view.right
+                            .primary_keys
+                            .iter()
+                            .map(|column| col(column.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                let changed_before = right_before.join(
+                    changed_pks,
+                    JoinType::LeftSemi,
+                    &right_key_names,
+                    &right_key_names,
+                    None,
+                )?;
+                changed_before
+                    .union(delta_right)?
+                    .distinct()?
+                    .select(right_key_exprs)?
+            }
+            .distinct()?;
+            let left_join_keys = view
+                .join_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let right_join_key_names = right_join_keys(view)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let affected_from_right = left_before
+                .join(
+                    changed_keys,
+                    JoinType::LeftSemi,
+                    &left_join_keys,
+                    &right_join_key_names,
+                    None,
+                )?
+                .select(left_key_exprs.clone())?
+                .distinct()?;
+            affected_from_left.union(affected_from_right)?.distinct()?
         } else {
             let changed_pks = delta_right
                 .clone()
@@ -638,10 +905,13 @@ impl IvmRuntime {
             JoinType::LeftSemi
         };
         // Rows that match right now; the ANTI insert takes the difference.
-        let matched_now =
+        let matched_now = if view.right_aggregate.is_some() {
+            semi_aggregate_match(&context, left_now.clone(), right_now, view)?
+        } else {
             semi_anti_join(left_now.clone(), right_now, view, JoinType::LeftSemi)?
-                .select(left_key_exprs.clone())?
-                .distinct()?;
+        }
+        .select(left_key_exprs.clone())?
+        .distinct()?;
 
         let output_columns = semi_anti_output_columns(view)
             .iter()
@@ -800,10 +1070,14 @@ impl IvmRuntime {
             .iter()
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
-        let rows = semi_anti_join(left, right, view, join_type)?
-            .select(output_columns)?
-            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let rows = if view.right_aggregate.is_some() {
+            semi_aggregate_match(&context, left, right, view)?
+        } else {
+            semi_anti_join(left, right, view, join_type)?
+        }
+        .select(output_columns)?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         for batch in rows.collect().await? {
             if batch.num_rows() > 0 {
                 commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
