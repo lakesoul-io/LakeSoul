@@ -489,6 +489,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
+        /// An optional filter the referenced right rows must satisfy; a left
+        /// row whose match is filtered out keeps NULLs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_filter: Option<String>,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source; NULL without a match.
@@ -2658,6 +2662,9 @@ pub struct LookupJoinView {
     pub right_keys: Vec<String>,
     /// An optional filter the contributing left rows must satisfy.
     pub left_filter: Option<String>,
+    /// An optional filter the referenced right rows must satisfy; a left row
+    /// whose match is filtered out keeps NULLs.
+    pub right_filter: Option<String>,
     /// The payload column of the left source.
     pub left_value: String,
     /// The payload column of the right source.
@@ -2708,6 +2715,7 @@ impl LookupJoinView {
             join_keys,
             right_keys: Vec::new(),
             left_filter: None,
+            right_filter: None,
             left_value: left_value.into(),
             right_value: right_value.into(),
             output_columns: Vec::new(),
@@ -2728,6 +2736,13 @@ impl LookupJoinView {
     /// Only left rows matching `filter` contribute to the view.
     pub fn with_left_filter(mut self, filter: impl Into<String>) -> Self {
         self.left_filter = Some(filter.into());
+        self
+    }
+
+    /// Only referenced right rows matching `filter` contribute to the view;
+    /// a left row whose match is filtered out keeps NULLs.
+    pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
+        self.right_filter = Some(filter.into());
         self
     }
 
@@ -2752,6 +2767,7 @@ impl LookupJoinView {
             join_keys: self.join_keys.clone(),
             right_keys: self.right_keys.clone(),
             left_filter: self.left_filter.clone(),
+            right_filter: self.right_filter.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
@@ -3215,6 +3231,10 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
     if let Some(filter) = &view.left_filter {
         let context = SessionContext::new();
         parse_filter(&context, &view.left.schema, filter)?;
+    }
+    if let Some(filter) = &view.right_filter {
+        let context = SessionContext::new();
+        parse_filter(&context, &view.right.schema, filter)?;
     }
     if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
         return Err(report!(
@@ -7634,6 +7654,7 @@ impl IvmRuntime {
                 join_keys,
                 right_keys,
                 left_filter,
+                right_filter,
                 left_value,
                 right_value,
                 output_columns,
@@ -7645,6 +7666,7 @@ impl IvmRuntime {
                 join_keys: join_keys.clone(),
                 right_keys: right_keys.clone(),
                 left_filter: left_filter.clone(),
+                right_filter: right_filter.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),
@@ -9691,13 +9713,18 @@ impl IvmRuntime {
             left_now =
                 left_now.filter(parse_filter(&context, &view.left.schema, filter)?)?;
         }
-        let right_now = filter_deletes(
-            dataframe(
-                &context,
-                view.right.read_current(&self.client).await?,
-                &view.right.schema,
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.right.read_current(&self.client).await?,
+                    &view.right.schema,
+                )?,
+                change_column(&view.right),
             )?,
-            change_column(&view.right),
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let mv = dataframe(
             &context,
@@ -9878,9 +9905,14 @@ impl IvmRuntime {
             left_now =
                 left_now.filter(parse_filter(&context, &view.left.schema, filter)?)?;
         }
-        let right_now = filter_deletes(
-            dataframe(&context, right_baseline.batches, &view.right.schema)?,
-            change_column(&view.right),
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                change_column(&view.right),
+            )?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         for batch in lookup_join_projection(left_now, right_now, view)?
             .select(lookup_join_output_columns(view))?

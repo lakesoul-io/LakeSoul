@@ -4327,11 +4327,6 @@ fn analyze_outer_join(
         !expected.is_empty() && expected == keys
     };
     if lookup {
-        if right_filter.is_some() {
-            return Err(unsupported(
-                "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-            ));
-        }
         Ok(ViewSpec::LookupJoin {
             view_id: request.view_id.clone(),
             left_table_id: left.table_id.clone(),
@@ -4340,6 +4335,7 @@ fn analyze_outer_join(
             join_keys,
             right_keys,
             left_filter,
+            right_filter,
             left_value,
             right_value,
             output_columns,
@@ -8543,6 +8539,7 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
                 left_filter: None,
+                right_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
@@ -8603,6 +8600,7 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 right_keys: vec!["rk".to_string()],
                 left_filter: None,
+                right_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
@@ -8619,6 +8617,22 @@ mod tests {
             panic!("expected a lookup join spec");
         };
         assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+
+        // A filtered right input is kept as well.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from src a left join \
+             (select * from dim where v > 1) b on a.k = b.k",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin { right_filter, .. } = analyzed.spec else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(
+            normalized(right_filter.as_deref()).as_deref(),
+            Some("v > 1")
+        );
 
         // An unkeyed side is rejected.
         let mut unkeyed = source_table("dim2");
@@ -8652,6 +8666,7 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
                 left_filter: None,
+                right_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),

@@ -70,7 +70,7 @@ used as row identities must be non-nullable.
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
-| Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
+| Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
 | Multi-way join | inner `JOIN`s over three or four sources (all keyed or all append-only), optional side filters and cross-source conditions | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
@@ -315,11 +315,6 @@ the backlog):
   sides — while the maintained joins compare with equality and keep one row
   per left row, so the unsafe shapes are rejected rather than silently
   returning different rows;
-* a filtered right input of a **lookup** `LEFT JOIN` (the pair-keyed
-  left/right/full joins maintain filters on either input): the analyzer
-  rejects the shape instead of ignoring the predicate (a right-side `WHERE`
-  on a `LEFT JOIN` whose right side is not keyed by the join keys becomes an
-  inner join or a filtered pair-keyed join and is maintained as one);
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
