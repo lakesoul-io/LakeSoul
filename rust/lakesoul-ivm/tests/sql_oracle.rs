@@ -2322,3 +2322,59 @@ async fn oracle_wide_left_join_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_cross_join_matches_full_recompute() {
+    // A keyless three-way chain: every combination of the current rows, keyed
+    // by all three row identities.
+    let schema = source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(0i64)),
+        (0, 1, "g1", Some(1)),
+        (1, 0, "g0", Some(2)),
+        (2, 0, "g9", Some(3)),
+    ];
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "k".to_string(),
+            name: "bk".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "g".to_string(),
+            name: "cg".to_string(),
+        },
+    ];
+    let primary_keys = vec![
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+    ];
+    run_oracle_seeded(
+        "multicross",
+        3,
+        schema.clone(),
+        false,
+        &seed,
+        multi_join_mv_schema_for(
+            &[schema.clone(), schema.clone(), schema.clone()],
+            &primary_keys,
+            &columns,
+        )
+        .unwrap(),
+        multi_join_primary_keys(&primary_keys),
+        "SELECT a.k AS k, b.k AS bk, c.g AS cg FROM __SRC__ a, __SRC1__ b, __SRC2__ c",
+        "SELECT a.k AS k, b.k AS bk, c.g AS cg, a.k AS p0, b.k AS p1, \
+         c.k AS p2 FROM __SRC__ a, __SRC1__ b, __SRC2__ c \
+         WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
+        "SELECT k, bk, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
+         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

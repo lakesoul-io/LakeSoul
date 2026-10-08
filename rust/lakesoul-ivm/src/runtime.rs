@@ -14352,7 +14352,7 @@ fn multi_join_frame(
             needed[source].push(column.to_string());
         }
     };
-    let _ = context;
+
     for key in keys {
         push(key.left_source, &key.left_column);
         push(key.right_source, &key.right_column);
@@ -14399,7 +14399,14 @@ fn multi_join_frame(
             right_names.push(multi_join_column_alias(source, &key.right_column));
         }
         if left_names.is_empty() {
-            return Err(report!("multi join source {source} has no join key pair"));
+            // A keyless step is a cross join.
+            let plan = datafusion::logical_expr::LogicalPlanBuilder::new(
+                current.logical_plan().clone(),
+            )
+            .cross_join(right.logical_plan().clone())?
+            .build()?;
+            current = DataFrame::new(context.state(), plan);
+            continue;
         }
         let left_refs = left_names.iter().map(String::as_str).collect::<Vec<_>>();
         let right_refs = right_names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -14456,9 +14463,9 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    if source_count > 4 {
+    if source_count > 8 {
         return Err(report!(
-            "multi join view {} supports at most four sources",
+            "multi join view {} supports at most eight sources",
             view.view_id
         ));
     }
@@ -14497,12 +14504,7 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             }
         }
     }
-    if view.keys.is_empty() {
-        return Err(report!(
-            "multi join view {} needs at least one join key",
-            view.view_id
-        ));
-    }
+    // A chain without keys is a cross join of every source.
     for key in &view.keys {
         if key.left_source >= source_count
             || key.right_source >= source_count
@@ -14543,14 +14545,8 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             ));
         }
     }
-    for source in 1..source_count {
-        if !view.keys.iter().any(|key| key.right_source == source) {
-            return Err(report!(
-                "multi join view {}: source {source} has no join key pair",
-                view.view_id
-            ));
-        }
-    }
+    // A source without a key pair is cross joined (the chain's `FROM a, b`
+    // and mixed keyless steps).
     for condition in &view.conditions {
         for (source, column) in [
             (condition.left_source, &condition.left_column),

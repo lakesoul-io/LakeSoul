@@ -1,0 +1,90 @@
+# A keyless multi-way chain (`FROM a, b, c`): every pair of rows, keyed by
+# all three row identities.
+
+statement ok
+/*ivm-append __SRC1__: id=1,lv=10,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: mid=5,mv=50,op=insert*/
+
+statement ok
+/*ivm-append __SRC3__: rid=7,rv=70,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lv AS lv, b.mv AS mv, c.rv AS rv FROM __SRC1__ a, __SRC2__ b, __SRC3__ c
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIIII rowsort
+SELECT lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 50 70 1 5 7
+
+# A new middle row pairs with every left and right row.
+statement ok
+/*ivm-append __SRC2__: mid=6,mv=60,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lv AS lv, b.mv AS mv, c.rv AS rv FROM __SRC1__ a, __SRC2__ b, __SRC3__ c
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIII rowsort
+SELECT lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 50 70 1 5 7
+10 60 70 1 6 7
+
+# A new left row pairs with every middle and right row.
+statement ok
+/*ivm-append __SRC1__: id=2,lv=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lv AS lv, b.mv AS mv, c.rv AS rv FROM __SRC1__ a, __SRC2__ b, __SRC3__ c
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIII rowsort
+SELECT lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 50 70 1 5 7
+10 60 70 1 6 7
+20 50 70 2 5 7
+20 60 70 2 6 7
+
+# A right payload change rewrites all of its tuples.
+statement ok
+/*ivm-append __SRC3__: rid=7,rv=71,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lv AS lv, b.mv AS mv, c.rv AS rv FROM __SRC1__ a, __SRC2__ b, __SRC3__ c
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIII rowsort
+SELECT lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 50 71 1 5 7
+10 60 71 1 6 7
+20 50 71 2 5 7
+20 60 71 2 6 7
+
+# A delete retracts the row's tuples.
+statement ok
+/*ivm-append __SRC1__: id=1,lv=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lv AS lv, b.mv AS mv, c.rv AS rv FROM __SRC1__ a, __SRC2__ b, __SRC3__ c
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIII rowsort
+SELECT lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20 50 71 2 5 7
+20 60 71 2 6 7

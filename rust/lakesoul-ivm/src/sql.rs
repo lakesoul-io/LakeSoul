@@ -4078,9 +4078,9 @@ fn analyze_multi_join(
             "a multi-table join needs at least three sources",
         ));
     }
-    if flat.inputs.len() > 4 {
+    if flat.inputs.len() > 8 {
         return Err(unsupported(
-            "a multi-table join supports at most four sources",
+            "a multi-table join supports at most eight sources",
         ));
     }
     if projection.is_some_and(|projection| !is_plain_projection(projection)) {
@@ -7561,6 +7561,42 @@ mod tests {
             panic!("expected an inner join spec");
         };
         assert!(right_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyzes_multi_cross_join() {
+        // A keyless chain (`FROM a, b, c`) flattens into cross joins.
+        let analyzed = analyze_optimized(
+            "select a.k, b.g as bg, c.v as cv from src a, src b, src c",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiJoin {
+            sources,
+            keys,
+            columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi join spec");
+        };
+        assert_eq!(sources.len(), 3);
+        assert!(keys.is_empty());
+        assert_eq!(columns.len(), 3);
+        assert_eq!(columns[1].source, 1);
+        assert_eq!(columns[2].name, "cv");
+
+        // A mixed chain keeps the keyed step and cross joins the rest.
+        let analyzed = analyze_optimized(
+            "select a.k, b.g as bg, c.v as cv from src a join src b on a.k = b.k, src c",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiJoin { keys, .. } = analyzed.spec else {
+            panic!("expected a multi join spec");
+        };
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].right_source, 1);
     }
 
     #[tokio::test]
