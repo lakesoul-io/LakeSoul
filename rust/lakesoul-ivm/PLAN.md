@@ -1083,12 +1083,12 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE`（当前明确拒绝）；同一语句混合多种聚合 kind | 设计级扩展（分组 id + 每集合重算 + 可空键） |
-| 连接/集合 | 三表及以上 join（join 树 / 中间视图）；每侧多 payload 列；`FULL JOIN` 的强制侧过滤（优化器会重写为 LEFT/RIGHT）；pair 谓词只能引用 payload 列 | 设计级扩展（多视图链 / 中间 MV） |
+| 聚合/分组 | 同一语句混合多种聚合 kind（如 `SUM(v), MIN(v)` 同组，现按 kind 拒绝） | 设计级扩展（多聚合通用 spec：按受影响分组重算每个聚合） |
+| 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的可空键/重复计数放宽；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | 标量/相关子查询（依赖多视图链）；嵌套/不透明派生表 | 低，随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
-| 表达式 | 每个聚合族各自的小形状（如 `ANY_VALUE`、`BOOL_AND` 等新函数） | 按需接线 |
+| 表达式 | 每个聚合族各自的小形状（如 `ANY_VALUE` 等顺序相关函数按需明确拒绝） | 按需接线 |
 
 ### 10.6 本轮 PR 拆分
 
@@ -2383,6 +2383,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：analyzer（lookup 右侧 derived table 过滤）、`lookup_join_right_filter.slt`
   （维度行进入/离开过滤区导致 NULL 填充/补齐、新事实行、过滤变化重建）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）361 个测试通过、0 失败。
+
+### 10.80 多路 join 的无键（CROSS）步骤与源数上限（PR-74）
+
+- **无键步骤**：多路链中某个源没有键对即视为 CROSS 步骤——`multi_join_frame` 用
+  `LogicalPlanBuilder::cross_join` 连接累积帧与该源（`FROM a, b, c` 与 `a JOIN b ON ... , c`
+  混合形状均可）；校验器移除「每源至少一个键对」「至少一个键」两条约束（纯交叉链合法）。
+- **源数上限**：4 → 8（append-only 刷新只对**本窗口变化**的源枚举子集，平均窗口仍是 ~2 项）。
+- **正确性**：keyed 刷新的受影响集合以各源行标识为基准，与是否存在等值键无关；append-only
+  子集分解同理，因此交叉步骤无需特殊处理。
+- **测试**：analyzer（纯交叉链与混合链）、`multi_cross_join.slt`（三源交叉的增删改）、
+  `oracle_multi_cross_join_matches_full_recompute`（随机轮差分）。README 形状表/限制清单与
+  §10.5 backlog 同步刷新。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）364 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
