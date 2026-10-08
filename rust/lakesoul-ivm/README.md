@@ -71,6 +71,7 @@ used as row identities must be non-nullable.
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name) | join keys, `left_value`, `right_value`, left primary keys, kinds, epoch |
+| Multi-way join | inner `JOIN`s over three or four sources (all keyed or all append-only), optional side filters and cross-source conditions | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, optional filters on the preserved side | as the inner join, with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
@@ -137,6 +138,13 @@ Supported within the shapes above:
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
   its filter adds, retracts or NULL-pads its pairs;
+* **multi-way inner joins** (three or four sources): the join tree flattens
+  into one chained inner join; the MV is keyed by every source's row identity
+  (`__pk0_*`, `__pk1_*`, ...), a keyed refresh rewrites the tuples of the rows
+  that changed on any source, and an append-only refresh runs the
+  inclusion-exclusion decomposition over the sources that changed in the
+  window; side filters and non-equality conditions between any two sources
+  are maintained;
 * **wide join outputs**: an inner join or a cross join may select more than
   one column per side; each becomes an MV column under its select alias (or
   source name), at least one column per side is required, and a non-equality
@@ -295,11 +303,13 @@ the backlog):
 * range-partitioned source tables: the reads do not carry the partition values
   through the IO layer yet, and the join / row / union / TOP-K views reject them
   explicitly. Supporting them needs a dedicated change (see the backlog);
-* three or more table joins, non-equality join conditions over columns that
-  the join does not materialize (a pair carries `left_value` / `right_value`
-  or the wide output columns), join keys outside the equality support,
-  differently named keys outside inner joins and the lookup `LEFT JOIN`, and
-  multiple payload columns per side for the outer and lookup joins;
+* non-equality join conditions over columns that the join does not
+  materialize (a pair carries `left_value` / `right_value` or the wide output
+  columns), join keys outside the equality support, differently named keys
+  outside inner joins and the lookup `LEFT JOIN`, and multiple payload columns
+  per side for the outer and lookup joins;
+* outer joins inside a three-or-four-source chain (the flattened chain only
+  supports inner joins) and more than four sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: they plan as *null-aware* joins — a NULL row
   matches a NULL row, and the `ALL` variants also count the matches on both

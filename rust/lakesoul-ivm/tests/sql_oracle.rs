@@ -18,15 +18,16 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
     IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, JoinOutputColumn,
-    JoinSide, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
-    WindowGroupSpec, approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
-    array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
-    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
-    computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
-    keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_window_mv_schema_for,
+    JoinSide, MinMaxKind, MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn,
+    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
+    approx_percentile_mv_schema_for, array_agg_expr_mv_schema_for,
+    array_agg_groups_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
+    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
+    distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
+    grouping_sets_mv_schema_for, keyed_join_output_primary_keys,
+    keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
     semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
     string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
@@ -2189,6 +2190,71 @@ async fn oracle_wide_inner_join_matches_full_recompute() {
          b.k AS rpk FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
          WHERE a.op <> 'delete' AND b.op <> 'delete' AND a.v > 10",
         "SELECT k, lv, lg, rv, rg, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_join_matches_full_recompute() {
+    // A three-way keyed inner join; a refresh recomputes the current matches
+    // of every changed row's identity and rewrites its tuples.
+    let schema = source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(0i64)),
+        (0, 1, "g1", Some(1)),
+        (1, 0, "g0", Some(2)),
+        (1, 2, "g2", Some(3)),
+        (2, 0, "g9", Some(4)),
+        (2, 1, "g9", Some(5)),
+    ];
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        MultiJoinColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "av".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "g".to_string(),
+            name: "cg".to_string(),
+        },
+    ];
+    let primary_keys = vec![
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+    ];
+    run_oracle_seeded(
+        "multijoin",
+        3,
+        schema.clone(),
+        false,
+        &seed,
+        multi_join_mv_schema_for(
+            &[schema.clone(), schema.clone(), schema.clone()],
+            &primary_keys,
+            &columns,
+        )
+        .unwrap(),
+        multi_join_primary_keys(&primary_keys),
+        "SELECT a.k, a.v AS av, b.v AS bv, c.g AS cg FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.k = b.k JOIN __SRC2__ c ON b.k = c.k",
+        "SELECT a.k, a.v AS av, b.v AS bv, c.g AS cg, a.k AS p0, b.k AS p1, \
+         c.k AS p2 FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
+         JOIN __SRC2__ c ON b.k = c.k \
+         WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
+        "SELECT k, av, bv, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
          FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;

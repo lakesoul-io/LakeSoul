@@ -40,9 +40,10 @@ use crate::runtime::{
     full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_for,
     keyed_join_view_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for,
-    multi_window_mv_schema_for, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
+    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
     wide_join_view_schema_for, wide_keyed_join_view_schema_for,
     window_columns_mv_schema_for,
@@ -822,6 +823,39 @@ fn expected_mv_schema(
             let output =
                 union_output_schema_for(&source.schema, &spec.columns, &spec.exprs)?;
             union_distinct_mv_schema_for(&output)
+        }
+        ViewSpec::MultiJoin {
+            sources, columns, ..
+        } => {
+            let tables = sources
+                .iter()
+                .map(|source| find_table(tables, &source.table_id))
+                .collect::<Result<Vec<_>>>()?;
+            let schemas = tables
+                .iter()
+                .map(|table| table.schema.clone())
+                .collect::<Vec<_>>();
+            let keyed = tables
+                .first()
+                .map(|table| !table.primary_keys.is_empty())
+                .unwrap_or(false);
+            if tables
+                .iter()
+                .any(|table| table.primary_keys.is_empty() == keyed)
+            {
+                return Err(rootcause::report!(
+                    "a multi join view needs all sources keyed or all append-only"
+                ));
+            }
+            if keyed {
+                let primary_keys = tables
+                    .iter()
+                    .map(|table| table.primary_keys.clone())
+                    .collect::<Vec<_>>();
+                multi_join_mv_schema_for(&schemas, &primary_keys, columns)?
+            } else {
+                multi_join_append_schema_for(&schemas, columns)?
+            }
         }
         ViewSpec::CrossJoin {
             left_table_id,

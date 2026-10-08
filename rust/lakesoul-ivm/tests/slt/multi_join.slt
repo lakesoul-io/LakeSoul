@@ -1,0 +1,94 @@
+# A three-way keyed inner join: the MV is keyed by every source's row
+# identity and a refresh rewrites the tuples of the rows that changed.
+
+statement ok
+/*ivm-append __SRC1__: id=1,lk=10,lv=100,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: mid=5,mk=10,mv=50,op=insert*/
+
+statement ok
+/*ivm-append __SRC3__: rid=7,rk=10,rv=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mk = c.rk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 100 50 1 1 5 7
+
+# A new fact row without a match adds nothing.
+statement ok
+/*ivm-append __SRC1__: id=2,lk=20,lv=200,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mk = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 100 50 1 1 5 7
+
+# A new dimension row without a matching fact adds nothing either.
+statement ok
+/*ivm-append __SRC3__: rid=8,rk=20,rv=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mk = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 100 50 1 1 5 7
+
+# A middle key change moves its tuples.
+statement ok
+/*ivm-append __SRC2__: mid=5,mk=20,mv=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mk = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20 200 50 2 2 5 8
+
+# A delete of an already unmatched row adds nothing.
+statement ok
+/*ivm-append __SRC3__: rid=7,rk=10,rv=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mk = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20 200 50 2 2 5 8
+
+# A filtered definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mk = c.rk WHERE a.lv > 150
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20 200 50 2 2 5 8

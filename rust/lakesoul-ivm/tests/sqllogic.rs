@@ -31,8 +31,8 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
     IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, JoinOutputColumn, JoinSide, MinMaxKind, PhysicalFormat,
-    VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
+    IvmTableOptions, JoinOutputColumn, JoinSide, MinMaxKind, MultiJoinColumn,
+    PhysicalFormat, VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
     approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for,
@@ -41,6 +41,7 @@ use lakesoul_ivm::{
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
     semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
@@ -2056,6 +2057,125 @@ fn sqllogic_cross_join() {
         )
         .unwrap(),
         keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
+    );
+}
+
+#[test]
+fn sqllogic_multi_join() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("lk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let middle = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("mid", DataType::Int64, false),
+        arrow::datatypes::Field::new("mk", DataType::Int64, true),
+        arrow::datatypes::Field::new("mv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dimension = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("rk", DataType::Int64, true),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "multijoin",
+        include_str!("slt/multi_join.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", middle.clone(), group_keys(&["mid"])),
+            SltSource::keyed("__SRC3__", dimension.clone(), group_keys(&["rid"])),
+        ],
+        multi_join_mv_schema_for(
+            &[fact, middle, dimension],
+            &[
+                group_keys(&["id"]),
+                group_keys(&["mid"]),
+                group_keys(&["rid"]),
+            ],
+            &[
+                MultiJoinColumn {
+                    source: 0,
+                    column: "lk".to_string(),
+                    name: "lk".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 0,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 1,
+                    column: "mv".to_string(),
+                    name: "mv".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 2,
+                    column: "rv".to_string(),
+                    name: "rv".to_string(),
+                },
+            ],
+        )
+        .unwrap(),
+        multi_join_primary_keys(&[
+            group_keys(&["id"]),
+            group_keys(&["mid"]),
+            group_keys(&["rid"]),
+        ]),
+    );
+}
+
+#[test]
+fn sqllogic_multi_join_append_only() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("lk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+    ]));
+    let middle = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("mk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("mv", DataType::Int64, true),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Utf8, true),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+    ]));
+    run_script_for_sources(
+        "multijoinappend",
+        include_str!("slt/multi_join_append.slt"),
+        vec![
+            SltSource::append_only("__SRC1__", left.clone()),
+            SltSource::append_only("__SRC2__", middle.clone()),
+            SltSource::append_only("__SRC3__", right.clone()),
+        ],
+        multi_join_append_schema_for(
+            &[left, middle, right],
+            &[
+                MultiJoinColumn {
+                    source: 0,
+                    column: "lk".to_string(),
+                    name: "lk".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 0,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 1,
+                    column: "mv".to_string(),
+                    name: "mv".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 2,
+                    column: "rv".to_string(),
+                    name: "rv".to_string(),
+                },
+            ],
+        )
+        .unwrap(),
+        Vec::new(),
     );
 }
 

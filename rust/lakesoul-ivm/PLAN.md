@@ -2309,6 +2309,29 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   inclusion-exclusion 项各覆盖）、`oracle_wide_inner_join_matches_full_recompute`（带侧过滤的逐轮差分）。
   README 形状表/限制清单同步。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）351 个测试通过、0 失败。
 
+### 10.76 三表及以上 join（多路内连接，PR-70）
+
+- **扁平化而非中间表**：优化器对多表 join 统一输出左深/任意树（括号写法也会重排），
+  analyzer 后序展平为线性链 `((S0 ⋈ S1) ⋈ S2)`；每个等值键对连接两个源且左端在链中靠前
+  （`MultiJoinKey`），跨源非等值条件（`MultiJoinCondition`）与单源谓词（并入该源侧过滤）
+  分开收集；中间裁剪 Projection/Filter 均被穿透，别名可在链路任意位置（`join_input` 重构）。
+- **新 spec `ViewSpec::MultiJoin` + `MultiJoinView`**：`sources`（表 + 侧过滤）、`keys`、`columns`
+  （输出列 = 源下标 + 列 + 物化名）、`conditions`；MV 以**每个源的行标识**为主键
+  （`__pk<i>_<key>`），宽输出直接复用 10.75 的列命名；schema helper
+  （`multi_join_mv_schema_for` / `multi_join_append_schema_for` / `multi_join_primary_keys`）与
+  执行器期望 schema 同步。键/条件渲染为中间列 `__c<i>_<col>`，投影与连接在
+  `multi_join_frame` 内一次完成。
+- **刷新**：keyed 路径取各源 changed 行（current ⋈semi delta），对每个变化源做一次
+  「该源 changed × 其余 current」的 N 路连接并去重，删除按各源受影响标识反连接该源的 MV 元组；
+  append-only 路径只对**本窗口变化的源集合**枚举非空子集（2^c-1 项），
+  子集取 Δ、补集取 before，逐项连接后 union（项间天然不重叠）。重建路径同构并带 epoch/rebuild 状态机。
+- **范围**：3–4 个源、内连接（树中出现 LEFT/RIGHT/FULL 明确拒绝）、全 keyed 或全 append-only、
+  同/异名键、侧过滤、跨源条件；明确拒绝 >4 源。
+- **测试**：analyzer（键/条件/侧过滤与左连接拒绝）、`multi_join.slt`（三源 keyed 增删改与重建）、
+  `multi_join_append.slt`（append-only 三类 inclusion-exclusion 覆盖 + 带过滤重建）、
+  `oracle_multi_join_matches_full_recompute`（三源 keyed 随机轮差分）。
+  README 形状表/限制清单同步。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）355 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
