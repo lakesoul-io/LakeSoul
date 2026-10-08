@@ -812,6 +812,19 @@ pub enum ViewSpec {
         /// operations and null-aware predicates do.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         null_safe: bool,
+        /// The rendered aggregate call over the right columns; when present
+        /// the right side contributes one value per join key (a correlated
+        /// scalar subquery) instead of a row match.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_aggregate: Option<String>,
+        /// The right group keys, aligned with `join_keys`; empty means the
+        /// same names as `join_keys`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        right_keys: Vec<String>,
+        /// The rendered comparison predicate over the left row and the
+        /// aggregate output column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        match_predicate: Option<String>,
     },
     /// `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` over a keyed source with
     /// `SUM`/`COUNT`/`AVG`: the MV keeps one row per (grouping index, key
@@ -2576,6 +2589,9 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 null_safe,
+                right_aggregate,
+                right_keys,
+                match_predicate,
             } => SpecView::SemiAnti(SemiAntiView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2588,6 +2604,9 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 null_safe: *null_safe,
+                right_aggregate: right_aggregate.clone(),
+                right_keys: right_keys.clone(),
+                match_predicate: match_predicate.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::Row {

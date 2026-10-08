@@ -2,13 +2,13 @@ use crate::error::Result;
 use crate::runtime::{
     BoolAggKind, CompareOp, ComputedAggArg, ComputedAggResult, DistinctAggKind,
     GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
-    IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, JoinOutputColumn,
-    JoinSide, MinMaxKind, MultiAggSpec, MultiJoinColumn, MultiJoinCondition,
-    MultiJoinKey, MultiJoinSource, RowScalarSpec, ScalarTableSpec, SemiAntiCondition,
-    UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn, WindowFunction,
-    WindowGroupSpec, approx_distinct_output_column, approx_percentile_output_column,
-    bool_agg_output_column, encode_data_type, string_agg_output_column,
-    union_output_schema_for, wide_pair_alias,
+    IVM_NONNULL_COUNT_COLUMN, IVM_RIGHT_AGG_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
+    JoinOutputColumn, JoinSide, MinMaxKind, MultiAggSpec, MultiJoinColumn,
+    MultiJoinCondition, MultiJoinKey, MultiJoinSource, RowScalarSpec, ScalarTableSpec,
+    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
+    WindowFunction, WindowGroupSpec, approx_distinct_output_column,
+    approx_percentile_output_column, bool_agg_output_column, encode_data_type,
+    string_agg_output_column, union_output_schema_for, wide_pair_alias,
 };
 use crate::table::IvmTable;
 use arrow_schema::{DataType, Schema};
@@ -289,6 +289,15 @@ fn render_filter(expr: &Expr) -> Result<String> {
     let ast = Unparser::default()
         .expr_to_sql(&stripped)
         .map_err(|error| unsupported(format!("filter {error}")))?;
+    Ok(ast.to_string())
+}
+/// Render an expression to SQL over unqualified columns, for the runtime to
+/// parse back (aggregate calls and join predicates included).
+fn render_expression(expr: &Expr) -> Result<String> {
+    let stripped = strip_relations(expr.clone())?;
+    let ast = Unparser::default()
+        .expr_to_sql(&stripped)
+        .map_err(|error| unsupported(format!("expression {error}")))?;
     Ok(ast.to_string())
 }
 fn strip_relations(expr: Expr) -> Result<Expr> {

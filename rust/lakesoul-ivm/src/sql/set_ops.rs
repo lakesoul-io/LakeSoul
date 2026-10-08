@@ -122,6 +122,9 @@ pub(super) fn analyze_set_operation(
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
         null_safe,
+        right_aggregate: None,
+        right_keys: Vec::new(),
+        match_predicate: None,
     })
 }
 

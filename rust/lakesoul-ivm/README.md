@@ -78,7 +78,7 @@ used as row identities must be non-nullable.
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
-| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters | the projected left columns, kinds, epoch |
+| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
 | INTERSECT / EXCEPT | over unique-per-row join columns (the distinct and `ALL` variants); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns, kinds, epoch |
 
 Supported within the shapes above:
@@ -143,6 +143,13 @@ Supported within the shapes above:
   delta path and any change to a subquery table re-evaluates every key; the
   subquery must be a single global aggregate (no `GROUP BY`) over a keyed
   source, and select-list scalar subqueries or correlated ones are rejected;
+* **correlated scalar subqueries** in a `WHERE` comparison
+  (`WHERE v > (SELECT AVG(w) FROM dim u WHERE u.k = s.k)`) are maintained as
+  a semi join against one aggregate row per correlated key: a change to the
+  aggregate inputs re-evaluates only the left rows of the affected keys, a
+  key without rows never matches (the subquery is NULL) and the comparison
+  keeps SQL NULL semantics; the subquery must be one plain aggregate over a
+  single table, and the left rows must be unique per correlated key;
 * **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
   semi/anti semantics coincide with the set operation: the left rows are
   unique per join tuple (their primary key is covered), which also covers
@@ -341,9 +348,9 @@ the backlog):
   `ALL` variants also count the matches on both sides, while the maintained
   views keep one row per left row, so the shapes whose match counts can
   differ are rejected rather than silently returning different rows;
-* scalar subqueries outside the maintained subset (a select-list
-  `(SELECT ...)`, a `GROUP BY` subquery, an append-only outer source and
-  correlated subqueries, which plan as semi joins with an aggregate input)
+* scalar subqueries outside the maintained subset (a select-list correlated
+  `(SELECT ...)`, a `GROUP BY` subquery, an append-only outer source, and a
+  `DISTINCT` aggregate or several aggregates inside a correlated subquery)
   and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;

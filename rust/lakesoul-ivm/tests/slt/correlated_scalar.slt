@@ -1,0 +1,109 @@
+# A correlated scalar subquery: the threshold per row comes from the average
+# of the rows the other table has for the same key.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=15; k=1,g=a,v=25; k=2,g=a,v=25*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+
+# A key without rows has no average, so its rows never match.
+statement ok
+/*ivm-append __DIM__: k=3,g=b,v=5*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+3 b 20
+
+# Raising a key's average drops its row.
+statement ok
+/*ivm-append __DIM__: k=2,g=a,v=100*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 b 20
+
+# A source update is evaluated against the current average.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100
+3 b 20
+
+# A source delete removes its row.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100
+
+# A new key without rows in the other table does not match.
+statement ok
+/*ivm-append __SRC__: k=4,g=c,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100
+
+# A subquery filter rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k AND u.v < 50)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100
+2 a 30

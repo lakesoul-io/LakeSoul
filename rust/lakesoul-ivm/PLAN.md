@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
-| 子查询/CTE | 相关标量子查询（规划为带聚合右输入的 semi join）；嵌套/不透明派生表 | 随多视图链一起做 |
+| 子查询/CTE | 选择列表中的相关标量子查询、`DISTINCT`/多聚合的相关子查询；嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
 | 表达式 | 每个聚合族各自的小形状（如 `ANY_VALUE` 等顺序相关函数按需明确拒绝） | 按需接线 |
@@ -2559,6 +2559,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `set_ops_nullable.slt`（NULL 命中/失配/再命中、EXCEPT 的 NULL 匹配、右侧删除）、
   `oracle_intersect_nullable_matches_full_recompute`（nullable 值 + NULL 种子，另跑 seed 11/42/99 × 25 轮）。
   全量 IVM 套件 384 个测试通过、0 失败。
+
+### 10.89 相关标量子查询（WHERE 比较，聚合右输入，PR-83）
+
+- **形状**：`WHERE v OP (SELECT AGG(w) FROM dim u WHERE u.k = s.k)` 规划为
+  `LeftSemi Join(s.k = __scalar_sq_1.k, Filter: <比较>)`，右侧是
+  `SubqueryAlias -> Projection -> Aggregate(groupBy=相关键)`。
+- **spec/typed**：`ViewSpec::SemiAnti` / `SemiAntiView` 增加 `right_aggregate`（渲染后的聚合调用）、
+  `right_keys`（与 `join_keys` 对齐的右侧分组键）与 `match_predicate`（把聚合输出改名为
+  `__ivm_right_agg` 后的比较谓词）；均为 serde 省略，非相关子查询的定义哈希不变。
+- **analyzer**：`analyze_join` 在派发前识别「右侧为聚合」的连接；`LeftSemi` 走
+  `analyze_correlated_scalar`（校验单个聚合、相关键与分组一致、列单输出、连接键为普通列，
+  渲染聚合调用与比较谓词；聚合输出按子查询投影里非键字段识别），其他连接类型与
+  选择列表相关子查询、`DISTINCT`/多聚合重写明确拒绝。
+- **运行时**：`semi_aggregate_match` 先按相关键对右侧做聚合（输出别名 `__ivm_right_agg`），再以
+  半连接 + 过滤谓词求匹配；受影响键取「左 delta 键 ∪ 右侧变化键」（`right_aggregate` 模式对
+  append-only 右侧用 delta 键，对 keyed 右侧用主键回查旧键）；投影列集合补上聚合参数列与
+  谓词左列；校验器解析聚合与谓词（类型由逻辑推断）。
+- **测试**：analyzer（基本形状、异名键 + 双侧表达式 + 子查询过滤、选择列表与 DISTINCT 拒绝）、
+  `correlated_scalar.slt`（bootstrap、无匹配键=NULL、平均值升降、源更新/删除、子查询过滤重建）、
+  `oracle_correlated_scalar_matches_full_recompute`（keyed 双源 + 种子，另跑 seed 7/31/64 × 30 轮）。
+  全量 IVM 套件 387 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
