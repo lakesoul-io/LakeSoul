@@ -2419,6 +2419,30 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_mixed_aggregates_matches_full_recompute`（随机轮差分）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）368 个测试通过、0 失败。
 
+### 10.82 runtime.rs 按算子模块化拆分（PR-76）
+
+- **动机**：`src/runtime.rs` 已达 ~1.8 万行，单文件难以导航与评审。按 SQL 算子拆分为
+  `src/runtime/` 子模块，公共 API（`lib.rs` 的 `pub use`、`IvmRuntime` 方法与视图类型）保持不变。
+- **模块划分**（新增 `pub use` 汇聚到 `runtime`，外部路径不变）：
+  - `runtime.rs`（父，~3.0k）：`IvmRuntime` 核心（建表/打开/epoch/窗口/游标/baseline）、
+    `ViewSpec`/`SpecView`、view_id/kind、`spec_view`、refresh/rebuild 分发、编码与共享助手
+    （引号/过滤/键/分组/`affected_groups_sql`/`dataframe` 等）。
+  - `runtime/aggregates.rs`（~2.9k）：SUM/COUNT/AVG、MIN/MAX、DISTINCT 聚合、value-count 状态、
+    GROUPING SETS/ROLLUP/CUBE。
+  - `runtime/recompute.rs`（~2.7k）：recompute 家族（方差/中位数/布尔/近似/字符串/数组/计算聚合/混合聚合）
+    与 `RecomputeParts` 机制。
+  - `runtime/joins.rs`（~4.0k）：pair join（inner/lookup LEFT/pair-keyed LEFT/RIGHT/FULL/CROSS + 宽投影）。
+  - `runtime/multi_join.rs`（~0.9k）：多路链（3–8 源、交叉步骤）。
+  - `runtime/semi_anti.rs`（~0.8k）：EXISTS/IN 与 INTERSECT/EXCEPT 子集。
+  - `runtime/windows.rs`（~2.1k）：窗口/链式窗口/TOP-K。
+  - `runtime/rows.rs`（~0.5k）：行投影；`runtime/unions.rs`（~1.1k）：UNION ALL/UNION。
+- **可见性**：子模块 `use super::*;` 继承父模块私有助手；跨模块共享项（`RecomputeParts` 及字段、
+  `validate_recompute_view`、`refresh_recomputed`/`rebuild_recomputed`、`apply_pair_filter`、
+  `wide_pair_alias`）标注 `pub(super)`/`pub(crate)`；父模块以 `pub use self::<mod>::*;` 重导出，
+  保持 `crate::runtime::X` 与 `lib.rs` 公共导出路径不变。
+- **验证**：顶层条目名集合与拆分前完全一致（无遗漏/新增）；fmt、clippy 干净；
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）368 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
