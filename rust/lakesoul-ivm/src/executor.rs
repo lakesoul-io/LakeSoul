@@ -724,16 +724,29 @@ fn expected_mv_schema(
             value_expr,
             average,
             grouping_columns,
+            aggregates,
             ..
-        } => grouping_sets_mv_schema_for(
-            &find_table(tables, source_table_id)?.schema,
-            group_keys,
-            group_exprs,
-            value_column.as_deref(),
-            value_expr.as_deref(),
-            *average,
-            grouping_columns,
-        )?,
+        } => {
+            let columns = aggregates
+                .iter()
+                .map(|aggregate| {
+                    Ok((
+                        aggregate.column.clone(),
+                        decode_data_type(&aggregate.result)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            grouping_sets_mv_schema_for(
+                &find_table(tables, source_table_id)?.schema,
+                group_keys,
+                group_exprs,
+                value_column.as_deref(),
+                value_expr.as_deref(),
+                *average,
+                grouping_columns,
+                &columns,
+            )?
+        }
         ViewSpec::BoolAgg {
             source_table_id,
             group_keys,

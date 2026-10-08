@@ -58,7 +58,7 @@ used as row identities must be non-nullable.
 | DISTINCT ON | `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` over a keyed source; the picked row is deterministic (the source primary keys break ties) | keys, one column per picked column (`first_value_v`), kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
 | MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k`; without a `GROUP BY` a global MIN/MAX | keys, `value`, kinds, epoch (+ value-count state table) |
-| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` with `SUM`/`COUNT`/`AVG` over a keyed source | `__ivm_grouping`, every flat key (nullable), `sum_v`, `count_v`, `__ivm_nonnull_count` (+ `avg_v`), kinds, epoch |
+| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` over a keyed source; any mix of the supported aggregates (`SUM`/`COUNT`/`AVG` keep the incremental layout, other mixes are recomputed per set) | `__ivm_grouping`, every flat key (nullable), one column per aggregate (`sum_v`/`count_v`/`__ivm_nonnull_count`/`avg_v` for the `SUM`/`COUNT`/`AVG` layout), kinds, epoch |
 | COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; globally without a `GROUP BY`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
@@ -89,8 +89,9 @@ Supported within the shapes above:
   every set, so a row moving in or out of a set (including the grand total)
   updates it; a `GROUPING(key)` column is materialized per set (0 for the sets
   that group by the key, 1 for the sets that aggregate it away, named after
-  its alias or `grouping_<key>`); only `SUM`/`COUNT`/`AVG` over plain key
-  columns and keyed sources are maintained;
+  its alias or `grouping_<key>`); a `SUM`/`COUNT`/`AVG` statement keeps the
+  incremental layout and any other mix of the supported aggregates is
+  recomputed per set; plain key columns and keyed sources only;
 * **`APPROX_DISTINCT`** and **`APPROX_PERCENTILE_CONT(v, p)`** (a literal
   percentile): the affected groups are recomputed from their current rows, and
   DataFusion's sketch updates are order independent, so the estimates are
@@ -333,8 +334,8 @@ the backlog):
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
-* the grouping-set shapes outside the maintained subset (aggregates other
-  than `SUM`/`COUNT`/`AVG`, key expressions, and append-only sources), and
+* the grouping-set shapes outside the maintained subset (key expressions and
+  append-only sources), and
   `DISTINCT ON` over an **append-only** source (there is no primary key to
   break ties, so the picked row would not be deterministic);
 * retractions in a `UNION ALL` over an **append-only CDC** source: the delete

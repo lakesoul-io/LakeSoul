@@ -2117,6 +2117,27 @@ fn sqllogic_wide_lookup_join() {
 }
 
 #[test]
+fn sqllogic_grouping_sets_multi() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "groupingsetsmulti",
+        include_str!("slt/grouping_sets_multi.slt"),
+        grouping_sets_mv_schema_for(
+            &schema,
+            &group_keys(&["g", "v"]),
+            &[],
+            Some("v"),
+            None,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+        group_keys(&["__ivm_grouping", "g", "v"]),
+    );
+}
+
+#[test]
 fn sqllogic_distinct_on() {
     let schema = source_schema();
     run_script_for_mv(
@@ -2617,6 +2638,7 @@ fn sqllogic_grouping_sets_grouping() {
                 key: 0,
                 name: "is_total".to_string(),
             }],
+            &[],
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g"]),
@@ -2680,6 +2702,7 @@ fn sqllogic_grouping_sets() {
             None,
             false,
             &[],
+            &[],
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g"]),
@@ -2687,22 +2710,27 @@ fn sqllogic_grouping_sets() {
 }
 
 #[test]
-fn sqllogic_grouping_sets_multi() {
+fn sqllogic_grouping_sets_mixed_aggregates() {
     let schema = source_schema();
     run_script_for_mv(
-        "groupingsetsmulti",
-        include_str!("slt/grouping_sets_multi.slt"),
+        "groupingsetsmixedaggs",
+        include_str!("slt/grouping_sets_mixed_aggregates.slt"),
         grouping_sets_mv_schema_for(
             &schema,
-            &group_keys(&["g", "v"]),
+            &group_keys(&["g"]),
             &[],
-            Some("v"),
+            None,
             None,
             false,
             &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("min_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+            ],
         )
         .unwrap(),
-        group_keys(&["__ivm_grouping", "g", "v"]),
+        group_keys(&["__ivm_grouping", "g"]),
     );
 }
 

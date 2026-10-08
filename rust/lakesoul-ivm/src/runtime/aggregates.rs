@@ -278,6 +278,24 @@ fn validate_grouping_sets_view(view: &GroupingSetsView) -> Result<()> {
         ));
     }
     validate_having(&view.view_id, &view.mv.schema, view.having.as_deref())?;
+    if !view.aggregates.is_empty() {
+        let mut names = std::collections::HashSet::new();
+        for (call, column, _) in &view.aggregates {
+            if call.is_empty() || column.is_empty() {
+                return Err(report!(
+                    "grouping sets view {} has an empty aggregate",
+                    view.view_id
+                ));
+            }
+            if !names.insert(column.as_str()) {
+                return Err(report!(
+                    "grouping sets view {}: column {column} is materialized twice",
+                    view.view_id
+                ));
+            }
+        }
+        return Ok(());
+    }
     if view.value_expr.is_some() && view.value_column.is_some() {
         return Err(report!(
             "grouping sets view {}: a value column and a value expression are \
@@ -629,6 +647,8 @@ pub struct GroupingSetsView {
     pub average: bool,
     /// The materialized `GROUPING(key)` columns.
     pub grouping_columns: Vec<GroupingColumn>,
+    /// A general aggregate list (empty keeps the SUM/COUNT/AVG layout).
+    pub aggregates: Vec<(String, String, DataType)>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
@@ -660,6 +680,7 @@ impl GroupingSetsView {
             aggregate_filter: None,
             average: false,
             grouping_columns: Vec::new(),
+            aggregates: Vec::new(),
             filter: None,
             having: None,
             refresh_interval_ms: 0,
@@ -706,6 +727,16 @@ impl GroupingSetsView {
         self
     }
 
+    /// Recompute a general aggregate list per grouping set instead of the
+    /// incremental SUM/COUNT/AVG layout.
+    pub fn with_aggregates(
+        mut self,
+        aggregates: Vec<(String, String, DataType)>,
+    ) -> Self {
+        self.aggregates = aggregates;
+        self
+    }
+
     /// Only rows matching `filter` contribute to the view.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
@@ -718,8 +749,8 @@ impl GroupingSetsView {
         self
     }
 
-    fn to_spec(&self) -> ViewSpec {
-        ViewSpec::GroupingSets {
+    fn to_spec(&self) -> Result<ViewSpec> {
+        Ok(ViewSpec::GroupingSets {
             view_id: self.view_id.clone(),
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
@@ -732,9 +763,20 @@ impl GroupingSetsView {
             aggregate_filter: self.aggregate_filter.clone(),
             average: self.average,
             grouping_columns: self.grouping_columns.clone(),
+            aggregates: self
+                .aggregates
+                .iter()
+                .map(|(call, column, data_type)| {
+                    Ok(MultiAggSpec {
+                        call: call.clone(),
+                        column: column.clone(),
+                        result: encode_data_type(data_type)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
             filter: self.filter.clone(),
             having: self.having.clone(),
-        }
+        })
     }
 }
 
@@ -856,6 +898,7 @@ pub fn grouping_sets_mv_schema_for(
     value_expr: Option<&str>,
     average: bool,
     grouping_columns: &[GroupingColumn],
+    aggregates: &[(String, DataType)],
 ) -> Result<SchemaRef> {
     let mut fields: Vec<arrow_schema::FieldRef> = vec![Arc::new(Field::new(
         IVM_GROUPING_COLUMN,
@@ -881,6 +924,51 @@ pub fn grouping_sets_mv_schema_for(
             let (data_type, _) = expression_type(source_schema, expression)?;
             fields.push(Arc::new(Field::new(key.clone(), data_type, true)));
         }
+    }
+    if !aggregates.is_empty() {
+        let mut fields: Vec<arrow_schema::FieldRef> = vec![Arc::new(Field::new(
+            IVM_GROUPING_COLUMN,
+            DataType::Int64,
+            false,
+        ))];
+        for (index, key) in group_keys.iter().enumerate() {
+            let data_type = if group_exprs.is_empty() {
+                field_type(source_schema, key)?
+            } else {
+                let expression = group_exprs.get(index).ok_or_else(|| {
+                    report!(
+                        "grouping sets view: group_keys and group_exprs are not parallel"
+                    )
+                })?;
+                expression_type(source_schema, expression)?.0
+            };
+            fields.push(Arc::new(Field::new(key.clone(), data_type, true)));
+        }
+        for (column, data_type) in aggregates {
+            fields.push(Arc::new(Field::new(
+                column.clone(),
+                data_type.clone(),
+                true,
+            )));
+        }
+        for grouping in grouping_columns {
+            fields.push(Arc::new(Field::new(
+                grouping.name.clone(),
+                DataType::Int32,
+                false,
+            )));
+        }
+        fields.push(Arc::new(Field::new(
+            IVM_ROW_KINDS_COLUMN,
+            DataType::Utf8,
+            false,
+        )));
+        fields.push(Arc::new(Field::new(
+            IVM_EPOCH_COLUMN,
+            DataType::Int64,
+            false,
+        )));
+        return Ok(Arc::new(Schema::new(fields)));
     }
     let sum_type = match (value_expr, value_column) {
         (Some(value_expr), _) => {
@@ -1788,11 +1876,15 @@ fn value_count_mv_sql(view: &ValueCountView<'_>, epoch: i64) -> String {
 fn grouping_sets_columns(view: &GroupingSetsView) -> Vec<String> {
     let mut columns = vec![IVM_GROUPING_COLUMN.to_string()];
     columns.extend(view.group_keys.iter().cloned());
-    columns.push(IVM_SUM_COLUMN.to_string());
-    columns.push(IVM_COUNT_COLUMN.to_string());
-    columns.push(IVM_NONNULL_COUNT_COLUMN.to_string());
-    if view.average {
-        columns.push(IVM_AVG_COLUMN.to_string());
+    if view.aggregates.is_empty() {
+        columns.push(IVM_SUM_COLUMN.to_string());
+        columns.push(IVM_COUNT_COLUMN.to_string());
+        columns.push(IVM_NONNULL_COUNT_COLUMN.to_string());
+        if view.average {
+            columns.push(IVM_AVG_COLUMN.to_string());
+        }
+    } else {
+        columns.extend(view.aggregates.iter().map(|(_, column, _)| column.clone()));
     }
     for grouping in &view.grouping_columns {
         columns.push(grouping.name.clone());
@@ -1858,7 +1950,6 @@ fn grouping_sets_group_now(
         .iter()
         .map(|key| view.group_keys[*key].clone())
         .collect::<Vec<_>>();
-    let (sum_expr, nonnull_expr, avg_expr) = grouping_sets_aggregates(view);
     let mut select = vec![format!("{index} as {}", quote_ident(IVM_GROUPING_COLUMN))];
     for key in &view.group_keys {
         if keys.contains(key) {
@@ -1867,14 +1958,21 @@ fn grouping_sets_group_now(
             select.push(format!("NULL as {}", quote_ident(key)));
         }
     }
-    select.push(format!("{sum_expr} as {}", quote_ident(IVM_SUM_COLUMN)));
-    select.push(format!("count(1) as {}", quote_ident(IVM_COUNT_COLUMN)));
-    select.push(format!(
-        "{nonnull_expr} as {}",
-        quote_ident(IVM_NONNULL_COUNT_COLUMN)
-    ));
-    if view.average {
-        select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+    if view.aggregates.is_empty() {
+        let (sum_expr, nonnull_expr, avg_expr) = grouping_sets_aggregates(view);
+        select.push(format!("{sum_expr} as {}", quote_ident(IVM_SUM_COLUMN)));
+        select.push(format!("count(1) as {}", quote_ident(IVM_COUNT_COLUMN)));
+        select.push(format!(
+            "{nonnull_expr} as {}",
+            quote_ident(IVM_NONNULL_COUNT_COLUMN)
+        ));
+        if view.average {
+            select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+        }
+    } else {
+        for (call, column, _) in &view.aggregates {
+            select.push(format!("{call} as {}", quote_ident(column)));
+        }
     }
     for (name, value) in grouping_set_constants(view, index) {
         select.push(format!("cast({value} as int) as {}", quote_ident(&name)));
@@ -1989,8 +2087,9 @@ fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
         source_delete_filter("src", change_column(&view.source)),
         filter_clause(view.filter.as_deref()),
     );
-    let (sum_expr, nonnull_expr, avg_expr) = grouping_sets_aggregates(view);
     let columns = quoted_list(&grouping_sets_columns(view));
+    let legacy = view.aggregates.is_empty();
+    let (sum_expr, nonnull_expr, avg_expr) = grouping_sets_aggregates(view);
     let mut branches = Vec::new();
     for (index, set) in view.groupings.iter().enumerate() {
         let keys = set
@@ -2005,14 +2104,20 @@ fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
                 select.push(format!("NULL as {}", quote_ident(key)));
             }
         }
-        select.push(format!("{sum_expr} as {}", quote_ident(IVM_SUM_COLUMN)));
-        select.push(format!("count(1) as {}", quote_ident(IVM_COUNT_COLUMN)));
-        select.push(format!(
-            "{nonnull_expr} as {}",
-            quote_ident(IVM_NONNULL_COUNT_COLUMN)
-        ));
-        if view.average {
-            select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+        if legacy {
+            select.push(format!("{sum_expr} as {}", quote_ident(IVM_SUM_COLUMN)));
+            select.push(format!("count(1) as {}", quote_ident(IVM_COUNT_COLUMN)));
+            select.push(format!(
+                "{nonnull_expr} as {}",
+                quote_ident(IVM_NONNULL_COUNT_COLUMN)
+            ));
+            if view.average {
+                select.push(format!("{avg_expr} as {}", quote_ident(IVM_AVG_COLUMN)));
+            }
+        } else {
+            for (call, column, _) in &view.aggregates {
+                select.push(format!("{call} as {}", quote_ident(column)));
+            }
         }
         for (name, value) in grouping_set_constants(view, index) {
             select.push(format!("cast({value} as int) as {}", quote_ident(&name)));
@@ -2231,7 +2336,7 @@ impl IvmRuntime {
     ) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
-        let spec = serde_json::to_value(view.to_spec())?;
+        let spec = serde_json::to_value(view.to_spec()?)?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await

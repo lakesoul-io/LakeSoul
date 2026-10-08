@@ -847,6 +847,10 @@ pub enum ViewSpec {
         /// output column name.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         grouping_columns: Vec<GroupingColumn>,
+        /// A general aggregate list (any mix of the supported functions);
+        /// empty keeps the incremental SUM/COUNT/AVG layout.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        aggregates: Vec<MultiAggSpec>,
         /// An optional `HAVING` predicate over the MV columns.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
@@ -2016,6 +2020,7 @@ impl IvmRuntime {
                 aggregate_filter,
                 average,
                 grouping_columns,
+                aggregates,
                 filter,
                 having,
             } => SpecView::GroupingSets(GroupingSetsView {
@@ -2031,6 +2036,16 @@ impl IvmRuntime {
                 aggregate_filter: aggregate_filter.clone(),
                 average: *average,
                 grouping_columns: grouping_columns.clone(),
+                aggregates: aggregates
+                    .iter()
+                    .map(|aggregate| {
+                        Ok((
+                            aggregate.call.clone(),
+                            aggregate.column.clone(),
+                            decode_data_type(&aggregate.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
                 filter: filter.clone(),
                 having: having.clone(),
                 refresh_interval_ms,
