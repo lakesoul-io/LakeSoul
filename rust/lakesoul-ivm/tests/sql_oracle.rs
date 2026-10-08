@@ -1784,6 +1784,7 @@ async fn oracle_grouping_sets_matches_full_recompute() {
             None,
             false,
             &[],
+            &[],
         )
         .unwrap(),
         vec!["__ivm_grouping".to_string(), "g".to_string()],
@@ -1835,6 +1836,7 @@ async fn oracle_grouping_sets_cube_matches_full_recompute() {
             None,
             false,
             &[],
+            &[],
         )
         .unwrap(),
         vec![
@@ -1864,6 +1866,7 @@ async fn oracle_grouping_sets_having_matches_full_recompute() {
             Some("v"),
             None,
             true,
+            &[],
             &[],
         )
         .unwrap(),
@@ -2122,6 +2125,7 @@ async fn oracle_grouping_sets_grouping_matches_full_recompute() {
                 key: 0,
                 name: "is_total".to_string(),
             }],
+            &[],
         )
         .unwrap(),
         vec!["__ivm_grouping".to_string(), "g".to_string()],
@@ -2431,6 +2435,38 @@ async fn oracle_distinct_on_matches_full_recompute() {
         "SELECT g, first_value(v ORDER BY v DESC NULLS FIRST, k) AS first_value_v \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
         "SELECT g, first_value_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_mixed_aggregates_matches_full_recompute() {
+    // A ROLLUP with mixed aggregates (SUM/MIN/COUNT) recomputed per set.
+    run_oracle(
+        "groupingsetsmix",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string()],
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("min_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["__ivm_grouping".to_string(), "g".to_string()],
+        "SELECT g, SUM(v), MIN(v), COUNT(*) FROM __SRC__ WHERE v > 10 \
+         GROUP BY ROLLUP(g)",
+        "SELECT g, SUM(v) AS sum_v, MIN(v) AS min_v, COUNT(*) AS \"count\" \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY ROLLUP(g)",
+        "SELECT g, sum_v, min_v, \"count\" FROM __MV__ \
+         WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

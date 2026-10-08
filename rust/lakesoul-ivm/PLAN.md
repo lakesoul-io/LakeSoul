@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE` 里的非 SUM/COUNT/AVG 聚合与键表达式 | 设计级扩展（每集合多聚合重算） |
+| 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE` 的键表达式与 append-only 源 | 设计级扩展 |
 | 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的可空键/重复计数放宽；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | 标量/相关子查询（依赖多视图链）；嵌套/不透明派生表 | 低，随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
@@ -2488,6 +2488,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   普通 ORDER BY 仍拒绝；更新一处旧的“DISTINCT ON 拒绝”断言）、`distinct_on.slt`（选中行随更新/
   删除/新增迁移、过滤重建重建）、`oracle_distinct_on_matches_full_recompute`（随机轮差分）。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）371 个测试通过、0 失败。
+
+### 10.85 `GROUPING SETS`/`ROLLUP`/`CUBE` 支持任意聚合组合（PR-79）
+
+- **spec/typed**：`ViewSpec::GroupingSets` 与 `GroupingSetsView` 增加 `aggregates: Vec<MultiAggSpec>`（serde
+  省略）；空 = 既有 SUM/COUNT/AVG 增量布局（完全兼容），非空 = 每集合重算的通用聚合列表
+  （列名规则与 MultiAgg 一致：`<函数>_<参数>`）。
+- **analyzer**：`analyze_grouping_sets` 先判断「全部为非 DISTINCT/FILTER/ORDER BY 的 SUM/COUNT/AVG」→ 走
+  原增量路径；否则复用从 `analyze_multi_agg` 抽出的 `parse_multi_aggregates` 构建通用列表，
+  HAVING 经 `render_multi_agg_having` 映射；`GROUPING()` 列解析抽为
+  `grouping_set_projection_columns` 两条路径共用。聚合结果类型改从 aggregate schema **末尾**定位
+  （ROLLUP 的隐藏 `__grouping_id` 位于键与聚合之间）。
+- **运行时**：`grouping_sets_columns`/`group_now`/`rebuild_sql` 按 `aggregates` 是否为空分支
+  （删除/插入统一走 `grouping_sets_columns`，故只需这三处）；schema helper
+  `grouping_sets_mv_schema_for` 增加 `aggregates` 参数；校验器校验列名唯一；执行器解码类型。
+- **测试**：analyzer（ROLLUP 混合聚合 + HAVING、SUM/COUNT/AVG 回退、DISTINCT 拒绝；更新一处旧断言）、
+  `grouping_sets_mixed_aggregates.slt`（更新/删除整组/新增组/过滤重建）、
+  `oracle_grouping_sets_mixed_aggregates_matches_full_recompute`（随机轮差分）。
+- **注**：修复过程中曾误改既有 `sqllogic_grouping_sets_multi` 注册与 slt（已恢复）；新增 slt 命名为
+  `grouping_sets_mixed_aggregates`。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）374 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

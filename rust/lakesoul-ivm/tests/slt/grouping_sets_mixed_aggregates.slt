@@ -1,0 +1,80 @@
+# A ROLLUP with mixed aggregates (SUM/MIN/COUNT) recomputed per grouping set.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 40 10 2
+0 b 20 20 1
+1 NULL 60 10 3
+
+# An update moves the detail and the total rows.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 50 10 2
+0 b 20 20 1
+1 NULL 70 10 3
+
+# Deleting a whole group removes its detail row but not the total.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 50 10 2
+1 NULL 50 10 2
+
+# A new group appears in both the detail and the total.
+statement ok
+/*ivm-append __SRC__: k=4,g=c,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 50 10 2
+0 c 5 5 1
+1 NULL 55 5 3
+
+# A filtered definition rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v), MIN(v), COUNT(*) FROM __SRC__ WHERE v > 5 GROUP BY ROLLUP(g)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIII rowsort
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+0 a 50 10 2
+1 NULL 50 10 2

@@ -624,6 +624,51 @@ fn sum_value_argument(arg: &Expr, hoisted: &HashMap<String, Expr>) -> Result<Agg
 
 /// The flat key index of a `GROUPING(key)` projection column: the optimizer
 /// rewrites it to `CAST(__grouping_id & <single bit> AS Int32)`.
+/// The `GROUPING(key)` columns of a grouping-sets projection: the optimizer
+/// rewrites them to expressions over the hidden `__grouping_id`, and the
+/// supported single-key shape is materialized per set.
+fn grouping_set_projection_columns(
+    projection: Option<&Projection>,
+    group_keys: &[String],
+) -> Result<Vec<GroupingColumn>> {
+    let mut grouping_columns = Vec::new();
+    let Some(projection) = projection else {
+        return Ok(grouping_columns);
+    };
+    for expr in &projection.expr {
+        let inner = strip_alias(expr);
+        let Some(key) = grouping_bit(inner, group_keys.len()) else {
+            if expr_mentions_grouping_id(inner) {
+                return Err(unsupported(
+                    "only a single-key GROUPING(key) column is maintained",
+                ));
+            }
+            continue;
+        };
+        // The optimizer auto-names an unaliased `GROUPING()` column after
+        // the SQL expression; fall back to a plain derived name then.
+        let name = match expr {
+            Expr::Alias(alias)
+                if alias
+                    .name
+                    .chars()
+                    .all(|character| character.is_alphanumeric() || character == '_') =>
+            {
+                alias.name.clone()
+            }
+            _ => format!("grouping_{}", group_keys[key]),
+        };
+        if grouping_columns
+            .iter()
+            .any(|column: &GroupingColumn| column.name == name)
+        {
+            return Err(unsupported("duplicate GROUPING() column"));
+        }
+        grouping_columns.push(GroupingColumn { key, name });
+    }
+    Ok(grouping_columns)
+}
+
 fn grouping_bit(expr: &Expr, keys: usize) -> Option<usize> {
     let Expr::Cast(cast) = expr else {
         return None;
@@ -796,6 +841,56 @@ fn analyze_grouping_sets(
         groupings.push(indices);
     }
 
+    // A SUM/COUNT/AVG-only statement keeps the incremental layout; any other
+    // mix is recomputed per set with the general aggregate list.
+    let legacy_shape = !aggregate.aggr_expr.is_empty()
+        && aggregate.aggr_expr.iter().all(|expr| {
+            matches!(
+                strip_alias(expr),
+                Expr::AggregateFunction(function)
+                    if matches!(function.func.name(), "sum" | "count" | "avg")
+                        && !function.params.distinct
+                        && function.params.filter.is_none()
+                        && function.params.order_by.is_empty()
+            )
+        });
+    if !legacy_shape {
+        let aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+        if aggregates.is_empty() {
+            return Err(unsupported(
+                "GROUPING SETS needs at least one aggregate over a non-key column",
+            ));
+        }
+        let having =
+            render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
+        let grouping_columns = grouping_set_projection_columns(projection, &group_keys)?;
+        return Ok(ViewSpec::GroupingSets {
+            view_id: request.view_id.clone(),
+            source_table_id: source.table_id.clone(),
+            mv_table_id: request.mv_table_id.clone(),
+            group_keys,
+            group_exprs: Vec::new(),
+            groupings,
+            value_column: None,
+            value_expr: None,
+            count_column: None,
+            aggregate_filter: None,
+            average: false,
+            grouping_columns,
+            aggregates: aggregates
+                .iter()
+                .map(|(call, column, data_type)| {
+                    Ok(MultiAggSpec {
+                        call: call.clone(),
+                        column: column.clone(),
+                        result: encode_data_type(data_type)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            filter,
+            having,
+        });
+    }
     let hoisted = hoisted_expressions(&aggregate.input);
     let mut value: Option<AggValue> = None;
     let mut count = false;
@@ -892,41 +987,7 @@ fn analyze_grouping_sets(
         Some(AggValue::Expr(expression)) => (None, Some(expression)),
         None => (None, None),
     };
-    // `GROUPING(key)` is rewritten to a projection over the hidden
-    // `__grouping_id`; materialize the supported single-key shape per set.
-    let mut grouping_columns = Vec::new();
-    if let Some(projection) = projection {
-        for expr in &projection.expr {
-            let inner = strip_alias(expr);
-            let Some(key) = grouping_bit(inner, group_keys.len()) else {
-                if expr_mentions_grouping_id(inner) {
-                    return Err(unsupported(
-                        "only a single-key GROUPING(key) column is maintained",
-                    ));
-                }
-                continue;
-            };
-            // The optimizer auto-names an unaliased `GROUPING()` column after
-            // the SQL expression; fall back to a plain derived name then.
-            let name = match expr {
-                Expr::Alias(alias)
-                    if alias.name.chars().all(|character| {
-                        character.is_alphanumeric() || character == '_'
-                    }) =>
-                {
-                    alias.name.clone()
-                }
-                _ => format!("grouping_{}", group_keys[key]),
-            };
-            if grouping_columns
-                .iter()
-                .any(|column: &GroupingColumn| column.name == name)
-            {
-                return Err(unsupported("duplicate GROUPING() column"));
-            }
-            grouping_columns.push(GroupingColumn { key, name });
-        }
-    }
+    let grouping_columns = grouping_set_projection_columns(projection, &group_keys)?;
     Ok(ViewSpec::GroupingSets {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -940,6 +1001,7 @@ fn analyze_grouping_sets(
         count_column,
         aggregate_filter: None,
         average,
+        aggregates: Vec::new(),
         filter,
         having,
     })
@@ -2277,17 +2339,21 @@ fn render_multi_agg_having(
 /// An aggregate view over one source with any mix of supported aggregate
 /// functions in a single statement (recomputed from the affected groups).
 #[allow(clippy::too_many_arguments)]
-fn analyze_multi_agg(
+fn parse_multi_aggregates(
     aggregate: &Aggregate,
-    group_keys: Vec<String>,
-    group_exprs: Vec<String>,
-    having_exprs: &[Expr],
+    group_keys: &[String],
     source: &IvmTable,
-    filter: Option<String>,
-    request: &AnalyzeRequest,
-) -> Result<ViewSpec> {
+) -> Result<Vec<(String, String, DataType)>> {
     let mut aggregates: Vec<(String, String, DataType)> = Vec::new();
     let mut names: Vec<String> = Vec::new();
+    // Hidden columns (for example the grouping-set id) may sit between the
+    // group keys and the aggregates, so locate the aggregate outputs from the
+    // end of the schema.
+    let aggregate_offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
     for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
         let inner = strip_alias(expr);
         let Expr::AggregateFunction(function) = inner else {
@@ -2296,7 +2362,7 @@ fn analyze_multi_agg(
         let name = function.func.name();
         if function.params.filter.is_some() {
             return Err(unsupported(format!(
-                "aggregate FILTER over {name} is not maintained in a mixed statement"
+                "aggregate FILTER over {name} is not maintained"
             )));
         }
         if !function.params.order_by.is_empty()
@@ -2326,7 +2392,7 @@ fn analyze_multi_agg(
             && (!matches!(name, "count" | "sum") || function.params.args.len() != 1)
         {
             return Err(unsupported(
-                "a mixed statement only maintains DISTINCT over a single argument",
+                "DISTINCT is only maintained over a single COUNT/SUM argument",
             ));
         }
         if name == "count" && function.params.args.len() > 1 {
@@ -2359,12 +2425,28 @@ fn analyze_multi_agg(
         names.push(column.clone());
         let data_type = aggregate
             .schema
-            .field(aggregate.group_expr.len() + index)
+            .field(aggregate_offset + index)
             .data_type()
             .clone();
         encode_data_type(&data_type)?;
         aggregates.push((call, column, data_type));
     }
+    Ok(aggregates)
+}
+
+/// An aggregate view over one source with any mix of supported aggregate
+/// functions in a single statement (recomputed from the affected groups).
+#[allow(clippy::too_many_arguments)]
+fn analyze_multi_agg(
+    aggregate: &Aggregate,
+    group_keys: Vec<String>,
+    group_exprs: Vec<String>,
+    having_exprs: &[Expr],
+    source: &IvmTable,
+    filter: Option<String>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
     if aggregates.is_empty() {
         return Err(unsupported(
             "DISTINCT ON needs at least one non-key column; use SELECT DISTINCT for plain key deduplication",
@@ -3544,6 +3626,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_grouping_sets_mixed_aggregates() {
+        // A non-SUM/COUNT/AVG aggregate recomputes per grouping set with the
+        // general aggregate list.
+        let analyzed = analyze_optimized(
+            "select g, sum(v), min(v), count(*) from src group by rollup(g) \
+             having min(v) > 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            groupings,
+            aggregates,
+            value_column,
+            having,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert_eq!(groupings, vec![vec![0usize], vec![]]);
+        assert!(value_column.is_none());
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "sum_v".to_string(),
+                "min_v".to_string(),
+                "count".to_string(),
+            ]
+        );
+        assert_eq!(normalized(having.as_deref()).as_deref(), Some("min_v > 1"));
+
+        // The SUM/COUNT/AVG shape keeps the incremental layout.
+        let analyzed =
+            analyze_optimized("select g, sum(v), count(*) from src group by rollup(g)")
+                .await
+                .unwrap();
+        let ViewSpec::GroupingSets {
+            aggregates,
+            value_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert!(aggregates.is_empty());
+        assert_eq!(value_column.as_deref(), Some("v"));
+
+        // DISTINCT stays rejected.
+        assert!(
+            analyze_optimized(
+                "select g, count(distinct v), sum(v) from src group by rollup(g)",
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_distinct_on() {
         // `DISTINCT ON (...) ... ORDER BY` plans as FIRST_VALUE aggregates;
         // the source primary keys are appended to the ordering so the picked
@@ -4076,12 +4221,12 @@ mod tests {
         };
         assert_eq!(grouping_columns[0].name, "grouping_g");
 
-        // Only SUM/COUNT/AVG and plain columns are maintained.
-        assert!(
-            analyze_optimized("select g, min(v) from src group by rollup(g)")
-                .await
-                .is_err()
-        );
+        // Any supported aggregate mix is maintained (see
+        // analyzes_grouping_sets_mixed_aggregates); plain columns only.
+        let mixed = analyze_optimized("select g, min(v) from src group by rollup(g)")
+            .await
+            .unwrap();
+        assert!(matches!(mixed.spec, ViewSpec::GroupingSets { .. }));
         assert!(
             analyze_optimized(
                 "select v + 1 as bucket, sum(v) from src group by rollup(v + 1)"
