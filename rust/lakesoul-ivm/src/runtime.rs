@@ -365,6 +365,10 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source; NULL without a match.
         right_value: String,
+        /// The wide output columns; empty means the compact
+        /// `left_value` / `right_value` shape.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_columns: Vec<JoinOutputColumn>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -442,6 +446,10 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source; NULL without a match.
         right_value: String,
+        /// The wide output columns; empty means the compact
+        /// `left_value` / `right_value` shape.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_columns: Vec<JoinOutputColumn>,
     },
     /// `LEFT JOIN` lookup: every left row with the right row its join keys
     /// reference (or NULL).
@@ -471,6 +479,10 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source; NULL without a match.
         right_value: String,
+        /// The wide output columns; empty means the compact
+        /// `left_value` / `right_value` shape.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_columns: Vec<JoinOutputColumn>,
     },
     /// `group_key`, `MIN(value_column)` or `MAX(value_column)` over the source
     /// changelog, backed by a value-count state table.
@@ -1759,6 +1771,18 @@ fn wide_output_fields(
     right_schema: &Schema,
     output_columns: &[JoinOutputColumn],
 ) -> Result<Vec<Arc<Field>>> {
+    wide_output_fields_with(left_schema, right_schema, output_columns, false, false)
+}
+
+/// The fields of a wide join output, with the nullability of either side
+/// forced (outer joins pad the missing side).
+fn wide_output_fields_with(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    output_columns: &[JoinOutputColumn],
+    left_nullable: bool,
+    right_nullable: bool,
+) -> Result<Vec<Arc<Field>>> {
     let mut names = std::collections::HashSet::new();
     let mut fields = Vec::with_capacity(output_columns.len());
     for column in output_columns {
@@ -1768,9 +1792,9 @@ fn wide_output_fields(
                 column.name
             ));
         }
-        let schema = match column.side {
-            JoinSide::Left => left_schema,
-            JoinSide::Right => right_schema,
+        let (schema, forced) = match column.side {
+            JoinSide::Left => (left_schema, left_nullable),
+            JoinSide::Right => (right_schema, right_nullable),
         };
         let field = schema.field_with_name(&column.column).map_err(|_| {
             report!(
@@ -1785,10 +1809,117 @@ fn wide_output_fields(
         fields.push(Arc::new(Field::new(
             column.name.clone(),
             field.data_type().clone(),
-            field.is_nullable(),
+            forced || field.is_nullable(),
         )));
     }
     Ok(fields)
+}
+
+/// The schema of a wide outer [`LeftJoinView`] / [`FullJoinView`] output:
+/// the fields are nullable because an unmatched row pads one side.
+pub fn wide_outer_join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+    join_keys: &[String],
+    output_columns: &[JoinOutputColumn],
+) -> Result<SchemaRef> {
+    if left_primary_keys.is_empty() || right_primary_keys.is_empty() {
+        return Err(report!(
+            "an outer join view needs primary keys on both sources"
+        ));
+    }
+    let mut fields = Vec::new();
+    for key in join_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+    }
+    fields.extend(wide_output_fields_with(
+        left_schema,
+        right_schema,
+        output_columns,
+        true,
+        true,
+    )?);
+    for key in left_primary_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            left_pk_alias(key),
+            field.data_type().clone(),
+            true,
+        )));
+    }
+    for key in right_primary_keys {
+        let field = right_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            right_pk_alias(key),
+            field.data_type().clone(),
+            true,
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of a wide [`LookupJoinView`] output: the left fields keep their
+/// nullability and the right fields are nullable (NULL without a match).
+pub fn wide_lookup_join_view_schema_for(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    join_keys: &[String],
+    output_columns: &[JoinOutputColumn],
+) -> Result<SchemaRef> {
+    if left_primary_keys.is_empty() {
+        return Err(report!(
+            "a lookup join view needs primary keys on the left source"
+        ));
+    }
+    let mut fields = Vec::new();
+    for key in join_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+    }
+    fields.extend(wide_output_fields_with(
+        left_schema,
+        right_schema,
+        output_columns,
+        false,
+        true,
+    )?);
+    for key in left_primary_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 /// The schema of a wide append-only [`JoinView`] output: the join keys, the
@@ -2065,6 +2196,8 @@ pub struct LeftJoinView {
     pub left_value: String,
     /// The payload column of the right source.
     pub right_value: String,
+    /// The wide output columns; empty means the compact payload shape.
+    pub output_columns: Vec<JoinOutputColumn>,
     /// An optional filter the contributing left rows must satisfy.
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
@@ -2113,6 +2246,7 @@ impl LeftJoinView {
             join_keys,
             left_value: left_value.into(),
             right_value: right_value.into(),
+            output_columns: Vec::new(),
             left_filter: None,
             right_filter: None,
             refresh_interval_ms: 0,
@@ -2131,6 +2265,12 @@ impl LeftJoinView {
         self
     }
 
+    /// Materialize a wide output instead of the single payload per side.
+    pub fn with_output_columns(mut self, output_columns: Vec<JoinOutputColumn>) -> Self {
+        self.output_columns = output_columns;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::LeftJoin {
             view_id: self.view_id.clone(),
@@ -2140,6 +2280,7 @@ impl LeftJoinView {
             join_keys: self.join_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
         }
@@ -2164,6 +2305,8 @@ pub struct FullJoinView {
     pub left_value: String,
     /// The payload column of the right source.
     pub right_value: String,
+    /// The wide output columns; empty means the compact payload shape.
+    pub output_columns: Vec<JoinOutputColumn>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -2208,6 +2351,7 @@ impl FullJoinView {
             join_keys,
             left_value: left_value.into(),
             right_value: right_value.into(),
+            output_columns: Vec::new(),
             refresh_interval_ms: 0,
         }
     }
@@ -2218,11 +2362,17 @@ impl FullJoinView {
             right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
-            output_columns: &[],
+            output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
         }
+    }
+
+    /// Materialize a wide output instead of the single payload per side.
+    pub fn with_output_columns(mut self, output_columns: Vec<JoinOutputColumn>) -> Self {
+        self.output_columns = output_columns;
+        self
     }
 
     fn to_spec(&self) -> ViewSpec {
@@ -2234,6 +2384,7 @@ impl FullJoinView {
             join_keys: self.join_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            output_columns: self.output_columns.clone(),
         }
     }
 }
@@ -2455,6 +2606,8 @@ pub struct LookupJoinView {
     pub left_value: String,
     /// The payload column of the right source.
     pub right_value: String,
+    /// The wide output columns; empty means the compact payload shape.
+    pub output_columns: Vec<JoinOutputColumn>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -2501,6 +2654,7 @@ impl LookupJoinView {
             left_filter: None,
             left_value: left_value.into(),
             right_value: right_value.into(),
+            output_columns: Vec::new(),
             refresh_interval_ms: 0,
         }
     }
@@ -2527,6 +2681,12 @@ impl LookupJoinView {
         self
     }
 
+    /// Materialize a wide output instead of the single payload per side.
+    pub fn with_output_columns(mut self, output_columns: Vec<JoinOutputColumn>) -> Self {
+        self.output_columns = output_columns;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::LookupJoin {
             view_id: self.view_id.clone(),
@@ -2538,6 +2698,7 @@ impl LookupJoinView {
             left_filter: self.left_filter.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
+            output_columns: self.output_columns.clone(),
         }
     }
 }
@@ -2603,12 +2764,26 @@ fn lookup_join_projection(
     right: DataFrame,
     view: &LookupJoinView,
 ) -> Result<DataFrame> {
+    let wide = !view.output_columns.is_empty();
     let mut left_columns = view
         .join_keys
         .iter()
         .map(|key| col(key.as_str()))
         .collect::<Vec<_>>();
-    left_columns.push(col(view.left_value.as_str()).alias("left_value"));
+    if wide {
+        for column in view
+            .output_columns
+            .iter()
+            .filter(|column| column.side == JoinSide::Left)
+        {
+            left_columns.push(
+                col(column.column.as_str())
+                    .alias(join_side_alias(JoinSide::Left, &column.name)),
+            );
+        }
+    } else {
+        left_columns.push(col(view.left_value.as_str()).alias("left_value"));
+    }
     for key in &view.left.primary_keys {
         left_columns.push(col(key.as_str()));
     }
@@ -2622,7 +2797,20 @@ fn lookup_join_projection(
             col(right_key.as_str()).alias(format!("__right_{left_key}"))
         })
         .collect::<Vec<_>>();
-    right_columns.push(col(view.right_value.as_str()).alias("right_value"));
+    if wide {
+        for column in view
+            .output_columns
+            .iter()
+            .filter(|column| column.side == JoinSide::Right)
+        {
+            right_columns.push(
+                col(column.column.as_str())
+                    .alias(join_side_alias(JoinSide::Right, &column.name)),
+            );
+        }
+    } else {
+        right_columns.push(col(view.right_value.as_str()).alias("right_value"));
+    }
     let right = right.select(right_columns)?;
 
     let key_names = view
@@ -2639,18 +2827,46 @@ fn lookup_join_projection(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    Ok(left.join(right, JoinType::Left, &key_names, &right_key_refs, None)?)
+    let joined = left.join(right, JoinType::Left, &key_names, &right_key_refs, None)?;
+    if !wide {
+        return Ok(joined);
+    }
+    let mut output = view
+        .join_keys
+        .iter()
+        .map(|key| col(key.as_str()))
+        .collect::<Vec<_>>();
+    for column in &view.output_columns {
+        output.push(
+            col(join_side_alias(column.side, &column.name).as_str())
+                .alias(column.name.as_str()),
+        );
+    }
+    for key in &view.left.primary_keys {
+        output.push(col(key.as_str()));
+    }
+    Ok(joined.select(output)?)
 }
 
 /// The output columns of a lookup join, as expressions over the joined frame.
 fn lookup_join_output_columns(view: &LookupJoinView) -> Vec<Expr> {
-    view.join_keys
+    let mut output = view
+        .join_keys
         .iter()
         .map(|key| col(key.as_str()))
-        .chain(std::iter::once(col("left_value")))
-        .chain(std::iter::once(col("right_value")))
-        .chain(view.left.primary_keys.iter().map(|key| col(key.as_str())))
-        .collect()
+        .collect::<Vec<_>>();
+    if view.output_columns.is_empty() {
+        output.push(col("left_value"));
+        output.push(col("right_value"));
+    } else {
+        output.extend(
+            view.output_columns
+                .iter()
+                .map(|column| col(column.name.as_str())),
+        );
+    }
+    output.extend(view.left.primary_keys.iter().map(|key| col(key.as_str())));
+    output
 }
 
 /// Validate that a computed-aggregate view can be maintained.
@@ -2764,6 +2980,7 @@ fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
         join_keys: view.join_keys.clone(),
         left_value: view.left_value.clone(),
         right_value: view.right_value.clone(),
+        output_columns: view.output_columns.clone(),
         left_filter: None,
         right_filter: None,
         refresh_interval_ms: view.refresh_interval_ms,
@@ -2889,8 +3106,18 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
             ));
         }
     }
-    field_type(&view.left.schema, &view.left_value)?;
-    field_type(&view.right.schema, &view.right_value)?;
+    if view.output_columns.is_empty() {
+        field_type(&view.left.schema, &view.left_value)?;
+        field_type(&view.right.schema, &view.right_value)?;
+    } else {
+        wide_output_fields_with(
+            &view.left.schema,
+            &view.right.schema,
+            &view.output_columns,
+            true,
+            true,
+        )?;
+    }
     if view.left_filter.is_some() || view.right_filter.is_some() {
         let context = SessionContext::new();
         if let Some(filter) = &view.left_filter {
@@ -2967,8 +3194,18 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
             ));
         }
     }
-    field_type(&view.left.schema, &view.left_value)?;
-    field_type(&view.right.schema, &view.right_value)?;
+    if view.output_columns.is_empty() {
+        field_type(&view.left.schema, &view.left_value)?;
+        field_type(&view.right.schema, &view.right_value)?;
+    } else {
+        wide_output_fields_with(
+            &view.left.schema,
+            &view.right.schema,
+            &view.output_columns,
+            false,
+            true,
+        )?;
+    }
     Ok(())
 }
 
@@ -7271,6 +7508,7 @@ impl IvmRuntime {
                 join_keys,
                 left_value,
                 right_value,
+                output_columns,
                 left_filter,
                 right_filter,
             } => SpecView::LeftJoin(LeftJoinView {
@@ -7281,6 +7519,7 @@ impl IvmRuntime {
                 join_keys: join_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 refresh_interval_ms,
@@ -7293,6 +7532,7 @@ impl IvmRuntime {
                 join_keys,
                 left_value,
                 right_value,
+                output_columns,
             } => SpecView::FullJoin(FullJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -7301,6 +7541,7 @@ impl IvmRuntime {
                 join_keys: join_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                output_columns: output_columns.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::LookupJoin {
@@ -7313,6 +7554,7 @@ impl IvmRuntime {
                 left_filter,
                 left_value,
                 right_value,
+                output_columns,
             } => SpecView::LookupJoin(LookupJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -7323,6 +7565,7 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
+                output_columns: output_columns.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::CrossJoin {
@@ -14261,7 +14504,7 @@ impl LeftJoinView {
             right_keys: &[],
             left_value: &self.left_value,
             right_value: &self.right_value,
-            output_columns: &[],
+            output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,

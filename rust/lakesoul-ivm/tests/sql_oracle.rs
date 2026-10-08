@@ -33,9 +33,9 @@ use lakesoul_ivm::{
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -2255,6 +2255,69 @@ async fn oracle_multi_join_matches_full_recompute() {
          JOIN __SRC2__ c ON b.k = c.k \
          WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
         "SELECT k, av, bv, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
+         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_wide_left_join_matches_full_recompute() {
+    // A pair-keyed wide left join: the right side is not keyed by the join
+    // key, so the output is keyed by both row identities and unmatched left
+    // rows keep NULL right outputs.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(0i64)),
+        (0, 1, "g1", Some(1)),
+        (0, 2, "g2", Some(2)),
+        (1, 0, "g0", Some(0)),
+        (1, 2, "g2", Some(5)),
+    ];
+    let output_columns = vec![
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: "g".to_string(),
+            name: "lg".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: "k".to_string(),
+            name: "lk".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: "g".to_string(),
+            name: "bg".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: "k".to_string(),
+            name: "bk".to_string(),
+        },
+    ];
+    run_oracle_seeded(
+        "wideleft",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        wide_outer_join_view_schema_for(
+            &schema,
+            &schema,
+            &keys,
+            &keys,
+            &["v".to_string()],
+            &output_columns,
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.v, a.g AS lg, a.k AS lk, b.g AS bg, b.k AS bk FROM __SRC__ a \
+         LEFT JOIN __SRC1__ b ON a.v = b.v",
+        "SELECT a.v, a.g AS lg, a.k AS lk, b.g AS bg, b.k AS bk, a.k AS lpk, \
+         b.k AS rpk FROM __SRC__ a LEFT JOIN __SRC1__ b ON a.v = b.v \
+         WHERE a.op <> 'delete' AND (b.op IS NULL OR b.op <> 'delete')",
+        "SELECT v, lg, lk, bg, bk, \"__left_pk_k\", \"__right_pk_k\" \
          FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;

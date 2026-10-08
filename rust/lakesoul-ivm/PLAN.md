@@ -2332,6 +2332,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_multi_join_matches_full_recompute`（三源 keyed 随机轮差分）。
   README 形状表/限制清单同步。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）355 个测试通过、0 失败。
 
+### 10.77 outer/lookup join 的宽投影（PR-71）
+
+- **spec/typed 扩展**：`ViewSpec::LeftJoin`/`FullJoin`/`LookupJoin`、`LeftJoinView`/`FullJoinView`/
+  `LookupJoinView` 增加 `output_columns`（serde 省略，既有紧凑 spec/定义哈希不变）；
+  LEFT/FULL 与 inner 共用 `keyed_join_projection`（`PairJoin` 透传），lookup 的
+  `lookup_join_projection`/`lookup_join_output_columns` 增加宽分支。
+- **schema nullability**：`wide_output_fields_with` 支持按侧强制可空；新增
+  `wide_outer_join_view_schema_for`（键取左源可空性、输出与两侧标识全部可空）与
+  `wide_lookup_join_view_schema_for`（左列保持源可空性、右列强制可空、左标识非空）。
+- **analyzer**：`analyze_outer_join`（LEFT/RIGHT/lookup）与 FULL 分支改用统一的
+  `join_payloads` + `compact_or_wide`（单侧 1 列走紧凑、其余走宽、每侧至少一列）；执行器
+  期望 schema 四条 outer/lookup 分支按 `output_columns` 选择宽/紧凑 helper；校验
+  （`validate_left_join_view`/`validate_lookup_join_view`，FULL 经克隆委托）增加宽形态列校验。
+- **范围**：LEFT/RIGHT/FULL/lookup 的宽输出（RIGHT 仍按「保留侧在左」的 lookup/pair-LEFT 处理）；
+  外连接的侧过滤支持范围不变（FULL 仍不接受输入过滤）。
+- **测试**：analyzer（lookup/full/pair-LEFT 宽形态与紧凑回退）、`wide_lookup_join.slt`（NULL 补位、
+  维度增删改、事实键迁移、过滤重建）、`wide_full_join.slt`（双侧未匹配与补位）、
+  `oracle_wide_left_join_matches_full_recompute`（pair-keyed 宽 LEFT 随机轮差分）。
+  README 形状表/限制清单同步。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）359 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

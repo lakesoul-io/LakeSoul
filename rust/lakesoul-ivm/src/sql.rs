@@ -3298,7 +3298,7 @@ fn analyze_join(
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
                 return Err(unsupported("FULL JOIN needs a primary key on both sources"));
             }
-            let (left_value, right_value) = join_values(
+            let payloads = join_payloads(
                 projection,
                 left_alias,
                 right_alias,
@@ -3306,6 +3306,8 @@ fn analyze_join(
                 right,
                 &join_keys,
             )?;
+            let (left_value, right_value, output_columns) =
+                compact_or_wide(payloads, &join_keys, "FULL JOIN")?;
             Ok(ViewSpec::FullJoin {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
@@ -3314,6 +3316,7 @@ fn analyze_join(
                 join_keys,
                 left_value,
                 right_value,
+                output_columns,
             })
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
@@ -4266,8 +4269,10 @@ fn analyze_outer_join(
             key_names.push(key.clone());
         }
     }
-    let (left_value, right_value) =
-        join_values(projection, left_alias, right_alias, left, right, &key_names)?;
+    let payloads =
+        join_payloads(projection, left_alias, right_alias, left, right, &key_names)?;
+    let (left_value, right_value, output_columns) =
+        compact_or_wide(payloads, &key_names, kind)?;
     let lookup = {
         let mut expected = right.primary_keys.clone();
         expected.sort();
@@ -4291,6 +4296,7 @@ fn analyze_outer_join(
             left_filter,
             left_value,
             right_value,
+            output_columns,
         })
     } else if !right_keys.is_empty() {
         Err(unsupported(
@@ -4305,6 +4311,7 @@ fn analyze_outer_join(
             join_keys,
             left_value,
             right_value,
+            output_columns,
             left_filter,
             right_filter,
         })
@@ -4660,6 +4667,33 @@ fn join_payloads_from_fields(
     Ok(payloads)
 }
 
+/// Split the classified payloads into the compact payload pair or the wide
+/// output column list.
+fn compact_or_wide(
+    payloads: JoinPayloads,
+    key_names: &[String],
+    shape: &str,
+) -> Result<(String, String, Vec<JoinOutputColumn>)> {
+    if payloads.left_count == 1 && payloads.right_count == 1 {
+        return Ok((
+            payloads.left_value.clone().expect("one left payload"),
+            payloads.right_value.clone().expect("one right payload"),
+            Vec::new(),
+        ));
+    }
+    if payloads.left_count == 0 || payloads.right_count == 0 {
+        return Err(unsupported(format!(
+            "a {shape} needs at least one column from each side"
+        )));
+    }
+    check_wide_output_names(&payloads.output_columns, key_names)?;
+    Ok((
+        payloads.left_value.clone().expect("one left payload"),
+        payloads.right_value.clone().expect("one right payload"),
+        payloads.output_columns,
+    ))
+}
+
 /// The wide output names must be unique and must not shadow the join keys.
 fn check_wide_output_names(
     output_columns: &[JoinOutputColumn],
@@ -4676,57 +4710,6 @@ fn check_wide_output_names(
         names.push(column.name.clone());
     }
     Ok(())
-}
-
-/// The single payload column of each join side, taken from the select list.
-fn join_values(
-    projection: Option<&Projection>,
-    left_alias: Option<&str>,
-    right_alias: Option<&str>,
-    left: &IvmTable,
-    right: &IvmTable,
-    join_keys: &[String],
-) -> Result<(String, String)> {
-    let projection = projection.ok_or_else(|| {
-        unsupported("a join view needs one payload column from each side")
-    })?;
-    if !is_plain_projection(projection) {
-        return Err(unsupported("computed columns in a join output"));
-    }
-    let mut left_value = None;
-    let mut right_value = None;
-    for expr in &projection.expr {
-        let column = column_of(expr)
-            .ok_or_else(|| unsupported("join output must be plain columns"))?;
-        if join_keys.contains(&column.name) {
-            continue;
-        }
-        match side_of(column, left_alias, right_alias, left, right) {
-            Some(Side::Left) => {
-                if left_value.replace(column.name.clone()).is_some() {
-                    return Err(unsupported("a join view takes one left payload column"));
-                }
-            }
-            Some(Side::Right) => {
-                if right_value.replace(column.name.clone()).is_some() {
-                    return Err(unsupported(
-                        "a join view takes one right payload column",
-                    ));
-                }
-            }
-            None => {
-                return Err(unsupported(format!(
-                    "join output column {} is ambiguous",
-                    column.name
-                )));
-            }
-        }
-    }
-    let left_value = left_value
-        .ok_or_else(|| unsupported("a join view needs a left payload column"))?;
-    let right_value = right_value
-        .ok_or_else(|| unsupported("a join view needs a right payload column"))?;
-    Ok((left_value, right_value))
 }
 
 /// Stable definition identity.  FNV-1a over the canonical spec JSON: a change
@@ -7532,6 +7515,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_wide_outer_joins() {
+        // A wide lookup join materializes several columns per side.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, a.v, b.g as bg, b.v as bv from src a \
+             left join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin {
+            left_value,
+            right_value,
+            output_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(left_value, "g");
+        assert_eq!(right_value, "g");
+        assert_eq!(output_columns.len(), 4);
+        assert_eq!(output_columns[2].name, "bg");
+        assert_eq!(output_columns[3].side, JoinSide::Right);
+
+        // A wide full join.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, a.v, b.g as bg, b.v as bv from src a \
+             full join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::FullJoin { output_columns, .. } = analyzed.spec else {
+            panic!("expected a full join spec");
+        };
+        assert_eq!(output_columns.len(), 4);
+
+        // A pair-keyed wide left join (the right side keyed by another
+        // column).
+        let dim = {
+            let mut table = source_table("dim");
+            table.primary_keys = vec!["v".to_string()];
+            table
+        };
+        let analyzed = analyze_multi(
+            "select a.k, a.g, a.v, b.g as bg, b.v as bv from src a \
+             left join dim b on a.k = b.k",
+            vec![source_table("src"), dim],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin { output_columns, .. } = analyzed.spec else {
+            panic!("expected a left join spec");
+        };
+        assert_eq!(output_columns.len(), 4);
+
+        // One payload per side stays compact.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v from src a left join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin { output_columns, .. } = analyzed.spec else {
+            panic!("expected a lookup join spec");
+        };
+        assert!(output_columns.is_empty());
+    }
+
+    #[tokio::test]
     async fn analyzes_multi_join() {
         let analyzed = analyze_optimized(
             "select a.k, a.g, b.g as bg, c.v as cv from src a \
@@ -8442,6 +8492,7 @@ mod tests {
                 left_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                output_columns: Vec::new(),
             }
         );
 
@@ -8468,6 +8519,7 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                output_columns: Vec::new(),
                 left_filter: None,
                 right_filter: None,
             }
@@ -8499,6 +8551,7 @@ mod tests {
                 left_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                output_columns: Vec::new(),
             }
         );
 
@@ -8558,6 +8611,7 @@ mod tests {
                 left_filter: None,
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                output_columns: Vec::new(),
             }
         );
 
@@ -8603,6 +8657,7 @@ mod tests {
                 join_keys: vec!["k".to_string()],
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                output_columns: Vec::new(),
             }
         );
 

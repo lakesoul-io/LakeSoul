@@ -129,7 +129,8 @@ pub use runtime::{
     value_count_mv_schema_for, value_count_state_expr_schema_for,
     value_count_state_schema, value_count_state_schema_for,
     variance_groups_mv_schema_for, variance_mv_schema_for, wide_join_view_schema_for,
-    wide_keyed_join_view_schema_for, window_aggregate_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_lookup_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
     window_columns_mv_schema_for, window_key, window_mv_schema, window_mv_schema_for,
     window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
