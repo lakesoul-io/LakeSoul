@@ -361,6 +361,10 @@ pub enum ViewSpec {
         /// The equi-join keys, present in both sources.
         #[serde(default, alias = "join_key", deserialize_with = "de_group_keys")]
         join_keys: Vec<String>,
+        /// The right source's key columns when they differ from the left
+        /// ones; empty means the keys share their names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        right_keys: Vec<String>,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source; NULL without a match.
@@ -446,10 +450,20 @@ pub enum ViewSpec {
         left_value: String,
         /// The payload column of the right source; NULL without a match.
         right_value: String,
+        /// The right source's key columns when they differ from the left
+        /// ones; empty means the keys share their names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        right_keys: Vec<String>,
         /// The wide output columns; empty means the compact
         /// `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output_columns: Vec<JoinOutputColumn>,
+        /// An optional filter the contributing left rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_filter: Option<String>,
+        /// An optional filter the contributing right rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_filter: Option<String>,
     },
     /// `LEFT JOIN` lookup: every left row with the right row its join keys
     /// reference (or NULL).
@@ -2192,6 +2206,9 @@ pub struct LeftJoinView {
     pub output: IvmTable,
     /// The equi-join keys, present in both sources.
     pub join_keys: Vec<String>,
+    /// The right source's key columns when they differ from the left ones;
+    /// empty means the keys share their names.
+    pub right_keys: Vec<String>,
     /// The payload column of the left source.
     pub left_value: String,
     /// The payload column of the right source.
@@ -2244,6 +2261,7 @@ impl LeftJoinView {
             right,
             output,
             join_keys,
+            right_keys: Vec::new(),
             left_value: left_value.into(),
             right_value: right_value.into(),
             output_columns: Vec::new(),
@@ -2265,6 +2283,12 @@ impl LeftJoinView {
         self
     }
 
+    /// The right source's join keys when they differ from the left ones.
+    pub fn with_right_keys(mut self, right_keys: Vec<String>) -> Self {
+        self.right_keys = right_keys;
+        self
+    }
+
     /// Materialize a wide output instead of the single payload per side.
     pub fn with_output_columns(mut self, output_columns: Vec<JoinOutputColumn>) -> Self {
         self.output_columns = output_columns;
@@ -2278,6 +2302,7 @@ impl LeftJoinView {
             right_table_id: self.right.table_id.clone(),
             output_table_id: self.output.table_id.clone(),
             join_keys: self.join_keys.clone(),
+            right_keys: self.right_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
@@ -2301,12 +2326,19 @@ pub struct FullJoinView {
     pub output: IvmTable,
     /// The equi-join keys, present in both sources.
     pub join_keys: Vec<String>,
+    /// The right source's key columns when they differ from the left ones;
+    /// empty means the keys share their names.
+    pub right_keys: Vec<String>,
     /// The payload column of the left source.
     pub left_value: String,
     /// The payload column of the right source.
     pub right_value: String,
     /// The wide output columns; empty means the compact payload shape.
     pub output_columns: Vec<JoinOutputColumn>,
+    /// An optional filter the contributing left rows must satisfy.
+    pub left_filter: Option<String>,
+    /// An optional filter the contributing right rows must satisfy.
+    pub right_filter: Option<String>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -2349,9 +2381,12 @@ impl FullJoinView {
             right,
             output,
             join_keys,
+            right_keys: Vec::new(),
             left_value: left_value.into(),
             right_value: right_value.into(),
             output_columns: Vec::new(),
+            left_filter: None,
+            right_filter: None,
             refresh_interval_ms: 0,
         }
     }
@@ -2359,7 +2394,7 @@ impl FullJoinView {
     fn parts(&self) -> PairJoin<'_> {
         PairJoin {
             join_keys: &self.join_keys,
-            right_keys: &[],
+            right_keys: &self.right_keys,
             left_value: &self.left_value,
             right_value: &self.right_value,
             output_columns: &self.output_columns,
@@ -2375,6 +2410,24 @@ impl FullJoinView {
         self
     }
 
+    /// The right source's join keys when they differ from the left ones.
+    pub fn with_right_keys(mut self, right_keys: Vec<String>) -> Self {
+        self.right_keys = right_keys;
+        self
+    }
+
+    /// Only left rows matching `filter` contribute to the view.
+    pub fn with_left_filter(mut self, filter: impl Into<String>) -> Self {
+        self.left_filter = Some(filter.into());
+        self
+    }
+
+    /// Only right rows matching `filter` contribute to the view.
+    pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
+        self.right_filter = Some(filter.into());
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::FullJoin {
             view_id: self.view_id.clone(),
@@ -2382,9 +2435,12 @@ impl FullJoinView {
             right_table_id: self.right.table_id.clone(),
             output_table_id: self.output.table_id.clone(),
             join_keys: self.join_keys.clone(),
+            right_keys: self.right_keys.clone(),
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
+            left_filter: self.left_filter.clone(),
+            right_filter: self.right_filter.clone(),
         }
     }
 }
@@ -2978,11 +3034,12 @@ fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
         right: view.right.clone(),
         output: view.output.clone(),
         join_keys: view.join_keys.clone(),
+        right_keys: view.right_keys.clone(),
         left_value: view.left_value.clone(),
         right_value: view.right_value.clone(),
         output_columns: view.output_columns.clone(),
-        left_filter: None,
-        right_filter: None,
+        left_filter: view.left_filter.clone(),
+        right_filter: view.right_filter.clone(),
         refresh_interval_ms: view.refresh_interval_ms,
     };
     validate_left_join_view(&left)
@@ -3068,19 +3125,36 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    for key in &view.join_keys {
-        view.left.schema.field_with_name(key).map_err(|_| {
+    let right_keys = if view.right_keys.is_empty() {
+        &view.join_keys
+    } else {
+        &view.right_keys
+    };
+    if right_keys.len() != view.join_keys.len() {
+        return Err(report!(
+            "left join view {}: right_keys must be parallel to join_keys",
+            view.view_id
+        ));
+    }
+    for (key, right_key) in view.join_keys.iter().zip(right_keys) {
+        let left = view.left.schema.field_with_name(key).map_err(|_| {
             report!(
                 "left join view {}: join key {key} is not in the left source",
                 view.view_id
             )
         })?;
-        view.right.schema.field_with_name(key).map_err(|_| {
+        let right = view.right.schema.field_with_name(right_key).map_err(|_| {
             report!(
-                "left join view {}: join key {key} is not in the right source",
+                "left join view {}: join key {right_key} is not in the right source",
                 view.view_id
             )
         })?;
+        if left.data_type() != right.data_type() {
+            return Err(report!(
+                "left join view {}: join key {key} has different types on the two sources",
+                view.view_id
+            ));
+        }
     }
     for key in view
         .left
@@ -7506,6 +7580,7 @@ impl IvmRuntime {
                 right_table_id,
                 output_table_id,
                 join_keys,
+                right_keys,
                 left_value,
                 right_value,
                 output_columns,
@@ -7517,6 +7592,7 @@ impl IvmRuntime {
                 right: self.open_table_by_id(right_table_id).await?,
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
+                right_keys: right_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),
@@ -7530,18 +7606,24 @@ impl IvmRuntime {
                 right_table_id,
                 output_table_id,
                 join_keys,
+                right_keys,
                 left_value,
                 right_value,
                 output_columns,
+                left_filter,
+                right_filter,
             } => SpecView::FullJoin(FullJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
                 right: self.open_table_by_id(right_table_id).await?,
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
+                right_keys: right_keys.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),
+                left_filter: left_filter.clone(),
+                right_filter: right_filter.clone(),
                 refresh_interval_ms,
             }),
             ViewSpec::LookupJoin {
@@ -10200,21 +10282,31 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
-            dataframe(
-                &context,
-                view.left.read_current(&self.client).await?,
-                &view.left.schema,
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.left.read_current(&self.client).await?,
+                    &view.left.schema,
+                )?,
+                change_column(&view.left),
             )?,
-            change_column(&view.left),
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(
-                &context,
-                view.right.read_current(&self.client).await?,
-                &view.right.schema,
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(
+                    &context,
+                    view.right.read_current(&self.client).await?,
+                    &view.right.schema,
+                )?,
+                change_column(&view.right),
             )?,
-            change_column(&view.right),
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let mv = dataframe(
             &context,
@@ -10276,6 +10368,20 @@ impl IvmRuntime {
             .iter()
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>();
+        // The right source's key columns when they differ from the left ones.
+        let right_join_names = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        let right_join_key_names = right_join_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let right_join_key_exprs = right_join_names
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
 
         let mut affected_left = left_now
             .clone()
@@ -10286,12 +10392,17 @@ impl IvmRuntime {
             .select(right_key_exprs.clone())?
             .limit(0, None)?;
         if !left_window.added_files.is_empty() {
-            let delta_left = dataframe(
+            let delta_left = apply_side_filter(
                 &context,
-                view.left
-                    .read_files(left_window.added_files.clone())
-                    .await?,
+                dataframe(
+                    &context,
+                    view.left
+                        .read_files(left_window.added_files.clone())
+                        .await?,
+                    &view.left.schema,
+                )?,
                 &view.left.schema,
+                view.left_filter.as_deref(),
             )?;
             affected_left = affected_left.union(
                 delta_left
@@ -10306,7 +10417,7 @@ impl IvmRuntime {
                     .join(
                         changed_keys,
                         JoinType::LeftSemi,
-                        &join_key_names,
+                        &right_join_key_names,
                         &join_key_names,
                         None,
                     )?
@@ -10314,12 +10425,17 @@ impl IvmRuntime {
             )?;
         }
         if !right_window.added_files.is_empty() {
-            let delta_right = dataframe(
+            let delta_right = apply_side_filter(
                 &context,
-                view.right
-                    .read_files(right_window.added_files.clone())
-                    .await?,
+                dataframe(
+                    &context,
+                    view.right
+                        .read_files(right_window.added_files.clone())
+                        .await?,
+                    &view.right.schema,
+                )?,
                 &view.right.schema,
+                view.right_filter.as_deref(),
             )?;
             affected_right = affected_right.union(
                 delta_right
@@ -10327,7 +10443,7 @@ impl IvmRuntime {
                     .select(right_key_exprs.clone())?
                     .distinct()?,
             )?;
-            let changed_keys = delta_right.select(join_key_exprs)?.distinct()?;
+            let changed_keys = delta_right.select(right_join_key_exprs)?.distinct()?;
             affected_left = affected_left.union(
                 left_now
                     .clone()
@@ -10335,7 +10451,7 @@ impl IvmRuntime {
                         changed_keys,
                         JoinType::LeftSemi,
                         &join_key_names,
-                        &join_key_names,
+                        &right_join_key_names,
                         None,
                     )?
                     .select(left_key_exprs.clone())?,
@@ -10482,13 +10598,23 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let left_now = filter_deletes(
-            dataframe(&context, left_baseline.batches, &view.left.schema)?,
-            change_column(&view.left),
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                change_column(&view.left),
+            )?,
+            &view.left.schema,
+            view.left_filter.as_deref(),
         )?;
-        let right_now = filter_deletes(
-            dataframe(&context, right_baseline.batches, &view.right.schema)?,
-            change_column(&view.right),
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(
+                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                change_column(&view.right),
+            )?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
         )?;
         let left_pairs = keyed_join_projection(
             &context,
@@ -14501,7 +14627,7 @@ impl LeftJoinView {
     fn parts(&self) -> PairJoin<'_> {
         PairJoin {
             join_keys: &self.join_keys,
-            right_keys: &[],
+            right_keys: &self.right_keys,
             left_value: &self.left_value,
             right_value: &self.right_value,
             output_columns: &self.output_columns,

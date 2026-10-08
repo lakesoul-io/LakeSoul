@@ -2352,6 +2352,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_wide_left_join_matches_full_recompute`（pair-keyed 宽 LEFT 随机轮差分）。
   README 形状表/限制清单同步。全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）359 个测试通过、0 失败。
 
+### 10.78 outer pair join 的异名键与输入过滤（PR-72）
+
+- **异名键**：`ViewSpec::LeftJoin`/`FullJoin` 与 typed view 新增 `right_keys`（serde 省略）；
+  `parts()` 透传给 `keyed_join_projection`（沿用 `effective_right_keys`）。FULL 刷新里
+  「变化键 × 另一侧当前态」的半连接改为左键名/右键名分别解析（`right_join_key_names`），
+  不再假定两侧同名。analyzer 移除「异名键仅限 inner/lookup」限制，pair-keyed LEFT/RIGHT/FULL
+  均支持；校验器按并行键对校验存在性与类型。
+- **输入过滤**：`ViewSpec::FullJoin`/`FullJoinView` 新增 `left_filter`/`right_filter`，
+  刷新与重建对 current/delta/baseline 帧统一叠加 `apply_side_filter`；analyzer 移除 FULL 的
+  「join input with a WHERE」拒绝（derived table / 下推过滤两侧均可）。剩余拒绝：
+  lookup LEFT 的右侧过滤。
+- **侧别感知的 payload 分类**：`join_payloads`/`join_payloads_from_fields` 改为按左/右键列表
+  分别跳过（此前按合并列表跳名，异名键时会把另一侧同名 payload 误判为键）；outer/FULL 的
+  裁剪投影（`Projection` 被优化器移除）也走 `join_payloads_from_fields` 兜底。
+- **测试**：analyzer（FULL 异名键+双侧 derived 过滤、移除过时拒绝断言）、
+  `full_join_names_filter.slt`（异名键 FULL 的增删与带过滤重建）。README 形状表/限制清单同步。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）360 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -3178,7 +3178,8 @@ fn analyze_join(
                     right_alias,
                     left,
                     right,
-                    &key_names,
+                    &join_keys,
+                    &right_keys,
                 )?,
                 // The optimizer drops the projection when the pruned join
                 // output is exactly the select list.
@@ -3188,7 +3189,8 @@ fn analyze_join(
                     right_alias,
                     left,
                     right,
-                    &key_names,
+                    &join_keys,
+                    &right_keys,
                 )?,
             };
             let right_keys = if same_names { Vec::new() } else { right_keys };
@@ -3248,6 +3250,7 @@ fn analyze_join(
             }
             analyze_outer_join(
                 "LEFT",
+                &join.schema,
                 projection,
                 left,
                 right,
@@ -3268,6 +3271,7 @@ fn analyze_join(
             // the swapped sides swap their key names too.
             analyze_outer_join(
                 "RIGHT",
+                &join.schema,
                 projection,
                 right,
                 left,
@@ -3284,39 +3288,56 @@ fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("full join with non-equality conditions"));
             }
-            if left_filter.is_some() || right_filter.is_some() {
-                return Err(unsupported(
-                    "a join input with a WHERE clause (or a filtered derived table) is not supported yet",
-                ));
-            }
-            if !same_names {
-                return Err(unsupported(
-                    "differently named join keys are only supported by inner joins \
-                     and lookup LEFT JOINs",
-                ));
-            }
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
                 return Err(unsupported("FULL JOIN needs a primary key on both sources"));
             }
-            let payloads = join_payloads(
-                projection,
-                left_alias,
-                right_alias,
-                left,
-                right,
-                &join_keys,
-            )?;
+            let right_keys = if same_names { Vec::new() } else { right_keys };
+            // The join keys, under either name, never become payloads.
+            let mut key_names = join_keys.clone();
+            for key in &right_keys {
+                if !key_names.contains(key) {
+                    key_names.push(key.clone());
+                }
+            }
+            let right_key_list = if right_keys.is_empty() {
+                &join_keys
+            } else {
+                &right_keys
+            };
+            let payloads = match projection {
+                Some(projection) => join_payloads(
+                    Some(projection),
+                    left_alias,
+                    right_alias,
+                    left,
+                    right,
+                    &join_keys,
+                    right_key_list,
+                )?,
+                None => join_payloads_from_fields(
+                    &join.schema,
+                    left_alias,
+                    right_alias,
+                    left,
+                    right,
+                    &join_keys,
+                    right_key_list,
+                )?,
+            };
             let (left_value, right_value, output_columns) =
-                compact_or_wide(payloads, &join_keys, "FULL JOIN")?;
+                compact_or_wide(payloads, &key_names, "FULL JOIN")?;
             Ok(ViewSpec::FullJoin {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
                 right_table_id: right.table_id.clone(),
                 output_table_id: request.mv_table_id.clone(),
                 join_keys,
+                right_keys,
                 left_value,
                 right_value,
                 output_columns,
+                left_filter,
+                right_filter,
             })
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
@@ -4157,9 +4178,15 @@ fn analyze_cross_join(
         ));
     }
     let payloads = match projection {
-        Some(projection) => {
-            join_payloads(Some(projection), left_alias, right_alias, left, right, &[])?
-        }
+        Some(projection) => join_payloads(
+            Some(projection),
+            left_alias,
+            right_alias,
+            left,
+            right,
+            &[],
+            &[],
+        )?,
         None => {
             // The optimizer drops the projection when the pruned join output
             // is exactly the select list: every column of the output belongs
@@ -4240,6 +4267,7 @@ fn analyze_cross_join(
 #[allow(clippy::too_many_arguments)]
 fn analyze_outer_join(
     kind: &str,
+    join_schema: &datafusion::common::DFSchema,
     projection: Option<&Projection>,
     left: &IvmTable,
     right: &IvmTable,
@@ -4269,8 +4297,26 @@ fn analyze_outer_join(
             key_names.push(key.clone());
         }
     }
-    let payloads =
-        join_payloads(projection, left_alias, right_alias, left, right, &key_names)?;
+    let payloads = match projection {
+        Some(projection) => join_payloads(
+            Some(projection),
+            left_alias,
+            right_alias,
+            left,
+            right,
+            &join_keys,
+            &effective_right_keys,
+        )?,
+        None => join_payloads_from_fields(
+            join_schema,
+            left_alias,
+            right_alias,
+            left,
+            right,
+            &join_keys,
+            &effective_right_keys,
+        )?,
+    };
     let (left_value, right_value, output_columns) =
         compact_or_wide(payloads, &key_names, kind)?;
     let lookup = {
@@ -4298,10 +4344,6 @@ fn analyze_outer_join(
             right_value,
             output_columns,
         })
-    } else if !right_keys.is_empty() {
-        Err(unsupported(
-            "differently named join keys are only supported by a lookup LEFT JOIN",
-        ))
     } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
         Ok(ViewSpec::LeftJoin {
             view_id: request.view_id.clone(),
@@ -4309,6 +4351,7 @@ fn analyze_outer_join(
             right_table_id: right.table_id.clone(),
             output_table_id: request.mv_table_id.clone(),
             join_keys,
+            right_keys,
             left_value,
             right_value,
             output_columns,
@@ -4605,7 +4648,8 @@ fn join_payloads(
     right_alias: Option<&str>,
     left: &IvmTable,
     right: &IvmTable,
-    join_keys: &[String],
+    left_keys: &[String],
+    right_keys: &[String],
 ) -> Result<JoinPayloads> {
     let projection = projection.ok_or_else(|| {
         unsupported("a join view needs payload columns from the select list")
@@ -4617,9 +4661,6 @@ fn join_payloads(
     for expr in &projection.expr {
         let column = column_of(expr)
             .ok_or_else(|| unsupported("join output must be plain columns"))?;
-        if join_keys.contains(&column.name) {
-            continue;
-        }
         let side =
             side_of(column, left_alias, right_alias, left, right).ok_or_else(|| {
                 unsupported(format!(
@@ -4627,6 +4668,13 @@ fn join_payloads(
                     column.name
                 ))
             })?;
+        let keys = match side {
+            Side::Left => left_keys,
+            Side::Right => right_keys,
+        };
+        if keys.contains(&column.name) {
+            continue;
+        }
         let name = match expr {
             Expr::Alias(alias) => alias.name.clone(),
             _ => column.name.clone(),
@@ -4644,13 +4692,11 @@ fn join_payloads_from_fields(
     right_alias: Option<&str>,
     left: &IvmTable,
     right: &IvmTable,
-    join_keys: &[String],
+    left_keys: &[String],
+    right_keys: &[String],
 ) -> Result<JoinPayloads> {
     let mut payloads = JoinPayloads::default();
     for (qualifier, field) in schema.iter() {
-        if join_keys.contains(field.name()) {
-            continue;
-        }
         let column = datafusion::common::Column::new(
             qualifier.map(|qualifier| qualifier.table().to_string()),
             field.name(),
@@ -4662,6 +4708,13 @@ fn join_payloads_from_fields(
                     field.name()
                 ))
             })?;
+        let keys = match side {
+            Side::Left => left_keys,
+            Side::Right => right_keys,
+        };
+        if keys.contains(field.name()) {
+            continue;
+        }
         payloads.push(side, field.name().clone(), field.name().clone());
     }
     Ok(payloads)
@@ -8517,6 +8570,7 @@ mod tests {
                 right_table_id: "table_dim".to_string(),
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
+                right_keys: Vec::new(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
@@ -8565,17 +8619,6 @@ mod tests {
             panic!("expected a lookup join spec");
         };
         assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
-
-        // Differently named keys are rejected outside inner joins and
-        // lookup LEFT JOINs.
-        assert!(
-            analyze_multi(
-                "select a.k, a.v, b.v from src a full join dim b on a.k = b.rk",
-                vec![source_table("src"), names],
-            )
-            .await
-            .is_err()
-        );
 
         // An unkeyed side is rejected.
         let mut unkeyed = source_table("dim2");
@@ -8655,10 +8698,51 @@ mod tests {
                 right_table_id: "table_src".to_string(),
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
+                right_keys: Vec::new(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                left_filter: None,
+                right_filter: None,
             }
+        );
+
+        // Differently named keys and filtered derived tables are supported.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.g from src a full join dim b on a.k = b.v",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::FullJoin {
+            join_keys,
+            right_keys,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a full join spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert_eq!(right_keys, vec!["v".to_string()]);
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from (select * from src where v > 1) a \
+             full join (select * from dim where v < 9) b on a.k = b.k",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::FullJoin {
+            left_filter,
+            right_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a full join spec");
+        };
+        assert_eq!(normalized(left_filter.as_deref()).as_deref(), Some("v > 1"));
+        assert_eq!(
+            normalized(right_filter.as_deref()).as_deref(),
+            Some("v < 9")
         );
 
         // Both sides must be keyed.

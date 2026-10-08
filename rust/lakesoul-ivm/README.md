@@ -73,7 +73,7 @@ used as row identities must be non-nullable.
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
 | Multi-way join | inner `JOIN`s over three or four sources (all keyed or all append-only), optional side filters and cross-source conditions | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
-| LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, optional filters on the preserved side; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
+| LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters | the projected left columns, kinds, epoch |
@@ -306,8 +306,7 @@ the backlog):
   explicitly. Supporting them needs a dedicated change (see the backlog);
 * non-equality join conditions over columns that the join does not
   materialize (a pair carries `left_value` / `right_value` or the wide output
-  columns), join keys outside the equality support, and differently named
-  keys outside inner joins and the lookup `LEFT JOIN`;
+  columns) and join keys outside the equality support;
 * outer joins inside a three-or-four-source chain (the flattened chain only
   supports inner joins) and more than four sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
@@ -316,11 +315,11 @@ the backlog):
   sides — while the maintained joins compare with equality and keep one row
   per left row, so the unsafe shapes are rejected rather than silently
   returning different rows;
-* a join input with a `WHERE` clause (or a filtered derived table) outside an
-  inner join, a cross join, a semi/anti join or the preserved side of a
-  `LEFT JOIN`: the optimizer pushes the filter below the join and the analyzer
+* a filtered right input of a **lookup** `LEFT JOIN` (the pair-keyed
+  left/right/full joins maintain filters on either input): the analyzer
   rejects the shape instead of ignoring the predicate (a right-side `WHERE`
-  on a `LEFT JOIN` becomes an inner join and is maintained as one);
+  on a `LEFT JOIN` whose right side is not keyed by the join keys becomes an
+  inner join or a filtered pair-keyed join and is maintained as one);
 * scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
   e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /

@@ -1,0 +1,50 @@
+# A FULL JOIN with differently named keys and filtered derived tables.
+
+statement ok
+/*ivm-append __SRC1__: id=1,jk=10,lv=1,op=insert; id=2,jk=20,lv=2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rid=5,rk=10,rv=5,op=insert; rid=6,rk=30,rv=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC1__ l FULL JOIN __SRC2__ r ON l.jk = r.rk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIII rowsort
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 1 5 1 5
+20 2 NULL 2 NULL
+30 NULL 6 NULL 6
+
+# A fact delete leaves the dimension row unmatched.
+statement ok
+/*ivm-append __SRC1__: id=1,jk=10,lv=1,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM __SRC1__ l FULL JOIN __SRC2__ r ON l.jk = r.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+10 NULL 5 NULL 5
+20 2 NULL 2 NULL
+30 NULL 6 NULL 6
+
+# Filtered derived tables rebuild the view with side filters.
+statement ok
+INSERT INTO __MV__ SELECT l.jk, l.lv, r.rv FROM (SELECT * FROM __SRC1__ WHERE lv > 1) l FULL JOIN (SELECT * FROM __SRC2__ WHERE rv > 5) r ON l.jk = r.rk
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IIIII rowsort
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+20 2 NULL 2 NULL
+30 NULL 6 NULL 6
