@@ -8,13 +8,12 @@ use super::*;
 
 /// `INTERSECT`/`EXCEPT` and null-aware semi/anti predicates.
 ///
-/// These plan as null-aware joins. The maintained semi/anti views compare
-/// with equality and keep one row per left row, while the set operations
-/// treat NULL as equal and the `ALL` variants count the matches on both
-/// sides. Both differences are vacuous when every join column is
-/// non-nullable on both sides and the left rows are unique on the join
-/// columns (their primary key is covered), which is exactly the subset
-/// maintained here; everything else is rejected.
+/// These plan as null-aware joins. A NULL-capable join column is matched
+/// null-safely (`NULL` matches `NULL`), and the `ALL` variants count the
+/// matches on both sides. The match counting still coincides with the
+/// semi/anti semantics when the left rows are unique on the join columns
+/// (their primary key is covered), which is the subset maintained here;
+/// everything else is rejected.
 pub(super) fn analyze_set_operation(
     join: &Join,
     projection: Option<&Projection>,
@@ -77,6 +76,9 @@ pub(super) fn analyze_set_operation(
             ));
         }
     }
+    // A NULL-capable join column makes the join null-aware: NULL matches
+    // NULL, exactly as the set operations do.
+    let mut null_safe = false;
     for key in &join_keys {
         let left_field = left.schema.field_with_name(key).map_err(|_| {
             unsupported(format!("set-operation key {key} is not in the left source"))
@@ -86,12 +88,7 @@ pub(super) fn analyze_set_operation(
                 "set-operation key {key} is not in the right source"
             ))
         })?;
-        if left_field.is_nullable() || right_field.is_nullable() {
-            return Err(unsupported(
-                "a set operation treats NULLs as equal, which needs non-nullable \
-                 join columns",
-            ));
-        }
+        null_safe = null_safe || left_field.is_nullable() || right_field.is_nullable();
     }
     // The peeled distinct must not have grouped on extra columns: the
     // projected tuples must be the distinct ones.
@@ -124,6 +121,7 @@ pub(super) fn analyze_set_operation(
         anti,
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
+        null_safe,
     })
 }
 
@@ -154,6 +152,7 @@ mod tests {
                 join_keys,
                 output_columns,
                 anti: analyzed_anti,
+                null_safe,
                 ..
             } = analyzed.spec
             else {
@@ -162,6 +161,7 @@ mod tests {
             assert_eq!(join_keys, vec!["k".to_string(), "v".to_string()]);
             assert_eq!(output_columns, vec!["k".to_string(), "v".to_string()]);
             assert_eq!(analyzed_anti, anti);
+            assert!(!null_safe);
         }
 
         // A null-aware EXISTS over non-nullable keys is the same semi join.
@@ -176,6 +176,24 @@ mod tests {
             panic!("expected a semi/anti spec");
         };
         assert!(!anti);
+
+        // A NULL-capable join column makes the view null-safe.
+        let mut nullable = source_table("dim");
+        nullable.schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, true),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let analyzed = analyze_multi(
+            "select k, v from src intersect select k, v from dim",
+            vec![source_table("src"), nullable],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti { null_safe, .. } = analyzed.spec else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(null_safe);
     }
 
     #[tokio::test]
@@ -185,21 +203,6 @@ mod tests {
             analyze_multi(
                 "select g from src intersect select g from dim",
                 vec![source_table("src"), source_table("dim")],
-            )
-            .await
-            .is_err()
-        );
-        // A NULL-capable join column breaks the equivalence.
-        let mut nullable = source_table("dim");
-        nullable.schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int64, true),
-            Field::new("g", DataType::Utf8, false),
-            Field::new("v", DataType::Int64, false),
-        ]));
-        assert!(
-            analyze_multi(
-                "select k, v from src intersect select k, v from dim",
-                vec![source_table("src"), nullable],
             )
             .await
             .is_err()

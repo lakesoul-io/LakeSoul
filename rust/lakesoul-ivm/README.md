@@ -79,7 +79,7 @@ used as row identities must be non-nullable.
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters | the projected left columns, kinds, epoch |
-| INTERSECT / EXCEPT | over non-nullable, unique-per-row join columns (the distinct and `ALL` variants) | the projected left columns, kinds, epoch |
+| INTERSECT / EXCEPT | over unique-per-row join columns (the distinct and `ALL` variants); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns, kinds, epoch |
 
 Supported within the shapes above:
 
@@ -144,10 +144,11 @@ Supported within the shapes above:
   subquery must be a single global aggregate (no `GROUP BY`) over a keyed
   source, and select-list scalar subqueries or correlated ones are rejected;
 * **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
-  semi/anti semantics coincide with the set operation: every join column is
-  non-nullable on both sides (so NULL never matches) and the left rows are
+  semi/anti semantics coincide with the set operation: the left rows are
   unique per join tuple (their primary key is covered), which also covers
-  null-aware `IS NOT DISTINCT FROM` semi/anti predicates over such columns;
+  null-aware `IS NOT DISTINCT FROM` semi/anti predicates; a NULL-capable join
+  column makes the view null-safe, so `NULL` matches `NULL` exactly as the
+  set operations require;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -336,11 +337,10 @@ the backlog):
 * outer joins inside a multi-way chain (the flattened chain only supports
   inner and cross joins) and more than eight sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
-  outside the maintained subset: they plan as *null-aware* joins — a NULL row
-  matches a NULL row, and the `ALL` variants also count the matches on both
-  sides — while the maintained joins compare with equality and keep one row
-  per left row, so the unsafe shapes are rejected rather than silently
-  returning different rows;
+  outside the maintained subset: they plan as *null-aware* joins, and the
+  `ALL` variants also count the matches on both sides, while the maintained
+  views keep one row per left row, so the shapes whose match counts can
+  differ are rejected rather than silently returning different rows;
 * scalar subqueries outside the maintained subset (a select-list
   `(SELECT ...)`, a `GROUP BY` subquery, an append-only outer source and
   correlated subqueries, which plan as semi joins with an aggregate input)

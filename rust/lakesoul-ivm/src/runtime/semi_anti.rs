@@ -50,6 +50,9 @@ pub struct SemiAntiView {
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
     pub right_filter: Option<String>,
+    /// Whether a NULL join key matches another NULL join key (set operations
+    /// and null-aware predicates).
+    pub null_safe: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -88,6 +91,7 @@ impl SemiAntiView {
             anti,
             left_filter: None,
             right_filter: None,
+            null_safe: false,
             refresh_interval_ms: 0,
         }
     }
@@ -101,6 +105,13 @@ impl SemiAntiView {
     /// Only right rows matching `filter` contribute to the view.
     pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
         self.right_filter = Some(filter.into());
+        self
+    }
+
+    /// Match NULL join keys with NULL join keys, as the set operations and
+    /// null-aware predicates do.
+    pub fn with_null_safe(mut self, null_safe: bool) -> Self {
+        self.null_safe = null_safe;
         self
     }
 
@@ -123,6 +134,7 @@ impl SemiAntiView {
             anti: self.anti,
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -394,7 +406,23 @@ fn semi_anti_join(
         .iter()
         .map(|(_, right)| right.as_str())
         .collect::<Vec<_>>();
-    Ok(left.join(right, join_type, &left_on, &right_on, filter)?)
+    if !view.null_safe {
+        return Ok(left.join(right, join_type, &left_on, &right_on, filter)?);
+    }
+    // A NULL join key matches another NULL join key.
+    let plan = LogicalPlanBuilder::from(left.logical_plan().clone())
+        .join_detailed(
+            right.logical_plan().clone(),
+            join_type,
+            (
+                on_pairs.iter().map(|(left, _)| left.clone()).collect(),
+                on_pairs.iter().map(|(_, right)| right.clone()).collect(),
+            ),
+            filter,
+            NullEquality::NullEqualsNull,
+        )?
+        .build()?;
+    Ok(DataFrame::new(SessionContext::new().state().clone(), plan))
 }
 
 impl IvmRuntime {
