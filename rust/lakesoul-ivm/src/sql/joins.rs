@@ -303,6 +303,7 @@ pub(super) fn analyze_join(
                 anti: join.join_type == JoinType::LeftAnti,
                 left_filter,
                 right_filter,
+                null_safe: false,
             })
         }
         other => Err(unsupported(format!("join type {other:?}"))),
@@ -1902,6 +1903,7 @@ mod tests {
                 anti: false,
                 left_filter: None,
                 right_filter: None,
+                null_safe: false,
             }
         );
 

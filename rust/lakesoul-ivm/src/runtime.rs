@@ -18,9 +18,10 @@ use arrow::record_batch::RecordBatch;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, ScalarValue};
+use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue};
 use datafusion::logical_expr::ExprSchemable;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::logical_expr::when;
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
@@ -807,6 +808,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// Whether a NULL join key matches another NULL join key, as the set
+        /// operations and null-aware predicates do.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        null_safe: bool,
     },
     /// `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` over a keyed source with
     /// `SUM`/`COUNT`/`AVG`: the MV keeps one row per (grouping index, key
@@ -2570,6 +2575,7 @@ impl IvmRuntime {
                 anti,
                 left_filter,
                 right_filter,
+                null_safe,
             } => SpecView::SemiAnti(SemiAntiView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2581,6 +2587,7 @@ impl IvmRuntime {
                 anti: *anti,
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                null_safe: *null_safe,
                 refresh_interval_ms,
             }),
             ViewSpec::Row {

@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的可空键/重复计数放宽；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
+| 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | 相关标量子查询（规划为带聚合右输入的 semi join）；嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
@@ -2546,6 +2546,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （混合键 ROLLUP 的更新/整组删除/新组）、`grouping_sets_append.slt`（普通 append-only + 计算键
   CUBE 的追加/过滤重建）、`oracle_grouping_sets_expression_keys_matches_full_recompute`
   （另跑 seed 5/23/77 × 25 轮）。全量 IVM 套件 382 个测试通过、0 失败。
+
+### 10.88 `INTERSECT`/`EXCEPT` 支持可空键（空安全匹配，PR-82）
+
+- **能力**：集合操作/空安全半连接中的连接列可以为空 —— `NULL` 与 `NULL` 匹配，与 SQL 语义一致；
+  左侧行在连接列上仍须唯一（主键覆盖），否则明确拒绝。
+- **实现**：`ViewSpec::SemiAnti` / `SemiAntiView` 增加 `null_safe`（serde 省略 false，非空键的定义哈希
+  不变）；`semi_anti_join` 在 `null_safe` 时改用
+  `LogicalPlanBuilder::join_detailed(..., NullEquality::NullEqualsNull)`，其余键连接（左侧主键）仍为
+  普通等值；分析器按两侧字段可空性设置 `null_safe` 并移除原来的可空键拒绝。
+- **测试**：analyzer（可空键 → `null_safe = true`，非空键保持 false；删除旧的拒绝断言）、
+  `set_ops_nullable.slt`（NULL 命中/失配/再命中、EXCEPT 的 NULL 匹配、右侧删除）、
+  `oracle_intersect_nullable_matches_full_recompute`（nullable 值 + NULL 种子，另跑 seed 11/42/99 × 25 轮）。
+  全量 IVM 套件 384 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

@@ -1,0 +1,82 @@
+# INTERSECT / EXCEPT over keyed sources whose join column is nullable: NULL
+# matches NULL, exactly as the set operations require.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=null,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=10,op=insert; k=2,g=a,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+2 NULL
+
+# A NULL key stops matching a value.
+statement ok
+/*ivm-append __SRC2__: k=2,g=a,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+
+# The value becomes NULL again: it matches the NULL row once more.
+statement ok
+/*ivm-append __SRC2__: k=2,g=a,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+2 NULL
+
+# EXCEPT treats the NULL tuple as matching too, so it is removed.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=null,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ EXCEPT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 NULL
+
+# A right-side delete removes the match.
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ EXCEPT SELECT k, v FROM __SRC2__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query II rowsort
+SELECT k, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 10
+3 NULL

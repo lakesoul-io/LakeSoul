@@ -2532,3 +2532,32 @@ async fn oracle_grouping_sets_expression_keys_matches_full_recompute() {
     )
     .await;
 }
+
+#[test_log::test(tokio::test)]
+async fn oracle_intersect_nullable_matches_full_recompute() {
+    // INTERSECT over a NULL-capable tuple: NULL matches NULL.
+    let schema = nullable_source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(5i64)),
+        (0, 1, "g1", None),
+        (0, 2, "g2", Some(9)),
+        (1, 0, "g0", Some(5)),
+        (1, 1, "g1", None),
+        (1, 2, "g2", Some(9)),
+    ];
+    let keys = vec!["k".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "intersectnull",
+        2,
+        schema.clone(),
+        true,
+        &seed,
+        semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC1__",
+        "(SELECT k, v FROM __SRC__ WHERE op <> 'delete') \
+         INTERSECT (SELECT k, v FROM __SRC1__ WHERE op <> 'delete')",
+        "SELECT k, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}

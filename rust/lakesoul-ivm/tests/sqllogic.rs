@@ -2772,6 +2772,21 @@ fn sqllogic_grouping_sets() {
 }
 
 #[test]
+fn sqllogic_set_ops_nullable() {
+    let schema = nullable_source_schema();
+    run_script_for_sources(
+        "setopsnull",
+        include_str!("slt/set_ops_nullable.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+        ],
+        semi_anti_mv_schema_for(&schema, &group_keys(&["k", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_grouping_sets_mixed_aggregates() {
     let schema = source_schema();
     run_script_for_mv(
