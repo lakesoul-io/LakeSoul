@@ -17,9 +17,9 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
-    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, MinMaxKind,
-    PhysicalFormat, VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
-    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, JoinOutputColumn,
+    JoinSide, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
+    WindowGroupSpec, approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
@@ -32,8 +32,9 @@ use lakesoul_ivm::{
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    wide_keyed_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -2128,6 +2129,67 @@ async fn oracle_grouping_sets_grouping_matches_full_recompute() {
         "SELECT g, GROUPING(g) AS is_total, SUM(v) AS sum_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 10 GROUP BY ROLLUP(g)",
         "SELECT g, is_total, sum_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_wide_inner_join_matches_full_recompute() {
+    // A wide inner join materializes several columns per side under their
+    // select names, plus the hidden pair identities.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(50i64)),
+        (0, 1, "g1", Some(5)),
+        (1, 0, "g0", Some(70)),
+        (1, 1, "g1", Some(80)),
+    ];
+    let output_columns = vec![
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: "v".to_string(),
+            name: "lv".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: "g".to_string(),
+            name: "lg".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: "v".to_string(),
+            name: "rv".to_string(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: "g".to_string(),
+            name: "rg".to_string(),
+        },
+    ];
+    run_oracle_seeded(
+        "widejoin",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        wide_keyed_join_view_schema_for(
+            &schema,
+            &schema,
+            &keys,
+            &keys,
+            &keys,
+            &output_columns,
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.k, a.v AS lv, a.g AS lg, b.v AS rv, b.g AS rg FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.k = b.k WHERE a.v > 10",
+        "SELECT a.k, a.v AS lv, a.g AS lg, b.v AS rv, b.g AS rg, a.k AS lpk, \
+         b.k AS rpk FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
+         WHERE a.op <> 'delete' AND b.op <> 'delete' AND a.v > 10",
+        "SELECT k, lv, lg, rv, rg, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

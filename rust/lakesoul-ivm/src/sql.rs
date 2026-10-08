@@ -38,11 +38,11 @@ use crate::error::Result;
 use crate::runtime::{
     BoolAggKind, CompareOp, ComputedAggArg, ComputedAggResult, DistinctAggKind,
     GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
-    IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, MinMaxKind,
-    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
-    WindowFunction, WindowGroupSpec, approx_distinct_output_column,
+    IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, JoinOutputColumn,
+    JoinSide, MinMaxKind, SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec,
+    WindowColumn, WindowFunction, WindowGroupSpec, approx_distinct_output_column,
     approx_percentile_output_column, bool_agg_output_column, string_agg_output_column,
-    union_output_schema_for,
+    union_output_schema_for, wide_pair_alias,
 };
 use crate::table::IvmTable;
 
@@ -3166,21 +3166,62 @@ fn analyze_join(
                     key_names.push(key.clone());
                 }
             }
-            let (left_value, right_value) = join_values(
-                projection,
-                left_alias,
-                right_alias,
-                left,
-                right,
-                &key_names,
-            )?;
+            let payloads = match projection {
+                Some(projection) => join_payloads(
+                    Some(projection),
+                    left_alias,
+                    right_alias,
+                    left,
+                    right,
+                    &key_names,
+                )?,
+                // The optimizer drops the projection when the pruned join
+                // output is exactly the select list.
+                None => join_payloads_from_fields(
+                    &join.schema,
+                    left_alias,
+                    right_alias,
+                    left,
+                    right,
+                    &key_names,
+                )?,
+            };
             let right_keys = if same_names { Vec::new() } else { right_keys };
-            let pair_filter = render_pair_conditions(
-                &conditions,
-                &left_value,
-                &right_value,
-                "inner join",
-            )?;
+            // One payload per side keeps the compact `left_value` /
+            // `right_value` shape; anything else materializes the selected
+            // columns under their select names.
+            let (left_value, right_value, output_columns, pair_filter) =
+                if payloads.left_count == 1 && payloads.right_count == 1 {
+                    let left_value =
+                        payloads.left_value.clone().expect("one left payload");
+                    let right_value =
+                        payloads.right_value.clone().expect("one right payload");
+                    let pair_filter = render_pair_conditions(
+                        &conditions,
+                        &left_value,
+                        &right_value,
+                        "inner join",
+                    )?;
+                    (left_value, right_value, Vec::new(), pair_filter)
+                } else {
+                    if payloads.left_count == 0 || payloads.right_count == 0 {
+                        return Err(unsupported(
+                            "a join view needs at least one column from each side",
+                        ));
+                    }
+                    check_wide_output_names(&payloads.output_columns, &key_names)?;
+                    let pair_filter = render_wide_pair_conditions(
+                        &conditions,
+                        &payloads.output_columns,
+                        "inner join",
+                    )?;
+                    (
+                        payloads.left_value.clone().expect("one left payload"),
+                        payloads.right_value.clone().expect("one right payload"),
+                        payloads.output_columns,
+                        pair_filter,
+                    )
+                };
             Ok(ViewSpec::Join {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
@@ -3190,6 +3231,7 @@ fn analyze_join(
                 right_keys,
                 left_value,
                 right_value,
+                output_columns,
                 left_filter,
                 right_filter,
                 pair_filter,
@@ -3747,67 +3789,69 @@ fn analyze_cross_join(
             "a cross join needs primary keys on both sources",
         ));
     }
-    let (left_value, right_value) = match projection {
+    let payloads = match projection {
         Some(projection) => {
-            join_values(Some(projection), left_alias, right_alias, left, right, &[])?
+            join_payloads(Some(projection), left_alias, right_alias, left, right, &[])?
         }
         None => {
             // The optimizer drops the projection when the pruned join output
             // is exactly the select list: every column of the output belongs
-            // to one side, one of them is the payload of that side.
-            let mut left_value = None;
-            let mut right_value = None;
+            // to one side.
+            let mut payloads = JoinPayloads::default();
             for field in join.schema.fields() {
                 let column = datafusion::common::Column::new_unqualified(field.name());
-                match side_of(&column, left_alias, right_alias, left, right) {
-                    Some(Side::Left) => {
-                        if left_value.replace(field.name().clone()).is_some() {
-                            return Err(unsupported(
-                                "a cross join takes one left payload column",
-                            ));
-                        }
-                    }
-                    Some(Side::Right) => {
-                        if right_value.replace(field.name().clone()).is_some() {
-                            return Err(unsupported(
-                                "a cross join takes one right payload column",
-                            ));
-                        }
-                    }
-                    None => {
-                        return Err(unsupported(format!(
+                let side =
+                    side_of(&column, left_alias, right_alias, left, right).ok_or_else(|| {
+                        unsupported(format!(
                             "cross join output column {} is ambiguous; use distinct names \
                              or aliases",
                             field.name()
-                        )));
-                    }
-                }
+                        ))
+                    })?;
+                payloads.push(side, field.name().clone(), field.name().clone());
             }
-            (
-                left_value.ok_or_else(|| {
-                    unsupported("a cross join needs a left payload column")
-                })?,
-                right_value.ok_or_else(|| {
-                    unsupported("a cross join needs a right payload column")
-                })?,
-            )
+            payloads
         }
     };
-    let pair_filter = match &join.filter {
-        Some(filter) => {
-            let mut conditions = Vec::new();
-            for conjunct in split_conjunction(filter) {
-                let (left_column, right_column, op) =
-                    column_compare(conjunct, left_alias, right_alias, left, right)?;
-                conditions.push(SemiAntiCondition {
-                    left_column,
-                    right_column,
-                    op,
-                });
-            }
-            render_pair_conditions(&conditions, &left_value, &right_value, "cross join")?
+    let mut conditions = Vec::new();
+    if let Some(filter) = &join.filter {
+        for conjunct in split_conjunction(filter) {
+            let (left_column, right_column, op) =
+                column_compare(conjunct, left_alias, right_alias, left, right)?;
+            conditions.push(SemiAntiCondition {
+                left_column,
+                right_column,
+                op,
+            });
         }
-        None => None,
+    }
+    let (left_value, right_value, output_columns, pair_filter) = if payloads.left_count
+        == 1
+        && payloads.right_count == 1
+    {
+        let left_value = payloads.left_value.clone().expect("one left payload");
+        let right_value = payloads.right_value.clone().expect("one right payload");
+        let pair_filter =
+            render_pair_conditions(&conditions, &left_value, &right_value, "cross join")?;
+        (left_value, right_value, Vec::new(), pair_filter)
+    } else {
+        if payloads.left_count == 0 || payloads.right_count == 0 {
+            return Err(unsupported(
+                "a cross join needs at least one column from each side",
+            ));
+        }
+        check_wide_output_names(&payloads.output_columns, &[])?;
+        let pair_filter = render_wide_pair_conditions(
+            &conditions,
+            &payloads.output_columns,
+            "cross join",
+        )?;
+        (
+            payloads.left_value.clone().expect("one left payload"),
+            payloads.right_value.clone().expect("one right payload"),
+            payloads.output_columns,
+            pair_filter,
+        )
     };
     Ok(ViewSpec::CrossJoin {
         view_id: request.view_id.clone(),
@@ -3816,6 +3860,7 @@ fn analyze_cross_join(
         output_table_id: request.mv_table_id.clone(),
         left_value,
         right_value,
+        output_columns,
         left_filter,
         right_filter,
         pair_filter,
@@ -4030,6 +4075,43 @@ fn render_pair_conditions(
     Ok(Some(parts.join(" AND ")))
 }
 
+/// Render non-equality pair conditions over a wide join's output columns,
+/// which the layout carries as `__left_*` / `__right_*` fields.
+fn render_wide_pair_conditions(
+    conditions: &[SemiAntiCondition],
+    output_columns: &[JoinOutputColumn],
+    shape: &str,
+) -> Result<Option<String>> {
+    if conditions.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = Vec::with_capacity(conditions.len());
+    for condition in conditions {
+        let find = |side: JoinSide, column: &str| {
+            output_columns
+                .iter()
+                .find(|output| output.side == side && output.column == column)
+        };
+        let left = find(JoinSide::Left, &condition.left_column).ok_or_else(|| {
+            unsupported(format!(
+                "a {shape} condition must compare materialized left and right columns"
+            ))
+        })?;
+        let right = find(JoinSide::Right, &condition.right_column).ok_or_else(|| {
+            unsupported(format!(
+                "a {shape} condition must compare materialized left and right columns"
+            ))
+        })?;
+        parts.push(format!(
+            "{} {} {}",
+            wide_pair_alias(left),
+            compare_op_sql(condition.op),
+            wide_pair_alias(right)
+        ));
+    }
+    Ok(Some(parts.join(" AND ")))
+}
+
 /// `col = col` equality, used for join keys.
 fn equi_columns(expr: &Expr) -> Option<(&Column, &Column)> {
     let Expr::BinaryExpr(binary) = expr else {
@@ -4102,6 +4184,137 @@ fn side_of(
         (false, true) => Some(Side::Right),
         _ => None,
     }
+}
+
+/// The payload columns of a join select list, split by side.
+#[derive(Default)]
+struct JoinPayloads {
+    /// The wide output columns in select order, join keys removed.
+    output_columns: Vec<JoinOutputColumn>,
+    /// The first left output column (the compact payload fallback).
+    left_value: Option<String>,
+    /// The first right output column (the compact payload fallback).
+    right_value: Option<String>,
+    /// How many payload columns the left side contributes.
+    left_count: usize,
+    /// How many payload columns the right side contributes.
+    right_count: usize,
+}
+
+impl JoinPayloads {
+    /// Record one payload column from `side`.
+    fn push(&mut self, side: Side, column: String, name: String) {
+        match side {
+            Side::Left => {
+                self.left_count += 1;
+                if self.left_value.is_none() {
+                    self.left_value = Some(column.clone());
+                }
+            }
+            Side::Right => {
+                self.right_count += 1;
+                if self.right_value.is_none() {
+                    self.right_value = Some(column.clone());
+                }
+            }
+        }
+        self.output_columns.push(JoinOutputColumn {
+            side: match side {
+                Side::Left => JoinSide::Left,
+                Side::Right => JoinSide::Right,
+            },
+            column,
+            name,
+        });
+    }
+}
+
+/// Classify the join select list: every non-key column is a plain column of
+/// one side, and its select alias (or source name) becomes the output name.
+fn join_payloads(
+    projection: Option<&Projection>,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    left: &IvmTable,
+    right: &IvmTable,
+    join_keys: &[String],
+) -> Result<JoinPayloads> {
+    let projection = projection.ok_or_else(|| {
+        unsupported("a join view needs payload columns from the select list")
+    })?;
+    if !is_plain_projection(projection) {
+        return Err(unsupported("computed columns in a join output"));
+    }
+    let mut payloads = JoinPayloads::default();
+    for expr in &projection.expr {
+        let column = column_of(expr)
+            .ok_or_else(|| unsupported("join output must be plain columns"))?;
+        if join_keys.contains(&column.name) {
+            continue;
+        }
+        let side =
+            side_of(column, left_alias, right_alias, left, right).ok_or_else(|| {
+                unsupported(format!(
+                    "join output column {} is ambiguous; use distinct names or aliases",
+                    column.name
+                ))
+            })?;
+        let name = match expr {
+            Expr::Alias(alias) => alias.name.clone(),
+            _ => column.name.clone(),
+        };
+        payloads.push(side, column.name.clone(), name);
+    }
+    Ok(payloads)
+}
+
+/// Classify a pruned join schema whose projection the optimizer removed:
+/// every field outside the join keys is a payload named after the field.
+fn join_payloads_from_fields(
+    schema: &datafusion::common::DFSchema,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    left: &IvmTable,
+    right: &IvmTable,
+    join_keys: &[String],
+) -> Result<JoinPayloads> {
+    let mut payloads = JoinPayloads::default();
+    for (qualifier, field) in schema.iter() {
+        if join_keys.contains(field.name()) {
+            continue;
+        }
+        let column = datafusion::common::Column::new(
+            qualifier.map(|qualifier| qualifier.table().to_string()),
+            field.name(),
+        );
+        let side =
+            side_of(&column, left_alias, right_alias, left, right).ok_or_else(|| {
+                unsupported(format!(
+                    "join output column {} is ambiguous; use distinct names or aliases",
+                    field.name()
+                ))
+            })?;
+        payloads.push(side, field.name().clone(), field.name().clone());
+    }
+    Ok(payloads)
+}
+
+/// The wide output names must be unique and must not shadow the join keys.
+fn check_wide_output_names(
+    output_columns: &[JoinOutputColumn],
+    join_keys: &[String],
+) -> Result<()> {
+    let mut names = join_keys.to_vec();
+    for column in output_columns {
+        if names.contains(&column.name) {
+            return Err(unsupported(format!(
+                "join output column {} is materialized twice; add distinct aliases",
+                column.name
+            )));
+        }
+        names.push(column.name.clone());
+    }
+    Ok(())
 }
 
 /// The single payload column of each join side, taken from the select list.
@@ -6878,6 +7091,7 @@ mod tests {
                 right_keys: Vec::new(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
+                output_columns: Vec::new(),
                 left_filter: None,
                 right_filter: None,
                 pair_filter: None,
@@ -6954,6 +7168,111 @@ mod tests {
             panic!("expected an inner join spec");
         };
         assert!(right_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyzes_wide_inner_join() {
+        // More than one payload column per side materializes the select
+        // columns under their select names.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, a.v, b.g as bg, b.v as bv from src a join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            join_keys,
+            left_value,
+            right_value,
+            output_columns,
+            pair_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert_eq!(left_value, "g");
+        assert_eq!(right_value, "g");
+        assert_eq!(
+            output_columns,
+            vec![
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "g".to_string(),
+                    name: "g".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "v".to_string(),
+                    name: "v".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "g".to_string(),
+                    name: "bg".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "v".to_string(),
+                    name: "bv".to_string(),
+                },
+            ]
+        );
+        assert!(pair_filter.is_none());
+
+        // A non-equality condition over the wide payloads maps to the
+        // intermediate column names.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, a.v, b.g as bg, b.v as bv from src a \
+             join src b on a.k = b.k and a.v < b.v",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join { pair_filter, .. } = analyzed.spec else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(
+            normalized(pair_filter.as_deref()).as_deref(),
+            Some("__left_v < __right_bv")
+        );
+
+        // A side without a payload is rejected (duplicate or ambiguous
+        // select names are already rejected by the planner).
+        let error = analyze_optimized(
+            "select a.k, a.g, a.v, b.k from src a join src b on a.k = b.k",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("each side"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn analyzes_wide_cross_join() {
+        let analyzed = analyze_optimized(
+            "select a.g, a.v, b.g as bg, b.v as bv from src a cross join src b",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::CrossJoin { output_columns, .. } = analyzed.spec else {
+            panic!("expected a cross join spec");
+        };
+        assert_eq!(output_columns.len(), 4);
+        assert_eq!(output_columns[2].name, "bg");
+
+        // A cross-side predicate maps to the wide pair filter.
+        let analyzed = analyze_optimized(
+            "select a.g, a.v, b.g as bg, b.v as bv from src a cross join src b \
+             where a.v < b.v",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::CrossJoin { pair_filter, .. } = analyzed.spec else {
+            panic!("expected a cross join spec");
+        };
+        assert_eq!(
+            normalized(pair_filter.as_deref()).as_deref(),
+            Some("__left_v < __right_bv")
+        );
     }
 
     #[tokio::test]

@@ -31,10 +31,11 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
     IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, MinMaxKind, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
-    approx_percentile_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
-    bool_agg_mv_schema_for, computed_agg_mv_schema_for, cross_join_view_schema_for,
+    IvmTableOptions, JoinOutputColumn, JoinSide, MinMaxKind, PhysicalFormat,
+    VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
+    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
@@ -45,8 +46,9 @@ use lakesoul_ivm::{
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    wide_keyed_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -2058,6 +2060,61 @@ fn sqllogic_cross_join() {
 }
 
 #[test]
+fn sqllogic_cross_join_wide() {
+    let left = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new("ln", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new("rn", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "crossjoinwide",
+        include_str!("slt/cross_join_wide.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", left.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", right.clone(), group_keys(&["rid"])),
+        ],
+        wide_keyed_join_view_schema_for(
+            &left,
+            &right,
+            &group_keys(&["id"]),
+            &group_keys(&["rid"]),
+            &[],
+            &[
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "ln".to_string(),
+                    name: "ln".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rv".to_string(),
+                    name: "rv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rn".to_string(),
+                    name: "rn".to_string(),
+                },
+            ],
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
+    );
+}
+
+#[test]
 fn sqllogic_global_min_max() {
     run_script_for_mv(
         "globalminmax",
@@ -2344,6 +2401,61 @@ fn sqllogic_set_ops() {
         ],
         semi_anti_mv_schema_for(&schema, &group_keys(&["k", "v"])).unwrap(),
         group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_wide_join() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("jk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("rk", DataType::Int64, true),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "widejoin",
+        include_str!("slt/wide_join.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rid"])),
+        ],
+        wide_keyed_join_view_schema_for(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["rid"]),
+            &group_keys(&["jk"]),
+            &[
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "id".to_string(),
+                    name: "id".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rv".to_string(),
+                    name: "rv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rid".to_string(),
+                    name: "rid".to_string(),
+                },
+            ],
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rid"])),
     );
 }
 
