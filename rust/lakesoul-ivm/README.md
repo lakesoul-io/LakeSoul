@@ -53,7 +53,7 @@ used as row identities must be non-nullable.
 
 | Kind | SQL shape | Materialized columns |
 |---|---|---|
-| Projection / filter | `SELECT [expr AS c, ...] FROM src [WHERE p]` | projected columns, `rowKinds`, `__ivm_epoch` |
+| Projection / filter | `SELECT [expr AS c, ...] FROM src [WHERE p]`; `p` may compare against an uncorrelated scalar subquery (`WHERE v > (SELECT AVG(v) FROM dim)`), whose tables are watched alongside the source (a keyed source only) | projected columns, `rowKinds`, `__ivm_epoch` |
 | SELECT DISTINCT | `SELECT DISTINCT c, ... FROM src [WHERE p]` | the distinct columns, `count_v`, kinds, epoch |
 | DISTINCT ON | `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` over a keyed source; the picked row is deterministic (the source primary keys break ties) | keys, one column per picked column (`first_value_v`), kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
@@ -132,6 +132,13 @@ Supported within the shapes above:
   filters on either side (the outer `WHERE` filters the left source and a
   subquery predicate the right source): a row entering or leaving either
   filter gains or loses its match;
+* **uncorrelated scalar subqueries** in a projection/filter view's `WHERE`
+  compare a column against a global aggregate over other tables
+  (`WHERE v > (SELECT AVG(v) FROM dim)`); the subquery tables are registered,
+  watched and delete-filtered alongside the source, the source keeps the
+  delta path and any change to a subquery table re-evaluates every key; the
+  subquery must be a single global aggregate (no `GROUP BY`) over a keyed
+  source, and select-list scalar subqueries or correlated ones are rejected;
 * **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
   semi/anti semantics coincide with the set operation: every join column is
   non-nullable on both sides (so NULL never matches) and the left rows are
@@ -330,8 +337,10 @@ the backlog):
   sides — while the maintained joins compare with equality and keep one row
   per left row, so the unsafe shapes are rejected rather than silently
   returning different rows;
-* scalar subqueries (`(SELECT ...)` in the select list or in a comparison,
-  e.g. `WHERE x = (SELECT ...)`) and computed columns above an aggregate
+* scalar subqueries outside the maintained subset (a select-list
+  `(SELECT ...)`, a `GROUP BY` subquery, an append-only outer source and
+  correlated subqueries, which plan as semi joins with an aggregate input)
+  and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
 * the grouping-set shapes outside the maintained subset (key expressions and

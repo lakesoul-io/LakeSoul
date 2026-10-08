@@ -17,8 +17,10 @@ use std::sync::Arc;
 use arrow::record_batch::RecordBatch;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use datafusion::common::{DFSchema, ScalarValue};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::{Column, DFSchema, ScalarValue};
 use datafusion::logical_expr::ExprSchemable;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::when;
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
@@ -873,6 +875,10 @@ pub enum ViewSpec {
         /// An optional filter the source rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
+        /// The scalar subquery inputs of the filter, when it has any; their
+        /// tables are watched alongside the source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scalar: Option<RowScalarSpec>,
     },
     /// `UNION ALL` of several sources with the same schema.
     UnionAll {
@@ -1891,15 +1897,68 @@ fn validate_having(
     Ok(())
 }
 
+/// The temporary registration the scalar filter is planned against.
+const ROW_FILTER_SOURCE: &str = "__ivm_row_filter_source";
+
 /// The conjunction of a row view's filter, when it has one.
-fn row_filter_predicate(
+async fn row_filter_predicate(
     context: &SessionContext,
     view: &RowView,
 ) -> Result<Option<Expr>> {
-    view.filter
-        .as_deref()
-        .map(|filter| parse_filter(context, &view.source.schema, filter))
-        .transpose()
+    let Some(filter) = view.filter.as_deref() else {
+        return Ok(None);
+    };
+    if view.scalar.is_none() {
+        return Ok(Some(parse_filter(context, &view.source.schema, filter)?));
+    }
+    parse_scalar_filter(context, view, filter).await.map(Some)
+}
+
+/// Plan a row filter that contains scalar subqueries.
+///
+/// The source is registered under a temporary name so the subquery tables
+/// resolve through the session; the predicate's relation qualifiers are then
+/// stripped, because the frames it is applied to are unnamed.
+async fn parse_scalar_filter(
+    context: &SessionContext,
+    view: &RowView,
+    filter: &str,
+) -> Result<Expr> {
+    let provider: Arc<dyn datafusion::catalog::TableProvider> =
+        Arc::new(datafusion::datasource::memory::MemTable::try_new(
+            view.source.schema.clone(),
+            vec![vec![]],
+        )?);
+    context
+        .register_table(ROW_FILTER_SOURCE, provider)
+        .map_err(|error| report!("invalid filter {filter:?}: {error}"))?;
+    let sql = format!("select * from {ROW_FILTER_SOURCE} where ({filter})");
+    let plan = context
+        .state()
+        .create_logical_plan(&sql)
+        .await
+        .map_err(|error| report!("invalid filter {filter:?}: {error}"))?;
+    let mut predicate = None;
+    plan.apply(|node| {
+        if let LogicalPlan::Filter(filter) = node
+            && predicate.is_none()
+        {
+            predicate = Some(filter.predicate.clone());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .map_err(|error| report!("invalid filter {filter:?}: {error}"))?;
+    let predicate =
+        predicate.ok_or_else(|| report!("invalid filter {filter:?}: no predicate"))?;
+    predicate
+        .transform_down(|node| match node {
+            Expr::Column(column) if column.relation.is_some() => Ok(Transformed::yes(
+                Expr::Column(Column::from_name(column.name.clone())),
+            )),
+            other => Ok(Transformed::no(other)),
+        })
+        .map(|transformed| transformed.data)
+        .map_err(|error| report!("invalid filter {filter:?}: {error}"))
 }
 
 /// ` and (<filter>)`, to append to an existing WHERE clause.
@@ -2527,15 +2586,32 @@ impl IvmRuntime {
                 output_columns,
                 output_exprs,
                 filter,
-            } => SpecView::Row(RowView {
-                view_id: view_id.clone(),
-                source: self.open_table_by_id(source_table_id).await?,
-                mv: self.open_table_by_id(mv_table_id).await?,
-                output_columns: output_columns.clone(),
-                output_exprs: output_exprs.clone(),
-                filter: filter.clone(),
-                refresh_interval_ms,
-            }),
+                scalar,
+            } => {
+                let scalar = match scalar {
+                    Some(spec) => {
+                        let mut tables = Vec::with_capacity(spec.tables.len());
+                        for table in &spec.tables {
+                            tables.push((
+                                table.name.clone(),
+                                self.open_table_by_id(&table.table_id).await?,
+                            ));
+                        }
+                        Some(RowScalarView { tables })
+                    }
+                    None => None,
+                };
+                SpecView::Row(RowView {
+                    view_id: view_id.clone(),
+                    source: self.open_table_by_id(source_table_id).await?,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    output_columns: output_columns.clone(),
+                    output_exprs: output_exprs.clone(),
+                    filter: filter.clone(),
+                    scalar,
+                    refresh_interval_ms,
+                })
+            }
             ViewSpec::UnionAll {
                 view_id,
                 sources,

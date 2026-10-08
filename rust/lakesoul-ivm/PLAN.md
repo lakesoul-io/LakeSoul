@@ -1085,7 +1085,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 |---|---|---|
 | 聚合/分组 | `GROUPING SETS`/`ROLLUP`/`CUBE` 的键表达式与 append-only 源 | 设计级扩展 |
 | 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的可空键/重复计数放宽；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
-| 子查询/CTE | 标量/相关子查询（依赖多视图链）；嵌套/不透明派生表 | 低，随多视图链一起做 |
+| 子查询/CTE | 相关标量子查询（规划为带聚合右输入的 semi join）；嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
 | 表达式 | 每个聚合族各自的小形状（如 `ANY_VALUE` 等顺序相关函数按需明确拒绝） | 按需接线 |
@@ -2508,6 +2508,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **注**：修复过程中曾误改既有 `sqllogic_grouping_sets_multi` 注册与 slt（已恢复）；新增 slt 命名为
   `grouping_sets_mixed_aggregates`。
   全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）374 个测试通过、0 失败。
+
+### 10.86 投影/过滤视图支持非相关标量子查询（PR-80）
+
+- **能力**：`SELECT ... FROM src WHERE v > (SELECT AVG(v) FROM dim)` —— 过滤器中的
+  非相关标量子查询（全局聚合、无 `GROUP BY`），比较可为 `=, <>, <, <=, >, >=`
+  任一侧、可与普通谓词 AND 组合；外层源需 keyed。
+- **analyzer**：`collect_row` 增加 scalar 累积器；新 `render_scalar_filter` 按合取项拆分，
+  标量项 -> `(子查询 SQL) <op> <外层表达式>`（子查询经 `plan_to_sql` 渲染为自包含 SQL、
+  `render_scalar_subquery` 收集其表到 `RowScalarSpec`，拒绝相关子查询 / `GROUP BY` /
+  非聚合子查询）；select-list 标量子查询与 UNION 分支内的标量子查询明确报错。
+  spec/typed：`ViewSpec::Row.scalar` + `RowScalarView`（SQL 名 + 表）。
+- **运行时**：`refresh_row`/`rebuild_row` 把子查询表按 SQL 名注册为 MemTable
+  （`read_current` + `filter_deletes`），并把它们的游标与源一起收集/推进；`scalar_changed`
+  时 `affected` 取「当前源键 ∪ MV 键」以重算全部键（源仍走 delta 路径）。过滤器解析改为
+  `parse_scalar_filter`：把源临时注册后 `create_logical_plan("select * from <tmp> where <filter>")`
+  并取出 Filter 谓词（`create_logical_expr` 的空 table map 无法解析子查询表），再剥离关系限定名
+  （`Expr::ScalarSubquery` 在 TreeNode 中是叶子，子查询计划不受影响）。
+- **测试**：analyzer（两侧比较、AND 组合、四类拒绝）、`scalar_subquery.slt`
+  （bootstrap、子查询表增删驱动全量重算、源更新走 delta、阈值下降后回插）、
+  `oracle_scalar_subquery_matches_full_recompute`（双源随机轮差分，另跑 seed 3/17/91 × 25 轮）。
+  全量 IVM 套件（lib + 39 个集成测试二进制 + doctest）378 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

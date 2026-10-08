@@ -4,9 +4,9 @@ use crate::runtime::{
     GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, JoinOutputColumn,
     JoinSide, MinMaxKind, MultiAggSpec, MultiJoinColumn, MultiJoinCondition,
-    MultiJoinKey, MultiJoinSource, SemiAntiCondition, UnionSourceSpec, VarianceKind,
-    ViewSpec, WindowColumn, WindowFunction, WindowGroupSpec,
-    approx_distinct_output_column, approx_percentile_output_column,
+    MultiJoinKey, MultiJoinSource, RowScalarSpec, ScalarTableSpec, SemiAntiCondition,
+    UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn, WindowFunction,
+    WindowGroupSpec, approx_distinct_output_column, approx_percentile_output_column,
     bool_agg_output_column, encode_data_type, string_agg_output_column,
     union_output_schema_for, wide_pair_alias,
 };
@@ -18,7 +18,7 @@ use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatme
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
-    SortExpr, Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    SortExpr, Subquery, Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::prelude::SessionContext;
@@ -532,6 +532,31 @@ fn unsupported(what: impl std::fmt::Display) -> rootcause::Report {
 mod tests {
     use super::*;
     use crate::sql::test_helpers::*;
+
+    #[tokio::test]
+    async fn probe_scalar_subqueries() {
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        let dim = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(table)).unwrap();
+        ctx.register_table("dim", Arc::new(dim)).unwrap();
+        for sql in [
+            "select k, v from src where v > (select avg(v) from src)",
+            "select k, v from src s where v > (select avg(v) from dim)",
+            "select k, v, (select max(v) from dim) as m from src",
+            "select k, v from src s where v > (select avg(v) from dim u where u.k = s.k)",
+            "select k, v from src s where exists (select 1 from dim u where u.k = s.k)",
+        ] {
+            match ctx.sql(sql).await {
+                Ok(df) => {
+                    let plan = ctx.state().optimize(&df.logical_plan().clone()).unwrap();
+                    println!("=== {sql}");
+                    println!("{plan}");
+                }
+                Err(error) => println!("PLAN_ERR {sql}: {error}"),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn analyzes_projection_and_filters() {

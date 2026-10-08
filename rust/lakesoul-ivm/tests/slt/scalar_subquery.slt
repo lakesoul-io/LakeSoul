@@ -1,0 +1,109 @@
+# A scalar subquery threshold: the view keeps the rows of __SRC0__ whose value
+# is above the average of __SRC1__.  A change to either table re-evaluates the
+# view.
+
+statement ok
+/*ivm-append __SRC0__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __SRC1__: k=9,g=x,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+3 b 20
+
+# A change to the subquery table moves the threshold and flips rows.
+statement ok
+/*ivm-append __SRC1__: k=10,g=x,v=25,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+
+# Deleting from the subquery table lowers the threshold again.
+statement ok
+/*ivm-append __SRC1__: k=10,g=x,v=25,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+2 a 30
+3 b 20
+
+# A source-only update is maintained from the delta: only that key changes.
+statement ok
+/*ivm-append __SRC0__: k=2,g=a,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 b 20
+
+# A lower threshold re-inserts the rows the view had dropped.
+statement ok
+/*ivm-append __SRC1__: k=9,g=x,v=8,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10
+3 b 20
+
+# A self-referencing subquery: the same table is both the source and the input.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC0__)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+3 b 20
+
+statement ok
+/*ivm-append __SRC0__: k=1,g=a,v=100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC0__)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100

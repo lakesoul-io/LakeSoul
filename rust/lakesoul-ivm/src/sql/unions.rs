@@ -177,7 +177,12 @@ fn union_branch(
     plan: &LogicalPlan,
     tables: &HashMap<String, IvmTable>,
 ) -> Result<UnionBranch> {
-    let (source, output_columns, output_exprs, filter) = collect_row(plan, tables)?;
+    let mut scalars = Vec::new();
+    let (source, output_columns, output_exprs, filter) =
+        collect_row(plan, tables, &mut scalars)?;
+    if !scalars.is_empty() {
+        return Err(unsupported("a scalar subquery inside a UNION branch"));
+    }
     Ok(UnionBranch {
         source,
         filter,
@@ -235,7 +240,12 @@ fn union_distinct_branch(
     plan: &LogicalPlan,
     tables: &HashMap<String, IvmTable>,
 ) -> Result<UnionBranch> {
-    let (source, output_columns, output_exprs, filter) = collect_row(plan, tables)?;
+    let mut scalars = Vec::new();
+    let (source, output_columns, output_exprs, filter) =
+        collect_row(plan, tables, &mut scalars)?;
+    if !scalars.is_empty() {
+        return Err(unsupported("a scalar subquery inside a UNION branch"));
+    }
     let change = source.cdc_column.as_deref();
     let columns = match output_columns {
         Some(columns) => columns,
