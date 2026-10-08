@@ -858,6 +858,21 @@ fn sqllogic_row_expressions() {
 }
 
 #[test]
+fn sqllogic_scalar_subquery() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "scalarsub",
+        include_str!("slt/scalar_subquery.slt"),
+        vec![
+            SltSource::keyed("__SRC0__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC1__", schema.clone(), group_keys(&["k"])),
+        ],
+        row_mv_schema_for(&schema, &group_keys(&["k", "g", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_row_typed_append() {
     let schema = typed_source_schema();
     let output_columns = group_keys(&["k", "v", "flag", "d", "day"]);

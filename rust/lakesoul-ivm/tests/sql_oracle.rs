@@ -28,14 +28,15 @@ use lakesoul_ivm::{
     keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
     multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    multi_window_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -2467,6 +2468,35 @@ async fn oracle_grouping_sets_mixed_aggregates_matches_full_recompute() {
          FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY ROLLUP(g)",
         "SELECT g, sum_v, min_v, \"count\" FROM __MV__ \
          WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_scalar_subquery_matches_full_recompute() {
+    // The view keeps the rows of source 0 above the average of source 1, and
+    // watches both tables: a change to either re-evaluates the affected rows.
+    run_oracle_seeded(
+        "scalarsub",
+        2,
+        source_schema(),
+        false,
+        &[
+            (0, 1, "a", Some(10)),
+            (0, 2, "a", Some(30)),
+            (0, 3, "b", Some(20)),
+            (1, 9, "x", Some(15)),
+        ],
+        row_mv_schema_for(
+            &source_schema(),
+            &["k".to_string(), "g".to_string(), "v".to_string()],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)",
+        "SELECT k, g, v FROM __SRC0__ WHERE op <> 'delete' \
+         AND v > (SELECT avg(v) FROM __SRC1__ WHERE op <> 'delete')",
+        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

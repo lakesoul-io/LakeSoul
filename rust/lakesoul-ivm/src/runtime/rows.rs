@@ -6,11 +6,36 @@
 
 use super::*;
 
+/// One table an uncorrelated scalar subquery reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScalarTableSpec {
+    /// The name the rendered subquery refers to.
+    pub name: String,
+    /// The source table id.
+    pub table_id: String,
+}
+
+/// The scalar subquery inputs of a row view's filter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowScalarSpec {
+    /// Every table the subqueries read, deduplicated by table id.
+    pub tables: Vec<ScalarTableSpec>,
+}
+
+/// The typed scalar subquery inputs of a [`RowView`]: the SQL name and table
+/// of every table the subqueries read.
+#[derive(Debug, Clone)]
+pub struct RowScalarView {
+    /// `(SQL name, table)` of every subquery table.
+    pub tables: Vec<(String, IvmTable)>,
+}
+
 /// A projection (and optional filter) of one source.
 ///
 /// A keyed source is maintained with `delete(old) + insert(current)` per
 /// changed primary key; an append-only source simply appends the rows that
-/// pass the filter.
+/// pass the filter.  A filter may contain uncorrelated scalar subqueries over
+/// other tables, which the refresh watches alongside the source.
 #[derive(Debug, Clone)]
 pub struct RowView {
     /// The view id.
@@ -28,6 +53,9 @@ pub struct RowView {
     pub output_exprs: Vec<String>,
     /// An optional filter the source rows must satisfy.
     pub filter: Option<String>,
+    /// The scalar subqueries of the filter, when it has any.  Their tables
+    /// are registered (and watched) in addition to the source.
+    pub scalar: Option<RowScalarView>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -42,6 +70,7 @@ impl RowView {
             output_columns: Vec::new(),
             output_exprs: Vec::new(),
             filter: None,
+            scalar: None,
             refresh_interval_ms: 0,
         }
     }
@@ -65,6 +94,12 @@ impl RowView {
         self
     }
 
+    /// The scalar subquery inputs of the filter (a keyed source only).
+    pub fn with_scalar(mut self, scalar: RowScalarView) -> Self {
+        self.scalar = Some(scalar);
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Row {
             view_id: self.view_id.clone(),
@@ -73,6 +108,16 @@ impl RowView {
             output_columns: self.output_columns.clone(),
             output_exprs: self.output_exprs.clone(),
             filter: self.filter.clone(),
+            scalar: self.scalar.as_ref().map(|scalar| RowScalarSpec {
+                tables: scalar
+                    .tables
+                    .iter()
+                    .map(|(name, table)| ScalarTableSpec {
+                        name: name.clone(),
+                        table_id: table.table_id.clone(),
+                    })
+                    .collect(),
+            }),
         }
     }
 }
@@ -177,7 +222,7 @@ fn row_output_columns(view: &RowView) -> Vec<String> {
 }
 
 /// Validate that a projection/filter view can be maintained.
-fn validate_row_view(view: &RowView) -> Result<()> {
+async fn validate_row_view(view: &RowView) -> Result<()> {
     let columns = row_output_columns(view);
     if view.output_exprs.is_empty() {
         project_schema(&view.source.schema, &columns)?;
@@ -250,12 +295,53 @@ fn validate_row_view(view: &RowView) -> Result<()> {
             }
         }
     }
-    if let Some(filter) = &view.filter {
-        // The parser resolves every referenced column against the source schema.
-        let context = SessionContext::new();
-        parse_filter(&context, &view.source.schema, filter)?;
+    if view.filter.is_some() {
+        // The parser resolves every referenced column against the source schema
+        // and every subquery table against the registered ones.
+        let context = scalar_context(view)?;
+        row_filter_predicate(&context, view).await?;
+    }
+    if view.scalar.is_some() {
+        if view.filter.is_none() {
+            return Err(report!(
+                "row view {}: scalar subqueries without a filter",
+                view.view_id
+            ));
+        }
+        // A scalar subquery is only re-evaluated for every key, which needs a
+        // keyed source.
+        if view.source.primary_keys.is_empty() {
+            return Err(report!(
+                "row view {}: a scalar subquery needs a keyed source",
+                view.view_id
+            ));
+        }
     }
     Ok(())
+}
+
+/// A session with the view's scalar subquery tables registered as empty
+/// relations (enough to parse and plan the filter).
+fn scalar_context(view: &RowView) -> Result<SessionContext> {
+    let context = SessionContext::new();
+    if let Some(scalar) = &view.scalar {
+        for (name, table) in &scalar.tables {
+            let provider: Arc<dyn datafusion::catalog::TableProvider> =
+                Arc::new(datafusion::datasource::memory::MemTable::try_new(
+                    table.schema.clone(),
+                    vec![vec![]],
+                )?);
+            context
+                .register_table(name.as_str(), provider)
+                .map_err(|error| {
+                    report!(
+                        "row view {}: cannot register scalar table {name}: {error}",
+                        view.view_id
+                    )
+                })?;
+        }
+    }
+    Ok(context)
 }
 
 impl IvmRuntime {
@@ -269,6 +355,41 @@ impl IvmRuntime {
             .await
     }
 
+    /// A session with the row view's scalar subquery tables registered in
+    /// their current state, so the filter's subqueries can resolve and run.
+    async fn scalar_context_with_state(&self, view: &RowView) -> Result<SessionContext> {
+        let context = SessionContext::new();
+        let Some(scalar) = &view.scalar else {
+            return Ok(context);
+        };
+        for (name, table) in &scalar.tables {
+            let rows = filter_deletes(
+                dataframe(
+                    &context,
+                    table.read_current(&self.client).await?,
+                    &table.schema,
+                )?,
+                change_column(table),
+            )?
+            .collect()
+            .await?;
+            let provider: Arc<dyn datafusion::catalog::TableProvider> =
+                Arc::new(datafusion::datasource::memory::MemTable::try_new(
+                    table.schema.clone(),
+                    vec![rows],
+                )?);
+            context
+                .register_table(name.as_str(), provider)
+                .map_err(|error| {
+                    report!(
+                        "row view {}: cannot register scalar table {name}: {error}",
+                        view.view_id
+                    )
+                })?;
+        }
+        Ok(context)
+    }
+
     /// Refresh a projection/filter view.
     ///
     /// A keyed source is maintained per changed primary key (`delete(old) +
@@ -276,21 +397,42 @@ impl IvmRuntime {
     /// simply appends the delta rows that pass.
     pub async fn refresh_row(&self, view: &RowView) -> Result<Option<i64>> {
         self.register_row_view(view).await?;
-        validate_row_view(view)?;
+        validate_row_view(view).await?;
         self.ensure_unpartitioned(&view.source).await?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
             .await?;
-        if window.added_files.is_empty() {
+        // The scalar subquery inputs are watched as well: a change to one of
+        // them can flip any row, so every known key is re-evaluated.
+        let mut scalar_windows = Vec::new();
+        if let Some(scalar) = &view.scalar {
+            for (_, table) in &scalar.tables {
+                scalar_windows
+                    .push(self.collect_source_window(&view.view_id, table).await?);
+            }
+        }
+        let scalar_changed = scalar_windows
+            .iter()
+            .any(|window| !window.added_files.is_empty());
+        let outer_changed = !window.added_files.is_empty();
+        if !outer_changed && !scalar_changed {
             return Ok(None);
         }
+        let mut identity = window.identity.clone();
+        for scalar_window in &scalar_windows {
+            identity.extend(scalar_window.identity.iter().cloned());
+        }
         let record = match self
-            .begin_window(&view.view_id, &window.identity, &view.mv)
+            .begin_window(&view.view_id, &identity, &view.mv)
             .await?
         {
             WindowStart::AlreadyApplied(epoch) => {
-                self.advance_cursors(&view.view_id, window.cursors).await?;
+                let mut cursors = window.cursors;
+                for scalar_window in scalar_windows {
+                    cursors.extend(scalar_window.cursors);
+                }
+                self.advance_cursors(&view.view_id, cursors).await?;
                 return Ok(Some(epoch));
             }
             WindowStart::Apply(record) => record,
@@ -299,14 +441,18 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
         let keyed = !view.source.primary_keys.is_empty();
 
-        let context = SessionContext::new();
-        let delta = dataframe(
-            &context,
-            view.source.read_files(window.added_files).await?,
-            &view.source.schema,
-        )?;
+        let context = self.scalar_context_with_state(view).await?;
+        let delta = if outer_changed {
+            dataframe(
+                &context,
+                view.source.read_files(window.added_files).await?,
+                &view.source.schema,
+            )?
+        } else {
+            dataframe(&context, Vec::new(), &view.source.schema)?
+        };
         let output_exprs = row_projection(view, &context)?;
-        let predicate = row_filter_predicate(&context, view)?;
+        let predicate = row_filter_predicate(&context, view).await?;
 
         if keyed {
             let source_now = filter_deletes(
@@ -334,7 +480,17 @@ impl IvmRuntime {
                 .iter()
                 .map(|column| col(column.as_str()))
                 .collect::<Vec<_>>();
-            let affected = delta.select(key_exprs.clone())?.distinct()?;
+            let affected = if scalar_changed {
+                // A scalar subquery change re-evaluates every key either the
+                // current source or the view knows.
+                source_now
+                    .clone()
+                    .select(key_exprs.clone())?
+                    .distinct()?
+                    .union(mv.clone().select(key_exprs.clone())?.distinct()?)?
+            } else {
+                delta.select(key_exprs.clone())?.distinct()?
+            };
             let mut passing = source_now.join(
                 affected.clone(),
                 JoinType::LeftSemi,
@@ -406,14 +562,18 @@ impl IvmRuntime {
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
-        self.advance_cursors(&view.view_id, window.cursors).await?;
+        let mut cursors = window.cursors;
+        for scalar_window in scalar_windows {
+            cursors.extend(scalar_window.cursors);
+        }
+        self.advance_cursors(&view.view_id, cursors).await?;
         Ok(Some(epoch))
     }
 
     /// Rebuild a projection/filter view from the full source state.
     pub async fn rebuild_row(&self, view: &RowView) -> Result<i64> {
         self.register_row_view(view).await?;
-        validate_row_view(view)?;
+        validate_row_view(view).await?;
         self.ensure_unpartitioned(&view.source).await?;
 
         self.metadata
@@ -449,12 +609,12 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = self.scalar_context_with_state(view).await?;
         let mut rows = filter_deletes(
             dataframe(&context, baseline.batches, &view.source.schema)?,
             change_column(&view.source),
         )?;
-        if let Some(predicate) = row_filter_predicate(&context, view)? {
+        if let Some(predicate) = row_filter_predicate(&context, view).await? {
             rows = rows.filter(predicate)?;
         }
         let output_exprs = row_projection(view, &context)?;
