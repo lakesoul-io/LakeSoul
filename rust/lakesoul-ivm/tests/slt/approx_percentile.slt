@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TR rowsort
-SELECT g, approx_percentile_cont_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_percentile_cont_v FROM __MV__
 ----
 a 25.0
 b 5.0
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, approx_percentile_cont_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_percentile_cont_v FROM __MV__
 ----
 a 30.0
 b 5.0
@@ -40,6 +40,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TR rowsort
-SELECT g, approx_percentile_cont_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_percentile_cont_v FROM __MV__
 ----
 a 40.0

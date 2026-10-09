@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query R rowsort
-SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT median_v FROM __MV__
 ----
 20.0
 
@@ -25,7 +25,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query R rowsort
-SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT median_v FROM __MV__
 ----
 20.0
 
@@ -40,7 +40,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query R rowsort
-SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT median_v FROM __MV__
 ----
 30.0
 
@@ -55,6 +55,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query R rowsort
-SELECT median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT median_v FROM __MV__
 ----
 45.0

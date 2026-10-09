@@ -7,13 +7,13 @@ statement ok
 INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 30
 b 5
 
 query I
-SELECT COUNT(*) FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT COUNT(*) FROM __MV__
 ----
 2
 
@@ -25,13 +25,13 @@ statement ok
 INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 31
 c 7
 
 query I
-SELECT COUNT(*) FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT COUNT(*) FROM __MV__
 ----
 2
 
@@ -40,7 +40,7 @@ statement ok
 INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 31
 c 7

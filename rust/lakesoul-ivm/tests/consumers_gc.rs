@@ -150,7 +150,7 @@ async fn mv_state(fixture: &Fixture) -> HashMap<String, (i64, i64)> {
         Arc::new(MemTable::try_new(schema, vec![batches]).unwrap());
     context.register_table("mv", table).unwrap();
     let frame = context
-        .sql("select g, sum_v, count_v from mv where \"rowKinds\" = 'insert'")
+        .sql("select g, sum_v, count_v from mv")
         .await
         .unwrap();
     let mut state = HashMap::new();

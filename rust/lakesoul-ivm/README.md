@@ -281,7 +281,9 @@ over an internal table:
 | `Raw` | the physical merge-on-read rows, including tombstones |
 
 Logical reads drop tombstone rows by default, so consumers see the MV as an
-ordinary table.
+ordinary table: no `"rowKinds" = 'insert'` filter is needed (the internal
+`rowKinds` / `__ivm_epoch` columns are an implementation detail), and a scan
+that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
 
 ## Refresh semantics
 

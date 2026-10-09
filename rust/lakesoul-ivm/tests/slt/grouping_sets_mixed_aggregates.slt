@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__
 ----
 0 a 40 10 2
 0 b 20 20 1
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__
 ----
 0 a 50 10 2
 0 b 20 20 1
@@ -44,7 +44,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__
 ----
 0 a 50 10 2
 1 NULL 50 10 2
@@ -60,7 +60,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__
 ----
 0 a 50 10 2
 0 c 5 5 1
@@ -74,7 +74,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, sum_v, min_v, "count" FROM __MV__
 ----
 0 a 50 10 2
 1 NULL 50 10 2

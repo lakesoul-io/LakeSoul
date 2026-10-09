@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TR rowsort
-SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, stddev_v FROM __MV__
 ----
 a 7.0710678118654755
 b NULL
@@ -25,7 +25,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, stddev_v FROM __MV__
 ----
 a 7.0710678118654755
 b 7.0710678118654755
@@ -38,7 +38,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TR rowsort
-SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, stddev_v FROM __MV__
 ----
 a 5.0
 b 5.0
@@ -51,7 +51,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TR rowsort
-SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, stddev_v FROM __MV__
 ----
 a 5.0
 b 5.0
@@ -66,7 +66,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, stddev_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, stddev_v FROM __MV__
 ----
 a 0.0
 b 5.0

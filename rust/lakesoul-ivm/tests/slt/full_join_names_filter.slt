@@ -13,7 +13,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IIIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 10 1 5 1 5
 20 2 NULL 2 NULL
@@ -30,7 +30,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IIIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 10 NULL 5 NULL 5
 20 2 NULL 2 NULL
@@ -44,7 +44,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IIIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 20 2 NULL 2 NULL
 30 NULL 6 NULL 6

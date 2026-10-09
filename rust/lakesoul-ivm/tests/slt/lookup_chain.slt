@@ -18,7 +18,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 NULL NULL
@@ -34,7 +34,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 NULL NULL
@@ -50,7 +50,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 50 50
@@ -66,7 +66,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 60 NULL
@@ -82,7 +82,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 60 60
@@ -101,7 +101,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 60 60
@@ -118,7 +118,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 100 100
 2 a 30 60 NULL
@@ -132,7 +132,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, bv, cv FROM __MV__
 ----
 1 a 10 NULL NULL
 2 a 30 60 NULL

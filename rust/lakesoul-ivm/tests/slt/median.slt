@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TR rowsort
-SELECT g, median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, median_v FROM __MV__
 ----
 a 20.0
 b 5.0
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, median_v FROM __MV__
 ----
 a 20.0
 b 20.0
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, median_v FROM __MV__
 ----
 a 15.0
 b 20.0
@@ -55,7 +55,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TR rowsort
-SELECT g, median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, median_v FROM __MV__
 ----
 b 20.0
 
@@ -70,7 +70,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, median_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, median_v FROM __MV__
 ----
 a 20.0
 b 20.0

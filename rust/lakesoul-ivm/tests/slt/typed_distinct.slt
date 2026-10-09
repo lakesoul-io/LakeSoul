@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ?I rowsort
-SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, value FROM __MV__
 ----
 false 2
 true 1
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?I rowsort
-SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, value FROM __MV__
 ----
 false 2
 true 2
@@ -43,7 +43,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?I rowsort
-SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, value FROM __MV__
 ----
 false 1
 true 2
@@ -56,6 +56,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ?I rowsort
-SELECT flag, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, value FROM __MV__
 ----
 true 2

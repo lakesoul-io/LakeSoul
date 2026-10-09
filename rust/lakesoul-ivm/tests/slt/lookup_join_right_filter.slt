@@ -15,7 +15,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TTII rowsort
-SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, id FROM __MV__
 ----
 a L1 10 1
 b L2 NULL 2
@@ -31,7 +31,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TTII rowsort
-SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, id FROM __MV__
 ----
 a L1 10 1
 b L2 20 2
@@ -47,7 +47,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TTII rowsort
-SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, id FROM __MV__
 ----
 a L1 NULL 1
 b L2 20 2
@@ -63,7 +63,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TTII rowsort
-SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, id FROM __MV__
 ----
 a L1 NULL 1
 a L3 NULL 3
@@ -77,7 +77,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TTII rowsort
-SELECT jk, left_value, right_value, id FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, id FROM __MV__
 ----
 a L1 1 1
 a L3 1 3

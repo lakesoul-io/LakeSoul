@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 keep 100 1 10
 
@@ -29,7 +29,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 keep 100 1 10
 ok 100 2 10
@@ -45,7 +45,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 keep 100 1 10
 keep 20 1 11
@@ -63,7 +63,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 ok 100 2 10
 ok 20 2 11
@@ -79,7 +79,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 ok 20 2 11
 
@@ -94,7 +94,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 
 # Changed filters rebuild the view.
@@ -111,7 +111,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 keep 1 3 10
 keep 20 3 11

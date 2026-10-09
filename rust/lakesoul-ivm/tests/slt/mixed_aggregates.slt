@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TIIII rowsort
-SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__
 ----
 a 30 10 20 2
 b 5 5 5 1
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIIII rowsort
-SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__
 ----
 a 15 5 10 2
 b 5 5 5 1
@@ -43,7 +43,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIIII rowsort
-SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__
 ----
 a 10 10 10 1
 b 12 5 7 2
@@ -59,7 +59,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIIII rowsort
-SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__
 ----
 a 10 10 10 1
 b 7 7 7 1
@@ -74,7 +74,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIIII rowsort
-SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__
 ----
 a 10 10 10 1
 
@@ -86,6 +86,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TIIII rowsort
-SELECT g, sum_v, min_v, max_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, min_v, max_v, "count" FROM __MV__
 ----
 a 10 10 10 1

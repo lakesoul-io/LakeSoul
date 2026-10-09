@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITTI rowsort
-SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT id, jk, left_value, right_value FROM __MV__
 ----
 1 a keep 10
 
@@ -29,7 +29,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTI rowsort
-SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT id, jk, left_value, right_value FROM __MV__
 ----
 1 a keep 10
 2 b ok 20
@@ -45,7 +45,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTI rowsort
-SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT id, jk, left_value, right_value FROM __MV__
 ----
 2 b ok 20
 
@@ -60,7 +60,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTI rowsort
-SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT id, jk, left_value, right_value FROM __MV__
 ----
 2 b ok 25
 
@@ -72,7 +72,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ITTI rowsort
-SELECT id, jk, left_value, right_value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT id, jk, left_value, right_value FROM __MV__
 ----
 1 a skip 10
 2 b ok 25

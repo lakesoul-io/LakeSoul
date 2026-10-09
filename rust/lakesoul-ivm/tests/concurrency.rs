@@ -55,7 +55,7 @@ async fn mv_state(
         Arc::new(MemTable::try_new(mv.schema.clone(), vec![batches]).unwrap());
     context.register_table("mv", table).unwrap();
     let frame = context
-        .sql("select g, sum_v, count_v from mv where \"rowKinds\" = 'insert'")
+        .sql("select g, sum_v, count_v from mv")
         .await
         .unwrap();
     let mut state = HashMap::new();

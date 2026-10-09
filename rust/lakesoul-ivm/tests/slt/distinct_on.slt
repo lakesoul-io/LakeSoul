@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TI rowsort
-SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, first_value_v FROM __MV__
 ----
 a 20
 b 5
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, first_value_v FROM __MV__
 ----
 a 10
 b 5
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, first_value_v FROM __MV__
 ----
 a 30
 b 5
@@ -58,7 +58,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, first_value_v FROM __MV__
 ----
 a 5
 b 5
@@ -74,7 +74,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, first_value_v FROM __MV__
 ----
 a 5
 b 50
@@ -87,7 +87,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TI rowsort
-SELECT g, first_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, first_value_v FROM __MV__
 ----
 a 5
 b 50

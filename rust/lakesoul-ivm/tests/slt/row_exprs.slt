@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IIT rowsort
-SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v2, bucket FROM __MV__
 ----
 1 20 big
 2 6 small
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IIT rowsort
-SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v2, bucket FROM __MV__
 ----
 1 8 small
 2 6 small
@@ -44,7 +44,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IIT rowsort
-SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v2, bucket FROM __MV__
 ----
 1 8 small
 2 6 small
@@ -57,6 +57,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IIT rowsort
-SELECT k, v2, bucket FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v2, bucket FROM __MV__
 ----
 1 8 small

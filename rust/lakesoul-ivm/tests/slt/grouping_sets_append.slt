@@ -12,7 +12,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query III rowsort
-SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__
 ----
 0 0 30 2
 1 NULL 30 2
@@ -28,7 +28,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__
 ----
 0 0 30 2
 0 5 5 1
@@ -45,7 +45,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__
 ----
 0 0 30 2
 0 5 20 2
@@ -59,7 +59,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query III rowsort
-SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", bucket, sum_v, count_v FROM __MV__
 ----
 0 0 20 1
 0 5 15 1

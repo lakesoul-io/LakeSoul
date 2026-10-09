@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 a L1 100 10
 1 a L1 101 11
@@ -31,7 +31,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 a L1 110 10
 2 b L2 NULL NULL
@@ -47,7 +47,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 a L1 110 10
 2 b L2 102 12
@@ -63,6 +63,6 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 2 b L2 102 12

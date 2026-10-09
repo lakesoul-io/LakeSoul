@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 30
 b 5
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 35
 c 7

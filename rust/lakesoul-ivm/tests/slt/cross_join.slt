@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 a 100 1 10
 a 101 1 11
@@ -30,7 +30,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 a 100 1 10
 a 101 1 11
@@ -48,7 +48,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 b 100 2 10
 b 101 2 11
@@ -66,7 +66,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 b 100 2 10
 c 100 1 10
@@ -82,7 +82,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT left_value, right_value, __left_pk_id, __right_pk_rid FROM __MV__
 ----
 b 100 2 10
 b 102 2 12

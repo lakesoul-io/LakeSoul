@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__
 ----
 0 a 10 10 1
 0 a 20 20 1
@@ -31,7 +31,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__
 ----
 0 a 20 20 1
 0 b 20 20 1
@@ -47,7 +47,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ITIII rowsort
-SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__ivm_grouping", g, v, sum_v, count_v FROM __MV__
 ----
 0 a 20 20 1
 0 b 20 20 1

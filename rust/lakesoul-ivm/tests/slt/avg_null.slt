@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IR rowsort
-SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, avg_v FROM __MV__
 ----
 a 10.0
 b NULL
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR rowsort
-SELECT g, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, avg_v FROM __MV__
 ----
 a 8.0
 b 8.0

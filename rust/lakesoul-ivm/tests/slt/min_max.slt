@@ -7,7 +7,7 @@ statement ok
 INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 3
 b 7
@@ -20,7 +20,7 @@ statement ok
 INSERT INTO __MV__ SELECT g, MIN(v) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 5
 c 2
@@ -30,7 +30,7 @@ statement ok
 INSERT INTO __MV__ SELECT g, MAX(v) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 10
 c 2
@@ -43,7 +43,7 @@ statement ok
 INSERT INTO __MV__ SELECT g, MAX(v) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 20
 c 2
