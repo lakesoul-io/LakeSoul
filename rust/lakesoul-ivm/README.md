@@ -74,6 +74,7 @@ used as row identities must be non-nullable.
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
 | Multi-way join | inner `JOIN`s over three to eight sources (all keyed or all append-only), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
+| Lookup chain | a left-deep `[LEFT] JOIN` chain over a keyed base where every step joins a source keyed by its join keys on base columns (`a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.k = a.k`), optional step filters | one column per selected payload (aliases name the step payloads), kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
@@ -170,6 +171,12 @@ Supported within the shapes above:
   key-only `SELECT DISTINCT ON (key) key` is rejected with a hint to write
   `SELECT DISTINCT` instead); the affected groups are recomputed from their
   current rows;
+* **lookup chains**: a left-deep `[LEFT] JOIN` chain over a keyed base whose
+  steps are keyed 1:1 lookups joined on base columns (the star-schema shape)
+  keeps one row per base key: a refresh re-evaluates the base rows the
+  changed keys touch (the base delta plus, per changed step, the base rows
+  matching its old and new keys) by replaying the chain, so a missing step
+  row NULLs its payload and a removed base row drops its row;
 * **mixed aggregate kinds**: a statement may combine the supported aggregate
   functions (`SUM(v), MIN(v), MAX(v), COUNT(*)`, `AVG`, the variance family,
   `MEDIAN`, `APPROX_DISTINCT`, `STRING_AGG`, `ARRAY_AGG`, the bit / regression
@@ -346,9 +353,9 @@ the backlog):
 * non-equality join conditions over columns that the join does not
   materialize (a pair carries `left_value` / `right_value` or the wide output
   columns) and join keys outside the equality support;
-* outer joins inside a multi-way chain (the flattened chain only supports
-  inner and cross joins; a keyed 1:1 star-schema lookup chain is the planned
-  next shape, see PLAN §10.91) and more than eight sources;
+* outer joins inside a multi-way chain outside the lookup-chain shape: a
+  right/full step, a bushy tree, a step joined on another step's columns, a
+  step source not keyed by its join keys, or more than eight sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: they plan as *null-aware* joins, and the
   `ALL` variants also count the matches on both sides, while the maintained
