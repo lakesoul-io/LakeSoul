@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 连接/集合 | 多路链中的外连接剩余形状（keyed 1:1 星型链已实现，见 §10.92；右侧一对多、步骤键引用非基表列、bushy 树仍拒绝）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
+| 连接/集合 | 多路链中的外连接剩余形状（keyed 1:1 链含非基表键已实现，见 §10.92/§10.93；右侧一对多、bushy 树仍拒绝）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | `DISTINCT`/多聚合的相关子查询、聚合右输入的嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
@@ -2638,6 +2638,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （维表插入/更新/删除、基表更新/删除、多步独立变化、过滤源重建）、
   `oracle_lookup_chain_matches_full_recompute`（三源种子，另跑 seed 13/57/88 × 30 轮）。
   全量 IVM 套件 392 个测试通过、0 失败。
+
+### 10.93 `LookupChain` 步骤键引用前序源（PR-87）
+
+- **能力**：步骤键可引用任意**更早**源的列（不限基表），如
+  `a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.v = b.v`（`c` 由 `b` 产出的值查找）；
+  键名不再要求同名（只要求类型一致）。
+- **spec**：`LookupChainStep` 增加 `key_sources`（每个键的来源源序号，空 = 全基表），serde 省略。
+- **运行时**：重放时左侧键用 `__ivm_chain_<i>_<col>`（或基表列名）解析到前序源列；受影响映射分两条路径 ——
+  若该步骤的任一前序源（含基表）在本窗口也变化，保守地把「基表当前键 ∪ MV 键 ∪ 基表 delta 键」全部重算；
+  否则用**前缀重放**（当前态、前序不变）把变化键经 `__ivm_changed_<k>` 别名半连接到基表主键。
+  步骤投影与重放帧额外带上「被后续步骤键引用的列」。
+- **测试**：analyzer（`c.k = b.k` 的 `key_sources == [1]`）、`lookup_chain.slt` 改为
+  `__DIM2__` 以 `v` 为主键并执行 `c.v = b.v`（中间步骤取值变化导致末步失配、基表与步骤同窗口变化、
+  末步删除、过滤源重建）、oracle 第三步改为 `c.k = b.k`（seed 21/66/5 × 30 轮，并修掉
+  「保守路径丢失已删除基表键」的缺陷）。全量 IVM 套件 392 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

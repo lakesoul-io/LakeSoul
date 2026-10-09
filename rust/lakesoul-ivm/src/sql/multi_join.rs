@@ -482,28 +482,52 @@ pub(super) fn analyze_lookup_chain(
         }
         let mut keys = Vec::new();
         let mut right_keys = Vec::new();
+        let mut key_sources = Vec::new();
         for (left_expr, right_expr) in &join.on {
             let left_column = column_of(left_expr)
                 .ok_or_else(|| unsupported("a lookup chain key must be a column"))?;
             let right_column = column_of(right_expr)
                 .ok_or_else(|| unsupported("a lookup chain key must be a column"))?;
-            if left_column.name != right_column.name {
-                return Err(unsupported("a lookup chain joins on same-named keys"));
-            }
-            let on_base = match &left_column.relation {
-                Some(relation) => {
-                    let base_name = aliases[0]
+            // The key may come from any source joined before this step.
+            let mut source = None;
+            if let Some(relation) = &left_column.relation {
+                for (candidate, table) in chain.iter().enumerate() {
+                    let name = aliases[candidate]
                         .clone()
-                        .unwrap_or_else(|| base.table_name.clone());
-                    relation.table() == base_name.as_str()
+                        .unwrap_or_else(|| table.table_name.clone());
+                    if relation.table() == name.as_str() {
+                        source = Some(candidate);
+                        break;
+                    }
                 }
-                None => base.schema.field_with_name(&left_column.name).is_ok(),
+            } else {
+                let matches = chain
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, table)| {
+                        table.schema.field_with_name(&left_column.name).is_ok()
+                    })
+                    .map(|(candidate, _)| candidate)
+                    .collect::<Vec<_>>();
+                if matches.len() == 1 {
+                    source = Some(matches[0]);
+                }
+            }
+            let Some(source) = source else {
+                return Err(unsupported(format!(
+                    "lookup chain step key {} is ambiguous",
+                    left_column.name
+                )));
             };
-            if !on_base {
-                return Err(unsupported("a lookup chain step must join on base columns"));
+            if source > index {
+                return Err(unsupported(format!(
+                    "lookup chain step key {} must come from an earlier source",
+                    left_column.name
+                )));
             }
             keys.push(left_column.name.clone());
             right_keys.push(right_column.name.clone());
+            key_sources.push(source);
         }
         if keys.is_empty() {
             return Err(unsupported("a lookup chain step needs a key"));
@@ -529,6 +553,7 @@ pub(super) fn analyze_lookup_chain(
             left: join.join_type == JoinType::Left,
             keys,
             right_keys,
+            key_sources,
         });
         aliases.push(step_input.alias.clone());
         chain.push(step);

@@ -2630,12 +2630,14 @@ async fn oracle_lookup_chain_matches_full_recompute() {
             left: true,
             keys: vec!["k".to_string()],
             right_keys: vec!["k".to_string()],
+            key_sources: Vec::new(),
         },
         LookupChainStep {
             source: 2,
             left: true,
             keys: vec!["k".to_string()],
             right_keys: vec!["k".to_string()],
+            key_sources: Vec::new(),
         },
     ];
     let columns = vec![
@@ -2682,11 +2684,11 @@ async fn oracle_lookup_chain_matches_full_recompute() {
         vec!["k".to_string()],
         "SELECT a.k, a.v, b.v AS bv, c.v AS cv FROM __SRC0__ a \
          LEFT JOIN __SRC1__ b ON b.k = a.k \
-         LEFT JOIN __SRC2__ c ON c.k = a.k",
+         LEFT JOIN __SRC2__ c ON c.k = b.k",
         "SELECT a.k, a.v, b.v, c.v FROM \
              (SELECT k, v FROM __SRC0__ WHERE op <> 'delete') a \
          LEFT JOIN (SELECT k, v FROM __SRC1__ WHERE op <> 'delete') b ON b.k = a.k \
-         LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = a.k",
+         LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = b.k",
         "SELECT k, v, bv, cv FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
