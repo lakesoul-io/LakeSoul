@@ -84,9 +84,13 @@ fn flatten_join_node<'a>(
         }
         LogicalPlan::Join(join) => {
             if join.join_type != JoinType::Inner {
-                return Err(unsupported(
-                    "three or more table joins only support inner joins",
-                ));
+                return Err(unsupported(format!(
+                    "an outer {} inside a three-or-more-table chain is not \
+                     maintained (the flattened chain only supports inner \
+                     joins; a two-table outer join and per-step lookups are \
+                     maintained separately)",
+                    join.join_type,
+                )));
             }
             // Flatten the left side, then the right side; the keys of this
             // node connect the two sides.

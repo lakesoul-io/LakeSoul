@@ -347,7 +347,8 @@ the backlog):
   materialize (a pair carries `left_value` / `right_value` or the wide output
   columns) and join keys outside the equality support;
 * outer joins inside a multi-way chain (the flattened chain only supports
-  inner and cross joins) and more than eight sources;
+  inner and cross joins; a keyed 1:1 star-schema lookup chain is the planned
+  next shape, see PLAN §10.91) and more than eight sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: they plan as *null-aware* joins, and the
   `ALL` variants also count the matches on both sides, while the maintained

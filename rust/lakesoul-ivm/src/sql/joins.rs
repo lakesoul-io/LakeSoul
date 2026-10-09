@@ -1540,6 +1540,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_outer_joins_in_a_chain() {
+        // The flattened chain only supports inner joins; an outer step is
+        // rejected explicitly (a two-table outer join is maintained by the
+        // pairwise views).
+        for sql in [
+            "select a.k, b.v, c.v from src a left join src b on b.k = a.k \
+             join src c on c.k = a.k",
+            "select a.k, b.v, c.v from src a join src b on b.k = a.k \
+             right join src c on c.k = a.k",
+            "select a.k, b.v, c.v from src a join src b on b.k = a.k \
+             full join src c on c.k = a.k",
+        ] {
+            let error = analyze_multi(
+                sql,
+                vec![source_table("src"), source_table("b"), source_table("c")],
+            )
+            .await
+            .unwrap_err();
+            let message = format!("{error}");
+            assert!(
+                message.contains("three-or-more-table chain"),
+                "{sql}: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn analyzes_multi_join() {
         let analyzed = analyze_optimized(
             "select a.k, a.g, b.g as bg, c.v as cv from src a \
