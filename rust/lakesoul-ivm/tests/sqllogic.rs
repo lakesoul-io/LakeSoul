@@ -2773,6 +2773,18 @@ fn sqllogic_grouping_sets() {
 }
 
 #[test]
+fn sqllogic_row_append_cdc() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "rowappendcdc",
+        include_str!("slt/row_append_cdc.slt"),
+        vec![SltSource::append_only_cdc("__SRC__", schema.clone())],
+        row_mv_schema_for(&schema, &group_keys(&["k", "g", "v"])).unwrap(),
+        Vec::new(),
+    );
+}
+
+#[test]
 fn sqllogic_lookup_chain() {
     let schema = source_schema();
     let steps = vec![

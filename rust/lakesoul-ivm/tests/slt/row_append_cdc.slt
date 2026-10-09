@@ -1,0 +1,32 @@
+# A row view over an append-only changelog source: a delete marker must not
+# become a live row (the matching insert cannot be retracted without a key).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+1 a 10
+2 a 20
+
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+1 a 10
+2 a 20
