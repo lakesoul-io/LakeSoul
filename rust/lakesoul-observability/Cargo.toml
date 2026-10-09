@@ -13,6 +13,7 @@ version.workspace = true
 publish = false
 
 [dependencies]
+lakesoul-build-info = { path = "../lakesoul-build-info" }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 opentelemetry = { version = "0.32.0", default-features = false, features = [

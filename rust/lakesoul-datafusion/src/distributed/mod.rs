@@ -44,7 +44,13 @@ pub use resolver::{
 /// than rejecting them, so a plan written by the versioned encoder would have
 /// been silently accepted by a `/1` worker. Advertising `/2` filters those
 /// workers out at discovery and closes the other direction at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
+///
+/// Adding the vortex scan codec to [`codec::user_codecs`] was the next one:
+/// extension payloads name the *position* of the codec that wrote them, so a
+/// coordinator that can stamp position 2 needs workers that resolve it.
+/// Advertising `/3` keeps such a coordinator from handing a vortex stage to a
+/// `/2` worker, which could only fail at decode time.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
@@ -57,9 +63,8 @@ pub struct DistributedOptions {
     pub discovery: WorkerDiscovery,
     /// Development-mode fallback: when the distributed planner fails to plan
     /// a query, or plans one whose worker stages cannot be serialized (a scan
-    /// leaf without a wire form, e.g. vortex), plan it with the plain LakeSoul
-    /// planner and execute it single-node on the coordinator instead of
-    /// failing.
+    /// leaf without a wire form), plan it with the plain LakeSoul planner and
+    /// execute it single-node on the coordinator instead of failing.
     ///
     /// Production deployments must leave this `false`: such a failure then
     /// fails the query instead of silently degrading to coordinator-only

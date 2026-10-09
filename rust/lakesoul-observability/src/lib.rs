@@ -9,6 +9,7 @@
 
 use std::net::SocketAddr;
 
+use metrics::{describe_gauge, gauge};
 use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder};
 
 pub mod tracing;
@@ -63,7 +64,31 @@ pub fn install_prometheus_metrics(
             Matcher::Suffix("duration_seconds".to_string()),
             DURATION_BUCKETS_SECONDS,
         )?
-        .install()
+        .install()?;
+    publish_build_info();
+    Ok(())
+}
+
+/// Records the build identity this binary was compiled from.
+///
+/// This is the Prometheus `build_info{...} 1` convention: the labels carry the
+/// identity while the value stays 1, so a panel joins on them (and
+/// `build_info unless on(service, commit) …` finds replicas left on an old
+/// commit). Both this metric and the traces' `build.commit` resource attribute
+/// come from `lakesoul-build-info`.
+fn publish_build_info() {
+    describe_gauge!(
+        "build_info",
+        "Build identity of this binary, always 1; read the labels"
+    );
+    gauge!(
+        "build_info",
+        "version" => lakesoul_build_info::VERSION,
+        "commit" => lakesoul_build_info::GIT_COMMIT,
+        "target" => lakesoul_build_info::TARGET,
+        "profile" => lakesoul_build_info::PROFILE,
+    )
+    .set(1.0);
 }
 
 /// The configured service name, unless `OTEL_SERVICE_NAME` overrides it.
@@ -92,5 +117,22 @@ mod tests {
             overridden_service_name("role".to_string(), Some("demo".to_string())),
             "demo"
         );
+    }
+
+    #[test]
+    fn build_info_carries_the_compiled_commit() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        let rendered = metrics::with_local_recorder(&recorder, || {
+            publish_build_info();
+            handle.render()
+        });
+
+        assert!(
+            rendered.contains(&format!("commit=\"{}\"", lakesoul_build_info::GIT_COMMIT)),
+            "build_info must name the compiled commit:\n{rendered}"
+        );
+        assert!(rendered.contains("# HELP build_info"), "{rendered}");
     }
 }

@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Single-binary Loki for the local LakeSoul observability stack.
+#
+# `docker/observability/alloy` pushes the host processes' stdout logs here; the
+# LakeSoul processes themselves never talk to Loki. Everything lives on the
+# `loki-data` volume, so `docker compose down` keeps the logs and `down -v`
+# drops them.
+#
+# Both listeners are pinned to loopback, like every other listener in this
+# stack: host networking bypasses Docker's port isolation, and Loki has no
+# authentication of its own.
+
+auth_enabled: false
+
+server:
+  http_listen_address: 127.0.0.1
+  http_listen_port: 3100
+  # Tempo holds 9095 (its own gRPC) on this host: the stack shares one network
+  # namespace, so Loki's default gRPC port must move aside.
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 9096
+  # Loki logs every push at info level otherwise, which drowns the stack.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # `| logfmt` and `| json` parsing plus arbitrary `key="value"` filters need
+  # the structured metadata this enables.
+  allow_structured_metadata: true
+  # One file per process, so the stream count stays tiny; the cap only stops a
+  # logrotate-style filename explosion from exhausting the ingester's memory.
+  max_global_streams_per_user: 1000
+
+analytics:
+  reporting_enabled: false

@@ -144,6 +144,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - uses: ./.github/actions/setup-flatc
       - name: Install protoc
         uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
         with:
@@ -229,6 +230,7 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-flatc
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -238,6 +240,11 @@ jobs:
         with:
           tool: cross@0.2.5
       - name: Build Linux x86_64 native libraries
+        # `cross` builds inside its own container, which has no flatc: share the binary the
+        # setup-flatc step installed. The release binary is static, so the container's older
+        # glibc is not a problem.
+        env:
+          CROSS_CONTAINER_OPTS: "--volume /usr/local/bin/flatc:/usr/local/bin/flatc:ro"
         run: >-
           cross -q build --target x86_64-unknown-linux-gnu --release --all-features
           --package lakesoul-io-c --package lakesoul-metadata-c
@@ -508,6 +515,7 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-flatc
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:

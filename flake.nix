@@ -68,6 +68,10 @@
 
         actionlint
 
+        # The `vortex` git dependency's build script runs `flatc` to generate
+        # its FlatBuffers bindings (overridable with $FLATC).
+        flatbuffers
+
         clang
         lld
         llvmPackages.libclang
@@ -93,6 +97,10 @@
       fhsPackages = formatterPackages ++ (with pkgs; [
 
         actionlint
+
+        # The `vortex` git dependency's build script runs `flatc` to generate
+        # its FlatBuffers bindings (overridable with $FLATC).
+        flatbuffers
 
         clang
         lld

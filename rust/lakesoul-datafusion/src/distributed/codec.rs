@@ -12,6 +12,16 @@
 //! distributed codec via `with_distributed_user_codec` on both the coordinator
 //! and the worker sessions.
 //!
+//! A file scan whose source has no `try_to_proto` hook of its own crosses the
+//! wire through an extension codec instead. Vortex scans are such a source and
+//! [`VortexScanCodec`] is their codec; [`user_codecs`] is the one place that
+//! defines the ordered list every distributed session registers.
+//!
+//! The composition order *is* the wire format: `datafusion-proto` stamps each
+//! extension payload with the position of the codec that wrote it and the
+//! receiver resolves that position against its own list, so a coordinator and
+//! its workers must register the same codecs in the same order.
+//!
 //! The wire format is versioned by [`CODEC_VERSION`]: the encoder stamps it and
 //! the decoder refuses any other value, so a mixed-version cluster fails loudly
 //! at decode time instead of misinterpreting a plan.
@@ -28,6 +38,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result as DFResult;
 use datafusion::common::exec_err;
+use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -36,8 +47,10 @@ use datafusion_proto::physical_plan::{
     PhysicalProtoConverterExtension,
 };
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
+use lakesoul_io::file_format::vortex_scan_session;
 use lakesoul_io::physical_plan::MergeParquetExec;
 use prost::Message as _;
+use vortex_datafusion::{VortexScanCodec, VortexSource};
 
 /// Wire-format version of [`MergeParquetExecProto`].
 ///
@@ -46,7 +59,12 @@ use prost::Message as _;
 /// [`crate::distributed::DISTRIBUTED_PROTOCOL_VERSION`] with it, since worker
 /// discovery filters by that version (a test keeps the two in sync). Version 0
 /// means "written before the field existed" and is always refused.
-pub const CODEC_VERSION: u32 = 2;
+///
+/// The generation also covers the *list* of codecs (see [`user_codecs`]): its
+/// order decides which codec reads an extension payload, so registering a
+/// codec a worker does not know is a protocol change even when no existing
+/// message layout moved. Version 3 added [`VortexScanCodec`] at position 2.
+pub const CODEC_VERSION: u32 = 3;
 
 /// Wire format for [`MergeParquetExec`].
 ///
@@ -79,16 +97,51 @@ pub struct MergeParquetExecProto {
 #[derive(Debug, Clone, Default)]
 pub struct LakeSoulCodec;
 
+/// The user codecs a distributed session registers, in registration order.
+///
+/// The coordinator's planner and every worker build their codec list from this
+/// one function so the positions an extension payload refers to cannot drift:
+/// position 0 is always the distributed codec itself, position 1
+/// [`LakeSoulCodec`] (merge-on-read stages), position 2 the vortex scan codec.
+/// A worker that registers a different list either fails to decode a stage or
+/// would hand a payload to the wrong codec, so the list is part of the wire
+/// generation ([`CODEC_VERSION`]).
+///
+/// The vortex codec is built from [`vortex_scan_session`], the session
+/// [`lakesoul_io::file_format::LakeSoulFormatRegistry`] plans scans with, so a
+/// rebuilt worker-side scan decodes files exactly like the coordinator's.
+pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
+    vec![
+        Arc::new(LakeSoulCodec),
+        Arc::new(VortexScanCodec::new(vortex_scan_session())),
+    ]
+}
+
 /// Composed codec used to (de)serialize worker stage plans: the distributed
-/// codec first, LakeSoul's own nodes last.
+/// codec first, then the [`user_codecs`] in order.
 ///
 /// Both sides of a cluster must build this list in the same order — decoding
 /// is position-addressed, so reordering the list breaks cross-version plans.
 pub fn composed_codec() -> ComposedPhysicalExtensionCodec {
-    ComposedPhysicalExtensionCodec::new(vec![
-        Arc::new(datafusion_distributed::DistributedCodec),
-        Arc::new(LakeSoulCodec),
-    ])
+    let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> =
+        vec![Arc::new(datafusion_distributed::DistributedCodec)];
+    codecs.extend(user_codecs());
+    ComposedPhysicalExtensionCodec::new(codecs)
+}
+
+/// Whether a worker can decode a stage whose scan leaf reads through `source`.
+///
+/// Two ways a file source gets a wire form: `datafusion-proto` serializes it
+/// itself when it implements `try_to_proto` (parquet, and the csv/json sources
+/// LakeSoul does not build), or an extension codec in [`user_codecs`] carries
+/// it — currently [`VortexScanCodec`] for [`VortexSource`]. Anything else is
+/// refused while planning, where the caller's fallback policy can still act on
+/// it, instead of failing when the stage is sent to a worker.
+///
+/// Keep this in sync with [`user_codecs`]: a source is only encodable here
+/// because a codec in that list encodes it.
+pub fn source_has_wire_form(source: &dyn FileSource) -> bool {
+    source.is::<ParquetSource>() || source.is::<VortexSource>()
 }
 
 impl LakeSoulCodec {
@@ -220,7 +273,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::datatypes::SchemaRef;
     use datafusion::datasource::physical_plan::{
-        FileGroup, FileScanConfigBuilder, ParquetSource,
+        FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource,
     };
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::datasource::table_schema::TableSchema;
@@ -262,6 +315,55 @@ mod tests {
         .with_file_groups(vec![FileGroup::new(vec![file])])
         .build();
         DataSourceExec::from_data_source(config)
+    }
+
+    /// A vortex scan leaf, the source with no `try_to_proto` hook: it only
+    /// crosses the wire through the vortex codec in [`user_codecs`].
+    fn vortex_input(path: &str) -> Arc<dyn ExecutionPlan> {
+        let file_schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let source = VortexSource::new(
+            TableSchema::new(file_schema, Vec::new()),
+            vortex_scan_session(),
+        );
+        let file = PartitionedFile::new(path.to_string(), 1024);
+        let config = FileScanConfigBuilder::new(
+            ObjectStoreUrl::parse("file://").unwrap(),
+            Arc::new(source),
+        )
+        .with_file_groups(vec![FileGroup::new(vec![file])])
+        .build();
+        DataSourceExec::from_data_source(config)
+    }
+
+    /// The gate treats a vortex leaf as shippable (`source_has_wire_form`), so
+    /// the composed codec has to actually carry it: a decode that dropped the
+    /// files or rebuilt a parquet source would fail a distributed vortex query
+    /// when its stage reaches a worker.
+    #[test]
+    fn vortex_scan_leaf_roundtrips_through_the_composed_codec() {
+        let decoded = roundtrip(vortex_input("s3://bucket/t/a.vortex")).unwrap();
+
+        let exec = decoded
+            .downcast_ref::<DataSourceExec>()
+            .expect("a vortex scan decodes as a DataSourceExec");
+        let config = exec
+            .data_source()
+            .downcast_ref::<FileScanConfig>()
+            .expect("over a file scan config");
+        assert!(config.file_source().is::<VortexSource>());
+        assert!(source_has_wire_form(config.file_source().as_ref()));
+        // `PartitionedFile` stores the store-relative path, which normalizes
+        // the double slash.
+        assert_eq!(
+            config
+                .file_groups
+                .iter()
+                .flat_map(|group| group.files())
+                .map(|file| file.object_meta.location.to_string())
+                .collect::<Vec<_>>(),
+            [object_store::path::Path::from("s3://bucket/t/a.vortex").to_string()]
+        );
     }
 
     #[test]

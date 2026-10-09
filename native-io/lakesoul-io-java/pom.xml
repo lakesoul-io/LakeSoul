@@ -406,7 +406,7 @@ SPDX-License-Identifier: Apache-2.0
                                 </goals>
                                 <configuration>
                                     <executable>cargo</executable>
-                                    <commandlineArgs>build --release --all-features --package lakesoul-io-c
+                                    <commandlineArgs>build --release --features lakesoul-io-c/hdfs --package lakesoul-io-c
                                     </commandlineArgs>
                                     <workingDirectory>${basedir}/../../rust</workingDirectory>
                                 </configuration>

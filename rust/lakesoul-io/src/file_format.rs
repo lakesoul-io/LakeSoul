@@ -100,6 +100,17 @@ impl FromStr for PhysicalFormat {
     }
 }
 
+/// The [`VortexSession`] every LakeSoul vortex scan runs with.
+///
+/// [`LakeSoulFormatRegistry`] builds its vortex sources with this session, and
+/// the distributed codec rebuilds a worker-side scan with the same call
+/// (`lakesoul_datafusion::distributed::codec::user_codecs`), so the coordinator
+/// and the workers decode files with identical codecs, expressions and
+/// coercions.
+pub fn vortex_scan_session() -> VortexSession {
+    VortexSession::default()
+}
+
 #[derive(Debug)]
 pub struct LakeSoulFormatRegistry {
     parquet: Arc<LakeSoulParquetFormat>,
@@ -125,10 +136,7 @@ impl LakeSoulFormatRegistry {
         };
 
         let vortex = Arc::new(LakeSoulVortexFormat::new(
-            Arc::new(VortexFormat::new_with_options(
-                VortexSession::default(),
-                opts,
-            )),
+            Arc::new(VortexFormat::new_with_options(vortex_scan_session(), opts)),
             io_config,
         ));
 

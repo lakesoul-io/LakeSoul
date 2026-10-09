@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Datasources are linked both ways: metrics carry trace ids as exemplars and
-# Tempo exposes span metrics through the Prometheus datasource.
+# Datasources are linked both ways: metrics carry trace ids as exemplars, Tempo
+# exposes span metrics through the Prometheus datasource, and the Tempo
+# datasource jumps to Loki for the logs of the service a span belongs to.
 
 apiVersion: 1
 
@@ -34,7 +35,28 @@ datasources:
         datasourceUid: prometheus
       nodeGraph:
         enabled: true
-      # Link a span's service to that service's logs once a log backend is
-      # added; left out on purpose while LakeSoul only exports traces.
+      # A span's service name is the Loki stream's `service` label, so the
+      # trace view can open the matching logs. LakeSoul log lines carry no
+      # trace id, so the link matches on the service and the span's time range
+      # instead of on a trace id.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: false
+        filterBySpanID: false
+        tags:
+          - key: service.name
+            value: service
+      lokiSearch:
+        datasourceUid: loki
       search:
         hide: false
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://127.0.0.1:3100
+    jsonData:
+      maxLines: 1000
