@@ -363,9 +363,25 @@ impl LakeSoulIOConfig {
     }
 }
 
+/// `Debug` wrapper for `object_store_options` which redacts sensitive values
+/// (e.g. S3 access/secret keys) before they can reach the logs.
+struct RedactedObjectStoreOptions<'a>(&'a HashMap<String, String>);
+
+impl std::fmt::Debug for RedactedObjectStoreOptions<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut map = f.debug_map();
+        for (key, value) in self.0 {
+            map.entry(key, &SecretMap::redacted_value(key, value));
+        }
+        map.finish()
+    }
+}
+
 impl Debug for LakeSoulIOConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("LakeSoulIOConfig");
+        let redacted_object_store_options =
+            RedactedObjectStoreOptions(&self.object_store_options);
         macro_rules! field {
             ($name:ident) => {
                 debug.field(stringify!($name), &self.$name);
@@ -401,7 +417,9 @@ impl Debug for LakeSoulIOConfig {
         field!(prefetch_size);
         field!(target_schema);
         field!(partition_schema);
-        container!(object_store_options);
+        if !self.object_store_options.is_empty() {
+            debug.field("object_store_options", &redacted_object_store_options);
+        }
         container!(merge_operators);
         container!(default_column_value);
         field!(thread_num);
@@ -995,5 +1013,31 @@ mod tests {
             config.primary_keys_slice(),
             &["k".to_string(), "row_id".to_string()]
         );
+    }
+
+    #[test]
+    fn debug_redacts_sensitive_object_store_options() {
+        let mut options = HashMap::new();
+        options.insert(
+            "fs.s3a.access.key".to_string(),
+            "AKIA_TEST_ACCESS_KEY".to_string(),
+        );
+        options.insert(
+            "fs.s3a.secret.key".to_string(),
+            "test-secret-key".to_string(),
+        );
+        options.insert(
+            "fs.s3a.endpoint".to_string(),
+            "http://localhost:9000".to_string(),
+        );
+
+        let config =
+            LakeSoulIOConfigBuilder::new_with_object_store_options(options).build();
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("AKIA_TEST_ACCESS_KEY"));
+        assert!(!debug.contains("test-secret-key"));
+        assert!(debug.contains("http://localhost:9000"));
     }
 }

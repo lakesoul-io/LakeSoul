@@ -26,7 +26,8 @@ impl SecretMap {
         matches!(key, "fs.s3a.access.key" | "fs.s3a.secret.key" | "password")
     }
 
-    fn redacted_value<'a>(key: &str, value: &'a str) -> &'a str {
+    /// Returns the value to log for `key`: sensitive values are redacted.
+    pub fn redacted_value<'a>(key: &str, value: &'a str) -> &'a str {
         if Self::is_sensitive(key) {
             Self::REDACTED
         } else {
