@@ -65,8 +65,15 @@ pub(super) fn analyze_join(
             )),
         };
     }
-    // Three or more joined tables flatten into one chained inner join.
+    // Three or more joined tables flatten into one chain: an outer step is a
+    // left-deep lookup chain, anything else an inner chain.
     if join_tree_has_multiple_sources(join) {
+        if join.join_type != JoinType::Inner
+            || join_tree_has_outer_step(&join.left)
+            || join_tree_has_outer_step(&join.right)
+        {
+            return analyze_lookup_chain(join, projection, tables, request);
+        }
         return analyze_multi_join(join, projection, tables, request);
     }
     // `FROM a, b` / `CROSS JOIN` plans as an inner join without an `ON`
@@ -1540,29 +1547,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_outer_joins_in_a_chain() {
-        // The flattened chain only supports inner joins; an outer step is
-        // rejected explicitly (a two-table outer join is maintained by the
-        // pairwise views).
-        for sql in [
-            "select a.k, b.v, c.v from src a left join src b on b.k = a.k \
+    async fn analyzes_lookup_chain() {
+        // A left-deep chain of keyed 1:1 lookups over a base table.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             left join src b on b.k = a.k \
              join src c on c.k = a.k",
-            "select a.k, b.v, c.v from src a join src b on b.k = a.k \
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain {
+            sources,
+            steps,
+            output_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup chain spec");
+        };
+        assert_eq!(sources.len(), 3);
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].left && !steps[1].left);
+        assert_eq!(steps[0].keys, vec!["k".to_string()]);
+        assert_eq!(steps[0].right_keys, vec!["k".to_string()]);
+        assert_eq!(output_columns.len(), 4);
+        assert_eq!(output_columns[0].source, 0);
+        assert_eq!(output_columns[2].source, 1);
+        assert_eq!(output_columns[2].name, "bv");
+        assert_eq!(output_columns[3].source, 2);
+        assert_eq!(output_columns[3].name, "cv");
+
+        // A right/full step, differently named keys and non-base keys stay
+        // rejected.
+        for sql in [
+            "select a.k, b.v as bv, c.v as cv from src a join src b on b.k = a.k \
              right join src c on c.k = a.k",
-            "select a.k, b.v, c.v from src a join src b on b.k = a.k \
+            "select a.k, b.v as bv, c.v as cv from src a join src b on b.k = a.k \
              full join src c on c.k = a.k",
+            "select a.k, b.v as bv, c.v as cv from src a left join src b on b.g = a.g \
+             join src c on c.k = a.k",
+            "select a.k, b.v as bv, c.v as cv from src a join src b on b.k = a.k \
+             left join src c on c.v = b.v",
         ] {
-            let error = analyze_multi(
-                sql,
-                vec![source_table("src"), source_table("b"), source_table("c")],
-            )
-            .await
-            .unwrap_err();
+            let error = analyze_multi(sql, vec![source_table("src")])
+                .await
+                .unwrap_err();
             let message = format!("{error}");
-            assert!(
-                message.contains("three-or-more-table chain"),
-                "{sql}: {message}"
-            );
+            assert!(message.contains("lookup chain"), "{sql}: {message}");
         }
     }
 

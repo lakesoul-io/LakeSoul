@@ -1,0 +1,132 @@
+# A left-deep chain of keyed 1:1 lookups: the base keeps every row and each
+# step pads with NULL when the key is missing.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert*/
+
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=100,op=insert*/
+
+statement ok
+/*ivm-append __DIM2__: k=1,g=a,v=1000,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 100 1000
+2 a 30 NULL NULL
+
+# A dimension row for another base key fills one row only.
+statement ok
+/*ivm-append __DIM__: k=2,g=a,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 100 1000
+2 a 30 50 NULL
+
+# A dimension update moves the value of its key.
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=200,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 200 1000
+2 a 30 50 NULL
+
+# A dimension delete NULLs the payload of its key.
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=200,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 NULL 1000
+2 a 30 50 NULL
+
+# The last step changes independently.
+statement ok
+/*ivm-append __DIM2__: k=1,g=a,v=999,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 NULL 999
+2 a 30 50 NULL
+
+# A base update keeps the looked-up values; a base delete removes its row.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=11,op=insert; k=3,g=b,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 11 NULL 999
+2 a 30 50 NULL
+3 b 7 NULL NULL
+
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=30,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 11 NULL 999
+3 b 7 NULL NULL
+
+# A filtered step source rebuilds the chain.
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN (SELECT k, v FROM __DIM2__ WHERE v > 5000) c ON c.k = a.k
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 11 NULL NULL
+3 b 7 NULL NULL

@@ -158,7 +158,7 @@ pub fn from_opaque<F, T>(obj: NonNull<F>) -> T {
 
 /// Convert the object to a [`NonNull`] opaque pointer
 pub fn convert_to_nonnull<T>(obj: T) -> NonNull<T> {
-    unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) }
+    Box::into_non_null(Box::new(obj))
 }
 
 /// Convert the [`NonNull`] opaque pointer to the object

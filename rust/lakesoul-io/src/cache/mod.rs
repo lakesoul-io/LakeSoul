@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::cache::disk_cache::DiskCache;
+use crate::cache::paging::PageCache;
+use crate::cache::stats::{AtomicIntCacheStats, CacheStats};
 use std::sync::{Arc, OnceLock};
 
 pub mod disk_cache;
@@ -12,6 +14,56 @@ pub mod stats;
 pub use read_through::ReadThroughCache;
 
 static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
+
+/// Shared read stats for all LakeSoul read-through caches in this process.
+static LAKESOUL_CACHE_STATS: OnceLock<Arc<dyn CacheStats>> = OnceLock::new();
+
+/// Returns the process-wide cache stats handle, creating it on first use.
+///
+/// All read-through stores must share the same stats instance so that the
+/// exported metrics aggregate across sessions/readers.
+pub(crate) fn get_lakesoul_cache_stats_handle() -> Arc<dyn CacheStats> {
+    LAKESOUL_CACHE_STATS
+        .get_or_init(|| Arc::new(AtomicIntCacheStats::new()))
+        .clone()
+}
+
+/// A point-in-time snapshot of the LakeSoul disk cache stats.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LakesoulCacheStatsSnapshot {
+    /// Total page reads on the cache.
+    pub total_reads: u64,
+    /// Total page misses on the cache.
+    pub total_misses: u64,
+    /// Total bytes served from the cache.
+    pub hit_bytes: u64,
+    /// Total bytes served after a cache miss.
+    pub miss_bytes: u64,
+    /// Total bytes fetched from the inner store (e.g. S3).
+    pub insert_bytes: u64,
+    /// Current cache usage in bytes.
+    pub usage_bytes: u64,
+    /// Cache capacity in bytes.
+    pub capacity_bytes: u64,
+}
+
+/// Returns a snapshot of the LakeSoul disk cache stats.
+///
+/// Returns `None` if the cache has not been initialized, e.g. when
+/// `LAKESOUL_CACHE` is not set or no read-through store has been created yet.
+pub fn lakesoul_cache_stats() -> Option<LakesoulCacheStatsSnapshot> {
+    let stats = LAKESOUL_CACHE_STATS.get()?;
+    let cache = LAKESOUL_CACHE.get()?;
+    Some(LakesoulCacheStatsSnapshot {
+        total_reads: stats.total_reads(),
+        total_misses: stats.total_misses(),
+        hit_bytes: stats.total_hit_bytes(),
+        miss_bytes: stats.total_miss_bytes(),
+        insert_bytes: stats.total_insert_bytes(),
+        usage_bytes: cache.size() as u64,
+        capacity_bytes: cache.capacity() as u64,
+    })
+}
 
 /// Get and init Lakesoul Cache
 pub(crate) fn get_lakesoul_cache() -> Arc<DiskCache> {

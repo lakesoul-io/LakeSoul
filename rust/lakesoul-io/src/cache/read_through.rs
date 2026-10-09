@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
 use std::thread;
 use std::{ops::Range, time::Instant};
@@ -20,6 +21,9 @@ use object_store::Result;
 
 const PAGE_READS_TOTAL: &str = "lakesoul_cache_page_reads_total";
 const PAGE_MISSES_TOTAL: &str = "lakesoul_cache_page_misses_total";
+const PAGE_HIT_BYTES_TOTAL: &str = "lakesoul_cache_page_hit_bytes_total";
+const PAGE_MISS_BYTES_TOTAL: &str = "lakesoul_cache_page_miss_bytes_total";
+const PAGE_INSERT_BYTES_TOTAL: &str = "lakesoul_cache_page_insert_bytes_total";
 const CAPACITY_BYTES: &str = "lakesoul_cache_capacity_bytes";
 const USAGE_BYTES: &str = "lakesoul_cache_usage_bytes";
 
@@ -34,6 +38,18 @@ fn describe_metrics() {
         metrics::describe_counter!(
             PAGE_MISSES_TOTAL,
             "Page lookups that missed and fetched from the object store"
+        );
+        metrics::describe_counter!(
+            PAGE_HIT_BYTES_TOTAL,
+            "Bytes served from the read-through cache"
+        );
+        metrics::describe_counter!(
+            PAGE_MISS_BYTES_TOTAL,
+            "Bytes served after a read-through cache miss"
+        );
+        metrics::describe_counter!(
+            PAGE_INSERT_BYTES_TOTAL,
+            "Bytes fetched from the object store to fill cache misses"
         );
         metrics::describe_gauge!(
             CAPACITY_BYTES,
@@ -144,21 +160,45 @@ async fn get_range<C: PageCache>(
             metrics::counter!(PAGE_READS_TOTAL).increment(1);
 
             async move {
+                // Tracks whether this page had to be fetched from the inner store.
+                let was_miss = Arc::new(AtomicBool::new(false));
+                let miss_flag = was_miss.clone();
+                let stats_for_fetch = stats.clone();
                 // Actual range in the file.
-                page_cache
-                    .get_range_with(location, page_id as u32, range_in_page, async {
-                        stats.inc_total_misses();
+                let page_bytes = page_cache
+                    .get_range_with(location, page_id as u32, range_in_page, async move {
+                        stats_for_fetch.inc_total_misses();
                         metrics::counter!(PAGE_MISSES_TOTAL).increment(1);
-                        store
+                        miss_flag.store(true, Ordering::Relaxed);
+                        let fetched = store
                             .get_range(location, offset as u64..page_end as u64)
-                            .await
+                            .await?;
+                        stats_for_fetch.inc_insert_bytes(fetched.len() as u64);
+                        metrics::counter!(PAGE_INSERT_BYTES_TOTAL)
+                            .increment(fetched.len() as u64);
+                        Ok::<Bytes, Error>(fetched)
                     })
-                    .await
+                    .await?;
+                if was_miss.load(Ordering::Relaxed) {
+                    stats.inc_miss_bytes(page_bytes.len() as u64);
+                    metrics::counter!(PAGE_MISS_BYTES_TOTAL)
+                        .increment(page_bytes.len() as u64);
+                } else {
+                    stats.inc_hit_bytes(page_bytes.len() as u64);
+                    metrics::counter!(PAGE_HIT_BYTES_TOTAL)
+                        .increment(page_bytes.len() as u64);
+                }
+                Ok::<Bytes, Error>(page_bytes)
             }
         })
         .buffered(parallelism)
         .try_collect::<Vec<_>>()
         .await?;
+
+    let total_read_bytes: usize = pages.iter().map(|p| p.len()).sum();
+    let duration = Instant::now() - current_time;
+    stats.inc_total_query_time(duration.as_millis() as u64);
+    stats.inc_total_data_size(total_read_bytes as u64);
 
     if pages.len() == 1 {
         let bytes = pages.into_iter().next().unwrap();
@@ -167,13 +207,10 @@ async fn get_range<C: PageCache>(
     }
 
     // stick all bytes together.
-    let mut buf = BytesMut::with_capacity(range.len());
+    let mut buf = BytesMut::with_capacity(total_read_bytes);
     for page in pages {
         buf.extend_from_slice(&page);
     }
-    let duration = Instant::now() - current_time;
-    stats.inc_total_query_time(duration.as_millis() as u64);
-    stats.inc_total_data_size(buf.len() as u64);
     span.record("output_bytes", buf.len() as u64);
     let _current_thread = thread::current();
     // info!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
@@ -335,5 +372,49 @@ mod tests {
         let data = cache.get_range(&path, 10..meta.size).await.unwrap();
         assert_eq!(data.len(), 9);
         assert_eq!(data, "long text".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_stats_hit_miss_bytes() {
+        use crate::cache::stats::{AtomicIntCacheStats, CacheReadStats};
+
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(DiskCache::with_path(
+            64 * 1024 * 1024,
+            16 * 1024,
+            cache_dir.path().join("cache"),
+        ));
+        let store = Arc::new(object_store::local::LocalFileSystem::new());
+        let stats = Arc::new(AtomicIntCacheStats::new());
+        let cache = Arc::new(ReadThroughCache::new_with_stats(
+            store,
+            cache,
+            stats.clone(),
+        ));
+
+        let temp_file = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        {
+            std::fs::write(temp_file.to_str().unwrap(), "this is a long text").unwrap();
+        }
+        let path = Path::from(temp_file.to_str().unwrap());
+        let meta = cache.head(&path).await.unwrap();
+
+        // First read is a miss: the whole page is fetched from the inner store.
+        let first = cache.get_range(&path, 0..9).await.unwrap();
+        assert_eq!(first, "this is a".as_bytes());
+        assert_eq!(stats.total_reads(), 1);
+        assert_eq!(stats.total_misses(), 1);
+        assert_eq!(stats.total_hit_bytes(), 0);
+        assert_eq!(stats.total_miss_bytes(), 9);
+        assert_eq!(stats.total_insert_bytes(), meta.size);
+
+        // Second read hits the cache: no fetch from the inner store.
+        let second = cache.get_range(&path, 0..9).await.unwrap();
+        assert_eq!(second, "this is a".as_bytes());
+        assert_eq!(stats.total_reads(), 2);
+        assert_eq!(stats.total_misses(), 1);
+        assert_eq!(stats.total_hit_bytes(), 9);
+        assert_eq!(stats.total_miss_bytes(), 9);
+        assert_eq!(stats.total_insert_bytes(), meta.size);
     }
 }

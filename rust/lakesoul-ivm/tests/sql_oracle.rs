@@ -18,14 +18,15 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
     IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, JoinOutputColumn,
-    JoinSide, MinMaxKind, MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
-    approx_percentile_mv_schema_for, array_agg_expr_mv_schema_for,
-    array_agg_groups_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
-    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
-    grouping_sets_mv_schema_for, keyed_join_output_primary_keys,
-    keyed_join_view_schema_for, left_aggregate_mv_schema_for,
+    JoinSide, LookupChainColumn, LookupChainStep, MinMaxKind, MultiJoinColumn,
+    PhysicalFormat, VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
+    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
+    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
+    distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
+    keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    left_aggregate_mv_schema_for, lookup_chain_mv_schema_for,
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
@@ -2615,6 +2616,78 @@ async fn oracle_left_aggregate_matches_full_recompute() {
                  WHERE u.op <> 'delete' AND u.k = s.k) AS m \
          FROM __SRC0__ s WHERE s.op <> 'delete'",
         "SELECT k, g, v, m FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_lookup_chain_matches_full_recompute() {
+    // A base table with two keyed 1:1 lookups; a missing key pads with NULL.
+    let schema = source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: vec!["k".to_string()],
+            right_keys: vec!["k".to_string()],
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: vec!["k".to_string()],
+            right_keys: vec!["k".to_string()],
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+    ];
+    let mv_schema = lookup_chain_mv_schema_for(
+        &[schema.clone(), schema.clone(), schema.clone()],
+        &steps,
+        &columns,
+    )
+    .unwrap();
+    run_oracle_seeded(
+        "lookupchain",
+        3,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+            (2, 1, "g0", Some(7)),
+        ],
+        mv_schema,
+        vec!["k".to_string()],
+        "SELECT a.k, a.v, b.v AS bv, c.v AS cv FROM __SRC0__ a \
+         LEFT JOIN __SRC1__ b ON b.k = a.k \
+         LEFT JOIN __SRC2__ c ON c.k = a.k",
+        "SELECT a.k, a.v, b.v, c.v FROM \
+             (SELECT k, v FROM __SRC0__ WHERE op <> 'delete') a \
+         LEFT JOIN (SELECT k, v FROM __SRC1__ WHERE op <> 'delete') b ON b.k = a.k \
+         LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = a.k",
+        "SELECT k, v, bv, cv FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }
