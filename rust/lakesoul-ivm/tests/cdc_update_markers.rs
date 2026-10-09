@@ -456,3 +456,137 @@ async fn keyed_update_markers_fold_and_lone_before_retracts() {
         HashMap::from([("a".to_string(), (20, 1))])
     );
 }
+
+/// The keyed CDC contract corners: an out-of-order update pair, a primary key
+/// change written as delete + insert, duplicate live versions and a value
+/// outside the documented domain.
+#[test_log::test(tokio::test)]
+async fn keyed_cdc_contract_corners() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_cdc_corner_src_{suffix}"),
+                table_path(&dir, "src"),
+                keyed_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let groups = vec!["g".to_string()];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_cdc_corner_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&source.schema, &groups, Some("amount")).unwrap(),
+            )
+            .with_primary_keys(groups.clone()),
+        )
+        .await
+        .unwrap();
+    let view = SumCountView::new_with_group_keys(
+        format!("cdc_corner_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        groups,
+        Some("amount".to_string()),
+    );
+
+    // An `update_after` arriving before its `update_before`: the latest
+    // version wins, so the retraction removes the row, and a rebuild agrees.
+    source
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 10, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            keyed_batch(&[(1, "a", 30, "update_after")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("a".to_string(), (30, 1))])
+    );
+    source
+        .append_batch(
+            runtime.client(),
+            keyed_batch(&[(1, "a", 10, "update_before")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    assert!(mv_sum_state(&runtime, &mv).await.is_empty());
+    runtime.rebuild_sum_count(&view).await.unwrap();
+    assert!(mv_sum_state(&runtime, &mv).await.is_empty());
+
+    // A primary key change is a delete of the old key plus an insert of the
+    // new one; both markers in one window fold to the new row.
+    source
+        .append_batch(runtime.client(), keyed_batch(&[(2, "b", 40, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("b".to_string(), (40, 1))])
+    );
+    source
+        .append_batch(
+            runtime.client(),
+            keyed_batch(&[(2, "b", 40, "delete"), (3, "b", 45, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("b".to_string(), (45, 1))])
+    );
+
+    // Duplicate live versions for one key: merge-on-read keeps the latest
+    // (the writer keeps the input order for a key).
+    source
+        .append_batch(
+            runtime.client(),
+            keyed_batch(&[(3, "b", 45, "insert"), (3, "b", 50, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("b".to_string(), (50, 1))])
+    );
+    runtime.rebuild_sum_count(&view).await.unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("b".to_string(), (50, 1))])
+    );
+
+    // Only `insert`, `update_after`, `update_before` and `delete` are in the
+    // contract; any other value is a live version (latest wins) — pin it.
+    source
+        .append_batch(runtime.client(), keyed_batch(&[(3, "b", 50, "upsert")]))
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&view).await.unwrap().unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("b".to_string(), (50, 1))])
+    );
+    runtime.rebuild_sum_count(&view).await.unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("b".to_string(), (50, 1))])
+    );
+}

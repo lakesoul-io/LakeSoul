@@ -47,7 +47,7 @@
 
 验收：无主键 MV 报错且信息可操作；有主键的既有视图全部不受影响；README 补充 MV 主键职责说明。
 
-### A2. keyed CDC 契约与测试（P0，S）
+### A2. keyed CDC 契约与测试（P0，S）——已实现（PLAN §10.97，PR-91）
 
 - op 值域固定为 `insert` / `update_after` / `update_before` / `delete`；建表/打开表时校验
   该列存在；对非法值给出明确报错（新增 `validate_cdc_values` 或至少在文档中固定）。
