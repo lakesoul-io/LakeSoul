@@ -86,6 +86,24 @@ struct BytesResult {
   uint8_t private_[0];
 };
 
+/// LakeSoul disk cache statistics snapshot.
+struct LakesoulCacheStats {
+  /// Total page reads on the cache.
+  uint64_t total_reads;
+  /// Total page misses on the cache.
+  uint64_t total_misses;
+  /// Total bytes served from the cache.
+  uint64_t hit_bytes;
+  /// Total bytes served after a cache miss.
+  uint64_t miss_bytes;
+  /// Total bytes fetched from the inner object store (e.g. S3).
+  uint64_t insert_bytes;
+  /// Current cache usage in bytes.
+  uint64_t usage_bytes;
+  /// Cache capacity in bytes.
+  uint64_t capacity_bytes;
+};
+
 extern "C" {
 
 /// Return the LakeSoul Core version.
@@ -545,6 +563,18 @@ CResult<BytesResult> *apply_partition_filter(void (*callback)(int32_t, const cha
 
 /// Free the [`BytesResult`].
 void free_bytes_result(CResult<BytesResult> *bytes);
+
+/// Get a snapshot of the LakeSoul disk cache statistics.
+///
+/// # Safety
+///
+/// `out` must be either null or a valid, writable pointer to a
+/// [`LakesoulCacheStats`] allocation (e.g. a caller-owned stack or heap
+/// allocation). Passing any other pointer is undefined behavior.
+///
+/// Returns `true` and fills `out` when the cache has been initialized,
+/// `false` otherwise (e.g. when `LAKESOUL_CACHE` is not set).
+bool get_lakesoul_cache_stats(LakesoulCacheStats *out);
 
 /// init a global logger for rust code
 /// now use RUST_LOG=LEVEL to activate

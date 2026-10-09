@@ -1582,6 +1582,60 @@ pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
     }
 }
 
+/// LakeSoul disk cache statistics snapshot.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LakesoulCacheStats {
+    /// Total page reads on the cache.
+    pub total_reads: u64,
+    /// Total page misses on the cache.
+    pub total_misses: u64,
+    /// Total bytes served from the cache.
+    pub hit_bytes: u64,
+    /// Total bytes served after a cache miss.
+    pub miss_bytes: u64,
+    /// Total bytes fetched from the inner object store (e.g. S3).
+    pub insert_bytes: u64,
+    /// Current cache usage in bytes.
+    pub usage_bytes: u64,
+    /// Cache capacity in bytes.
+    pub capacity_bytes: u64,
+}
+
+/// Get a snapshot of the LakeSoul disk cache statistics.
+///
+/// # Safety
+///
+/// `out` must be either null or a valid, writable pointer to a
+/// [`LakesoulCacheStats`] allocation (e.g. a caller-owned stack or heap
+/// allocation). Passing any other pointer is undefined behavior.
+///
+/// Returns `true` and fills `out` when the cache has been initialized,
+/// `false` otherwise (e.g. when `LAKESOUL_CACHE` is not set).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn get_lakesoul_cache_stats(out: *mut LakesoulCacheStats) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    match lakesoul_io::cache::lakesoul_cache_stats() {
+        Some(stats) => {
+            unsafe {
+                *out = LakesoulCacheStats {
+                    total_reads: stats.total_reads,
+                    total_misses: stats.total_misses,
+                    hit_bytes: stats.hit_bytes,
+                    miss_bytes: stats.miss_bytes,
+                    insert_bytes: stats.insert_bytes,
+                    usage_bytes: stats.usage_bytes,
+                    capacity_bytes: stats.capacity_bytes,
+                };
+            }
+            true
+        }
+        None => false,
+    }
+}
+
 /// init a global logger for rust code
 /// now use RUST_LOG=LEVEL to activate
 #[unsafe(no_mangle)]
