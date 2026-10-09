@@ -210,6 +210,22 @@ impl IvmSqlExecutor {
                 mv.table_name
             ));
         }
+        // The keyed contract: the MV's primary key is the merge key that
+        // resolves the delete markers a refresh writes, so a statement over
+        // keyed tables needs one.  A global aggregate rewrites its single row
+        // wholesale and needs no key, and a statement over an append-only
+        // source is outside the keyed contract (see ROADMAP §A3).
+        if mv.primary_keys.is_empty()
+            && !is_global_aggregate(&probe.spec)
+            && tables.values().all(|table| !table.primary_keys.is_empty())
+        {
+            return Err(rootcause::report!(
+                "target table `{}` needs a primary key: the view's refresh writes \
+                 delete markers that the MV's primary key merges; declare the key \
+                 columns when creating the table",
+                mv.table_name
+            ));
+        }
 
         // A changed definition invalidates the generated state: drop it before
         // the new spec creates (and registers) its own.
@@ -497,6 +513,26 @@ impl Visitor for RelationCollector<'_> {
 
 fn needs_state_table(spec: &ViewSpec) -> bool {
     matches!(spec, ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. })
+}
+
+/// Whether a spec is a global aggregate: its single MV row is rewritten
+/// wholesale on every refresh, so it needs no primary key.
+fn is_global_aggregate(spec: &ViewSpec) -> bool {
+    match spec {
+        ViewSpec::SumCount { group_keys, .. }
+        | ViewSpec::Variance { group_keys, .. }
+        | ViewSpec::Median { group_keys, .. }
+        | ViewSpec::BoolAgg { group_keys, .. }
+        | ViewSpec::ApproxDistinct { group_keys, .. }
+        | ViewSpec::ApproxPercentile { group_keys, .. }
+        | ViewSpec::ComputedAgg { group_keys, .. }
+        | ViewSpec::StringAgg { group_keys, .. }
+        | ViewSpec::ArrayAgg { group_keys, .. }
+        | ViewSpec::MultiAgg { group_keys, .. }
+        | ViewSpec::MinMax { group_keys, .. }
+        | ViewSpec::DistinctAgg { group_keys, .. } => group_keys.is_empty(),
+        _ => false,
+    }
 }
 
 fn find_table<'a>(
