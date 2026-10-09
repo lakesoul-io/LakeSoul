@@ -124,7 +124,13 @@ pub fn register_s3_object_store_with_cache(
     // requests; cache-level counters live in `ReadThroughCache`.
     let s3_store = Arc::new(MonitoredObjectStore::new(s3_store, "s3"));
     // cache size in bytes, default to 1GB
-    let cache_s3_store = Arc::new(ReadThroughCache::new(s3_store, disk_cache));
+    // NOTE: all read-through stores share one process-wide stats instance so
+    // that the cache metrics (reads/misses/bytes) aggregate correctly.
+    let cache_s3_store = Arc::new(ReadThroughCache::new_with_stats(
+        s3_store,
+        disk_cache,
+        crate::cache::get_lakesoul_cache_stats_handle(),
+    ));
     runtime.register_object_store(url, cache_s3_store);
     Ok(())
 }
