@@ -25,18 +25,18 @@ use lakesoul_ivm::{
     bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
     grouping_sets_mv_schema_for, keyed_join_output_primary_keys,
-    keyed_join_view_schema_for, median_groups_mv_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    keyed_join_view_schema_for, left_aggregate_mv_schema_for,
+    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
+    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -2586,6 +2586,35 @@ async fn oracle_correlated_scalar_matches_full_recompute() {
          WHERE s.op <> 'delete' AND s.v > \
          (SELECT avg(u.v) FROM __SRC1__ u WHERE u.op <> 'delete' AND u.k = s.k)",
         "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_left_aggregate_matches_full_recompute() {
+    // Every left row carries the per-key average of the other table.
+    let schema = source_schema();
+    let keys = vec!["k".to_string(), "g".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "leftagg",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+        ],
+        left_aggregate_mv_schema_for(&schema, &keys, "m", &DataType::Float64).unwrap(),
+        vec!["k".to_string()],
+        "SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __SRC1__ u WHERE u.k = s.k) AS m \
+         FROM __SRC0__ s",
+        "SELECT s.k, s.g, s.v, \
+                (SELECT avg(u.v) FROM __SRC1__ u \
+                 WHERE u.op <> 'delete' AND u.k = s.k) AS m \
+         FROM __SRC0__ s WHERE s.op <> 'delete'",
+        "SELECT k, g, v, m FROM __MV__ WHERE \"rowKinds\" = 'insert'",
     )
     .await;
 }

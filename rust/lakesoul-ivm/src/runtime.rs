@@ -826,6 +826,38 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         match_predicate: Option<String>,
     },
+    /// A left join against one aggregate row per join key (a select-list
+    /// correlated scalar subquery): the MV keeps one row per left key with the
+    /// aggregate value appended (NULL when the key has no right rows).
+    LeftAggregate {
+        /// The view id.
+        view_id: String,
+        /// The left source table id (keyed).
+        left_table_id: String,
+        /// The right source table id.
+        right_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The left join keys.
+        join_keys: Vec<String>,
+        /// The right group keys, aligned with `join_keys`; empty means the
+        /// same names as `join_keys`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        right_keys: Vec<String>,
+        /// The rendered aggregate call over the right columns.
+        right_aggregate: String,
+        /// The MV column the aggregate value is materialized into.
+        aggregate_column: String,
+        /// The left columns materialized; the left primary keys are always
+        /// contained.
+        output_columns: Vec<String>,
+        /// An optional filter the contributing left rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_filter: Option<String>,
+        /// An optional filter the contributing right rows must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right_filter: Option<String>,
+    },
     /// `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` over a keyed source with
     /// `SUM`/`COUNT`/`AVG`: the MV keeps one row per (grouping index, key
     /// tuple), and the keys a set does not group by are NULL.
@@ -989,6 +1021,7 @@ impl ViewSpec {
             | ViewSpec::DistinctAgg { view_id, .. }
             | ViewSpec::Window { view_id, .. }
             | ViewSpec::SemiAnti { view_id, .. }
+            | ViewSpec::LeftAggregate { view_id, .. }
             | ViewSpec::GroupingSets { view_id, .. }
             | ViewSpec::Row { view_id, .. }
             | ViewSpec::UnionAll { view_id, .. }
@@ -1021,6 +1054,7 @@ impl ViewSpec {
             ViewSpec::DistinctAgg { .. } => "distinct_agg",
             ViewSpec::Window { .. } => "window",
             ViewSpec::SemiAnti { .. } => "semi_anti",
+            ViewSpec::LeftAggregate { .. } => "left_aggregate",
             ViewSpec::GroupingSets { .. } => "grouping_sets",
             ViewSpec::Row { .. } => "row",
             ViewSpec::UnionAll { .. } => "union_all",
@@ -1053,6 +1087,7 @@ enum SpecView {
     DistinctAgg(DistinctAggView),
     Window(WindowView),
     SemiAnti(SemiAntiView),
+    LeftAggregate(LeftAggregateView),
     GroupingSets(GroupingSetsView),
     Row(RowView),
     UnionAll(UnionAllView),
@@ -1327,7 +1362,10 @@ pub struct GroupingColumn {
 }
 
 /// The type and nullability of a stored scalar expression over a schema.
-fn expression_type(source_schema: &Schema, expression: &str) -> Result<(DataType, bool)> {
+pub(crate) fn expression_type(
+    source_schema: &Schema,
+    expression: &str,
+) -> Result<(DataType, bool)> {
     let context = SessionContext::new();
     let df_schema = DFSchema::try_from(source_schema.clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
@@ -2609,6 +2647,32 @@ impl IvmRuntime {
                 match_predicate: match_predicate.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::LeftAggregate {
+                view_id,
+                left_table_id,
+                right_table_id,
+                mv_table_id,
+                join_keys,
+                right_keys,
+                right_aggregate,
+                aggregate_column,
+                output_columns,
+                left_filter,
+                right_filter,
+            } => SpecView::LeftAggregate(LeftAggregateView {
+                view_id: view_id.clone(),
+                left: self.open_table_by_id(left_table_id).await?,
+                right: self.open_table_by_id(right_table_id).await?,
+                mv: self.open_table_by_id(mv_table_id).await?,
+                join_keys: join_keys.clone(),
+                right_keys: right_keys.clone(),
+                right_aggregate: right_aggregate.clone(),
+                aggregate_column: aggregate_column.clone(),
+                output_columns: output_columns.clone(),
+                left_filter: left_filter.clone(),
+                right_filter: right_filter.clone(),
+                refresh_interval_ms,
+            }),
             ViewSpec::Row {
                 view_id,
                 source_table_id,
@@ -2755,6 +2819,7 @@ impl IvmRuntime {
             Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
             Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
             Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
+            Ok(SpecView::LeftAggregate(view)) => self.refresh_left_aggregate(&view).await,
             Ok(SpecView::GroupingSets(view)) => self.refresh_grouping_sets(&view).await,
             Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
             Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
@@ -2803,6 +2868,7 @@ impl IvmRuntime {
             Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
             Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
             Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
+            Ok(SpecView::LeftAggregate(view)) => self.rebuild_left_aggregate(&view).await,
             Ok(SpecView::GroupingSets(view)) => self.rebuild_grouping_sets(&view).await,
             Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
             Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,

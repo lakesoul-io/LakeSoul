@@ -1084,7 +1084,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 | 组 | 缺口 | 建议 |
 |---|---|---|
 | 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
-| 子查询/CTE | 选择列表中的相关标量子查询、`DISTINCT`/多聚合的相关子查询；嵌套/不透明派生表 | 随多视图链一起做 |
+| 子查询/CTE | `DISTINCT`/多聚合的相关子查询、聚合右输入的嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
 | 表达式 | 每个聚合族各自的小形状（如 `ANY_VALUE` 等顺序相关函数按需明确拒绝） | 按需接线 |
@@ -2580,6 +2580,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `correlated_scalar.slt`（bootstrap、无匹配键=NULL、平均值升降、源更新/删除、子查询过滤重建）、
   `oracle_correlated_scalar_matches_full_recompute`（keyed 双源 + 种子，另跑 seed 7/31/64 × 30 轮）。
   全量 IVM 套件 387 个测试通过、0 失败。
+
+### 10.90 选择列表相关标量子查询（左连接聚合，PR-84）
+
+- **形状**：`SELECT s.k, ..., (SELECT AGG(u.v) FROM dim u WHERE u.k = s.k) AS m FROM src s` 规划为
+  `Projection(s.k, __scalar_sq_1.agg AS m) -> Left Join(s.k = __scalar_sq_1.k) -> 聚合右输入`。
+- **spec/typed**：新增 `ViewSpec::LeftAggregate` 与 `LeftAggregateView`（`join_keys`/`right_keys`/
+  `right_aggregate`/`aggregate_column`/`output_columns`/两侧过滤），MV schema
+  `left_aggregate_mv_schema_for`（左输出列 + 聚合列 + rowKinds + epoch）。
+- **analyzer**：聚合右输入的派发按连接类型分支 —— `LeftSemi` 走相关比较（§10.89），`Left` 走
+  `analyze_left_aggregate`：要求无残余条件、单个聚合、相关键 == 分组键、外层投影为普通左列 +
+  恰好一次标量值（需要别名或沿用列名）、左主键保留在输出列中；计算表达式紧邻标量值明确拒绝。
+- **运行时**：`refresh_left_aggregate` 以「左 delta 主键 ∪ 右侧变化键命中的左行」为受影响集合，
+  先按相关键聚合右侧（键列加 `__ivm_right_` 前缀别名避免与左侧同名列冲突、聚合别名
+  `__ivm_right_agg`），再以左连接取值（无匹配键为 NULL），最后 delete+insert 重写受影响主键；
+  `rebuild_left_aggregate` 从两侧当前态整体重建。
+- **测试**：analyzer（形状字段断言、选择列表从旧拒绝改为正例、计算表达式/DISTINCT 拒绝）、
+  `left_aggregate.slt`（NULL 值、键获得/失去行、源更新/删除、子查询过滤重建）、
+  `oracle_left_aggregate_matches_full_recompute`（种子双源，另跑 seed 9/44/82 × 30 轮）。
+  全量 IVM 套件 389 个测试通过、0 失败。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

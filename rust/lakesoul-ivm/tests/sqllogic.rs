@@ -39,18 +39,19 @@ use lakesoul_ivm::{
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    left_join_view_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_agg_mv_schema_for, multi_join_append_schema_for, multi_join_mv_schema_for,
-    multi_join_primary_keys, multi_window_mv_schema_for, row_expr_mv_schema_for,
-    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    left_aggregate_mv_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
+    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_groups_mv_schema_for,
+    min_max_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
+    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_lookup_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -2768,6 +2769,32 @@ fn sqllogic_grouping_sets() {
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g"]),
+    );
+}
+
+#[test]
+fn sqllogic_left_aggregate() {
+    let schema = source_schema();
+    let dim_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, false),
+    ]));
+    run_script_for_sources(
+        "leftagg",
+        include_str!("slt/left_aggregate.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::append_only("__DIM__", dim_schema),
+        ],
+        left_aggregate_mv_schema_for(
+            &schema,
+            &group_keys(&["k", "g", "v"]),
+            "m",
+            &DataType::Float64,
+        )
+        .unwrap(),
+        group_keys(&["k"]),
     );
 }
 

@@ -79,6 +79,7 @@ used as row identities must be non-nullable.
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
+| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery) | the projected left columns, the aggregate column, kinds, epoch |
 | INTERSECT / EXCEPT | over unique-per-row join columns (the distinct and `ALL` variants); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns, kinds, epoch |
 
 Supported within the shapes above:
@@ -149,7 +150,11 @@ Supported within the shapes above:
   aggregate inputs re-evaluates only the left rows of the affected keys, a
   key without rows never matches (the subquery is NULL) and the comparison
   keeps SQL NULL semantics; the subquery must be one plain aggregate over a
-  single table, and the left rows must be unique per correlated key;
+  single table, and the left rows must be unique per correlated key; a
+  **select-list** correlated scalar subquery
+  (`SELECT ..., (SELECT AVG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s`)
+  is maintained as a left join against the same per-key aggregate, with NULL
+  for a key without rows;
 * **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
   semi/anti semantics coincide with the set operation: the left rows are
   unique per join tuple (their primary key is covered), which also covers
@@ -348,9 +353,9 @@ the backlog):
   `ALL` variants also count the matches on both sides, while the maintained
   views keep one row per left row, so the shapes whose match counts can
   differ are rejected rather than silently returning different rows;
-* scalar subqueries outside the maintained subset (a select-list correlated
-  `(SELECT ...)`, a `GROUP BY` subquery, an append-only outer source, and a
-  `DISTINCT` aggregate or several aggregates inside a correlated subquery)
+* scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
+  with a `GROUP BY`, an append-only outer source, a `DISTINCT` aggregate or
+  several aggregates, and a correlated value inside a computed expression)
   and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
