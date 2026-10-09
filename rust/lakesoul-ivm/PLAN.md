@@ -2669,6 +2669,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **后续**：CDC 语义一期（append-only CDC × recompute 族的拒绝矩阵）见
   `/home/chenxu/.opencode/plan/ivm-cdc-semantics.md`。
 
+### 10.95 投影/过滤视图跳过 append-only CDC 的墓碑行（PR-89）
+
+- **缺陷**：`refresh_row` 的 append-only 分支直接追加 delta，未过滤 CDC 墓碑行
+  （`delete`/`update_before`）——这些标记会被物化成一条新的活跃行（同一内容出现两次）。
+- **修复**：追加前套用 `filter_deletes(delta, change_column(source))`；keyed 分支不受影响
+  （它只从 delta 取受影响主键），普通 append-only（无 CDC 列）为 no-op。
+- **语义**：append-only 源没有行标识，删除标记无法撤回对应的 insert 行（既有文档化限制），
+  但「标记不得成为行」是明确的；重新审视 recompute 族对该源的拒绝矩阵列入
+  `/home/chenxu/.opencode/plan/ivm-cdc-semantics.md` 的一期工作。
+- **测试**：`row_append_cdc.slt`（insert 两行 → delete 一行 → 视图仍两行，删除标记不成行）。
+  全量 IVM 套件 393 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

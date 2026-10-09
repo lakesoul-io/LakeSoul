@@ -381,7 +381,11 @@ the backlog):
   markers become MV tombstones (hidden from logical reads), but the matching
   insert rows cannot be retracted because an append-only source has no row
   identity to match them with. Use keyed sources when the union must
-  retract.
+  retract. The same applies to a projection/filter view: a `delete` /
+  `update_before` marker is never materialized as a row, but the matching
+  insert row stays (there is no key to retract it), and views that recompute
+  from the current state are not maintained over such sources yet (see the
+  CDC plan in `PLAN.md`).
 
 ## Tests
 
