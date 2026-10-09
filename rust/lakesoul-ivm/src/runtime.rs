@@ -41,6 +41,7 @@ use crate::table::{
 
 mod aggregates;
 mod joins;
+mod lookup_chain;
 mod multi_join;
 mod recompute;
 mod rows;
@@ -50,6 +51,7 @@ mod windows;
 
 pub use self::aggregates::*;
 pub use self::joins::*;
+pub use self::lookup_chain::*;
 pub use self::multi_join::*;
 pub use self::recompute::*;
 pub use self::rows::*;
@@ -858,6 +860,20 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
     },
+    /// A left-deep chain of keyed 1:1 lookups over a base table: every base
+    /// row appears once, with NULL payloads for the steps it does not match.
+    LookupChain {
+        /// The view id.
+        view_id: String,
+        /// The chain sources; index 0 is the base.
+        sources: Vec<LookupChainSource>,
+        /// The join steps in chain order; step `k` joins source `k + 1`.
+        steps: Vec<LookupChainStep>,
+        /// The materialized columns.
+        output_columns: Vec<LookupChainColumn>,
+        /// The materialized view table id.
+        mv_table_id: String,
+    },
     /// `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` over a keyed source with
     /// `SUM`/`COUNT`/`AVG`: the MV keeps one row per (grouping index, key
     /// tuple), and the keys a set does not group by are NULL.
@@ -1022,6 +1038,7 @@ impl ViewSpec {
             | ViewSpec::Window { view_id, .. }
             | ViewSpec::SemiAnti { view_id, .. }
             | ViewSpec::LeftAggregate { view_id, .. }
+            | ViewSpec::LookupChain { view_id, .. }
             | ViewSpec::GroupingSets { view_id, .. }
             | ViewSpec::Row { view_id, .. }
             | ViewSpec::UnionAll { view_id, .. }
@@ -1055,6 +1072,7 @@ impl ViewSpec {
             ViewSpec::Window { .. } => "window",
             ViewSpec::SemiAnti { .. } => "semi_anti",
             ViewSpec::LeftAggregate { .. } => "left_aggregate",
+            ViewSpec::LookupChain { .. } => "lookup_chain",
             ViewSpec::GroupingSets { .. } => "grouping_sets",
             ViewSpec::Row { .. } => "row",
             ViewSpec::UnionAll { .. } => "union_all",
@@ -1063,6 +1081,41 @@ impl ViewSpec {
             ViewSpec::MultiWindow { .. } => "multi_window",
         }
     }
+}
+
+/// One source of a [`ViewSpec::LookupChain`] (index 0 is the base).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupChainSource {
+    /// The table id.
+    pub table_id: String,
+    /// An optional filter this source's rows must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+/// One `[LEFT] JOIN` step of a [`ViewSpec::LookupChain`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupChainStep {
+    /// The joined source index (1-based into the sources).
+    pub source: usize,
+    /// `true` for a LEFT join (the row keeps NULL payloads when unmatched).
+    pub left: bool,
+    /// The base columns the step joins on.
+    pub keys: Vec<String>,
+    /// The joined source's key columns (its primary keys), aligned with
+    /// [`Self::keys`].
+    pub right_keys: Vec<String>,
+}
+
+/// One materialized column of a [`ViewSpec::LookupChain`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupChainColumn {
+    /// The source index (0 is the base).
+    pub source: usize,
+    /// The source column.
+    pub column: String,
+    /// The MV column name.
+    pub name: String,
 }
 
 /// A typed view reconstructed from a persisted [`ViewSpec`].
@@ -1088,6 +1141,7 @@ enum SpecView {
     Window(WindowView),
     SemiAnti(SemiAntiView),
     LeftAggregate(LeftAggregateView),
+    LookupChain(LookupChainView),
     GroupingSets(GroupingSetsView),
     Row(RowView),
     UnionAll(UnionAllView),
@@ -2647,6 +2701,29 @@ impl IvmRuntime {
                 match_predicate: match_predicate.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::LookupChain {
+                view_id,
+                sources,
+                steps,
+                output_columns,
+                mv_table_id,
+            } => {
+                let mut opened = Vec::with_capacity(sources.len());
+                for source in sources {
+                    opened.push((
+                        self.open_table_by_id(&source.table_id).await?,
+                        source.filter.clone(),
+                    ));
+                }
+                SpecView::LookupChain(LookupChainView {
+                    view_id: view_id.clone(),
+                    sources: opened,
+                    steps: steps.clone(),
+                    output_columns: output_columns.clone(),
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    refresh_interval_ms,
+                })
+            }
             ViewSpec::LeftAggregate {
                 view_id,
                 left_table_id,
@@ -2820,6 +2897,7 @@ impl IvmRuntime {
             Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
             Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
             Ok(SpecView::LeftAggregate(view)) => self.refresh_left_aggregate(&view).await,
+            Ok(SpecView::LookupChain(view)) => self.refresh_lookup_chain(&view).await,
             Ok(SpecView::GroupingSets(view)) => self.refresh_grouping_sets(&view).await,
             Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
             Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
@@ -2869,6 +2947,7 @@ impl IvmRuntime {
             Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
             Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
             Ok(SpecView::LeftAggregate(view)) => self.rebuild_left_aggregate(&view).await,
+            Ok(SpecView::LookupChain(view)) => self.rebuild_lookup_chain(&view).await,
             Ok(SpecView::GroupingSets(view)) => self.rebuild_grouping_sets(&view).await,
             Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
             Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,

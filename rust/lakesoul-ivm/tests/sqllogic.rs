@@ -31,20 +31,20 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
     IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, JoinOutputColumn, JoinSide, MinMaxKind, MultiJoinColumn,
-    PhysicalFormat, VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
-    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
-    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
-    computed_agg_mv_schema_for, cross_join_view_schema_for,
+    IvmTableOptions, JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainStep,
+    MinMaxKind, MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn,
+    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
+    approx_percentile_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
+    bool_agg_mv_schema_for, computed_agg_mv_schema_for, cross_join_view_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    left_aggregate_mv_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
-    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_groups_mv_schema_for,
-    min_max_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
-    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    left_aggregate_mv_schema_for, left_join_view_schema_for, lookup_chain_mv_schema_for,
+    lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
@@ -2769,6 +2769,69 @@ fn sqllogic_grouping_sets() {
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g"]),
+    );
+}
+
+#[test]
+fn sqllogic_lookup_chain() {
+    let schema = source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: group_keys(&["k"]),
+            right_keys: group_keys(&["k"]),
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: group_keys(&["k"]),
+            right_keys: group_keys(&["k"]),
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "g".to_string(),
+            name: "g".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+    ];
+    let mv_schema = lookup_chain_mv_schema_for(
+        &[schema.clone(), schema.clone(), schema.clone()],
+        &steps,
+        &columns,
+    )
+    .unwrap();
+    run_script_for_sources(
+        "lookupchain",
+        include_str!("slt/lookup_chain.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM2__", schema.clone(), group_keys(&["k"])),
+        ],
+        mv_schema,
+        group_keys(&["k"]),
     );
 }
 

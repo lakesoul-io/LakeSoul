@@ -368,3 +368,224 @@ pub(super) fn analyze_multi_join(
         conditions: flat.conditions,
     })
 }
+
+/// Peel the aliases and plain projections a chain node may carry.
+fn peel_chain_node(plan: &LogicalPlan) -> &LogicalPlan {
+    let mut node = peel(plan);
+    loop {
+        match node {
+            LogicalPlan::Projection(projection)
+                if projection
+                    .expr
+                    .iter()
+                    .all(|expr| matches!(expr, Expr::Column(_))) =>
+            {
+                node = peel(&projection.input)
+            }
+            _ => return node,
+        }
+    }
+}
+
+/// Whether a join tree contains a step that is not an inner join.
+pub(super) fn join_tree_has_outer_step(plan: &LogicalPlan) -> bool {
+    let mut node = peel(plan);
+    loop {
+        match node {
+            LogicalPlan::SubqueryAlias(alias) => node = &alias.input,
+            LogicalPlan::Projection(projection) => node = &projection.input,
+            LogicalPlan::Filter(filter) => node = &filter.input,
+            _ => break,
+        }
+    }
+    match node {
+        LogicalPlan::Join(join) => {
+            join.join_type != JoinType::Inner
+                || join_tree_has_outer_step(&join.left)
+                || join_tree_has_outer_step(&join.right)
+        }
+        _ => false,
+    }
+}
+
+/// A left-deep chain of keyed 1:1 lookups over a base table: the shape a
+/// star-schema `[LEFT] JOIN` chain flattens to.
+pub(super) fn analyze_lookup_chain(
+    outer: &Join,
+    projection: Option<&Projection>,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let Some(projection) = projection else {
+        return Err(unsupported("a lookup chain needs a projection"));
+    };
+    if !is_plain_projection(projection) {
+        return Err(unsupported("computed columns in a lookup chain output"));
+    }
+    // Collect the left-deep steps from the outermost join inward.  The
+    // aliases are kept: the base alias names its columns in the step keys.
+    let mut joins = vec![outer];
+    let mut node: &LogicalPlan = &outer.left;
+    loop {
+        match node {
+            LogicalPlan::Projection(projection)
+                if projection
+                    .expr
+                    .iter()
+                    .all(|expr| matches!(expr, Expr::Column(_))) =>
+            {
+                node = &projection.input;
+            }
+            LogicalPlan::Join(join) => {
+                joins.push(join);
+                node = &join.left;
+            }
+            _ => break,
+        }
+    }
+    if joins.len() < 2 {
+        return Err(unsupported("a lookup chain needs at least three sources"));
+    }
+    joins.reverse();
+    // The base of the chain.
+    let base_input = join_input(node, tables)?;
+    let base = base_input.table;
+    if base.primary_keys.is_empty() {
+        return Err(unsupported("a lookup chain needs a keyed base"));
+    }
+    let mut aliases = vec![base_input.alias.clone()];
+    let mut sources = vec![LookupChainSource {
+        table_id: base.table_id.clone(),
+        filter: base_input.filter.clone(),
+    }];
+    let mut chain = vec![base];
+    let mut steps = Vec::new();
+    for (index, join) in joins.iter().enumerate() {
+        if !matches!(join.join_type, JoinType::Inner | JoinType::Left) {
+            return Err(unsupported(
+                "a lookup chain step must be an inner or left join",
+            ));
+        }
+        if join.filter.is_some() {
+            return Err(unsupported("a lookup chain step with a residual condition"));
+        }
+        if matches!(peel_chain_node(&join.right), LogicalPlan::Join(_)) {
+            return Err(unsupported("a lookup chain must be left-deep"));
+        }
+        let step_input = join_input(&join.right, tables)?;
+        let step = step_input.table;
+        if step.primary_keys.is_empty() {
+            return Err(unsupported(format!(
+                "a lookup chain step source {} needs a primary key",
+                step.table_name
+            )));
+        }
+        let mut keys = Vec::new();
+        let mut right_keys = Vec::new();
+        for (left_expr, right_expr) in &join.on {
+            let left_column = column_of(left_expr)
+                .ok_or_else(|| unsupported("a lookup chain key must be a column"))?;
+            let right_column = column_of(right_expr)
+                .ok_or_else(|| unsupported("a lookup chain key must be a column"))?;
+            if left_column.name != right_column.name {
+                return Err(unsupported("a lookup chain joins on same-named keys"));
+            }
+            let on_base = match &left_column.relation {
+                Some(relation) => {
+                    let base_name = aliases[0]
+                        .clone()
+                        .unwrap_or_else(|| base.table_name.clone());
+                    relation.table() == base_name.as_str()
+                }
+                None => base.schema.field_with_name(&left_column.name).is_ok(),
+            };
+            if !on_base {
+                return Err(unsupported("a lookup chain step must join on base columns"));
+            }
+            keys.push(left_column.name.clone());
+            right_keys.push(right_column.name.clone());
+        }
+        if keys.is_empty() {
+            return Err(unsupported("a lookup chain step needs a key"));
+        }
+        let mut pks = step.primary_keys.clone();
+        pks.sort();
+        pks.dedup();
+        let mut step_keys = right_keys.clone();
+        step_keys.sort();
+        step_keys.dedup();
+        if pks != step_keys {
+            return Err(unsupported(format!(
+                "a lookup chain step source {} must be keyed by its join keys",
+                step.table_name
+            )));
+        }
+        sources.push(LookupChainSource {
+            table_id: step.table_id.clone(),
+            filter: step_input.filter.clone(),
+        });
+        steps.push(LookupChainStep {
+            source: index + 1,
+            left: join.join_type == JoinType::Left,
+            keys,
+            right_keys,
+        });
+        aliases.push(step_input.alias.clone());
+        chain.push(step);
+    }
+    // The materialized columns.
+    let mut output_columns = Vec::new();
+    for expr in &projection.expr {
+        let mut inner = expr;
+        let mut alias = None;
+        while let Expr::Alias(nested) = inner {
+            if alias.is_none() {
+                alias = Some(nested.name.clone());
+            }
+            inner = &nested.expr;
+        }
+        let Expr::Column(column) = inner else {
+            return Err(unsupported("computed columns in a lookup chain output"));
+        };
+        let mut source = None;
+        if let Some(relation) = &column.relation {
+            for (index, table) in chain.iter().enumerate() {
+                let name = aliases[index]
+                    .clone()
+                    .unwrap_or_else(|| table.table_name.clone());
+                if relation.table() == name.as_str() {
+                    source = Some(index);
+                    break;
+                }
+            }
+        } else {
+            let matches = chain
+                .iter()
+                .enumerate()
+                .filter(|(_, table)| table.schema.field_with_name(&column.name).is_ok())
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if matches.len() == 1 {
+                source = Some(matches[0]);
+            }
+        }
+        let source = source.ok_or_else(|| {
+            unsupported(format!(
+                "lookup chain output column {} is ambiguous",
+                column.name
+            ))
+        })?;
+        output_columns.push(LookupChainColumn {
+            source,
+            column: column.name.clone(),
+            name: alias.unwrap_or_else(|| column.name.clone()),
+        });
+    }
+    Ok(ViewSpec::LookupChain {
+        view_id: request.view_id.clone(),
+        sources,
+        steps,
+        output_columns,
+        mv_table_id: request.mv_table_id.clone(),
+    })
+}
