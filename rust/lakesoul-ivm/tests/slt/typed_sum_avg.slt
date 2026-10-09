@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ?RIIR rowsort
-SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__
 ----
 false 11.0 2 2 5.5
 true 10.5 2 1 10.5
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?RIIR rowsort
-SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__
 ----
 false 11.0 2 2 5.5
 true 16.0 2 2 8.0
@@ -43,7 +43,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?RIIR rowsort
-SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__
 ----
 false 11.0 2 2 5.5
 true 5.5 1 1 5.5
@@ -59,7 +59,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?RIIR rowsort
-SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__
 ----
 true 5.5 1 1 5.5
 
@@ -71,7 +71,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ?RIIR rowsort
-SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__
 ----
 
 # An update inside the HAVING definition recomputes the group.
@@ -85,6 +85,6 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?RIIR rowsort
-SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, sum_v, count_v, "__ivm_nonnull_count", avg_v FROM __MV__
 ----
 true 20.0 1 1 20.0

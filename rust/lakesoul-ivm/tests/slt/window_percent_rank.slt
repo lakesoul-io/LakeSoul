@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITR rowsort
-SELECT g, k, percent_rank FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, k, percent_rank FROM __MV__
 ----
 a 1 1.0
 a 2 0.0
@@ -29,7 +29,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITR rowsort
-SELECT g, k, percent_rank FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, k, percent_rank FROM __MV__
 ----
 a 1 0.75
 a 2 1.0

@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TI rowsort
-SELECT g, bit_and_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, bit_and_v FROM __MV__
 ----
 a 2
 b 7
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, bit_and_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, bit_and_v FROM __MV__
 ----
 a 0
 b 7
@@ -39,7 +39,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TI rowsort
-SELECT g, bit_and_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, bit_and_v FROM __MV__
 ----
 a 6
 b 7

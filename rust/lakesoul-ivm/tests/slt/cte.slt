@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TI rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 10
 b 7
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 18
 b 7
@@ -43,7 +43,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 18
 
@@ -55,7 +55,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TI rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 
 # An incremental row inside the new definition.
@@ -69,7 +69,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 b 20
 
@@ -82,6 +82,6 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 b 20

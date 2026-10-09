@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 a 5 100 1 10
 
@@ -29,7 +29,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 a 5 100 1 10
 b 2 15 2 20
@@ -45,7 +45,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 a 5 100 1 10
 a 7 100 3 10
@@ -62,7 +62,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 a 7 100 3 10
 b 2 15 2 20
@@ -78,7 +78,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 a 7 100 3 10
 
@@ -93,7 +93,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 
 # A changed filter rebuilds the view.
@@ -104,6 +104,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TIII rowsort
-SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__left_pk_id", "__right_pk_rid" FROM __MV__
 ----
 b 2 3 2 20

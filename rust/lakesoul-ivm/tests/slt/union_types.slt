@@ -13,7 +13,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IR??I rowsort
-SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, d, day, __ivm_source FROM __MV__
 ----
 1 10.5 12.34 1970-01-02 0
 2 NULL NULL 1970-01-03 0
@@ -30,7 +30,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR??I rowsort
-SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, d, day, __ivm_source FROM __MV__
 ----
 1 10.5 12.34 1970-01-02 0
 2 5.5 2.50 1970-01-03 0
@@ -47,7 +47,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR??I rowsort
-SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, d, day, __ivm_source FROM __MV__
 ----
 1 10.5 12.34 1970-01-02 0
 2 5.5 2.50 1970-01-03 0
@@ -60,7 +60,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IR??I rowsort
-SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, d, day, __ivm_source FROM __MV__
 ----
 1 10.5 12.34 1970-01-02 0
 
@@ -75,7 +75,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR??I rowsort
-SELECT k, v, d, day, __ivm_source FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, d, day, __ivm_source FROM __MV__
 ----
 1 10.5 12.34 1970-01-02 0
 4 7.75 3.50 1970-01-04 0

@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ?R rowsort
-SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, variance_v FROM __MV__
 ----
 false 8.0
 true 50.0
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?R rowsort
-SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, variance_v FROM __MV__
 ----
 false 8.0
 true 200.0
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ?R rowsort
-SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, variance_v FROM __MV__
 ----
 false 8.0
 true NULL
@@ -55,6 +55,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ?R rowsort
-SELECT flag, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT flag, variance_v FROM __MV__
 ----
 false 8.0

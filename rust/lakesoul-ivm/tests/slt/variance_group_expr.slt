@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IR rowsort
-SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, variance_v FROM __MV__
 ----
 0 100.0
 7 50.0
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR rowsort
-SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, variance_v FROM __MV__
 ----
 0 200.0
 5 NULL
@@ -44,7 +44,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR rowsort
-SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, variance_v FROM __MV__
 ----
 0 NULL
 5 NULL
@@ -58,7 +58,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IR rowsort
-SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, variance_v FROM __MV__
 ----
 7 50.0
 
@@ -73,6 +73,6 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR rowsort
-SELECT bucket, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, variance_v FROM __MV__
 ----
 7 100.0

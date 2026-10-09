@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IRT?? rowsort
-SELECT k, v, flag, d, day FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, flag, d, day FROM __MV__
 ----
 1 10.5 true 12.34 1970-01-02
 2 NULL true NULL 1970-01-01
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IRT?? rowsort
-SELECT k, v, flag, d, day FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, v, flag, d, day FROM __MV__
 ----
 2 NULL true NULL 1970-01-01
 3 3.25 true 1.00 1970-01-03

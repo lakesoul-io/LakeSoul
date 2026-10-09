@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query III rowsort
-SELECT sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT sum_v, min_v, "count" FROM __MV__
 ----
 30 10 2
 
@@ -25,7 +25,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT sum_v, min_v, "count" FROM __MV__
 ----
 21 1 2
 
@@ -40,7 +40,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT sum_v, min_v, "count" FROM __MV__
 ----
 20 20 1
 
@@ -52,6 +52,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query III rowsort
-SELECT sum_v, min_v, "count" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT sum_v, min_v, "count" FROM __MV__
 ----
 20 20 1

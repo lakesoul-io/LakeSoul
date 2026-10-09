@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IIR rowsort
-SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, avg_v FROM __MV__
 ----
 a 26 13.0
 b 14 14.0
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IIR rowsort
-SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, avg_v FROM __MV__
 ----
 a 14 7.0
 b 14 14.0
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IIR rowsort
-SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, avg_v FROM __MV__
 ----
 a 14 7.0
 
@@ -54,7 +54,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IIR rowsort
-SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, avg_v FROM __MV__
 ----
 a 14 7.0
 
@@ -69,7 +69,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IIR rowsort
-SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, avg_v FROM __MV__
 ----
 a 24 8.0
 
@@ -81,6 +81,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IIR rowsort
-SELECT g, sum_v, avg_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v, avg_v FROM __MV__
 ----
 a 18 9.0

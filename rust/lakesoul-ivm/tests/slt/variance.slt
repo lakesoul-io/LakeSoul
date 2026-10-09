@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TR rowsort
-SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, variance_v FROM __MV__
 ----
 a 100.0
 b NULL
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, variance_v FROM __MV__
 ----
 a 100.0
 b 50.0
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, variance_v FROM __MV__
 ----
 a 50.0
 b 50.0
@@ -58,7 +58,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TR rowsort
-SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, variance_v FROM __MV__
 ----
 a 100.0
 
@@ -73,6 +73,6 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TR rowsort
-SELECT g, variance_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, variance_v FROM __MV__
 ----
 a 175.0

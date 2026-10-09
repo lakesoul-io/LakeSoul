@@ -418,7 +418,7 @@ async fn oracle_multi_window_clauses_matches_full_recompute() {
         "SELECT k, v, g, SUM(v) OVER (PARTITION BY v) AS cnt, \
                 ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn \
          FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT k, v, g, cnt, rn FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, v, g, cnt, rn FROM __MV__",
     )
     .await;
 }
@@ -442,7 +442,7 @@ async fn oracle_min_max_group_expr_matches_full_recompute() {
         "SELECT v % 10 AS bucket, MIN(v) FROM __SRC__ WHERE v > 30 GROUP BY bucket",
         "SELECT v % 10 AS bucket, MIN(v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
-        "SELECT bucket, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, value FROM __MV__",
     )
     .await;
 }
@@ -466,7 +466,7 @@ async fn oracle_distinct_group_expr_matches_full_recompute() {
          WHERE v > 30 GROUP BY bucket",
         "SELECT v % 10 AS bucket, COUNT(DISTINCT g) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
-        "SELECT bucket, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, value FROM __MV__",
     )
     .await;
 }
@@ -484,7 +484,7 @@ async fn oracle_semi_join_matches_full_recompute() {
          WHERE EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.g = f.g)",
         "SELECT k, g FROM __SRC__ f \
          WHERE EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.g = f.g)",
-        "SELECT k, g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g FROM __MV__",
     )
     .await;
 }
@@ -502,7 +502,7 @@ async fn oracle_anti_join_matches_full_recompute() {
          WHERE NOT EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.k = f.k)",
         "SELECT k, g FROM __SRC__ f \
          WHERE NOT EXISTS (SELECT 1 FROM __SRC1__ d WHERE d.k = f.k)",
-        "SELECT k, g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g FROM __MV__",
     )
     .await;
 }
@@ -519,7 +519,7 @@ async fn oracle_cte_matches_full_recompute() {
          SELECT g, SUM(v) FROM filtered GROUP BY g",
         "SELECT g, SUM(v) AS sum_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, sum_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v FROM __MV__",
     )
     .await;
 }
@@ -544,7 +544,7 @@ async fn oracle_group_expr_matches_full_recompute() {
          FROM __SRC__ WHERE v > 30 GROUP BY bucket",
         "SELECT v % 10 AS bucket, SUM(v) AS sum_v, COUNT(*) AS count_v \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
-        "SELECT bucket, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -562,7 +562,7 @@ async fn oracle_sum_expr_matches_full_recompute() {
          WHERE v > 30 GROUP BY g",
         "SELECT g, SUM(v * 2) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -577,7 +577,7 @@ async fn oracle_sum_count_matches_full_recompute() {
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ GROUP BY g",
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -595,7 +595,7 @@ async fn oracle_aggregate_filter_matches_full_recompute() {
          FROM __SRC__ GROUP BY g",
         "SELECT g, SUM(v) FILTER (WHERE v > 30) AS sum_v, COUNT(*) AS count_v \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -615,7 +615,7 @@ async fn oracle_count_filter_matches_full_recompute() {
          GROUP BY g",
         "SELECT g, COUNT(v) FILTER (WHERE v > 30) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, \"__ivm_nonnull_count\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, \"__ivm_nonnull_count\" FROM __MV__",
     )
     .await;
 }
@@ -630,7 +630,7 @@ async fn oracle_array_agg_matches_full_recompute() {
         "SELECT g, ARRAY_AGG(v ORDER BY k) FROM __SRC__ GROUP BY g",
         "SELECT g, ARRAY_AGG(v ORDER BY k) AS array_agg_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, array_agg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, array_agg_v FROM __MV__",
     )
     .await;
 }
@@ -646,7 +646,7 @@ async fn oracle_array_agg_expr_matches_full_recompute() {
         "SELECT g, ARRAY_AGG(v * 2 ORDER BY k) FROM __SRC__ GROUP BY g",
         "SELECT g, ARRAY_AGG(v * 2 ORDER BY k) AS array_agg_value FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, array_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, array_agg_value FROM __MV__",
     )
     .await;
 }
@@ -668,7 +668,7 @@ async fn oracle_string_agg_expr_matches_full_recompute() {
          GROUP BY g",
         "SELECT g, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY k) AS string_agg_value \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, string_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, string_agg_value FROM __MV__",
     )
     .await;
 }
@@ -685,7 +685,7 @@ async fn oracle_string_agg_matches_full_recompute() {
         "SELECT g, STRING_AGG(g, '|' ORDER BY k) FROM __SRC__ GROUP BY g",
         "SELECT g, STRING_AGG(g, '|' ORDER BY k) AS string_agg_g FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, string_agg_g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, string_agg_g FROM __MV__",
     )
     .await;
 }
@@ -704,7 +704,7 @@ async fn oracle_count_column_matches_full_recompute() {
         "SELECT g, COUNT(v) AS count_v FROM __SRC__ GROUP BY g",
         "SELECT g, COUNT(v) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, \"__ivm_nonnull_count\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, \"__ivm_nonnull_count\" FROM __MV__",
     )
     .await;
 }
@@ -726,7 +726,7 @@ async fn oracle_min_expr_matches_full_recompute() {
          WHERE v > 30 GROUP BY g",
         "SELECT g, MIN(v * 2) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -742,7 +742,7 @@ async fn oracle_min_matches_full_recompute() {
         "SELECT g, MIN(v) AS value FROM __SRC__ GROUP BY g",
         "SELECT g, MIN(v) AS value FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -760,7 +760,7 @@ async fn oracle_sum_count_where_matches_full_recompute() {
          WHERE v > 30 GROUP BY g",
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -777,7 +777,7 @@ async fn oracle_min_where_matches_full_recompute() {
          WHERE v > 30 AND g <> 'g1' GROUP BY g",
         "SELECT g, MIN(v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 AND g <> 'g1' GROUP BY g",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -798,7 +798,7 @@ async fn oracle_window_where_matches_full_recompute() {
          FROM __SRC__ WHERE v > 30",
         "SELECT g, k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS \"row_number\" \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT g, k, \"row_number\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, \"row_number\" FROM __MV__",
     )
     .await;
 }
@@ -823,7 +823,7 @@ async fn oracle_window_order_expr_matches_full_recompute() {
         "SELECT g, k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v % 10, k) \
              AS \"row_number\" \
          FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT g, k, \"row_number\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, \"row_number\" FROM __MV__",
     )
     .await;
 }
@@ -847,7 +847,7 @@ async fn oracle_string_agg_order_expr_matches_full_recompute() {
         "SELECT g, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY v % 10, k) \
              AS string_agg_value \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, string_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, string_agg_value FROM __MV__",
     )
     .await;
 }
@@ -872,7 +872,7 @@ async fn oracle_desc_window_matches_full_recompute() {
         "SELECT g, k, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC, k) \
              AS \"row_number\" \
          FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT g, k, \"row_number\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, \"row_number\" FROM __MV__",
     )
     .await;
 }
@@ -894,7 +894,7 @@ async fn oracle_top_k_desc_matches_full_recompute() {
         "SELECT k, g, v FROM (SELECT k, g, v, \
              ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC, k) AS rn \
              FROM __SRC__ WHERE op <> 'delete') t WHERE rn <= 2",
-        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v FROM __MV__",
     )
     .await;
 }
@@ -916,7 +916,7 @@ async fn oracle_top_k_where_matches_full_recompute() {
         "SELECT k, g, v FROM (SELECT k, g, v, \
              ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn \
              FROM __SRC__ WHERE op <> 'delete' AND v > 30) t WHERE rn <= 2",
-        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v FROM __MV__",
     )
     .await;
 }
@@ -946,7 +946,7 @@ async fn oracle_multi_window_matches_full_recompute() {
         "SELECT g, k, SUM(v) OVER (PARTITION BY g) AS total, \
                 COUNT(*) OVER (PARTITION BY g) AS n \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT g, k, total, n FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, total, n FROM __MV__",
     )
     .await;
 }
@@ -970,7 +970,7 @@ async fn oracle_global_row_number_matches_full_recompute() {
          FROM __SRC__ WHERE v > 30",
         "SELECT k, ROW_NUMBER() OVER (ORDER BY v, k) AS row_number \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT k, row_number FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, row_number FROM __MV__",
     )
     .await;
 }
@@ -996,7 +996,7 @@ async fn oracle_window_filter_matches_full_recompute() {
         "SELECT g, k, SUM(v) FILTER (WHERE v > 50) OVER (PARTITION BY g ORDER BY v, k \
          ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS sum_v \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT g, k, sum_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, sum_v FROM __MV__",
     )
     .await;
 }
@@ -1020,7 +1020,7 @@ async fn oracle_ntile_matches_full_recompute() {
          FROM __SRC__ WHERE v > 30",
         "SELECT g, k, NTILE(3) OVER (PARTITION BY g ORDER BY v, k) AS ntile \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT g, k, ntile FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, ntile FROM __MV__",
     )
     .await;
 }
@@ -1047,7 +1047,7 @@ async fn oracle_first_value_matches_full_recompute() {
         "SELECT g, k, FIRST_VALUE(v) OVER (PARTITION BY g ORDER BY v, k \
          ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_value_v \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT g, k, first_value_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, first_value_v FROM __MV__",
     )
     .await;
 }
@@ -1072,7 +1072,7 @@ async fn oracle_lag_matches_full_recompute() {
          FROM __SRC__ WHERE v > 30",
         "SELECT g, k, LAG(v, 1, 0) OVER (PARTITION BY g ORDER BY v, k) AS lag_v \
          FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT g, k, lag_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, k, lag_v FROM __MV__",
     )
     .await;
 }
@@ -1088,7 +1088,7 @@ async fn oracle_select_distinct_matches_full_recompute() {
         vec!["v".to_string()],
         "SELECT DISTINCT v FROM __SRC__ WHERE v > 30",
         "SELECT DISTINCT v FROM __SRC__ WHERE op <> 'delete' AND v > 30",
-        "SELECT v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT v FROM __MV__",
     )
     .await;
 }
@@ -1112,7 +1112,7 @@ async fn oracle_count_distinct_matches_full_recompute() {
          WHERE v > 30 GROUP BY g",
         "SELECT g, COUNT(DISTINCT v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -1134,7 +1134,7 @@ async fn oracle_sum_distinct_matches_full_recompute() {
          WHERE v > 30 GROUP BY g",
         "SELECT g, SUM(DISTINCT v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -1158,7 +1158,7 @@ async fn oracle_array_agg_group_expr_matches_full_recompute() {
          GROUP BY bucket",
         "SELECT v % 10 AS bucket, ARRAY_AGG(v * 2 ORDER BY k) AS array_agg_value \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY bucket",
-        "SELECT bucket, array_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, array_agg_value FROM __MV__",
     )
     .await;
 }
@@ -1182,7 +1182,7 @@ async fn oracle_string_agg_group_expr_matches_full_recompute() {
          FROM __SRC__ GROUP BY bucket",
         "SELECT v % 10 AS bucket, STRING_AGG(CAST(v AS VARCHAR), '|' ORDER BY k) \
          AS string_agg_value FROM __SRC__ WHERE op <> 'delete' GROUP BY bucket",
-        "SELECT bucket, string_agg_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, string_agg_value FROM __MV__",
     )
     .await;
 }
@@ -1206,7 +1206,7 @@ async fn oracle_median_group_expr_matches_full_recompute() {
          WHERE v > 30 GROUP BY bucket",
         "SELECT v % 10 AS bucket, MEDIAN(v) AS median_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
-        "SELECT bucket, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, median_v FROM __MV__",
     )
     .await;
 }
@@ -1231,7 +1231,7 @@ async fn oracle_variance_expr_matches_full_recompute() {
          GROUP BY g",
         "SELECT g, VAR_SAMP(v * 2) AS variance_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, variance_v FROM __MV__",
     )
     .await;
 }
@@ -1254,7 +1254,7 @@ async fn oracle_median_expr_matches_full_recompute() {
         "SELECT g, MEDIAN(v * 2) AS median_v FROM __SRC__ WHERE v > 30 GROUP BY g",
         "SELECT g, MEDIAN(v * 2) AS median_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, median_v FROM __MV__",
     )
     .await;
 }
@@ -1271,7 +1271,7 @@ async fn oracle_median_matches_full_recompute() {
         "SELECT g, MEDIAN(v) AS median_v FROM __SRC__ WHERE v > 30 GROUP BY g",
         "SELECT g, MEDIAN(v) AS median_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, median_v FROM __MV__",
     )
     .await;
 }
@@ -1292,7 +1292,7 @@ async fn oracle_variance_matches_full_recompute() {
         "SELECT g, VAR_SAMP(v) AS variance_v FROM __SRC__ WHERE v > 30 GROUP BY g",
         "SELECT g, VAR_SAMP(v) AS variance_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, variance_v FROM __MV__",
     )
     .await;
 }
@@ -1317,7 +1317,7 @@ async fn oracle_variance_group_expr_matches_full_recompute() {
          WHERE v > 30 GROUP BY bucket",
         "SELECT v % 10 AS bucket, VAR_SAMP(v) AS variance_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY bucket",
-        "SELECT bucket, variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT bucket, variance_v FROM __MV__",
     )
     .await;
 }
@@ -1342,7 +1342,7 @@ async fn oracle_union_distinct_projection_matches_full_recompute() {
         "SELECT k AS id, g AS name, count(*) AS count_v FROM (SELECT k, g FROM __SRC__ \
          WHERE op <> 'delete' UNION ALL SELECT k, g FROM __SRC1__ \
          WHERE op <> 'delete') t GROUP BY k, g",
-        "SELECT id, name, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT id, name, count_v FROM __MV__",
     )
     .await;
 }
@@ -1367,7 +1367,7 @@ async fn oracle_union_distinct_matches_full_recompute() {
         "SELECT k, g, v, count(*) AS count_v FROM (SELECT k, g, v FROM __SRC__ \
          WHERE op <> 'delete' UNION ALL SELECT k, g, v FROM __SRC1__ \
          WHERE op <> 'delete') t GROUP BY k, g, v",
-        "SELECT k, g, v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v, count_v FROM __MV__",
     )
     .await;
 }
@@ -1384,7 +1384,7 @@ async fn oracle_avg_matches_full_recompute() {
         "SELECT g, AVG(v) AS avg_v FROM __SRC__ WHERE v > 30 GROUP BY g",
         "SELECT g, AVG(v) AS avg_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g",
-        "SELECT g, avg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, avg_v FROM __MV__",
     )
     .await;
 }
@@ -1403,7 +1403,7 @@ async fn oracle_sum_count_having_matches_full_recompute() {
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g \
          HAVING COUNT(*) >= 2 OR g = 'g2'",
-        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -1421,7 +1421,7 @@ async fn oracle_min_having_matches_full_recompute() {
         "SELECT g, MIN(v) AS value FROM __SRC__ \
          WHERE op <> 'delete' AND v > 30 GROUP BY g \
          HAVING MIN(v) <= 40 OR g = 'g2'",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -1439,7 +1439,7 @@ async fn oracle_union_all_where_matches_full_recompute() {
          WHERE op <> 'delete' AND v > 30 \
          UNION ALL SELECT k, g, v, 1 AS __ivm_source FROM __SRC1__ \
          WHERE op <> 'delete' AND g <> 'g2'",
-        "SELECT k, g, v, __ivm_source FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v, __ivm_source FROM __MV__",
     )
     .await;
 }
@@ -1470,7 +1470,7 @@ async fn oracle_inner_join_names_matches_full_recompute() {
          JOIN __SRC1__ b ON a.k = b.v \
          WHERE a.op <> 'delete' AND b.op <> 'delete'",
         "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
-         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+         FROM __MV__",
     )
     .await;
 }
@@ -1501,7 +1501,7 @@ async fn oracle_theta_join_matches_full_recompute() {
          JOIN __SRC1__ b ON a.k = b.k WHERE a.op <> 'delete' \
          AND b.op <> 'delete' AND a.v > 20 AND a.v > b.v",
         "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
-         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+         FROM __MV__",
     )
     .await;
 }
@@ -1527,7 +1527,7 @@ async fn oracle_multi_distinct_matches_full_recompute() {
         "SELECT g, COUNT(DISTINCT v, k) FROM __SRC__ GROUP BY g",
         "SELECT g, COUNT(DISTINCT CAST(v AS VARCHAR) || '/' || CAST(k AS VARCHAR)) AS value \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, value FROM __MV__",
     )
     .await;
 }
@@ -1546,7 +1546,7 @@ async fn oracle_semi_anti_filters_matches_full_recompute() {
         "SELECT k, g FROM __SRC__ f WHERE f.op <> 'delete' AND f.v > 10 \
          AND EXISTS (SELECT 1 FROM __SRC1__ d \
                      WHERE d.op <> 'delete' AND d.g = f.g AND d.v > 10)",
-        "SELECT k, g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g FROM __MV__",
     )
     .await;
 }
@@ -1576,7 +1576,7 @@ async fn oracle_intersect_matches_full_recompute() {
         "SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC1__",
         "(SELECT k, v FROM __SRC__ WHERE op <> 'delete') \
          INTERSECT (SELECT k, v FROM __SRC1__ WHERE op <> 'delete')",
-        "SELECT k, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, v FROM __MV__",
     )
     .await;
 }
@@ -1603,7 +1603,7 @@ async fn oracle_except_matches_full_recompute() {
         "SELECT k, v FROM __SRC__ EXCEPT SELECT k, v FROM __SRC1__",
         "(SELECT k, v FROM __SRC__ WHERE op <> 'delete') \
          EXCEPT (SELECT k, v FROM __SRC1__ WHERE op <> 'delete')",
-        "SELECT k, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, v FROM __MV__",
     )
     .await;
 }
@@ -1621,7 +1621,7 @@ async fn oracle_global_sum_matches_full_recompute() {
         "SELECT SUM(v) AS sum_v, COUNT(*) AS count_v, COUNT(v) AS nonnull, \
          AVG(v) AS avg_v FROM __SRC__ WHERE op <> 'delete'",
         "SELECT sum_v, count_v, \"__ivm_nonnull_count\", avg_v FROM __MV__ \
-         WHERE \"rowKinds\" = 'insert'",
+        ",
     )
     .await;
 }
@@ -1636,7 +1636,7 @@ async fn oracle_global_min_matches_full_recompute() {
         Vec::new(),
         "SELECT MIN(v) FROM __SRC__",
         "SELECT MIN(v) AS value FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT \"value\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT \"value\" FROM __MV__",
     )
     .await;
 }
@@ -1652,7 +1652,7 @@ async fn oracle_global_distinct_matches_full_recompute() {
         Vec::new(),
         "SELECT COUNT(DISTINCT v) FROM __SRC__",
         "SELECT COUNT(DISTINCT v) AS value FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT \"value\" FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT \"value\" FROM __MV__",
     )
     .await;
 }
@@ -1668,7 +1668,7 @@ async fn oracle_global_variance_matches_full_recompute() {
         Vec::new(),
         "SELECT VAR_SAMP(v) FROM __SRC__",
         "SELECT VAR_SAMP(v) AS variance_v FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT variance_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT variance_v FROM __MV__",
     )
     .await;
 }
@@ -1683,7 +1683,7 @@ async fn oracle_global_median_matches_full_recompute() {
         Vec::new(),
         "SELECT MEDIAN(v) FROM __SRC__",
         "SELECT MEDIAN(v) AS median_v FROM __SRC__ WHERE op <> 'delete'",
-        "SELECT median_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT median_v FROM __MV__",
     )
     .await;
 }
@@ -1709,7 +1709,7 @@ async fn oracle_union_all_branches_matches_full_recompute() {
         "SELECT k, g, v, 0 AS __ivm_source FROM __SRC__ WHERE op <> 'delete' \
          UNION ALL SELECT k, g, v, 1 AS __ivm_source FROM __SRC1__ WHERE op <> 'delete' \
          UNION ALL SELECT k, g, v, 2 AS __ivm_source FROM __SRC2__ WHERE op <> 'delete'",
-        "SELECT k, g, v, __ivm_source FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v, __ivm_source FROM __MV__",
     )
     .await;
 }
@@ -1734,7 +1734,7 @@ async fn oracle_union_distinct_branches_matches_full_recompute() {
         "SELECT k, g, v, count(*) AS count_v FROM (SELECT k, g, v FROM __SRC__ \
          WHERE op <> 'delete' UNION ALL SELECT k, g, v FROM __SRC1__ WHERE op <> 'delete' \
          UNION ALL SELECT k, g, v FROM __SRC2__ WHERE op <> 'delete') t GROUP BY k, g, v",
-        "SELECT k, g, v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v, count_v FROM __MV__",
     )
     .await;
 }
@@ -1750,7 +1750,7 @@ async fn oracle_global_string_agg_matches_full_recompute() {
         "SELECT STRING_AGG(g, ',' ORDER BY k) FROM __SRC__",
         "SELECT STRING_AGG(g, ',' ORDER BY k) AS string_agg_g FROM __SRC__ \
          WHERE op <> 'delete'",
-        "SELECT string_agg_g FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT string_agg_g FROM __MV__",
     )
     .await;
 }
@@ -1766,7 +1766,7 @@ async fn oracle_global_array_agg_matches_full_recompute() {
         "SELECT ARRAY_AGG(v ORDER BY k) FROM __SRC__",
         "SELECT ARRAY_AGG(v ORDER BY k) AS array_agg_v FROM __SRC__ \
          WHERE op <> 'delete'",
-        "SELECT array_agg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT array_agg_v FROM __MV__",
     )
     .await;
 }
@@ -1793,7 +1793,7 @@ async fn oracle_grouping_sets_matches_full_recompute() {
         "SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY ROLLUP(g)",
         "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY ROLLUP(g)",
-        "SELECT g, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -1818,7 +1818,7 @@ async fn oracle_bool_agg_matches_full_recompute() {
         "SELECT g, BOOL_AND(v > 1) FROM __SRC__ WHERE v > 10 GROUP BY g",
         "SELECT g, BOOL_AND(v > 1) AS flag FROM __SRC__ \
          WHERE op <> 'delete' AND v > 10 GROUP BY g",
-        "SELECT g, bool_and_value FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, bool_and_value FROM __MV__",
     )
     .await;
 }
@@ -1849,7 +1849,7 @@ async fn oracle_grouping_sets_cube_matches_full_recompute() {
         "SELECT g, v, SUM(v), COUNT(*) FROM __SRC__ GROUP BY CUBE(g, v)",
         "SELECT g, v, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY CUBE(g, v)",
-        "SELECT g, v, sum_v, count_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, v, sum_v, count_v FROM __MV__",
     )
     .await;
 }
@@ -1877,7 +1877,7 @@ async fn oracle_grouping_sets_having_matches_full_recompute() {
          HAVING SUM(v) > 50",
         "SELECT g, SUM(v) AS sum_v, AVG(v) AS avg_v FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY ROLLUP(g) HAVING SUM(v) > 50",
-        "SELECT g, sum_v, avg_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, sum_v, avg_v FROM __MV__",
     )
     .await;
 }
@@ -1894,7 +1894,7 @@ async fn oracle_approx_distinct_matches_full_recompute() {
         "SELECT g, APPROX_DISTINCT(v) FROM __SRC__ WHERE v > 10 GROUP BY g",
         "SELECT g, APPROX_DISTINCT(v) AS approx_distinct_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 10 GROUP BY g",
-        "SELECT g, approx_distinct_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, approx_distinct_v FROM __MV__",
     )
     .await;
 }
@@ -1913,7 +1913,7 @@ async fn oracle_approx_percentile_matches_full_recompute() {
          GROUP BY g",
         "SELECT g, APPROX_PERCENTILE_CONT(v, 0.5) AS approx_percentile_cont_v \
          FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY g",
-        "SELECT g, approx_percentile_cont_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, approx_percentile_cont_v FROM __MV__",
     )
     .await;
 }
@@ -2086,8 +2086,7 @@ async fn oracle_computed_aggs_matches_full_recompute() {
             "SELECT g, {call} AS {column_name} FROM __SRC__ \
              WHERE op <> 'delete' AND v > 10 GROUP BY g"
         );
-        let query =
-            format!("SELECT g, {column_name} FROM __MV__ WHERE \"rowKinds\" = 'insert'");
+        let query = format!("SELECT g, {column_name} FROM __MV__");
         run_oracle(
             tag,
             1,
@@ -2135,7 +2134,7 @@ async fn oracle_grouping_sets_grouping_matches_full_recompute() {
          WHERE v > 10 GROUP BY ROLLUP(g)",
         "SELECT g, GROUPING(g) AS is_total, SUM(v) AS sum_v FROM __SRC__ \
          WHERE op <> 'delete' AND v > 10 GROUP BY ROLLUP(g)",
-        "SELECT g, is_total, sum_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, is_total, sum_v FROM __MV__",
     )
     .await;
 }
@@ -2196,7 +2195,7 @@ async fn oracle_wide_inner_join_matches_full_recompute() {
          b.k AS rpk FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
          WHERE a.op <> 'delete' AND b.op <> 'delete' AND a.v > 10",
         "SELECT k, lv, lg, rv, rg, \"__left_pk_k\", \"__right_pk_k\" \
-         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+         FROM __MV__",
     )
     .await;
 }
@@ -2261,7 +2260,7 @@ async fn oracle_multi_join_matches_full_recompute() {
          JOIN __SRC2__ c ON b.k = c.k \
          WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
         "SELECT k, av, bv, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
-         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+         FROM __MV__",
     )
     .await;
 }
@@ -2324,7 +2323,7 @@ async fn oracle_wide_left_join_matches_full_recompute() {
          b.k AS rpk FROM __SRC__ a LEFT JOIN __SRC1__ b ON a.v = b.v \
          WHERE a.op <> 'delete' AND (b.op IS NULL OR b.op <> 'delete')",
         "SELECT v, lg, lk, bg, bk, \"__left_pk_k\", \"__right_pk_k\" \
-         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+         FROM __MV__",
     )
     .await;
 }
@@ -2380,7 +2379,7 @@ async fn oracle_multi_cross_join_matches_full_recompute() {
          c.k AS p2 FROM __SRC__ a, __SRC1__ b, __SRC2__ c \
          WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
         "SELECT k, bk, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
-         FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+         FROM __MV__",
     )
     .await;
 }
@@ -2412,7 +2411,7 @@ async fn oracle_mixed_aggregates_matches_full_recompute() {
          COUNT(*) AS \"count\" FROM __SRC__ WHERE op <> 'delete' AND v > 10 \
          GROUP BY g",
         "SELECT g, sum_v, min_v, max_v, \"count\" FROM __MV__ \
-         WHERE \"rowKinds\" = 'insert'",
+        ",
     )
     .await;
 }
@@ -2436,7 +2435,7 @@ async fn oracle_distinct_on_matches_full_recompute() {
         "SELECT DISTINCT ON (g) g, v FROM __SRC__ ORDER BY g, v DESC",
         "SELECT g, first_value(v ORDER BY v DESC NULLS FIRST, k) AS first_value_v \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
-        "SELECT g, first_value_v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT g, first_value_v FROM __MV__",
     )
     .await;
 }
@@ -2468,7 +2467,7 @@ async fn oracle_grouping_sets_mixed_aggregates_matches_full_recompute() {
         "SELECT g, SUM(v) AS sum_v, MIN(v) AS min_v, COUNT(*) AS \"count\" \
          FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY ROLLUP(g)",
         "SELECT g, sum_v, min_v, \"count\" FROM __MV__ \
-         WHERE \"rowKinds\" = 'insert'",
+        ",
     )
     .await;
 }
@@ -2497,7 +2496,7 @@ async fn oracle_scalar_subquery_matches_full_recompute() {
         "SELECT k, g, v FROM __SRC0__ WHERE v > (SELECT avg(v) FROM __SRC1__)",
         "SELECT k, g, v FROM __SRC0__ WHERE op <> 'delete' \
          AND v > (SELECT avg(v) FROM __SRC1__ WHERE op <> 'delete')",
-        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v FROM __MV__",
     )
     .await;
 }
@@ -2529,7 +2528,7 @@ async fn oracle_grouping_sets_expression_keys_matches_full_recompute() {
         "SELECT g, v % 10 AS bucket, SUM(v) AS sum_v, COUNT(*) AS count_v \
          FROM __SRC__ WHERE op <> 'delete' GROUP BY ROLLUP(g, bucket)",
         "SELECT g, bucket, sum_v, count_v FROM __MV__ \
-         WHERE \"rowKinds\" = 'insert'",
+        ",
     )
     .await;
 }
@@ -2558,7 +2557,7 @@ async fn oracle_intersect_nullable_matches_full_recompute() {
         "SELECT k, v FROM __SRC__ INTERSECT SELECT k, v FROM __SRC1__",
         "(SELECT k, v FROM __SRC__ WHERE op <> 'delete') \
          INTERSECT (SELECT k, v FROM __SRC1__ WHERE op <> 'delete')",
-        "SELECT k, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, v FROM __MV__",
     )
     .await;
 }
@@ -2586,7 +2585,7 @@ async fn oracle_correlated_scalar_matches_full_recompute() {
         "SELECT s.k, s.g, s.v FROM __SRC0__ s \
          WHERE s.op <> 'delete' AND s.v > \
          (SELECT avg(u.v) FROM __SRC1__ u WHERE u.op <> 'delete' AND u.k = s.k)",
-        "SELECT k, g, v FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v FROM __MV__",
     )
     .await;
 }
@@ -2615,7 +2614,7 @@ async fn oracle_left_aggregate_matches_full_recompute() {
                 (SELECT avg(u.v) FROM __SRC1__ u \
                  WHERE u.op <> 'delete' AND u.k = s.k) AS m \
          FROM __SRC0__ s WHERE s.op <> 'delete'",
-        "SELECT k, g, v, m FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, g, v, m FROM __MV__",
     )
     .await;
 }
@@ -2689,7 +2688,7 @@ async fn oracle_lookup_chain_matches_full_recompute() {
              (SELECT k, v FROM __SRC0__ WHERE op <> 'delete') a \
          LEFT JOIN (SELECT k, v FROM __SRC1__ WHERE op <> 'delete') b ON b.k = a.k \
          LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = b.k",
-        "SELECT k, v, bv, cv FROM __MV__ WHERE \"rowKinds\" = 'insert'",
+        "SELECT k, v, bv, cv FROM __MV__",
     )
     .await;
 }

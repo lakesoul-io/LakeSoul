@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 a keep 100 10
 
@@ -29,7 +29,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 a keep 100 10
 2 b ok NULL NULL
@@ -45,7 +45,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 c keep 101 11
 2 b ok NULL NULL
@@ -61,7 +61,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 c keep 111 11
 2 b ok NULL NULL
@@ -77,7 +77,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 2 b ok NULL NULL
 
@@ -92,7 +92,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 
 # A changed filter rebuilds the view.
@@ -103,6 +103,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ITTII rowsort
-SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT "__left_pk_id", jk, left_value, right_value, "__right_pk_rid" FROM __MV__
 ----
 1 c skip 111 11

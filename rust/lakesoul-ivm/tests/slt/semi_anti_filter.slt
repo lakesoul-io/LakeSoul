@@ -15,7 +15,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 2 10 5
 
@@ -30,7 +30,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 1 10 7
 2 10 5
@@ -46,7 +46,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 1 10 7
 2 10 5
@@ -63,7 +63,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 1 10 7
 3 20 2
@@ -79,7 +79,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 3 20 2
 
@@ -94,7 +94,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 1 20 7
 3 20 2
@@ -110,7 +110,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 
 # Changed filters rebuild the view, and the ANTI variant keeps the fact rows
@@ -122,7 +122,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query III rowsort
-SELECT k, g, x FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, x FROM __MV__
 ----
 1 20 7
 3 20 2

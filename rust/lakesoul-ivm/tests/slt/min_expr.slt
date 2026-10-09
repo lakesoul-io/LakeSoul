@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query II rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 6
 b 14
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query II rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 2
 b 14
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query II rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 20
 b 14
@@ -55,7 +55,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query II rowsort
-SELECT g, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, value FROM __MV__
 ----
 a 10
 b 7

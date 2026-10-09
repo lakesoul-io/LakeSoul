@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query II rowsort
-SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, value FROM __MV__
 ----
 0 1
 7 2
@@ -26,7 +26,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query II rowsort
-SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, value FROM __MV__
 ----
 0 1
 7 2
@@ -42,7 +42,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query II rowsort
-SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, value FROM __MV__
 ----
 0 1
 7 1
@@ -58,7 +58,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query II rowsort
-SELECT bucket, value FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT bucket, value FROM __MV__
 ----
 0 1
 1 1

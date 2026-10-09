@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TITI rowsort
-SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__
 ----
 a 100 L1 1
 b 101 NULL NULL
@@ -30,7 +30,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TITI rowsort
-SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__
 ----
 a 100 L1 1
 a 100 L2 2
@@ -47,7 +47,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TITI rowsort
-SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__
 ----
 a 100 L2 2
 b 101 NULL NULL
@@ -63,7 +63,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TITI rowsort
-SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT jk, left_value, right_value, "__right_pk_id" FROM __MV__
 ----
 a 100 NULL NULL
 b 101 L2 2

@@ -27,6 +27,6 @@ statement ok
 INSERT INTO __MV__ SELECT g, SUM(v), COUNT(*) FROM __SRC__ GROUP BY g
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 10

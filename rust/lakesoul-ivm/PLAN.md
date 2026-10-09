@@ -2654,6 +2654,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   末步删除、过滤源重建）、oracle 第三步改为 `c.k = b.k`（seed 21/66/5 × 30 轮，并修掉
   「保守路径丢失已删除基表键」的缺陷）。全量 IVM 套件 392 个测试通过、0 失败。
 
+### 10.94 逻辑读去 tombstone 过滤 + `COUNT(*)` 修复（PR-88）
+
+- **背景**：slt/oracle 里所有查询都带 `WHERE "rowKinds" = 'insert'`，而最终用户不应加这种内部列过滤；
+  `IvmReadMode::Current`（默认）本就通过 `drop_tombstones` 隐藏 CDC 墓碑行。
+- **改动**：删除 122 个 slt 文件中的 541 处与 `sql_oracle.rs` 的 85 处 `WHERE "rowKinds" = 'insert'`
+  （concurrency/consumers_gc 各 1 处），让测试走用户视角的逻辑读；
+- **顺带修复**：去掉过滤后暴露出 provider 的真实缺陷 —— `SELECT COUNT(*) FROM mv` 触发空投影扫描，
+  `project_batches` 在 0 列 schema 上用 `RecordBatch::try_new` 抛
+  "must either specify a row count or at least one column"；改为
+  `try_new_with_options(..., row_count = Some(batch.num_rows()))` 保留行数。
+- **测试**：全量 IVM 套件 392 个测试通过、0 失败；`concurrent_refreshes_converge` 本次不再跳过
+  （本地 1.28s 通过）。
+- **后续**：CDC 语义一期（append-only CDC × recompute 族的拒绝矩阵）见
+  `/home/chenxu/.opencode/plan/ivm-cdc-semantics.md`。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -11,7 +11,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query TI rowsort
-SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_distinct_v FROM __MV__
 ----
 a 2
 b 1
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_distinct_v FROM __MV__
 ----
 a 3
 b 1
@@ -43,7 +43,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query TI rowsort
-SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_distinct_v FROM __MV__
 ----
 a 2
 b 1
@@ -56,6 +56,6 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query TI rowsort
-SELECT g, approx_distinct_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, approx_distinct_v FROM __MV__
 ----
 a 1

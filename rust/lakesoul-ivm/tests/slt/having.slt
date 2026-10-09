@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 15
 
@@ -25,7 +25,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 b 20
 
@@ -40,7 +40,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 32
 
@@ -52,7 +52,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 32
 
@@ -64,7 +64,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 30
 
@@ -79,7 +79,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 39
 
@@ -94,7 +94,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 a 19
 
@@ -109,6 +109,6 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IT rowsort
-SELECT g, sum_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, sum_v FROM __MV__
 ----
 c 14

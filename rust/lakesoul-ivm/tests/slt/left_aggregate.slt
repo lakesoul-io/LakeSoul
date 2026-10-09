@@ -14,7 +14,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 10 20.0
 2 a 30 25.0
@@ -31,7 +31,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 10 20.0
 2 a 30 25.0
@@ -48,7 +48,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 10 20.0
 2 a 30 62.5
@@ -65,7 +65,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 100 20.0
 2 a 30 62.5
@@ -82,7 +82,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 100 20.0
 2 a 30 62.5
@@ -98,7 +98,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 100 20.0
 2 a 30 62.5
@@ -112,7 +112,7 @@ statement ok
 /*ivm-expect-action rebuild*/
 
 query ITIF rowsort
-SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT k, g, v, m FROM __MV__
 ----
 1 a 100 20.0
 2 a 30 25.0

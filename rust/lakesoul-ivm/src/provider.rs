@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use arrow::array::RecordBatchOptions;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, BooleanArray};
 use arrow_schema::{Field, Schema, SchemaRef};
@@ -277,6 +278,16 @@ fn project_batches(batches: &[RecordBatch], out_schema: &SchemaRef) -> Vec<Recor
             let columns = (0..count)
                 .map(|position| batch.column(position).clone())
                 .collect::<Vec<_>>();
+            if count == 0 {
+                // A scan that needs no columns (`COUNT(*)`): keep the row
+                // count without materializing any column.
+                return RecordBatch::try_new_with_options(
+                    out_schema.clone(),
+                    columns,
+                    &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+                )
+                .expect("the projected columns match the output schema");
+            }
             RecordBatch::try_new(out_schema.clone(), columns)
                 .expect("the projected columns match the output schema")
         })

@@ -10,7 +10,7 @@ statement ok
 /*ivm-expect-action bootstrap*/
 
 query ITI rowsort
-SELECT g, k, nth_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, k, nth_value_v FROM __MV__
 ----
 a 1 7
 a 2 7
@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query ITI rowsort
-SELECT g, k, nth_value_v FROM __MV__ WHERE "rowKinds" = 'insert'
+SELECT g, k, nth_value_v FROM __MV__
 ----
 a 1 10
 a 2 10
