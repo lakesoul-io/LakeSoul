@@ -133,9 +133,11 @@ jobs:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Test legacy merge
+        env:
+          LAKESOUL_IO_USE_V2_MERGE: "false"
+          RUST_LOG: info
+          RUST_BACKTRACE: full
         run: |
-          export RUST_LOG=info
-          export RUST_BACKTRACE=full
           cargo test --profile test-fast --lib --bins --tests --jobs 4
       - name: Test v2 merge
         env:

@@ -193,9 +193,9 @@ macro_rules! create_merger {
                 .all(|op| *op == MergeOperator::UseLast)
         {
             let use_v2_merge: bool = std::env::var("LAKESOUL_IO_USE_V2_MERGE")
-                .unwrap_or("false".into())
+                .unwrap_or("true".into())
                 .parse()
-                .unwrap_or(false);
+                .unwrap_or(true);
             info!("lakesoul use_v2_merge: {}", use_v2_merge);
             if use_v2_merge {
                 let is_partial_merge = $fields_map
