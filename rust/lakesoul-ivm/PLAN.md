@@ -2681,6 +2681,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`row_append_cdc.slt`（insert 两行 → delete 一行 → 视图仍两行，删除标记不成行）。
   全量 IVM 套件 393 个测试通过、0 失败。
 
+### 10.96 MV 主键存在性校验（PR-90，ROADMAP §A1）
+
+- **契约**：MV 由用户建表、主键由用户在 `CREATE TABLE` 时声明（对标 Flink `PRIMARY KEY ...
+  NOT ENFORCED` + `SinkUpsertMaterializer`：引擎不校验键的语义，只按该键物化）；我们的
+  merge-on-read 就是同一角色的读路径放置（删除行是从 MV 按身份列选出的完整行）。
+- **缺口与修复**：执行器原先只校验 schema、不看主键，无键 MV 会静默退化为 append 语义。
+  现在在执行器（`expected_mv_schema` 旁边）增加校验：键ed 语句（引用的表都有主键）且
+  **不是全局聚合**时，目标 MV 必须声明非空主键，否则报错说明「视图的刷新写入删除标记，
+  需要 MV 主键作为合并键」。
+- **不变量**：不要求主键包含身份列、不校验唯一性（用户负责，已写入 README：典型陷阱是
+  多分支 `UNION ALL` 需投影分支列并入主键）；全局聚合（单行整表重写）豁免；引用了
+  append-only 源的语句按 ROADMAP §A3 暂不纳入契约、跳过校验。
+- **测试**：`sql_executor.rs::rejects_keyless_target_for_keyed_views`（键ed 语句 + 无键 MV
+  → 报错；全局聚合无键 MV → 通过；append-only 源 + 无键 MV → 通过）。
+  全量 IVM 套件 395 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

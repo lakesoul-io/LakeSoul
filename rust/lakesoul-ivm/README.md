@@ -251,6 +251,17 @@ partition keys plus source primary keys for windows, the projected identities
 for row/semi/anti views, the join identities for joins, and the data columns
 for `UNION` (or the data columns plus `__ivm_source` for `UNION ALL`).
 
+**You declare the MV primary key at `CREATE TABLE` and it is your
+responsibility that it identifies a logical row** (like Flink's
+`PRIMARY KEY ... NOT ENFORCED`): the refresh writes delete markers whose merge
+relies on that key, and a key that is not unique makes the view resolve rows
+last-writer-wins.  The executor only enforces that a statement over keyed
+tables targets an MV **with** a key (a global aggregate, whose single row is
+rewritten wholesale, needs none; a statement over an append-only source is
+outside the keyed contract).  A typical trap: the two branches of a
+`UNION ALL` can produce the same key values, so project a branch column
+(`'a' AS src`) and include it in the MV key.
+
 ## Sources
 
 * A **keyed** source (LakeSoul primary key) supports upserts, deletes and

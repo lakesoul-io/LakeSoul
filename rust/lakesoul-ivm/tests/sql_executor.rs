@@ -438,3 +438,96 @@ async fn rejects_bad_statements_and_mismatched_targets() {
     let _ = mv;
     let _ = other;
 }
+
+#[tokio::test]
+async fn rejects_keyless_target_for_keyed_views() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("m3_keyless_src_{suffix}"),
+                table_path(&dir, "src"),
+                schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let keyless = runtime
+        .create_table(IvmTableOptions::new(
+            format!("m3_keyless_mv_{suffix}"),
+            table_path(&dir, "mv"),
+            sum_count_mv_schema_for(&source.schema, &["g".to_string()], Some("v"))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    // A statement over keyed tables needs an MV primary key.
+    let error = executor
+        .execute(&format!(
+            "INSERT INTO m3_keyless_mv_{suffix} \
+             SELECT g, SUM(v), COUNT(*) FROM m3_keyless_src_{suffix} GROUP BY g"
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error}").contains("needs a primary key"),
+        "{error}"
+    );
+    drop(keyless);
+
+    // A global aggregate rewrites its single row and needs no key.
+    executor
+        .runtime()
+        .create_table(IvmTableOptions::new(
+            format!("m3_keyless_global_{suffix}"),
+            table_path(&dir, "global"),
+            sum_count_mv_schema_for(&source.schema, &Vec::<String>::new(), Some("v"))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    executor
+        .execute(&format!(
+            "INSERT INTO m3_keyless_global_{suffix} \
+             SELECT SUM(v), COUNT(*) FROM m3_keyless_src_{suffix}"
+        ))
+        .await
+        .unwrap();
+
+    // A statement over an append-only source is outside the keyed contract.
+    let append_source = executor
+        .runtime()
+        .create_table(
+            IvmTableOptions::new(
+                format!("m3_keyless_app_{suffix}"),
+                table_path(&dir, "app"),
+                schema(),
+            )
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    executor
+        .runtime()
+        .create_table(IvmTableOptions::new(
+            format!("m3_keyless_appmv_{suffix}"),
+            table_path(&dir, "appmv"),
+            sum_count_mv_schema_for(&append_source.schema, &["g".to_string()], Some("v"))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    executor
+        .execute(&format!(
+            "INSERT INTO m3_keyless_appmv_{suffix} \
+             SELECT g, SUM(v), COUNT(*) FROM m3_keyless_app_{suffix} GROUP BY g"
+        ))
+        .await
+        .unwrap();
+}
