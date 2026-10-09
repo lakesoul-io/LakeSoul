@@ -2781,12 +2781,14 @@ fn sqllogic_lookup_chain() {
             left: true,
             keys: group_keys(&["k"]),
             right_keys: group_keys(&["k"]),
+            key_sources: Vec::new(),
         },
         LookupChainStep {
             source: 2,
             left: true,
             keys: group_keys(&["k"]),
             right_keys: group_keys(&["k"]),
+            key_sources: Vec::new(),
         },
     ];
     let columns = vec![
@@ -2828,7 +2830,7 @@ fn sqllogic_lookup_chain() {
         vec![
             SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
             SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k"])),
-            SltSource::keyed("__DIM2__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM2__", schema.clone(), group_keys(&["v"])),
         ],
         mv_schema,
         group_keys(&["k"]),

@@ -1105,6 +1105,10 @@ pub struct LookupChainStep {
     /// The joined source's key columns (its primary keys), aligned with
     /// [`Self::keys`].
     pub right_keys: Vec<String>,
+    /// The source index of each key (0 is the base); empty means every key
+    /// comes from the base.  A key may reference any earlier source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_sources: Vec<usize>,
 }
 
 /// One materialized column of a [`ViewSpec::LookupChain`].

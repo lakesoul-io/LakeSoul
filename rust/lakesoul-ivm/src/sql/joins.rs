@@ -1578,6 +1578,21 @@ mod tests {
         assert_eq!(output_columns[3].source, 2);
         assert_eq!(output_columns[3].name, "cv");
 
+        // A step key may reference an earlier step's column.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             left join src b on b.k = a.k \
+             left join src c on c.k = b.k",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain { steps, .. } = analyzed.spec else {
+            panic!("expected a lookup chain spec");
+        };
+        assert_eq!(steps[1].keys, vec!["k".to_string()]);
+        assert_eq!(steps[1].key_sources, vec![1]);
+
         // A right/full step, differently named keys and non-base keys stay
         // rejected.
         for sql in [
@@ -1688,11 +1703,19 @@ mod tests {
             }]
         );
 
-        // A non-inner join in the tree is rejected.
+        // A non-inner join in the tree becomes a lookup chain (see
+        // analyzes_lookup_chain); a right or full step stays rejected.
+        let analyzed = analyze_optimized(
+            "select a.k, b.g, c.v from src a join src b on a.k = b.k \
+             left join src c on b.k = c.k",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::LookupChain { .. }));
         assert!(
             analyze_optimized(
                 "select a.k, b.g, c.v from src a join src b on a.k = b.k \
-                 left join src c on b.k = c.k",
+                 full join src c on b.k = c.k",
             )
             .await
             .is_err()

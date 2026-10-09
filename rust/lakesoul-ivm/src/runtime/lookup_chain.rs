@@ -120,6 +120,71 @@ fn lookup_chain_alias(source: usize, column: &str) -> String {
     format!("__ivm_chain_{source}_{column}")
 }
 
+/// The source a step key comes from (0 is the base).
+fn step_key_source(step: &LookupChainStep, index: usize) -> usize {
+    step.key_sources.get(index).copied().unwrap_or(0)
+}
+
+/// The name of a chain column in the replay frame.
+fn chain_column_name(source: usize, column: &str) -> String {
+    if source == 0 {
+        column.to_string()
+    } else {
+        lookup_chain_alias(source, column)
+    }
+}
+
+/// The columns of earlier sources that later steps join on.
+fn lookup_chain_referenced(view: &LookupChainView, source: usize) -> Vec<String> {
+    let mut columns = Vec::new();
+    for step in &view.steps {
+        if step.source <= source {
+            continue;
+        }
+        for (index, key) in step.keys.iter().enumerate() {
+            if step_key_source(step, index) == source && !columns.contains(key) {
+                columns.push(key.clone());
+            }
+        }
+    }
+    columns
+}
+
+/// Replay the first `steps` chain steps over `frame` (the base rows).
+fn lookup_chain_replay(
+    view: &LookupChainView,
+    frames: &[DataFrame],
+    steps: usize,
+    mut frame: DataFrame,
+) -> Result<DataFrame> {
+    for (index, step) in view.steps.iter().enumerate().take(steps) {
+        let (_, step_frame) = lookup_chain_step_frame(view, index, &frames[index + 1])?;
+        let right_keys = step
+            .right_keys
+            .iter()
+            .map(|key| lookup_chain_alias(index + 1, key))
+            .collect::<Vec<_>>();
+        let left_keys = step
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(key, column)| chain_column_name(step_key_source(step, key), column))
+            .collect::<Vec<_>>();
+        frame = frame.join(
+            step_frame,
+            if step.left {
+                JoinType::Left
+            } else {
+                JoinType::Inner
+            },
+            &left_keys.iter().map(String::as_str).collect::<Vec<_>>(),
+            &right_keys.iter().map(String::as_str).collect::<Vec<_>>(),
+            None,
+        )?;
+    }
+    Ok(frame)
+}
+
 /// The payload columns a source contributes to the view.
 fn lookup_chain_payload(view: &LookupChainView, source: usize) -> Vec<String> {
     let mut columns = Vec::new();
@@ -205,23 +270,33 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
                 table.table_name
             ));
         }
-        for key in &step.keys {
-            let base_field = base.schema.field_with_name(key).map_err(|_| {
-                report!(
-                    "lookup chain view {}: join key {key} is not in the base",
+        for (key_index, key) in step.keys.iter().enumerate() {
+            let source = step_key_source(step, key_index);
+            if source > index {
+                return Err(report!(
+                    "lookup chain view {}: join key {key} must come from an earlier source",
                     view.view_id
-                )
-            })?;
-            let step_field = table.schema.field_with_name(key).map_err(|_| {
+                ));
+            }
+            let (left_table, _) = &view.sources[source];
+            let left_field = left_table.schema.field_with_name(key).map_err(|_| {
                 report!(
                     "lookup chain view {}: join key {key} is not in {}",
+                    view.view_id,
+                    left_table.table_name
+                )
+            })?;
+            let right_key = &step.right_keys[key_index];
+            let right_field = table.schema.field_with_name(right_key).map_err(|_| {
+                report!(
+                    "lookup chain view {}: join key {right_key} is not in {}",
                     view.view_id,
                     table.table_name
                 )
             })?;
-            if base_field.data_type() != step_field.data_type() {
+            if left_field.data_type() != right_field.data_type() {
                 return Err(report!(
-                    "lookup chain view {}: join key {key} has different types",
+                    "lookup chain view {}: join key {right_key} has different types",
                     view.view_id
                 ));
             }
@@ -244,6 +319,11 @@ fn lookup_chain_source_columns(
 ) -> Result<Vec<String>> {
     let (table, filter) = &view.sources[index];
     let mut columns = lookup_chain_payload(view, index);
+    for column in lookup_chain_referenced(view, index) {
+        if !columns.contains(&column) {
+            columns.push(column);
+        }
+    }
     if index == 0 {
         for key in &table.primary_keys {
             if !columns.contains(key) {
@@ -291,7 +371,13 @@ fn lookup_chain_step_frame(
     for key in &step.right_keys {
         select.push(col(key.as_str()).alias(lookup_chain_alias(index + 1, key)));
     }
-    for column in lookup_chain_payload(view, index + 1) {
+    let mut columns = lookup_chain_payload(view, index + 1);
+    for column in lookup_chain_referenced(view, index + 1) {
+        if !columns.contains(&column) {
+            columns.push(column);
+        }
+    }
+    for column in columns {
         if !step.right_keys.contains(&column) {
             select
                 .push(col(column.as_str()).alias(lookup_chain_alias(index + 1, &column)));
@@ -420,6 +506,11 @@ impl IvmRuntime {
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
 
+        let now_frames = frames
+            .iter()
+            .map(|(_, _, now)| now.clone())
+            .collect::<Vec<_>>();
+
         // The base rows the window can change: the base delta keys plus, for
         // every changed step source, the base rows matching the changed keys.
         let mut affected = frames[0]
@@ -427,9 +518,16 @@ impl IvmRuntime {
             .clone()
             .select(base_key_exprs.clone())?
             .distinct()?;
+        let mut every_base_row = false;
         for (index, step) in view.steps.iter().enumerate() {
             if !changed[index + 1] {
                 continue;
+            }
+            // A change in the base or in an earlier step can move any key, so
+            // every base row is re-evaluated.
+            if (0..=index).any(|source| changed[source]) {
+                every_base_row = true;
+                break;
             }
             let (table, _) = &view.sources[index + 1];
             let (delta, before, _) = &frames[index + 1];
@@ -464,53 +562,70 @@ impl IvmRuntime {
                     .select(right_key_exprs)?
             }
             .distinct()?;
-            let matched = frames[0]
-                .2
-                .clone()
+            // Match the changed keys against the prefix columns they refer
+            // to; the prefix is replayed over the current (unchanged) states.
+            let matching = (0..step.keys.len())
+                .map(|key| format!("__ivm_changed_{key}"))
+                .collect::<Vec<_>>();
+            let mut prefix_select = base_key_exprs.clone();
+            for (key, name) in step.keys.iter().zip(&matching) {
+                let position = step
+                    .keys
+                    .iter()
+                    .position(|column| column == key)
+                    .unwrap_or(0);
+                let source = step_key_source(step, position);
+                prefix_select.push(
+                    col(chain_column_name(source, key).as_str()).alias(name.as_str()),
+                );
+            }
+            let prefix =
+                lookup_chain_replay(view, &now_frames, index, frames[0].2.clone())?
+                    .select(prefix_select)?;
+            let changed_renamed = changed_keys.select(
+                step.right_keys
+                    .iter()
+                    .zip(&matching)
+                    .map(|(key, name)| col(key.as_str()).alias(name.as_str()))
+                    .collect::<Vec<_>>(),
+            )?;
+            let matched = prefix
                 .join(
-                    changed_keys,
+                    changed_renamed,
                     JoinType::LeftSemi,
-                    &step.keys.iter().map(String::as_str).collect::<Vec<_>>(),
-                    &step
-                        .right_keys
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>(),
+                    &matching.iter().map(String::as_str).collect::<Vec<_>>(),
+                    &matching.iter().map(String::as_str).collect::<Vec<_>>(),
                     None,
                 )?
                 .select(base_key_exprs.clone())?
                 .distinct()?;
             affected = affected.union(matched)?.distinct()?;
         }
+        if every_base_row {
+            // Every key the base or the view knows is re-evaluated; the view
+            // side keeps the keys the base no longer has.
+            let base_now_keys = frames[0]
+                .2
+                .clone()
+                .select(base_key_exprs.clone())?
+                .distinct()?;
+            let mv_keys = mv.clone().select(base_key_exprs.clone())?.distinct()?;
+            affected = affected.union(base_now_keys)?.union(mv_keys)?.distinct()?;
+        }
 
         // Replay the chain over the current states for the affected rows.
-        let mut frame = frames[0].2.clone().join(
-            affected.clone(),
-            JoinType::LeftSemi,
-            &base_key_names,
-            &base_key_names,
-            None,
-        )?;
-        for (index, step) in view.steps.iter().enumerate() {
-            let (_, step_frame) =
-                lookup_chain_step_frame(view, index, &frames[index + 1].2)?;
-            let right_keys = step
-                .right_keys
-                .iter()
-                .map(|key| lookup_chain_alias(index + 1, key))
-                .collect::<Vec<_>>();
-            frame = frame.join(
-                step_frame,
-                if step.left {
-                    JoinType::Left
-                } else {
-                    JoinType::Inner
-                },
-                &step.keys.iter().map(String::as_str).collect::<Vec<_>>(),
-                &right_keys.iter().map(String::as_str).collect::<Vec<_>>(),
+        let frame = lookup_chain_replay(
+            view,
+            &now_frames,
+            view.steps.len(),
+            frames[0].2.clone().join(
+                affected.clone(),
+                JoinType::LeftSemi,
+                &base_key_names,
+                &base_key_names,
                 None,
-            )?;
-        }
+            )?,
+        )?;
         let output_exprs = view
             .output_columns
             .iter()
@@ -649,38 +764,8 @@ impl IvmRuntime {
             )?;
             frames.push(frame);
         }
-        let mut frame = frames[0].clone();
-        for (index, step) in view.steps.iter().enumerate() {
-            let mut select = Vec::new();
-            for key in &step.right_keys {
-                select.push(col(key.as_str()).alias(lookup_chain_alias(index + 1, key)));
-            }
-            for column in lookup_chain_payload(view, index + 1) {
-                if !step.right_keys.contains(&column) {
-                    select.push(
-                        col(column.as_str())
-                            .alias(lookup_chain_alias(index + 1, &column)),
-                    );
-                }
-            }
-            let right = frames[index + 1].clone().select(select)?;
-            let right_keys = step
-                .right_keys
-                .iter()
-                .map(|key| lookup_chain_alias(index + 1, key))
-                .collect::<Vec<_>>();
-            frame = frame.join(
-                right,
-                if step.left {
-                    JoinType::Left
-                } else {
-                    JoinType::Inner
-                },
-                &step.keys.iter().map(String::as_str).collect::<Vec<_>>(),
-                &right_keys.iter().map(String::as_str).collect::<Vec<_>>(),
-                None,
-            )?;
-        }
+        let frame =
+            lookup_chain_replay(view, &frames, view.steps.len(), frames[0].clone())?;
         let output_exprs = view
             .output_columns
             .iter()

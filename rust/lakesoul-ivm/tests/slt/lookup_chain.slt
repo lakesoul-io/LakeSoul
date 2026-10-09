@@ -1,5 +1,6 @@
-# A left-deep chain of keyed 1:1 lookups: the base keeps every row and each
-# step pads with NULL when the key is missing.
+# A left-deep chain of keyed 1:1 lookups: the base keeps every row, each step
+# pads with NULL when the key is missing, and the last step joins on a column
+# of the previous step (__DIM2__ is keyed by v).
 
 statement ok
 /*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert*/
@@ -8,10 +9,10 @@ statement ok
 /*ivm-append __DIM__: k=1,g=a,v=100,op=insert*/
 
 statement ok
-/*ivm-append __DIM2__: k=1,g=a,v=1000,op=insert*/
+/*ivm-append __DIM2__: k=9,g=d,v=100,op=insert*/
 
 statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
 
 statement ok
 /*ivm-expect-action bootstrap*/
@@ -19,15 +20,31 @@ statement ok
 query ITIII rowsort
 SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
-1 a 10 100 1000
+1 a 10 100 100
 2 a 30 NULL NULL
 
-# A dimension row for another base key fills one row only.
+# A second-step row is only looked up when a previous step produces its key.
+statement ok
+/*ivm-append __DIM2__: k=8,g=d,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 100 100
+2 a 30 NULL NULL
+
+# The middle step gains a row whose value now matches the last step.
 statement ok
 /*ivm-append __DIM__: k=2,g=a,v=50,op=insert*/
 
 statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
 
 statement ok
 /*ivm-expect-action incremental*/
@@ -35,31 +52,15 @@ statement ok
 query ITIII rowsort
 SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
-1 a 10 100 1000
-2 a 30 50 NULL
+1 a 10 100 100
+2 a 30 50 50
 
-# A dimension update moves the value of its key.
+# Changing the middle step's value drops the last step's match.
 statement ok
-/*ivm-append __DIM__: k=1,g=a,v=200,op=insert*/
-
-statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+/*ivm-append __DIM__: k=2,g=a,v=60,op=insert*/
 
 statement ok
-/*ivm-expect-action incremental*/
-
-query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
-----
-1 a 10 200 1000
-2 a 30 50 NULL
-
-# A dimension delete NULLs the payload of its key.
-statement ok
-/*ivm-append __DIM__: k=1,g=a,v=200,op=delete*/
-
-statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
 
 statement ok
 /*ivm-expect-action incremental*/
@@ -67,31 +68,15 @@ statement ok
 query ITIII rowsort
 SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
-1 a 10 NULL 1000
-2 a 30 50 NULL
+1 a 10 100 100
+2 a 30 60 NULL
 
-# The last step changes independently.
+# A last-step row for the new value fills it again.
 statement ok
-/*ivm-append __DIM2__: k=1,g=a,v=999,op=insert*/
-
-statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+/*ivm-append __DIM2__: k=7,g=d,v=60,op=insert*/
 
 statement ok
-/*ivm-expect-action incremental*/
-
-query ITIII rowsort
-SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
-----
-1 a 10 NULL 999
-2 a 30 50 NULL
-
-# A base update keeps the looked-up values; a base delete removes its row.
-statement ok
-/*ivm-append __SRC__: k=1,g=a,v=11,op=insert; k=3,g=b,v=7,op=insert*/
-
-statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
 
 statement ok
 /*ivm-expect-action incremental*/
@@ -99,15 +84,18 @@ statement ok
 query ITIII rowsort
 SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
-1 a 11 NULL 999
-2 a 30 50 NULL
-3 b 7 NULL NULL
+1 a 10 100 100
+2 a 30 60 60
+
+# The base and a step changing in one window re-evaluates the view.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=7,op=insert*/
 
 statement ok
-/*ivm-append __SRC__: k=2,g=a,v=30,op=delete*/
+/*ivm-append __DIM__: k=3,g=b,v=77,op=insert*/
 
 statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = a.k
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
 
 statement ok
 /*ivm-expect-action incremental*/
@@ -115,12 +103,30 @@ statement ok
 query ITIII rowsort
 SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
-1 a 11 NULL 999
-3 b 7 NULL NULL
+1 a 10 100 100
+2 a 30 60 60
+3 b 7 77 NULL
 
-# A filtered step source rebuilds the chain.
+# A last-step delete removes its match.
 statement ok
-INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN (SELECT k, v FROM __DIM2__ WHERE v > 5000) c ON c.k = a.k
+/*ivm-append __DIM2__: k=7,g=d,v=60,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIII rowsort
+SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 100 100
+2 a 30 60 NULL
+3 b 7 77 NULL
+
+# A filtered middle step rebuilds the chain.
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a LEFT JOIN (SELECT k, v FROM __DIM__ WHERE v < 90) b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.v = b.v
 
 statement ok
 /*ivm-expect-action rebuild*/
@@ -128,5 +134,6 @@ statement ok
 query ITIII rowsort
 SELECT k, g, v, bv, cv FROM __MV__ WHERE "rowKinds" = 'insert'
 ----
-1 a 11 NULL NULL
-3 b 7 NULL NULL
+1 a 10 NULL NULL
+2 a 30 60 NULL
+3 b 7 77 NULL
