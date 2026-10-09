@@ -4,6 +4,7 @@
 
 //! The interface of LakeSoul table.
 
+use lakesoul_common::misc::SecretMap;
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -230,17 +231,17 @@ impl LakeSoulTable {
 
     pub async fn get_writer(
         &self,
-        object_store_options: HashMap<String, String>,
+        object_store_options: SecretMap,
     ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
         let mut builder = create_io_config_builder(
             self.client.clone(),
             Some(self.table_name()),
             false,
             self.table_namespace(),
-            HashMap::from([(
+            SecretMap::from(HashMap::from([(
                 OPTION_KEY_MEM_LIMIT.to_string(),
                 format!("{}", 1024 * 1024 * 1024),
-            )]),
+            )])),
             object_store_options,
         )
         .await?;
@@ -260,7 +261,7 @@ impl LakeSoulTable {
             Some(self.table_name()),
             true,
             self.table_namespace(),
-            HashMap::new(),
+            SecretMap::new(),
             object_store_options,
         )
         .await?;
@@ -286,7 +287,7 @@ impl LakeSoulTable {
             Some(self.table_name()),
             false,
             self.table_namespace(),
-            HashMap::new(),
+            SecretMap::new(),
             provider_options.object_store_options.clone(),
         )
         .await?
@@ -308,8 +309,8 @@ impl LakeSoulTable {
     ) -> Result<Arc<dyn TableProvider>> {
         let io_config = create_io_config_builder_from_table_info(
             self.table_info(),
-            HashMap::new(),
-            HashMap::new(),
+            SecretMap::new(),
+            SecretMap::new(),
         )?
         .build();
         let format_registry =
@@ -391,7 +392,7 @@ impl LakeSoulTable {
             self.table_name(),
             self.table_namespace(),
             &self.primary_keys,
-            HashMap::new(),
+            SecretMap::new(),
         )
         .await
     }
@@ -406,7 +407,7 @@ impl LakeSoulTable {
             self.table_name(),
             self.table_namespace(),
             &self.primary_keys,
-            HashMap::new(),
+            SecretMap::new(),
         )
         .await
     }

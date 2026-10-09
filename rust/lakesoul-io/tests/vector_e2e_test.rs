@@ -10,11 +10,11 @@
 //! Usage:
 //!   cargo test -p lakesoul-io --test vector_e2e_test -- --nocapture
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::vector::builder::VectorShardIndexBuilder;
 use lakesoul_vector::{
@@ -140,7 +140,7 @@ async fn test_glove_e2e_build_and_search() {
         config.clone(),
         vec![format!("file://{}", parquet_path)],
         vec!["id".to_string()],
-        HashMap::new(),
+        SecretMap::new(),
         None,
     );
     let outcome = builder.build().await.unwrap();
@@ -255,7 +255,7 @@ async fn test_build_and_list_files() {
         config,
         vec![format!("file://{}", parquet_path)],
         vec!["id".to_string()],
-        HashMap::new(),
+        SecretMap::new(),
         None,
     );
     let outcome = builder.build().await.unwrap();
@@ -370,7 +370,7 @@ async fn test_reader_with_vector_search() {
         config,
         vec![format!("file://{}", parquet_path)],
         vec![pk_col.to_string()],
-        HashMap::new(),
+        SecretMap::new(),
         Some(format!("file://{}", tmp_path)),
     );
     let outcome = builder.build().await.unwrap();

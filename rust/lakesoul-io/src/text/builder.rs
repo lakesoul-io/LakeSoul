@@ -10,7 +10,7 @@
 //! generation, an incremental build appends a split for the newly written
 //! files.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
@@ -52,7 +52,7 @@ pub struct TextShardIndexBuilder {
     config: TextIndexConfig,
     file_paths: Vec<String>,
     pk_column: String,
-    object_store_options: HashMap<String, String>,
+    object_store_options: SecretMap,
     default_fs: Option<String>,
     base: Option<ResolvedIndex>,
 }
@@ -63,7 +63,7 @@ impl TextShardIndexBuilder {
         config: TextIndexConfig,
         file_paths: Vec<String>,
         pk_column: String,
-        object_store_options: HashMap<String, String>,
+        object_store_options: SecretMap,
         default_fs: Option<String>,
     ) -> Self {
         Self {

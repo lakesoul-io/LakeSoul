@@ -8,6 +8,7 @@
 //! (tokenizer/positions/stored) are flattened next to them.
 
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_metadata::index_catalog::{CommitMode, IndexCatalog, IndexCommitView};
 use lakesoul_text::TextSplitEntry;
 use rootcause::{bail, report};
@@ -265,7 +266,7 @@ pub async fn auto_build_text_index(
                 config_for_build.clone(),
                 plan.files.clone(),
                 pk_column.clone(),
-                object_store_options.clone(),
+                object_store_options.clone().into(),
                 None,
             );
             if let Some(view) = &plan.base {
@@ -289,7 +290,7 @@ pub async fn auto_build_text_index(
                         config_for_build,
                         rebuild_files,
                         pk_column.clone(),
-                        object_store_options.clone(),
+                        object_store_options.clone().into(),
                         None,
                     )
                     .build()
@@ -384,7 +385,7 @@ pub async fn rebuild_text_index(
     table_name: &str,
     namespace: &str,
     primary_keys: &[String],
-    object_store_options: HashMap<String, String>,
+    object_store_options: SecretMap,
 ) -> Result<usize> {
     let Some(table_info) = client
         .get_table_info_by_table_name(table_name, namespace)
@@ -422,7 +423,7 @@ pub async fn rebuild_text_index(
                 config.to_text_index_config(),
                 files,
                 pk_column.clone(),
-                object_store_options.clone(),
+                object_store_options.clone().into(),
                 None,
             )
             .build()

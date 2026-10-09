@@ -114,7 +114,7 @@ pub struct LakeSoulIOConfig {
     /// Arrow schema for partition columns
     pub(crate) partition_schema: IOSchema,
     /// Object store configuration options (e.g., S3 credentials)
-    pub(crate) object_store_options: HashMap<String, String>,
+    pub(crate) object_store_options: SecretMap,
     /// Merge operators for each column
     pub(crate) merge_operators: HashMap<String, String>,
     /// Default values for columns
@@ -242,12 +242,12 @@ impl LakeSoulIOConfig {
     }
 
     /// Returns the object store configuration options (e.g. S3 credentials)
-    pub fn object_store_options(&self) -> &HashMap<String, String> {
+    pub fn object_store_options(&self) -> &SecretMap {
         &self.object_store_options
     }
 
     /// Returns the additional configuration options map
-    pub fn options(&self) -> &HashMap<String, String> {
+    pub fn options(&self) -> &SecretMap {
         &self.options
     }
 
@@ -447,7 +447,7 @@ impl LakeSoulIOConfigBuilder {
     ///
     pub fn new_with_object_store_options(options: HashMap<String, String>) -> Self {
         let mut builder = LakeSoulIOConfigBuilder::new();
-        builder.config.object_store_options = options;
+        builder.config.object_store_options = SecretMap::from_map(options);
         builder
     }
 
@@ -467,7 +467,7 @@ impl LakeSoulIOConfigBuilder {
         &self.config.prefix
     }
 
-    pub fn object_store_options(&self) -> &HashMap<String, String> {
+    pub fn object_store_options(&self) -> &SecretMap {
         &self.config.object_store_options
     }
 

@@ -12,7 +12,7 @@
 //! `text_match` predicate above the scan removes stale candidates, and the
 //! `Limit` trims the result.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -73,7 +73,7 @@ pub struct LakeSoulTextSearchExec {
     /// Primary key columns (the text index returns primary key ids).
     primary_keys: Vec<String>,
     /// Object store configuration options (e.g. S3 credentials).
-    object_store_options: HashMap<String, String>,
+    object_store_options: SecretMap,
     /// CDC change column; when set, delete tombstones are dropped after the
     /// merge-on-read merge.
     cdc_column: String,
@@ -100,7 +100,7 @@ impl LakeSoulTextSearchExec {
         partition_values: Vec<Vec<ScalarValue>>,
         object_store_url: ObjectStoreUrl,
         primary_keys: Vec<String>,
-        object_store_options: HashMap<String, String>,
+        object_store_options: SecretMap,
         cdc_column: String,
         config: TextIndexConfig,
         text_search: TextSearchRequest,

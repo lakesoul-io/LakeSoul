@@ -4,7 +4,7 @@
 
 //! The [`datafusion::catalog`] implementation for the LakeSoul.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -157,8 +157,8 @@ pub async fn create_io_config_builder(
     table_name: Option<&str>,
     fetch_files: bool,
     namespace: &str,
-    options: HashMap<String, String>,
-    object_store_options: HashMap<String, String>,
+    options: SecretMap,
+    object_store_options: SecretMap,
 ) -> Result<LakeSoulIOConfigBuilder> {
     if let Some(table_name) = table_name {
         let table_info = client
