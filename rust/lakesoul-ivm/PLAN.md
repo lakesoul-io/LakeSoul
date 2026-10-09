@@ -1083,7 +1083,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 | 组 | 缺口 | 建议 |
 |---|---|---|
-| 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
+| 连接/集合 | 多路链中的外连接（扁平链目前仅 inner/cross，已明确拒绝；设计见 §10.91 的 `LookupChain`，先做 keyed 1:1 星型子集）；`INTERSECT`/`EXCEPT` 的重复计数放宽（可空键已支持，匹配计数差异仍拒绝）；pair 谓词只能引用已物化列 | 设计级扩展（多视图链 / 空安全 join） |
 | 子查询/CTE | `DISTINCT`/多聚合的相关子查询、聚合右输入的嵌套/不透明派生表 | 随多视图链一起做 |
 | 入口/表 | **分区源表**（需打通 `lakesoul-io` 分区值读取与 IVM 读取路径） | 跨模块，独立立项 |
 | 类型 | Float/Decimal/Date/Boolean/Timestamp 的聚合/分组/去重与 UNION 已系统覆盖（typed slt + 差分 oracle）；剩余：Decimal 超出 Decimal128(38) 的 SUM 溢出、嵌套类型（List/Struct） | 随需求做 |
@@ -2599,6 +2599,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `left_aggregate.slt`（NULL 值、键获得/失去行、源更新/删除、子查询过滤重建）、
   `oracle_left_aggregate_matches_full_recompute`（种子双源，另跑 seed 9/44/82 × 30 轮）。
   全量 IVM 套件 389 个测试通过、0 失败。
+
+### 10.91 多路链中的外连接：现状与设计（PR-85）
+
+- **现状**：三表以上的扁平链只支持 inner/cross；链中出现 `LEFT`/`RIGHT`/`FULL` 步骤时分析器
+  **明确拒绝**（错误信息说明「链式外连接未维护，可用两表外连接或逐级 lookup 视图」），
+  不会静默产出与全量重算不同的结果。本 PR 补上该拒绝的专门测试与设计记录。
+- **设计（下一项实现，暂名 `LookupChain`）**：
+  - **形状**：左深链 `base [LEFT|INNER] JOIN s1 ON s1.<k> = base.<k> [LEFT|INNER] JOIN s2 ...`，
+    所有源 keyed，每个右表以连接键为其唯一键（1:1 lookup，与两表 LookupJoin 的既有约束一致）；
+    步骤键只引用**基表**列（星型/维表 lookup 的常见形状），先做这一子集，其余形状继续拒绝。
+  - **MV**：基表输出列 + 各步骤 payload（外表步骤可空）+ `rowKinds`/`__ivm_epoch`；
+    主键 = 基表主键（1:1 下每条基表行至多一行）。
+  - **刷新**：受影响基表主键 = 基表 delta 主键 ∪「各变化源的新旧键值经基表列半连接得到的
+    基表主键」（右侧变化取 `delta ∪ as-of(pks)` 的键值，覆盖键变更与删除）；对受影响行按当前
+    各源做 `base LEFT/INNER JOIN s1 ...` 重算，delete+insert 重写。
+  - **重建**：从各源当前态整体按链左连接重算。
+  - **后续扩展**：右侧一对多（非 1:1）的外连接、步骤键引用前序非基表列、与 inner 步骤混合的
+    链式副作用、computed 输出列。
+- **验证计划**：analyzer 形状/拒绝矩阵、`lookup_chain.slt`（维表插入/更新/删除、基表更新与删除、
+    多步 payload、空 payload 的 NULL 语义）、差分 oracle（种子随机轮）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
