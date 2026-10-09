@@ -1,0 +1,119 @@
+# A select-list correlated scalar subquery: every row carries the per-key
+# average of the other table, NULL when the key has no rows there.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=15; k=1,g=a,v=25; k=2,g=a,v=25*/
+
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 20.0
+2 a 30 25.0
+3 b 20 NULL
+
+# A key gaining rows gets its average.
+statement ok
+/*ivm-append __DIM__: k=3,g=b,v=5*/
+
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 20.0
+2 a 30 25.0
+3 b 20 5.0
+
+# Raising a key's average moves only that row.
+statement ok
+/*ivm-append __DIM__: k=2,g=a,v=100*/
+
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 10 20.0
+2 a 30 62.5
+3 b 20 5.0
+
+# A source update keeps the aggregate of its key.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100 20.0
+2 a 30 62.5
+3 b 20 5.0
+
+# A source delete removes the row.
+statement ok
+/*ivm-append __SRC__: k=3,g=b,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100 20.0
+2 a 30 62.5
+
+# A new key without rows in the other table carries NULL.
+statement ok
+/*ivm-append __SRC__: k=4,g=c,v=7,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100 20.0
+2 a 30 62.5
+4 c 7 NULL
+
+# A subquery filter rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k AND u.v < 50) AS m FROM __SRC__ s
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITIF rowsort
+SELECT k, g, v, m FROM __MV__ WHERE "rowKinds" = 'insert'
+----
+1 a 100 20.0
+2 a 30 25.0
+4 c 7 NULL

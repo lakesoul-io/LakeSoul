@@ -35,20 +35,35 @@ pub(super) fn analyze_join(
     // A correlated scalar subquery plans as a left-semi join against one
     // aggregate row per correlated key.
     if let Some((aggregate, subquery_projection)) = aggregate_input(&join.right) {
-        if join.join_type != JoinType::LeftSemi {
-            return Err(unsupported(
+        return match join.join_type {
+            JoinType::LeftSemi => analyze_correlated_scalar(
+                join,
+                aggregate,
+                subquery_projection,
+                projection,
+                tables,
+                request,
+            ),
+            JoinType::Left => {
+                let Some(projection) = projection else {
+                    return Err(unsupported(
+                        "a select-list scalar subquery needs its projection",
+                    ));
+                };
+                analyze_left_aggregate(
+                    join,
+                    aggregate,
+                    subquery_projection,
+                    projection,
+                    tables,
+                    request,
+                )
+            }
+            _ => Err(unsupported(
                 "a join against an aggregate input (a correlated scalar subquery) \
-                 is only maintained in a WHERE comparison",
-            ));
-        }
-        return analyze_correlated_scalar(
-            join,
-            aggregate,
-            subquery_projection,
-            projection,
-            tables,
-            request,
-        );
+                 is only maintained as a WHERE comparison or a select-list value",
+            )),
+        };
     }
     // Three or more joined tables flatten into one chained inner join.
     if join_tree_has_multiple_sources(join) {
@@ -445,6 +460,138 @@ fn analyze_correlated_scalar(
         right_aggregate: Some(call),
         right_keys,
         match_predicate: Some(predicate),
+    })
+}
+
+/// A select-list correlated scalar subquery: `SELECT k, (SELECT AGG(w) FROM
+/// dim u WHERE u.k = s.k) AS m FROM src s` is maintained as a left join
+/// against one aggregate row per correlated key.
+fn analyze_left_aggregate(
+    join: &Join,
+    aggregate: &Aggregate,
+    subquery_projection: &Projection,
+    projection: &Projection,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    if join.filter.is_some() {
+        return Err(unsupported(
+            "a select-list scalar subquery with a residual condition",
+        ));
+    }
+    if aggregate.aggr_expr.len() != 1 {
+        return Err(unsupported("a scalar subquery with several aggregates"));
+    }
+    // The correlated keys are the aggregate's group columns.
+    let mut right_keys = Vec::new();
+    for expr in &aggregate.group_expr {
+        let column = column_of(expr).ok_or_else(|| {
+            unsupported("a correlated scalar subquery needs plain key columns")
+        })?;
+        right_keys.push(column.name.clone());
+    }
+    if right_keys.is_empty() {
+        return Err(unsupported("an uncorrelated scalar subquery"));
+    }
+    // The subquery returns one column: the projection field that is not a key.
+    let mut aggregate_columns = Vec::new();
+    for field in subquery_projection.schema.fields() {
+        if !right_keys.contains(field.name()) {
+            aggregate_columns.push(field.name().clone());
+        }
+    }
+    if aggregate_columns.len() != 1 {
+        return Err(unsupported("a scalar subquery must return one column"));
+    }
+    // The join pairs the correlated keys.
+    let mut join_keys = Vec::new();
+    let mut on_right_keys = Vec::new();
+    let mut right_qualifier = None;
+    for (left_expr, right_expr) in &join.on {
+        let left_column = column_of(left_expr)
+            .ok_or_else(|| unsupported("a scalar-subquery key must be a column"))?;
+        let right_column = column_of(right_expr)
+            .ok_or_else(|| unsupported("a scalar-subquery key must be a column"))?;
+        join_keys.push(left_column.name.clone());
+        on_right_keys.push(right_column.name.clone());
+        if right_column.relation.is_some() {
+            right_qualifier = right_column.relation.clone();
+        }
+    }
+    if join_keys.is_empty() {
+        return Err(unsupported("a scalar subquery needs a correlated key"));
+    }
+    let mut sorted_group = right_keys.clone();
+    sorted_group.sort();
+    sorted_group.dedup();
+    let mut sorted_on = on_right_keys;
+    sorted_on.sort();
+    sorted_on.dedup();
+    if sorted_group != sorted_on {
+        return Err(unsupported(
+            "a scalar subquery correlated on keys other than its grouping",
+        ));
+    }
+    let left_input = join_input(&join.left, tables)?;
+    let right_input = join_input(&aggregate.input, tables)?;
+    let left = left_input.table;
+    let right = right_input.table;
+    // The outer projection: plain left columns plus the scalar value.
+    if !is_plain_projection(projection) {
+        return Err(unsupported(
+            "computed columns next to a select-list scalar subquery",
+        ));
+    }
+    let mut output_columns = Vec::new();
+    let mut aggregate_column = None;
+    for expr in &projection.expr {
+        let mut inner = expr;
+        let mut alias = None;
+        while let Expr::Alias(nested) = inner {
+            if alias.is_none() {
+                alias = Some(nested.name.clone());
+            }
+            inner = &nested.expr;
+        }
+        let Expr::Column(column) = inner else {
+            return Err(unsupported(
+                "computed columns next to a select-list scalar subquery",
+            ));
+        };
+        if column.relation.is_some()
+            && column.relation.as_ref() == right_qualifier.as_ref()
+        {
+            if aggregate_column.is_some() {
+                return Err(unsupported("the scalar subquery value appears twice"));
+            }
+            aggregate_column = Some(alias.unwrap_or_else(|| column.name.clone()));
+        } else {
+            output_columns.push(alias.unwrap_or_else(|| column.name.clone()));
+        }
+    }
+    let aggregate_column = aggregate_column.ok_or_else(|| {
+        unsupported("the projection must contain the scalar subquery value")
+    })?;
+    for key in &left.primary_keys {
+        if !output_columns.contains(key) {
+            return Err(unsupported(format!(
+                "a select-list scalar subquery must keep the left key {key}"
+            )));
+        }
+    }
+    let call = render_expression(&aggregate.aggr_expr[0])?;
+    Ok(ViewSpec::LeftAggregate {
+        view_id: request.view_id.clone(),
+        left_table_id: left.table_id.clone(),
+        right_table_id: right.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        join_keys,
+        right_keys,
+        right_aggregate: call,
+        aggregate_column,
+        output_columns,
+        left_filter: left_input.filter.clone(),
+        right_filter: right_input.filter.clone(),
     })
 }
 
@@ -2130,15 +2277,39 @@ mod tests {
             .is_ok()
         );
         for sql in [
-            "select k, (select avg(u.v) from src u where u.k = s.k) as m from src s",
             "select k, v from src s where v > \
              (select count(distinct u.v) from src u where u.k = s.k)",
+            "select (select avg(u.v) from src u where u.k = s.k) + 1 as m from src s",
         ] {
             assert!(
                 analyze_multi(sql, vec![source_table("src")]).await.is_err(),
                 "{sql}"
             );
         }
+
+        // A select-list correlated scalar subquery is a left aggregate view.
+        let analyzed = analyze_multi(
+            "select k, v, (select avg(u.v) from src u where u.k = s.k) as m from src s",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            join_keys,
+            right_keys,
+            aggregate_column,
+            output_columns,
+            right_aggregate,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert_eq!(right_keys, vec!["k".to_string()]);
+        assert_eq!(aggregate_column, "m");
+        assert_eq!(output_columns, vec!["k".to_string(), "v".to_string()]);
+        assert!(right_aggregate.contains("avg"), "{right_aggregate}");
     }
 
     #[tokio::test]

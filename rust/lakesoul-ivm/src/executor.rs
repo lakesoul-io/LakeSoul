@@ -38,10 +38,11 @@ use crate::runtime::{
     bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
     cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_for,
-    keyed_join_view_schema_for, left_join_view_schema_for, lookup_join_view_schema_for,
-    median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
-    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    keyed_join_view_schema_for, left_aggregate_mv_schema_for, left_join_view_schema_for,
+    lookup_join_view_schema_for, median_groups_mv_schema_for,
+    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
+    multi_join_mv_schema_for, multi_window_mv_schema_for, row_expr_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
@@ -514,6 +515,25 @@ fn expected_mv_schema(
     tables: &HashMap<String, IvmTable>,
 ) -> Result<SchemaRef> {
     Ok(match spec {
+        ViewSpec::LeftAggregate {
+            left_table_id,
+            right_table_id,
+            right_aggregate,
+            aggregate_column,
+            output_columns,
+            ..
+        } => {
+            let left = find_table(tables, left_table_id)?;
+            let right = find_table(tables, right_table_id)?;
+            let (aggregate_type, _) =
+                crate::runtime::expression_type(&right.schema, right_aggregate)?;
+            left_aggregate_mv_schema_for(
+                &left.schema,
+                output_columns,
+                aggregate_column,
+                &aggregate_type,
+            )?
+        }
         ViewSpec::SumCount {
             source_table_id,
             group_keys,
