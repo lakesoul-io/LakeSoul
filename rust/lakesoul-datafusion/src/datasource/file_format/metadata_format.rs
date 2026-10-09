@@ -6,6 +6,7 @@
 //! for LakeSoul tables: the metadata/listing callback DataFusion uses for
 //! LakeSoul tables, plus the LakeSoul write path.
 
+use lakesoul_common::misc::SecretMap;
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
 use std::sync::{Arc, Once};
@@ -417,7 +418,7 @@ pub struct LakeSoulHashSinkExec {
 
     /// Object store configuration options forwarded to the vector index
     /// builder after the write commits.
-    object_store_options: std::collections::HashMap<String, String>,
+    object_store_options: SecretMap,
 
     /// The properties of the plan.
     properties: Arc<PlanProperties>,
@@ -436,7 +437,7 @@ impl LakeSoulHashSinkExec {
         sort_order: Option<LexRequirement>,
         table_info: Arc<TableInfo>,
         metadata_client: MetaDataClientRef,
-        object_store_options: std::collections::HashMap<String, String>,
+        object_store_options: SecretMap,
     ) -> Result<Self> {
         let (range_partitions, primary_keys) =
             parse_table_info_partitions(&table_info.partitions)?;
@@ -540,8 +541,8 @@ impl LakeSoulHashSinkExec {
                 debug!("create writer for partition {partition_desc}");
                 let io_config = create_io_config_builder_from_table_info(
                     table_info.clone(),
-                    HashMap::new(),
-                    HashMap::new(),
+                    SecretMap::new(),
+                    SecretMap::new(),
                 )?
                 // The sink already assigns one file per input partition, so
                 // disable the writer's own dynamic partitioning.
@@ -597,7 +598,7 @@ impl LakeSoulHashSinkExec {
         client: MetaDataClientRef,
         table_name: String,
         primary_keys: Vec<String>,
-        object_store_options: std::collections::HashMap<String, String>,
+        object_store_options: SecretMap,
         partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
     ) -> Result<u64> {
         let count = futures::future::join_all(join_handles)
@@ -1219,7 +1220,7 @@ mod span_tests {
                         ..Default::default()
                     }),
                     client,
-                    HashMap::new(),
+                    SecretMap::new(),
                 )
                 .await
                 .unwrap();
@@ -1305,7 +1306,7 @@ mod commit_metrics_tests {
                     client.clone(),
                     "default.tmp_commit_metrics_absent".to_string(),
                     Vec::new(),
-                    HashMap::new(),
+                    SecretMap::new(),
                     Arc::new(Mutex::new(PartitionedFile::new())),
                 )
                 .await
@@ -1393,7 +1394,7 @@ mod commit_metrics_tests {
                     client.clone(),
                     format!("default.{table}"),
                     vec!["pk".to_string()],
-                    HashMap::new(),
+                    SecretMap::new(),
                     Arc::new(Mutex::new(partitions)),
                 )
                 .await

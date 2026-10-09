@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::prefix::shard_index_prefix;
 use lakesoul_io::vector::builder::VectorShardIndexBuilder;
@@ -266,7 +267,7 @@ fn run_shard_vector_index(
         config,
         file_paths,
         pk_columns,
-        object_store_options,
+        SecretMap::from(object_store_options),
         default_fs,
     );
 

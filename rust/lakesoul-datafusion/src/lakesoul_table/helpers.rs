@@ -4,7 +4,7 @@
 
 //! The utilities for LakeSoul table.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::sync::Arc;
 
 use arrow::{
@@ -40,8 +40,8 @@ const OBJECT_METADATA_FETCH_CONCURRENCY: usize = 8;
 /// Create a [`LakeSoulIOConfigBuilder`] from the table info.
 pub(crate) fn create_io_config_builder_from_table_info(
     table_info: Arc<TableInfo>,
-    options: HashMap<String, String>,
-    object_store_options: HashMap<String, String>,
+    options: SecretMap,
+    object_store_options: SecretMap,
 ) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) =
         parse_table_info_partitions(&table_info.partitions)?;
@@ -326,8 +326,8 @@ mod tests {
     fn ivm_io_config(properties: &str) -> Result<lakesoul_io::config::LakeSoulIOConfig> {
         Ok(create_io_config_builder_from_table_info(
             ivm_table_info(properties),
-            HashMap::new(),
-            HashMap::new(),
+            SecretMap::new(),
+            SecretMap::new(),
         )?
         .build())
     }

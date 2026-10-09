@@ -4,7 +4,7 @@
 
 //! The [`datafusion::catalog::CatalogProvider`] implementation for the LakeSoul.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +34,7 @@ pub struct LakeSoulProviderOptions {
     /// them, but readers that build their own io session — the vector search
     /// scan — and post-commit hooks build stores from the table's io config,
     /// which must not lose the credentials.
-    pub object_store_options: HashMap<String, String>,
+    pub object_store_options: SecretMap,
 }
 
 impl LakeSoulProviderOptions {

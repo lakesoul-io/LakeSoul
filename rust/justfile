@@ -1,9 +1,9 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 copy-to-java ext="so":
-  cargo build -p lakesoul-io-c -p lakesoul-metadata-c
-  cp target/debug/liblakesoul_io_c.{{ext}} ../lakesoul-common/target/classes/
-  cp target/debug/liblakesoul_metadata_c.{{ext}} ../lakesoul-common/target/classes/
+    cargo build -p lakesoul-io-c -p lakesoul-metadata-c
+    cp target/debug/liblakesoul_io_c.{{ ext }} ../lakesoul-common/target/classes/
+    cp target/debug/liblakesoul_metadata_c.{{ ext }} ../lakesoul-common/target/classes/
 
 log_level := "info"
 
@@ -14,7 +14,7 @@ log_dir := env("LAKESOUL_LOG_DIR", "/tmp/lakesoul/logs")
 clean-log:
     #!/usr/bin/env bash
     set -euo pipefail
-    dir={{quote(log_dir)}}
+    dir={{ quote(log_dir) }}
     if [ -z "$dir" ]; then
         echo "Refusing to clean unsafe LAKESOUL_LOG_DIR: '$dir'" >&2
         exit 1
@@ -37,10 +37,10 @@ clean-log:
     find "$resolved" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 
 flight-sql level=log_level:
-    RUST_LOG=lakesoul_flight={{level}},lakesoul_metadata={{level}} JWT_AUTH_ENABLED=false RBAC_AUTH_ENABLED=true cargo run --bin flight_sql_server
+    RUST_LOG=lakesoul_flight={{ level }},lakesoul_metadata={{ level }} JWT_AUTH_ENABLED=false RBAC_AUTH_ENABLED=true cargo run --bin flight_sql_server
 
 flight-sql-s3 level=log_level:
-    RUST_LOG={{level}} cargo run --bin \
+    RUST_LOG={{ level }} cargo run --bin \
       flight_sql_server -- \
       --warehouse-prefix "s3://lakesoul-test-bucket/flight-test" \
       --endpoint  "http://localhost:9000" \
@@ -49,11 +49,10 @@ flight-sql-s3 level=log_level:
       --s3-secret-key "rustfsadmin"
 
 clean-tpch:
-   rm -rf /tmp/lakesoul/tpch_data/*
-
+    rm -rf /tmp/lakesoul/tpch_data/*
 
 console-s3 level=log_level:
-    RUST_LOG={{level}}  cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    RUST_LOG={{ level }}  cargo run --release --bin lakesoul-console -- --worker-threads 16  \
     --warehouse-prefix "s3://lakesoul-test-bucket" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
@@ -66,13 +65,13 @@ console-s3 level=log_level:
 # identity here (option A: explicit injection):
 #   * OTEL_RESOURCE_ATTRIBUTES -> trace resource `service.instance.id`
 #   * --metrics-addr           -> a distinct Prometheus target (worker-1/2 label
-#     comes from docker/observability/prometheus/prometheus.yml)
+# comes from docker/observability/prometheus/prometheus.yml)
 worker-s3-1 level=log_level:
-    mkdir -p {{log_dir}}
+    mkdir -p {{ log_dir }}
     OTEL_SERVICE_NAME=lakesoul-worker \
     OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-1 \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
-    RUST_LOG={{level}} cargo run --bin lakesoul-worker -- \
+    RUST_LOG={{ level }} cargo run --bin lakesoul-worker -- \
       --bind "127.0.0.1" \
       --port 50051 \
       --metrics-addr "127.0.0.1:19091" \
@@ -81,14 +80,14 @@ worker-s3-1 level=log_level:
       --endpoint "http://localhost:9000" \
       --s3-bucket "lakesoul-test-bucket" \
       --s3-access-key "rustfsadmin" \
-      --s3-secret-key "rustfsadmin" 2>&1 | tee -a {{log_dir}}/lakesoul-worker.worker-1.log
+      --s3-secret-key "rustfsadmin" 2>&1 | tee -a {{ log_dir }}/lakesoul-worker.worker-1.log
 
 worker-s3-2 level=log_level:
-    mkdir -p {{log_dir}}
+    mkdir -p {{ log_dir }}
     OTEL_SERVICE_NAME=lakesoul-worker \
     OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-2 \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
-    RUST_LOG={{level}} cargo run --bin lakesoul-worker -- \
+    RUST_LOG={{ level }} cargo run --bin lakesoul-worker -- \
       --bind "127.0.0.1" \
       --port 50052 \
       --metrics-addr "127.0.0.1:19092" \
@@ -97,10 +96,10 @@ worker-s3-2 level=log_level:
       --endpoint "http://localhost:9000" \
       --s3-bucket "lakesoul-test-bucket" \
       --s3-access-key "rustfsadmin" \
-      --s3-secret-key "rustfsadmin" 2>&1 | tee -a {{log_dir}}/lakesoul-worker.worker-2.log
+      --s3-secret-key "rustfsadmin" 2>&1 | tee -a {{ log_dir }}/lakesoul-worker.worker-2.log
 
 console-distributed-s3 level=log_level:
-    RUST_LOG={{level}} cargo run --bin lakesoul-console -- --worker-threads 16 \
+    RUST_LOG={{ level }} cargo run --bin lakesoul-console -- --worker-threads 16 \
       --warehouse-prefix "s3://lakesoul-test-bucket" \
       --endpoint "http://localhost:9000" \
       --s3-bucket "lakesoul-test-bucket" \
@@ -111,7 +110,7 @@ console-distributed-s3 level=log_level:
       --target-partitions 2
 
 console level=log_level:
-    RUST_LOG={{level}} cargo run --bin lakesoul-console -- --worker-threads 16
+    RUST_LOG={{ level }} cargo run --bin lakesoul-console -- --worker-threads 16
 
 tpch-gen-s3:
     cargo run --release --bin lakesoul-console -- --worker-threads 16  \
@@ -122,22 +121,22 @@ tpch-gen-s3:
       --s3-secret-key "rustfsadmin" tpch-gen -p "s3://lakesoul-test-bucket" --scale-factor 0.1 -n 8
 
 tpch-gen-lfs level=log_level:
-   RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16  \
-      tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 10.0 -n 8
+    RUST_LOG={{ level }} cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+       tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 10.0 -n 8
 
 clean-meta:
     cargo test -p lakesoul-datafusion test_schema_to_sql
 
 tpch-gen-s3-1 level=log_level:
-   RUST_LOG=trace cargo run --release --bin lakesoul-console -- --worker-threads 16  \
-    --warehouse-prefix "s3://lakesoul-test-bucket" \
-      --endpoint  "http://localhost:31099" \
-      --s3-bucket  "lakesoul-test-bucket" \
-      --s3-access-key "rustfsadmin" \
-      --s3-secret-key "rustfsadmin" tpch-gen -p "s3://lakesoul-test-bucket" --scale-factor 0.1 -n 8
+    RUST_LOG={{ level }} cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+     --warehouse-prefix "s3://lakesoul-test-bucket" \
+       --endpoint  "http://localhost:31099" \
+       --s3-bucket  "lakesoul-test-bucket" \
+       --s3-access-key "rustfsadmin" \
+       --s3-secret-key "rustfsadmin" tpch-gen -p "s3://lakesoul-test-bucket" --scale-factor 0.1 -n 8
 
 copy level=log_level:
-   RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16 --file copy.sql
+    RUST_LOG={{ level }} cargo run --release --bin lakesoul-console -- --worker-threads 16 --file copy.sql
 
 cross:
     cross build --target x86_64-unknown-linux-gnu --release --package lakesoul-io-c -F hdfs
@@ -169,11 +168,11 @@ clean-test-tables-s3: clean-meta
     mc rm -r --force dev/lakesoul-test-bucket/test-tables
 
 pg:
-    mkdir -p {{log_dir}}
+    mkdir -p {{ log_dir }}
     RUST_LOG=info cargo run -p postgres-lakesoul -- -p 6543 \
      --warehouse-prefix "s3://lakesoul-test-bucket" \
      --endpoint "http://localhost:9000" \
      --s3-bucket "lakesoul-test-bucket" \
      --s3-access-key "rustfsadmin" \
      --s3-secret-key "rustfsadmin" \
-     --distributed-workers http://127.0.0.1:50051,http://127.0.0.1:50052 2>&1 | tee -a {{log_dir}}/postgres-lakesoul.pg.log
+     --distributed-workers http://127.0.0.1:50051,http://127.0.0.1:50052 2>&1 | tee -a {{ log_dir }}/postgres-lakesoul.pg.log

@@ -43,6 +43,7 @@ use datafusion::catalog::{
 };
 use datafusion::datasource::memory::MemTable;
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::index::IndexManagementConfig;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchOptions;
@@ -1294,7 +1295,7 @@ async fn run_build(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         vector_index_config(args, dim),
         files.clone(),
         vec![PK_COLUMN.to_string()],
-        HashMap::new(),
+        SecretMap::new(),
         Some(format!("file://{}", work_dir.display())),
     );
     let t = Instant::now();
@@ -1389,7 +1390,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             vector_index_config(args, dim),
             files.clone(),
             vec![PK_COLUMN.to_string()],
-            HashMap::new(),
+            SecretMap::new(),
             Some(format!("file://{}", work_dir.display())),
         )
         .build()
