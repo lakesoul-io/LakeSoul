@@ -13,7 +13,7 @@
 //! candidate rows.  The `Sort` + `Limit` nodes above the scan then compute
 //! the exact global top-k over the (small) candidate set.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -73,7 +73,7 @@ pub struct LakeSoulVectorSearchExec {
     /// Primary key columns (the vector index returns primary key ids).
     primary_keys: Vec<String>,
     /// Object store configuration options (e.g. S3 credentials).
-    object_store_options: HashMap<String, String>,
+    object_store_options: SecretMap,
     /// CDC change column; when set, delete tombstones are dropped after the
     /// merge-on-read merge.
     cdc_column: String,
@@ -98,7 +98,7 @@ impl LakeSoulVectorSearchExec {
         partition_values: Vec<Vec<ScalarValue>>,
         object_store_url: ObjectStoreUrl,
         primary_keys: Vec<String>,
-        object_store_options: HashMap<String, String>,
+        object_store_options: SecretMap,
         cdc_column: String,
         vector_search: VectorSearchRequest,
         catalog: VectorCatalog,

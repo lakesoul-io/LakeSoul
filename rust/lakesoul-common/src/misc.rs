@@ -37,6 +37,11 @@ impl SecretMap {
     pub fn into_inner(self) -> HashMap<String, String> {
         self.0
     }
+
+    /// Wraps an existing options map.
+    pub fn from_map(map: HashMap<String, String>) -> Self {
+        Self(map)
+    }
 }
 
 impl Debug for SecretMap {
@@ -67,6 +72,24 @@ impl Display for SecretMap {
         }
 
         f.write_str("}")
+    }
+}
+
+impl IntoIterator for SecretMap {
+    type Item = (String, String);
+    type IntoIter = std::collections::hash_map::IntoIter<String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a SecretMap {
+    type Item = (&'a String, &'a String);
+    type IntoIter = std::collections::hash_map::Iter<'a, String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::text::builder::TextShardIndexBuilder;
 use lakesoul_metadata::index_catalog::{CommitMode, IndexCatalog, IndexCommitView};
@@ -342,7 +343,7 @@ fn run_shard_text_index(
         config,
         file_paths,
         pk_column,
-        object_store_options,
+        SecretMap::from(object_store_options),
         default_fs,
     );
 

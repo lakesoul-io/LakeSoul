@@ -12,7 +12,7 @@
 //! trains a fresh index, with one it appends a delta.  The returned
 //! [`ShardBuildOutcome`] carries the segment entries to publish.
 
-use std::collections::HashMap;
+use lakesoul_common::misc::SecretMap;
 use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
@@ -42,7 +42,7 @@ pub struct VectorShardIndexBuilder {
     config: VectorIndexConfig,
     file_paths: Vec<String>,
     pk_columns: Vec<String>,
-    object_store_options: HashMap<String, String>,
+    object_store_options: SecretMap,
     default_fs: Option<String>,
     base: Option<ResolvedIndex>,
 }
@@ -53,7 +53,7 @@ impl VectorShardIndexBuilder {
         config: VectorIndexConfig,
         file_paths: Vec<String>,
         pk_columns: Vec<String>,
-        object_store_options: HashMap<String, String>,
+        object_store_options: SecretMap,
         default_fs: Option<String>,
     ) -> Self {
         Self {
@@ -307,7 +307,6 @@ impl VectorShardIndexBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, UInt64Array};
     use arrow_schema::{DataType, Field, Schema};
@@ -375,7 +374,7 @@ mod tests {
             },
             outputs.into_iter().map(|output| output.file_path).collect(),
             vec!["id".to_string()],
-            HashMap::new(),
+            SecretMap::new(),
             None,
         );
 

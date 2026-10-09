@@ -561,7 +561,7 @@ impl LakeSoulTableProvider {
             LakeSoulProviderOptions::from_session(session_state).object_store_options;
         let io_config = create_io_config_builder_from_table_info(
             table_info.clone(),
-            cmd.options.clone(),
+            cmd.options.clone().into(),
             object_store_options,
         )?
         .build();

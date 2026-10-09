@@ -27,6 +27,7 @@
 //! longer represents that cluster's contents.  [`rebuild_vector_index`]
 //! exposes the same operation explicitly.
 
+use lakesoul_common::misc::SecretMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -368,7 +369,7 @@ pub async fn auto_build_vector_index(
                 vector_config.clone(),
                 plan.files.clone(),
                 primary_keys.to_vec(),
-                object_store_options.clone(),
+                object_store_options.clone().into(),
                 None,
             );
             // The files this build reads, recorded on the new segments as
@@ -397,7 +398,7 @@ pub async fn auto_build_vector_index(
                         vector_config.clone(),
                         plan.files,
                         primary_keys.to_vec(),
-                        object_store_options.clone(),
+                        object_store_options.clone().into(),
                         None,
                     )
                     .rebuild()
@@ -506,7 +507,7 @@ pub async fn rebuild_vector_index(
     table_name: &str,
     namespace: &str,
     primary_keys: &[String],
-    object_store_options: HashMap<String, String>,
+    object_store_options: SecretMap,
 ) -> Result<usize> {
     let Some(table_info) = client
         .get_table_info_by_table_name(table_name, namespace)

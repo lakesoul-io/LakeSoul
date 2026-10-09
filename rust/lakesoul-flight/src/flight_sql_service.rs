@@ -1454,7 +1454,7 @@ impl FlightSqlServiceImpl {
         self.metrics.start_stream();
 
         let mut writer = table
-            .get_writer(self.args.core.s3_options())
+            .get_writer(self.args.core.s3_options().into())
             .await
             .map_err(report_to_status)?;
 

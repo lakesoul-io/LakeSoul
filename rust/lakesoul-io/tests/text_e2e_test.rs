@@ -5,12 +5,12 @@
 //! End-to-end: build text index splits from parquet data and search them
 //! through `LakeSoulReader` with exact candidate verification.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Float32Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::LakeSoulReader;
@@ -75,7 +75,7 @@ async fn build_split(index_prefix: &str, files: Vec<String>) -> ResolvedIndex {
         config(),
         files,
         "id".to_string(),
-        HashMap::new(),
+        SecretMap::new(),
         None,
     )
     .build()
