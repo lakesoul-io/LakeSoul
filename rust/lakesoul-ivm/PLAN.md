@@ -2697,6 +2697,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   → 报错；全局聚合无键 MV → 通过；append-only 源 + 无键 MV → 通过）。
   全量 IVM 套件 395 个测试通过、0 失败。
 
+### 10.97 keyed CDC 契约与测试（PR-91，ROADMAP §A2）
+
+- **契约固定**（写入 README「Sources」）：变更列只承认四个标记 `insert`/`update_after`/
+  `update_before`/`delete`（其它值按活跃版本处理）；keyed 源按最高版本 merge：
+  同窗口配对折叠为新版本、落单的 `update_before` 先撤回直至 `update_after` 到达（可跨窗口）、
+  乱序到达时以最后版本为准、**主键变更 = delete(旧) + insert(新)**、同键多个活跃版本取最新
+  （写入端对同键保持输入顺序）。
+- **测试**：`cdc_update_markers.rs` 新增 `keyed_cdc_contract_corners`，用 `SumCountView`
+  覆盖四个角：乱序 pair（撤回胜出，且重建一致）、主键变更（delete+insert 折叠）、
+  同键重复活跃行（取最新）、域外 op 值（按活跃版本处理）；既有
+  `keyed_update_markers_fold_and_lone_before_retracts` 与 append-only signed 用例保留。
+  全量 IVM 套件 396 个测试通过、0 失败。
+- **说明**：数据值层面的 op 校验不做（读取热路径代价高）；契约以文档 + 测试固定，
+  写入端应按四值约定落盘。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -275,6 +275,20 @@ outside the keyed contract).  A typical trap: the two branches of a
   `update_before`/`update_after` pair an update. Without one the internal
   `rowKinds` column is used. The change column is never part of a `UNION`
   distinct key.
+* The **keyed CDC contract** is exactly four markers: `insert`, `update_after`,
+  `update_before`, `delete` (any other value is treated as a live version).
+  A keyed source folds markers through merge-on-read, so the final state is the
+  highest version per key:
+  - an `update_before` + `update_after` pair in one window folds to the new
+    version; a lone `update_before` retracts the row until its `update_after`
+    arrives (windows may interleave);
+  - if the pair arrives out of order (`update_after` first), the retraction is
+    applied last and wins, exactly like a full recompute over the same table;
+  - a **primary key change is a `delete` of the old key plus an `insert` of the
+    new one**; an update that only changes the key's value leaves the old row in
+    place;
+  - several live versions for one key resolve to the latest (the writer keeps
+    the input order for a key), so a source should keep its key unique.
 * Tables consumed by an IVM view must keep LakeSoul's default retention: the
   refresh needs the `partition_info` / `data_commit_info` history back to the
   cursors. See the retention notes in [`lib.rs`](src/lib.rs).
