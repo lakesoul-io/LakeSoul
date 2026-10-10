@@ -1735,15 +1735,11 @@ fn change_column(source: &IvmTable) -> Option<&str> {
         .map(|_| IVM_ROW_KINDS_COLUMN)
 }
 
-/// Drop `delete` rows from a source frame when the source has a change column.
-/// Drop the rows retracted by their change marker (`delete` / `update_before`).
+/// Drop the rows retracted by their change marker (`delete`) when the source
+/// has a change column.
 fn filter_deletes(frame: DataFrame, change_column: Option<&str>) -> Result<DataFrame> {
     match change_column {
-        Some(column) => Ok(frame.filter(
-            column_expr(column)
-                .not_eq(lit("delete"))
-                .and(column_expr(column).not_eq(lit("update_before"))),
-        )?),
+        Some(column) => Ok(frame.filter(column_expr(column).not_eq(lit("delete")))?),
         None => Ok(frame),
     }
 }
@@ -1879,24 +1875,15 @@ fn register_table(
 /// `alias.column <> 'delete'` when the source has a change column.
 fn source_delete_filter(alias: &str, change_column: Option<&str>) -> String {
     match change_column {
-        Some(column) => format!(
-            "{alias}.{} not in ('delete', 'update_before')",
-            quote_ident(column)
-        ),
+        Some(column) => format!("{alias}.{} <> 'delete'", quote_ident(column)),
         None => "true".to_string(),
     }
 }
 
-/// The SQL predicate matching rows whose marker retracts them: `delete` for a
-/// removal and `update_before` for the old version of an update (which is
-/// superseded by the `update_after` of the same change, or leaves the row
-/// retracted until it arrives).
+/// The SQL predicate matching rows whose marker retracts them (`delete`).
 fn source_retract_condition(alias: &str, change_column: Option<&str>) -> String {
     match change_column {
-        Some(column) => format!(
-            "{alias}.{} in ('delete', 'update_before')",
-            quote_ident(column)
-        ),
+        Some(column) => format!("{alias}.{} = 'delete'", quote_ident(column)),
         None => "false".to_string(),
     }
 }

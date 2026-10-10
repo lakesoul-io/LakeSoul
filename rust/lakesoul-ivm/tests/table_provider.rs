@@ -307,7 +307,7 @@ async fn provider_logical_reads_drop_tombstones_and_raw_keeps_them() {
     let runtime = &fixture.runtime;
     let _keep_dir = &fixture.dir;
 
-    // An append-only changelog keeps both tombstone kinds in its files.
+    // An append-only changelog keeps its tombstone in the files.
     let suffix = uuid::Uuid::new_v4().simple();
     let source = runtime
         .create_table(
@@ -325,8 +325,7 @@ async fn provider_logical_reads_drop_tombstones_and_raw_keeps_them() {
             runtime.client(),
             source_batch(&[
                 (1, "a", 10, "insert"),
-                (1, "a", 10, "update_before"),
-                (1, "a", 12, "update_after"),
+                (1, "a", 12, "update"),
                 (2, "a", 20, "insert"),
                 (2, "a", 20, "delete"),
             ]),
@@ -342,22 +341,18 @@ async fn provider_logical_reads_drop_tombstones_and_raw_keeps_them() {
         .register_table("src_raw", Arc::new(runtime.table_provider_raw(&source)))
         .unwrap();
     assert_eq!(query_rows(&context, "select * from src_now").await, 3);
-    assert_eq!(query_rows(&context, "select * from src_raw").await, 5);
+    assert_eq!(query_rows(&context, "select * from src_raw").await, 4);
     assert_eq!(
-        query_rows(
-            &context,
-            "select * from src_now where op in ('delete', 'update_before')",
-        )
-        .await,
+        query_rows(&context, "select * from src_now where op = 'delete'").await,
         0
     );
     assert_eq!(
-        query_rows(
-            &context,
-            "select * from src_raw where op in ('delete', 'update_before')",
-        )
-        .await,
-        2
+        query_rows(&context, "select * from src_now where op = 'update'").await,
+        1
+    );
+    assert_eq!(
+        query_rows(&context, "select * from src_raw where op = 'delete'").await,
+        1
     );
 
     // MV tables carry `rowKinds` instead of a CDC column; the logical read

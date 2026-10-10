@@ -272,7 +272,7 @@ needs none).  A typical trap: the two branches of a
   a change column) is rejected when the statement is analyzed.
 * A source may declare a CDC change column (`lakesoul_cdc_change_column`,
   [`IvmTableOptions::with_cdc_column`](src/table.rs)): `delete` retracts and
-  `update_before`/`update_after` pair an update. Without one the internal
+  `update` asserts the new version of the key. Without one the internal
   `rowKinds` column is used. The change column is never part of a `UNION`
   distinct key.
 * A source may be **range partitioned** (LakeSoul `PARTITIONED BY`): the
@@ -283,18 +283,19 @@ needs none).  A typical trap: the two branches of a
   within a partition, and as in LakeSoul a key must not span partitions (the
   partition is also the unit of the cursors). Dropping a partition is not
   incremental yet: rebuild the view when a partition disappears.
-* The **keyed CDC contract** is exactly four markers: `insert`, `update_after`,
-  `update_before`, `delete` (any other value is treated as a live version).
-  A keyed source folds markers through merge-on-read, so the final state is the
-  highest version per key:
-  - an `update_before` + `update_after` pair in one window folds to the new
-    version; a lone `update_before` retracts the row until its `update_after`
-    arrives (windows may interleave);
-  - if the pair arrives out of order (`update_after` first), the retraction is
-    applied last and wins, exactly like a full recompute over the same table;
-  - a **primary key change is a `delete` of the old key plus an `insert` of the
-    new one**; an update that only changes the key's value leaves the old row in
-    place;
+* The **keyed CDC contract** is exactly three markers — the values the
+  LakeSoul Flink CDC ingestion writes: `insert`, `update`, `delete` (any other
+  value is treated as a live version).  A keyed source folds markers through
+  merge-on-read, so the final state is the highest version per key:
+  - `insert` and `update` assert the row; `update` carries the after image of a
+    change, so a same-key update supersedes the old version without needing a
+    before image;
+  - `delete` retracts the key; a later `insert`/`update` is a newer version and
+    resurrects it;
+  - an update that changes the key must be written as a `delete` of the old key
+    plus an `update`/`insert` of the new one (the ingestion represents the
+    before image as a `delete` row); a plain `update` carrying a new key
+    asserts that key and leaves the old row in place;
   - several live versions for one key resolve to the latest (the writer keeps
     the input order for a key), so a source should keep its key unique.
 * Tables consumed by an IVM view must keep LakeSoul's default retention: the
@@ -409,11 +410,11 @@ the backlog):
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
 * append-only sources (with or without a change column): incremental views
-  need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete` /
-  `update_before` marker is never materialized as a row, but the matching
-  insert row stays (there is no key to retract it), and views that recompute
-  from the current state are not maintained over such sources yet (see the
-  CDC plan in `PLAN.md`).
+  need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete`
+  marker is never materialized as a row, but the matching insert row stays
+  (there is no key to retract it), and views that recompute from the current
+  state are not maintained over such sources yet (see the CDC plan in
+  `PLAN.md`).
 
 ## Tests
 

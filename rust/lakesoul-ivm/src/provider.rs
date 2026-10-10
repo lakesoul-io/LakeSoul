@@ -8,7 +8,7 @@
 //! snapshot) in their own `SessionContext` and query it with SQL, without
 //! materializing the batches themselves. The provider pushes the query
 //! projection into the LakeSoul reader (keeping the merge key and the change
-//! column) and hides CDC tombstones (`delete` / `update_before`), so a scan
+//! column) and hides CDC tombstones (`delete`), so a scan
 //! returns the logical state by default; [`IvmReadMode::Raw`] exposes the
 //! physical merge-on-read rows instead.
 
@@ -33,7 +33,7 @@ use crate::table::IvmTable;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IvmReadMode {
     /// The current logical state: merge-on-read with the CDC tombstones
-    /// (`delete` / `update_before`) dropped.
+    /// (`delete`) dropped.
     Current,
     /// The state as of a timestamp in milliseconds (inclusive).
     AsOf(i64),
@@ -231,7 +231,7 @@ impl TableProvider for IvmTableProvider {
 
 impl IvmTableProvider {
     /// Drop the rows whose latest version is a CDC tombstone (`delete` or
-    /// `update_before`), so a scan returns the logical rows.
+    /// so a scan returns the logical rows.
     fn drop_tombstones(&self, batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>> {
         let Some(column) = self.change_column() else {
             return Ok(batches);
@@ -250,7 +250,7 @@ impl IvmTableProvider {
                 })?;
             let mask = BooleanArray::from_iter((0..values.len()).map(|row| {
                 let kind = values.value(row);
-                Some(kind != "delete" && kind != "update_before")
+                Some(kind != "delete")
             }));
             kept.push(arrow::compute::filter_record_batch(&batch, &mask)?);
         }

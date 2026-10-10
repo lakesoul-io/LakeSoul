@@ -2,9 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `update_before` / `update_after` CDC markers: an update is the retraction of
-//! the old version plus the insertion of the new one. Append-only sources keep
-//! every marker (no merge key), keyed sources fold the pair through merge-on-read.
+//! The three-marker CDC contract: `insert` / `update` / `delete`.
+//!
+//! `update` carries the after image of a change and is simply a newer version
+//! of its key (the latest version wins); `delete` retracts the key.  The
+//! ingestion represents the before image of an update as a `delete` row, so an
+//! append-only source can express "replace the old row" too (the signed
+//! aggregation subtracts it).  Any other marker value is a live version.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,7 +76,8 @@ fn keyed_batch(rows: &[(i64, &str, i64, &str)]) -> RecordBatch {
     .unwrap()
 }
 
-/// The signed SUM/COUNT state of an append-only CDC source.
+/// The signed SUM/COUNT state of an append-only CDC source: `delete` rows
+/// subtract their contribution, every other marker adds it.
 async fn signed_state(
     runtime: &IvmRuntime,
     source: &IvmTable,
@@ -85,10 +90,10 @@ async fn signed_state(
     let frame = context
         .sql(&format!(
             "select g, \
-                    sum(case when \"{CHANGE_COLUMN}\" in ('delete','update_before') then -amount else amount end) as s, \
-                    sum(case when \"{CHANGE_COLUMN}\" in ('delete','update_before') then -1 else 1 end) as c \
+                    sum(case when \"{CHANGE_COLUMN}\" = 'delete' then -amount else amount end) as s, \
+                    sum(case when \"{CHANGE_COLUMN}\" = 'delete' then -1 else 1 end) as c \
              from src group by g \
-             having sum(case when \"{CHANGE_COLUMN}\" in ('delete','update_before') then -1 else 1 end) > 0"
+             having sum(case when \"{CHANGE_COLUMN}\" = 'delete' then -1 else 1 end) > 0"
         ))
         .await
         .unwrap();
@@ -187,7 +192,7 @@ async fn mv_value_state(runtime: &IvmRuntime, mv: &IvmTable) -> HashMap<String, 
 }
 
 #[test_log::test(tokio::test)]
-async fn append_only_update_markers_are_signed() {
+async fn append_only_cdc_markers_are_signed() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -287,13 +292,15 @@ async fn append_only_update_markers_are_signed() {
         HashMap::from([("a".to_string(), (10, 1)), ("b".to_string(), (20, 1)),])
     );
 
-    // An update pair in one window: -10 + 15 and x -> z.
+    // An update: the ingestion writes the before image as `delete` and the
+    // after image as `update`, so the signed state moves from 10 to 15 and the
+    // distinct value from x to z.
     source
         .append_batch(
             runtime.client(),
             append_batch(&[
-                ("a", 10, Some("x"), "update_before"),
-                ("a", 15, Some("z"), "update_after"),
+                ("a", 10, Some("x"), "delete"),
+                ("a", 15, Some("z"), "update"),
             ]),
         )
         .await
@@ -320,14 +327,14 @@ async fn append_only_update_markers_are_signed() {
         ])
     );
 
-    // A delete plus another update pair in one window.
+    // A delete plus another update in one window.
     source
         .append_batch(
             runtime.client(),
             append_batch(&[
                 ("b", 20, Some("y"), "delete"),
-                ("a", 15, Some("z"), "update_before"),
-                ("a", 18, Some("w"), "update_after"),
+                ("a", 15, Some("z"), "delete"),
+                ("a", 18, Some("w"), "update"),
             ]),
         )
         .await
@@ -365,7 +372,7 @@ async fn append_only_update_markers_are_signed() {
 }
 
 #[test_log::test(tokio::test)]
-async fn keyed_update_markers_fold_and_lone_before_retracts() {
+async fn keyed_update_folds_and_delete_retracts() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -412,12 +419,10 @@ async fn keyed_update_markers_fold_and_lone_before_retracts() {
         HashMap::from([("a".to_string(), (10, 1))])
     );
 
-    // Merge-on-read folds the pair to the update_after version.
+    // A same-key update is one `update` row: merge-on-read keeps the latest
+    // version, so no before image is needed.
     source
-        .append_batch(
-            runtime.client(),
-            keyed_batch(&[(1, "a", 10, "update_before"), (1, "a", 15, "update_after")]),
-        )
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 15, "update")]))
         .await
         .unwrap();
     runtime.refresh_sum_count(&view).await.unwrap().unwrap();
@@ -426,22 +431,17 @@ async fn keyed_update_markers_fold_and_lone_before_retracts() {
         HashMap::from([("a".to_string(), (15, 1))])
     );
 
-    // A lone update_before retracts the row until the new version arrives.
+    // A delete retracts the key ...
     source
-        .append_batch(
-            runtime.client(),
-            keyed_batch(&[(1, "a", 15, "update_before")]),
-        )
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 15, "delete")]))
         .await
         .unwrap();
     runtime.refresh_sum_count(&view).await.unwrap().unwrap();
     assert!(mv_sum_state(&runtime, &mv).await.is_empty());
 
+    // ... and a later update resurrects it as a newer version.
     source
-        .append_batch(
-            runtime.client(),
-            keyed_batch(&[(1, "a", 20, "update_after")]),
-        )
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 20, "update")]))
         .await
         .unwrap();
     runtime.refresh_sum_count(&view).await.unwrap().unwrap();
@@ -457,9 +457,9 @@ async fn keyed_update_markers_fold_and_lone_before_retracts() {
     );
 }
 
-/// The keyed CDC contract corners: an out-of-order update pair, a primary key
-/// change written as delete + insert, duplicate live versions and a value
-/// outside the documented domain.
+/// The keyed CDC contract corners: the latest version wins for every marker
+/// mix, a key change is a delete of the old key plus an update/insert of the
+/// new one, and a value outside the contract is a live version.
 #[test_log::test(tokio::test)]
 async fn keyed_cdc_contract_corners() {
     let runtime = IvmRuntime::from_env().await.unwrap();
@@ -498,18 +498,14 @@ async fn keyed_cdc_contract_corners() {
         Some("amount".to_string()),
     );
 
-    // An `update_after` arriving before its `update_before`: the latest
-    // version wins, so the retraction removes the row, and a rebuild agrees.
+    // An insert followed by an update: the newer version wins.
     source
         .append_batch(runtime.client(), keyed_batch(&[(1, "a", 10, "insert")]))
         .await
         .unwrap();
     runtime.refresh_sum_count(&view).await.unwrap().unwrap();
     source
-        .append_batch(
-            runtime.client(),
-            keyed_batch(&[(1, "a", 30, "update_after")]),
-        )
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 30, "update")]))
         .await
         .unwrap();
     runtime.refresh_sum_count(&view).await.unwrap().unwrap();
@@ -517,11 +513,16 @@ async fn keyed_cdc_contract_corners() {
         mv_sum_state(&runtime, &mv).await,
         HashMap::from([("a".to_string(), (30, 1))])
     );
+    runtime.rebuild_sum_count(&view).await.unwrap();
+    assert_eq!(
+        mv_sum_state(&runtime, &mv).await,
+        HashMap::from([("a".to_string(), (30, 1))])
+    );
+
+    // An update followed by a delete: the delete is the latest version, so
+    // the row is retracted, and a rebuild agrees.
     source
-        .append_batch(
-            runtime.client(),
-            keyed_batch(&[(1, "a", 10, "update_before")]),
-        )
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 30, "delete")]))
         .await
         .unwrap();
     runtime.refresh_sum_count(&view).await.unwrap().unwrap();
@@ -529,7 +530,7 @@ async fn keyed_cdc_contract_corners() {
     runtime.rebuild_sum_count(&view).await.unwrap();
     assert!(mv_sum_state(&runtime, &mv).await.is_empty());
 
-    // A primary key change is a delete of the old key plus an insert of the
+    // A primary key change is a delete of the old key plus an update of the
     // new one; both markers in one window fold to the new row.
     source
         .append_batch(runtime.client(), keyed_batch(&[(2, "b", 40, "insert")]))
@@ -543,7 +544,7 @@ async fn keyed_cdc_contract_corners() {
     source
         .append_batch(
             runtime.client(),
-            keyed_batch(&[(2, "b", 40, "delete"), (3, "b", 45, "insert")]),
+            keyed_batch(&[(2, "b", 40, "delete"), (3, "b", 45, "update")]),
         )
         .await
         .unwrap();
@@ -558,7 +559,7 @@ async fn keyed_cdc_contract_corners() {
     source
         .append_batch(
             runtime.client(),
-            keyed_batch(&[(3, "b", 45, "insert"), (3, "b", 50, "insert")]),
+            keyed_batch(&[(3, "b", 45, "insert"), (3, "b", 50, "update")]),
         )
         .await
         .unwrap();
@@ -573,8 +574,8 @@ async fn keyed_cdc_contract_corners() {
         HashMap::from([("b".to_string(), (50, 1))])
     );
 
-    // Only `insert`, `update_after`, `update_before` and `delete` are in the
-    // contract; any other value is a live version (latest wins) — pin it.
+    // Only `insert`, `update` and `delete` are contract values; any other
+    // value is a live version (latest wins) — pin it.
     source
         .append_batch(runtime.client(), keyed_batch(&[(3, "b", 50, "upsert")]))
         .await

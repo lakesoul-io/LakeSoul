@@ -175,8 +175,7 @@ async fn grouped_aggregate_over_partitioned_source() {
             executor.runtime().client(),
             source_batch(&[
                 (2, "a", 20, "d1", "delete"),
-                (3, "b", 5, "d2", "update_before"),
-                (3, "b", 9, "d2", "update_after"),
+                (3, "b", 9, "d2", "update"),
                 (4, "c", 7, "d3", "insert"),
             ]),
         )
@@ -509,11 +508,7 @@ async fn keyed_join_reads_partitioned_left() {
     // left side carries its partition values through the join.
     left.append_batch(
         runtime.client(),
-        source_batch(&[
-            (2, "b", 20, "d2", "update_before"),
-            (2, "b", 25, "d2", "update_after"),
-            (1, "a", 10, "d1", "delete"),
-        ]),
+        source_batch(&[(2, "b", 25, "d2", "update"), (1, "a", 10, "d1", "delete")]),
     )
     .await
     .unwrap();
