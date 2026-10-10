@@ -1926,6 +1926,47 @@ async fn oracle_bool_agg_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_quantified_in_equivalents_match_full_recompute() {
+    // `= ANY` is maintained as `IN` and `<> ALL` as `NOT IN`; the reference
+    // uses the standard form, so the oracle checks the equivalence itself.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    for (tag, quantifier, predicate) in [
+        ("quantany", "= ANY", "IN"),
+        ("quantall", "<> ALL", "NOT IN"),
+    ] {
+        let definition = format!(
+            "SELECT k FROM __SRC__ WHERE k {quantifier} (SELECT k FROM __SRC1__)"
+        );
+        let reference = format!(
+            "SELECT k FROM (SELECT k FROM __SRC__ WHERE op <> 'delete') \
+             WHERE k {predicate} \
+             (SELECT k FROM (SELECT k FROM __SRC1__ WHERE op <> 'delete'))"
+        );
+        run_oracle_seeded(
+            tag,
+            2,
+            schema.clone(),
+            false,
+            &[
+                (0, 1, "g0", Some(10)),
+                (0, 2, "g0", Some(20)),
+                (0, 3, "g0", Some(30)),
+                (1, 1, "g0", Some(15)),
+                (1, 2, "g0", Some(25)),
+                (1, 3, "g0", Some(35)),
+            ],
+            semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+            keys.clone(),
+            &definition,
+            &reference,
+            "SELECT k FROM __MV__",
+        )
+        .await;
+    }
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_grouping_sets_plain_keys_matches_full_recompute() {
     // A plain key mixed into GROUPING SETS: the planner normalizes it to the
     // cross-product member sets, which the view maintains.

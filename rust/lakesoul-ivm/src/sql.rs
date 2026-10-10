@@ -17,6 +17,7 @@ use arrow_schema::{DataType, Schema};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue, TableReference};
 use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatment};
+use datafusion::logical_expr::expr::{InSubquery, SetQuantifier};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
@@ -85,6 +86,11 @@ pub fn analyze_select(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<AnalyzedView> {
+    // `x = ANY (S)` is `x IN (S)` and `x <> ALL (S)` is `x NOT IN (S)` by the
+    // SQL standard; normalizing them before planning makes DataFusion plan the
+    // semi/anti joins the analyzer models instead of mark joins.
+    let plan = normalize_quantified_comparisons(plan)?;
+    let plan = &plan;
     // Incremental views need keyed sources: the refresh folds the changelog
     // through merge-on-read and retracts by key.  Append-only sources (with or
     // without a change column) are rejected explicitly.
@@ -307,6 +313,41 @@ fn render_filter(expr: &Expr) -> Result<String> {
 }
 /// Render an expression to SQL over unqualified columns, for the runtime to
 /// parse back (aggregate calls and join predicates included).
+/// Rewrite the quantified comparisons the SQL standard equates with
+/// `IN` / `NOT IN`: `x = ANY (S)` is `x IN (S)` and `x <> ALL (S)` is
+/// `x NOT IN (S)`.  The remaining quantifiers (`> ALL`, `< ANY`, ...) need the
+/// null-aware mark-join semantics and stay unsupported.
+pub(crate) fn normalize_quantified_comparisons(
+    plan: &LogicalPlan,
+) -> Result<LogicalPlan> {
+    plan.clone()
+        .transform_down(|node| {
+            node.map_expressions(|expr| {
+                expr.transform_down(|expr| {
+                    let Expr::SetComparison(comparison) = expr else {
+                        return Ok(Transformed::no(expr));
+                    };
+                    let negated = match (comparison.quantifier, comparison.op) {
+                        (SetQuantifier::Any, Operator::Eq) => false,
+                        (SetQuantifier::All, Operator::NotEq) => true,
+                        _ => {
+                            return Ok(Transformed::no(Expr::SetComparison(comparison)));
+                        }
+                    };
+                    Ok(Transformed::yes(Expr::InSubquery(InSubquery::new(
+                        comparison.expr,
+                        comparison.subquery,
+                        negated,
+                    ))))
+                })
+            })
+        })
+        .map(|transformed| transformed.data)
+        .map_err(|error| {
+            unsupported(format!("normalize quantified comparisons: {error}"))
+        })
+}
+
 fn render_expression(expr: &Expr) -> Result<String> {
     let stripped = strip_relations(expr.clone())?;
     let ast = Unparser::default()
