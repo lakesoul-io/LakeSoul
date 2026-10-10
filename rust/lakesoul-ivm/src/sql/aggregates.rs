@@ -778,46 +778,33 @@ fn analyze_grouping_sets(
             "GROUPING SETS over an append-only changelog source (it cannot retract)",
         ));
     }
-    let mut grouping = None;
+    // `GROUP BY` may mix plain keys with any number of `GROUPING SETS` /
+    // `ROLLUP` / `CUBE` expressions: a plain key belongs to every member set
+    // and the grouping expressions contribute their own expansions, so the
+    // member sets are the cross product of the two.
+    let mut plain: Vec<Expr> = Vec::new();
+    let mut grouping_lists: GroupingExpansions = Vec::new();
     for expr in &aggregate.group_expr {
         match strip_alias(expr) {
-            Expr::GroupingSet(sets) => {
-                if grouping.replace(sets.clone()).is_some() {
-                    return Err(unsupported(
-                        "several GROUPING SETS expressions in one GROUP BY",
-                    ));
-                }
-            }
-            _ => {
-                return Err(unsupported(
-                    "GROUP BY mixing plain keys with GROUPING SETS / ROLLUP / CUBE",
-                ));
-            }
+            Expr::GroupingSet(sets) => grouping_lists.push(grouping_member_sets(sets)),
+            other => plain.push(other.clone()),
         }
     }
-    let Some(grouping) = grouping else {
+    if grouping_lists.is_empty() {
         return Err(unsupported("GROUP BY without a grouping set"));
-    };
-    let member_sets: Vec<Vec<Expr>> = match &grouping {
-        GroupingSet::Rollup(exprs) => (0..=exprs.len())
-            .rev()
-            .map(|length| exprs[..length].to_vec())
-            .collect(),
-        GroupingSet::Cube(exprs) => {
-            let mut sets = Vec::new();
-            for mask in (0..1u64 << exprs.len()).rev() {
-                let mut set = Vec::new();
-                for (index, expr) in exprs.iter().enumerate() {
-                    if mask & (1 << index) != 0 {
-                        set.push(expr.clone());
-                    }
-                }
-                sets.push(set);
+    }
+    let mut member_sets = vec![plain];
+    for sets in grouping_lists {
+        let mut combined = Vec::new();
+        for base in &member_sets {
+            for set in &sets {
+                let mut merged = base.clone();
+                merged.extend(set.iter().cloned());
+                combined.push(merged);
             }
-            sets
         }
-        GroupingSet::GroupingSets(sets) => sets.clone(),
-    };
+        member_sets = combined;
+    }
     // The flat keys, in first-seen order.  A computed key is named after its
     // select alias and rendered for the source-side key projection.
     let mut group_keys: Vec<String> = Vec::new();
@@ -1032,6 +1019,43 @@ fn analyze_grouping_sets(
 }
 
 #[allow(clippy::type_complexity)]
+/// A computed aggregate: `(alias, args, filter, result kind, rendered call)`.
+type ComputedAggState = (
+    String,
+    Vec<ComputedAggArg>,
+    Option<String>,
+    ComputedAggResult,
+    String,
+);
+
+/// The member-set expansions of the grouping expressions in one `GROUP BY`
+/// (one expansion per `GROUPING SETS` / `ROLLUP` / `CUBE` expression).
+type GroupingExpansions = Vec<Vec<Vec<Expr>>>;
+
+/// The member sets of one `GROUPING SETS` / `ROLLUP` / `CUBE` expression.
+fn grouping_member_sets(grouping: &GroupingSet) -> Vec<Vec<Expr>> {
+    match grouping {
+        GroupingSet::Rollup(exprs) => (0..=exprs.len())
+            .rev()
+            .map(|length| exprs[..length].to_vec())
+            .collect(),
+        GroupingSet::Cube(exprs) => {
+            let mut sets = Vec::new();
+            for mask in (0..1u64 << exprs.len()).rev() {
+                let mut set = Vec::new();
+                for (index, expr) in exprs.iter().enumerate() {
+                    if mask & (1 << index) != 0 {
+                        set.push(expr.clone());
+                    }
+                }
+                sets.push(set);
+            }
+            sets
+        }
+        GroupingSet::GroupingSets(sets) => sets.clone(),
+    }
+}
+
 pub(super) fn analyze_aggregate(
     aggregate: &Aggregate,
     projection: Option<&Projection>,
@@ -1188,13 +1212,7 @@ pub(super) fn analyze_aggregate(
     let mut bool_agg: Option<(BoolAggKind, AggValue)> = None;
     let mut approx_distinct: Option<AggValue> = None;
     let mut approx_percentile: Option<(AggValue, String)> = None;
-    let mut computed_agg: Option<(
-        String,
-        Vec<ComputedAggArg>,
-        Option<String>,
-        ComputedAggResult,
-        String,
-    )> = None;
+    let mut computed_agg: Option<ComputedAggState> = None;
     let mut median: Option<AggValue> = None;
     // `(value column, rendered delimiter, rendered aggregate ordering)`.
     let mut string_agg: Option<(AggValue, String, Vec<String>)> = None;
@@ -3791,6 +3809,46 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        // Plain keys mix with a grouping expression: the member sets are the
+        // cross product, the plain key belonging to every set.
+        let analyzed = analyze_optimized(
+            "select g, v, sum(v) from src group by g, grouping sets ((v), ())",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            groupings,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string(), "v".to_string()]);
+        assert_eq!(groupings, vec![vec![0, 1], vec![0]]);
+
+        // Several grouping expressions multiply out too: ROLLUP(g) x
+        // GROUPING SETS ((v), ()) gives (g, v), (g), (v) and the grand total.
+        let analyzed = analyze_optimized(
+            "select g, v, sum(v) from src \
+             group by rollup(g), grouping sets ((v), ())",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::GroupingSets {
+            group_keys,
+            groupings,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a grouping-sets spec");
+        };
+        // The planner normalizes `ROLLUP(g), GROUPING SETS ((v), ())` to the
+        // member sets `(v)`, `()`, `(g, v)`, `(g)`, so the keys come out in
+        // first-seen order.
+        assert_eq!(group_keys, vec!["v".to_string(), "g".to_string()]);
+        assert_eq!(groupings, vec![vec![0], vec![], vec![0, 1], vec![1]]);
     }
 
     #[tokio::test]

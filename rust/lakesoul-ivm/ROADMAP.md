@@ -125,16 +125,16 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
 | 连接键是**表达式**（`ON a.x+1=b.y`，两源 inner join） | **M** | ✅ 已实现（PR-98，PLAN §10.104）：两侧求值 + 隐藏 key 列 `__ivm_key_<n>`；lookup/outer/multi/chain 的表达式键仍拒绝 |
 | `ANY/ALL` 量化比较、多列 `IN`、`NOT IN` 空语义边角 | **M** | 归约到 semi/anti + 比较 |
-| 超过 8 个源 | **S** | 提高上限 + 压测 |
+| 超过 8 个源 | **S** | ✅ 已实现（PR-99，PLAN §10.105）：上限 8 → 16；9 源分析器用例 |
 
 ### B4. 聚合/分组（P1–P2）
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | 聚合之上的计算列（`SELECT s*2 FROM (SELECT SUM(v) s …)`） | **S-M** | 视图链一层投影；或扩展 MultiAgg 输出表达式 |
-| GROUPING SETS 多个 grouping 表达式 | **S-M** | 展平逻辑扩展 |
+| GROUPING SETS 多个 grouping 表达式 | **S-M** | ✅ 已支持（PR-99）：DataFusion 规划期已归一化成叉积成员集；分析器不再拒绝未归一化形态并补测试 |
 | GROUPING SETS 的聚合 `FILTER` | **M** | general 路径已支持 FILTER |
-| HAVING 中基于聚合的计算表达式 | **S** | 多半已支持，补测试 |
+| HAVING 中基于聚合的计算表达式 | **S** | ✅ 已支持（PR-99）：补 oracle（`HAVING SUM(v) * 2 > N`） |
 | 有序聚合（`SUM(v ORDER BY k)` 等） | **不做** | 罕见；median/percentile 已有无 ORDER 形式 |
 
 ### B5. 集合/半连接（P1–P2）
