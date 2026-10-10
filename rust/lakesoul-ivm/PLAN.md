@@ -2830,6 +2830,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `l.v < r.v` 而输出只含 `g`，隐藏列为 v/v，随机更新使匹配集合翻转，对比全量 SQL 语义。
   全量 IVM 396 passed / 0 failed；fmt/clippy 干净。
 
+### 10.104 两源 inner join 的表达式连接键（PR-98，ROADMAP §B3）
+
+- **能力**：`SELECT l.k, l.v, r.v FROM l JOIN r ON l.k = r.k AND l.v + 1 = r.v`——等值键的任一侧
+  不是普通列时，渲染成表达式（`render_expression`，去限定符），两侧分别求值后参与 join。
+- **表示**：`ViewSpec::Join`/`JoinView` 新增 `key_exprs: JoinKeyExprs`（与 `join_keys` 位置对齐；
+  普通键为空串）。表达式键在 `join_keys` 里以隐藏名 `__ivm_key_<n>` 出现（`join_key_expression_name`），
+  MV schema 的类型由 `expression_type` 从对应侧表达式推导（两侧类型必须一致）。
+- **运行时**：`join_side_key_columns` 在 `keyed_join_projection` 与 `join_projection` 的首次
+  select 里把表达式求值并 alias（左侧 `key`、右侧 `__right_<key>`），其余 join/撤回/排序逻辑
+  零改动；`validate_join_view` 校验长度、两侧类型与（keyed 路径的）输出 schema。
+- **schema helper**：新增 `keyed_join_view_schema_with_keys`、`wide_keyed_join_view_schema_with_keys`、
+  `join_view_schema_with_keys`、`wide_join_view_schema_with_keys`（带 `key_exprs`），既有 66 个
+  调用点保持原签名（委托空表达式）。
+- **范围**：仅两源 inner join；lookup/outer/multi-way/chain 的表达式键仍拒绝（错误信息不变）。
+- **测试**：分析器用例固定 `join_keys`/`key_exprs` 与两侧渲染；oracle
+  `oracle_join_key_expression_matches_full_recompute`（`a.k = b.k AND a.v + 1 = b.v`，随机更新
+  翻转匹配）。全量 IVM 397 passed / 0 failed；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

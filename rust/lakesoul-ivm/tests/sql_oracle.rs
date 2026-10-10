@@ -17,28 +17,28 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
-    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, JoinOutputColumn,
-    JoinSide, LookupChainColumn, LookupChainStep, MinMaxKind, MultiJoinColumn,
-    PhysicalFormat, VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
-    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, JoinKeyExprs,
+    JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainStep, MinMaxKind,
+    MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
+    WindowGroupSpec, approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
     distinct_agg_mv_schema_for, grouping_sets_mv_schema_for, join_condition_column_name,
-    keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    left_aggregate_mv_schema_for, lookup_chain_mv_schema_for,
-    lookup_chain_step_id_column, median_groups_mv_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    join_key_expression_name, keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_for,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, median_groups_mv_schema_for,
+    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_groups_mv_schema_for,
+    min_max_mv_schema_for, multi_agg_mv_schema_for, multi_join_mv_schema_for,
+    multi_join_primary_keys, multi_window_mv_schema_for, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -373,6 +373,45 @@ async fn run_oracle_seeded(
         mv_rows > 0 || custom_seed,
         "{tag}: the view stayed empty for every round"
     );
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_join_key_expression_matches_full_recompute() {
+    // A computed equality key (`a.v + 1 = b.v`) alongside a plain key; the
+    // round mutations keep changing `v`, so the matches flip.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(10i64)),
+        (0, 1, "g1", Some(20)),
+        (1, 0, "g0", Some(11)),
+        (1, 1, "g1", Some(21)),
+    ];
+    let key_exprs = JoinKeyExprs {
+        left: vec![String::new(), "v + 1".to_string()],
+        right: vec![String::new(), "v".to_string()],
+    };
+    let join_keys = vec!["k".to_string(), join_key_expression_name(0)];
+    run_oracle_seeded(
+        "joinkeyexpr",
+        2,
+        schema.clone(),
+        false,
+        &seed,
+        keyed_join_view_schema_with_keys(
+            &schema, &schema, &keys, &keys, &join_keys, &key_exprs, "v", "v",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.k, a.v, b.v FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
+         AND a.v + 1 = b.v",
+        "SELECT a.k, a.v, b.v, a.k AS lpk, b.k AS rpk FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.k = b.k WHERE a.op <> 'delete' \
+         AND b.op <> 'delete' AND a.v + 1 = b.v",
+        "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__",
+    )
+    .await;
 }
 
 #[test_log::test(tokio::test)]

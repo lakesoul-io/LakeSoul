@@ -93,15 +93,21 @@ pub(super) fn analyze_join(
     let right_filter = right_input.filter.clone();
 
     // The equality keys as (left, right) name pairs; differently named keys
-    // are supported by the lookup join.
+    // are supported by the lookup join.  A key that is not a plain column is
+    // a rendered expression evaluated on each side (`ON a.x + 1 = b.y`).
     let mut key_pairs = Vec::new();
+    let mut expression_pairs: Vec<(String, String)> = Vec::new();
     let mut conditions = Vec::new();
     for (left_expr, right_expr) in &join.on {
-        let left_column = column_of(left_expr)
-            .ok_or_else(|| unsupported("join keys must be plain columns"))?;
-        let right_column = column_of(right_expr)
-            .ok_or_else(|| unsupported("join keys must be plain columns"))?;
-        key_pairs.push((left_column.name.clone(), right_column.name.clone()));
+        match (column_of(left_expr), column_of(right_expr)) {
+            (Some(left_column), Some(right_column)) => {
+                key_pairs.push((left_column.name.clone(), right_column.name.clone()));
+            }
+            _ => expression_pairs.push((
+                render_expression(left_expr)?,
+                render_expression(right_expr)?,
+            )),
+        }
     }
     if let Some(filter) = &join.filter {
         for conjunct in split_conjunction(filter) {
@@ -129,19 +135,47 @@ pub(super) fn analyze_join(
             }
         }
     }
-    if key_pairs.is_empty() {
+    if key_pairs.is_empty() && expression_pairs.is_empty() {
         return Err(unsupported("join without an equality key"));
     }
     key_pairs.sort();
     key_pairs.dedup();
-    let join_keys = key_pairs
+    let mut join_keys = key_pairs
         .iter()
         .map(|(left, _)| left.clone())
         .collect::<Vec<_>>();
-    let right_keys = key_pairs
+    let mut right_keys = key_pairs
         .iter()
         .map(|(_, right)| right.clone())
         .collect::<Vec<_>>();
+    let mut key_exprs = JoinKeyExprs::default();
+    if !expression_pairs.is_empty() {
+        // `key_exprs` is positional over `join_keys`: the plain keys that come
+        // first get an empty entry.
+        let plain = join_keys.len();
+        let mut left_exprs = vec![String::new(); plain];
+        let mut right_exprs = vec![String::new(); plain];
+        for (index, (left_expr, right_expr)) in expression_pairs.iter().enumerate() {
+            let (left_type, _) =
+                crate::runtime::expression_type(&left.schema, left_expr)?;
+            let (right_type, _) =
+                crate::runtime::expression_type(&right.schema, right_expr)?;
+            if left_type != right_type {
+                return Err(unsupported(format!(
+                    "join key expressions {left_expr:?} and {right_expr:?} have different types"
+                )));
+            }
+            let name = join_key_expression_name(index);
+            join_keys.push(name.clone());
+            right_keys.push(name);
+            left_exprs.push(left_expr.clone());
+            right_exprs.push(right_expr.clone());
+        }
+        key_exprs = JoinKeyExprs {
+            left: left_exprs,
+            right: right_exprs,
+        };
+    }
     let same_names = join_keys == right_keys;
 
     match join.join_type {
@@ -228,6 +262,7 @@ pub(super) fn analyze_join(
                 output_table_id: request.mv_table_id.clone(),
                 join_keys,
                 right_keys,
+                key_exprs,
                 left_value,
                 right_value,
                 output_columns,
@@ -1441,6 +1476,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                key_exprs: JoinKeyExprs::default(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
@@ -1948,6 +1984,29 @@ mod tests {
             normalized(pair_filter.as_deref()).as_deref(),
             Some("left_value < right_value")
         );
+
+        // An equality key that is not a plain column becomes a computed key:
+        // both sides are rendered, evaluated and stored under a hidden name.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v as bv from src a join src b \
+             on a.k = b.k and a.v + 1 = b.v",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            join_keys,
+            key_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(join_keys.len(), 2);
+        assert_eq!(join_keys[1], join_key_expression_name(0));
+        assert_eq!(key_exprs.left.len(), 2);
+        assert!(key_exprs.left[0].is_empty() && key_exprs.right[0].is_empty());
+        assert!(key_exprs.left[1].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(key_exprs.right[1], "v");
 
         // A condition over a column the select list does not carry
         // materializes that column as a hidden wide payload.

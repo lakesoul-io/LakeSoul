@@ -37,18 +37,18 @@ use crate::runtime::{
     approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
     bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
     cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
-    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_for,
-    keyed_join_view_schema_for, left_aggregate_mv_schema_for, left_join_view_schema_for,
-    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
-    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
-    multi_join_mv_schema_for, multi_window_mv_schema_for, row_expr_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_for,
+    left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_join_view_schema_for,
+    median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
+    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
-    wide_join_view_schema_for, wide_keyed_join_view_schema_for,
-    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_columns_mv_schema_for,
+    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
+    wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_columns_mv_schema_for,
 };
 use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
@@ -1043,6 +1043,7 @@ fn expected_mv_schema(
             left_table_id,
             right_table_id,
             join_keys,
+            key_exprs,
             left_value,
             right_value,
             output_columns,
@@ -1053,40 +1054,44 @@ fn expected_mv_schema(
             match (left.primary_keys.is_empty(), right.primary_keys.is_empty()) {
                 (false, false) => {
                     if output_columns.is_empty() {
-                        keyed_join_view_schema_for(
+                        keyed_join_view_schema_with_keys(
                             &left.schema,
                             &right.schema,
                             &left.primary_keys,
                             &right.primary_keys,
                             join_keys,
+                            key_exprs,
                             left_value,
                             right_value,
                         )?
                     } else {
-                        wide_keyed_join_view_schema_for(
+                        wide_keyed_join_view_schema_with_keys(
                             &left.schema,
                             &right.schema,
                             &left.primary_keys,
                             &right.primary_keys,
                             join_keys,
+                            key_exprs,
                             output_columns,
                         )?
                     }
                 }
                 (true, true) => {
                     if output_columns.is_empty() {
-                        join_view_schema_for(
+                        join_view_schema_with_keys(
                             &left.schema,
                             &right.schema,
                             join_keys,
+                            key_exprs,
                             left_value,
                             right_value,
                         )?
                     } else {
-                        wide_join_view_schema_for(
+                        wide_join_view_schema_with_keys(
                             &left.schema,
                             &right.schema,
                             join_keys,
+                            key_exprs,
                             output_columns,
                         )?
                     }
