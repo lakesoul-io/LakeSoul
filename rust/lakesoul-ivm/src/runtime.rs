@@ -1048,6 +1048,116 @@ impl ViewSpec {
         }
     }
 
+    /// The source table ids the view reads, for refreshing cascading views in
+    /// dependency order.
+    pub fn source_table_ids(&self) -> Vec<&str> {
+        let mut ids = Vec::new();
+        match self {
+            ViewSpec::SumCount {
+                source_table_id, ..
+            }
+            | ViewSpec::Variance {
+                source_table_id, ..
+            }
+            | ViewSpec::Median {
+                source_table_id, ..
+            }
+            | ViewSpec::BoolAgg {
+                source_table_id, ..
+            }
+            | ViewSpec::ApproxDistinct {
+                source_table_id, ..
+            }
+            | ViewSpec::ApproxPercentile {
+                source_table_id, ..
+            }
+            | ViewSpec::ComputedAgg {
+                source_table_id, ..
+            }
+            | ViewSpec::StringAgg {
+                source_table_id, ..
+            }
+            | ViewSpec::ArrayAgg {
+                source_table_id, ..
+            }
+            | ViewSpec::MultiAgg {
+                source_table_id, ..
+            }
+            | ViewSpec::MinMax {
+                source_table_id, ..
+            }
+            | ViewSpec::DistinctAgg {
+                source_table_id, ..
+            }
+            | ViewSpec::Window {
+                source_table_id, ..
+            }
+            | ViewSpec::MultiWindow {
+                source_table_id, ..
+            }
+            | ViewSpec::TopK {
+                source_table_id, ..
+            }
+            | ViewSpec::GroupingSets {
+                source_table_id, ..
+            }
+            | ViewSpec::Row {
+                source_table_id, ..
+            } => {
+                ids.push(source_table_id.as_str());
+            }
+            ViewSpec::Join {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::LookupJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::LeftJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::FullJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::CrossJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::SemiAnti {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::LeftAggregate {
+                left_table_id,
+                right_table_id,
+                ..
+            } => {
+                ids.push(left_table_id.as_str());
+                ids.push(right_table_id.as_str());
+            }
+            ViewSpec::MultiJoin { sources, .. } => {
+                ids.extend(sources.iter().map(|source| source.table_id.as_str()));
+            }
+            ViewSpec::UnionAll { sources, .. }
+            | ViewSpec::UnionDistinct { sources, .. } => {
+                ids.extend(sources.iter().map(|source| source.table_id.as_str()));
+            }
+            ViewSpec::LookupChain { sources, .. } => {
+                ids.extend(sources.iter().map(|source| source.table_id.as_str()));
+            }
+        }
+        ids
+    }
+
     /// A stable label for the view kind, used by the metrics.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -2871,6 +2981,49 @@ impl IvmRuntime {
     /// Refresh a view from its persisted [`ViewSpec`], opening every table by
     /// id.  The spec is the only state needed to drive a refresh from any
     /// process; the registered refresh interval is preserved.
+    /// Refresh a view and every view it reads, upstream first, so a scheduler
+    /// can drive a whole chain with one call.
+    ///
+    /// Returns `(view_id, epoch)` for every view that was refreshed, in
+    /// refresh order (`None` when the view had no changes).  The traversal is
+    /// iterative and cycle-safe: a table that is not a registered view is
+    /// skipped.
+    pub async fn refresh_view_chain(
+        &self,
+        view_id: &str,
+    ) -> Result<Vec<(String, Option<i64>)>> {
+        let mut visited = std::collections::HashSet::new();
+        let mut specs: HashMap<String, ViewSpec> = HashMap::new();
+        let mut refreshed = Vec::new();
+        let mut stack = vec![(view_id.to_string(), false)];
+        while let Some((id, expanded)) = stack.pop() {
+            if !expanded {
+                if visited.contains(&id) {
+                    continue;
+                }
+                let Some(value) = self.metadata.get_view_spec(&id).await? else {
+                    continue;
+                };
+                let spec: ViewSpec = serde_json::from_value(value)?;
+                visited.insert(id.clone());
+                let sources = spec
+                    .source_table_ids()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                specs.insert(id.clone(), spec);
+                stack.push((id, true));
+                for source in sources.into_iter().rev() {
+                    stack.push((source, false));
+                }
+            } else if let Some(spec) = specs.get(&id) {
+                let epoch = self.refresh_spec(spec).await?;
+                refreshed.push((id, epoch));
+            }
+        }
+        Ok(refreshed)
+    }
+
     pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
         let kind = spec.kind();
         let started = std::time::Instant::now();
