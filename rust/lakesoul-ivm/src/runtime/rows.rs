@@ -398,7 +398,6 @@ impl IvmRuntime {
     pub async fn refresh_row(&self, view: &RowView) -> Result<Option<i64>> {
         self.register_row_view(view).await?;
         validate_row_view(view).await?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -445,7 +444,7 @@ impl IvmRuntime {
         let delta = if outer_changed {
             dataframe(
                 &context,
-                view.source.read_files(window.added_files).await?,
+                view.source.read_partition_files(window.added_files).await?,
                 &view.source.schema,
             )?
         } else {
@@ -577,7 +576,6 @@ impl IvmRuntime {
     pub async fn rebuild_row(&self, view: &RowView) -> Result<i64> {
         self.register_row_view(view).await?;
         validate_row_view(view).await?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")

@@ -271,6 +271,14 @@ needs none).  A typical trap: the two branches of a
   `update_before`/`update_after` pair an update. Without one the internal
   `rowKinds` column is used. The change column is never part of a `UNION`
   distinct key.
+* A source may be **range partitioned** (LakeSoul `PARTITIONED BY`): the
+  partition columns belong to the logical schema but not to the data files,
+  and every read injects their values from the partition descriptor —
+  changelog window, current state, before state and rebuild baseline alike —
+  so filters, group keys and join keys can reference them. Merge-on-read runs
+  within a partition, and as in LakeSoul a key must not span partitions (the
+  partition is also the unit of the cursors). Dropping a partition is not
+  incremental yet: rebuild the view when a partition disappears.
 * The **keyed CDC contract** is exactly four markers: `insert`, `update_after`,
   `update_before`, `delete` (any other value is treated as a live version).
   A keyed source folds markers through merge-on-read, so the final state is the
@@ -310,7 +318,9 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
 
 * Every source partition has a cursor (last consumed version/timestamp). A
   refresh collects the changelog window per partition, applies the delta and
-  advances the cursors.
+  advances the cursors. The before state of a window is read per partition from
+  its own pinned version, so partitions whose cursors moved apart stay
+  consistent.
 * **Cascading views**: a statement only reads the current state of the views
   it references.  A scheduler advances a whole chain with
   `IvmRuntime::refresh_view_chain(view_id)` (upstream first, cycle-safe), and
@@ -378,9 +388,6 @@ source state.
 The following shapes are currently rejected (see [PLAN.md](PLAN.md) §10.5 for
 the backlog):
 
-* range-partitioned source tables: the reads do not carry the partition values
-  through the IO layer yet, and the join / row / union / TOP-K views reject them
-  explicitly. Supporting them needs a dedicated change (see the backlog);
 * non-equality join conditions over columns that the join does not
   materialize (a pair carries `left_value` / `right_value` or the wide output
   columns) and join keys outside the equality support;

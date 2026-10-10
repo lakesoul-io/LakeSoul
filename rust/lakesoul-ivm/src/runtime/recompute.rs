@@ -2262,7 +2262,10 @@ impl IvmRuntime {
         let context = SessionContext::new();
         let delta_batches = project_group_keys(
             &context,
-            parts.source.read_files(window.added_files).await?,
+            parts
+                .source
+                .read_partition_files(window.added_files)
+                .await?,
             &parts.source.schema,
             parts.group_keys,
             parts.group_exprs,
@@ -2282,9 +2285,9 @@ impl IvmRuntime {
                 &context,
                 parts
                     .source
-                    .read_as_of_filtered(
+                    .read_before_window_filtered(
                         &self.client,
-                        window.before_timestamp,
+                        &window.before_versions,
                         pk_filters,
                     )
                     .await?,

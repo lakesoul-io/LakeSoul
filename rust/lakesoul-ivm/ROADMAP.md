@@ -172,7 +172,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| **分区源表**（keyed 分区表） | **M** | 游标/窗口已按分区工作；缺分区值进读取（IO 注入）。设计见 `ivm-partitioned-sources.md` |
+| **分区源表**（keyed 分区表） | **M** | ✅ 一期已实现（PR-94，PLAN §10.100）：分区值进读取（IO 注入）、按分区 before-state、keyed 视图 guard 全部移除；二期（变化分区裁剪、MV 分区写）见 `ivm-partitioned-sources.md` |
 | append-only / append-only CDC 源 | **不做** | 见 A3 |
 
 ---
@@ -182,7 +182,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 1. **P0（小步，正确性）**：A1 MV 主键存在性校验 → A2 CDC 契约测试 → A3 非契约源策略。
 2. **P0（大价值）**：B2 视图链编排（依赖图 + 拓扑刷新）——一次解锁组合类全部形状，
    并把「两段视图」模式写进 README。
-3. **P1**：B9 分区源表一期 → B3 1:N 右侧外连接链 → B3 连接键表达式/未物化列 →
+3. **P1**：B9 分区源表一期（✅ 已实现，PR-94）→ B3 1:N 右侧外连接链 → B3 连接键表达式/未物化列 →
    B5 INTERSECT/EXCEPT ALL。
 4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做。
 5. 若某类形状长期不做，纳入「两层刷新契约（Tier-2 全量回退）」的覆盖范围

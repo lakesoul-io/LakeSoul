@@ -2179,9 +2179,11 @@ impl IvmRuntime {
         if !keyed {
             ensure_append_only(&view.left, &view.view_id)?;
             ensure_append_only(&view.right, &view.view_id)?;
+            // The append-only decomposition reads one as-of before state per
+            // side; that only stays consistent for a single partition.
+            self.ensure_unpartitioned(&view.left).await?;
+            self.ensure_unpartitioned(&view.right).await?;
         }
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         let left_window = self
             .collect_source_window(&view.view_id, &view.left)
@@ -2246,14 +2248,14 @@ impl IvmRuntime {
             let delta_left = dataframe(
                 &context,
                 view.left
-                    .read_files(left_window.added_files.clone())
+                    .read_partition_files(left_window.added_files.clone())
                     .await?,
                 &view.left.schema,
             )?;
             let delta_right = dataframe(
                 &context,
                 view.right
-                    .read_files(right_window.added_files.clone())
+                    .read_partition_files(right_window.added_files.clone())
                     .await?,
                 &view.right.schema,
             )?;
@@ -2417,11 +2419,11 @@ impl IvmRuntime {
         } else {
             let left_delta = view
                 .left
-                .read_files(left_window.added_files.clone())
+                .read_partition_files(left_window.added_files.clone())
                 .await?;
             let right_delta = view
                 .right
-                .read_files(right_window.added_files.clone())
+                .read_partition_files(right_window.added_files.clone())
                 .await?;
             let left_before = view
                 .left
@@ -2522,8 +2524,6 @@ impl IvmRuntime {
     ) -> Result<Option<i64>> {
         self.register_lookup_join_view(view).await?;
         validate_lookup_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         let left_window = self
             .collect_source_window(&view.view_id, &view.left)
@@ -2613,7 +2613,7 @@ impl IvmRuntime {
             let delta_left = dataframe(
                 &context,
                 view.left
-                    .read_files(left_window.added_files.clone())
+                    .read_partition_files(left_window.added_files.clone())
                     .await?,
                 &view.left.schema,
             )?;
@@ -2626,7 +2626,7 @@ impl IvmRuntime {
             let delta_right = dataframe(
                 &context,
                 view.right
-                    .read_files(right_window.added_files.clone())
+                    .read_partition_files(right_window.added_files.clone())
                     .await?,
                 &view.right.schema,
             )?;
@@ -2711,8 +2711,6 @@ impl IvmRuntime {
     pub async fn rebuild_lookup_join(&self, view: &LookupJoinView) -> Result<i64> {
         self.register_lookup_join_view(view).await?;
         validate_lookup_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -2812,8 +2810,6 @@ impl IvmRuntime {
     pub async fn refresh_left_join(&self, view: &LeftJoinView) -> Result<Option<i64>> {
         self.register_left_join_view(view).await?;
         validate_left_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         let left_window = self
             .collect_source_window(&view.view_id, &view.left)
@@ -2912,7 +2908,7 @@ impl IvmRuntime {
             let delta_left = dataframe(
                 &context,
                 view.left
-                    .read_files(left_window.added_files.clone())
+                    .read_partition_files(left_window.added_files.clone())
                     .await?,
                 &view.left.schema,
             )?;
@@ -2925,7 +2921,7 @@ impl IvmRuntime {
             let delta_right = dataframe(
                 &context,
                 view.right
-                    .read_files(right_window.added_files.clone())
+                    .read_partition_files(right_window.added_files.clone())
                     .await?,
                 &view.right.schema,
             )?;
@@ -3027,8 +3023,6 @@ impl IvmRuntime {
     pub async fn rebuild_left_join(&self, view: &LeftJoinView) -> Result<i64> {
         self.register_left_join_view(view).await?;
         validate_left_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -3135,8 +3129,6 @@ impl IvmRuntime {
     pub async fn refresh_full_join(&self, view: &FullJoinView) -> Result<Option<i64>> {
         self.register_full_join_view(view).await?;
         validate_full_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         let left_window = self
             .collect_source_window(&view.view_id, &view.left)
@@ -3285,7 +3277,7 @@ impl IvmRuntime {
                 dataframe(
                     &context,
                     view.left
-                        .read_files(left_window.added_files.clone())
+                        .read_partition_files(left_window.added_files.clone())
                         .await?,
                     &view.left.schema,
                 )?,
@@ -3318,7 +3310,7 @@ impl IvmRuntime {
                 dataframe(
                     &context,
                     view.right
-                        .read_files(right_window.added_files.clone())
+                        .read_partition_files(right_window.added_files.clone())
                         .await?,
                     &view.right.schema,
                 )?,
@@ -3444,8 +3436,6 @@ impl IvmRuntime {
     pub async fn rebuild_full_join(&self, view: &FullJoinView) -> Result<i64> {
         self.register_full_join_view(view).await?;
         validate_full_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -3565,8 +3555,6 @@ impl IvmRuntime {
     pub async fn refresh_cross_join(&self, view: &CrossJoinView) -> Result<Option<i64>> {
         self.register_cross_join_view(view).await?;
         validate_cross_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         let left_window = self
             .collect_source_window(&view.view_id, &view.left)
@@ -3684,7 +3672,7 @@ impl IvmRuntime {
             let delta_left = dataframe(
                 &context,
                 view.left
-                    .read_files(left_window.added_files.clone())
+                    .read_partition_files(left_window.added_files.clone())
                     .await?,
                 &view.left.schema,
             )?;
@@ -3716,7 +3704,7 @@ impl IvmRuntime {
             let delta_right = dataframe(
                 &context,
                 view.right
-                    .read_files(right_window.added_files.clone())
+                    .read_partition_files(right_window.added_files.clone())
                     .await?,
                 &view.right.schema,
             )?;
@@ -3798,8 +3786,6 @@ impl IvmRuntime {
     pub async fn rebuild_cross_join(&self, view: &CrossJoinView) -> Result<i64> {
         self.register_cross_join_view(view).await?;
         validate_cross_join_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -3912,8 +3898,6 @@ impl IvmRuntime {
             ensure_append_only(&view.left, &view.view_id)?;
             ensure_append_only(&view.right, &view.view_id)?;
         }
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")

@@ -28,6 +28,7 @@ pub(crate) fn source_table(name: &str) -> IvmTable {
         namespace: "default".to_string(),
         table_path: format!("file:///tmp/{name}"),
         schema: schema(),
+        range_partition_columns: Vec::new(),
         primary_keys: vec!["k".to_string()],
         bucket_columns: Vec::new(),
         hash_bucket_num: "1".to_string(),
