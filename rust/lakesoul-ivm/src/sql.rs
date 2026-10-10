@@ -109,18 +109,9 @@ pub fn analyze_select(
     let spec = match plan {
         LogicalPlan::Projection(projection) => match peel(&projection.input) {
             LogicalPlan::Aggregate(aggregate) => {
-                // A `GROUPING()` column is a computed column over the grouping
-                // sets, which the grouping-sets analyzer materializes.
-                let grouping_projection = aggregate
-                    .group_expr
-                    .iter()
-                    .any(|expr| matches!(strip_alias(expr), Expr::GroupingSet(_)))
-                    && is_grouping_projection(projection);
-                if !is_plain_projection(projection) && !grouping_projection {
-                    return Err(unsupported(
-                        "computed columns above an aggregate are not supported",
-                    ));
-                }
+                // Computed columns above the aggregate (a `GROUPING()` column
+                // or an expression over the aggregate outputs) are materialized
+                // by the aggregate analyzers.
                 analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
             }
             LogicalPlan::Sort(sort) => {
@@ -149,15 +140,6 @@ pub fn analyze_select(
                 // `HAVING` is one or more filters directly above the
                 // aggregate; a filter on a window rank column is top-k.
                 if let Some((aggregate, having)) = having_aggregate(&projection.input) {
-                    let grouping_projection =
-                        aggregate.group_expr.iter().any(|expr| {
-                            matches!(strip_alias(expr), Expr::GroupingSet(_))
-                        }) && is_grouping_projection(projection);
-                    if !is_plain_projection(projection) && !grouping_projection {
-                        return Err(unsupported(
-                            "computed columns above an aggregate are not supported",
-                        ));
-                    }
                     analyze_aggregate(
                         aggregate,
                         Some(projection),

@@ -53,6 +53,10 @@ pub struct SemiAntiView {
     /// Whether a NULL join key matches another NULL join key (set operations
     /// and null-aware predicates).
     pub null_safe: bool,
+    /// Whether left rows sharing the join keys compete for the right
+    /// multiplicity: `INTERSECT ALL` keeps the first `count_r` copies and
+    /// `EXCEPT ALL` the `count_l - count_r` surplus.
+    pub count_mode: bool,
     /// An optional aggregate over the right source; when present the right
     /// side contributes one value per join key (a correlated scalar subquery)
     /// instead of a row match.
@@ -102,6 +106,7 @@ impl SemiAntiView {
             left_filter: None,
             right_filter: None,
             null_safe: false,
+            count_mode: false,
             right_aggregate: None,
             right_keys: Vec::new(),
             match_predicate: None,
@@ -162,6 +167,7 @@ impl SemiAntiView {
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             null_safe: self.null_safe,
+            count_mode: self.count_mode,
             right_aggregate: self.right_aggregate.clone(),
             right_keys: self.right_keys.clone(),
             match_predicate: self.match_predicate.clone(),
@@ -299,6 +305,20 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
                     view.view_id
                 ));
             }
+        }
+    }
+    if view.count_mode {
+        if view.right_aggregate.is_some() || view.match_predicate.is_some() {
+            return Err(report!(
+                "semi/anti view {}: a count mode view has no right aggregate",
+                view.view_id
+            ));
+        }
+        if !view.conditions.is_empty() {
+            return Err(report!(
+                "semi/anti view {}: a count mode view has no extra conditions",
+                view.view_id
+            ));
         }
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
@@ -534,6 +554,67 @@ fn semi_aggregate_match(
     )?)
 }
 
+/// The left rows that win the per-tuple multiplicity competition:
+/// `INTERSECT ALL` keeps the rows with `rank <= count_r` and `EXCEPT ALL` the
+/// rows with `rank > count_r` (a missing right tuple counts as zero).  The
+/// rank orders the rows of a tuple by the left primary keys, so it is stable
+/// across refreshes; NULL join keys partition and join null-safely, exactly
+/// like the set operations.
+async fn semi_count_qualifying(
+    context: &SessionContext,
+    left: DataFrame,
+    right: DataFrame,
+    view: &SemiAntiView,
+) -> Result<DataFrame> {
+    context.register_table("__ivm_count_left", left.into_view())?;
+    context.register_table("__ivm_count_right", right.into_view())?;
+    let quote = |columns: &[String]| {
+        columns
+            .iter()
+            .map(|column| quote_ident(column))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let left_keys = quote(&view.join_keys);
+    let right_keys = quote(right_join_keys(view));
+    let primary_keys = view
+        .left
+        .primary_keys
+        .iter()
+        .map(|key| format!("l.{}", quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order = quote(&view.left.primary_keys);
+    let on = view
+        .join_keys
+        .iter()
+        .zip(right_join_keys(view))
+        .map(|(left, right)| {
+            format!(
+                "l.{} IS NOT DISTINCT FROM r.{}",
+                quote_ident(left),
+                quote_ident(right)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let predicate = if view.anti {
+        "r.__ivm_match_count IS NULL OR l.__ivm_rank > r.__ivm_match_count"
+    } else {
+        "r.__ivm_match_count IS NOT NULL AND l.__ivm_rank <= r.__ivm_match_count"
+    };
+    let sql = format!(
+        "SELECT {primary_keys} FROM \
+         (SELECT *, row_number() OVER (PARTITION BY {left_keys} ORDER BY {order}) \
+          AS __ivm_rank FROM __ivm_count_left) l \
+         LEFT JOIN \
+         (SELECT {right_keys}, count(*) AS __ivm_match_count FROM __ivm_count_right \
+          GROUP BY {right_keys}) r \
+         ON {on} WHERE {predicate}"
+    );
+    Ok(context.sql(&sql).await?)
+}
+
 /// The alias of a right column in a semi/anti join, so conditions can name
 /// both sides unambiguously.
 fn semi_anti_right_alias(column: &str) -> String {
@@ -550,6 +631,25 @@ fn semi_anti_compare(left: Expr, right: Expr, op: CompareOp) -> Expr {
         CompareOp::Gt => left.gt(right),
         CompareOp::Ge => left.gt_eq(right),
     }
+}
+
+/// A null-safe semi join on columns shared by both frames (a set operation
+/// matches a NULL key with another NULL key).
+fn null_safe_semi_join(
+    left: DataFrame,
+    right: DataFrame,
+    keys: &[String],
+) -> Result<DataFrame> {
+    let plan = LogicalPlanBuilder::from(left.logical_plan().clone())
+        .join_detailed(
+            right.logical_plan().clone(),
+            JoinType::LeftSemi,
+            (keys.to_vec(), keys.to_vec()),
+            None,
+            NullEquality::NullEqualsNull,
+        )?
+        .build()?;
+    Ok(DataFrame::new(SessionContext::new().state().clone(), plan))
 }
 
 /// Join `left` against `right` with a semi/anti view's predicate.
@@ -688,6 +788,14 @@ impl IvmRuntime {
         // side filters included).
         let context = SessionContext::new();
         let mut left_columns = semi_anti_left_columns(view);
+        if view.count_mode {
+            // The rank partitions by the join keys.
+            for key in &view.join_keys {
+                if !left_columns.contains(key) {
+                    left_columns.push(key.clone());
+                }
+            }
+        }
         if let Some(filter) = view.left_filter.as_deref() {
             for column in filter_columns(&context, &view.left.schema, filter)? {
                 if !left_columns.contains(&column) {
@@ -816,8 +924,43 @@ impl IvmRuntime {
             .map(String::as_str)
             .collect::<Vec<_>>();
 
-        // Left rows in the delta are always affected.
-        let affected_from_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
+        // Left rows in the delta are always affected.  In count mode a left
+        // insertion or deletion also shifts the ranks of the remaining rows of
+        // its tuple, so the whole tuple follows.
+        let affected_from_left = if view.count_mode {
+            let join_key_exprs = view
+                .join_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let changed_tuples = delta_left
+                .clone()
+                .select(join_key_exprs.clone())?
+                .union(
+                    left_before
+                        .clone()
+                        .join(
+                            delta_left.clone().select(left_key_exprs.clone())?,
+                            JoinType::LeftSemi,
+                            &left_key_names,
+                            &left_key_names,
+                            None,
+                        )?
+                        .select(join_key_exprs)?,
+                )?
+                .distinct()?;
+            let shifted =
+                null_safe_semi_join(left_now.clone(), changed_tuples, &view.join_keys)?
+                    .select(left_key_exprs.clone())?
+                    .distinct()?;
+            delta_left
+                .select(left_key_exprs.clone())?
+                .distinct()?
+                .union(shifted)?
+                .distinct()?
+        } else {
+            delta_left.select(left_key_exprs.clone())?.distinct()?
+        };
         // A right change affects the left rows matching the previous or the
         // current version of the changed right rows: the predicate can flip on
         // an update and a changed equality key can drop an old match.
@@ -909,13 +1052,29 @@ impl IvmRuntime {
             JoinType::LeftSemi
         };
         // Rows that match right now; the ANTI insert takes the difference.
-        let matched_now = if view.right_aggregate.is_some() {
-            semi_aggregate_match(&context, left_now.clone(), right_now, view)?
+        // The count mode already returns the qualifying rows, so its insert
+        // joins semi against them.
+        let (matched_now, insert_join_type) = if view.count_mode {
+            (
+                semi_count_qualifying(&context, left_now.clone(), right_now, view)
+                    .await?,
+                JoinType::LeftSemi,
+            )
+        } else if view.right_aggregate.is_some() {
+            (
+                semi_aggregate_match(&context, left_now.clone(), right_now, view)?
+                    .select(left_key_exprs.clone())?
+                    .distinct()?,
+                join_type,
+            )
         } else {
-            semi_anti_join(left_now.clone(), right_now, view, JoinType::LeftSemi)?
-        }
-        .select(left_key_exprs.clone())?
-        .distinct()?;
+            (
+                semi_anti_join(left_now.clone(), right_now, view, JoinType::LeftSemi)?
+                    .select(left_key_exprs.clone())?
+                    .distinct()?,
+                join_type,
+            )
+        };
 
         let output_columns = semi_anti_output_columns(view)
             .iter()
@@ -931,7 +1090,7 @@ impl IvmRuntime {
             )?
             .join(
                 matched_now,
-                join_type,
+                insert_join_type,
                 &left_key_names,
                 &left_key_names,
                 None,
@@ -1072,7 +1231,17 @@ impl IvmRuntime {
             .iter()
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
-        let rows = if view.right_aggregate.is_some() {
+        let rows = if view.count_mode {
+            let qualifying =
+                semi_count_qualifying(&context, left.clone(), right, view).await?;
+            let key_names = view
+                .left
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            left.join(qualifying, JoinType::LeftSemi, &key_names, &key_names, None)?
+        } else if view.right_aggregate.is_some() {
             semi_aggregate_match(&context, left, right, view)?
         } else {
             semi_anti_join(left, right, view, join_type)?

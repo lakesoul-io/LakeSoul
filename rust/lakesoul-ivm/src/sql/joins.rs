@@ -388,6 +388,7 @@ pub(super) fn analyze_join(
                 left_filter,
                 right_filter,
                 null_safe: false,
+                count_mode: false,
                 right_aggregate: None,
                 right_keys: Vec::new(),
                 match_predicate: None,
@@ -508,6 +509,7 @@ fn analyze_correlated_scalar(
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
         null_safe: false,
+        count_mode: false,
         right_aggregate: Some(call),
         right_keys,
         match_predicate: Some(predicate),
@@ -1459,6 +1461,28 @@ mod tests {
                 .await
                 .unwrap();
         assert!(matches!(analyzed.spec, ViewSpec::CrossJoin { .. }));
+    }
+
+    #[tokio::test]
+    async fn probe_setop_vs_predicate_plans() {
+        for sql in [
+            "select g from src intersect all select g from dim",
+            "select g from src except all select g from dim",
+            "select g from src intersect select g from dim",
+            "select g from src where exists (select 1 from dim where dim.g is not distinct from src.g)",
+            "select g from src where not exists (select 1 from dim where dim.g is not distinct from src.g)",
+        ] {
+            let ctx = SessionContext::new();
+            let table = || {
+                Arc::new(MemTable::try_new(schema(), vec![vec![]]).unwrap())
+                    as Arc<dyn datafusion::catalog::TableProvider>
+            };
+            ctx.register_table("src", table()).unwrap();
+            ctx.register_table("dim", table()).unwrap();
+            let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+            let optimized = ctx.state().optimize(&plan).unwrap();
+            eprintln!("PROBE {sql}\n{}\n", optimized.display_indent());
+        }
     }
 
     #[tokio::test]
@@ -2634,6 +2658,7 @@ mod tests {
                 left_filter: None,
                 right_filter: None,
                 null_safe: false,
+                count_mode: false,
                 right_aggregate: None,
                 right_keys: Vec::new(),
                 match_predicate: None,

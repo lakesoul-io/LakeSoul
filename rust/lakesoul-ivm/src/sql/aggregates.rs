@@ -778,6 +778,15 @@ fn analyze_grouping_sets(
             "GROUPING SETS over an append-only changelog source (it cannot retract)",
         ));
     }
+    // Only `GROUPING()` (and plain columns) may be computed above the sets;
+    // any other computed output would silently miss its view column.
+    if let Some(projection) = projection
+        && !is_grouping_projection(projection)
+    {
+        return Err(unsupported(
+            "computed columns above a GROUPING SETS aggregate are not maintained",
+        ));
+    }
     // `GROUP BY` may mix plain keys with any number of `GROUPING SETS` /
     // `ROLLUP` / `CUBE` expressions: a plain key belongs to every member set
     // and the grouping expressions contribute their own expansions, so the
@@ -1171,6 +1180,14 @@ pub(super) fn analyze_aggregate(
         if group_keys.is_empty() {
             return Err(unsupported("SELECT DISTINCT needs at least one column"));
         }
+        // A distinct statement materializes its grouping keys only; anything
+        // else in the projection (for example a scalar subquery) would miss
+        // its view column.
+        if projection.is_some_and(|projection| !is_plain_projection(projection)) {
+            return Err(unsupported(
+                "computed columns over SELECT DISTINCT are not maintained",
+            ));
+        }
         return Ok(ViewSpec::SumCount {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
@@ -1185,6 +1202,39 @@ pub(super) fn analyze_aggregate(
             having: None,
             average: false,
         });
+    }
+
+    // A projection that computes over the aggregate outputs (for example
+    // `SUM(v) * 2 AS s2`) is maintained by the general multi-aggregate view:
+    // the raw aggregate columns stay materialized (the computed expression and
+    // HAVING reference them) and each computed select expression contributes
+    // one more view column.
+    if let Some(projection) = projection
+        && !is_plain_projection(projection)
+    {
+        if distinct_split.is_some() {
+            return Err(unsupported(
+                "computed columns above a DISTINCT aggregate are not maintained",
+            ));
+        }
+        for expr in &projection.expr {
+            if let Some(kind) = unsupported_computed_output(strip_alias(expr)) {
+                return Err(unsupported(format!(
+                    "{kind} above an aggregate is not maintained"
+                )));
+            }
+        }
+        return analyze_computed_agg(
+            aggregate,
+            projection,
+            group_keys,
+            group_exprs,
+            &hoisted_exprs,
+            having_exprs,
+            source,
+            filter,
+            request,
+        );
     }
 
     // Mixed aggregate kinds (e.g. `SUM(v), MIN(v)`) are recomputed with the
@@ -2476,6 +2526,160 @@ fn parse_multi_aggregates(
     Ok(aggregates)
 }
 
+/// The unsupported kind of a computed output above an aggregate: a subquery or
+/// a window function is evaluated over the whole result set, not per group, so
+/// the recompute path cannot model it.
+fn unsupported_computed_output(expr: &Expr) -> Option<&'static str> {
+    let mut kind = None;
+    let _ = expr.apply(|node| {
+        if kind.is_none() {
+            kind = match node {
+                Expr::ScalarSubquery(_) | Expr::Exists { .. } | Expr::InSubquery(_) => {
+                    Some("a subquery")
+                }
+                Expr::WindowFunction(_) => Some("a window function"),
+                _ => None,
+            };
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    kind
+}
+
+/// A computed output above an aggregate: the general multi-aggregate view
+/// keeps every raw aggregate column and appends one column per computed select
+/// expression, so the projection is recomputed with the groups.
+#[allow(clippy::too_many_arguments)]
+fn analyze_computed_agg(
+    aggregate: &Aggregate,
+    projection: &Projection,
+    group_keys: Vec<String>,
+    group_exprs: Vec<String>,
+    hoisted_exprs: &HashMap<String, Expr>,
+    having_exprs: &[Expr],
+    source: &IvmTable,
+    filter: Option<String>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let mut aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+    if aggregates.is_empty() {
+        return Err(unsupported(
+            "a computed aggregate output needs an aggregate function",
+        ));
+    }
+    let mut names = aggregates
+        .iter()
+        .map(|(_, column, _)| column.clone())
+        .collect::<Vec<_>>();
+    // The projection references the group keys and the aggregate outputs by
+    // their plan column names, so substitute each reference with the key
+    // expression or the aggregate call before rendering.
+    let offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
+    let mut substitution: HashMap<String, Expr> = HashMap::new();
+    for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
+        if let Some(field) = aggregate.schema.fields().get(offset + index) {
+            substitution.insert(field.name().clone(), strip_alias(expr).clone());
+        }
+    }
+    for (index, expr) in aggregate.group_expr.iter().enumerate() {
+        if let Some(field) = aggregate.schema.fields().get(index) {
+            substitution.insert(
+                field.name().clone(),
+                resolve_hoisted(strip_alias(expr), hoisted_exprs),
+            );
+        }
+    }
+    for (index, expr) in projection.expr.iter().enumerate() {
+        let inner = strip_alias(expr);
+        // A group key or a selected aggregate is already materialized.
+        if matches!(inner, Expr::Column(_))
+            || aggregate
+                .group_expr
+                .iter()
+                .any(|group| strip_alias(group) == inner)
+            || aggregate
+                .aggr_expr
+                .iter()
+                .any(|aggregate| strip_alias(aggregate) == inner)
+        {
+            continue;
+        }
+        let Expr::Alias(alias) = expr else {
+            return Err(unsupported("a computed aggregate output needs an alias"));
+        };
+        let column = alias.name.clone();
+        if names.contains(&column) {
+            return Err(unsupported(format!(
+                "computed aggregate output {column} is materialized twice"
+            )));
+        }
+        // The optimizer keeps the aggregate outputs as plan columns, so the
+        // expression is rewritten to evaluate the aggregate over the source
+        // columns; a hoisted alias is resolved back to its expression.
+        let resolved = resolve_hoisted(inner, hoisted_exprs);
+        let resolved = resolved
+            .transform_down(|node| {
+                if let Expr::Column(column) = &node
+                    && let Some(replacement) = substitution.get(&column.name)
+                {
+                    return Ok(Transformed::yes(replacement.clone()));
+                }
+                Ok(Transformed::no(node))
+            })
+            .map_err(|error| unsupported(format!("a computed aggregate output {error}")))?
+            .data;
+        let mut references = Vec::new();
+        resolved
+            .apply(|node| {
+                if let Expr::Column(column) = node {
+                    references.push(column.name.clone());
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .map_err(|error| {
+                unsupported(format!("a computed aggregate output {error}"))
+            })?;
+        for reference in references {
+            if source.schema.field_with_name(&reference).is_err() {
+                return Err(unsupported(format!(
+                    "a computed aggregate output references the unmaterialized \
+                     column {reference}"
+                )));
+            }
+        }
+        let call = render_expression(&resolved)?;
+        let data_type = projection.schema.field(index).data_type().clone();
+        encode_data_type(&data_type)?;
+        names.push(column.clone());
+        aggregates.push((call, column, data_type));
+    }
+    let having =
+        render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
+    Ok(ViewSpec::MultiAgg {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys,
+        group_exprs,
+        aggregates: aggregates
+            .iter()
+            .map(|(call, column, data_type)| {
+                Ok(MultiAggSpec {
+                    call: call.clone(),
+                    column: column.clone(),
+                    result: encode_data_type(data_type)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        filter,
+        having,
+    })
+}
+
 /// An aggregate view over one source with any mix of supported aggregate
 /// functions in a single statement (recomputed from the affected groups).
 #[allow(clippy::too_many_arguments)]
@@ -2521,6 +2725,123 @@ fn analyze_multi_agg(
 mod tests {
     use super::*;
     use crate::sql::test_helpers::*;
+
+    #[tokio::test]
+    async fn analyzes_computed_aggregate_outputs() {
+        // A computed select expression above an aggregate: the raw aggregate
+        // columns stay materialized (the expression and HAVING reference them)
+        // and the expression appends one view column.
+        let analyzed =
+            analyze_optimized("select g, sum(v) * 2 as s2 from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::MultiAgg {
+            group_keys,
+            group_exprs,
+            aggregates,
+            having,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        assert!(group_exprs.is_empty());
+        assert!(having.is_none());
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| (
+                    aggregate.call.as_str(),
+                    aggregate.column.as_str(),
+                    aggregate.result.as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("sum(v)", "sum_v", "int64"),
+                ("(sum(v) * 2)", "s2", "int64"),
+            ]
+        );
+
+        // A selected raw aggregate beside computed outputs keeps its
+        // canonical column, so HAVING can reference it.
+        let analyzed = analyze_optimized(
+            "select g, sum(v) * 2 as s2, count(*) + 1 as c1 from src group by g \
+             having sum(v) > 10",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            aggregates, having, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sum_v", "count", "s2", "c1"]
+        );
+        assert_eq!(aggregates[1].call, "count(1)");
+        assert_eq!(aggregates[3].call, "(count(1) + 1)");
+        assert_eq!(
+            normalized(having.as_deref()),
+            Some("sum_v > 10".to_string())
+        );
+
+        // A global computed aggregate has no group key.
+        let analyzed = analyze_optimized("select sum(v) * 2 as s2 from src")
+            .await
+            .unwrap();
+        let ViewSpec::MultiAgg {
+            group_keys,
+            aggregates,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert!(group_keys.is_empty());
+        assert_eq!(aggregates[1].column, "s2");
+
+        // A computed output needs an alias, and the general path does not
+        // model the DISTINCT split.
+        assert!(
+            analyze_optimized("select g, sum(v) * 2 from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze_optimized("select g, sum(distinct v) * 2 as s2 from src group by g")
+                .await
+                .is_err()
+        );
+        // A subquery or a window function is evaluated over the whole result
+        // set, so it cannot be recomputed per group.
+        assert!(
+            analyze_optimized("select g, (select max(v) from src) from src group by g")
+                .await
+                .is_err()
+        );
+        assert!(
+            analyze_optimized(
+                "select g, row_number() over (order by count(*)) as rn \
+                 from src group by g"
+            )
+            .await
+            .is_err()
+        );
+        // A GROUPING SETS projection only carries GROUPING() columns.
+        assert!(
+            analyze_optimized(
+                "select grouping(g), sum(v) * 2 as s2 from src group by rollup(g)"
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn analyzes_sum_count() {

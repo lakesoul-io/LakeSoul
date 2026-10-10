@@ -82,7 +82,7 @@ used as row identities must be non-nullable.
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
 | Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery) | the projected left columns, the aggregate column, kinds, epoch |
-| INTERSECT / EXCEPT | over unique-per-row join columns (the distinct and `ALL` variants); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns, kinds, epoch |
+| INTERSECT / EXCEPT | the distinct and `ALL` variants; a repeated left of an `ALL` variant competes the per-tuple match counts (`min(count_l, count_r)` copies for `INTERSECT ALL`, the surplus for `EXCEPT ALL`); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns (plus the left key), kinds, epoch |
 
 Supported within the shapes above:
 
@@ -155,12 +155,17 @@ Supported within the shapes above:
   (`SELECT ..., (SELECT AVG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s`)
   is maintained as a left join against the same per-key aggregate, with NULL
   for a key without rows;
-* **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
-  semi/anti semantics coincide with the set operation: the left rows are
-  unique per join tuple (their primary key is covered), which also covers
-  null-aware `IS NOT DISTINCT FROM` semi/anti predicates; a NULL-capable join
-  column makes the view null-safe, so `NULL` matches `NULL` exactly as the
-  set operations require;
+* **`INTERSECT` / `EXCEPT`**: the distinct variants need left rows unique per
+  join tuple (their primary key is covered), which also covers null-aware
+  `IS NOT DISTINCT FROM` semi/anti predicates with a repeated left (every row
+  is checked on its own, plain membership).  The `ALL` variants keep the
+  standard per-tuple match counts: a repeated left row is ranked by its
+  primary key and stays while `rank <= count_r` (`INTERSECT ALL`) or
+  `rank > count_r` (`EXCEPT ALL`), so a left insertion or deletion
+  re-evaluates its whole tuple.  A NULL-capable join column makes the view
+  null-safe, so `NULL` matches `NULL` exactly as the set operations require
+  (DataFusion evaluates a raw `INTERSECT ALL`/`EXCEPT ALL` as a plain
+  membership join, without the counts);
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -188,7 +193,13 @@ Supported within the shapes above:
   `MEDIAN`, `APPROX_DISTINCT`, `STRING_AGG`, `ARRAY_AGG`, the bit / regression
   functions, ...) in one view; the affected groups are recomputed from their
   current rows, and a SUM/COUNT/AVG-only mix keeps the incremental sum/count
-  view;
+  view.  A **computed select expression over the aggregates** (`SELECT g,
+  SUM(v) * 2 AS s2 ... GROUP BY g`) routes to the same general view: the raw
+  aggregate columns stay materialized (HAVING and the expression reference
+  them) and each computed expression appends one view column.  A computed
+  output needs an alias; the DISTINCT split, a subquery or window function
+  output and a computed column over a plain `SELECT DISTINCT` or a
+  `GROUPING SETS` statement are rejected;
 * **multi-way inner joins** (three to sixteen sources): the join tree flattens
   into one chained inner join; a source without a key pair is cross joined
   (the chain's `FROM a, b, c` and mixed keyless steps) and the MV is keyed by
@@ -407,10 +418,11 @@ the backlog):
 * outer joins inside a multi-way chain outside the lookup-chain shape: a
   right/full step, a bushy tree, or more than sixteen sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
-  outside the maintained subset: they plan as *null-aware* joins, and the
-  `ALL` variants also count the matches on both sides, while the maintained
-  views keep one row per left row, so the shapes whose match counts can
-  differ are rejected rather than silently returning different rows;
+  outside the maintained subset: a `DISTINCT` set-op variant whose left rows
+  repeat a join tuple is rejected rather than silently returning duplicate
+  rows (the `ALL` variants count the matches on both sides through the count
+  mode, and a null-aware predicate on a repeated left keeps plain membership
+  semantics);
 * quantified comparisons other than `= ANY` / `<> ALL` (`> ANY`, `> ALL`,
   `>= ANY`, ...): DataFusion plans them as null-aware mark joins the analyzer
   does not model.  `= ANY` and `<> ALL` are exactly `IN` / `NOT IN` and are
@@ -418,10 +430,12 @@ the backlog):
   rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY`, a `DISTINCT` aggregate or
-  several aggregates, and a correlated value inside a computed expression)
-  and computed columns above an aggregate
-  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
-  `IN` subqueries are supported as semi/anti joins;
+  several aggregates, and a correlated value inside a computed expression),
+  a subquery or window function **above** an aggregate, and the derived-table
+  form of a computed aggregate output
+  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained
+  views; the direct `SELECT SUM(v) * 2 ... GROUP BY g` form is maintained);
+  correlated `EXISTS` / `IN` subqueries are supported as semi/anti joins;
 * append-only sources (with or without a change column): incremental views
   need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete`
   marker is never materialized as a row, but the matching insert row stays
