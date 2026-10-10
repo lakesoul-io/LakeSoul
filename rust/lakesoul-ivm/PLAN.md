@@ -2771,6 +2771,28 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   的增量更新与删除。全量 IVM **392 passed / 0 failed**；lakesoul-io **219 passed /
   0 failed**；fmt/clippy 干净。
 
+### 10.101 LookupChain 支持 1:N 右侧（PR-95，ROADMAP §B3）
+
+- **语义**：步骤右表按自身主键去重后，join key 不等于其主键即 1:N；一条基表行产出多行
+  链行（LEFT 无匹配产出 NULL 补齐行）。1:1 步骤行为与 schema 不变。
+- **行标识**：每个 1:N 步骤在 MV 输出列之后追加一列非空 Utf8 `__step<source>_id`：匹配行
+  按「`v<octet_length>:<文本>`」对主键各列做长度前缀拼接（无碰撞、确定性；整值为 NULL 的
+  LEFT 未匹配为 `n...n` 哨兵）。`lookup_chain_mv_schema_for` 据此扩展 schema；
+  `validate_lookup_chain_view` 要求 MV 主键**包含**基表主键 + 各 1:N 步骤标识列（缺失明确
+  拒绝，多余列由用户负责，沿用 A1 口径），并校验 `unique` 与 right_keys/右表主键一致。
+- **刷新**：受影响集合仍按基表键集合计算（基表 delta + 每个变化步骤经前缀重放命中 old/new
+  keys 的基表行；前序源同窗口变化则全量），重放自然展开多行；插入/删除按完整标识
+  （基表键 + 标识列）去重并保持重试幂等；排序按完整标识 + `rowKinds`，保证同标识
+  delete 先于 insert；rebuild 走同一套行表达式。
+- **分析器**：`sql/multi_join.rs` 去掉「right_keys == 右表主键」拒绝，改为
+  `unique = (right_keys == 右表主键)` 写入 spec（serde 默认 true，旧 spec 兼容）；right/full、
+  bushy、>8 源等形状限制不变。步骤键引用前序源（含 1:N 步骤的列）继续支持。
+- **测试**：`tests/lookup_chain_1n.rs` 2 个（LEFT 1:N 多匹配/删到 NULL 补齐/改 join key/
+  基表删除/rebuild；INNER 1:N 丢行与恢复）；`sql_oracle` 新增
+  `oracle_lookup_chain_1n_matches_full_recompute`（SQL 全链随机增删改对比全量 LEFT JOIN
+  语义）；`analyzes_lookup_chain` 单测更新（1:N 与「1:N 步骤列作后续键」均接受）。
+  全量 IVM **395 passed / 0 failed**；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

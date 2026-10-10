@@ -2609,6 +2609,7 @@ fn sqllogic_lookup_chain() {
             keys: group_keys(&["k"]),
             right_keys: group_keys(&["k"]),
             key_sources: Vec::new(),
+            unique: true,
         },
         LookupChainStep {
             source: 2,
@@ -2616,6 +2617,7 @@ fn sqllogic_lookup_chain() {
             keys: group_keys(&["k"]),
             right_keys: group_keys(&["k"]),
             key_sources: Vec::new(),
+            unique: true,
         },
     ];
     let columns = vec![

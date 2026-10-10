@@ -27,17 +27,18 @@ use lakesoul_ivm::{
     distinct_agg_mv_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_aggregate_mv_schema_for, lookup_chain_mv_schema_for,
-    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
-    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    lookup_chain_step_id_column, median_groups_mv_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -2630,6 +2631,7 @@ async fn oracle_lookup_chain_matches_full_recompute() {
             keys: vec!["k".to_string()],
             right_keys: vec!["k".to_string()],
             key_sources: Vec::new(),
+            unique: true,
         },
         LookupChainStep {
             source: 2,
@@ -2637,6 +2639,7 @@ async fn oracle_lookup_chain_matches_full_recompute() {
             keys: vec!["k".to_string()],
             right_keys: vec!["k".to_string()],
             key_sources: Vec::new(),
+            unique: true,
         },
     ];
     let columns = vec![
@@ -2687,6 +2690,83 @@ async fn oracle_lookup_chain_matches_full_recompute() {
         "SELECT a.k, a.v, b.v, c.v FROM \
              (SELECT k, v FROM __SRC0__ WHERE op <> 'delete') a \
          LEFT JOIN (SELECT k, v FROM __SRC1__ WHERE op <> 'delete') b ON b.k = a.k \
+         LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = b.k",
+        "SELECT k, v, bv, cv FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_lookup_chain_1n_matches_full_recompute() {
+    // A base table with a 1:N lookup on `g` and a 1:1 lookup on the matched
+    // row's key; the MV merge key carries the 1:N identity column.
+    let schema = source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: vec!["g".to_string()],
+            right_keys: vec!["g".to_string()],
+            key_sources: Vec::new(),
+            unique: false,
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: vec!["k".to_string()],
+            right_keys: vec!["k".to_string()],
+            key_sources: vec![1],
+            unique: true,
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+    ];
+    let mv_schema = lookup_chain_mv_schema_for(
+        &[schema.clone(), schema.clone(), schema.clone()],
+        &steps,
+        &columns,
+    )
+    .unwrap();
+    run_oracle_seeded(
+        "lookupchain1n",
+        3,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+            (2, 1, "g0", Some(7)),
+        ],
+        mv_schema,
+        vec!["k".to_string(), lookup_chain_step_id_column(1)],
+        "SELECT a.k, a.v, b.v AS bv, c.v AS cv FROM __SRC0__ a \
+         LEFT JOIN __SRC1__ b ON b.g = a.g \
+         LEFT JOIN __SRC2__ c ON c.k = b.k",
+        "SELECT a.k, a.v, b.v, c.v FROM \
+             (SELECT k, g, v FROM __SRC0__ WHERE op <> 'delete') a \
+         LEFT JOIN (SELECT k, g, v FROM __SRC1__ WHERE op <> 'delete') b ON b.g = a.g \
          LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = b.k",
         "SELECT k, v, bv, cv FROM __MV__",
     )

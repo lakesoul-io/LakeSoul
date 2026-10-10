@@ -170,15 +170,19 @@ Supported within the shapes above:
   key-only `SELECT DISTINCT ON (key) key` is rejected with a hint to write
   `SELECT DISTINCT` instead); the affected groups are recomputed from their
   current rows;
-* **lookup chains**: a left-deep `[LEFT] JOIN` chain over a keyed base whose
-  steps are keyed 1:1 lookups (the star-schema shape): a step key may
-  reference any earlier source's column, so `c` can be looked up by a value
-  `b` produced; the view keeps one row per base key: a refresh re-evaluates
-  the base rows the changed keys touch (the base delta plus, per changed
-  step, the base rows matching its old and new keys through the prefix
-  chain; when an earlier source changed in the same window every base row is
-  re-evaluated) by replaying the chain, so a missing step row NULLs its
-  payload and a removed base row drops its row;
+* **lookup chains**: a left-deep `[LEFT] JOIN` chain over a keyed base (the
+  star-schema shape): a step key may reference any earlier source's column,
+  so `c` can be looked up by a value `b` produced. A step whose keys are the
+  source key is a **1:1 lookup**; any other key is a **1:N lookup**, and the
+  MV materializes one extra column per 1:N step (`__step<source>_id`, the
+  matched row's primary key encoded as a non-null string, `n...n` for an
+  unmatched LEFT step), so the MV primary key must contain the base key plus
+  those identity columns. A refresh re-evaluates the base rows the changed
+  keys touch (the base delta plus, per changed step, the base rows matching
+  its old and new keys through the prefix chain; when an earlier source
+  changed in the same window every base row is re-evaluated) by replaying
+  the chain, so a 1:N step emits one row per match, a missing step row NULLs
+  its payload and a removed base row drops its rows;
 * **mixed aggregate kinds**: a statement may combine the supported aggregate
   functions (`SUM(v), MIN(v), MAX(v), COUNT(*)`, `AVG`, the variance family,
   `MEDIAN`, `APPROX_DISTINCT`, `STRING_AGG`, `ARRAY_AGG`, the bit / regression
@@ -392,8 +396,7 @@ the backlog):
   materialize (a pair carries `left_value` / `right_value` or the wide output
   columns) and join keys outside the equality support;
 * outer joins inside a multi-way chain outside the lookup-chain shape: a
-  right/full step, a bushy tree, a step source not keyed by its join keys
-  (a 1:N right side), or more than eight sources;
+  right/full step, a bushy tree, or more than eight sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: they plan as *null-aware* joins, and the
   `ALL` variants also count the matches on both sides, while the maintained

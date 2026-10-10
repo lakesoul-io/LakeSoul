@@ -1593,17 +1593,43 @@ mod tests {
         assert_eq!(steps[1].keys, vec!["k".to_string()]);
         assert_eq!(steps[1].key_sources, vec![1]);
 
-        // A right/full step, differently named keys and non-base keys stay
-        // rejected.
+        // A step joined on a non-key column is a 1:N lookup.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             left join src b on b.g = a.g \
+             join src c on c.k = a.k",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain { steps, .. } = analyzed.spec else {
+            panic!("expected a lookup chain spec");
+        };
+        assert!(!steps[0].unique);
+        assert!(steps[1].unique);
+
+        // The key of a 1:N step may reference an earlier step.
+        let analyzed = analyze_multi(
+            "select a.k, b.v as bv, c.v as cv from src a \
+             join src b on b.k = a.k \
+             left join src c on c.v = b.v",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain { steps, .. } = analyzed.spec else {
+            panic!("expected a lookup chain spec");
+        };
+        assert!(steps[0].unique);
+        assert!(!steps[1].unique);
+        assert_eq!(steps[1].key_sources, vec![1]);
+
+        // A right/full step stays rejected.
         for sql in [
             "select a.k, b.v as bv, c.v as cv from src a join src b on b.k = a.k \
              right join src c on c.k = a.k",
             "select a.k, b.v as bv, c.v as cv from src a join src b on b.k = a.k \
              full join src c on c.k = a.k",
-            "select a.k, b.v as bv, c.v as cv from src a left join src b on b.g = a.g \
-             join src c on c.k = a.k",
-            "select a.k, b.v as bv, c.v as cv from src a join src b on b.k = a.k \
-             left join src c on c.v = b.v",
         ] {
             let error = analyze_multi(sql, vec![source_table("src")])
                 .await
