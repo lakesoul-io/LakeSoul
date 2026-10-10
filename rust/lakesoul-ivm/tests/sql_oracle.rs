@@ -1926,6 +1926,55 @@ async fn oracle_bool_agg_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_plain_keys_matches_full_recompute() {
+    // A plain key mixed into GROUPING SETS: the planner normalizes it to the
+    // cross-product member sets, which the view maintains.
+    run_oracle(
+        "groupsetsplain",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string(), "v".to_string()],
+            &[],
+            Some("v"),
+            None,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+        vec![
+            "__ivm_grouping".to_string(),
+            "g".to_string(),
+            "v".to_string(),
+        ],
+        "SELECT g, v, SUM(v), COUNT(*) FROM __SRC__ \
+         GROUP BY g, GROUPING SETS ((v), ())",
+        "SELECT g, v, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g, GROUPING SETS ((v), ())",
+        "SELECT g, v, sum_v, count_v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_having_computed_matches_full_recompute() {
+    // A computed HAVING predicate over the aggregate outputs.
+    run_oracle(
+        "havingcomputed",
+        1,
+        sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v")).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY g HAVING SUM(v) * 2 > 120",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g HAVING SUM(v) * 2 > 120",
+        "SELECT g, sum_v, count_v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_grouping_sets_cube_matches_full_recompute() {
     // A CUBE over two keys: detail rows, both per-key subtotals and the grand
     // total share the MV.

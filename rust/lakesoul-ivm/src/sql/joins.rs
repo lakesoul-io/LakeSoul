@@ -1787,6 +1787,22 @@ mod tests {
                 },
             ]
         );
+
+        // Up to sixteen sources: nine aliases of the same table flatten into
+        // one multi-way join.
+        let mut sql = String::from("select t0.k");
+        for index in 1..9 {
+            sql.push_str(&format!(", t{index}.k as k{index}"));
+        }
+        sql.push_str(" from src t0");
+        for index in 1..9 {
+            sql.push_str(&format!(" join src t{index} on t{index}.k = t0.k"));
+        }
+        let analyzed = analyze_optimized(&sql).await.unwrap();
+        let ViewSpec::MultiJoin { sources, .. } = analyzed.spec else {
+            panic!("expected a multi join spec");
+        };
+        assert_eq!(sources.len(), 9);
         assert!(conditions.is_empty());
 
         // A cross-source condition and a side filter.

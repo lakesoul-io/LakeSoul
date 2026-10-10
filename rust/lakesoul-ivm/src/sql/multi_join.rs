@@ -287,9 +287,9 @@ pub(super) fn analyze_multi_join(
             "a multi-table join needs at least three sources",
         ));
     }
-    if flat.inputs.len() > 8 {
+    if flat.inputs.len() > 16 {
         return Err(unsupported(
-            "a multi-table join supports at most eight sources",
+            "a multi-table join supports at most sixteen sources",
         ));
     }
     if projection.is_some_and(|projection| !is_plain_projection(projection)) {

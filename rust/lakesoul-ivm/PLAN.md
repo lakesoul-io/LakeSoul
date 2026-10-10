@@ -2848,6 +2848,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_join_key_expression_matches_full_recompute`（`a.k = b.k AND a.v + 1 = b.v`，随机更新
   翻转匹配）。全量 IVM 397 passed / 0 failed；fmt/clippy 干净。
 
+### 10.105 分析器覆盖小批：多源上限、混合 GROUPING SETS、HAVING 计算表达式（PR-99）
+
+- **多表 join 源上限 8 → 16**：`analyze_multi_join` 的硬限制提高（运行时本来与源数无关）；
+  新增 9 源分析器用例（同一表 9 个别名链式等值 join 展平成 9 源 MultiJoin）；README/限制清单
+  同步。
+- **GROUP BY 混合普通键与 GROUPING SETS/ROLLUP/CUBE**：核实 DataFusion 在规划期已把
+  `GROUP BY g, GROUPING SETS ((v), ())`、多个 `GROUPING SETS` 表达式、`g, ROLLUP(v), CUBE(k)`
+  等形态归一化成一个 `GroupingSet::GroupingSets`（叉积成员集）；原分析器的两条拒绝分支对
+  常规 SQL 不可达。本 PR 把分析器改为显式做叉积展开（`grouping_member_sets`，对未归一化
+  计划也正确），并补分析器断言（含规划器的成员集顺序）与 oracle
+  `oracle_grouping_sets_plain_keys_matches_full_recompute`。
+- **HAVING 计算表达式**：补 oracle `oracle_having_computed_matches_full_recompute`
+  （`HAVING SUM(v) * 2 > N`），确认既有 `render_having`/`rewrite_having` 路径端到端正确。
+- 全量 IVM 399 passed / 0 failed；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
