@@ -8,8 +8,8 @@ use crate::runtime::{
     MultiJoinSource, RowScalarSpec, ScalarTableSpec, SemiAntiCondition, UnionSourceSpec,
     VarianceKind, ViewSpec, WindowColumn, WindowFunction, WindowGroupSpec,
     approx_distinct_output_column, approx_percentile_output_column,
-    bool_agg_output_column, encode_data_type, string_agg_output_column,
-    union_output_schema_for, wide_pair_alias,
+    bool_agg_output_column, encode_data_type, join_condition_column_name,
+    string_agg_output_column, union_output_schema_for, wide_pair_alias,
 };
 use crate::table::IvmTable;
 use arrow_schema::{DataType, Schema};

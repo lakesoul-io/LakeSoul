@@ -122,7 +122,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 |---|---|---|
 | 链中 **1:N 右侧**外连接（维表按 join key 不唯一） | **L** | ✅ 已实现（PR-95，PLAN §10.101）：每步非空行标识编码列（长度前缀拼接，无碰撞）纳入 MV 主键；受影响集合按基表键重放，INNER/LEFT 均支持；设计见 `ivm-lookup-chain-1n.md` |
 | 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | 左深约束与顺序语义；内连接 bushy 已支持 |
-| 连接键/条件是**表达式**（`ON a.x+1=b.y`）、条件引用**未物化列** | **M** | 两侧投影 + 隐藏 payload |
+| 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
+| 连接键是**表达式**（`ON a.x+1=b.y`） | **M** | 两侧投影 + 隐藏 key payload（后续） |
 | `ANY/ALL` 量化比较、多列 `IN`、`NOT IN` 空语义边角 | **M** | 归约到 semi/anti + 比较 |
 | 超过 8 个源 | **S** | 提高上限 + 压测 |
 

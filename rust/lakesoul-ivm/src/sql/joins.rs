@@ -179,39 +179,48 @@ pub(super) fn analyze_join(
             let right_keys = if same_names { Vec::new() } else { right_keys };
             // One payload per side keeps the compact `left_value` /
             // `right_value` shape; anything else materializes the selected
-            // columns under their select names.
-            let (left_value, right_value, output_columns, pair_filter) =
-                if payloads.left_count == 1 && payloads.right_count == 1 {
-                    let left_value =
-                        payloads.left_value.clone().expect("one left payload");
-                    let right_value =
-                        payloads.right_value.clone().expect("one right payload");
-                    let pair_filter = render_pair_conditions(
-                        &conditions,
-                        &left_value,
-                        &right_value,
-                        "inner join",
-                    )?;
-                    (left_value, right_value, Vec::new(), pair_filter)
-                } else {
-                    if payloads.left_count == 0 || payloads.right_count == 0 {
-                        return Err(unsupported(
-                            "a join view needs at least one column from each side",
-                        ));
-                    }
-                    check_wide_output_names(&payloads.output_columns, &key_names)?;
-                    let pair_filter = render_wide_pair_conditions(
-                        &conditions,
-                        &payloads.output_columns,
-                        "inner join",
-                    )?;
-                    (
-                        payloads.left_value.clone().expect("one left payload"),
-                        payloads.right_value.clone().expect("one right payload"),
-                        payloads.output_columns,
-                        pair_filter,
+            // columns under their select names.  A non-equality condition over
+            // a column the select list does not carry materializes that column
+            // as a hidden payload too, so the pair filter can compare it.
+            let compact = payloads.left_count == 1
+                && payloads.right_count == 1
+                && conditions.iter().all(|condition| {
+                    pair_compatible(
+                        condition,
+                        payloads.left_value.as_deref().expect("one left payload"),
+                        payloads.right_value.as_deref().expect("one right payload"),
                     )
-                };
+                });
+            let (left_value, right_value, output_columns, pair_filter) = if compact {
+                let left_value = payloads.left_value.clone().expect("one left payload");
+                let right_value =
+                    payloads.right_value.clone().expect("one right payload");
+                let pair_filter = render_pair_conditions(
+                    &conditions,
+                    &left_value,
+                    &right_value,
+                    "inner join",
+                )?;
+                (left_value, right_value, Vec::new(), pair_filter)
+            } else {
+                if payloads.left_count == 0 || payloads.right_count == 0 {
+                    return Err(unsupported(
+                        "a join view needs at least one column from each side",
+                    ));
+                }
+                let left_value = payloads.left_value.clone().expect("one left payload");
+                let right_value =
+                    payloads.right_value.clone().expect("one right payload");
+                let mut output_columns = payloads.output_columns;
+                materialize_condition_columns(&mut output_columns, &conditions);
+                check_wide_output_names(&output_columns, &key_names)?;
+                let pair_filter = render_wide_pair_conditions(
+                    &conditions,
+                    &output_columns,
+                    "inner join",
+                )?;
+                (left_value, right_value, output_columns, pair_filter)
+            };
             Ok(ViewSpec::Join {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
@@ -747,10 +756,18 @@ fn analyze_cross_join(
             });
         }
     }
-    let (left_value, right_value, output_columns, pair_filter) = if payloads.left_count
-        == 1
+    // Like the inner join, a cross join materializes the columns its pair
+    // condition compares when the select list does not carry them.
+    let compact = payloads.left_count == 1
         && payloads.right_count == 1
-    {
+        && conditions.iter().all(|condition| {
+            pair_compatible(
+                condition,
+                payloads.left_value.as_deref().expect("one left payload"),
+                payloads.right_value.as_deref().expect("one right payload"),
+            )
+        });
+    let (left_value, right_value, output_columns, pair_filter) = if compact {
         let left_value = payloads.left_value.clone().expect("one left payload");
         let right_value = payloads.right_value.clone().expect("one right payload");
         let pair_filter =
@@ -762,18 +779,14 @@ fn analyze_cross_join(
                 "a cross join needs at least one column from each side",
             ));
         }
-        check_wide_output_names(&payloads.output_columns, &[])?;
-        let pair_filter = render_wide_pair_conditions(
-            &conditions,
-            &payloads.output_columns,
-            "cross join",
-        )?;
-        (
-            payloads.left_value.clone().expect("one left payload"),
-            payloads.right_value.clone().expect("one right payload"),
-            payloads.output_columns,
-            pair_filter,
-        )
+        let left_value = payloads.left_value.clone().expect("one left payload");
+        let right_value = payloads.right_value.clone().expect("one right payload");
+        let mut output_columns = payloads.output_columns;
+        materialize_condition_columns(&mut output_columns, &conditions);
+        check_wide_output_names(&output_columns, &[])?;
+        let pair_filter =
+            render_wide_pair_conditions(&conditions, &output_columns, "cross join")?;
+        (left_value, right_value, output_columns, pair_filter)
     };
     Ok(ViewSpec::CrossJoin {
         view_id: request.view_id.clone(),
@@ -1017,6 +1030,44 @@ fn render_wide_pair_conditions(
         ));
     }
     Ok(Some(parts.join(" AND ")))
+}
+
+/// Whether a non-equality condition compares exactly the compact pair
+/// payloads (in either order).
+fn pair_compatible(
+    condition: &SemiAntiCondition,
+    left_value: &str,
+    right_value: &str,
+) -> bool {
+    (condition.left_column == left_value && condition.right_column == right_value)
+        || (condition.left_column == right_value && condition.right_column == left_value)
+}
+
+/// Materialize the columns a non-equality condition compares but the select
+/// list does not carry as hidden wide payloads, so the pair filter can
+/// evaluate them; [`join_condition_column_name`] names them and the MV schema
+/// helper spells the same columns.
+fn materialize_condition_columns(
+    output_columns: &mut Vec<JoinOutputColumn>,
+    conditions: &[SemiAntiCondition],
+) {
+    for condition in conditions {
+        for (side, column) in [
+            (JoinSide::Left, &condition.left_column),
+            (JoinSide::Right, &condition.right_column),
+        ] {
+            if !output_columns
+                .iter()
+                .any(|output| output.side == side && &output.column == column)
+            {
+                output_columns.push(JoinOutputColumn {
+                    side,
+                    column: column.clone(),
+                    name: join_condition_column_name(side, column),
+                });
+            }
+        }
+    }
 }
 
 /// `col = col` equality, used for join keys.
@@ -1898,14 +1949,36 @@ mod tests {
             Some("left_value < right_value")
         );
 
-        // A condition over a column the pair does not carry is rejected.
-        assert!(
-            analyze_optimized(
-                "select a.k, a.v, b.v from src a join src b \
-                 on a.k = b.k and a.g < b.g",
-            )
-            .await
-            .is_err()
+        // A condition over a column the select list does not carry
+        // materializes that column as a hidden wide payload.
+        let analyzed = analyze_optimized(
+            "select a.k, a.v, b.v as bv from src a join src b \
+             on a.k = b.k and a.g < b.g",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            output_columns,
+            pair_filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected an inner join spec");
+        };
+        assert_eq!(output_columns.len(), 4);
+        assert!(output_columns.iter().any(|column| {
+            column.side == JoinSide::Left
+                && column.column == "g"
+                && column.name == join_condition_column_name(JoinSide::Left, "g")
+        }));
+        assert!(output_columns.iter().any(|column| {
+            column.side == JoinSide::Right
+                && column.column == "g"
+                && column.name == join_condition_column_name(JoinSide::Right, "g")
+        }));
+        assert_eq!(
+            normalized(pair_filter.as_deref()).as_deref(),
+            Some("__left___ivm_cond_left_g < __right___ivm_cond_right_g")
         );
     }
 
