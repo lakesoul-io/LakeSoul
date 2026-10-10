@@ -1547,7 +1547,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
         )
     } else {
         // Without a merge key the delta keeps every marker, so retractions
-        // (delete / update_before) subtract their contribution.
+        // (`delete`) subtract their contribution.
         let (signed_sum, signed_count, signed_nonnull) = signed_delta_exprs(
             "delta",
             value.as_deref(),

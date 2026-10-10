@@ -2711,6 +2711,8 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全量 IVM 套件 396 个测试通过、0 失败。
 - **说明**：数据值层面的 op 校验不做（读取热路径代价高）；契约以文档 + 测试固定，
   写入端应按四值约定落盘。
+- **后续收敛**（§10.102，PR-96）：实际摄入只产出 `insert`/`update`/`delete`（before 镜像落成
+  `delete`），契约已收敛为三标记，本文的 `update_before`/`update_after` 条目仅作历史记录。
 
 ### 10.98 非契约源：分析器直接拒绝 append-only 源（PR-92，ROADMAP §A3）
 
@@ -2792,6 +2794,41 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_lookup_chain_1n_matches_full_recompute`（SQL 全链随机增删改对比全量 LEFT JOIN
   语义）；`analyzes_lookup_chain` 单测更新（1:N 与「1:N 步骤列作后续键」均接受）。
   全量 IVM **395 passed / 0 failed**；fmt/clippy 干净。
+
+### 10.102 CDC 契约收敛为三标记 insert/update/delete（PR-96）
+
+- **背景**：LakeSoul Flink CDC 摄入（`FlinkUtil.rowKindToOperation`）把 `UPDATE_AFTER` 落成
+  `update`、`UPDATE_BEFORE` 落成 `delete`，静态数据只有 `insert`/`update`/`delete`；IVM 原
+  四标记契约靠"未知值按 live"兜底才对 `update` 生效，契约与事实不统一（且 lone `update_before`
+  的撤回角落真实摄入不会产生）。
+- **变更**：撤回标记只认 `delete`——`filter_deletes`、provider 墓碑隐藏、`union distinct`
+  的 retract 判定、`source_delete_filter`/`source_retract_condition` 统一为 `<> 'delete'` /
+  `= 'delete'`，与 IO 层 `cdc_delete_predicate` 完全一致；`update` 上升为契约值（同键新版本，
+  merge-on-read 高版本胜出）；未知值仍按 live。
+- **语义注记**：同键 update 不需要 before 镜像；键变更由摄入把 before 镜像落成 `delete`(旧键)
+  + `update`/`insert`(新键) 表达；append-only 源的 signed 聚合把 `delete` 记负贡献。
+- **测试**：`cdc_update_markers.rs` 重写为三标记（append-only signed；keyed update 折叠、
+  delete 撤回、update 复活；角落：insert→update、update→delete、键变更 delete+update、
+  重复活跃行取最新、未知值 `upsert` 按 live、rebuild 一致）；`table_provider`、
+  `partitioned_sources`、`lookup_chain_1n` 的 update 对改为单条 `update`。全量 IVM 395
+  passed / 0 failed；fmt/clippy 干净。
+
+### 10.103 inner/cross join 的非等值条件支持未物化列（PR-97，ROADMAP §B3）
+
+- **能力**：`SELECT l.k, l.v, r.v AS rv FROM l JOIN r ON l.k = r.k AND l.g < r.g` 这类
+  「条件引用未进 select list 的列」不再被拒；条件列自动物化为**隐藏 wide payload**，命名
+  `__ivm_cond_<side>_<column>`（`join_condition_column_name`，导出以便构造 MV schema）。
+- **判定**：先看 compact（每侧一个 payload）是否满足全部非等值条件都恰好比较
+  `left_value`/`right_value`（`pair_compatible`，任一侧顺序均可）；不满足则走 wide：
+  保留 select payload 顺序，再按条件顺序追加缺失的条件列（`materialize_condition_columns`
+  去重），随后沿用既有 `render_wide_pair_conditions` 与 wide keyed join 运行时——
+  运行时零改动，MV schema/重放/撤回都自动带上隐藏列。
+- **注意**：切换到 wide 后输出名必须唯一（原本 compact 允许两侧同名 payload），
+  重复名会以「materialized twice; add distinct aliases」明确拒绝。
+- **测试**：`analyzes_theta_joins` 更新（隐藏列进入 `output_columns`，pair_filter 引用
+  隐藏别名）；新增 `oracle_theta_join_hidden_columns_matches_full_recompute`：条件
+  `l.v < r.v` 而输出只含 `g`，隐藏列为 v/v，随机更新使匹配集合翻转，对比全量 SQL 语义。
+  全量 IVM 396 passed / 0 failed；fmt/clippy 干净。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

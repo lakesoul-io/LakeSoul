@@ -29,6 +29,17 @@ pub struct JoinOutputColumn {
     pub name: String,
 }
 
+/// The hidden MV column a condition-only column is materialized under: the
+/// select list does not carry the column, but the pair filter has to compare
+/// it, so the analyzer adds it as a wide payload under this name.
+pub fn join_condition_column_name(side: JoinSide, column: &str) -> String {
+    let side = match side {
+        JoinSide::Left => "left",
+        JoinSide::Right => "right",
+    };
+    format!("__ivm_cond_{side}_{column}")
+}
+
 /// An inner equi-join view over two append-only sources.
 ///
 /// The output is append-only: as long as both sides only grow, every joined

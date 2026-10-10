@@ -540,7 +540,7 @@ impl IvmRuntime {
                 }
             }
         } else {
-            // A CDC tombstone (`delete` / `update_before`) is not a row: an
+            // A CDC tombstone (`delete`) is not a row: an
             // append-only source cannot retract the matching insert, but the
             // marker itself must not become a live row.
             let mut rows = filter_deletes(delta, change_column(&view.source))?;

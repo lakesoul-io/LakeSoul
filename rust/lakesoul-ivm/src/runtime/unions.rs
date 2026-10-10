@@ -737,8 +737,7 @@ impl IvmRuntime {
                 // even when the CDC column is not part of the projection.
                 let kinds = match change_column(table) {
                     Some(column) => {
-                        let retract = col(column)
-                            .in_list(vec![lit("delete"), lit("update_before")], false);
+                        let retract = col(column).eq(lit("delete"));
                         when(retract, lit("delete")).otherwise(lit("insert"))?
                     }
                     None => lit("insert"),
