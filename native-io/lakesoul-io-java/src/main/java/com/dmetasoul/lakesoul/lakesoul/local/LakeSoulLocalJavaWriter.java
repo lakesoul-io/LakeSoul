@@ -13,6 +13,8 @@ import com.dmetasoul.lakesoul.meta.entity.*;
 import com.dmetasoul.lakesoul.util.SensitiveConfig;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.TextFormat;
 
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -163,12 +165,22 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         initNativeWriter();
     }
 
+    /**
+     * Escapes an identifier like protobuf text-format field values (as TableInfo.toString() did).
+     */
+    static String textFormatEscape(String identifier) {
+        return TextFormat.escapeBytes(ByteString.copyFromUtf8(identifier));
+    }
+
     private void initNativeWriter() throws IOException {
         // TableInfo includes unredacted table properties; log only its identifiers.
+        // The identifiers come from metadata and may contain newline or other control
+        // characters; text-format escaping (what protobuf's own TableInfo formatting
+        // did before) keeps each record on a single line.
         LOG.info(
                 "LakeSoulLocalJavaWriter initNativeWriter for table={}, tableId={}",
-                tableInfo.getTableName(),
-                tableInfo.getTableId());
+                textFormatEscape(tableInfo.getTableName()),
+                textFormatEscape(tableInfo.getTableId()));
         nativeWriter = new NativeIOWriter(tableInfo);
 
         Schema arrowSchema =

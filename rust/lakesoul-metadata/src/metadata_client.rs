@@ -272,8 +272,10 @@ pub fn pg_config_from_env(
 fn table_log_summary(table_info: &TableInfo) -> String {
     // `TableInfo::properties` is deliberately omitted: table properties can carry
     // object store credentials.
+    // Debug formatting escapes control characters in the retained fields, keeping
+    // each diagnostic record on a single line.
     format!(
-        "table_id={}, table_namespace={}, table_name={}, table_path={}",
+        "table_id={:?}, table_namespace={:?}, table_name={:?}, table_path={:?}",
         table_info.table_id,
         table_info.table_namespace,
         table_info.table_name,
@@ -2224,12 +2226,28 @@ mod tests {
 
         let summary = table_log_summary(&table_info);
 
-        assert!(summary.contains("table_id=table-id"));
-        assert!(summary.contains("table_name=events"));
-        assert!(summary.contains("table_path=s3://bucket/events"));
         assert!(!summary.contains("access-key-sentinel"));
         assert!(!summary.contains("secret-key-sentinel"));
         assert!(!summary.contains("properties"));
+    }
+
+    #[test]
+    fn table_log_summary_escapes_control_characters_in_retained_fields() {
+        let table_info = TableInfo {
+            table_id: "id\nforged".to_string(),
+            table_namespace: "namespace\rforged".to_string(),
+            table_name: "events\t\u{0}\u{1b}".to_string(),
+            table_path: "s3://bucket/\npath\u{7f}".to_string(),
+            ..Default::default()
+        };
+
+        let summary = table_log_summary(&table_info);
+
+        assert!(!summary.chars().any(char::is_control));
+        assert!(summary.contains(r#"table_id="id\nforged""#));
+        assert!(summary.contains(r#"table_namespace="namespace\rforged""#));
+        assert!(summary.contains(r#"table_name="events\t\0\u{1b}""#));
+        assert!(summary.contains(r#"table_path="s3://bucket/\npath\u{7f}""#));
     }
 
     #[test]
