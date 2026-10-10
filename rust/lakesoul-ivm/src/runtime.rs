@@ -1213,13 +1213,23 @@ pub struct LookupChainStep {
     pub left: bool,
     /// The base columns the step joins on.
     pub keys: Vec<String>,
-    /// The joined source's key columns (its primary keys), aligned with
-    /// [`Self::keys`].
+    /// The joined source's key columns aligned with [`Self::keys`].
     pub right_keys: Vec<String>,
     /// The source index of each key (0 is the base); empty means every key
     /// comes from the base.  A key may reference any earlier source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_sources: Vec<usize>,
+    /// `true` when the joined source's primary key is exactly `right_keys`,
+    /// so one row matches at most one chain row (a 1:1 lookup).  `false` for
+    /// a 1:N lookup, which materializes the matched row's identity.
+    #[serde(default = "lookup_chain_step_unique_default")]
+    pub unique: bool,
+}
+
+/// `LookupChainStep::unique` defaults to `true`, so specs written before 1:N
+/// steps existed keep their 1:1 meaning.
+fn lookup_chain_step_unique_default() -> bool {
+    true
 }
 
 /// One materialized column of a [`ViewSpec::LookupChain`].

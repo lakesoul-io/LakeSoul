@@ -121,7 +121,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| 链中 **1:N 右侧**外连接（维表按 join key 不唯一） | **L** | 行标识编码（每步存在性编码列作为 MV 键）+ 按基表键重算；设计见 `ivm-lookup-chain-1n.md` |
+| 链中 **1:N 右侧**外连接（维表按 join key 不唯一） | **L** | ✅ 已实现（PR-95，PLAN §10.101）：每步非空行标识编码列（长度前缀拼接，无碰撞）纳入 MV 主键；受影响集合按基表键重放，INNER/LEFT 均支持；设计见 `ivm-lookup-chain-1n.md` |
 | 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | 左深约束与顺序语义；内连接 bushy 已支持 |
 | 连接键/条件是**表达式**（`ON a.x+1=b.y`）、条件引用**未物化列** | **M** | 两侧投影 + 隐藏 payload |
 | `ANY/ALL` 量化比较、多列 `IN`、`NOT IN` 空语义边角 | **M** | 归约到 semi/anti + 比较 |
@@ -182,8 +182,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 1. **P0（小步，正确性）**：A1 MV 主键存在性校验 → A2 CDC 契约测试 → A3 非契约源策略。
 2. **P0（大价值）**：B2 视图链编排（依赖图 + 拓扑刷新）——一次解锁组合类全部形状，
    并把「两段视图」模式写进 README。
-3. **P1**：B9 分区源表一期（✅ 已实现，PR-94）→ B3 1:N 右侧外连接链 → B3 连接键表达式/未物化列 →
-   B5 INTERSECT/EXCEPT ALL。
+3. **P1**：B9 分区源表一期（✅ 已实现，PR-94）→ B3 1:N 右侧外连接链（✅ 已实现，PR-95）→
+   B3 连接键表达式/未物化列 → B5 INTERSECT/EXCEPT ALL。
 4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做。
 5. 若某类形状长期不做，纳入「两层刷新契约（Tier-2 全量回退）」的覆盖范围
    （设计见 `ivm-tier1-tier2-refresh-contract.md`），保证用户 SQL 可用、只是非增量。

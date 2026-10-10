@@ -6,8 +6,12 @@
 
 use super::*;
 
-/// The typed view of a left-deep chain of keyed 1:1 lookups over a base
-/// table.
+use datafusion::functions::string::expr_fn::{concat, octet_length};
+use datafusion::logical_expr::Cast;
+
+/// The typed view of a left-deep chain of keyed lookups over a base table.
+/// A step whose keys are the source key is a 1:1 lookup; any other key is a
+/// 1:N lookup, whose matched row identity becomes part of the MV merge key.
 #[derive(Debug, Clone)]
 pub struct LookupChainView {
     /// The view id.
@@ -87,7 +91,7 @@ pub fn lookup_chain_mv_schema_for(
         let field = schema.field_with_name(&column.column).map_err(|_| {
             report!("lookup chain column {} is not in its source", column.column)
         })?;
-        if !names.insert(column.name.as_str()) {
+        if !names.insert(column.name.clone()) {
             return Err(report!(
                 "lookup chain column {} is materialized twice",
                 column.name
@@ -100,6 +104,18 @@ pub fn lookup_chain_mv_schema_for(
             field.data_type().clone(),
             nullable,
         )));
+    }
+    for step in steps {
+        if step.unique {
+            continue;
+        }
+        let id_column = lookup_chain_step_id_column(step.source);
+        if !names.insert(id_column.clone()) {
+            return Err(report!(
+                "lookup chain identity column {id_column} collides with an output column"
+            ));
+        }
+        fields.push(Arc::new(Field::new(id_column, DataType::Utf8, false)));
     }
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -132,6 +148,87 @@ fn chain_column_name(source: usize, column: &str) -> String {
     } else {
         lookup_chain_alias(source, column)
     }
+}
+
+/// The identity column of a 1:N step: `__step<source>_id`.  It is non-null
+/// for every chain row (the unmatched row uses the `n...n` encoding), so it
+/// can take part in the MV merge key.
+pub fn lookup_chain_step_id_column(source: usize) -> String {
+    format!("__step{source}_id")
+}
+
+/// The identity expression of a 1:N step: the primary key of the matched row
+/// encoded as a deterministic, collision-free string.
+///
+/// Every component is length prefixed (`v<octets>:<text>`), so concatenating
+/// the components cannot collide; the all-NULL unmatched row encodes as
+/// `n...n`.
+fn lookup_chain_step_id_expr(
+    step: &LookupChainStep,
+    primary_keys: &[String],
+) -> Result<Expr> {
+    let mut parts = Vec::new();
+    for key in primary_keys {
+        let value = col(lookup_chain_alias(step.source, key).as_str());
+        let text = Expr::Cast(Cast::new(Box::new(value.clone()), DataType::Utf8));
+        let length = octet_length(text.clone());
+        let length = Expr::Cast(Cast::new(Box::new(length), DataType::Utf8));
+        let encoded = concat(vec![lit("v"), length, lit(":"), text]);
+        parts.push(when(value.is_null(), lit("n")).otherwise(encoded)?);
+    }
+    Ok(concat(parts).alias(lookup_chain_step_id_column(step.source)))
+}
+
+/// The expressions of one MV row: the output columns and the identity column
+/// of every 1:N step.
+fn lookup_chain_row_exprs(view: &LookupChainView) -> Result<Vec<Expr>> {
+    let mut exprs = view
+        .output_columns
+        .iter()
+        .map(|column| {
+            let expr = if column.source == 0 {
+                col(column.column.as_str())
+            } else {
+                col(lookup_chain_alias(column.source, &column.column).as_str())
+            };
+            expr.alias(column.name.as_str())
+        })
+        .collect::<Vec<_>>();
+    for step in &view.steps {
+        if step.unique {
+            continue;
+        }
+        let (table, _) = &view.sources[step.source];
+        exprs.push(lookup_chain_step_id_expr(step, &table.primary_keys)?);
+    }
+    Ok(exprs)
+}
+
+/// The MV columns one rewritten row carries, in MV schema order.
+fn lookup_chain_row_columns(view: &LookupChainView) -> Vec<String> {
+    let mut columns = view
+        .output_columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    for step in &view.steps {
+        if !step.unique {
+            columns.push(lookup_chain_step_id_column(step.source));
+        }
+    }
+    columns
+}
+
+/// The columns that identify one MV row: the base key plus the identity
+/// column of every 1:N step.
+fn lookup_chain_identity_columns(view: &LookupChainView) -> Vec<String> {
+    let mut columns = view.sources[0].0.primary_keys.clone();
+    for step in &view.steps {
+        if !step.unique {
+            columns.push(lookup_chain_step_id_column(step.source));
+        }
+    }
+    columns
 }
 
 /// The columns of earlier sources that later steps join on.
@@ -263,9 +360,12 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
         let mut keys = step.right_keys.clone();
         keys.sort();
         keys.dedup();
-        if pks != keys {
+        // `unique` drives the MV schema and the merge key, so it must agree
+        // with the declared keys instead of silently producing duplicate
+        // logical rows.
+        if step.unique != (pks == keys) {
             return Err(report!(
-                "lookup chain view {}: step source {} must be keyed by its join keys",
+                "lookup chain view {}: step source {} unique flag does not match its keys",
                 view.view_id,
                 table.table_name
             ));
@@ -308,6 +408,22 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
             parse_filter(&context, &table.schema, filter)?;
         }
     }
+    // The MV merge key must identify a logical row: it has to contain the
+    // base key and the identity column of every 1:N step (extra columns are
+    // the user's responsibility, like the MV primary key check of A1).
+    let declared = view
+        .mv
+        .primary_keys
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    for column in lookup_chain_identity_columns(view) {
+        if !declared.contains(&column) {
+            return Err(report!(
+                "lookup chain view {}: MV primary key must contain {column}",
+                view.view_id
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -338,9 +454,17 @@ fn lookup_chain_source_columns(
             }
         }
     } else {
-        for key in &view.steps[index - 1].right_keys {
+        let step = &view.steps[index - 1];
+        for key in &step.right_keys {
             if !columns.contains(key) {
                 columns.push(key.clone());
+            }
+        }
+        if !step.unique {
+            for key in &table.primary_keys {
+                if !columns.contains(key) {
+                    columns.push(key.clone());
+                }
             }
         }
     }
@@ -375,6 +499,13 @@ fn lookup_chain_step_frame(
     for column in lookup_chain_referenced(view, index + 1) {
         if !columns.contains(&column) {
             columns.push(column);
+        }
+    }
+    if !step.unique {
+        for key in &view.sources[index + 1].0.primary_keys {
+            if !columns.contains(key) {
+                columns.push(key.clone());
+            }
         }
     }
     for column in columns {
@@ -626,35 +757,27 @@ impl IvmRuntime {
                 None,
             )?,
         )?;
-        let output_exprs = view
-            .output_columns
+        let identity_columns = lookup_chain_identity_columns(view);
+        let identity_names = identity_columns
             .iter()
-            .map(|column| {
-                let expr = if column.source == 0 {
-                    col(column.column.as_str())
-                } else {
-                    col(lookup_chain_alias(column.source, &column.column).as_str())
-                };
-                expr.alias(column.name.as_str())
-            })
+            .map(String::as_str)
             .collect::<Vec<_>>();
-        let delete_exprs = view
-            .output_columns
+        let identity_exprs = identity_columns
             .iter()
-            .map(|column| col(column.name.as_str()))
+            .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
         let mv_epoch_keys = mv
             .clone()
             .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
-            .select(base_key_exprs.clone())?
+            .select(identity_exprs)?
             .distinct()?;
         let inserts = frame
-            .select(output_exprs)?
+            .select(lookup_chain_row_exprs(view)?)?
             .join(
                 mv_epoch_keys,
                 JoinType::LeftAnti,
-                &base_key_names,
-                &base_key_names,
+                &identity_names,
+                &identity_names,
                 None,
             )?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
@@ -668,14 +791,17 @@ impl IvmRuntime {
                 None,
             )?
             .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
-            .select(delete_exprs)?
+            .select(
+                lookup_chain_row_columns(view)
+                    .iter()
+                    .map(|column| col(column.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        let mut sort_exprs = view.sources[0]
-            .0
-            .primary_keys
+        let mut sort_exprs = identity_columns
             .iter()
-            .map(|key| column_expr(key))
+            .map(|column| column_expr(column))
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         for batch in inserts
@@ -766,20 +892,8 @@ impl IvmRuntime {
         }
         let frame =
             lookup_chain_replay(view, &frames, view.steps.len(), frames[0].clone())?;
-        let output_exprs = view
-            .output_columns
-            .iter()
-            .map(|column| {
-                let expr = if column.source == 0 {
-                    col(column.column.as_str())
-                } else {
-                    col(lookup_chain_alias(column.source, &column.column).as_str())
-                };
-                expr.alias(column.name.as_str())
-            })
-            .collect::<Vec<_>>();
         let rows = frame
-            .select(output_exprs)?
+            .select(lookup_chain_row_exprs(view)?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         for batch in rows.collect().await? {

@@ -538,12 +538,10 @@ pub(super) fn analyze_lookup_chain(
         let mut step_keys = right_keys.clone();
         step_keys.sort();
         step_keys.dedup();
-        if pks != step_keys {
-            return Err(unsupported(format!(
-                "a lookup chain step source {} must be keyed by its join keys",
-                step.table_name
-            )));
-        }
+        // The join keys equal to the source key make the step a 1:1 lookup;
+        // any other key is a 1:N lookup, whose matched row identity the MV
+        // materializes.
+        let unique = pks == step_keys;
         sources.push(LookupChainSource {
             table_id: step.table_id.clone(),
             filter: step_input.filter.clone(),
@@ -554,6 +552,7 @@ pub(super) fn analyze_lookup_chain(
             keys,
             right_keys,
             key_sources,
+            unique,
         });
         aliases.push(step_input.alias.clone());
         chain.push(step);
