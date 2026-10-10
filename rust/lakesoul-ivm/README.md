@@ -311,6 +311,11 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
 * Every source partition has a cursor (last consumed version/timestamp). A
   refresh collects the changelog window per partition, applies the delta and
   advances the cursors.
+* **Cascading views**: a statement only reads the current state of the views
+  it references.  A scheduler advances a whole chain with
+  `IvmRuntime::refresh_view_chain(view_id)` (upstream first, cycle-safe), and
+  `IvmSqlExecutor::with_refresh_upstream(true)` opts a statement into
+  refreshing the views it reads first.
 * The window identity (source, partition, from/to versions) is recorded in
   `ivm.epochs`. Re-applying the same window is a no-op; a partially written
   window is completed by the retry because the affected keys are rewritten.

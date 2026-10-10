@@ -103,7 +103,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | A2 | CDC 契约测试 | S | 见上 |
 | A3 | 非契约源策略 | S | 见上 |
 
-### B2. 组合类（P0，机制已具备，缺编排）
+### B2. 组合类（P0，机制已具备，缺编排）——编排已实现（opt-in：`refresh_view_chain` + 语句开关，PLAN §10.99，PR-93）
 
 `tests/cascading_views.rs` 已证明：下游视图把上游 MV 当普通 keyed 源（`rowKinds` 当变更列、
 墓碑照常过滤），**调用方按拓扑序刷新**即可。因此下列单语句形状虽被分析器拒绝，但拆两段

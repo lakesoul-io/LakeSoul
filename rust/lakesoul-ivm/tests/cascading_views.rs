@@ -409,3 +409,133 @@ async fn cascading_window_over_an_aggregate_mv() {
         vec![("a".to_string(), 2), ("c".to_string(), 1)]
     );
 }
+
+/// A chain of views is refreshed on demand, not implicitly: the default
+/// statement only reads the current upstream state, the runtime chain refresh
+/// advances the whole chain, and the executor flag opts a statement in.
+#[test_log::test(tokio::test)]
+async fn chained_views_refresh_on_demand() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv1 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_mv1_{suffix}"),
+                table_path(&dir, "mv1"),
+                sum_count_mv_schema_for(&source.schema, &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mv2 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_mv2_{suffix}"),
+                table_path(&dir, "mv2"),
+                sum_count_mv_schema_for(&mv1.schema, &["g".to_string()], Some("sum_v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mv3 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_mv3_{suffix}"),
+                table_path(&dir, "mv3"),
+                sum_count_mv_schema_for(&mv2.schema, &["g".to_string()], Some("sum_v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "insert"),
+                (2, "a", 20, "insert"),
+                (3, "b", 5, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = |name: &str, from: &str| {
+        let value = if from == "src" { "v" } else { "sum_v" };
+        format!(
+            "INSERT INTO ivm_chain_{name}_{suffix} \
+             SELECT g, SUM({value}) AS sum_v, COUNT(*) AS count_v \
+             FROM ivm_chain_{from}_{suffix} GROUP BY g"
+        )
+    };
+    executor.execute(&statement("mv1", "src")).await.unwrap();
+    executor.execute(&statement("mv2", "mv1")).await.unwrap();
+    executor.execute(&statement("mv3", "mv2")).await.unwrap();
+    let initial = vec![("a".to_string(), 30), ("b".to_string(), 5)];
+    assert_eq!(read_mv(executor.runtime(), &mv3).await, initial);
+
+    // A source change: the default statement only reads the current upstream
+    // state, so the chain stays behind.
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(4, "b", 15, "insert")]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement("mv3", "mv2")).await.unwrap();
+    assert_eq!(read_mv(executor.runtime(), &mv1).await, initial);
+    assert_eq!(read_mv(executor.runtime(), &mv3).await, initial);
+
+    // A scheduler advances the whole chain with one call, upstream first.
+    let refreshed = executor
+        .runtime()
+        .refresh_view_chain(&mv3.table_id)
+        .await
+        .unwrap();
+    assert!(
+        refreshed
+            .iter()
+            .any(|(id, epoch)| id == &mv1.table_id && epoch.is_some()),
+        "{refreshed:?}"
+    );
+    let expected = vec![("a".to_string(), 30), ("b".to_string(), 20)];
+    assert_eq!(read_mv(executor.runtime(), &mv1).await, expected);
+    assert_eq!(read_mv(executor.runtime(), &mv2).await, expected);
+    assert_eq!(read_mv(executor.runtime(), &mv3).await, expected);
+
+    // Opting a statement in refreshes the views it reads first.
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(5, "b", 1, "insert")]),
+        )
+        .await
+        .unwrap();
+    drop(executor);
+    let eager = IvmSqlExecutor::new(IvmRuntime::from_env().await.unwrap())
+        .with_refresh_upstream(true);
+    eager.execute(&statement("mv3", "mv2")).await.unwrap();
+    let expected = vec![("a".to_string(), 30), ("b".to_string(), 21)];
+    assert_eq!(read_mv(eager.runtime(), &mv3).await, expected);
+}

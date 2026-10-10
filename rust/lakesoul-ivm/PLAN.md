@@ -2730,6 +2730,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   作为后续一次性删除死代码的独立重构；SLT/oracle 层面已无 append-only 入口。
 - **测试**：全量 IVM 套件 388 个测试通过、0 失败（删除 8 个 SQL 级用例、1 个子用例改为拒绝）。
 
+### 10.99 视图链：可复用的拓扑刷新与语句内 opt-in（PR-93，ROADMAP §B2，方案 D）
+
+- **默认不隐式刷新**：读上游 MV 的语句仍只读取其当前状态（保持原有被动语义，避免"写 mv3
+  却改了 mv1"的隐式副作用与时间旅行破坏）。
+- **调度器 API**：`IvmRuntime::refresh_view_chain(view_id)` —— 从目标视图出发按拓扑序
+  （显式栈的后序遍历、环安全、每个表一次）刷新自身及其上游，返回 `(view_id, epoch)` 列表
+  （`None` = 无变化），供调度器一次推进整条链。
+- **语句内 opt-in**：`IvmSqlExecutor::with_refresh_upstream(true)` 时，语句先对其引用的每个
+  注册视图调用 `refresh_view_chain`，再执行本语句；默认 `false`。
+- **实现**：`ViewSpec::source_table_ids()` 汇总 spec 的源表 id（无需重新解析上游 SQL）；
+  拓扑遍历与刷新逻辑放在 runtime（不依赖 session）。
+- **测试**：`cascading_views.rs::chained_views_refresh_on_demand`：三层链默认叶子语句**不**
+  推进上游；`refresh_view_chain(mv3)` 一次推进三层（含 mv1 epoch 非空断言）；opt-in 语句
+  再次追加后经整链得到正确结果。全量 IVM 套件 389 个测试通过、0 失败。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -112,6 +112,7 @@ pub struct IvmExecution {
 pub struct IvmSqlExecutor {
     runtime: IvmRuntime,
     session: Option<SessionContext>,
+    refresh_upstream: bool,
 }
 
 impl IvmSqlExecutor {
@@ -120,7 +121,17 @@ impl IvmSqlExecutor {
         Self {
             runtime,
             session: None,
+            refresh_upstream: false,
         }
+    }
+
+    /// Refresh the views the statement reads (upstream first) before running
+    /// it.  Off by default: a statement only reads their current state, and a
+    /// scheduler drives the chain through
+    /// [`IvmRuntime::refresh_view_chain`](crate::IvmRuntime::refresh_view_chain).
+    pub fn with_refresh_upstream(mut self, enabled: bool) -> Self {
+        self.refresh_upstream = enabled;
+        self
     }
 
     /// Use the caller's session for planning (its catalog must be able to
@@ -242,6 +253,15 @@ impl IvmSqlExecutor {
             return Err(rootcause::report!(
                 "internal error: the definition identity changed during analysis"
             ));
+        }
+
+        // A cascading view reads other materialized views.  By default the
+        // statement only reads their current state; with the opt-in flag the
+        // views it reads are brought up to date first, upstream first.
+        if self.refresh_upstream {
+            for table in tables.values() {
+                self.runtime.refresh_view_chain(&table.table_id).await?;
+            }
         }
 
         let (action, epoch) = if insert.overwrite {

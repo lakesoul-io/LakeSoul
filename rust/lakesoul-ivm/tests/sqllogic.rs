@@ -529,19 +529,6 @@ impl SltSource {
             cdc_column: true,
         }
     }
-
-    /// An append-only changelog with CDC markers but no merge key.
-    fn append_only_cdc(
-        placeholder: &'static str,
-        schema: arrow::datatypes::SchemaRef,
-    ) -> Self {
-        Self {
-            placeholder,
-            schema,
-            primary_keys: Vec::new(),
-            cdc_column: true,
-        }
-    }
 }
 
 /// Create the given source tables plus an MV and run one script against them.
