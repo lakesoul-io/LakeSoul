@@ -3,13 +3,14 @@ use crate::runtime::{
     BoolAggKind, CompareOp, ComputedAggArg, ComputedAggResult, DistinctAggKind,
     GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_RIGHT_AGG_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainSource, LookupChainStep,
-    MinMaxKind, MultiAggSpec, MultiJoinColumn, MultiJoinCondition, MultiJoinKey,
-    MultiJoinSource, RowScalarSpec, ScalarTableSpec, SemiAntiCondition, UnionSourceSpec,
-    VarianceKind, ViewSpec, WindowColumn, WindowFunction, WindowGroupSpec,
-    approx_distinct_output_column, approx_percentile_output_column,
+    JoinKeyExprs, JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainSource,
+    LookupChainStep, MinMaxKind, MultiAggSpec, MultiJoinColumn, MultiJoinCondition,
+    MultiJoinKey, MultiJoinSource, RowScalarSpec, ScalarTableSpec, SemiAntiCondition,
+    UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn, WindowFunction,
+    WindowGroupSpec, approx_distinct_output_column, approx_percentile_output_column,
     bool_agg_output_column, encode_data_type, join_condition_column_name,
-    string_agg_output_column, union_output_schema_for, wide_pair_alias,
+    join_key_expression_name, string_agg_output_column, union_output_schema_for,
+    wide_pair_alias,
 };
 use crate::table::IvmTable;
 use arrow_schema::{DataType, Schema};

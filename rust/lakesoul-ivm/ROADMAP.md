@@ -123,7 +123,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 链中 **1:N 右侧**外连接（维表按 join key 不唯一） | **L** | ✅ 已实现（PR-95，PLAN §10.101）：每步非空行标识编码列（长度前缀拼接，无碰撞）纳入 MV 主键；受影响集合按基表键重放，INNER/LEFT 均支持；设计见 `ivm-lookup-chain-1n.md` |
 | 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | 左深约束与顺序语义；内连接 bushy 已支持 |
 | 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
-| 连接键是**表达式**（`ON a.x+1=b.y`） | **M** | 两侧投影 + 隐藏 key payload（后续） |
+| 连接键是**表达式**（`ON a.x+1=b.y`，两源 inner join） | **M** | ✅ 已实现（PR-98，PLAN §10.104）：两侧求值 + 隐藏 key 列 `__ivm_key_<n>`；lookup/outer/multi/chain 的表达式键仍拒绝 |
 | `ANY/ALL` 量化比较、多列 `IN`、`NOT IN` 空语义边角 | **M** | 归约到 semi/anti + 比较 |
 | 超过 8 个源 | **S** | 提高上限 + 压测 |
 
@@ -173,7 +173,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | **分区源表**（keyed 分区表） | **M** | ✅ 一期已实现（PR-94，PLAN §10.100）：分区值进读取（IO 注入）、按分区 before-state、keyed 视图 guard 全部移除；二期（变化分区裁剪、MV 分区写）见 `ivm-partitioned-sources.md` |
-| append-only / append-only CDC 源 | **不做** | 见 A3 |
+| append-only / append-only CDC 源 | **不做** | 见 A3；无 key 场景的后续方向见 §F3（推迟，只覆盖易增量子集） |
 
 ---
 
@@ -182,8 +182,9 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 1. **P0（小步，正确性）**：A1 MV 主键存在性校验 → A2 CDC 契约测试 → A3 非契约源策略。
 2. **P0（大价值）**：B2 视图链编排（依赖图 + 拓扑刷新）——一次解锁组合类全部形状，
    并把「两段视图」模式写进 README。
-3. **P1**：B9 分区源表一期（✅ 已实现，PR-94）→ B3 1:N 右侧外连接链（✅ 已实现，PR-95）→
-   B3 连接键表达式/未物化列 → B5 INTERSECT/EXCEPT ALL。
+3. **P1**：B9 分区源表一期（✅ PR-94）→ B3 1:N 右侧外连接链（✅ PR-95）→
+   B3 条件引用未物化列（✅ PR-97）→ B3 连接键表达式（✅ 两源 inner join，PR-98）
+   → B5 INTERSECT/EXCEPT ALL。
 4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做。
 5. 若某类形状长期不做，纳入「两层刷新契约（Tier-2 全量回退）」的覆盖范围
    （设计见 `ivm-tier1-tier2-refresh-contract.md`），保证用户 SQL 可用、只是非增量。
@@ -202,3 +203,47 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 - `~/.opencode/plan/ivm-lookup-chain-1n.md`（1:N 行标识设计）
 - `~/.opencode/plan/ivm-partitioned-sources.md`（分区源一期/二期）
 - `~/.opencode/plan/ivm-tier1-tier2-refresh-contract.md`（Tier-2 全量回退契约）
+
+---
+
+## F. 相关工作与 keyed-only 取舍（2026-10 调研）
+
+> 结论：**keyed / FK 增量维护是数据库界 40 年的共识路线**，工业与学术都做过；但没人采用
+> 「keyed-only 契约 + MV 即湖仓一级 keyed 表（merge-on-read / 级联 / 时光回溯）+ 无全量回退」
+> 这一组合。我们坚持 keyed-first：涉及撤回、连接重放、去重的语义，键就是硬需求。
+
+### F1. 已有实现（按类别）
+
+| 类别 | 代表 | 机制 | 与我们的关系 |
+|---|---|---|---|
+| 经典数据库 | Oracle 物化视图 FAST REFRESH | MV log 记 PK/ROWID + 新旧值；join 视图要求**所有明细表 rowid 出现在 SELECT 列表** | 同一个"可寻址"问题：Oracle 强制物化，我们用隐藏 payload 自动化 |
+| | DB2 MQT + staging table | staging 表收集变更，对 deferred MQT 增量刷新 | changelog/游标就是我们的 staging |
+| | PostgreSQL pg_ivm | 触发器 transition tables（OLD/NEW）；要求 IMMV 有唯一索引、**join 属性必须进 target list**、仅简单等值 join | 最接近的开源先例；差别在 Δ 来源（库内日志 vs CDC 契约 + 湖表 changelog） |
+| 流式引擎 | Flink SQL | upsert 源必须 PRIMARY KEY（NOT ENFORCED）；ChangelogNormalize 归一成 retract（补 update_before，状态开销）；SinkUpsertMaterializer / FLIP-558 兜底 upsert key≠目的 PK | 与我们的四标记契约/两态输出同构；但它的 MV 在算子状态，不在可查的表里 |
+| | Materialize | Kafka `ENVELOPE UPSERT` 需要 key，且为每 key 维护当前值以生成 retraction；内部是 differential dataflow 的 Z-set 权重（键无关） | "通用但更重"的另一极 |
+| 云数仓 | BigQuery 物化视图 | 仅 append-only 时增量；base 表 update/delete **直接退回原查询/全量**；join 仅最左侧可追加 | 我们正面解决它主动放弃的部分 |
+| | Snowflake Dynamic Tables | INCREMENTAL/FULL/ADAPTIVE 自动选择；CDC 走 `CHANGES(APPEND_ONLY)` + 自定义 MERGE；建议单次变更 <5% 数据 | 把撤回交给用户 MERGE |
+| 湖仓 / 现代 | Delta CDF | insert / update_preimage / update_postimage / delete；automatic CDF 用 **row tracking / Iceberg v3 row lineage 造行号** | 源侧契约与我们一致；"无键就造键"的工业答案 |
+| | Apache Paimon | PK 表 + `changelog-producer` 产出真 changelog | 存储层最像我们；增量契约在 Flink 侧 |
+| | Databricks Enzyme（SIGMOD'26） | 代价驱动的刷新计划；互补路线 ID-based IVM / unique row identifiers | 同样靠造行 ID，而非强制用户 PK |
+
+### F2. 论文
+
+- **经典**：Blakeley/Larson/Tompa 1986；Gupta/Mumick/Subrahmanian 1993（counting / DRed）；
+  Griffin & Libkin 1995（bag / 重复语义——无键的理论答案）；Gupta & Mumick 1995 survey；
+  Colby et al. 1996（deferred）；Larson & Zhou 2007（outer join，pg_ivm 依据）。
+- **键 / FK 特化（"有键更简单"的学术证据）**：Katsis et al. 2015（ID-based IVM）；
+  Wang & Yi 2020（AJU，acyclic foreign-key joins）；Svingos et al. 2023（FK-IVM，Redshift 实验
+  全量 2× / 增量 2.7×）。
+- **键无关通用**：Differential Dataflow / Naiad 2013 → Materialize；DBSP 2023 → Feldera；
+  F-IVM 2018；DBToaster 2014；Noria 2018。
+
+### F3. 无 key 场景：推迟，后续重新设计（2026-10 决定）
+
+- **本轮不做**：append-only 源继续在 analyzer 明确拒绝（A3）；运行时非 keyed 分支视为遗留。
+- 重新设计时**只覆盖容易增量的 SQL 子集**，候选白名单：投影/过滤、`UNION ALL`、
+  可交换聚合（SUM/COUNT/MIN/MAX）、append-only 窗口；删除/撤回基于 **bag/计数语义**
+  （Griffin-Libkin 1995）实现整行计数，而不是为每 key 维护状态。
+- **明确不支持**撤回代价高的形状：带删除/更新的 join、DISTINCT 去重后的删除、Top-K 回退等，
+  遇到即拒绝，或纳入 Tier-2 全量重算契约（`ivm-tier1-tier2-refresh-contract.md`）。
+- 实现前先出设计稿；本期 keyed 路线（B3 表达式连接键等）不受影响。

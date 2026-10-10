@@ -210,6 +210,10 @@ Supported within the shapes above:
   is evaluated on each joined pair, so a change adds or retracts the
   affected pairs, and the compared columns need not be materialized in the
   select list;
+* **computed join keys** (`ON l.x + 1 = r.y`, an equality whose sides are not
+  both plain columns): the two-source inner join renders each side, evaluates
+  it on that source before the join, and stores the value under a hidden key
+  column (`__ivm_key_<n>`), so the MV stays keyed by its pair identities;
 * an **inner join** and a **lookup `LEFT JOIN`** may reference differently
   named right keys (`ON fact.dim_id = dim.id`);
 * a **lookup `LEFT JOIN`** may filter the fact side
@@ -396,9 +400,10 @@ source state.
 The following shapes are currently rejected (see [PLAN.md](PLAN.md) §10.5 for
 the backlog):
 
-* join keys outside the equality support (an expression key such as
-  `ON l.x + 1 = r.y`); a non-equality condition may compare unmaterialized
-  columns, they become hidden payload columns;
+* computed equality keys outside the two-source inner join (a lookup, outer,
+  multi-way or chain join whose key is an expression); a non-equality
+  condition may compare unmaterialized columns, they become hidden payload
+  columns;
 * outer joins inside a multi-way chain outside the lookup-chain shape: a
   right/full step, a bushy tree, or more than eight sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
