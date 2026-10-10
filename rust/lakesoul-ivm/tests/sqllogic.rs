@@ -42,9 +42,9 @@ use lakesoul_ivm::{
     left_aggregate_mv_schema_for, left_join_view_schema_for, lookup_chain_mv_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
-    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
+    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
     union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
@@ -530,19 +530,6 @@ impl SltSource {
         }
     }
 
-    /// An append-only source without CDC semantics.
-    fn append_only(
-        placeholder: &'static str,
-        schema: arrow::datatypes::SchemaRef,
-    ) -> Self {
-        Self {
-            placeholder,
-            schema,
-            primary_keys: Vec::new(),
-            cdc_column: false,
-        }
-    }
-
     /// An append-only changelog with CDC markers but no merge key.
     fn append_only_cdc(
         placeholder: &'static str,
@@ -723,18 +710,6 @@ fn sqllogic_sum_expression() {
 }
 
 #[test]
-fn sqllogic_sum_expression_append_only() {
-    let source = source_schema();
-    run_script_for_sources(
-        "sumexprappend",
-        include_str!("slt/sum_expr_append.slt"),
-        vec![SltSource::append_only_cdc("__SRC__", source.clone())],
-        sum_expr_mv_schema_for(&source, &group_keys(&["g"]), "v * 2", false).unwrap(),
-        group_keys(&["g"]),
-    );
-}
-
-#[test]
 fn sqllogic_count_column() {
     let schema = nullable_source_schema();
     run_script_for_source(
@@ -742,18 +717,6 @@ fn sqllogic_count_column() {
         include_str!("slt/count_column.slt"),
         schema.clone(),
         group_keys(&["k"]),
-        sum_count_mv_schema_for(&schema, &group_keys(&["g"]), None).unwrap(),
-        group_keys(&["g"]),
-    );
-}
-
-#[test]
-fn sqllogic_count_column_append_only() {
-    let schema = nullable_source_schema();
-    run_script_for_sources(
-        "countcolumnappend",
-        include_str!("slt/count_column_append.slt"),
-        vec![SltSource::append_only_cdc("__SRC__", schema.clone())],
         sum_count_mv_schema_for(&schema, &group_keys(&["g"]), None).unwrap(),
         group_keys(&["g"]),
     );
@@ -1288,18 +1251,6 @@ fn sqllogic_having() {
         include_str!("slt/having.slt"),
         sum_count_mv_schema_for(&source_schema(), &group_keys(&["g"]), Some("v"))
             .unwrap(),
-        group_keys(&["g"]),
-    );
-}
-
-#[test]
-fn sqllogic_having_append_only() {
-    let source = source_schema();
-    run_script_for_sources(
-        "havingappend",
-        include_str!("slt/having_append.slt"),
-        vec![SltSource::append_only_cdc("__SRC__", source.clone())],
-        sum_count_mv_schema_for(&source, &group_keys(&["g"]), Some("v")).unwrap(),
         group_keys(&["g"]),
     );
 }
@@ -1871,24 +1822,6 @@ fn sqllogic_union_distinct() {
 }
 
 #[test]
-fn sqllogic_union_distinct_append_only() {
-    let schema = source_schema();
-    run_script_for_sources(
-        "uniondistinctappend",
-        include_str!("slt/union_distinct_append.slt"),
-        vec![
-            SltSource::append_only_cdc("__SRC1__", schema.clone()),
-            SltSource::append_only_cdc("__SRC2__", schema.clone()),
-        ],
-        union_distinct_mv_schema_for(
-            &union_output_schema_for(&schema, &group_keys(&["k", "g", "v"]), &[])
-                .unwrap(),
-        ),
-        group_keys(&["k", "g", "v"]),
-    );
-}
-
-#[test]
 fn sqllogic_union_where() {
     let source = source_schema();
     run_script_for_sources(
@@ -1900,21 +1833,6 @@ fn sqllogic_union_where() {
         ],
         union_all_mv_schema_for(&source).unwrap(),
         group_keys(&[IVM_SOURCE_COLUMN, "k"]),
-    );
-}
-
-#[test]
-fn sqllogic_union_append_where() {
-    let source = source_schema();
-    run_script_for_sources(
-        "unionappend",
-        include_str!("slt/union_append_where.slt"),
-        vec![
-            SltSource::append_only("__SRC1__", source.clone()),
-            SltSource::append_only("__SRC2__", source.clone()),
-        ],
-        union_all_mv_schema_for(&source).unwrap(),
-        Vec::new(),
     );
 }
 
@@ -2171,32 +2089,6 @@ fn sqllogic_grouping_sets_expressions() {
         )
         .unwrap(),
         group_keys(&["__ivm_grouping", "g", "bucket"]),
-    );
-}
-
-#[test]
-fn sqllogic_grouping_sets_append() {
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("k", DataType::Int64, false),
-        arrow::datatypes::Field::new("g", DataType::Utf8, false),
-        arrow::datatypes::Field::new("v", DataType::Int64, false),
-    ]));
-    run_script_for_sources(
-        "groupingsetsappend",
-        include_str!("slt/grouping_sets_append.slt"),
-        vec![SltSource::append_only("__SRC__", schema.clone())],
-        grouping_sets_mv_schema_for(
-            &schema,
-            &group_keys(&["bucket"]),
-            &["(v % 10)".to_string()],
-            Some("v"),
-            None,
-            false,
-            &[],
-            &[],
-        )
-        .unwrap(),
-        group_keys(&["__ivm_grouping", "bucket"]),
     );
 }
 
@@ -2513,58 +2405,6 @@ fn sqllogic_multi_join() {
 }
 
 #[test]
-fn sqllogic_multi_join_append_only() {
-    let left = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("lk", DataType::Utf8, true),
-        arrow::datatypes::Field::new("lv", DataType::Int64, true),
-    ]));
-    let middle = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("mk", DataType::Utf8, true),
-        arrow::datatypes::Field::new("mv", DataType::Int64, true),
-    ]));
-    let right = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("rk", DataType::Utf8, true),
-        arrow::datatypes::Field::new("rv", DataType::Int64, true),
-    ]));
-    run_script_for_sources(
-        "multijoinappend",
-        include_str!("slt/multi_join_append.slt"),
-        vec![
-            SltSource::append_only("__SRC1__", left.clone()),
-            SltSource::append_only("__SRC2__", middle.clone()),
-            SltSource::append_only("__SRC3__", right.clone()),
-        ],
-        multi_join_append_schema_for(
-            &[left, middle, right],
-            &[
-                MultiJoinColumn {
-                    source: 0,
-                    column: "lk".to_string(),
-                    name: "lk".to_string(),
-                },
-                MultiJoinColumn {
-                    source: 0,
-                    column: "lv".to_string(),
-                    name: "lv".to_string(),
-                },
-                MultiJoinColumn {
-                    source: 1,
-                    column: "mv".to_string(),
-                    name: "mv".to_string(),
-                },
-                MultiJoinColumn {
-                    source: 2,
-                    column: "rv".to_string(),
-                    name: "rv".to_string(),
-                },
-            ],
-        )
-        .unwrap(),
-        Vec::new(),
-    );
-}
-
-#[test]
 fn sqllogic_cross_join_wide() {
     let left = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("id", DataType::Int64, false),
@@ -2773,18 +2613,6 @@ fn sqllogic_grouping_sets() {
 }
 
 #[test]
-fn sqllogic_row_append_cdc() {
-    let schema = source_schema();
-    run_script_for_sources(
-        "rowappendcdc",
-        include_str!("slt/row_append_cdc.slt"),
-        vec![SltSource::append_only_cdc("__SRC__", schema.clone())],
-        row_mv_schema_for(&schema, &group_keys(&["k", "g", "v"])).unwrap(),
-        Vec::new(),
-    );
-}
-
-#[test]
 fn sqllogic_lookup_chain() {
     let schema = source_schema();
     let steps = vec![
@@ -2852,17 +2680,12 @@ fn sqllogic_lookup_chain() {
 #[test]
 fn sqllogic_left_aggregate() {
     let schema = source_schema();
-    let dim_schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("k", DataType::Int64, false),
-        arrow::datatypes::Field::new("g", DataType::Utf8, false),
-        arrow::datatypes::Field::new("v", DataType::Int64, false),
-    ]));
     run_script_for_sources(
         "leftagg",
         include_str!("slt/left_aggregate.slt"),
         vec![
             SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
-            SltSource::append_only("__DIM__", dim_schema),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k", "v"])),
         ],
         left_aggregate_mv_schema_for(
             &schema,
@@ -2878,17 +2701,12 @@ fn sqllogic_left_aggregate() {
 #[test]
 fn sqllogic_correlated_scalar() {
     let schema = source_schema();
-    let dim_schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("k", DataType::Int64, false),
-        arrow::datatypes::Field::new("g", DataType::Utf8, false),
-        arrow::datatypes::Field::new("v", DataType::Int64, false),
-    ]));
     run_script_for_sources(
         "corrscalar",
         include_str!("slt/correlated_scalar.slt"),
         vec![
             SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
-            SltSource::append_only("__DIM__", dim_schema),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k", "v"])),
         ],
         semi_anti_mv_schema_for(&schema, &group_keys(&["k", "g", "v"])).unwrap(),
         group_keys(&["k"]),

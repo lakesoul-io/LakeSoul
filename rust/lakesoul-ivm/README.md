@@ -47,8 +47,9 @@ Ordinary SQL execution is untouched; callers opt in by going through
 
 ## Supported query shapes
 
-Sources are keyed (a LakeSoul primary key, i.e. upsert semantics) or
-append-only. Aggregates and windows follow SQL NULL semantics; primary keys
+Every source is keyed (a LakeSoul primary key, i.e. upsert semantics);
+append-only sources are rejected (see [Sources](#sources)). Aggregates and
+windows follow SQL NULL semantics; primary keys
 used as row identities must be non-nullable.
 
 | Kind | SQL shape | Materialized columns |
@@ -58,7 +59,7 @@ used as row identities must be non-nullable.
 | DISTINCT ON | `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` over a keyed source; the picked row is deterministic (the source primary keys break ties) | keys, one column per picked column (`first_value_v`), kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
 | MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k`; without a `GROUP BY` a global MIN/MAX | keys, `value`, kinds, epoch (+ value-count state table) |
-| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` over a keyed or plain append-only source; plain or aliased computed keys; any mix of the supported aggregates (`SUM`/`COUNT`/`AVG` keep the incremental layout, other mixes are recomputed per set) | `__ivm_grouping`, every flat key (nullable), one column per aggregate (`sum_v`/`count_v`/`__ivm_nonnull_count`/`avg_v` for the `SUM`/`COUNT`/`AVG` layout), kinds, epoch |
+| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` over a keyed source; plain or aliased computed keys; any mix of the supported aggregates (`SUM`/`COUNT`/`AVG` keep the incremental layout, other mixes are recomputed per set) | `__ivm_grouping`, every flat key (nullable), one column per aggregate (`sum_v`/`count_v`/`__ivm_nonnull_count`/`avg_v` for the `SUM`/`COUNT`/`AVG` layout), kinds, epoch |
 | COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; globally without a `GROUP BY`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
@@ -71,9 +72,9 @@ used as row identities must be non-nullable.
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
-| Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed or both append-only, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
-| Multi-way join | inner `JOIN`s over three to eight sources (all keyed or all append-only), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
+| Multi-way join | inner `JOIN`s over three to eight sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | Lookup chain | a left-deep `[LEFT] JOIN` chain over a keyed base where every step joins a source keyed by its join keys (`a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.v = b.v` — a step key may reference any earlier source), optional step filters | one column per selected payload (aliases name the step payloads), kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
@@ -94,9 +95,7 @@ Supported within the shapes above:
   its alias or `grouping_<key>`); a `SUM`/`COUNT`/`AVG` statement keeps the
   incremental layout and any other mix of the supported aggregates is
   recomputed per set; keys may be plain columns or aliased expressions
-  (`ROLLUP(g, v % 10 AS bucket)`), and a plain append-only source is
-  maintained from the delta (an append-only **changelog** source, whose
-  markers cannot retract, is rejected);
+  (`ROLLUP(g, v % 10 AS bucket)`);
 * **`APPROX_DISTINCT`** and **`APPROX_PERCENTILE_CONT(v, p)`** (a literal
   percentile): the affected groups are recomputed from their current rows, and
   DataFusion's sketch updates are order independent, so the estimates are
@@ -189,11 +188,9 @@ Supported within the shapes above:
 * **multi-way inner joins** (three to eight sources): the join tree flattens
   into one chained inner join; a source without a key pair is cross joined
   (the chain's `FROM a, b, c` and mixed keyless steps) and the MV is keyed by
-  every source's row identity (`__pk0_*`, `__pk1_*`, ...); a keyed refresh
-  rewrites the tuples of the rows that changed on any source, and an
-  append-only refresh runs the inclusion-exclusion decomposition over the
-  sources that changed in the window; side filters and non-equality
-  conditions between any two sources are maintained;
+  every source's row identity (`__pk0_*`, `__pk1_*`, ...); a refresh rewrites
+  the tuples of the rows that changed on any source; side filters and
+  non-equality conditions between any two sources are maintained;
 * **wide join outputs**: an inner join, a cross join, a lookup `LEFT JOIN`
   or an outer join may select more than one column per side; each becomes an
   MV column under its select alias (or source name), at least one column per
@@ -255,10 +252,9 @@ for `UNION` (or the data columns plus `__ivm_source` for `UNION ALL`).
 responsibility that it identifies a logical row** (like Flink's
 `PRIMARY KEY ... NOT ENFORCED`): the refresh writes delete markers whose merge
 relies on that key, and a key that is not unique makes the view resolve rows
-last-writer-wins.  The executor only enforces that a statement over keyed
-tables targets an MV **with** a key (a global aggregate, whose single row is
-rewritten wholesale, needs none; a statement over an append-only source is
-outside the keyed contract).  A typical trap: the two branches of a
+last-writer-wins.  The executor only enforces that a statement targets an MV
+**with** a key (a global aggregate, whose single row is rewritten wholesale,
+needs none).  A typical trap: the two branches of a
 `UNION ALL` can produce the same key values, so project a branch column
 (`'a' AS src`) and include it in the MV key.
 
@@ -267,9 +263,9 @@ outside the keyed contract).  A typical trap: the two branches of a
 * A **keyed** source (LakeSoul primary key) supports upserts, deletes and
   join-key changes: the refresh reads the changed keys' previous state as of
   the window start and retracts it.
-* An **append-only** source only accumulates rows. Joins require both sides to
-  be keyed or both append-only; `UNION` branches must all be keyed or all
-  append-only.
+* Every source must be **keyed**: the refresh folds the changelog through
+  merge-on-read and retracts by key, so an append-only source (with or without
+  a change column) is rejected when the statement is analyzed.
 * A source may declare a CDC change column (`lakesoul_cdc_change_column`,
   [`IvmTableOptions::with_cdc_column`](src/table.rs)): `delete` retracts and
   `update_before`/`update_after` pair an update. Without one the internal
@@ -392,21 +388,13 @@ the backlog):
   views keep one row per left row, so the shapes whose match counts can
   differ are rejected rather than silently returning different rows;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
-  with a `GROUP BY`, an append-only outer source, a `DISTINCT` aggregate or
+  with a `GROUP BY`, a `DISTINCT` aggregate or
   several aggregates, and a correlated value inside a computed expression)
   and computed columns above an aggregate
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
-* `GROUPING SETS` / `ROLLUP` / `CUBE` over an append-only **changelog**
-  source (its delete/update markers cannot retract a superseded row without a
-  key), and
-  `DISTINCT ON` over an **append-only** source (there is no primary key to
-  break ties, so the picked row would not be deterministic);
-* retractions in a `UNION ALL` over an **append-only CDC** source: the delete
-  markers become MV tombstones (hidden from logical reads), but the matching
-  insert rows cannot be retracted because an append-only source has no row
-  identity to match them with. Use keyed sources when the union must
-  retract. The same applies to a projection/filter view: a `delete` /
+* append-only sources (with or without a change column): incremental views
+  need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete` /
   `update_before` marker is never materialized as a row, but the matching
   insert row stays (there is no key to retract it), and views that recompute
   from the current state are not maintained over such sources yet (see the

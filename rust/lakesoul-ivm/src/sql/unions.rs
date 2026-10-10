@@ -361,29 +361,19 @@ mod tests {
 
     #[tokio::test]
     async fn analyzes_union_projections() {
-        // Append-only branches may prune, rename and compute columns as long
-        // as their output schemas match.
-        let mut left = source_table("a");
-        left.primary_keys.clear();
-        let mut right = source_table("b");
-        right.primary_keys.clear();
-        let analyzed = analyze_multi(
-            "select k as id, upper(g) as name from a \
-             union all select k as id, g as name from b",
-            vec![left, right],
-        )
-        .await
-        .unwrap();
-        let ViewSpec::UnionAll { sources, .. } = analyzed.spec else {
-            panic!("expected a union all spec");
-        };
-        assert_eq!(
-            sources[0].columns,
-            vec!["id".to_string(), "name".to_string()]
+        // A UNION ALL branch over an append-only source is rejected: views
+        // need keyed sources.
+        let mut keyless = source_table("a");
+        keyless.primary_keys.clear();
+        assert!(
+            analyze_multi(
+                "select k as id, upper(g) as name from a \
+                 union all select k as id, g as name from b",
+                vec![keyless, source_table("b")],
+            )
+            .await
+            .is_err()
         );
-        assert_eq!(sources[0].exprs.len(), 2);
-        assert_eq!(sources[0].exprs[0], "k");
-        assert!(sources.iter().all(|source| source.filter.is_none()));
 
         // A keyed UNION ALL branch must keep its primary keys unchanged.
         let analyzed = analyze_multi(

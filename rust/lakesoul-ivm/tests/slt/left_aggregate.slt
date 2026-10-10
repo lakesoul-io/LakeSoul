@@ -5,7 +5,7 @@ statement ok
 /*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
 
 statement ok
-/*ivm-append __DIM__: k=1,g=a,v=15; k=1,g=a,v=25; k=2,g=a,v=25*/
+/*ivm-append __DIM__: k=1,g=a,v=15,op=insert; k=1,g=a,v=25,op=insert; k=2,g=a,v=25,op=insert*/
 
 statement ok
 INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
@@ -22,7 +22,7 @@ SELECT k, g, v, m FROM __MV__
 
 # A key gaining rows gets its average.
 statement ok
-/*ivm-append __DIM__: k=3,g=b,v=5*/
+/*ivm-append __DIM__: k=3,g=b,v=5,op=insert*/
 
 statement ok
 INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
@@ -39,7 +39,7 @@ SELECT k, g, v, m FROM __MV__
 
 # Raising a key's average moves only that row.
 statement ok
-/*ivm-append __DIM__: k=2,g=a,v=100*/
+/*ivm-append __DIM__: k=2,g=a,v=100,op=insert*/
 
 statement ok
 INSERT INTO __MV__ SELECT s.k, s.g, s.v, (SELECT avg(u.v) FROM __DIM__ u WHERE u.k = s.k) AS m FROM __SRC__ s
