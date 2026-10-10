@@ -651,8 +651,6 @@ impl IvmRuntime {
     pub async fn refresh_semi_anti(&self, view: &SemiAntiView) -> Result<Option<i64>> {
         self.register_semi_anti_view(view).await?;
         validate_semi_anti_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         let left_window = self
             .collect_source_window(&view.view_id, &view.left)
@@ -726,17 +724,23 @@ impl IvmRuntime {
 
         let delta_left = view
             .left
-            .read_files_projected(left_window.added_files, Some(&left_projection))
+            .read_partition_files_projected(
+                left_window.added_files,
+                Some(&left_projection),
+            )
             .await?;
         let delta_right = view
             .right
-            .read_files_projected(right_window.added_files, Some(&right_projection))
+            .read_partition_files_projected(
+                right_window.added_files,
+                Some(&right_projection),
+            )
             .await?;
         let left_before = view
             .left
-            .read_as_of_projected(
+            .read_before_window_projected(
                 &self.client,
-                left_window.before_timestamp,
+                &left_window.before_versions,
                 Some(&left_projection),
             )
             .await?;
@@ -745,9 +749,9 @@ impl IvmRuntime {
             Vec::new()
         } else {
             view.right
-                .read_as_of_projected(
+                .read_before_window_projected(
                     &self.client,
-                    right_window.before_timestamp,
+                    &right_window.before_versions,
                     Some(&right_projection),
                 )
                 .await?
@@ -996,8 +1000,6 @@ impl IvmRuntime {
     pub async fn rebuild_semi_anti(&self, view: &SemiAntiView) -> Result<i64> {
         self.register_semi_anti_view(view).await?;
         validate_semi_anti_view(view)?;
-        self.ensure_unpartitioned(&view.left).await?;
-        self.ensure_unpartitioned(&view.right).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -1461,14 +1463,20 @@ impl IvmRuntime {
         let delta_left = dataframe(
             &context,
             view.left
-                .read_files_projected(left_window.added_files, Some(&left_projection))
+                .read_partition_files_projected(
+                    left_window.added_files,
+                    Some(&left_projection),
+                )
                 .await?,
             &left_projection,
         )?;
         let delta_right = dataframe(
             &context,
             view.right
-                .read_files_projected(right_window.added_files, Some(&right_projection))
+                .read_partition_files_projected(
+                    right_window.added_files,
+                    Some(&right_projection),
+                )
                 .await?,
             &right_projection,
         )?;
@@ -1476,9 +1484,9 @@ impl IvmRuntime {
             dataframe(
                 &context,
                 view.left
-                    .read_as_of_projected(
+                    .read_before_window_projected(
                         &self.client,
-                        left_window.before_timestamp,
+                        &left_window.before_versions,
                         Some(&left_projection),
                     )
                     .await?,
@@ -1490,9 +1498,9 @@ impl IvmRuntime {
             dataframe(
                 &context,
                 view.right
-                    .read_as_of_projected(
+                    .read_before_window_projected(
                         &self.client,
-                        right_window.before_timestamp,
+                        &right_window.before_versions,
                         Some(&right_projection),
                     )
                     .await?,

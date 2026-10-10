@@ -149,8 +149,17 @@ impl MergeParquetExec {
         }
         // Compute Nullability
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
-        let merged_schema =
-            Self::merged_schema_with_input_nullability(merged_schema, &inputs, &[]);
+        //
+        // The default-column values are constants injected by this plan, so a
+        // field missing from every input file does not make it nullable (the
+        // same rule `new_with_inputs` applies to partition columns).
+        let partition_columns: Vec<String> =
+            io_config.default_column_value.keys().cloned().collect();
+        let merged_schema = Self::merged_schema_with_input_nullability(
+            merged_schema,
+            &inputs,
+            &partition_columns,
+        );
 
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);

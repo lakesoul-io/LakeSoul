@@ -1680,7 +1680,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let delta_batches = view.source.read_files(window.added_files).await?;
+        let delta_batches = view.source.read_partition_files(window.added_files).await?;
         let mv_batches = view.mv.read_current(&self.client).await?;
 
         // Phase 1: the affected partitions follow from the delta and the MV
@@ -1754,7 +1754,6 @@ impl IvmRuntime {
     ) -> Result<Option<i64>> {
         self.register_multi_window_view(view).await?;
         validate_multi_window_view(view)?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -1779,7 +1778,7 @@ impl IvmRuntime {
         register_table(
             &context,
             "delta",
-            view.source.read_files(window.added_files).await?,
+            view.source.read_partition_files(window.added_files).await?,
             &view.source.schema,
         )?;
         register_table(
@@ -1817,7 +1816,6 @@ impl IvmRuntime {
     pub async fn rebuild_multi_window(&self, view: &MultiWindowView) -> Result<i64> {
         self.register_multi_window_view(view).await?;
         validate_multi_window_view(view)?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -1944,7 +1942,6 @@ impl IvmRuntime {
     pub async fn refresh_top_k(&self, view: &TopKView) -> Result<Option<i64>> {
         self.register_top_k_view(view).await?;
         validate_top_k_view(view)?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -1969,7 +1966,7 @@ impl IvmRuntime {
         register_table(
             &context,
             "delta",
-            view.source.read_files(window.added_files).await?,
+            view.source.read_partition_files(window.added_files).await?,
             &view.source.schema,
         )?;
         register_table(
@@ -2007,7 +2004,6 @@ impl IvmRuntime {
     pub async fn rebuild_top_k(&self, view: &TopKView) -> Result<i64> {
         self.register_top_k_view(view).await?;
         validate_top_k_view(view)?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")

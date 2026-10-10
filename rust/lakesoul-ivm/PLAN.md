@@ -2745,6 +2745,32 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   推进上游；`refresh_view_chain(mv3)` 一次推进三层（含 mv1 epoch 非空断言）；opt-in 语句
   再次追加后经整链得到正确结果。全量 IVM 套件 389 个测试通过、0 失败。
 
+### 10.100 分区源表一期：分区值注入与按分区 before-state（PR-94，ROADMAP §B9）
+
+- **表结构**：`IvmTable`/`IvmTableOptions` 新增 `range_partition_columns`；建表写
+  `partitions = "range;hash"` 并校验分区列不重复、在 schema 内；打开表时从
+  `TableInfo.partitions` 解析。分区列属于逻辑 schema，数据文件不含它们。
+- **分组读取**：`PartitionFiles { partition_desc, files }` +
+  `read_partition_files(_projected)`；每个分区组单独读，`with_range_partitions` +
+  `with_default_column_value`（对齐 DataFusion provider 注入语义）；未分区表仍单次读取，
+  merge 范围不变。`read_current`/`read_as_of`/`read_at_versions` 全部改为按分区组读取。
+- **changelog 窗口**：`SourceWindow.added_files` 变成按分区组，并新增
+  `before_versions: partition_desc -> 上次消费版本`；新增 `read_before_window(_filtered/
+  _projected)` 按分区 pin 版本读取 before-state（未触及分区读当前态；首次消费分区为空），
+  替换 keyed 路径上的 `read_as_of(*, before_timestamp)`（sum/count 族、grouping sets、
+  union distinct、recompute、semi-anti、left-aggregate、lookup chain）。
+- **非 keyed 旧路径**：append-only join / multi-join 的 inclusion-exclusion 需要单一
+  as-of 时间戳，仍保留 `ensure_unpartitioned`；keyed 视图与 rebuild 的 guard 全部移除。
+- **写入**：`append_batch` 在声明分区列时启用 `with_range_partitions`，writer 自动剥离
+  分区列并生成 `partition_desc`/子目录（测试与二期 MV 分区复用）。
+- **IO 修复**：`MergeParquetExec::new` 与 `new_with_inputs` 对齐——注入的常量列
+  （`default_column_value`）视为分区列，不因输入文件缺失而标成 nullable，否则分区列
+  可空性与表 schema 不一致（DataFusion `MemTable` 直接报 schema mismatch）。
+- **测试**：`tests/partitioned_sources.rs` 3 个：按 `day` 分组聚合跨增量/删除/新分区/
+  staggered 游标/`INSERT OVERWRITE` rebuild；行视图 `WHERE day = ...`；分区源 keyed join
+  的增量更新与删除。全量 IVM **392 passed / 0 failed**；lakesoul-io **219 passed /
+  0 failed**；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

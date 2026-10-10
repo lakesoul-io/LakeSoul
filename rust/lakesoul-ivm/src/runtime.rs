@@ -36,7 +36,8 @@ use crate::metadata::{
 };
 use crate::provider::IvmTableProvider;
 use crate::table::{
-    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, PartitionFiles,
+    create_ivm_table,
 };
 
 mod aggregates;
@@ -1604,12 +1605,16 @@ pub struct IvmRuntime {
 
 /// The changelog window of every partition of one source.
 struct SourceWindow {
-    added_files: Vec<String>,
+    added_files: Vec<PartitionFiles>,
     cursors: Vec<Cursor>,
     /// `(source_table_id, partition_desc, from_version, to_version)` of every
     /// consumed partition; this is the window identity the epoch is keyed by.
     identity: Vec<(String, String, i64, i64)>,
     before_timestamp: i64,
+    /// `partition_desc -> last consumed version before this window`, for every
+    /// partition the window touched (`None` = the partition is first consumed
+    /// by this window). Used to read the before state per partition.
+    before_versions: HashMap<String, Option<i64>>,
 }
 
 /// The full current state of one source, as read by a rebuild.
@@ -3231,15 +3236,18 @@ impl IvmRuntime {
     /// Read the full current state of a source and the cursors / source ranges
     /// that represent it (a rebuild baseline).
     async fn source_baseline(&self, source: &IvmTable) -> Result<SourceBaseline> {
-        let mut files = Vec::new();
+        let mut groups = Vec::new();
         let mut cursors = Vec::new();
         let mut to_versions = Vec::new();
         for partition in self.client.get_all_partition_info(&source.table_id).await? {
-            files.extend(
-                self.client
-                    .get_data_files_of_single_partition(&partition)
-                    .await?,
-            );
+            let files = self
+                .client
+                .get_data_files_of_single_partition(&partition)
+                .await?;
+            groups.push(PartitionFiles {
+                partition_desc: partition.partition_desc.clone(),
+                files,
+            });
             cursors.push(Cursor {
                 source_table_id: source.table_id.clone(),
                 partition_desc: partition.partition_desc.clone(),
@@ -3253,7 +3261,7 @@ impl IvmRuntime {
                 to_version: i64::from(partition.version),
             });
         }
-        let batches = source.read_files(files).await?;
+        let batches = source.read_partition_files(groups).await?;
         Ok(SourceBaseline {
             batches,
             cursors,
@@ -3293,6 +3301,7 @@ impl IvmRuntime {
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
+        let mut before_versions = HashMap::new();
         for partition in window.partitions {
             let last_version = cursors
                 .get(&partition.partition_desc)
@@ -3310,8 +3319,20 @@ impl IvmRuntime {
                 continue;
             }
 
-            added_files
-                .extend(partition.added_files.iter().map(|file| file.path.clone()));
+            added_files.push(PartitionFiles {
+                partition_desc: partition.partition_desc.clone(),
+                files: partition
+                    .added_files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect(),
+            });
+            before_versions.insert(
+                partition.partition_desc.clone(),
+                cursors
+                    .get(&partition.partition_desc)
+                    .map(|cursor| cursor.last_version),
+            );
             identity.push((
                 source.table_id.clone(),
                 partition.partition_desc.clone(),
@@ -3331,6 +3352,7 @@ impl IvmRuntime {
             cursors: new_cursors,
             identity,
             before_timestamp,
+            before_versions,
         })
     }
 

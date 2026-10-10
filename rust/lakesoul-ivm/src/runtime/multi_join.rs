@@ -528,9 +528,12 @@ impl IvmRuntime {
         validate_multi_join_view(view)?;
         let keyed = view.keyed();
         for source in &view.sources {
-            self.ensure_unpartitioned(source).await?;
             if !keyed {
                 ensure_append_only(source, &view.view_id)?;
+                // The append-only decomposition reads one as-of before state
+                // per source; that only stays consistent for a single
+                // partition.
+                self.ensure_unpartitioned(source).await?;
             }
         }
 
@@ -600,7 +603,9 @@ impl IvmRuntime {
                 }
                 let delta = dataframe(
                     &context,
-                    source.read_files(window.added_files.clone()).await?,
+                    source
+                        .read_partition_files(window.added_files.clone())
+                        .await?,
                     &source.schema,
                 )?;
                 let key_names = source
@@ -747,7 +752,11 @@ impl IvmRuntime {
                         .read_as_of(&self.client, window.before_timestamp)
                         .await?,
                 );
-                delta.push(source.read_files(window.added_files.clone()).await?);
+                delta.push(
+                    source
+                        .read_partition_files(window.added_files.clone())
+                        .await?,
+                );
             }
             let changed_sources = (0..view.sources.len())
                 .filter(|index| !delta[*index].is_empty())
@@ -819,7 +828,6 @@ impl IvmRuntime {
         validate_multi_join_view(view)?;
         let keyed = view.keyed();
         for source in &view.sources {
-            self.ensure_unpartitioned(source).await?;
             if !keyed {
                 ensure_append_only(source, &view.view_id)?;
             }

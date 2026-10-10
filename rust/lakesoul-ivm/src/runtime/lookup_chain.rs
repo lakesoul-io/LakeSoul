@@ -450,7 +450,7 @@ impl IvmRuntime {
             let delta = dataframe(
                 &context,
                 table
-                    .read_files_projected(
+                    .read_partition_files_projected(
                         windows[index].added_files.clone(),
                         Some(&projection),
                     )
@@ -461,9 +461,9 @@ impl IvmRuntime {
                 dataframe(
                     &context,
                     table
-                        .read_as_of_projected(
+                        .read_before_window_projected(
                             &self.client,
-                            windows[index].before_timestamp,
+                            &windows[index].before_versions,
                             Some(&projection),
                         )
                         .await?,

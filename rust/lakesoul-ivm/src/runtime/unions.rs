@@ -640,9 +640,6 @@ impl IvmRuntime {
     pub async fn refresh_union_all(&self, view: &UnionAllView) -> Result<Option<i64>> {
         self.register_union_all_view(view).await?;
         validate_union_all_view(view)?;
-        for source in &view.sources {
-            self.ensure_unpartitioned(&source.table).await?;
-        }
 
         let mut windows = Vec::new();
         for source in &view.sources {
@@ -687,7 +684,9 @@ impl IvmRuntime {
                 .transpose()?;
             let delta = dataframe(
                 &context,
-                table.read_files(windows[index].added_files.clone()).await?,
+                table
+                    .read_partition_files(windows[index].added_files.clone())
+                    .await?,
                 &table.schema,
             )?;
             if keyed {
@@ -835,9 +834,6 @@ impl IvmRuntime {
     pub async fn rebuild_union_all(&self, view: &UnionAllView) -> Result<i64> {
         self.register_union_all_view(view).await?;
         validate_union_all_view(view)?;
-        for source in &view.sources {
-            self.ensure_unpartitioned(&source.table).await?;
-        }
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -942,9 +938,6 @@ impl IvmRuntime {
     ) -> Result<Option<i64>> {
         self.register_union_distinct_view(view).await?;
         validate_union_distinct_view(view)?;
-        for source in &view.sources {
-            self.ensure_unpartitioned(&source.table).await?;
-        }
 
         let mut windows = Vec::new();
         for source in &view.sources {
@@ -980,13 +973,15 @@ impl IvmRuntime {
         let context = SessionContext::new();
         for (index, source) in view.sources.iter().enumerate() {
             let table = &source.table;
-            let delta = table.read_files(windows[index].added_files.clone()).await?;
+            let delta = table
+                .read_partition_files(windows[index].added_files.clone())
+                .await?;
             if keyed {
                 let pk_filters = key_filters(&table.primary_keys, &delta)?;
                 let before = table
-                    .read_as_of_filtered(
+                    .read_before_window_filtered(
                         &self.client,
-                        windows[index].before_timestamp,
+                        &windows[index].before_versions,
                         pk_filters,
                     )
                     .await?;
@@ -1022,9 +1017,6 @@ impl IvmRuntime {
     pub async fn rebuild_union_distinct(&self, view: &UnionDistinctView) -> Result<i64> {
         self.register_union_distinct_view(view).await?;
         validate_union_distinct_view(view)?;
-        for source in &view.sources {
-            self.ensure_unpartitioned(&source.table).await?;
-        }
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")

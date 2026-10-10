@@ -2216,7 +2216,7 @@ impl IvmRuntime {
         let context = SessionContext::new();
         let delta_batches = project_group_keys(
             &context,
-            view.source.read_files(window.added_files).await?,
+            view.source.read_partition_files(window.added_files).await?,
             &view.source.schema,
             &view.group_keys,
             &view.group_exprs,
@@ -2238,9 +2238,9 @@ impl IvmRuntime {
             let batches = project_group_keys(
                 &context,
                 view.source
-                    .read_as_of_filtered(
+                    .read_before_window_filtered(
                         &self.client,
-                        window.before_timestamp,
+                        &window.before_versions,
                         pk_filters,
                     )
                     .await?,
@@ -2356,7 +2356,6 @@ impl IvmRuntime {
     ) -> Result<Option<i64>> {
         self.register_grouping_sets_view(view).await?;
         validate_grouping_sets_view(view)?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         let window = self
             .collect_source_window(&view.view_id, &view.source)
@@ -2383,7 +2382,7 @@ impl IvmRuntime {
             "delta",
             project_group_keys(
                 &context,
-                view.source.read_files(window.added_files).await?,
+                view.source.read_partition_files(window.added_files).await?,
                 &view.source.schema,
                 &view.group_keys,
                 &view.group_exprs,
@@ -2397,7 +2396,7 @@ impl IvmRuntime {
             project_group_keys(
                 &context,
                 view.source
-                    .read_as_of(&self.client, window.before_timestamp)
+                    .read_before_window(&self.client, &window.before_versions)
                     .await?,
                 &view.source.schema,
                 &view.group_keys,
@@ -2448,7 +2447,6 @@ impl IvmRuntime {
     pub async fn rebuild_grouping_sets(&self, view: &GroupingSetsView) -> Result<i64> {
         self.register_grouping_sets_view(view).await?;
         validate_grouping_sets_view(view)?;
-        self.ensure_unpartitioned(&view.source).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
@@ -2704,7 +2702,7 @@ impl IvmRuntime {
         let context = SessionContext::new();
         let delta_batches = project_group_keys(
             &context,
-            view.source.read_files(window.added_files).await?,
+            view.source.read_partition_files(window.added_files).await?,
             &view.source.schema,
             view.group_keys,
             view.group_exprs,
@@ -2726,9 +2724,9 @@ impl IvmRuntime {
             let batches = project_group_keys(
                 &context,
                 view.source
-                    .read_as_of_filtered(
+                    .read_before_window_filtered(
                         &self.client,
-                        window.before_timestamp,
+                        &window.before_versions,
                         pk_filters,
                     )
                     .await?,
