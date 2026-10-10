@@ -248,11 +248,7 @@ async fn one_to_many_step_matches_a_full_recompute() {
     // Moving the join key changes the match set on both sides.
     dim.append_batch(
         executor.runtime().client(),
-        source_batch(&[
-            (102, "y", 3, "update_before"),
-            (102, "x", 3, "update_after"),
-            (103, "x", 4, "insert"),
-        ]),
+        source_batch(&[(102, "x", 3, "update"), (103, "x", 4, "insert")]),
     )
     .await
     .unwrap();
