@@ -2813,6 +2813,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `partitioned_sources`、`lookup_chain_1n` 的 update 对改为单条 `update`。全量 IVM 395
   passed / 0 failed；fmt/clippy 干净。
 
+### 10.103 inner/cross join 的非等值条件支持未物化列（PR-97，ROADMAP §B3）
+
+- **能力**：`SELECT l.k, l.v, r.v AS rv FROM l JOIN r ON l.k = r.k AND l.g < r.g` 这类
+  「条件引用未进 select list 的列」不再被拒；条件列自动物化为**隐藏 wide payload**，命名
+  `__ivm_cond_<side>_<column>`（`join_condition_column_name`，导出以便构造 MV schema）。
+- **判定**：先看 compact（每侧一个 payload）是否满足全部非等值条件都恰好比较
+  `left_value`/`right_value`（`pair_compatible`，任一侧顺序均可）；不满足则走 wide：
+  保留 select payload 顺序，再按条件顺序追加缺失的条件列（`materialize_condition_columns`
+  去重），随后沿用既有 `render_wide_pair_conditions` 与 wide keyed join 运行时——
+  运行时零改动，MV schema/重放/撤回都自动带上隐藏列。
+- **注意**：切换到 wide 后输出名必须唯一（原本 compact 允许两侧同名 payload），
+  重复名会以「materialized twice; add distinct aliases」明确拒绝。
+- **测试**：`analyzes_theta_joins` 更新（隐藏列进入 `output_columns`，pair_filter 引用
+  隐藏别名）；新增 `oracle_theta_join_hidden_columns_matches_full_recompute`：条件
+  `l.v < r.v` 而输出只含 `g`，隐藏列为 v/v，随机更新使匹配集合翻转，对比全量 SQL 语义。
+  全量 IVM 396 passed / 0 failed；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

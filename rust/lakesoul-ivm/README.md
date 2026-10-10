@@ -199,14 +199,17 @@ Supported within the shapes above:
   or an outer join may select more than one column per side; each becomes an
   MV column under its select alias (or source name), at least one column per
   side is required, and for the inner and cross joins a non-equality
-  condition may compare any two materialized columns (`ON l.k = r.k AND
-  l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`); the compact
-  single-payload `left_value` / `right_value` shape stays for one payload per
-  side, and the outer / lookup wide outputs pad the unmatched side with NULLs;
-* **non-equality join conditions over the payloads** (`ON l.k = r.k AND
+  condition may compare any column of either side (`ON l.k = r.k AND
+  l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`); a compared
+  column the select list does not carry is materialized as a hidden payload
+  column named `__ivm_cond_<side>_<column>`; the compact single-payload
+  `left_value` / `right_value` shape stays for one payload per side, and the
+  outer / lookup wide outputs pad the unmatched side with NULLs;
+* **non-equality join conditions** (`ON l.k = r.k AND
   l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`): the condition
-  is evaluated on each joined pair, so a payload change adds or retracts the
-  affected pairs;
+  is evaluated on each joined pair, so a change adds or retracts the
+  affected pairs, and the compared columns need not be materialized in the
+  select list;
 * an **inner join** and a **lookup `LEFT JOIN`** may reference differently
   named right keys (`ON fact.dim_id = dim.id`);
 * a **lookup `LEFT JOIN`** may filter the fact side
@@ -393,9 +396,9 @@ source state.
 The following shapes are currently rejected (see [PLAN.md](PLAN.md) §10.5 for
 the backlog):
 
-* non-equality join conditions over columns that the join does not
-  materialize (a pair carries `left_value` / `right_value` or the wide output
-  columns) and join keys outside the equality support;
+* join keys outside the equality support (an expression key such as
+  `ON l.x + 1 = r.y`); a non-equality condition may compare unmaterialized
+  columns, they become hidden payload columns;
 * outer joins inside a multi-way chain outside the lookup-chain shape: a
   right/full step, a bushy tree, or more than eight sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
