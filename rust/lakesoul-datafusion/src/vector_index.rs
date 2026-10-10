@@ -548,7 +548,7 @@ pub async fn rebuild_vector_index(
                 vector_config.clone(),
                 files,
                 primary_keys.to_vec(),
-                object_store_options.clone().into(),
+                object_store_options.clone(),
                 None,
             )
             .rebuild()

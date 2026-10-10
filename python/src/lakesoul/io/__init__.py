@@ -14,6 +14,7 @@ from typing import Literal, Any
 import pyarrow as pa
 
 from lakesoul._lib._writer import _NativeFileInfo, _NativeWriter
+from lakesoul.redaction import redacted_dataclass_repr
 
 __all__ = ["FileInfo", "IOConfig", "WriteResult", "Writer", "merge_blob_option"]
 
@@ -30,6 +31,10 @@ def merge_blob_option(
     if blob_columns and "blob_columns" not in merged:
         merged["blob_columns"] = blob_columns
     return merged
+
+
+# Fields whose mappings are redacted in ``repr`` for diagnostics.
+_IO_CONFIG_SENSITIVE_FIELDS = frozenset({"object_store_options", "options"})
 
 
 @dataclass(slots=True)
@@ -49,6 +54,9 @@ class IOConfig:
     max_row_group_size: int = 250_000
     object_store_options: Mapping[str, str] = field(default_factory=dict)
     options: Mapping[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return redacted_dataclass_repr(self, _IO_CONFIG_SENSITIVE_FIELDS)
 
     def __post_init__(self) -> None:
         _validate_config(self)

@@ -10,6 +10,7 @@ import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.util.SensitiveConfig;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -129,13 +130,16 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
             throws IOException {
         String value = conf.getOrDefault(confKey, "");
         if (!value.isEmpty()) {
-            LOG.info("Set native object store option {}={}", fsConfKey, value);
+            LOG.info(
+                    "Set native object store option {}={}",
+                    fsConfKey,
+                    SensitiveConfig.redact(fsConfKey, value));
             io.setObjectStoreOption(fsConfKey, value);
         }
     }
 
     public void init(Map<String, String> params) throws IOException {
-        LOG.info(String.format("LakeSoulLocalJavaWriter init with params=%s", params));
+        LOG.info("LakeSoulLocalJavaWriter init with params={}", SensitiveConfig.redact(params));
 
         this.params = params;
         Preconditions.checkArgument(params.containsKey(PG_URL_KEY));
@@ -160,9 +164,11 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
     }
 
     private void initNativeWriter() throws IOException {
+        // TableInfo includes unredacted table properties; log only its identifiers.
         LOG.info(
-                String.format(
-                        "LakeSoulLocalJavaWriter initNativeWriter with tableInfo=%s", tableInfo));
+                "LakeSoulLocalJavaWriter initNativeWriter for table={}, tableId={}",
+                tableInfo.getTableName(),
+                tableInfo.getTableId());
         nativeWriter = new NativeIOWriter(tableInfo);
 
         Schema arrowSchema =

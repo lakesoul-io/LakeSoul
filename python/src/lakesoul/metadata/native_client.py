@@ -17,6 +17,7 @@ import pyarrow
 from lakesoul._lib._metadata import _NativeMetadataClient
 from lakesoul._lib._utils import _schema_from_metadata_str
 from lakesoul.exceptions import MetadataError, TableNotFoundError
+from lakesoul.redaction import REDACTED, redact_uri
 
 from .const import PARAM_DELIM, DaoType
 from .generated.entity_pb2 import (
@@ -50,6 +51,16 @@ class PostgresMetadataConfig:
         if self.secondary_url is None:
             return None
         return _pg_config_from_url(self.secondary_url, self.username, self.password)
+
+    def __repr__(self) -> str:
+        secondary_url = (
+            redact_uri(self.secondary_url) if self.secondary_url is not None else None
+        )
+        return (
+            f"{type(self).__name__}(url={redact_uri(self.url)!r}, "
+            f"username={self.username!r}, password={REDACTED!r}, "
+            f"secondary_url={secondary_url!r}, max_retry={self.max_retry!r})"
+        )
 
 
 def _pg_config_from_url(url: str, username: str, password: str) -> str:

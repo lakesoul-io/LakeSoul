@@ -269,6 +269,18 @@ pub fn pg_config_from_env(
     }
 }
 
+fn table_log_summary(table_info: &TableInfo) -> String {
+    // `TableInfo::properties` is deliberately omitted: table properties can carry
+    // object store credentials.
+    format!(
+        "table_id={}, table_namespace={}, table_name={}, table_path={}",
+        table_info.table_id,
+        table_info.table_namespace,
+        table_info.table_name,
+        table_info.table_path
+    )
+}
+
 impl MetaDataClient {
     pub async fn from_env() -> Result<Self> {
         let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?;
@@ -332,7 +344,7 @@ impl MetaDataClient {
 
     /// Atomically creates all metadata rows for a table.
     pub async fn create_table(&self, table_info: TableInfo) -> Result<()> {
-        info!("create_table: {:?}", &table_info);
+        info!("create_table: {}", table_log_summary(&table_info));
         let inserted = self.insert_table_atomic(&table_info, false).await?;
         if inserted != 1 {
             return Err(LakeSoulMetaDataError::Internal(format!(
@@ -350,7 +362,10 @@ impl MetaDataClient {
         &self,
         table_info: TableInfo,
     ) -> Result<bool> {
-        info!("create_table_if_not_exists: {:?}", &table_info);
+        info!(
+            "create_table_if_not_exists: {}",
+            table_log_summary(&table_info)
+        );
         match self.insert_table_atomic(&table_info, true).await? {
             0 => Ok(false),
             1 => Ok(true),
@@ -2192,6 +2207,30 @@ fn data_commit_info_list_from_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_log_summary_omits_credentials_in_properties() {
+        let table_info = TableInfo {
+            table_id: "table-id".to_string(),
+            table_namespace: "default".to_string(),
+            table_name: "events".to_string(),
+            table_path: "s3://bucket/events".to_string(),
+            table_schema: "[]".to_string(),
+            properties: r#"{"fs.s3a.access.key":"access-key-sentinel","fs.s3a.secret.key":"secret-key-sentinel"}"#.to_string(),
+            partitions: ";".to_string(),
+            domain: "public".to_string(),
+            ..Default::default()
+        };
+
+        let summary = table_log_summary(&table_info);
+
+        assert!(summary.contains("table_id=table-id"));
+        assert!(summary.contains("table_name=events"));
+        assert!(summary.contains("table_path=s3://bucket/events"));
+        assert!(!summary.contains("access-key-sentinel"));
+        assert!(!summary.contains("secret-key-sentinel"));
+        assert!(!summary.contains("properties"));
+    }
 
     #[test]
     fn missing_secondary_url_in_properties_does_not_use_primary_default() {

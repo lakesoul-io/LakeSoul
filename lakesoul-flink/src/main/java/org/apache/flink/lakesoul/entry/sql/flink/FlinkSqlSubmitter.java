@@ -19,7 +19,6 @@ import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.helpers.MessageFormatter;
 
 import java.util.concurrent.TimeUnit;
 
@@ -51,12 +50,8 @@ public class FlinkSqlSubmitter extends Submitter {
         tEnv = StreamTableEnvironment.create(env, settings);
 
         String sql = FileUtil.readHDFSFile(submitOption.getSqlFilePath());
-        LOG.info(
-                MessageFormatter.format(
-                                "\n======SQL Script Content from file {}:\n{}",
-                                submitOption.getSqlFilePath(),
-                                sql)
-                        .getMessage());
+        // SQL scripts may contain credentials in SET statements, WITH clauses or comments.
+        LOG.info("Read SQL script from {}", submitOption.getSqlFilePath());
         long scheduleTime = submitOption.getScheduleTime();
         if (scheduleTime <= 0) {
             LOG.info("Use current time as scheduleTime");
@@ -64,7 +59,7 @@ public class FlinkSqlSubmitter extends Submitter {
         }
         LOG.info("Batch ScheduleTime is: {}", scheduleTime);
         sql = replaceSchedulerTime(sql, scheduleTime);
-        LOG.info("replaced ${scheduleTime}, result sql: {}", sql);
+        LOG.info("Applied scheduleTime substitution");
 
         ExecuteSql.executeSqlFileContent(sql, tEnv, env);
     }
