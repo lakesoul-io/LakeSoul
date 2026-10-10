@@ -134,7 +134,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| 聚合之上的计算列（`SELECT s*2 FROM (SELECT SUM(v) s …)`） | **S-M** | 视图链一层投影；或扩展 MultiAgg 输出表达式 |
+| 聚合之上的计算列（`SELECT g, SUM(v)*2 AS s2 … GROUP BY g`） | **S-M** | ✅ 已实现（PR-101，PLAN §10.107）：MultiAgg general 路径 + 输出表达式（别名必需；DISTINCT 拆分/子查询/窗口/无聚合 distinct/分组集投影拒绝） |
 | GROUPING SETS 多个 grouping 表达式 | **S-M** | ✅ 已支持（PR-99）：DataFusion 规划期已归一化成叉积成员集；分析器不再拒绝未归一化形态并补测试 |
 | GROUPING SETS 的聚合 `FILTER` | **M** | general 路径已支持 FILTER |
 | HAVING 中基于聚合的计算表达式 | **S** | ✅ 已支持（PR-99）：补 oracle（`HAVING SUM(v) * 2 > N`） |
@@ -144,7 +144,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | 计数型 semi/anti + match-count 状态 |
+| `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | ✅ 已实现（PR-101，PLAN §10.107）：`SemiAntiView.count_mode`（rank vs 右侧 per-tuple count）；引擎自身对原始集合运算只做成员判定，oracle 用 Rust 独立计数 |
 | 空安全谓词的非 semi/anti 形态（outer join 上的 `IS NOT DISTINCT FROM`） | **M** | 空安全 join 条件扩展 |
 
 ### B6. 子查询（P2）
@@ -187,8 +187,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
    并把「两段视图」模式写进 README。
 3. **P1**：B9 分区源表一期（✅ PR-94）→ B3 1:N 右侧外连接链（✅ PR-95）→
    B3 条件引用未物化列（✅ PR-97）→ B3 连接键表达式（✅ 两源 inner join，PR-98）
-   → B5 INTERSECT/EXCEPT ALL。
-4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做。
+   → B5 INTERSECT/EXCEPT ALL + B4 聚合之上的计算列（✅ PR-101）。
+4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做（✅ PR-99）；其余量化比较待专门映射。
 5. 若某类形状长期不做，纳入「两层刷新契约（Tier-2 全量回退）」的覆盖范围
    （设计见 `ivm-tier1-tier2-refresh-contract.md`），保证用户 SQL 可用、只是非增量。
 

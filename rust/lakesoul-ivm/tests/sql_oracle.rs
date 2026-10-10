@@ -2609,6 +2609,92 @@ async fn oracle_mixed_aggregates_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_computed_aggregate_outputs_match_full_recompute() {
+    // A computed select expression above an aggregate (`SUM(v) * 2`): the raw
+    // aggregate column stays materialized and the expression is recomputed
+    // with the affected groups.
+    let schema = source_schema();
+    run_oracle(
+        "computedagg",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) * 2 AS s2 FROM __SRC__ GROUP BY g",
+        "SELECT g, SUM(v) AS sum_v, SUM(v) * 2 AS s2 FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, sum_v, s2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_computed_aggregate_having_matches_full_recompute() {
+    // HAVING references the raw aggregate column while the computed outputs
+    // cover a count and a sum expression.
+    let schema = source_schema();
+    run_oracle(
+        "computedagghav",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+                ("c2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) * 2 AS s2, COUNT(*) + 1 AS c2 FROM __SRC__ \
+         GROUP BY g HAVING SUM(v) > 0",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS \"count\", SUM(v) * 2 AS s2, \
+         COUNT(*) + 1 AS c2 FROM __SRC__ WHERE op <> 'delete' GROUP BY g \
+         HAVING SUM(v) > 0",
+        "SELECT g, sum_v, \"count\", s2, c2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_computed_aggregate_matches_full_recompute() {
+    // A global computed aggregate: the single MV row holds the raw statistic
+    // and its computed output.
+    let schema = source_schema();
+    run_oracle(
+        "computedaggglobal",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &[],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        Vec::new(),
+        "SELECT SUM(v) * 2 AS s2 FROM __SRC__",
+        "SELECT SUM(v) AS sum_v, SUM(v) * 2 AS s2 FROM __SRC__ \
+         WHERE op <> 'delete'",
+        "SELECT sum_v, s2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_distinct_on_matches_full_recompute() {
     // `DISTINCT ON (g) ... ORDER BY g, v DESC` picks the first row per group;
     // the primary key breaks ties, so the pick is deterministic.

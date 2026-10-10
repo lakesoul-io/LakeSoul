@@ -2886,6 +2886,55 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
      （spec 增加 per-output 渲染表达式 + schema helper + 重算 SQL 追加表达式），
      或给 SumCount 增加输出表达式列。需先定设计稿再实现。
 
+### 10.107 集合运算计数放宽与聚合之上的计算列（PR-101，ROADMAP §B5 / §B4）
+
+#### A. `INTERSECT ALL` / `EXCEPT ALL` 计数模式
+
+- **语义**：每个 join tuple 输出 `min(count_l, count_r)` 份（`INTERSECT ALL`）或
+  `max(count_l - count_r, 0)` 份（`EXCEPT ALL`）；左侧按左主键排序取 rank，
+  `rank <= count_r` / `rank > count_r` 决定该左行是否保留。
+- **计划判别**：`analyze_set_operation` 看到的只是 `LeftSemi/LeftAnti` +
+  `NullEqualsNull`。DataFusion 的 decorrelation 会把 `EXISTS ... IS NOT DISTINCT FROM`
+  的右键列限定到 `__correlated_sq_*` 子查询别名，集合运算不会，因此以
+  「右键列是否来自 `__correlated_sq_*`」区分：correlated → 成员语义（左侧重复合法，
+  每行独立判定，不再要求唯一）；非 correlated 且左侧非唯一 → `count_mode=true`；
+  distinct 变体（左侧被去重聚合包住）仍要求左侧在 join 列上唯一（否则会输出重复行）。
+- **运行时**：新增 `semi_count_qualifying`（SQL 实现）：左侧
+  `row_number() over (partition by 连接键 order by 左主键)`，右侧
+  `group by 连接键 count(*)`，两者 `IS NOT DISTINCT FROM` 左连接后按模式过滤出合格左主键。
+  刷新/重建的 matched 集合改用它，插入改走 `LeftSemi`；左侧增删会改变同 tuple 其余行的
+  rank，受影响集合扩展为「该 tuple 的全部左行 ∪ 左 delta 主键」（新增
+  `null_safe_semi_join` helper 按同名列做空安全 semi join）。
+- **物化**：输出列必须含左主键（MV 按行主键撤回）；分析器在 select 列表缺失时补隐藏主键列。
+- **重要发现**：DataFusion 55 自身把原始 `INTERSECT ALL`/`EXCEPT ALL` 执行为**成员判定**
+  （无计数），因此 oracle 的参考实现不能直接使用引擎的集合运算；新增
+  `tests/count_set_ops.rs`：用 Rust 独立计算标准计数，两种运算 × 12 轮随机增删改 +
+  重复组种子，与 MV 逐轮比对。
+- **测试**：分析器用例（`INTERSECT ALL`/`EXCEPT ALL` 计数模式与补主键；distinct 变体仍拒绝；
+  空安全谓词保持成员语义且接受重复左侧）。
+
+#### B. 聚合之上的计算列（MultiAgg 输出表达式）
+
+- **背景**：`SELECT g, SUM(v) * 2 AS s2 ... GROUP BY g` 原先在 `sql.rs` 直接拒绝。
+- **实现**：`analyze_aggregate` 在单族分派前新增路由——投影非 plain（且非 GROUPING SETS
+  形态、非 distinct 拆分）→ `analyze_computed_agg`：保留 `parse_multi_aggregates` 的全部原始
+  聚合列（HAVING 与计算表达式引用它们），再按投影顺序为每个计算表达式追加一列
+  （`call` = 渲染后的表达式，`column` = 别名，类型取投影 schema 字段）。**运行时零改动**：
+  MultiAgg 重算 SQL 的 `select keys, <call> as <column> ... group by keys` 天然支持表达式
+  （含全局聚合），spec/列名/schema helper 沿用。
+- **替换**：优化器把聚合输出保留为计划列（`Column("sum(src.v)")`、`Column("count(Int64(1))")`），
+  渲染前按聚合 schema 字段名替换为对应渲染调用；分组键表达式同样按 `group_exprs` 映射。
+- **拒绝**（明确报错）：计算输出缺别名；DISTINCT 拆分之上的计算列；子查询 / 窗口函数
+  （整结果集求值，不能按组重算）；无聚合的 distinct 投影（如
+  `select g, (select max(v) from src) from src group by g`）；GROUPING SETS 投影仅允许
+  `GROUPING()`/普通列（恢复 `is_grouping_projection` guard，防静默丢列）。
+- **测试**：分析器用例（spec 形状 `[sum_v, s2]`/`[sum_v, count, s2, c1]`、HAVING 映射
+  `sum_v > 10`、全局计算列、各类拒绝）+ 3 个 oracle（分组计算列、HAVING + 混合计算列、
+  全局计算列）。
+
+两部分合计：全量 IVM **408 passed / 0 failed**（`--test-threads=1`），
+`cargo fmt --all --check` 与 `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

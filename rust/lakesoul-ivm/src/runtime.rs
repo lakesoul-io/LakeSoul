@@ -819,6 +819,11 @@ pub enum ViewSpec {
         /// operations and null-aware predicates do.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         null_safe: bool,
+        /// Whether left rows sharing the join keys compete for the right
+        /// multiplicity: `INTERSECT ALL` keeps the first `count_r` copies and
+        /// `EXCEPT ALL` the `count_l - count_r` surplus.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        count_mode: bool,
         /// The rendered aggregate call over the right columns; when present
         /// the right side contributes one value per join key (a correlated
         /// scalar subquery) instead of a row match.
@@ -2803,6 +2808,7 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 null_safe,
+                count_mode,
                 right_aggregate,
                 right_keys,
                 match_predicate,
@@ -2818,6 +2824,7 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 null_safe: *null_safe,
+                count_mode: *count_mode,
                 right_aggregate: right_aggregate.clone(),
                 right_keys: right_keys.clone(),
                 match_predicate: match_predicate.clone(),
