@@ -2863,6 +2863,29 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （`HAVING SUM(v) * 2 > N`），确认既有 `render_having`/`rewrite_having` 路径端到端正确。
 - 全量 IVM 399 passed / 0 failed；fmt/clippy 干净。
 
+### 10.106 `= ANY` / `<> ALL` 量化比较归一化为 `IN` / `NOT IN`（PR-100，ROADMAP §B3）
+
+- **背景**：DataFusion 55 把量化比较表示为 `Expr::SetComparison`（`x op ANY/ALL (S)`），优化器将其计划成
+  **LeftMark Join**（过滤器里带 `Boolean(NULL)` 的 3VL 编码），IVM 分析器无法安全映射。
+- **能力**：SQL 标准定义 `x = ANY (S)` ≡ `x IN (S)`、`x <> ALL (S)` ≡ `x NOT IN (S)`。
+  新增 `sql::normalize_quantified_comparisons`（约 30 行）：在**优化前**对计划做表达式重写
+  （`Expr::SetComparison { Any, Eq }` / `{ All, NotEq }` → `Expr::InSubquery{negated}`），
+  executor 与测试 helper 均先归一化再 `optimize`；`analyze_select` 顶部也做一次（直接传原始计划
+  的调用方同样受益，优化过的计划是 no-op）。
+- **范围**：仅上述两个精确等价；`> ANY`、`> ALL` 等仍明确拒绝（mark join 语义，见 ROADMAP 待办）。
+  多列 `IN` 在 DataFusion 计划期就报错，与 IVM 无关。
+- **测试**：分析器用例（`= ANY` → semi；`<> ALL`/`!= ALL` → anti；`> ANY` 仍拒绝）；
+  oracle `oracle_quantified_in_equivalents_match_full_recompute`（definition 用 ANY/ALL、
+  reference 用 IN/NOT IN，多组共享键 seed + 随机更新）。全量 IVM 401 passed / 0 failed；fmt/clippy 干净。
+- **下一批（已勘查，未完成）**：
+  1. **`INTERSECT ALL`/`EXCEPT ALL` 计数放宽**（M）：左侧按 tuple 非唯一时输出 `min(count_l, count_r)` /
+     `max(count_l-count_r, 0)`；需在 `SemiAntiView` 增加计数模式（右侧 per-tuple `COUNT(*)`、
+     左侧 per-tuple rank，撤回按受影响 tuple 的全部左行重写），并补 schema helper 与测试。
+  2. **聚合之上的计算列**（S-M）：`SELECT g, SUM(v) * 2 AS s2 … GROUP BY g`；现被
+     `analyze_aggregate` 前拒。路径：路由到 MultiAgg general 路径并扩展「输出表达式」
+     （spec 增加 per-output 渲染表达式 + schema helper + 重算 SQL 追加表达式），
+     或给 SumCount 增加输出表达式列。需先定设计稿再实现。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -124,7 +124,10 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | 左深约束与顺序语义；内连接 bushy 已支持 |
 | 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
 | 连接键是**表达式**（`ON a.x+1=b.y`，两源 inner join） | **M** | ✅ 已实现（PR-98，PLAN §10.104）：两侧求值 + 隐藏 key 列 `__ivm_key_<n>`；lookup/outer/multi/chain 的表达式键仍拒绝 |
-| `ANY/ALL` 量化比较、多列 `IN`、`NOT IN` 空语义边角 | **M** | 归约到 semi/anti + 比较 |
+| `= ANY` / `<> ALL` 量化比较 | **S** | ✅ 已实现（PR-100，PLAN §10.106）：标准精确等价，优化前重写为 `IN` / `NOT IN` |
+| 其余量化比较（`> ANY`、`> ALL`、`>= ANY` …） | **M** | DataFusion 计划为 LeftMark Join（含 `Boolean(NULL)` 空语义编码），待专门映射；已勘查 |
+| 多列 `(a, b) IN (...)` | **—** | DataFusion 55 计划期即报「子查询只能单列」，不在 IVM 侧 |
+| `NOT IN` 的 NULL 边角 | **已支持** | null-aware anti；`= ANY`/`<> ALL` 归一化后同路径 |
 | 超过 8 个源 | **S** | ✅ 已实现（PR-99，PLAN §10.105）：上限 8 → 16；9 源分析器用例 |
 
 ### B4. 聚合/分组（P1–P2）

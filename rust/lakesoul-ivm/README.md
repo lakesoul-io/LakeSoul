@@ -411,6 +411,11 @@ the backlog):
   `ALL` variants also count the matches on both sides, while the maintained
   views keep one row per left row, so the shapes whose match counts can
   differ are rejected rather than silently returning different rows;
+* quantified comparisons other than `= ANY` / `<> ALL` (`> ANY`, `> ALL`,
+  `>= ANY`, ...): DataFusion plans them as null-aware mark joins the analyzer
+  does not model.  `= ANY` and `<> ALL` are exactly `IN` / `NOT IN` and are
+  normalized to those before planning; a multi-column `(a, b) IN (...)` is
+  rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY`, a `DISTINCT` aggregate or
   several aggregates, and a correlated value inside a computed expression)

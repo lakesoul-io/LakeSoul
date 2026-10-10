@@ -194,6 +194,7 @@ impl IvmSqlExecutor {
             .create_logical_plan(&select_sql)
             .await
             .map_err(|error| rootcause::report!("plan `{select_sql}`: {error}"))?;
+        let plan = crate::sql::normalize_quantified_comparisons(&plan)?;
         let plan = session
             .state()
             .optimize(&plan)

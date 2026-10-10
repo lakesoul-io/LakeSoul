@@ -1727,6 +1727,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_quantified_in_equivalents() {
+        // `= ANY` is `IN` (a semi join) and `<> ALL` / `!= ALL` is `NOT IN`
+        // (an anti join) by the SQL standard.
+        let analyzed = analyze_multi(
+            "select k from src where k = any (select k from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            anti, join_keys, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(!anti);
+        assert_eq!(join_keys, vec!["k".to_string()]);
+
+        for sql in [
+            "select k from src where k <> all (select k from dim)",
+            "select k from src where k != all (select k from dim)",
+        ] {
+            let analyzed =
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .unwrap();
+            let ViewSpec::SemiAnti { anti, .. } = analyzed.spec else {
+                panic!("expected a semi/anti spec");
+            };
+            assert!(anti, "{sql}");
+        }
+
+        // The remaining quantifiers keep their null-aware mark-join semantics
+        // and stay unsupported.
+        assert!(
+            analyze_multi(
+                "select k from src where k > any (select k from dim)",
+                vec![source_table("src"), source_table("dim")],
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_multi_join() {
         let analyzed = analyze_optimized(
             "select a.k, a.g, b.g as bg, c.v as cv from src a \
