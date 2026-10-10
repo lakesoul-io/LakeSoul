@@ -211,14 +211,10 @@ impl IvmSqlExecutor {
             ));
         }
         // The keyed contract: the MV's primary key is the merge key that
-        // resolves the delete markers a refresh writes, so a statement over
-        // keyed tables needs one.  A global aggregate rewrites its single row
-        // wholesale and needs no key, and a statement over an append-only
-        // source is outside the keyed contract (see ROADMAP §A3).
-        if mv.primary_keys.is_empty()
-            && !is_global_aggregate(&probe.spec)
-            && tables.values().all(|table| !table.primary_keys.is_empty())
-        {
+        // resolves the delete markers a refresh writes, so a keyed statement
+        // needs one.  A global aggregate rewrites its single row wholesale and
+        // needs no key; append-only statements are rejected by the analyzer.
+        if mv.primary_keys.is_empty() && !is_global_aggregate(&probe.spec) {
             return Err(rootcause::report!(
                 "target table `{}` needs a primary key: the view's refresh writes \
                  delete markers that the MV's primary key merges; declare the key \

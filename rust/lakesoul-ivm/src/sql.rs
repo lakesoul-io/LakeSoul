@@ -84,6 +84,18 @@ pub fn analyze_select(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<AnalyzedView> {
+    // Incremental views need keyed sources: the refresh folds the changelog
+    // through merge-on-read and retracts by key.  Append-only sources (with or
+    // without a change column) are rejected explicitly.
+    for table in tables.values() {
+        if table.primary_keys.is_empty() {
+            return Err(unsupported(format!(
+                "source table {} has no primary key: incremental views need \
+                 keyed sources (append-only sources are not supported)",
+                table.table_name
+            )));
+        }
+    }
     if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
         return analyze_select(peel(plan), tables, request);
     }

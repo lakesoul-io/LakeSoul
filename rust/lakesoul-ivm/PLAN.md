@@ -2712,6 +2712,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **说明**：数据值层面的 op 校验不做（读取热路径代价高）；契约以文档 + 测试固定，
   写入端应按四值约定落盘。
 
+### 10.98 非契约源：分析器直接拒绝 append-only 源（PR-92，ROADMAP §A3）
+
+- **契约**：只支持有主键的源；append-only / append-only CDC 源不再支持（不设开关）。
+  `analyze_select` 在任何形状分派之前检查语句引用的每张表，缺主键即报错
+  （"source table X has no primary key: incremental views need keyed sources"）。
+- **连带调整**：
+  - 执行器 A1 校验去掉「append-only 语句跳过」的分支（不再可达）；
+  - 删除 8 个 SQL 级 append-only 用例与其 slt（sum_expr_append、count_column_append、
+    having_append、union_distinct_append、union_append_where、grouping_sets_append、
+    multi_join_append、row_append_cdc）及 `SltSource::append_only(_cdc)` 辅助；
+  - `left_aggregate` / `correlated_scalar` 的维表从 append-only 改为 keyed（主键 `(k, v)`，
+    保持多行/键的 avg 语义），slt 的维表写入补 `op=insert`；
+  - `sql/unions.rs` 的 append-only 投影用例改为拒绝断言；
+  - README 全面更新（形状表、Sources、A1 段、限制清单：append-only 归并为一条）。
+- **保留**：运行时非 keyed 分支与其**直接构造 typed view** 的单元测试暂留（不经过分析器），
+  作为后续一次性删除死代码的独立重构；SLT/oracle 层面已无 append-only 入口。
+- **测试**：全量 IVM 套件 388 个测试通过、0 失败（删除 8 个 SQL 级用例、1 个子用例改为拒绝）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

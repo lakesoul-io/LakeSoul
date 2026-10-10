@@ -61,7 +61,7 @@
 - 测试：`tests/cdc_semantics.rs`（或扩展 `cdc_update_markers.rs`）：配对/乱序/跨窗口/
   主键变更/重复键 × 抽 2–3 个代表视图（sum_count、row、join）。
 
-### A3. 非契约源策略（P0，S，需决策）
+### A3. 非契约源策略（P0，S）——已实现：直接拒绝（PLAN §10.98，PR-92）
 
 append-only / append-only CDC 源有两种处理：
 - ① 保留现状 + 文档标注「非契约，不承诺增量」（维护面大，但兼容现有 slt）；

@@ -500,7 +500,8 @@ async fn rejects_keyless_target_for_keyed_views() {
         .await
         .unwrap();
 
-    // A statement over an append-only source is outside the keyed contract.
+    // A statement over an append-only source is rejected: incremental views
+    // need keyed sources.
     let append_source = executor
         .runtime()
         .create_table(
@@ -523,11 +524,12 @@ async fn rejects_keyless_target_for_keyed_views() {
         ))
         .await
         .unwrap();
-    executor
+    let error = executor
         .execute(&format!(
             "INSERT INTO m3_keyless_appmv_{suffix} \
              SELECT g, SUM(v), COUNT(*) FROM m3_keyless_app_{suffix} GROUP BY g"
         ))
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(format!("{error}").contains("has no primary key"), "{error}");
 }
