@@ -53,7 +53,7 @@ def test_purge_keeps_pinned_and_latest_versions(tmp_path: Path) -> None:
 
         result = catalog.purge(name, older_than=dt.timedelta(seconds=0), dry_run=False)
         assert result.versions == 0
-        assert [pinned for _, pinned in _versions(catalog, table.id)] == [True, False]
+        assert sorted(_versions(catalog, table.id)) == [(0, True), (1, False)]
         assert sorted(table.scan().to_arrow_table().column("id").to_pylist()) == [1, 2]
         assert table.scan().options(snapshot=snapshot_id).to_arrow_table().column(
             "id"
