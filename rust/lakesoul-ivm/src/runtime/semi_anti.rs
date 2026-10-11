@@ -8,7 +8,9 @@
 use super::*;
 
 /// One condition of a [`SemiAntiView`]:
-/// `left.{left_column} {op} right.{right_column}`.
+/// `left.{left_column} {op} right.{right_column}`, or
+/// `(left.{left_column} {op} right.{right_column}) IS NOT TRUE` for the `ALL`
+/// quantifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemiAntiCondition {
     /// The left column.
@@ -17,6 +19,10 @@ pub struct SemiAntiCondition {
     pub right_column: String,
     /// The comparison operator.
     pub op: CompareOp,
+    /// Whether the condition matches when the comparison is false or unknown
+    /// (`IS NOT TRUE`), as the maintained `x op ALL (subquery)` needs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_not_true: bool,
 }
 
 /// A `SEMI`/`ANTI` join view.
@@ -383,11 +389,16 @@ fn semi_anti_output_columns(view: &SemiAntiView) -> Vec<String> {
 /// primary keys, the condition columns and the change column.
 fn semi_anti_left_columns(view: &SemiAntiView) -> Vec<String> {
     let mut columns = semi_anti_output_columns(view);
-    for column in view.left.primary_keys.iter().chain(
-        view.conditions
-            .iter()
-            .map(|condition| &condition.left_column),
-    ) {
+    for column in view
+        .join_keys
+        .iter()
+        .chain(view.left.primary_keys.iter())
+        .chain(
+            view.conditions
+                .iter()
+                .map(|condition| &condition.left_column),
+        )
+    {
         if !columns.contains(column) {
             columns.push(column.clone());
         }
@@ -678,7 +689,7 @@ fn semi_anti_join(
     let mut filter: Option<Expr> = None;
     for condition in &view.conditions {
         let alias = semi_anti_right_alias(&condition.right_column);
-        if condition.op == CompareOp::Eq {
+        if condition.op == CompareOp::Eq && !condition.is_not_true {
             let pair = (condition.left_column.clone(), alias);
             if !on_pairs.contains(&pair) {
                 on_pairs.push(pair);
@@ -689,6 +700,11 @@ fn semi_anti_join(
                 col(alias.as_str()),
                 condition.op,
             );
+            let expr = if condition.is_not_true {
+                Expr::IsNotTrue(Box::new(expr))
+            } else {
+                expr
+            };
             filter = Some(match filter {
                 Some(filter) => filter.and(expr),
                 None => expr,
@@ -788,14 +804,6 @@ impl IvmRuntime {
         // side filters included).
         let context = SessionContext::new();
         let mut left_columns = semi_anti_left_columns(view);
-        if view.count_mode {
-            // The rank partitions by the join keys.
-            for key in &view.join_keys {
-                if !left_columns.contains(key) {
-                    left_columns.push(key.clone());
-                }
-            }
-        }
         if let Some(filter) = view.left_filter.as_deref() {
             for column in filter_columns(&context, &view.left.schema, filter)? {
                 if !left_columns.contains(&column) {

@@ -15,18 +15,22 @@ use crate::runtime::{
 use crate::table::IvmTable;
 use arrow_schema::{DataType, Schema};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue, TableReference};
+use datafusion::common::{
+    Column, DFSchema, ExprSchema, NullEquality, ScalarValue, TableReference,
+};
+use datafusion::logical_expr::expr::SetQuantifier;
 use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatment};
-use datafusion::logical_expr::expr::{InSubquery, SetQuantifier};
-use datafusion::logical_expr::utils::split_conjunction;
+use datafusion::logical_expr::expr::{BinaryExpr, Exists, InSubquery, SetComparison};
+use datafusion::logical_expr::utils::{merge_schema, split_conjunction};
 use datafusion::logical_expr::{
-    Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
-    SortExpr, Subquery, Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
+    Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, LogicalPlanBuilder,
+    Operator, Projection, SortExpr, Subquery, Union, Window, WindowFrame,
+    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::Unparser;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 mod aggregates;
 mod joins;
@@ -295,32 +299,29 @@ fn render_filter(expr: &Expr) -> Result<String> {
 }
 /// Render an expression to SQL over unqualified columns, for the runtime to
 /// parse back (aggregate calls and join predicates included).
-/// Rewrite the quantified comparisons the SQL standard equates with
-/// `IN` / `NOT IN`: `x = ANY (S)` is `x IN (S)` and `x <> ALL (S)` is
-/// `x NOT IN (S)`.  The remaining quantifiers (`> ALL`, `< ANY`, ...) need the
-/// null-aware mark-join semantics and stay unsupported.
+/// Rewrite the quantified comparisons into the maintained semi/anti shapes.
+///
+/// `x = ANY (S)` is exactly `x IN (S)` and `x <> ALL (S)` is exactly
+/// `x NOT IN (S)`, so those keep the cheaper `IN` forms.  The remaining
+/// quantifiers are rewritten into `EXISTS` predicates whose filter sees the
+/// comparison truth: `x op ANY (S)` keeps a left row exactly when some right
+/// row satisfies `x op y`, and `x op ALL (S)` exactly when no right row makes
+/// `x op y` false or unknown.  A `NOT` directly above a quantifier is pushed
+/// into it with the complementary operator (`NOT (x op ANY S)` is
+/// `x complement(op) ALL S`), so a quantifier below a wider `NOT` keeps its
+/// mark-join plan and is rejected by the analyzer rather than mistranslated.
 pub(crate) fn normalize_quantified_comparisons(
     plan: &LogicalPlan,
 ) -> Result<LogicalPlan> {
     plan.clone()
         .transform_down(|node| {
+            // The expressions of a node resolve against its inputs.
+            let schema = merge_schema(&node.inputs());
             node.map_expressions(|expr| {
                 expr.transform_down(|expr| {
-                    let Expr::SetComparison(comparison) = expr else {
-                        return Ok(Transformed::no(expr));
-                    };
-                    let negated = match (comparison.quantifier, comparison.op) {
-                        (SetQuantifier::Any, Operator::Eq) => false,
-                        (SetQuantifier::All, Operator::NotEq) => true,
-                        _ => {
-                            return Ok(Transformed::no(Expr::SetComparison(comparison)));
-                        }
-                    };
-                    Ok(Transformed::yes(Expr::InSubquery(InSubquery::new(
-                        comparison.expr,
-                        comparison.subquery,
-                        negated,
-                    ))))
+                    rewrite_set_comparison(expr, &schema).map_err(|error| {
+                        datafusion::error::DataFusionError::Plan(error.to_string())
+                    })
                 })
             })
         })
@@ -328,6 +329,123 @@ pub(crate) fn normalize_quantified_comparisons(
         .map_err(|error| {
             unsupported(format!("normalize quantified comparisons: {error}"))
         })
+}
+
+/// The complementary operator: `NOT (x op y)` is `x complement(op) y`.
+fn complement_operator(op: Operator) -> Result<Operator> {
+    Ok(match op {
+        Operator::Eq => Operator::NotEq,
+        Operator::NotEq => Operator::Eq,
+        Operator::Lt => Operator::GtEq,
+        Operator::LtEq => Operator::Gt,
+        Operator::Gt => Operator::LtEq,
+        Operator::GtEq => Operator::Lt,
+        other => {
+            return Err(unsupported(format!("quantified comparison {other}")));
+        }
+    })
+}
+
+fn rewrite_set_comparison(
+    expr: Expr,
+    outer_schema: &DFSchema,
+) -> Result<Transformed<Expr>> {
+    match expr {
+        Expr::Not(inner) if matches!(inner.as_ref(), Expr::SetComparison(_)) => {
+            let Expr::SetComparison(comparison) = *inner else {
+                unreachable!("the guard checked the variant");
+            };
+            let comparison = SetComparison {
+                quantifier: match comparison.quantifier {
+                    SetQuantifier::Any => SetQuantifier::All,
+                    SetQuantifier::All => SetQuantifier::Any,
+                },
+                op: complement_operator(comparison.op)?,
+                ..comparison
+            };
+            Ok(Transformed::yes(build_set_comparison(
+                comparison,
+                outer_schema,
+            )?))
+        }
+        Expr::SetComparison(comparison) => Ok(Transformed::yes(build_set_comparison(
+            comparison,
+            outer_schema,
+        )?)),
+        other => Ok(Transformed::no(other)),
+    }
+}
+
+fn build_set_comparison(
+    comparison: SetComparison,
+    outer_schema: &DFSchema,
+) -> Result<Expr> {
+    let SetComparison {
+        expr,
+        subquery,
+        op,
+        quantifier,
+    } = comparison;
+    match (quantifier, op) {
+        (SetQuantifier::Any, Operator::Eq) => {
+            return Ok(Expr::InSubquery(InSubquery::new(expr, subquery, false)));
+        }
+        (SetQuantifier::All, Operator::NotEq) => {
+            return Ok(Expr::InSubquery(InSubquery::new(expr, subquery, true)));
+        }
+        _ => {}
+    }
+    let left = to_outer_reference(*expr, outer_schema)?;
+    let subquery_schema = subquery.subquery.schema();
+    if subquery_schema.fields().is_empty() {
+        return Err(unsupported(
+            "a quantified comparison needs a single subquery column",
+        ));
+    }
+    let right = Expr::Column(Column::from(subquery_schema.qualified_field(0)));
+    let comparison =
+        Expr::BinaryExpr(BinaryExpr::new(Box::new(left), op, Box::new(right)));
+    // The EXISTS filter holds where the comparison is true (`ANY`) or where
+    // no row makes it false or unknown (`ALL`, as an anti join).
+    let (filter, negated) = match quantifier {
+        SetQuantifier::Any => (comparison, false),
+        SetQuantifier::All => (Expr::IsNotTrue(Box::new(comparison)), true),
+    };
+    let plan = LogicalPlanBuilder::from(subquery.subquery.as_ref().clone())
+        .filter(filter)?
+        .build()?;
+    let outer_ref_columns = plan.all_out_ref_exprs();
+    Ok(Expr::Exists(Exists {
+        subquery: Subquery {
+            subquery: Arc::new(plan),
+            outer_ref_columns,
+            spans: subquery.spans,
+        },
+        negated,
+    }))
+}
+
+/// Mark every outer column of a quantified comparison's left expression, so
+/// the subquery can reference it (the same form DataFusion's own
+/// `RewriteSetComparison` rule builds).
+fn to_outer_reference(expr: Expr, outer_schema: &DFSchema) -> Result<Expr> {
+    expr.transform_up(|expr| match expr {
+        Expr::Column(column) => {
+            let field = outer_schema.field_from_column(&column).map_err(|error| {
+                datafusion::error::DataFusionError::Plan(format!(
+                    "quantified comparison {error}"
+                ))
+            })?;
+            Ok(Transformed::yes(Expr::OuterReferenceColumn(
+                Arc::clone(field),
+                column,
+            )))
+        }
+        Expr::OuterReferenceColumn(_, _) => Ok(Transformed::no(expr)),
+        other => Ok(Transformed::no(other)),
+    })
+    .map(|transformed| transformed.data)
+    .map_err(|error| unsupported(format!("quantified comparison {error}")))
 }
 
 fn render_expression(expr: &Expr) -> Result<String> {

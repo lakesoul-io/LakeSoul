@@ -124,6 +124,18 @@ pub(super) fn analyze_join(
                     }
                 };
                 key_pairs.push((left_column.name.clone(), right_column.name.clone()));
+            } else if let Expr::IsNotTrue(inner) = conjunct {
+                // `(x op y) IS NOT TRUE`: the match condition of an `ALL`
+                // quantifier (a false or unknown comparison disqualifies the
+                // left row).
+                let (left_column, right_column, op) =
+                    column_compare(inner, left_alias, right_alias, left, right)?;
+                conditions.push(SemiAntiCondition {
+                    left_column,
+                    right_column,
+                    op,
+                    is_not_true: true,
+                });
             } else {
                 let (left_column, right_column, op) =
                     column_compare(conjunct, left_alias, right_alias, left, right)?;
@@ -131,12 +143,19 @@ pub(super) fn analyze_join(
                     left_column,
                     right_column,
                     op,
+                    is_not_true: false,
                 });
             }
         }
     }
     if key_pairs.is_empty() && expression_pairs.is_empty() {
-        return Err(unsupported("join without an equality key"));
+        // A theta semi/anti join (the maintained `x op ANY/ALL` quantifiers)
+        // has no equality key at all: the condition is the whole predicate.
+        let theta_semi_anti = !conditions.is_empty()
+            && matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti);
+        if !theta_semi_anti {
+            return Err(unsupported("join without an equality key"));
+        }
     }
     key_pairs.sort();
     key_pairs.dedup();
@@ -790,6 +809,7 @@ fn analyze_cross_join(
                 left_column,
                 right_column,
                 op,
+                is_not_true: false,
             });
         }
     }
@@ -1355,6 +1375,116 @@ mod tests {
     use crate::sql::test_helpers::*;
 
     #[tokio::test]
+    async fn analyzes_quantified_comparisons() {
+        // `x > ANY (S)` keeps a left row when some right row satisfies the
+        // comparison: a theta semi join with no equality key.
+        let analyzed = analyze_multi(
+            "select k from src where v > any (select v from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            join_keys,
+            conditions,
+            anti,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(join_keys.is_empty());
+        assert!(!anti);
+        assert_eq!(
+            conditions,
+            vec![SemiAntiCondition {
+                left_column: "v".to_string(),
+                right_column: "v".to_string(),
+                op: CompareOp::Gt,
+                is_not_true: false,
+            }]
+        );
+
+        // `x > ALL (S)` keeps a left row when no right row makes the
+        // comparison false or unknown: an anti join on `IS NOT TRUE`.
+        let analyzed = analyze_multi(
+            "select k from src where v > all (select v from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            conditions, anti, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(anti);
+        assert_eq!(conditions[0].op, CompareOp::Gt);
+        assert!(conditions[0].is_not_true);
+
+        // `NOT (x > ANY S)` is exactly `x <= ALL S`.
+        let analyzed = analyze_multi(
+            "select k from src where not (v > any (select v from dim))",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            conditions, anti, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(anti);
+        assert_eq!(conditions[0].op, CompareOp::Le);
+        assert!(conditions[0].is_not_true);
+
+        // A side filter and a correlated key beside the quantifier are kept.
+        for (sql, keys) in [
+            (
+                "select k from src where g = 'x' and v > any (select v from dim)",
+                Vec::<String>::new(),
+            ),
+            (
+                "select k from src where v > any (select v from dim where dim.g = src.g)",
+                vec!["g".to_string()],
+            ),
+        ] {
+            let analyzed =
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .unwrap();
+            let ViewSpec::SemiAnti {
+                join_keys,
+                left_filter,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("expected a semi/anti spec");
+            };
+            assert_eq!(join_keys, keys, "{sql}");
+            if keys.is_empty() {
+                assert_eq!(
+                    normalized(left_filter.as_deref()),
+                    Some("g = 'x'".to_string())
+                );
+            }
+        }
+
+        // A quantifier below a disjunction keeps its mark-join plan: it is
+        // rejected rather than mistranslated.
+        assert!(
+            analyze_multi(
+                "select k from src where v > any (select v from dim) or g = 'x'",
+                vec![source_table("src"), source_table("dim")],
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_semi_anti_subqueries() {
         // `WHERE EXISTS` / `NOT EXISTS` / `IN` decorrelate into LeftSemi /
         // LeftAnti joins over a correlated subquery alias.
@@ -1783,16 +1913,16 @@ mod tests {
             assert!(anti, "{sql}");
         }
 
-        // The remaining quantifiers keep their null-aware mark-join semantics
-        // and stay unsupported.
-        assert!(
-            analyze_multi(
-                "select k from src where k > any (select k from dim)",
-                vec![source_table("src"), source_table("dim")],
-            )
-            .await
-            .is_err()
-        );
+        // The remaining quantifiers are rewritten into EXISTS predicates and
+        // maintained as theta semi/anti joins (see
+        // `analyzes_quantified_comparisons`).
+        let analyzed = analyze_multi(
+            "select k from src where k > any (select k from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::SemiAnti { .. }));
     }
 
     #[tokio::test]
@@ -2693,6 +2823,7 @@ mod tests {
                 left_column: "v".to_string(),
                 right_column: "v".to_string(),
                 op: CompareOp::Gt,
+                is_not_true: false,
             }]
         );
     }

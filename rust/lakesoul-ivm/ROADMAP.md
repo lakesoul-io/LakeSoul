@@ -125,7 +125,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
 | 连接键是**表达式**（`ON a.x+1=b.y`，两源 inner join） | **M** | ✅ 已实现（PR-98，PLAN §10.104）：两侧求值 + 隐藏 key 列 `__ivm_key_<n>`；lookup/outer/multi/chain 的表达式键仍拒绝 |
 | `= ANY` / `<> ALL` 量化比较 | **S** | ✅ 已实现（PR-100，PLAN §10.106）：标准精确等价，优化前重写为 `IN` / `NOT IN` |
-| 其余量化比较（`> ANY`、`> ALL`、`>= ANY` …） | **M** | DataFusion 计划为 LeftMark Join（含 `Boolean(NULL)` 空语义编码），待专门映射；已勘查 |
+| 其余量化比较（`> ANY`、`> ALL`、`>= ANY` …） | **M** | ✅ 已实现（PR-102，PLAN §10.108）：优化前重写为 EXISTS/NOT EXISTS（`(x op y) IS NOT TRUE`）；`NOT` 用补算子；theta semi/anti（无等值键）；子查询外的 wider NOT / 析取仍拒绝 |
 | 多列 `(a, b) IN (...)` | **—** | DataFusion 55 计划期即报「子查询只能单列」，不在 IVM 侧 |
 | `NOT IN` 的 NULL 边角 | **已支持** | null-aware anti；`= ANY`/`<> ALL` 归一化后同路径 |
 | 超过 8 个源 | **S** | ✅ 已实现（PR-99，PLAN §10.105）：上限 8 → 16；9 源分析器用例 |
@@ -145,7 +145,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | ✅ 已实现（PR-101，PLAN §10.107）：`SemiAntiView.count_mode`（rank vs 右侧 per-tuple count）；引擎自身对原始集合运算只做成员判定，oracle 用 Rust 独立计数 |
-| 空安全谓词的非 semi/anti 形态（outer join 上的 `IS NOT DISTINCT FROM`） | **M** | 空安全 join 条件扩展 |
+| 空安全谓词的非 semi/anti 形态（outer join 上的 `IS NOT DISTINCT FROM`） | **M** | 单独 PR：join 状态表主键含 join key，NULL 键需要 sentinel 编码（spec → 状态表键 → 运行时匹配全链路），并确定 MV 身份列表示；`semi/anti` 已支持空安全 |
 
 ### B6. 子查询（P2）
 
@@ -153,8 +153,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 |---|---|---|
 | 相关标量子查询 + `GROUP BY` | **M-L** | 可拆 join+聚合链 |
 | 相关子查询内 `DISTINCT`/多聚合 | **M** | DISTINCT 重写形状；多聚合可先拒绝 |
-| 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | LeftAggregate 支持输出表达式 |
-| 子查询出现在 HAVING/ORDER BY | **S-M** | 位置扩展 |
+| 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | 单独 PR：`LeftAggregate` 增加 `output_exprs`（渲染表达式 + MV 列）；聚合值列保留（内部列），schema helper/expected schema/refresh+rebuild 行构造同步；分析器解析引用聚合列的投影表达式并校验别名 |
+| 子查询出现在 HAVING/ORDER BY | **S-M** | 单独 PR：非相关子查询需要「聚合 join 聚合」双源依赖视图；相关子查询优化计划为「聚合 ⋈ 按键盘聚合」的 LeftSemi + 过滤，需要新形状；现状明确拒绝 |
 | 递归 CTE / LATERAL | **不做** | 非目标 |
 
 ### B7. 窗口 / TOP-K（P2）
@@ -187,7 +187,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
    并把「两段视图」模式写进 README。
 3. **P1**：B9 分区源表一期（✅ PR-94）→ B3 1:N 右侧外连接链（✅ PR-95）→
    B3 条件引用未物化列（✅ PR-97）→ B3 连接键表达式（✅ 两源 inner join，PR-98）
-   → B5 INTERSECT/EXCEPT ALL + B4 聚合之上的计算列（✅ PR-101）。
+   → B5 INTERSECT/EXCEPT ALL + B4 聚合之上的计算列（✅ PR-101）→ 其余量化比较
+   （✅ PR-102，含 theta semi/anti 与 `IS NOT TRUE` 条件）。
 4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做（✅ PR-99）；其余量化比较待专门映射。
 5. 若某类形状长期不做，纳入「两层刷新契约（Tier-2 全量回退）」的覆盖范围
    （设计见 `ivm-tier1-tier2-refresh-contract.md`），保证用户 SQL 可用、只是非增量。

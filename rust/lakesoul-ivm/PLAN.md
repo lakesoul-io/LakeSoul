@@ -2935,6 +2935,41 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 两部分合计：全量 IVM **408 passed / 0 failed**（`--test-threads=1`），
 `cargo fmt --all --check` 与 `cargo clippy -p lakesoul-ivm --all-targets` 干净。
 
+### 10.108 量化比较（`> ANY` / `> ALL` 等）重写为 EXISTS（PR-102，ROADMAP §B3）
+
+- **背景**：DataFusion 把非 `= ANY` / `<> ALL` 的量化比较计划成多层 LeftMark Join
+  （`Filter: mark OR mark AND NOT mark AND Boolean(NULL)` 的 3VL 编码），直接映射不可行。
+- **实现**：在优化前（`normalize_quantified_comparisons`）做结构化重写，构造方式与
+  DataFusion 自带 `RewriteSetComparison` 一致（`Expr::OuterReferenceColumn` + 子查询 filter）：
+  - `NOT (SetComparison)` → De Morgan 补算子反转（`>` ↔ `<=`、`Any` ↔ `All`）；
+  - `(Any, Eq)` → `IN`、`(All, NotEq)` → `NOT IN`（原有精确等价，保持更廉价的形态）；
+  - `(Any, op)` → `EXISTS(subquery WHERE x op y)`；
+  - `(All, op)` → `EXISTS(negated; subquery WHERE (x op y) IS NOT TRUE)`（anti）——
+    filter 语义下精确：空集为 TRUE、NULL 比较 unknown 会被过滤。
+  重写只在**谓词真值**等价成立的场合做；`NOT` 直接包住量化比较时用补算子消化，
+  更宽的 `NOT` / 析取留下的量化比较仍是 mark join → 分析器明确拒绝（不静默错译）。
+- **运行时**：新增 `SemiAntiCondition.is_not_true`（serde 默认 false）：
+  - 分析器把 `IS NOT TRUE(l op r)` 解析成该标志；theta semi/anti（仅条件、无等值键）
+    放宽「join without an equality key」，DataFusion 用 nested-loop semi/anti 计划；
+  - `semi_anti_join` 对 `is_not_true` 条件生成 `Expr::IsNotTrue`，且不再作为 hash key；
+  - 顺带修复既有缺口：`semi_anti_left_columns` 现在总是包含 join keys
+    （此前关联键不在输出列时读取投影缺列，关联量化比较会暴露）。
+- **测试**：分析器用例（ANY/ALL/complement/side filter/correlated、析取拒绝）；
+  oracle `oracle_quantified_comparisons_match_full_recompute`：7 组（`>` `>=` `<` `<=` 的
+  ANY/ALL 与 `NOT (...)`、相关子查询），nullable 值 + 每算子定制种子，参考实现用
+  DataFusion 原生量化比较（独立实现），10 轮随机增删改 + 重复执行幂等检查。
+  全量 IVM **410 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+- **下一批（本次未完成，已勘查）**：
+  1. **LeftAggregate 输出表达式**（S-M）：`(SELECT AGG(w) …) + 1` 的计划是
+     `Projection: __scalar_sq_1.max(d.v) + 1` 覆盖同一个 Left Join；只需
+     `ViewSpec::LeftAggregate` / `LeftAggregateView` 增加 `output_exprs`（渲染表达式 + MV 列）、
+     schema helper 与 refresh/rebuild 行构造追加表达式列（原始聚合值列保留为内部列）。
+  2. **空安全 outer join**（M）：join 状态表主键含 join key，NULL 需要 sentinel 编码
+     （spec → 状态表键 → 运行时匹配 → MV 身份列），单独 PR。
+  3. **HAVING 子查询**（S-M）：非相关子查询需要「聚合 join 聚合」双源依赖视图；
+     相关子查询优化成「聚合 ⋈ 按键盘聚合」的 LeftSemi + 过滤，需要新形状。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
