@@ -2970,6 +2970,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   3. **HAVING 子查询**（S-M）：非相关子查询需要「聚合 join 聚合」双源依赖视图；
      相关子查询优化成「聚合 ⋈ 按键盘聚合」的 LeftSemi + 过滤，需要新形状。
 
+### 10.109 LeftAggregate 输出表达式（PR-103，ROADMAP §B6）
+
+- **形状**：`SELECT s.k, (SELECT MAX(w) FROM dim u WHERE u.k = s.k) * 2 + 1 AS m FROM src s`
+  ——计划是 `Projection: __scalar_sq_1.max(u.w) * 2 + 1` 覆盖同一个 Left Join，
+  只是投影不再是普通列。
+- **实现**：`ViewSpec::LeftAggregate` / `LeftAggregateView` 增加
+  `output_exprs: Vec<LeftAggregateOutput { call, column, result }>`（serde 默认空）。
+  - 分析器：投影里引用右键列的计算表达式必须带标识符别名、且只能引用**唯一**的子查询值列
+    （引用左列的计算列拒绝），渲染时把右键列替换为 `IVM_RIGHT_AGG_COLUMN`
+    （`__ivm_right_agg`）；原生值列继续物化（select 列表没有它时命名为
+    `IVM_AGG_VALUE_COLUMN`（`__ivm_agg`））。
+  - 运行时：新增 `left_aggregate_row_exprs` 统一生成 insert/delete 投影：
+    insert = 左输出列 + 原生值 + `create_logical_expr(call)` 计算列；delete = 对应 MV 列名列表；
+    refresh/rebuild 两处共用。
+  - schema：新增 `left_aggregate_mv_schema_with_outputs`（旧 helper 委托，保持兼容），
+    executor 的 expected schema 与 `lib.rs` re-export 同步。
+- **测试**：分析器用例（computed-only 的 `__ivm_agg` 命名、普通值别名、缺别名/左列计算拒绝）、
+  oracle `oracle_left_aggregate_outputs_match_full_recompute`（`max * 2 + 1` 差分 oracle）。
+- **HAVING 子查询（3b，未实现）**：相关形态计划为
+  `LeftSemi(Aggregate(src), SubqueryAlias(Aggregate(dim)))` 与
+  `Filter: sum(src.v) > __scalar_sq_1.max(d.v)`；非相关形态为
+  `Filter(Aggregate(src), Subquery(Aggregate(dim)))`——视图会依赖第二个源，需要
+  「聚合 ⋈ 按键盘/全局聚合」的新形状与按第二源变更重算受影响组的刷新协议；
+  当前明确拒绝（新增 `rejects_having_subqueries` 固化，避免静默丢条件）。
+  全量 IVM **413 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

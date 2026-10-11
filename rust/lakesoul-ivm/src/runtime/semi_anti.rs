@@ -442,6 +442,10 @@ fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
 /// refers to it by this name.
 pub const IVM_RIGHT_AGG_COLUMN: &str = "__ivm_right_agg";
 
+/// The MV column holding the scalar subquery value when the select list only
+/// computes over it (a computed-only left-aggregate projection).
+pub const IVM_AGG_VALUE_COLUMN: &str = "__ivm_agg";
+
 /// The right group keys of a scalar-subquery view, falling back to the shared
 /// join keys.
 fn right_join_keys(view: &SemiAntiView) -> &[String] {
@@ -1308,6 +1312,10 @@ pub struct LeftAggregateView {
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
     pub right_filter: Option<String>,
+    /// The computed select-list expressions over the scalar subquery value:
+    /// the rendered expression over [`IVM_RIGHT_AGG_COLUMN`], the MV column
+    /// and the result type.
+    pub output_exprs: Vec<(String, String, DataType)>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1338,6 +1346,7 @@ impl LeftAggregateView {
             output_columns,
             left_filter: None,
             right_filter: None,
+            output_exprs: Vec::new(),
             refresh_interval_ms: 0,
         }
     }
@@ -1354,8 +1363,17 @@ impl LeftAggregateView {
         self
     }
 
-    fn to_spec(&self) -> ViewSpec {
-        ViewSpec::LeftAggregate {
+    /// Append computed select-list expressions over the scalar subquery value.
+    pub fn with_output_exprs(
+        mut self,
+        output_exprs: Vec<(String, String, DataType)>,
+    ) -> Self {
+        self.output_exprs = output_exprs;
+        self
+    }
+
+    fn to_spec(&self) -> Result<ViewSpec> {
+        Ok(ViewSpec::LeftAggregate {
             view_id: self.view_id.clone(),
             left_table_id: self.left.table_id.clone(),
             right_table_id: self.right.table_id.clone(),
@@ -1367,8 +1385,57 @@ impl LeftAggregateView {
             output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
-        }
+            output_exprs: self
+                .output_exprs
+                .iter()
+                .map(|(call, column, data_type)| {
+                    Ok(LeftAggregateOutput {
+                        call: call.clone(),
+                        column: column.clone(),
+                        result: encode_data_type(data_type)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        })
     }
+}
+
+/// The projection expressions of one left-aggregate row: the materialized
+/// columns for an insert and the plain column list for a delete.  A computed
+/// select-list expression is rendered against the raw aggregate column of the
+/// joined frame.
+fn left_aggregate_row_exprs(
+    context: &SessionContext,
+    view: &LeftAggregateView,
+    joined: &DataFrame,
+) -> Result<(Vec<Expr>, Vec<Expr>)> {
+    let mut insert_exprs = view
+        .output_columns
+        .iter()
+        .map(|column| col(column.as_str()))
+        .collect::<Vec<_>>();
+    insert_exprs.push(col(IVM_RIGHT_AGG_COLUMN).alias(view.aggregate_column.as_str()));
+    for (call, column, _) in &view.output_exprs {
+        insert_exprs.push(
+            context
+                .state()
+                .create_logical_expr(call, joined.schema())
+                .map_err(|error| {
+                    report!("invalid scalar subquery output {call:?}: {error}")
+                })?
+                .alias(column.as_str()),
+        );
+    }
+    let mut output_exprs = view
+        .output_columns
+        .iter()
+        .map(|column| col(column.as_str()))
+        .collect::<Vec<_>>();
+    output_exprs.push(col(view.aggregate_column.as_str()));
+    for (_, column, _) in &view.output_exprs {
+        output_exprs.push(col(column.as_str()));
+    }
+    Ok((insert_exprs, output_exprs))
 }
 
 /// The right group keys of a left-aggregate view, falling back to the shared
@@ -1389,6 +1456,25 @@ pub fn left_aggregate_mv_schema_for(
     aggregate_column: &str,
     aggregate_type: &DataType,
 ) -> Result<SchemaRef> {
+    left_aggregate_mv_schema_with_outputs(
+        left_schema,
+        output_columns,
+        aggregate_column,
+        aggregate_type,
+        &[],
+    )
+}
+
+/// The schema of a [`LeftAggregateView`] with computed outputs: the left
+/// columns, the aggregate value, the computed columns, the row kind and the
+/// epoch.
+pub fn left_aggregate_mv_schema_with_outputs(
+    left_schema: &Schema,
+    output_columns: &[String],
+    aggregate_column: &str,
+    aggregate_type: &DataType,
+    outputs: &[(String, DataType)],
+) -> Result<SchemaRef> {
     if output_columns.is_empty() {
         return Err(report!("a left aggregate view needs its output columns"));
     }
@@ -1402,6 +1488,13 @@ pub fn left_aggregate_mv_schema_for(
         aggregate_type.clone(),
         true,
     )));
+    for (column, data_type) in outputs {
+        fields.push(Arc::new(Field::new(
+            column.clone(),
+            data_type.clone(),
+            true,
+        )));
+    }
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
         DataType::Utf8,
@@ -1439,6 +1532,32 @@ fn validate_left_aggregate_view(view: &LeftAggregateView) -> Result<()> {
         if !view.output_columns.contains(key) {
             return Err(report!(
                 "left aggregate view {}: output columns must contain the left key {key}",
+                view.view_id
+            ));
+        }
+    }
+    for (call, column, _) in &view.output_exprs {
+        if call.is_empty() || column.is_empty() {
+            return Err(report!(
+                "left aggregate view {} has an empty computed output",
+                view.view_id
+            ));
+        }
+        if view.output_columns.contains(column) || column == &view.aggregate_column {
+            return Err(report!(
+                "left aggregate view {}: column {column} is materialized twice",
+                view.view_id
+            ));
+        }
+        if view
+            .output_exprs
+            .iter()
+            .filter(|(_, other, _)| other == column)
+            .count()
+            > 1
+        {
+            return Err(report!(
+                "left aggregate view {}: column {column} is materialized twice",
                 view.view_id
             ));
         }
@@ -1589,7 +1708,7 @@ impl IvmRuntime {
     ) -> Result<()> {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
-        let spec = serde_json::to_value(view.to_spec())?;
+        let spec = serde_json::to_value(view.to_spec()?)?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await
@@ -1795,15 +1914,6 @@ impl IvmRuntime {
             affected_from_left.union(affected_from_right)?.distinct()?
         };
 
-        let mut output_exprs = view
-            .output_columns
-            .iter()
-            .map(|column| col(column.as_str()))
-            .collect::<Vec<_>>();
-        let mut insert_exprs = output_exprs.clone();
-        insert_exprs
-            .push(col(IVM_RIGHT_AGG_COLUMN).alias(view.aggregate_column.as_str()));
-        output_exprs.push(col(view.aggregate_column.as_str()));
         let joined = left_now
             .join(
                 affected.clone(),
@@ -1826,6 +1936,8 @@ impl IvmRuntime {
                     .collect::<Vec<_>>(),
                 None,
             )?;
+        let (insert_exprs, output_exprs) =
+            left_aggregate_row_exprs(&context, view, &joined)?;
         let mv_epoch_keys = mv
             .clone()
             .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
@@ -1945,29 +2057,23 @@ impl IvmRuntime {
             &view.right.schema,
             view.right_filter.as_deref(),
         )?;
-        let mut output_exprs = view
-            .output_columns
-            .iter()
-            .map(|column| col(column.as_str()))
-            .collect::<Vec<_>>();
-        output_exprs
-            .push(col(IVM_RIGHT_AGG_COLUMN).alias(view.aggregate_column.as_str()));
-        let rows = left
-            .join(
-                left_aggregate_frame(&context, right, view)?,
-                JoinType::Left,
-                &view
-                    .join_keys
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                &left_aggregate_join_right_keys(view)
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                None,
-            )?
-            .select(output_exprs)?
+        let joined = left.join(
+            left_aggregate_frame(&context, right, view)?,
+            JoinType::Left,
+            &view
+                .join_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            &left_aggregate_join_right_keys(view)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            None,
+        )?;
+        let (insert_exprs, _) = left_aggregate_row_exprs(&context, view, &joined)?;
+        let rows = joined
+            .select(insert_exprs)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         for batch in rows.collect().await? {

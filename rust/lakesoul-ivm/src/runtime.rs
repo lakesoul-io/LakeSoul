@@ -869,6 +869,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// The computed select-list expressions over the scalar subquery
+        /// value, appended after the aggregate column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_exprs: Vec<LeftAggregateOutput>,
     },
     /// A left-deep chain of keyed 1:1 lookups over a base table: every base
     /// row appears once, with NULL payloads for the steps it does not match.
@@ -1282,6 +1286,20 @@ enum SpecView {
     UnionDistinct(UnionDistinctView),
     TopK(TopKView),
     MultiWindow(MultiWindowView),
+}
+
+/// One computed output of a [`ViewSpec::LeftAggregate`] view:
+/// the rendered expression over the scalar subquery value
+/// ([`crate::runtime::semi_anti::IVM_RIGHT_AGG_COLUMN`]) and the MV column
+/// holding it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftAggregateOutput {
+    /// The rendered expression over the right aggregate column.
+    pub call: String,
+    /// The MV column holding the value.
+    pub column: String,
+    /// The encoded result type of the expression.
+    pub result: String,
 }
 
 /// One aggregate of a [`ViewSpec::MultiAgg`] view.
@@ -2865,6 +2883,7 @@ impl IvmRuntime {
                 output_columns,
                 left_filter,
                 right_filter,
+                output_exprs,
             } => SpecView::LeftAggregate(LeftAggregateView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2877,6 +2896,16 @@ impl IvmRuntime {
                 output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                output_exprs: output_exprs
+                    .iter()
+                    .map(|output| {
+                        Ok((
+                            output.call.clone(),
+                            output.column.clone(),
+                            decode_data_type(&output.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
                 refresh_interval_ms,
             }),
             ViewSpec::Row {

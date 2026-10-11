@@ -81,7 +81,7 @@ used as row identities must be non-nullable.
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
-| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery) | the projected left columns, the aggregate column, kinds, epoch |
+| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery), or a computed expression over it (`... * 2 + 1 AS m`) | the projected left columns, the aggregate column, the computed columns, kinds, epoch |
 | INTERSECT / EXCEPT | the distinct and `ALL` variants; a repeated left of an `ALL` variant competes the per-tuple match counts (`min(count_l, count_r)` copies for `INTERSECT ALL`, the surplus for `EXCEPT ALL`); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns (plus the left key), kinds, epoch |
 
 Supported within the shapes above:
@@ -154,7 +154,10 @@ Supported within the shapes above:
   **select-list** correlated scalar subquery
   (`SELECT ..., (SELECT AVG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s`)
   is maintained as a left join against the same per-key aggregate, with NULL
-  for a key without rows;
+  for a key without rows; a computed select-list expression over the value
+  (`(SELECT MAX(w) FROM dim u WHERE u.k = s.k) * 2 + 1 AS m`) appends a view
+  column computed from the per-key aggregate (the raw value stays
+  materialized, named `__ivm_agg` when the select list does not carry it);
 * **quantified comparisons** (`x op ANY (S)`, `x op ALL (S)` and their
   `NOT (...)` complements): rewritten before planning into an `EXISTS`
   (`x op y`) or `NOT EXISTS` (`(x op y) IS NOT TRUE`) predicate, so they are
@@ -439,8 +442,9 @@ the backlog):
   operator, and `= ANY` / `<> ALL` keep the exact `IN` / `NOT IN` forms); a
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
-  with a `GROUP BY`, a `DISTINCT` aggregate or
-  several aggregates, and a correlated value inside a computed expression),
+  with a `GROUP BY` (already per-key), a `DISTINCT` aggregate or
+  several aggregates, a computed value over left columns beside one, and any
+  subquery in `HAVING` — the view would then depend on the subquery source),
   a subquery or window function **above** an aggregate, and the derived-table
   form of a computed aggregate output
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained
