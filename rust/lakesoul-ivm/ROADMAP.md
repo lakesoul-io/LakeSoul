@@ -154,7 +154,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 相关标量子查询 + `GROUP BY` | **M-L** | 可拆 join+聚合链 |
 | 相关子查询内 `DISTINCT`/多聚合 | **M** | DISTINCT 重写形状；多聚合可先拒绝 |
 | 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | ✅ 已实现（PR-103，PLAN §10.109）：`LeftAggregate.output_exprs`（渲染表达式对 `__ivm_right_agg` + MV 列 + 类型）；聚合值列保留（计算-only 时内部命名 `__ivm_agg`）；`left_aggregate_mv_schema_with_outputs` / expected schema / refresh+rebuild 同步 |
-| 子查询出现在 HAVING/ORDER BY | **S-M** | ✅ 两视图模式已支持并测试（PR-104，PLAN §10.110）：先分组视图、再用相关/非相关标量子查询过滤第二个视图（`tests/having_subquery_views.rs` 随机差分）；单语句形态仍明确拒绝，错误信息指向该模式。单语句原生实现需要「聚合 ⋈ 按键盘/全局聚合」新形状 + 第二源变更重算，待需求 |
+| 子查询出现在 HAVING/ORDER BY | **S-M** | ✅ 单语句已实现（PR-105，PLAN §10.111）：MultiAgg 增加 `having_lookup` 第二源——相关形态按组键左连接按键盘聚合、非相关形态交叉连接全局聚合；两种源变更都会重算受影响组（全局=全部组）。两视图模式（PR-104）仍可用 |
 | 递归 CTE / LATERAL | **不做** | 非目标 |
 
 ### B7. 窗口 / TOP-K（P2）

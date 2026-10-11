@@ -62,8 +62,28 @@ pub struct MultiAggView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
     pub having: Option<String>,
+    /// The extra source a `HAVING` subquery reads, when the statement has
+    /// one.
+    pub having_lookup: Option<HavingLookup>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
+}
+
+/// A resolved [`crate::runtime::HavingLookupSpec`].
+#[derive(Debug, Clone)]
+pub struct HavingLookup {
+    /// The lookup source table.
+    pub table: IvmTable,
+    /// The rendered aggregate over the lookup rows.
+    pub aggregate: String,
+    /// The group keys joined to the lookup keys; empty means a cross join.
+    pub join_keys: Vec<String>,
+    /// The lookup keys, aligned with `join_keys`.
+    pub right_keys: Vec<String>,
+    /// The name the joined value carries in the recompute SQL.
+    pub column: String,
+    /// An optional filter the lookup rows must satisfy.
+    pub filter: Option<String>,
 }
 
 impl MultiAggView {
@@ -84,8 +104,15 @@ impl MultiAggView {
             aggregates,
             filter: None,
             having: None,
+            having_lookup: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// The extra source a `HAVING` subquery reads.
+    pub fn with_having_lookup(mut self, lookup: HavingLookup) -> Self {
+        self.having_lookup = Some(lookup);
+        self
     }
 
     /// Group by rendered expressions parallel to the group keys.
@@ -126,6 +153,16 @@ impl MultiAggView {
                 .collect::<Result<Vec<_>>>()?,
             filter: self.filter.clone(),
             having: self.having.clone(),
+            having_lookup: self.having_lookup.as_ref().map(|lookup| {
+                crate::runtime::HavingLookupSpec {
+                    table_id: lookup.table.table_id.clone(),
+                    aggregate: lookup.aggregate.clone(),
+                    join_keys: lookup.join_keys.clone(),
+                    right_keys: lookup.right_keys.clone(),
+                    column: lookup.column.clone(),
+                    filter: lookup.filter.clone(),
+                }
+            }),
         })
     }
 
@@ -149,6 +186,14 @@ impl MultiAggView {
                 })
                 .collect(),
             distinct_columns: None,
+            lookup: self.having_lookup.as_ref().map(|lookup| RecomputeLookup {
+                table: &lookup.table,
+                aggregate: lookup.aggregate.as_str(),
+                join_keys: lookup.join_keys.as_slice(),
+                right_keys: lookup.right_keys.as_slice(),
+                column: lookup.column.as_str(),
+                filter: lookup.filter.as_deref(),
+            }),
             filter: self.filter.as_deref(),
             having: self.having.as_deref(),
         })
@@ -515,6 +560,7 @@ impl BoolAggView {
 
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -714,6 +760,7 @@ impl ApproxDistinctView {
 
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -911,6 +958,7 @@ impl ApproxPercentileView {
 
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -1142,6 +1190,7 @@ impl ComputedAggView {
 
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -1344,6 +1393,22 @@ pub(super) struct RecomputeAggregate {
     pub(super) column: String,
 }
 
+/// A source joined into the recomputed groups for a `HAVING` subquery.
+pub(super) struct RecomputeLookup<'a> {
+    /// The lookup source table.
+    pub(super) table: &'a IvmTable,
+    /// The rendered aggregate over the lookup rows.
+    pub(super) aggregate: &'a str,
+    /// The group keys joined to the lookup keys; empty means a cross join.
+    pub(super) join_keys: &'a [String],
+    /// The lookup keys, aligned with `join_keys`.
+    pub(super) right_keys: &'a [String],
+    /// The name the joined value carries in the recompute SQL.
+    pub(super) column: &'a str,
+    /// An optional filter the lookup rows must satisfy.
+    pub(super) filter: Option<&'a str>,
+}
+
 pub(super) struct RecomputeParts<'a> {
     pub(super) view_id: &'a str,
     pub(super) source: &'a IvmTable,
@@ -1363,6 +1428,8 @@ pub(super) struct RecomputeParts<'a> {
     /// the aggregate is the count of distinct tuples among the affected
     /// group's rows, computed over a `SELECT DISTINCT` subquery.
     pub(super) distinct_columns: Option<&'a [String]>,
+    /// The extra source a `HAVING` subquery reads.
+    pub(super) lookup: Option<RecomputeLookup<'a>>,
     pub(super) filter: Option<&'a str>,
     pub(super) having: Option<&'a str>,
 }
@@ -1400,6 +1467,7 @@ impl RecomputeParts<'_> {
 impl VarianceView {
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -1425,6 +1493,7 @@ impl VarianceView {
 impl MedianView {
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -1590,6 +1659,7 @@ impl StringAggView {
 
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -1801,6 +1871,7 @@ impl ArrayAggView {
 
     fn parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,
@@ -1917,6 +1988,45 @@ fn validate_multi_agg_view(view: &MultiAggView) -> Result<()> {
             view.view_id
         ));
     }
+    if let Some(lookup) = &view.having_lookup {
+        if lookup.aggregate.is_empty() || lookup.column.is_empty() {
+            return Err(report!(
+                "multi-aggregate view {} has an empty HAVING lookup",
+                view.view_id
+            ));
+        }
+        if view.mv.schema.field_with_name(&lookup.column).is_ok() {
+            return Err(report!(
+                "multi-aggregate view {}: the HAVING lookup column {} collides \
+                 with a materialized column",
+                view.view_id,
+                lookup.column
+            ));
+        }
+        let right_keys = if lookup.right_keys.is_empty() {
+            &lookup.join_keys
+        } else {
+            &lookup.right_keys
+        };
+        if lookup.join_keys.len() != right_keys.len() {
+            return Err(report!(
+                "multi-aggregate view {}: the HAVING lookup needs one right key \
+                 per group key",
+                view.view_id
+            ));
+        }
+        for (left, right) in lookup.join_keys.iter().zip(right_keys) {
+            let left_type = field_type(&view.mv.schema, left)?;
+            let right_type = field_type(&lookup.table.schema, right)?;
+            if left_type != right_type {
+                return Err(report!(
+                    "multi-aggregate view {}: HAVING lookup key {right} does not \
+                     match the group key {left}",
+                    view.view_id
+                ));
+            }
+        }
+    }
     let mut names = std::collections::HashSet::new();
     for (call, column, _) in &view.aggregates {
         if call.is_empty() || column.is_empty() {
@@ -1941,12 +2051,99 @@ fn validate_multi_agg_view(view: &MultiAggView) -> Result<()> {
 /// A multi-column distinct count cannot run as DataFusion's
 /// `count(DISTINCT a, b)` (the aggregate is not implemented), so it counts the
 /// non-NULL tuples of a deduplicated subquery instead.
+/// Project the lookup delta onto the joined group key names, so it can take
+/// part in the affected-group union.
+async fn project_lookup_keys(
+    context: &SessionContext,
+    batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+    lookup: &RecomputeLookup<'_>,
+) -> Result<Vec<RecordBatch>> {
+    if lookup.join_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let frame = dataframe(context, batches, schema)?;
+    let select = lookup
+        .join_keys
+        .iter()
+        .zip(lookup_right_keys(lookup))
+        .map(|(key, right)| col(right.as_str()).alias(key.as_str()))
+        .collect::<Vec<_>>();
+    let frame = frame.select(select)?;
+    let projected = Arc::new(frame.schema().as_arrow().clone());
+    let mut batches = frame.collect().await?;
+    if batches.is_empty() {
+        batches.push(RecordBatch::new_empty(projected));
+    }
+    Ok(batches)
+}
+
+/// The keys the lookup aggregate groups by (falling back to the joined keys).
+fn lookup_right_keys<'a>(lookup: &'a RecomputeLookup<'_>) -> &'a [String] {
+    if lookup.right_keys.is_empty() {
+        lookup.join_keys
+    } else {
+        lookup.right_keys
+    }
+}
+
+/// The `from` clause of the lookup aggregate over the registered `lookup`
+/// table.
+fn lookup_from(parts: &RecomputeParts<'_>) -> String {
+    let lookup = parts
+        .lookup
+        .as_ref()
+        .expect("a lookup clause needs the lookup source");
+    if !lookup.table.primary_keys.is_empty() {
+        format!(
+            "lookup where {}{}",
+            source_delete_filter("lookup", change_column(lookup.table)),
+            filter_clause(lookup.filter),
+        )
+    } else {
+        format!("lookup{}", filter_where(lookup.filter))
+    }
+}
+
+/// The joined lookup clause of the recompute: a per-key aggregate left join
+/// (or a cross join for a global aggregate).  The caller registers the
+/// `lookup` table.
+fn lookup_join(parts: &RecomputeParts<'_>, left_alias: Option<&str>) -> String {
+    let Some(lookup) = &parts.lookup else {
+        return String::new();
+    };
+    let from = lookup_from(parts);
+    let column = quote_ident(lookup.column);
+    let right_keys = quoted_list(lookup_right_keys(lookup));
+    if lookup.join_keys.is_empty() {
+        return format!(
+            " cross join (select {} as {column} from {from}) l",
+            lookup.aggregate
+        );
+    }
+    let frame = format!(
+        "select {right_keys}, {} as {column} from {from} group by {right_keys}",
+        lookup.aggregate
+    );
+    let alias = left_alias.unwrap_or("src");
+    let on = lookup
+        .join_keys
+        .iter()
+        .zip(lookup_right_keys(lookup))
+        .map(|(key, right)| {
+            format!("{alias}.{} = l.{}", quote_ident(key), quote_ident(right))
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
+    format!(" left join ({frame}) l on {on}")
+}
+
 fn recompute_group_now_sql(
     parts: &RecomputeParts<'_>,
     keys: &str,
     src_from: &str,
 ) -> String {
-    match parts.distinct_columns {
+    let base = match parts.distinct_columns {
         Some(distinct) => {
             let column = quote_ident(&parts.column);
             let distinct_list = quoted_list(distinct);
@@ -1965,12 +2162,26 @@ fn recompute_group_now_sql(
             "select {keys}, {} from {src_from} group by {keys}",
             parts.aggregate_select()
         ),
-    }
+    };
+    let Some(lookup) = &parts.lookup else {
+        return base;
+    };
+    // The lookup value is functionally dependent on the group keys, so the
+    // outer select carries it alongside the aggregate columns.
+    let column = quote_ident(lookup.column);
+    format!(
+        "select t.*, l.{column} from ({base}) t{}",
+        lookup_join(parts, Some("t"))
+    )
 }
 
 /// SQL for one recomputed-aggregate refresh window: recompute the affected
 /// groups from their current source rows.
-fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
+fn recompute_refresh_sql(
+    parts: &RecomputeParts<'_>,
+    epoch: i64,
+    lookup_changed: bool,
+) -> String {
     let keys = quoted_list(parts.group_keys);
     let columns = parts.aggregate_columns().join(", ");
     let agg = &parts.aggregate_call;
@@ -1992,6 +2203,33 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
         .unwrap_or_default();
     let group_now = recompute_group_now_sql(parts, &keys, &src_from);
     let _ = agg;
+    // A changed lookup re-evaluates the groups it can touch: every active
+    // group for a global lookup, the changed keys for a per-key one.
+    let affected = if lookup_changed && parts.lookup.is_some() {
+        if parts
+            .lookup
+            .as_ref()
+            .is_some_and(|lookup| lookup.join_keys.is_empty())
+        {
+            format!(
+                "select distinct {keys} from mv \
+                 where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}"
+            )
+        } else {
+            format!(
+                "select {keys} from ({affected}) u \
+                 union select distinct {keys} from lookup_delta",
+                affected = affected_groups_sql(
+                    parts.source,
+                    parts.group_keys,
+                    keyed,
+                    parts.filter
+                ),
+            )
+        }
+    } else {
+        affected_groups_sql(parts.source, parts.group_keys, keyed, parts.filter)
+    };
     format!(
         "with affected as ({affected}), \
          group_now as ({group_now}), \
@@ -2005,8 +2243,6 @@ fn recompute_refresh_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
                      where not exists (select 1 from already a where {already_match}){having}) \
          select * from deletes union all select * from inserts \
          order by {keys}, \"rowKinds\"",
-        affected =
-            affected_groups_sql(parts.source, parts.group_keys, keyed, parts.filter,),
     )
 }
 
@@ -2018,14 +2254,36 @@ fn recompute_global_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
         source_delete_filter("src", change_column(parts.source)),
         filter_clause(parts.filter),
     );
-    let row = format!(
-        "select {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-         from src where {src_where}",
-        parts.aggregate_select()
-    );
-    match parts.having {
-        Some(having) => format!("select * from ({row}) t where {having}"),
-        None => row,
+    let columns = parts.aggregate_columns().join(", ");
+    let project =
+        format!("select {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\"");
+    match &parts.lookup {
+        Some(_) => {
+            // The lookup value is computed alongside and projected away.
+            let lookup_column =
+                quote_ident(parts.lookup.as_ref().expect("checked above").column);
+            let row = format!(
+                "select {}, l.{lookup_column} as {lookup_column} from src{} where {src_where}",
+                parts.aggregate_select(),
+                lookup_join(parts, None),
+            );
+            let having = parts
+                .having
+                .map(|having| format!(" where {having}"))
+                .unwrap_or_default();
+            format!("{project} from ({row}) t{having}")
+        }
+        None => {
+            let row = format!(
+                "select {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+                 from src where {src_where}",
+                parts.aggregate_select()
+            );
+            match parts.having {
+                Some(having) => format!("select * from ({row}) t where {having}"),
+                None => row,
+            }
+        }
     }
 }
 
@@ -2046,14 +2304,15 @@ fn recompute_rebuild_sql(parts: &RecomputeParts<'_>, epoch: i64) -> String {
     };
     let group_now = recompute_group_now_sql(parts, &keys, &src_from);
     let _ = agg;
-    let rebuild = format!(
+    // The predicate is applied where the lookup column is visible.
+    let having = parts
+        .having
+        .map(|having| format!(" where {having}"))
+        .unwrap_or_default();
+    format!(
         "select {keys}, {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-         from ({group_now}) t"
-    );
-    match parts.having {
-        Some(having) => format!("select * from ({rebuild}) t where {having}"),
-        None => rebuild,
-    }
+         from ({group_now}) t{having}"
+    )
 }
 
 /// Validate that a recomputed-aggregate view can be maintained.
@@ -2073,9 +2332,46 @@ pub(super) fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> 
     }
     if let Some(having) = parts.having {
         let context = SessionContext::new();
-        parse_filter(&context, &parts.mv.schema, having)?;
+        let mut schema = parts.mv.schema.fields().iter().cloned().collect::<Vec<_>>();
+        if let Some(lookup) = &parts.lookup {
+            // The lookup value is joined into the recompute and referenced by
+            // the predicate, but it is not part of the MV.
+            let field = parts
+                .mv
+                .schema
+                .fields()
+                .iter()
+                .find(|field| field.name() == lookup.column);
+            if field.is_none() {
+                schema.push(Arc::new(Field::new(
+                    lookup.column,
+                    lookup_type(&context, lookup)?,
+                    true,
+                )));
+            }
+        }
+        parse_filter(&context, &Arc::new(Schema::new(schema)), having)?;
     }
     Ok(())
+}
+
+/// The result type of the lookup aggregate, inferred by planning the call
+/// against the lookup schema.
+fn lookup_type(
+    context: &SessionContext,
+    lookup: &RecomputeLookup<'_>,
+) -> Result<DataType> {
+    let schema = DFSchema::try_from(lookup.table.schema.as_ref().clone())
+        .map_err(|error| report!("invalid lookup schema: {error}"))?;
+    let expression = context
+        .state()
+        .create_logical_expr(lookup.aggregate, &schema)
+        .map_err(|error| {
+            report!("invalid lookup aggregate {:?}: {error}", lookup.aggregate)
+        })?;
+    expression.get_type(&schema).map_err(|error| {
+        report!("invalid lookup aggregate {:?}: {error}", lookup.aggregate)
+    })
 }
 
 impl IvmRuntime {
@@ -2216,15 +2512,33 @@ impl IvmRuntime {
         let window = self
             .collect_source_window(parts.view_id, parts.source)
             .await?;
-        if window.added_files.is_empty() {
+        let lookup_window = match &parts.lookup {
+            Some(lookup) => Some(
+                self.collect_source_window(parts.view_id, lookup.table)
+                    .await?,
+            ),
+            None => None,
+        };
+        let lookup_changed = lookup_window
+            .as_ref()
+            .is_some_and(|window| !window.added_files.is_empty());
+        if window.added_files.is_empty() && !lookup_changed {
             return Ok(None);
         }
+        let mut identity = window.identity.clone();
+        if let Some(lookup_window) = &lookup_window {
+            identity.extend(lookup_window.identity.iter().cloned());
+        }
         let record = match self
-            .begin_window(parts.view_id, &window.identity, parts.mv)
+            .begin_window(parts.view_id, &identity, parts.mv)
             .await?
         {
             WindowStart::AlreadyApplied(epoch) => {
                 self.advance_cursors(parts.view_id, window.cursors).await?;
+                if let Some(lookup_window) = lookup_window {
+                    self.advance_cursors(parts.view_id, lookup_window.cursors)
+                        .await?;
+                }
                 return Ok(Some(epoch));
             }
             WindowStart::Apply(record) => record,
@@ -2244,6 +2558,14 @@ impl IvmRuntime {
                 parts.source.read_current(&self.client).await?,
                 &parts.source.schema,
             )?;
+            if let Some(lookup) = &parts.lookup {
+                register_table(
+                    &context,
+                    "lookup",
+                    lookup.table.read_current(&self.client).await?,
+                    &lookup.table.schema,
+                )?;
+            }
             parts.mv.truncate(&self.client).await?;
             let sql = recompute_global_sql(parts, epoch);
             for batch in context.sql(&sql).await?.collect().await? {
@@ -2256,6 +2578,10 @@ impl IvmRuntime {
                 .mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(parts.view_id, window.cursors).await?;
+            if let Some(lookup_window) = lookup_window {
+                self.advance_cursors(parts.view_id, lookup_window.cursors)
+                    .await?;
+            }
             return Ok(Some(epoch));
         }
 
@@ -2311,14 +2637,67 @@ impl IvmRuntime {
             .await?
             .collect()
             .await?;
-        // A computed group key cannot prune the source reads.
-        let filters = if parts.group_exprs.is_empty() {
-            key_filters(parts.group_keys, &groups)?
-        } else {
-            Vec::new()
+        // A changed lookup re-evaluates the groups it can touch.
+        let lookup_delta_batches = match (&parts.lookup, &lookup_window) {
+            (Some(lookup), Some(lookup_window)) => {
+                project_lookup_keys(
+                    &context,
+                    lookup
+                        .table
+                        .read_partition_files(lookup_window.added_files.clone())
+                        .await?,
+                    &lookup.table.schema,
+                    lookup,
+                )
+                .await?
+            }
+            _ => Vec::new(),
         };
+        let lookup_global = parts
+            .lookup
+            .as_ref()
+            .is_some_and(|lookup| lookup.join_keys.is_empty());
+        let groups = if lookup_delta_batches.is_empty() {
+            groups
+        } else {
+            let keys_schema = project_schema(&parts.source.schema, parts.group_keys)?;
+            dataframe(&delta_context, groups, &keys_schema)?
+                .union(dataframe(
+                    &delta_context,
+                    lookup_delta_batches.clone(),
+                    &keys_schema,
+                )?)?
+                .distinct()?
+                .collect()
+                .await?
+        };
+        // A computed group key cannot prune the source reads, and a changed
+        // global lookup touches every group.
+        let filters =
+            if parts.group_exprs.is_empty() && !(lookup_global && lookup_changed) {
+                key_filters(parts.group_keys, &groups)?
+            } else {
+                Vec::new()
+            };
 
         register_table(&context, "delta", delta_batches, &parts.source.schema)?;
+        if let Some(lookup) = &parts.lookup {
+            register_table(
+                &context,
+                "lookup",
+                lookup.table.read_current(&self.client).await?,
+                &lookup.table.schema,
+            )?;
+            if !lookup_delta_batches.is_empty() {
+                let schema = lookup_delta_batches[0].schema();
+                register_table(
+                    &context,
+                    "lookup_delta",
+                    lookup_delta_batches.clone(),
+                    &schema,
+                )?;
+            }
+        }
         if keyed {
             register_table(&context, "old", old_batches, &parts.source.schema)?;
         }
@@ -2344,7 +2723,7 @@ impl IvmRuntime {
             &parts.mv.schema,
         )?;
         for batch in context
-            .sql(&recompute_refresh_sql(parts, epoch))
+            .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
             .await?
             .collect()
             .await?
@@ -2359,6 +2738,10 @@ impl IvmRuntime {
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(parts.view_id, window.cursors).await?;
+        if let Some(lookup_window) = lookup_window {
+            self.advance_cursors(parts.view_id, lookup_window.cursors)
+                .await?;
+        }
         Ok(Some(epoch))
     }
 
@@ -2431,6 +2814,14 @@ impl IvmRuntime {
             // single MV row.
             let context = SessionContext::new();
             register_table(&context, "src", baseline.batches, &parts.source.schema)?;
+            if let Some(lookup) = &parts.lookup {
+                register_table(
+                    &context,
+                    "lookup",
+                    lookup.table.read_current(&self.client).await?,
+                    &lookup.table.schema,
+                )?;
+            }
             let sql = recompute_global_sql(parts, epoch);
             for batch in context.sql(&sql).await?.collect().await? {
                 if batch.num_rows() > 0 {
@@ -2456,6 +2847,14 @@ impl IvmRuntime {
         )
         .await?;
         register_table(&context, "src", batches, &parts.source.schema)?;
+        if let Some(lookup) = &parts.lookup {
+            register_table(
+                &context,
+                "lookup",
+                lookup.table.read_current(&self.client).await?,
+                &lookup.table.schema,
+            )?;
+        }
         for batch in context
             .sql(&recompute_rebuild_sql(parts, epoch))
             .await?

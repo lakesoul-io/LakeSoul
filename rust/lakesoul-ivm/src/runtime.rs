@@ -362,6 +362,10 @@ pub enum ViewSpec {
         /// An optional `HAVING` predicate over the materialized columns.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
+        /// The extra source a `HAVING` subquery reads, when the statement has
+        /// one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having_lookup: Option<HavingLookupSpec>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -1094,9 +1098,6 @@ impl ViewSpec {
             | ViewSpec::ArrayAgg {
                 source_table_id, ..
             }
-            | ViewSpec::MultiAgg {
-                source_table_id, ..
-            }
             | ViewSpec::MinMax {
                 source_table_id, ..
             }
@@ -1119,6 +1120,16 @@ impl ViewSpec {
                 source_table_id, ..
             } => {
                 ids.push(source_table_id.as_str());
+            }
+            ViewSpec::MultiAgg {
+                source_table_id,
+                having_lookup,
+                ..
+            } => {
+                ids.push(source_table_id.as_str());
+                if let Some(lookup) = having_lookup {
+                    ids.push(lookup.table_id.as_str());
+                }
             }
             ViewSpec::Join {
                 left_table_id,
@@ -1286,6 +1297,29 @@ enum SpecView {
     UnionDistinct(UnionDistinctView),
     TopK(TopKView),
     MultiWindow(MultiWindowView),
+}
+
+/// The extra source a `HAVING` subquery reads: its rows are aggregated and
+/// joined into the affected groups before the predicate is evaluated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HavingLookupSpec {
+    /// The lookup source table id.
+    pub table_id: String,
+    /// The rendered aggregate over the lookup rows (for example `max("v")`).
+    pub aggregate: String,
+    /// The group keys joined to the lookup keys; empty means the aggregate is
+    /// global and joined with a cross join.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub join_keys: Vec<String>,
+    /// The lookup keys, aligned with `join_keys` (empty means the same names).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub right_keys: Vec<String>,
+    /// The name the joined lookup value carries in the recompute SQL; the
+    /// rendered `having` references it.
+    pub column: String,
+    /// An optional filter the lookup rows must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 /// One computed output of a [`ViewSpec::LeftAggregate`] view:
@@ -2375,6 +2409,7 @@ impl IvmRuntime {
                 aggregates,
                 filter,
                 having,
+                having_lookup,
             } => SpecView::MultiAgg(MultiAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -2393,6 +2428,17 @@ impl IvmRuntime {
                     .collect::<Result<Vec<_>>>()?,
                 filter: filter.clone(),
                 having: having.clone(),
+                having_lookup: match having_lookup {
+                    Some(lookup) => Some(HavingLookup {
+                        table: self.open_table_by_id(&lookup.table_id).await?,
+                        aggregate: lookup.aggregate.clone(),
+                        join_keys: lookup.join_keys.clone(),
+                        right_keys: lookup.right_keys.clone(),
+                        column: lookup.column.clone(),
+                        filter: lookup.filter.clone(),
+                    }),
+                    None => None,
+                },
                 refresh_interval_ms,
             }),
             ViewSpec::MultiJoin {

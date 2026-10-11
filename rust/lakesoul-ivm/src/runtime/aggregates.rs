@@ -578,6 +578,7 @@ impl DistinctAggView {
     /// The recompute description of a multi-column distinct count.
     fn recompute_parts(&self) -> RecomputeParts<'_> {
         RecomputeParts {
+            lookup: None,
             view_id: &self.view_id,
             source: &self.source,
             mv: &self.mv,

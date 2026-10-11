@@ -128,14 +128,14 @@ Supported within the shapes above:
   aggregates (`ORDER BY v % 10`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
   operations;
-* **a `HAVING` subquery** is maintained as two chained views: group the source
-  in one view and filter it against the subquery in a second one —
-  `INSERT INTO groups SELECT g, SUM(v) AS sum_v FROM src GROUP BY g;` then
-  `INSERT INTO filtered SELECT g, sum_v FROM groups WHERE sum_v >
-  (SELECT MAX(d.v) FROM dim d WHERE d.g = groups.g);` (or an uncorrelated
-  `... WHERE sum_v > (SELECT MAX(v) FROM dim)`).  Refresh the views in that
-  order (the schedule follows the dependency chain); the error for the
-  single-statement form points at this pattern;
+* **a `HAVING` subquery** over another source is joined into the recomputed
+  groups before the predicate runs: `GROUP BY g HAVING SUM(v) >
+  (SELECT MAX(d.v) FROM dim d WHERE d.g = src.g)` keeps the per-key lookup
+  (a keyed left join) and `HAVING SUM(v) > (SELECT MAX(v) FROM dim)` a global
+  one (a cross join).  A lookup change re-evaluates every group (global) or
+  the groups whose keys changed (per-key); the two-view pattern
+  (`INSERT INTO groups ...; INSERT INTO filtered SELECT ... WHERE sum_v >
+  (SELECT ...)`) remains available and is refreshed in dependency order;
 * **set-operation projections**: union branches may prune, rename and compute
   columns as long as every branch has the same output schema; a keyed
   `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
@@ -451,9 +451,9 @@ the backlog):
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY` (already per-key), a `DISTINCT` aggregate or
-  several aggregates, a computed value over left columns beside one, and a
-  subquery in `HAVING` as a **single** view — it would depend on the subquery
-  source; maintain it as the two chained views described above),
+  several aggregates, a computed value over left columns beside one, a
+  `HAVING` subquery with several aggregates / nested subqueries / correlated
+  on a non-group key, and a computed column over the lookup value),
   a subquery or window function **above** an aggregate, and the derived-table
   form of a computed aggregate output
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained
