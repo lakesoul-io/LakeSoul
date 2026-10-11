@@ -608,15 +608,15 @@ fn analyze_left_aggregate(
     let right_input = join_input(&aggregate.input, tables)?;
     let left = left_input.table;
     let right = right_input.table;
-    // The outer projection: plain left columns plus the scalar value.
-    if !is_plain_projection(projection) {
-        return Err(unsupported(
-            "computed columns next to a select-list scalar subquery",
-        ));
-    }
+    // The outer projection: plain left columns plus the scalar value, or
+    // computed expressions over the scalar value (`(SELECT AGG(w) ...) + 1`).
     let mut output_columns = Vec::new();
-    let mut aggregate_column = None;
-    for expr in &projection.expr {
+    let mut aggregate_column: Option<String> = None;
+    let mut output_exprs = Vec::new();
+    let on_right = |relation: Option<&TableReference>| {
+        relation.is_some() && relation == right_qualifier.as_ref()
+    };
+    for (index, expr) in projection.expr.iter().enumerate() {
         let mut inner = expr;
         let mut alias = None;
         while let Expr::Alias(nested) = inner {
@@ -625,25 +625,79 @@ fn analyze_left_aggregate(
             }
             inner = &nested.expr;
         }
-        let Expr::Column(column) = inner else {
+        if let Expr::Column(column) = inner {
+            if on_right(column.relation.as_ref()) {
+                if aggregate_column.is_some() {
+                    return Err(unsupported("the scalar subquery value appears twice"));
+                }
+                aggregate_column = Some(alias.unwrap_or_else(|| column.name.clone()));
+            } else {
+                output_columns.push(alias.unwrap_or_else(|| column.name.clone()));
+            }
+            continue;
+        }
+        // A computed output: it must compute over the scalar subquery value
+        // and nothing else, and it is rendered against the runtime's raw
+        // aggregate column.
+        let Expr::Alias(output_alias) = expr else {
             return Err(unsupported(
-                "computed columns next to a select-list scalar subquery",
+                "a computed scalar subquery output needs an alias",
             ));
         };
-        if column.relation.is_some()
-            && column.relation.as_ref() == right_qualifier.as_ref()
+        if !output_alias
+            .name
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_')
         {
-            if aggregate_column.is_some() {
-                return Err(unsupported("the scalar subquery value appears twice"));
-            }
-            aggregate_column = Some(alias.unwrap_or_else(|| column.name.clone()));
-        } else {
-            output_columns.push(alias.unwrap_or_else(|| column.name.clone()));
+            return Err(unsupported(
+                "a computed scalar subquery output needs an alias",
+            ));
         }
+        let mut references = 0usize;
+        let mut left_reference = false;
+        inner
+            .apply(|node| {
+                if let Expr::Column(column) = node {
+                    if on_right(column.relation.as_ref()) {
+                        references += 1;
+                    } else {
+                        left_reference = true;
+                    }
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .map_err(|error| unsupported(format!("a scalar subquery output {error}")))?;
+        if references != 1 || left_reference {
+            return Err(unsupported(
+                "a computed scalar subquery output must compute over the \
+                 subquery value (computed left columns are not maintained)",
+            ));
+        }
+        let rewritten = inner
+            .clone()
+            .transform_down(|node| {
+                if let Expr::Column(column) = &node
+                    && on_right(column.relation.as_ref())
+                {
+                    return Ok(Transformed::yes(Expr::Column(Column::from_name(
+                        IVM_RIGHT_AGG_COLUMN,
+                    ))));
+                }
+                Ok(Transformed::no(node))
+            })
+            .map_err(|error| unsupported(format!("a scalar subquery output {error}")))?
+            .data;
+        let data_type = projection.schema.field(index).data_type().clone();
+        output_exprs.push(LeftAggregateOutput {
+            call: render_expression(&rewritten)?,
+            column: output_alias.name.clone(),
+            result: encode_data_type(&data_type)?,
+        });
     }
-    let aggregate_column = aggregate_column.ok_or_else(|| {
-        unsupported("the projection must contain the scalar subquery value")
-    })?;
+    // The raw subquery value stays materialized (it is what the runtime joins
+    // and sorts on); a computed-only select list names it internally.
+    let aggregate_column =
+        aggregate_column.unwrap_or_else(|| IVM_AGG_VALUE_COLUMN.to_string());
     for key in &left.primary_keys {
         if !output_columns.contains(key) {
             return Err(unsupported(format!(
@@ -664,6 +718,7 @@ fn analyze_left_aggregate(
         output_columns,
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
+        output_exprs,
     })
 }
 
@@ -1482,6 +1537,96 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_left_aggregate_outputs() {
+        // A computed select-list expression over the scalar subquery value:
+        // the raw value stays materialized (named internally when the select
+        // list does not carry it) and the expression appends a view column.
+        let analyzed = analyze_multi(
+            "select s.k, (select max(d.v) from dim d where d.k = s.k) * 2 + 1 \
+             as m from src s",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            aggregate_column,
+            output_columns,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert_eq!(aggregate_column, "__ivm_agg");
+        assert_eq!(output_columns, vec!["k".to_string()]);
+        assert_eq!(
+            output_exprs,
+            vec![LeftAggregateOutput {
+                call: "((__ivm_right_agg * 2) + 1)".to_string(),
+                column: "m".to_string(),
+                result: "int64".to_string(),
+            }]
+        );
+
+        // The plain value keeps the user's alias.
+        let analyzed = analyze_multi(
+            "select s.k, (select max(d.v) from dim d where d.k = s.k) as m \
+             from src s",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            aggregate_column,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert_eq!(aggregate_column, "m");
+        assert!(output_exprs.is_empty());
+
+        // A computed output must be aliased and may only compute over the
+        // subquery value.
+        for sql in [
+            "select s.k, (select max(d.v) from dim d where d.k = s.k) + 1 \
+             from src s",
+            "select s.k, s.v + 1 as x, \
+             (select max(d.v) from dim d where d.k = s.k) + 1 as m from src s",
+        ] {
+            assert!(
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_having_subqueries() {
+        // A HAVING subquery makes the view depend on the subquery source: the
+        // correlated form plans as a semi join between two grouped aggregates
+        // and the uncorrelated form as a global aggregate beside the grouped
+        // one, neither of which a single-source view models.  They stay
+        // rejected rather than silently dropping the condition.
+        for sql in [
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(v) from dim)",
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+        ] {
+            assert!(
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .is_err(),
+                "{sql}"
+            );
+        }
     }
 
     #[tokio::test]

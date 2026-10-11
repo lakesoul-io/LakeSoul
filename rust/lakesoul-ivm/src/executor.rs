@@ -38,7 +38,7 @@ use crate::runtime::{
     bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
     cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_with_keys,
-    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_for,
+    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
     left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
@@ -586,17 +586,24 @@ fn expected_mv_schema(
             right_aggregate,
             aggregate_column,
             output_columns,
+            output_exprs,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
             let (aggregate_type, _) =
                 crate::runtime::expression_type(&right.schema, right_aggregate)?;
-            left_aggregate_mv_schema_for(
+            left_aggregate_mv_schema_with_outputs(
                 &left.schema,
                 output_columns,
                 aggregate_column,
                 &aggregate_type,
+                &output_exprs
+                    .iter()
+                    .map(|output| {
+                        Ok((output.column.clone(), decode_data_type(&output.result)?))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
             )?
         }
         ViewSpec::SumCount {

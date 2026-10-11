@@ -153,8 +153,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 |---|---|---|
 | 相关标量子查询 + `GROUP BY` | **M-L** | 可拆 join+聚合链 |
 | 相关子查询内 `DISTINCT`/多聚合 | **M** | DISTINCT 重写形状；多聚合可先拒绝 |
-| 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | 单独 PR：`LeftAggregate` 增加 `output_exprs`（渲染表达式 + MV 列）；聚合值列保留（内部列），schema helper/expected schema/refresh+rebuild 行构造同步；分析器解析引用聚合列的投影表达式并校验别名 |
-| 子查询出现在 HAVING/ORDER BY | **S-M** | 单独 PR：非相关子查询需要「聚合 join 聚合」双源依赖视图；相关子查询优化计划为「聚合 ⋈ 按键盘聚合」的 LeftSemi + 过滤，需要新形状；现状明确拒绝 |
+| 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | ✅ 已实现（PR-103，PLAN §10.109）：`LeftAggregate.output_exprs`（渲染表达式对 `__ivm_right_agg` + MV 列 + 类型）；聚合值列保留（计算-only 时内部命名 `__ivm_agg`）；`left_aggregate_mv_schema_with_outputs` / expected schema / refresh+rebuild 同步 |
+| 子查询出现在 HAVING/ORDER BY | **S-M** | 待单独设计：相关形态计划为「聚合 ⋈ 按键盘聚合」的 `LeftSemi + Filter`，非相关形态为 `Filter(聚合 > 全局子查询聚合)`；视图会依赖第二个源（变更需重算受影响组），当前**明确拒绝**（`rejects_having_subqueries` 固化） |
 | 递归 CTE / LATERAL | **不做** | 非目标 |
 
 ### B7. 窗口 / TOP-K（P2）
