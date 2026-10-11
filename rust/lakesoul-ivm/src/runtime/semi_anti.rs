@@ -446,6 +446,10 @@ pub const IVM_RIGHT_AGG_COLUMN: &str = "__ivm_right_agg";
 /// computes over it (a computed-only left-aggregate projection).
 pub const IVM_AGG_VALUE_COLUMN: &str = "__ivm_agg";
 
+/// The name the `HAVING` subquery value carries in the recompute SQL; the
+/// rendered predicate references it.
+pub const IVM_HAVING_LOOKUP_COLUMN: &str = "__ivm_lookup";
+
 /// The right group keys of a scalar-subquery view, falling back to the shared
 /// join keys.
 fn right_join_keys(view: &SemiAntiView) -> &[String] {

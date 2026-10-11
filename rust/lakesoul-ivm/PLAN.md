@@ -3024,6 +3024,32 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全量 IVM **414 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
   `cargo clippy -p lakesoul-ivm --all-targets` 干净。
 
+### 10.111 单语句 HAVING 子查询（PR-105，ROADMAP §B6）
+
+- **形状**：`SELECT g, SUM(v) FROM src GROUP BY g HAVING SUM(v) >
+  (SELECT MAX(d.v) FROM dim d WHERE d.g = src.g)`（相关）与
+  `... HAVING SUM(v) > (SELECT MAX(v) FROM dim)`（非相关），含全局聚合语句。
+- **实现**：`ViewSpec::MultiAgg` / `MultiAggView` 增加可选 `having_lookup`
+  （`HavingLookupSpec`：表、渲染聚合、`join_keys`/`right_keys`、列名、filter）：
+  - 分析器：`analyze_aggregate` 检测 HAVING 中的标量子查询 →
+    `having_subquery_source`（全局聚合）；`analyze_join` 在左输入是聚合、右输入是
+    按键盘聚合且 `LeftSemi` 时 → `analyze_having_join`（相关形态；`join_keys` 映射到
+    物化组键名，支持组键别名）。谓词重写：子查询/限定列 → `__ivm_lookup`、
+    聚合调用 → MV 列（`render_multi_agg_having` 增加 `extra_columns` 放行 lookup 列）。
+  - 运行时（`RecomputeParts.lookup`）：lookup 源与主源一起 collect 窗口/游标；
+    `group_now` 左连接（相关）或交叉连接（全局）lookup 聚合，HAVING 在 lookup 列
+    可见处过滤；相关形态把 lookup delta 投影到组键名并并入受影响组，全局形态在
+    lookup 变化时受影响组=全部当前组；rebuild 同样注册 lookup。9 个
+    `RecomputeParts` 构造点补 `lookup: None`。
+  - 校验：lookup 列不得与物化列冲突、左右键类型一致；`validate_recompute_view`
+    把 lookup 列加入 HAVING 的解析 schema。
+- **测试**：分析器（全局/相关/组键别名/拒绝：非组键相关、嵌套子查询）；
+  oracle `oracle_having_subquery_matches_full_recompute`（两种形态 × 随机增删改，
+  参考用 DataFusion 原生的 HAVING 子查询求值）。
+- **两视图模式（PR-104）**继续保留：`tests/having_subquery_views.rs` 覆盖。
+  全量 IVM **416 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

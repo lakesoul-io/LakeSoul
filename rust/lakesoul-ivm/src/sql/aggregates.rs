@@ -881,8 +881,13 @@ fn analyze_grouping_sets(
                 "GROUPING SETS needs at least one aggregate over a non-key column",
             ));
         }
-        let having =
-            render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
+        let having = render_multi_agg_having(
+            having_exprs,
+            aggregate,
+            &group_keys,
+            &aggregates,
+            &[],
+        )?;
         let grouping_columns = grouping_set_projection_columns(projection, &group_keys)?;
         return Ok(ViewSpec::GroupingSets {
             view_id: request.view_id.clone(),
@@ -1202,6 +1207,22 @@ pub(super) fn analyze_aggregate(
             having: None,
             average: false,
         });
+    }
+
+    // A `HAVING` scalar subquery over another source is joined into the
+    // recomputed groups before the predicate runs.
+    if having_exprs.iter().any(has_scalar_subquery) {
+        let lookup = having_subquery_source(having_exprs, tables)?;
+        return analyze_having_aggregate(
+            aggregate,
+            group_keys,
+            group_exprs,
+            having_exprs,
+            source,
+            filter,
+            lookup,
+            request,
+        );
     }
 
     // A projection that computes over the aggregate outputs (for example
@@ -2343,6 +2364,7 @@ fn render_multi_agg_having(
     aggregate: &Aggregate,
     group_keys: &[String],
     aggregates: &[(String, String, DataType)],
+    extra_columns: &[&str],
 ) -> Result<Option<String>> {
     if having_exprs.is_empty() {
         return Ok(None);
@@ -2385,6 +2407,9 @@ fn render_multi_agg_having(
             .clone()
             .transform_down(|node| match node {
                 Expr::Column(column) if !group_set.contains(column.name.as_str()) => {
+                    if extra_columns.contains(&column.name.as_str()) {
+                        return Ok(Transformed::no(Expr::Column(column)));
+                    }
                     if let Some(key) = group_aliases.get(&column.name) {
                         return Ok(Transformed::yes(Expr::Column(Column::from_name(
                             key.clone(),
@@ -2658,7 +2683,7 @@ fn analyze_computed_agg(
         aggregates.push((call, column, data_type));
     }
     let having =
-        render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
+        render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates, &[])?;
     Ok(ViewSpec::MultiAgg {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -2677,7 +2702,290 @@ fn analyze_computed_agg(
             .collect::<Result<Vec<_>>>()?,
         filter,
         having,
+        having_lookup: None,
     })
+}
+
+/// Peel a plain projection above a plan (a subquery projection).
+fn peel_plain(plan: &LogicalPlan) -> &LogicalPlan {
+    match peel(plan) {
+        LogicalPlan::Projection(projection) => peel(&projection.input),
+        other => other,
+    }
+}
+
+/// Whether an expression contains a scalar subquery.
+fn has_scalar_subquery(expr: &Expr) -> bool {
+    let mut found = false;
+    let _ = expr.apply(|node| {
+        if matches!(node, Expr::ScalarSubquery(_)) {
+            found = true;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
+}
+
+/// The resolved lookup of a `HAVING` subquery.
+struct HavingSubquery {
+    /// The lookup source table.
+    table: IvmTable,
+    /// The rendered aggregate over the lookup rows.
+    aggregate: String,
+    /// The group keys joined to the lookup keys; empty means a global
+    /// aggregate (a cross join).
+    join_keys: Vec<String>,
+    /// The lookup keys, aligned with `join_keys`.
+    right_keys: Vec<String>,
+    /// The lookup rows' filter.
+    filter: Option<String>,
+    /// The relation the predicate qualifies the lookup value with (the
+    /// correlated form).
+    qualifier: Option<TableReference>,
+}
+
+/// The lookup a `HAVING` subquery reads: a global aggregate over one source.
+fn having_subquery_source(
+    having_exprs: &[Expr],
+    tables: &HashMap<String, IvmTable>,
+) -> Result<HavingSubquery> {
+    let mut subquery = None;
+    for expr in having_exprs {
+        expr.apply(|node| {
+            if let Expr::ScalarSubquery(inner) = node {
+                subquery = Some(inner.subquery.clone());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .map_err(|error| unsupported(format!("a HAVING subquery {error}")))?;
+    }
+    let subquery =
+        subquery.ok_or_else(|| unsupported("a HAVING subquery needs a scalar value"))?;
+    let (aggregate, filter) = match peel_plain(subquery.as_ref()) {
+        LogicalPlan::Aggregate(aggregate) => (aggregate, None),
+        LogicalPlan::Filter(filter) => {
+            let LogicalPlan::Aggregate(aggregate) = peel_plain(&filter.input) else {
+                return Err(unsupported("a HAVING subquery over a non-aggregate"));
+            };
+            (aggregate, Some(render_filter(&filter.predicate)?))
+        }
+        _ => return Err(unsupported("a HAVING subquery over a non-aggregate")),
+    };
+    if !aggregate.group_expr.is_empty() {
+        return Err(unsupported(
+            "an uncorrelated HAVING subquery with a GROUP BY",
+        ));
+    }
+    if aggregate.aggr_expr.len() != 1 {
+        return Err(unsupported("a HAVING subquery with several aggregates"));
+    }
+    let (source, pushed) =
+        collect_filtered_source(&aggregate.input, tables, "a HAVING subquery")?;
+    Ok(HavingSubquery {
+        table: source,
+        aggregate: render_expression(&aggregate.aggr_expr[0])?,
+        join_keys: Vec::new(),
+        right_keys: Vec::new(),
+        filter: combine_filters(filter, pushed),
+        qualifier: None,
+    })
+}
+
+/// `(previous) AND (pushed)` when both sides are present.
+fn combine_filters(previous: Option<String>, pushed: Option<String>) -> Option<String> {
+    match (previous, pushed) {
+        (Some(previous), Some(pushed)) => Some(format!("({previous}) AND ({pushed})")),
+        (filter, None) => filter,
+        (None, filter) => filter,
+    }
+}
+
+/// Build the maintained view of a grouped statement whose `HAVING` compares
+/// an aggregate against a scalar subquery over another source.
+#[allow(clippy::too_many_arguments)]
+fn analyze_having_aggregate(
+    aggregate: &Aggregate,
+    group_keys: Vec<String>,
+    group_exprs: Vec<String>,
+    having_exprs: &[Expr],
+    source: &IvmTable,
+    filter: Option<String>,
+    lookup: HavingSubquery,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+    if aggregates.is_empty() {
+        return Err(unsupported(
+            "a HAVING subquery needs at least one aggregate",
+        ));
+    }
+    // The predicate references the materialized aggregate columns and the
+    // joined lookup value.
+    let lookup_column = Expr::Column(Column::from_name(IVM_HAVING_LOOKUP_COLUMN));
+    let mut rewritten = Vec::new();
+    for expr in having_exprs {
+        let expr = expr
+            .clone()
+            .transform_down(|node| match node {
+                Expr::ScalarSubquery(_) => Ok(Transformed::yes(lookup_column.clone())),
+                Expr::Column(column)
+                    if lookup.qualifier.as_ref().is_some_and(|qualifier| {
+                        column.relation.as_ref() == Some(qualifier)
+                    }) =>
+                {
+                    Ok(Transformed::yes(lookup_column.clone()))
+                }
+                Expr::Exists { .. } | Expr::InSubquery(_) => {
+                    Err(datafusion::error::DataFusionError::Plan(
+                        "a HAVING subquery must compare against a scalar value"
+                            .to_string(),
+                    ))
+                }
+                other => Ok(Transformed::no(other)),
+            })
+            .map_err(|error| unsupported(format!("a HAVING subquery {error}")))?
+            .data;
+        rewritten.push(expr);
+    }
+    let having = render_multi_agg_having(
+        &rewritten,
+        aggregate,
+        &group_keys,
+        &aggregates,
+        &[IVM_HAVING_LOOKUP_COLUMN],
+    )?;
+    Ok(ViewSpec::MultiAgg {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys,
+        group_exprs,
+        aggregates: aggregates
+            .iter()
+            .map(|(call, column, data_type)| {
+                Ok(MultiAggSpec {
+                    call: call.clone(),
+                    column: column.clone(),
+                    result: encode_data_type(data_type)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        filter,
+        having,
+        having_lookup: Some(HavingLookupSpec {
+            table_id: lookup.table.table_id.clone(),
+            aggregate: lookup.aggregate,
+            join_keys: lookup.join_keys,
+            right_keys: lookup.right_keys,
+            column: IVM_HAVING_LOOKUP_COLUMN.to_string(),
+            filter: lookup.filter,
+        }),
+    })
+}
+
+/// Build the maintained view of the correlated form: the plan wraps the
+/// grouped source aggregate in a semi join against the per-key lookup
+/// aggregate.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn analyze_having_join(
+    join: &Join,
+    left_aggregate: &Aggregate,
+    right_aggregate: &Aggregate,
+    projection: Option<&Projection>,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    if right_aggregate.aggr_expr.len() != 1 {
+        return Err(unsupported("a HAVING subquery with several aggregates"));
+    }
+    let (source, source_filter) =
+        collect_filtered_source(&left_aggregate.input, tables, "an aggregate")?;
+    // The group keys are plain columns, named by the statement projection.
+    let mut group_keys = Vec::new();
+    let mut group_exprs = Vec::new();
+    for expr in &left_aggregate.group_expr {
+        let column = column_of(expr)
+            .ok_or_else(|| unsupported("a HAVING subquery needs plain group keys"))?;
+        let alias = projection.and_then(|projection| projection_alias(projection, expr));
+        group_keys.push(alias.unwrap_or_else(|| column.name.clone()));
+        group_exprs.push(column.name.clone());
+    }
+    let group_exprs = if group_keys == group_exprs {
+        Vec::new()
+    } else {
+        group_exprs
+    };
+    // The lookup keys are the right aggregate's plain grouping columns.
+    let mut right_keys = Vec::new();
+    for expr in &right_aggregate.group_expr {
+        let column = column_of(expr)
+            .ok_or_else(|| unsupported("a HAVING subquery needs plain lookup keys"))?;
+        right_keys.push(column.name.clone());
+    }
+    if right_keys.is_empty() {
+        return Err(unsupported("an uncorrelated HAVING subquery"));
+    }
+    // The correlated keys: the join's left columns must be group keys, and
+    // the right ones the lookup's grouping columns.
+    let mut join_keys = Vec::new();
+    let mut on_right = Vec::new();
+    let mut qualifier = None;
+    for (left_expr, right_expr) in &join.on {
+        let left_column = column_of(left_expr)
+            .ok_or_else(|| unsupported("a HAVING key must be a column"))?;
+        let right_column = column_of(right_expr)
+            .ok_or_else(|| unsupported("a HAVING key must be a column"))?;
+        // The runtime joins the materialized group keys, so map the source
+        // column to its group key (which the projection may rename).
+        let key = left_aggregate
+            .group_expr
+            .iter()
+            .position(|expr| {
+                column_of(expr).is_some_and(|column| column.name == left_column.name)
+            })
+            .map(|index| group_keys[index].clone())
+            .ok_or_else(|| {
+                unsupported("a HAVING subquery correlated on a non-group key")
+            })?;
+        join_keys.push(key);
+        on_right.push(right_column.name.clone());
+        if right_column.relation.is_some() {
+            qualifier = right_column.relation.clone();
+        }
+    }
+    let mut sorted_right = right_keys.clone();
+    sorted_right.sort();
+    let mut sorted_on = on_right;
+    sorted_on.sort();
+    if sorted_right != sorted_on {
+        return Err(unsupported(
+            "a HAVING subquery correlated on keys other than its grouping",
+        ));
+    }
+    let (lookup_table, lookup_filter) =
+        collect_filtered_source(&right_aggregate.input, tables, "a HAVING subquery")?;
+    let filter = join
+        .filter
+        .clone()
+        .ok_or_else(|| unsupported("a HAVING subquery needs a comparison"))?;
+    let lookup = HavingSubquery {
+        table: lookup_table,
+        aggregate: render_expression(&right_aggregate.aggr_expr[0])?,
+        join_keys,
+        right_keys,
+        filter: lookup_filter,
+        qualifier,
+    };
+    analyze_having_aggregate(
+        left_aggregate,
+        group_keys,
+        group_exprs,
+        &[filter],
+        &source,
+        source_filter,
+        lookup,
+        request,
+    )
 }
 
 /// An aggregate view over one source with any mix of supported aggregate
@@ -2699,7 +3007,7 @@ fn analyze_multi_agg(
         ));
     }
     let having =
-        render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates)?;
+        render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates, &[])?;
     Ok(ViewSpec::MultiAgg {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -2718,6 +3026,7 @@ fn analyze_multi_agg(
             .collect::<Result<Vec<_>>>()?,
         filter,
         having,
+        having_lookup: None,
     })
 }
 

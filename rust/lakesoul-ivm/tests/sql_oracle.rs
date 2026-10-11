@@ -3016,6 +3016,63 @@ async fn oracle_left_aggregate_outputs_match_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_having_subquery_matches_full_recompute() {
+    // A single-statement HAVING scalar subquery: a global aggregate over the
+    // lookup source (a cross join) or a per-key aggregate (a keyed join).
+    // The reference is DataFusion's native evaluation of the same statement.
+    let schema = source_schema();
+    let mv_schema = multi_agg_mv_schema_for(
+        &schema,
+        &["g".to_string()],
+        &[],
+        &[("sum_v".to_string(), DataType::Int64)],
+    )
+    .unwrap();
+    let seeds = [
+        (0, 1, "g0", Some(10)),
+        (0, 2, "g1", Some(30)),
+        (0, 3, "g0", Some(20)),
+        (1, 1, "g0", Some(15)),
+        (1, 2, "g1", Some(25)),
+        (1, 3, "g0", Some(40)),
+    ];
+    for (tag, definition_having, reference_having) in [
+        (
+            "havingglob",
+            "SUM(v) > (SELECT MAX(v) FROM __SRC1__)",
+            "SUM(v) > (SELECT MAX(v) FROM __SRC1__ WHERE op <> 'delete')",
+        ),
+        (
+            "havingcorr",
+            "SUM(v) > (SELECT MAX(d.v) FROM __SRC1__ d WHERE d.g = __SRC__.g)",
+            "SUM(v) > (SELECT MAX(d.v) FROM __SRC1__ d \
+                       WHERE d.op <> 'delete' AND d.g = __SRC__.g)",
+        ),
+    ] {
+        let definition = format!(
+            "SELECT g, SUM(v) AS sum_v FROM __SRC__ GROUP BY g HAVING {definition_having}"
+        );
+        let reference = format!(
+            "SELECT g, SUM(v) AS sum_v FROM __SRC__ WHERE op <> 'delete' \
+             GROUP BY g HAVING {reference_having}"
+        );
+        run_oracle_seeded(
+            tag,
+            2,
+            schema.clone(),
+            false,
+            &seeds,
+            mv_schema.clone(),
+            vec!["g".to_string()],
+            &definition,
+            &reference,
+            "SELECT g, sum_v FROM __MV__",
+        )
+        .await;
+    }
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_lookup_chain_matches_full_recompute() {
     // A base table with two keyed 1:1 lookups; a missing key pads with NULL.
     let schema = source_schema();

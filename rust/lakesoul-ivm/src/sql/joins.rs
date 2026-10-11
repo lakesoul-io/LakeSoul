@@ -34,6 +34,22 @@ pub(super) fn analyze_join(
     }
     // A correlated scalar subquery plans as a left-semi join against one
     // aggregate row per correlated key.
+    if let Some((aggregate, _)) = aggregate_input(&join.right) {
+        // The correlated `HAVING` form: a semi join between the grouped
+        // source and the per-key lookup aggregate.
+        if join.join_type == JoinType::LeftSemi
+            && let LogicalPlan::Aggregate(left_aggregate) = peel(&join.left)
+        {
+            return analyze_having_join(
+                join,
+                left_aggregate,
+                aggregate,
+                projection,
+                tables,
+                request,
+            );
+        }
+    }
     if let Some((aggregate, subquery_projection)) = aggregate_input(&join.right) {
         return match join.join_type {
             JoinType::LeftSemi => analyze_correlated_scalar(
@@ -1615,24 +1631,96 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_having_subqueries() {
-        // A HAVING subquery makes the view depend on the subquery source: the
-        // correlated form plans as a semi join between two grouped aggregates
-        // and the uncorrelated form as a global aggregate beside the grouped
-        // one, neither of which a single-source view models.  They stay
-        // rejected rather than silently dropping the condition.
+    async fn probe_having_native() {
         for sql in [
+            "select g, sum(v) from src group by g having sum(v) > (select max(v) from dim)",
+            "select g, sum(v) from src group by g having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+            "select g, sum(v) from src group by g having sum(v) > (select max(d.v) from dim d where d.g = src.g and d.v > 0)",
+            "select g, sum(v), count(*) from src group by g having count(*) > (select count(*) from dim)",
+            "select sum(v) from src having sum(v) > (select max(v) from dim)",
+        ] {
+            match analyze_multi(sql, vec![source_table("src"), source_table("dim")]).await
+            {
+                Ok(analyzed) => eprintln!("HAVING_OK {sql}:\n{:#?}\n", analyzed.spec),
+                Err(error) => eprintln!("HAVING_ERR {sql}:\n{error}\n"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn analyzes_having_subqueries() {
+        // A global lookup aggregate (a cross join) and a per-key one (a
+        // keyed join) both feed the recomputed groups before the predicate.
+        let analyzed = analyze_multi(
             "select g, sum(v) from src group by g \
              having sum(v) > (select max(v) from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            having,
+            having_lookup,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert!(having.is_some());
+        let lookup = having_lookup.expect("a HAVING lookup");
+        assert_eq!(lookup.aggregate, "max(v)");
+        assert!(lookup.join_keys.is_empty());
+        assert_eq!(lookup.column, "__ivm_lookup");
+
+        let analyzed = analyze_multi(
             "select g, sum(v) from src group by g \
              having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            group_keys,
+            having_lookup,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        let lookup = having_lookup.expect("a HAVING lookup");
+        assert_eq!(lookup.aggregate, "max(v)");
+        assert_eq!(lookup.join_keys, vec!["g".to_string()]);
+        assert_eq!(lookup.right_keys, vec!["g".to_string()]);
+
+        // An aliased group key keeps the alias in the lookup key.
+        let analyzed = analyze_multi(
+            "select g as bucket, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg { having_lookup, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
+        let lookup = having_lookup.expect("a HAVING lookup");
+        assert_eq!(lookup.join_keys, vec!["bucket".to_string()]);
+
+        // A lookup correlated on a non-group key stays rejected.
+        for sql in [
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.k = src.k)",
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.g = src.g \
+             and d.v > (select min(v) from dim))",
         ] {
-            let error =
+            assert!(
                 analyze_multi(sql, vec![source_table("src"), source_table("dim")])
                     .await
-                    .unwrap_err();
-            // The error points at the documented two-view pattern.
-            assert!(format!("{error}").contains("two views"), "{sql}: {error}");
+                    .is_err(),
+                "{sql}"
+            );
         }
     }
 
