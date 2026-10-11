@@ -1926,6 +1926,87 @@ async fn oracle_bool_agg_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_quantified_comparisons_match_full_recompute() {
+    // The non-`IN` quantifiers keep the three-valued filter semantics: the
+    // analyzer rewrites them into EXISTS predicates while the reference uses
+    // DataFusion's native quantifier evaluation, with NULL values in play.
+    let schema = nullable_source_schema();
+    let left: &[SeedRow] = &[
+        (0, 1, "g0", Some(10)),
+        (0, 2, "g1", Some(50)),
+        (0, 3, "g2", Some(80)),
+    ];
+    let null_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(20)),
+        (1, 2, "g1", Some(60)),
+        (1, 3, "g2", None),
+    ];
+    let high_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(90)),
+        (1, 2, "g1", Some(70)),
+        (1, 3, "g2", Some(60)),
+    ];
+    let low_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(20)),
+        (1, 2, "g1", None),
+        (1, 3, "g2", Some(30)),
+    ];
+    let correlated_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(5)),
+        (1, 2, "g1", Some(20)),
+        (1, 3, "g2", Some(70)),
+    ];
+    let cases: &[(&str, &str, &[SeedRow])] = &[
+        ("quantgtany", "v > ANY (SELECT v FROM __SRC1__)", null_right),
+        (
+            "quantgeany",
+            "v >= ANY (SELECT v FROM __SRC1__)",
+            null_right,
+        ),
+        ("quantltall", "v < ALL (SELECT v FROM __SRC1__)", high_right),
+        (
+            "quantleall",
+            "v <= ALL (SELECT v FROM __SRC1__)",
+            high_right,
+        ),
+        (
+            "quantnotgtany",
+            "NOT (v > ANY (SELECT v FROM __SRC1__))",
+            high_right,
+        ),
+        (
+            "quantnotleall",
+            "NOT (v <= ALL (SELECT v FROM __SRC1__))",
+            low_right,
+        ),
+        (
+            "quantcorrelated",
+            "v > ANY (SELECT v FROM __SRC1__ WHERE __SRC1__.g = __SRC__.g)",
+            correlated_right,
+        ),
+    ];
+    for (tag, predicate, right) in cases {
+        let definition = format!("SELECT k FROM __SRC__ WHERE {predicate}");
+        let reference = definition.clone();
+        let mut seeds = left.to_vec();
+        seeds.extend_from_slice(right);
+        run_oracle_seeded(
+            tag,
+            2,
+            schema.clone(),
+            true,
+            &seeds,
+            semi_anti_mv_schema_for(&schema, &["k".to_string()]).unwrap(),
+            vec!["k".to_string()],
+            &definition,
+            &reference,
+            "SELECT k FROM __MV__",
+        )
+        .await;
+    }
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_quantified_in_equivalents_match_full_recompute() {
     // `= ANY` is maintained as `IN` and `<> ALL` as `NOT IN`; the reference
     // uses the standard form, so the oracle checks the equivalence itself.

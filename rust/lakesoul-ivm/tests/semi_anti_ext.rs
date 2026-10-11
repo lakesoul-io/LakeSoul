@@ -269,6 +269,7 @@ fn lt(left: &str, right: &str) -> SemiAntiCondition {
         left_column: left.to_string(),
         right_column: right.to_string(),
         op: CompareOp::Lt,
+        is_not_true: false,
     }
 }
 

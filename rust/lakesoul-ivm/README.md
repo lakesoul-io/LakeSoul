@@ -80,7 +80,7 @@ used as row identities must be non-nullable.
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
-| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
+| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
 | Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery) | the projected left columns, the aggregate column, kinds, epoch |
 | INTERSECT / EXCEPT | the distinct and `ALL` variants; a repeated left of an `ALL` variant competes the per-tuple match counts (`min(count_l, count_r)` copies for `INTERSECT ALL`, the surplus for `EXCEPT ALL`); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns (plus the left key), kinds, epoch |
 
@@ -155,6 +155,15 @@ Supported within the shapes above:
   (`SELECT ..., (SELECT AVG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s`)
   is maintained as a left join against the same per-key aggregate, with NULL
   for a key without rows;
+* **quantified comparisons** (`x op ANY (S)`, `x op ALL (S)` and their
+  `NOT (...)` complements): rewritten before planning into an `EXISTS`
+  (`x op y`) or `NOT EXISTS` (`(x op y) IS NOT TRUE`) predicate, so they are
+  maintained as a theta semi/anti join whose comparison is the only
+  condition.  A NULL-capable comparison keeps the quantifier's three-valued
+  filter semantics (`> ALL` over an empty set is true, a NULL comparison
+  makes the result unknown and the row drops); a `NOT` directly above a
+  quantifier is pushed into it with the complementary operator
+  (`NOT (x > ANY S)` is `x <= ALL S`);
 * **`INTERSECT` / `EXCEPT`**: the distinct variants need left rows unique per
   join tuple (their primary key is covered), which also covers null-aware
   `IS NOT DISTINCT FROM` semi/anti predicates with a repeated left (every row
@@ -423,11 +432,12 @@ the backlog):
   rows (the `ALL` variants count the matches on both sides through the count
   mode, and a null-aware predicate on a repeated left keeps plain membership
   semantics);
-* quantified comparisons other than `= ANY` / `<> ALL` (`> ANY`, `> ALL`,
-  `>= ANY`, ...): DataFusion plans them as null-aware mark joins the analyzer
-  does not model.  `= ANY` and `<> ALL` are exactly `IN` / `NOT IN` and are
-  normalized to those before planning; a multi-column `(a, b) IN (...)` is
-  rejected by the planner itself;
+* quantified comparisons in a position that is not a plain predicate: a
+  quantifier below a wider `NOT` or inside a disjunction keeps DataFusion's
+  null-aware mark-join plan and is rejected rather than mistranslated (a
+  `NOT` directly above a quantifier is rewritten with the complementary
+  operator, and `= ANY` / `<> ALL` keep the exact `IN` / `NOT IN` forms); a
+  multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY`, a `DISTINCT` aggregate or
   several aggregates, and a correlated value inside a computed expression),
