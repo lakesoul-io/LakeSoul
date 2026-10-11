@@ -10,8 +10,11 @@ import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.util.SensitiveConfig;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.TextFormat;
 
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -129,13 +132,16 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
             throws IOException {
         String value = conf.getOrDefault(confKey, "");
         if (!value.isEmpty()) {
-            LOG.info("Set native object store option {}={}", fsConfKey, value);
+            LOG.info(
+                    "Set native object store option {}={}",
+                    fsConfKey,
+                    SensitiveConfig.redact(fsConfKey, value));
             io.setObjectStoreOption(fsConfKey, value);
         }
     }
 
     public void init(Map<String, String> params) throws IOException {
-        LOG.info(String.format("LakeSoulLocalJavaWriter init with params=%s", params));
+        LOG.info("LakeSoulLocalJavaWriter init with params={}", SensitiveConfig.redact(params));
 
         this.params = params;
         Preconditions.checkArgument(params.containsKey(PG_URL_KEY));
@@ -159,10 +165,22 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         initNativeWriter();
     }
 
+    /**
+     * Escapes an identifier like protobuf text-format field values (as TableInfo.toString() did).
+     */
+    static String textFormatEscape(String identifier) {
+        return TextFormat.escapeBytes(ByteString.copyFromUtf8(identifier));
+    }
+
     private void initNativeWriter() throws IOException {
+        // TableInfo includes unredacted table properties; log only its identifiers.
+        // The identifiers come from metadata and may contain newline or other control
+        // characters; text-format escaping (what protobuf's own TableInfo formatting
+        // did before) keeps each record on a single line.
         LOG.info(
-                String.format(
-                        "LakeSoulLocalJavaWriter initNativeWriter with tableInfo=%s", tableInfo));
+                "LakeSoulLocalJavaWriter initNativeWriter for table={}, tableId={}",
+                textFormatEscape(tableInfo.getTableName()),
+                textFormatEscape(tableInfo.getTableId()));
         nativeWriter = new NativeIOWriter(tableInfo);
 
         Schema arrowSchema =

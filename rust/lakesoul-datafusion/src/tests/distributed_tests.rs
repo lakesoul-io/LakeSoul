@@ -48,6 +48,7 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
+use datafusion_distributed::grpc::{GetTaskProgressRequest, ObservabilityServiceClient};
 use datafusion_distributed::{
     DistributedExec, DistributedExt, DistributedLeafExec, Worker, display_plan_ascii,
 };
@@ -1619,7 +1620,9 @@ async fn test_vortex_table_runs_when_no_stage_is_sent_inner() -> Result<()> {
 
 /// Like `spawn_workers`, but each worker's `Worker` handle is returned too, so
 /// a test can observe task lifecycle through `Worker::tasks_running` (which
-/// needs the `integration` feature, enabled for this crate's dev deps).
+/// needs the `integration` feature, enabled for this crate's dev deps). The
+/// observability endpoint is served alongside each worker, so a test can also
+/// tell initialized tasks (plan set) apart from empty cache entries.
 async fn spawn_workers_with_handles(
     workers: usize,
 ) -> (Vec<String>, Vec<Worker>, JoinSet<()>) {
@@ -1631,16 +1634,22 @@ async fn spawn_workers_with_handles(
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
-        urls.push(format!("http://127.0.0.1:{port}"));
+        let url = format!("http://127.0.0.1:{port}");
+        urls.push(url.clone());
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
         };
         let worker = crate::distributed::lakesoul_worker(&options).unwrap();
+        let observability = worker.with_observability_service(Arc::new(
+            crate::distributed::StaticWorkerResolver::new(vec![url])
+                .expect("worker url is well formed"),
+        ));
         handles.push(worker.clone());
         join_set.spawn(async move {
             let incoming = TcpListenerStream::new(listener);
             tonic::transport::Server::builder()
                 .add_service(worker.into_worker_server())
+                .add_service(observability)
                 .serve_with_incoming(incoming)
                 .await
                 .unwrap();
@@ -1704,8 +1713,16 @@ fn test_dropping_a_running_distributed_stream_stops_the_workers() {
 ///   running is backpressured — the cancelled query never reads another
 ///   batch — so it never completes on its own and the entry survives its
 ///   ten-minute TTL.
-/// - Therefore, after the drop, every worker's `tasks_running()` must reach
-///   zero within seconds, and the workers must stay usable.
+/// - Therefore, after the drop, no worker may still hold an initialized task
+///   within seconds, and the workers must stay usable.
+///
+/// The drain is observed through the observability endpoint rather than
+/// `Worker::tasks_running()`: the latter counts cache entries, and after the
+/// EOS cleanup a late cancel-propagation `ExecuteTask` can recreate an empty
+/// entry that lingers until its ten-minute TTI (upstream
+/// datafusion-distributed#771). An entry without a plan holds no computation,
+/// so `GetTaskProgress` — which only reports entries whose plan was set —
+/// reaching zero is exactly the no-leaked-task contract this test pins.
 async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() -> Result<()>
 {
     let client = Arc::new(MetaDataClient::from_env().await?);
@@ -1716,6 +1733,10 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
 
     let (worker_urls, handles, mut workers) =
         spawn_workers_with_handles(WORKER_COUNT).await;
+    let mut observers = Vec::with_capacity(handles.len());
+    for url in &worker_urls {
+        observers.push(ObservabilityServiceClient::connect(url.clone()).await?);
+    }
     let factory = distributed_factory(client, worker_urls, false)?;
     let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
@@ -1741,10 +1762,17 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
     // is still running.
     drop(stream);
 
-    for handle in &handles {
+    for (worker_i, observer) in observers.iter_mut().enumerate() {
         let mut drained = false;
+        let mut initialized = 0;
         for _ in 0..100 {
-            if handle.tasks_running().await == 0 {
+            initialized = observer
+                .get_task_progress(GetTaskProgressRequest {})
+                .await?
+                .into_inner()
+                .tasks
+                .len();
+            if initialized == 0 {
                 drained = true;
                 break;
             }
@@ -1752,8 +1780,8 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
         }
         assert!(
             drained,
-            "the dropped stream must stop the worker tasks; {} still running",
-            handle.tasks_running().await
+            "worker {worker_i}: the dropped stream must stop the worker tasks; \
+             {initialized} task(s) still hold a plan"
         );
     }
 

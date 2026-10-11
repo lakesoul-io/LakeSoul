@@ -71,6 +71,19 @@ catalog = LakeSoulCatalog(
 
 Do not embed production credentials in source code. Use environment variables or the secret-management mechanism of the deployment platform.
 
+`PostgresMetadataConfig` hides its password in diagnostic representations, including
+userinfo and sensitive query parameters in both primary and secondary PostgreSQL
+URLs. `IOConfig` and `LakeSoulScanConfig` also sanitize URI values under public option
+names in their object-store and writer/reader option maps.
+
+URI query redaction includes AWS `X-Amz-Signature`, GCS `X-Goog-Signature` and
+`Signature`, and Azure SAS `sig`. Parameter names are matched case-insensitively
+after percent-decoding, and repeated sensitive values are all redacted. Signature
+names are special only in URI queries, so public options such as `sig` and query
+parameters such as `signal` remain visible. Public URL components are preserved.
+These changes affect diagnostic representations only, not the original connection
+or IO settings used for authentication.
+
 ## SDK model
 
 The public API has three main objects:

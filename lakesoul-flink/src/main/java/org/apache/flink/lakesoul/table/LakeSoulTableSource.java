@@ -14,6 +14,7 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.dmetasoul.lakesoul.util.SensitiveConfig;
 
 import io.substrait.expression.Expression;
 import io.substrait.proto.Plan;
@@ -410,7 +411,7 @@ public class LakeSoulTableSource
                 + ", projectedFields="
                 + Arrays.toString(projectedFields)
                 + ", optionParams="
-                + optionParams
+                + SensitiveConfig.redact(optionParams)
                 + ", remainingPartitions="
                 + remainingPartitions
                 + ", pushedFilters="

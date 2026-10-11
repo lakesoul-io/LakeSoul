@@ -12,6 +12,7 @@ import com.facebook.presto.spi.security.PrestoAuthenticator;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 public class LakesoulPrestoAuthenticator implements PrestoAuthenticator {
     private static final String AUTHORIZATION_HEADER = "Authorization";
@@ -19,19 +20,23 @@ public class LakesoulPrestoAuthenticator implements PrestoAuthenticator {
 
     @Override
     public Principal createAuthenticatedPrincipal(Map<String, List<String>> headers) {
+        return createAuthenticatedPrincipal(headers, JwtUtils::parseClaims);
+    }
+
+    Principal createAuthenticatedPrincipal(
+            Map<String, List<String>> headers, Function<String, Claims> parseClaims) {
         if (!headers.containsKey(AUTHORIZATION_HEADER)) {
             throw new AccessDeniedException("Authorization header is missing!");
         } else if (!(headers.get(AUTHORIZATION_HEADER).size() >= 1
                 && headers.get(AUTHORIZATION_HEADER).get(0).startsWith(BEARER_PREFIX))) {
-            throw new AccessDeniedException(
-                    "Authorization header format must be Bearer <token>, but is "
-                            + headers.get(AUTHORIZATION_HEADER));
+            // The header value carries the bearer token, so it must never reach the message.
+            throw new AccessDeniedException("Authorization header format must be Bearer <token>");
         }
 
         String token = headers.get(AUTHORIZATION_HEADER).get(0).substring(BEARER_PREFIX.length());
-        Claims claims = JwtUtils.parseClaims(token);
+        Claims claims = parseClaims.apply(token);
         if (claims == null) {
-            throw new AccessDeniedException("Invalid token: " + token);
+            throw new AccessDeniedException("Invalid token");
         }
 
         return new LakeSoulAuthenticatedPrincipal(claims);
