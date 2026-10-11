@@ -1067,6 +1067,13 @@ pub(super) fn join_input<'a>(
                     filter,
                 });
             }
+            LogicalPlan::Aggregate(_) => {
+                return Err(unsupported(
+                    "a HAVING subquery over a grouped source needs two views: \
+                     group the source in one view, then filter it against the \
+                     subquery in a second view",
+                ));
+            }
             _ => return Err(unsupported("join input must be a table")),
         }
     }
@@ -1620,12 +1627,12 @@ mod tests {
             "select g, sum(v) from src group by g \
              having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
         ] {
-            assert!(
+            let error =
                 analyze_multi(sql, vec![source_table("src"), source_table("dim")])
                     .await
-                    .is_err(),
-                "{sql}"
-            );
+                    .unwrap_err();
+            // The error points at the documented two-view pattern.
+            assert!(format!("{error}").contains("two views"), "{sql}: {error}");
         }
     }
 

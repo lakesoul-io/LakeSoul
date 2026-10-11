@@ -128,6 +128,14 @@ Supported within the shapes above:
   aggregates (`ORDER BY v % 10`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
   operations;
+* **a `HAVING` subquery** is maintained as two chained views: group the source
+  in one view and filter it against the subquery in a second one —
+  `INSERT INTO groups SELECT g, SUM(v) AS sum_v FROM src GROUP BY g;` then
+  `INSERT INTO filtered SELECT g, sum_v FROM groups WHERE sum_v >
+  (SELECT MAX(d.v) FROM dim d WHERE d.g = groups.g);` (or an uncorrelated
+  `... WHERE sum_v > (SELECT MAX(v) FROM dim)`).  Refresh the views in that
+  order (the schedule follows the dependency chain); the error for the
+  single-statement form points at this pattern;
 * **set-operation projections**: union branches may prune, rename and compute
   columns as long as every branch has the same output schema; a keyed
   `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
@@ -443,8 +451,9 @@ the backlog):
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY` (already per-key), a `DISTINCT` aggregate or
-  several aggregates, a computed value over left columns beside one, and any
-  subquery in `HAVING` — the view would then depend on the subquery source),
+  several aggregates, a computed value over left columns beside one, and a
+  subquery in `HAVING` as a **single** view — it would depend on the subquery
+  source; maintain it as the two chained views described above),
   a subquery or window function **above** an aggregate, and the derived-table
   form of a computed aggregate output
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained

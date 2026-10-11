@@ -2997,6 +2997,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全量 IVM **413 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
   `cargo clippy -p lakesoul-ivm --all-targets` 干净。
 
+### 10.110 HAVING 子查询：两视图模式支持（PR-104，ROADMAP §B6）
+
+- **背景**：单语句 `... GROUP BY g HAVING sum(v) > (SELECT …)` 不可维护：相关形态计划为
+  「聚合 ⋈ 按键盘聚合」的 `LeftSemi + Filter`，非相关形态为
+  `Filter(分组聚合, 全局子查询聚合)`——视图会依赖第二个源，需要新的
+  「聚合 ⋈ 按键盘/全局聚合」形状与按第二源变更重算受影响组的刷新协议。
+- **本轮能力**：用现有能力以**两视图模式**覆盖（README「HAVING subquery」条目）：
+  1. `mv1 = INSERT INTO mv1 SELECT g, SUM(v) AS sum_v FROM src GROUP BY g`
+     （SUM/COUNT 增量视图）；
+  2. 相关：`mv2 = INSERT INTO mv2 SELECT g, sum_v FROM mv1 WHERE sum_v >
+     (SELECT MAX(d.v) FROM dim d WHERE d.g = mv1.g)`——即既有「WHERE 相关标量子查询」
+     semi 视图（`right_aggregate` + `match_predicate`），左源是 keyed MV；
+  3. 非相关：`mv2 = INSERT INTO mv2 SELECT g, sum_v FROM mv1 WHERE sum_v >
+     (SELECT MAX(v) FROM dim)`——即既有「WHERE 非相关标量子查询」row 视图
+     （`RowScalarSpec` 监视子查询表）。
+  刷新按依赖顺序（`mv1` → `mv2`；view chain 编排同样适用）。
+- **拒绝提示**：单语句形态的错误信息现在指向两视图模式（`join_input` 的聚合左输入分支、
+  `validate_filter` 的子查询分支），`rejects_having_subqueries` 断言错误信息包含
+  "two views"。
+- **测试**：`tests/having_subquery_views.rs`：相关与非相关各 10 轮随机增删改（同时变更
+  src/dim），每轮依次刷新两个视图并与对两个 provider 的全量重算比对。
+- **单语句原生实现（未做）**：需要在 MultiAgg 重算引擎上引入第二源（窗口、cursors、
+  affected groups 的按键扩展/全组扩展、HAVING 与 lookup 值的 SQL 组装），或新增专用
+  view kind；待需求驱动。
+  全量 IVM **414 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
