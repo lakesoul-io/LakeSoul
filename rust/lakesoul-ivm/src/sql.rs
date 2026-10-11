@@ -468,11 +468,18 @@ fn strip_relations(expr: Expr) -> Result<Expr> {
 fn validate_filter(expr: &Expr) -> Result<()> {
     expr.apply(|node| {
         match node {
+            Expr::ScalarSubquery(_) => {
+                return Err(datafusion::error::DataFusionError::Plan(
+                    "a filter may not contain a subquery; a HAVING subquery \
+                     needs two views: group the source in one view, then \
+                     filter it against the subquery in a second view"
+                        .to_string(),
+                ));
+            }
             Expr::AggregateFunction(_)
             | Expr::WindowFunction(_)
             | Expr::Exists { .. }
-            | Expr::InSubquery(_)
-            | Expr::ScalarSubquery(_) => {
+            | Expr::InSubquery(_) => {
                 return Err(datafusion::error::DataFusionError::Plan(
                     "filters may not contain aggregates, windows or subqueries"
                         .to_string(),
