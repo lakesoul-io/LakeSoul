@@ -145,7 +145,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | ✅ 已实现（PR-101，PLAN §10.107）：`SemiAntiView.count_mode`（rank vs 右侧 per-tuple count）；引擎自身对原始集合运算只做成员判定，oracle 用 Rust 独立计数 |
-| 空安全谓词的非 semi/anti 形态（outer join 上的 `IS NOT DISTINCT FROM`） | **M** | 单独 PR：join 状态表主键含 join key，NULL 键需要 sentinel 编码（spec → 状态表键 → 运行时匹配全链路），并确定 MV 身份列表示；`semi/anti` 已支持空安全 |
+| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | 拆分：**inner join 已侦察完毕（PLAN §10.112）——无按 join key 的状态表，只需 `keyed_join_projection` 走 `NullEquality::NullEqualsNull` + spec/分析器放行**；outer join 的“未匹配 vs 匹配到 NULL 键”语义与 MV 身份列需在 inner 闭环后单独设计；`semi/anti` 已支持空安全 |
 
 ### B6. 子查询（P2）
 

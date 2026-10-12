@@ -3050,6 +3050,57 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全量 IVM **416 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
   `cargo clippy -p lakesoul-ivm --all-targets` 干净。
 
+### 10.112 空安全 inner join（待实现，设计稿；ROADMAP §B5 的一部分）
+
+> 目标：`SELECT ... FROM a JOIN b ON a.k IS NOT DISTINCT FROM b.k`（NULL 与 NULL 匹配）。
+> 现状：`analyze_join` 把所有 `null_equality == NullEqualsNull` 的 join 送进
+> `analyze_set_operation`（`rust/lakesoul-ivm/src/sql/joins.rs:32`），非 semi/anti 形态被拒。
+
+**侦察结论（2026-10-12，已完成，实现前不必重复）**
+
+1. **inner join 没有按 join key 建键的状态表**：`refresh_join` 只注册 `StateRole::Mv`
+   （`runtime/joins.rs:2406`），所以不需要“状态表键 NULL sentinel”。
+2. **受影响行按源主键选取**（`delta_left → left_now` 用主键 LeftSemi，`runtime/joins.rs:2537`
+   起），主键非空 → 天然 null-safe；MV 身份列是各源主键（`left_pk_alias`/`right_pk_alias`）
+   → 不需要 NULL 编码。最初担心的“全链路 sentinel”不成立。
+3. **唯一需要改的连接点是 pair 连接**：`keyed_join_projection`
+   （`runtime/joins.rs:2198`）里的
+   `left.join(right, join_type, &key_names, &right_key_refs, None)?`
+   → 在 `null_safe` 时改走 `join_detailed(..., NullEquality::NullEqualsNull)`
+   （`semi_anti.rs::semi_anti_join` 末尾有完全相同写法可照抄）；cross-join 分支无键、不受影响。
+4. 重算对 before-state 的读取同样走主键过滤，无需 NULL 感知的 `key_filters`。
+
+**实施步骤**
+
+1. `ViewSpec::Join` 增加
+   `#[serde(default, skip_serializing_if = "std::ops::Not::not")] null_safe: bool`；
+   `JoinView` 增加 `pub null_safe: bool`（`new()` 置 false、`with_null_safe`、`to_spec`、
+   `spec_view` 透传）。
+2. `PairJoin` 增加 `null_safe: bool`；`JoinView::parts()` 传 `self.null_safe`，其余三个
+   `PairJoin` 构造点（LeftJoin/FullJoin/CrossJoin）传 `false`。
+   ⚠️ `runtime/joins.rs` 中 `pair_filter: None` / `pair_filter: self.pair_filter.clone()`
+   在多个视图的构造器与 `to_spec` 里重复出现，补丁必须带足上下文或逐处精确编辑，
+   避免串位（2026-10-12 已踩坑并回退）。
+3. `keyed_join_projection` 增加 `parts.null_safe` 分支（见结论 3）。
+4. 分析器：`sql/joins.rs:32` 的 `if join.null_equality == NullEquality::NullEqualsNull`
+   改为仅对 **非 inner** 送 `analyze_set_operation`；inner 且 `on` 全为普通列时继续原
+   inner 分析并置 `null_safe = true`；表达式键 / outer join 继续明确拒绝（错误文案注明）。
+5. 校验：`null_safe` 仅 inner、键为普通列（`key_exprs` 为空）；可只在任一键列可空时置 true
+   （非空列上 `IS NOT DISTINCT FROM` ≡ `=`，置 false 更省）。
+6. 测试：
+   - 分析器用例：`on a.v is not distinct from b.v` → 新 spec 的 `null_safe = true`；
+     表达式键 / outer join 仍拒绝；
+   - 确定性用例：NULL 匹配 NULL、NULL 不匹配非空（含更新后由非空变 NULL）；
+   - oracle：`nullable_source_schema()` + `run_oracle_seeded`（join 键选可空的 `v`），
+     参考实现用同一 SQL 的 DataFusion 原生 `IS NOT DISTINCT FROM` 求值；
+   - 全量 IVM 套件 + `cargo fmt --all --check` + clippy。
+
+**后续（outer join 扩展，未做）**
+
+- LEFT/RIGHT/FULL join 的“未匹配”用**对方主键为 NULL**表示（见 `ViewSpec::LeftJoin` 文档），
+  与 null-safe 的 join 键是不同列，不直接冲突；但仍需确认“未匹配行”与“匹配到 NULL 键的行”
+  在重算/撤回路径上的区分，以及 MV 身份列语义（`__pk` 系列）。建议 inner 闭环合入后单独设计。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
