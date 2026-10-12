@@ -1236,6 +1236,11 @@ impl ViewSpec {
                 view_id: id,
                 mv_table_id: mv,
                 ..
+            }
+            | ViewSpec::SumCount {
+                view_id: id,
+                mv_table_id: mv,
+                ..
             } => {
                 *id = view_id.to_string();
                 *mv = mv_table_id.to_string();

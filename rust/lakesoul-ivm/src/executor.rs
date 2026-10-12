@@ -24,10 +24,11 @@ use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
+use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{Expr, SessionContext};
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
     ObjectName, ObjectNamePart, Query, Statement, TableObject, Visit, Visitor,
@@ -36,7 +37,8 @@ use datafusion::sql::sqlparser::ast::{
 use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
-    ChainPolicy, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
+    ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,
+    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
     approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
     array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
@@ -55,7 +57,9 @@ use crate::runtime::{
     wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_for, window_columns_mv_schema_for,
 };
-use crate::sql::{AnalyzeRequest, DerivedSource, analyze_select, definition_hash};
+use crate::sql::{
+    AnalyzeRequest, DerivedSource, analyze_select, definition_hash, peel, plan_label,
+};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
 
 /// Placeholder state table id used to probe the query shape before the real
@@ -140,6 +144,108 @@ fn derived_scan(table: &IvmTable, runtime: &IvmRuntime) -> Result<LogicalPlan> {
         None,
     )?
     .build()?)
+}
+
+/// Rename the column references of a rewritten plan: the materialized
+/// column of a derived view can differ from the subplan output it replaces
+/// (the aggregate layouts), so every reference to a subplan field is pointed
+/// at the MV column.  The mapping only holds non-identity entries.
+fn rename_derived_columns(
+    plan: LogicalPlan,
+    mapping: &HashMap<String, String>,
+) -> Result<LogicalPlan> {
+    let transformed = plan
+        .transform_up(|node| {
+            node.map_expressions(|expr| {
+                let renamed = expr.transform_down(|node| match &node {
+                    Expr::Column(column) => match mapping.get(&column.name) {
+                        Some(name) => Ok(Transformed::yes(Expr::Column(
+                            datafusion::common::Column::from_name(name),
+                        ))),
+                        None => Ok(Transformed::no(node)),
+                    },
+                    _ => Ok(Transformed::no(node)),
+                })?;
+                Ok(renamed)
+            })
+        })
+        .map_err(|error| rootcause::report!("renaming the derived columns: {error}"))?;
+    Ok(transformed.data)
+}
+
+/// Whether a subplan can be materialized as a derived view for now: the join
+/// shapes and the sum/count/avg aggregates.
+fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
+    match peel(subplan) {
+        LogicalPlan::Join(_) => Ok(()),
+        LogicalPlan::Aggregate(aggregate) => {
+            for expr in &aggregate.aggr_expr {
+                sum_count_column(expr)?;
+            }
+            Ok(())
+        }
+        other => Err(rootcause::report!(
+            "a derived view over {} is not materialized yet",
+            plan_label(other)
+        )),
+    }
+}
+
+/// The materialized column of one aggregate output of a sum-count step.
+fn sum_count_column(expr: &Expr) -> Result<&'static str> {
+    let Expr::AggregateFunction(function) = expr else {
+        return Err(rootcause::report!(
+            "a derived view over a non-aggregate output is not materialized yet"
+        ));
+    };
+    match function.func.name() {
+        "sum" => Ok(IVM_SUM_COLUMN),
+        "count" => {
+            if matches!(
+                function.params.args.as_slice(),
+                [Expr::Literal(ScalarValue::Int64(Some(1)), _)]
+            ) {
+                Ok(IVM_COUNT_COLUMN)
+            } else {
+                Ok(IVM_NONNULL_COUNT_COLUMN)
+            }
+        }
+        "avg" => Ok(IVM_AVG_COLUMN),
+        other => Err(rootcause::report!(
+            "a derived view over {other}(...) is not materialized yet"
+        )),
+    }
+}
+
+/// The rename mapping of a derived step: every subplan output field and the
+/// MV column that materializes it.
+fn derived_output_mapping(
+    spec: &ViewSpec,
+    subplan: &LogicalPlan,
+) -> Result<Vec<(String, String)>> {
+    let fields = subplan.schema().fields();
+    if matches!(spec, ViewSpec::SumCount { .. }) {
+        let LogicalPlan::Aggregate(aggregate) = peel(subplan) else {
+            return Err(rootcause::report!(
+                "a derived sum-count view needs an aggregate input"
+            ));
+        };
+        let groups = aggregate.group_expr.len();
+        let mut mapping = Vec::with_capacity(fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            let column = if index < groups {
+                field.name().clone()
+            } else {
+                sum_count_column(&aggregate.aggr_expr[index - groups])?.to_string()
+            };
+            mapping.push((field.name().clone(), column));
+        }
+        return Ok(mapping);
+    }
+    Ok(fields
+        .iter()
+        .map(|field| (field.name().clone(), field.name().clone()))
+        .collect())
 }
 
 /// Replace every occurrence of `target` in `plan` with `replacement`.
@@ -480,11 +586,18 @@ impl IvmSqlExecutor {
                              derived views; split it into explicit views"
                         ));
                     }
-                    let (table, view_id) = self
+                    let (table, view_id, mapping) = self
                         .materialize_derived(&source, target, tables, steps)
                         .await?;
                     let scan = derived_scan(&table, &self.runtime)?;
                     plan = replace_plan(&plan, &source, &scan)?;
+                    let renames = mapping
+                        .into_iter()
+                        .filter(|(field, column)| field != column)
+                        .collect::<HashMap<_, _>>();
+                    if !renames.is_empty() {
+                        plan = rename_derived_columns(plan, &renames)?;
+                    }
                     tables.insert(table.table_name.clone(), table);
                     steps.push(view_id);
                 }
@@ -500,7 +613,8 @@ impl IvmSqlExecutor {
         target: &IvmTable,
         tables: &mut HashMap<String, IvmTable>,
         steps: &mut Vec<String>,
-    ) -> Result<(IvmTable, String)> {
+    ) -> Result<(IvmTable, String, Vec<(String, String)>)> {
+        derived_step_supported(subplan)?;
         let request = AnalyzeRequest {
             view_id: DERIVED_PLACEHOLDER.to_string(),
             mv_table_id: DERIVED_PLACEHOLDER.to_string(),
@@ -511,16 +625,19 @@ impl IvmSqlExecutor {
         let (mut spec, _) =
             Box::pin(self.analyze_with_derived(subplan, tables, &request, target, steps))
                 .await?;
-        // The derived view must expose the subplan's column names (the
-        // compact join shapes name their payloads left_value / right_value).
+        // A compact join names its payloads left_value / right_value; the
+        // derived view widens them to the subplan's column names so the
+        // rewritten plan resolves its columns.
         widen_derived_join(&mut spec);
-        let derived_schema = expected_mv_schema(&spec, tables)?;
-        for field in subplan.schema().fields() {
-            if derived_schema.field_with_name(field.name()).is_err() {
+        // The materialized columns must cover every subplan output field
+        // (the replacement projection renames them back).
+        let mapping = derived_output_mapping(&spec, subplan)?;
+        let schema = expected_mv_schema(&spec, tables)?;
+        for (_, column) in &mapping {
+            if schema.field_with_name(column).is_err() {
                 return Err(rootcause::report!(
-                    "a derived view does not expose the column {}; \
-                     split the statement into explicit views",
-                    field.name()
+                    "a derived view does not expose the column {column}; \
+                     split the statement into explicit views"
                 ));
             }
         }
@@ -546,7 +663,7 @@ impl IvmSqlExecutor {
                 .set_view_definition(&view_id, &definition, "")
                 .await?;
         }
-        Ok((table, view_id))
+        Ok((table, view_id, mapping))
     }
 
     /// Create or reuse the internal MV table of a derived step.  The table is
@@ -587,8 +704,10 @@ impl IvmSqlExecutor {
             .await
     }
 
-    /// The primary keys a derived MV is created with.  Only the join shapes
-    /// are materialized for now; the other kinds are rejected explicitly.
+    /// The primary keys a derived MV is created with.  The join shapes and
+    /// the sum/count aggregates are materialized for now; the other kinds
+    /// (which would also need their own state tables) are rejected
+    /// explicitly.
     async fn derived_primary_keys(&self, spec: &ViewSpec) -> Result<Vec<String>> {
         Ok(match spec {
             ViewSpec::Join {
@@ -605,6 +724,7 @@ impl IvmSqlExecutor {
                 let right = self.runtime.open_table_by_id(right_table_id).await?;
                 keyed_join_output_primary_keys(&left.primary_keys, &right.primary_keys)
             }
+            ViewSpec::SumCount { group_keys, .. } => group_keys.clone(),
             ViewSpec::LookupJoin { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)

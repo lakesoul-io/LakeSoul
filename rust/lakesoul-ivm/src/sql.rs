@@ -651,7 +651,7 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
     }
     Ok(format!("{hash:016x}"))
 }
-fn peel(plan: &LogicalPlan) -> &LogicalPlan {
+pub(crate) fn peel(plan: &LogicalPlan) -> &LogicalPlan {
     match plan {
         LogicalPlan::SubqueryAlias(alias) => peel(&alias.input),
         _ => plan,
@@ -739,7 +739,7 @@ fn flip(op: CompareOp) -> CompareOp {
         CompareOp::Ge => CompareOp::Le,
     }
 }
-fn plan_label(plan: &LogicalPlan) -> &'static str {
+pub(crate) fn plan_label(plan: &LogicalPlan) -> &'static str {
     match plan {
         LogicalPlan::Projection(_) => "a projection",
         LogicalPlan::Filter(_) => "a filter",
