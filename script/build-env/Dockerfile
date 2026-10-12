@@ -92,7 +92,7 @@ RUN mkdir -p ${RUSTUP_HOME} ${CARGO_HOME} && \
     --component rust-analyzer
 
 ENV PATH=${CARGO_HOME}/bin:${PATH}
-RUN chmod -R 777 /opt/rustup/tmp
+RUN chmod -R 777 /opt/rustup
 
 ENV PROTOC_VERSION=25.3
 ENV PROTOC_ZIP=protoc-${PROTOC_VERSION}-linux-x86_64.zip
