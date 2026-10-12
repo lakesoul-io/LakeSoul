@@ -67,7 +67,16 @@ docker run --rm -ti --net host \
 
     echo "=== Building python workspace ==="
     cd python
-    uvx --from maturin[zig,patchelf] maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist
+    MATURIN_VERSION=1.15.0
+    ZIGLANG_VERSION=0.17.0
+    PATCHELF_VERSION=0.19.1.0
+    uvx --from "maturin[zig,patchelf]==${MATURIN_VERSION}" \
+      --with "ziglang==${ZIGLANG_VERSION}" \
+      --with "patchelf==${PATCHELF_VERSION}" \
+      maturin build --release --zig --target x86_64-unknown-linux-gnu \
+        --auditwheel repair --compatibility manylinux2014 \
+        --features 'pyo3/extension-module,dist-ffi' \
+        --out ../dist
     echo
     echo "=== Build complete ==="
   '
