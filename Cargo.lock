@@ -5761,6 +5761,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "crc32fast",
+ "criterion",
  "faer",
  "futures",
  "half",

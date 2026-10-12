@@ -3,6 +3,31 @@
 
 use crate::rabitq::{Metric, simd};
 
+/// Number of vectors one FastScan batch processes.
+pub const FASTSCAN_BATCH_SIZE: usize = simd::FASTSCAN_BATCH_SIZE;
+
+/// FastScan stage-1 accumulation for one batch of `FASTSCAN_BATCH_SIZE`
+/// vectors (runtime dispatch: AVX-512, then AVX2, then scalar).
+///
+/// Exposed for micro-benchmarks; the search path reaches this through
+/// [`compute_fastscan_batch`].
+pub fn accumulate_batch(
+    packed_codes: &[u8],
+    lut_i8: &[i8],
+    dim: usize,
+    results: &mut [u16; FASTSCAN_BATCH_SIZE],
+) {
+    simd::accumulate_batch_avx2(packed_codes, lut_i8, dim, results);
+}
+
+/// Build the i8 FastScan lookup table for one query.
+///
+/// Returns `(lut_i8, delta, sum_vl_lut)`; exposed for micro-benchmarks.
+pub fn build_query_lut(rotated_query: &[f32], padded_dim: usize) -> (Vec<i8>, f32, f32) {
+    let lut = crate::rabitq::ivf::lut::QueryLut::new(rotated_query, padded_dim);
+    (lut.lut_i8, lut.delta, lut.sum_vl_lut)
+}
+
 /// A view over the query LUT used by FastScan accumulation.
 #[derive(Clone, Copy)]
 pub enum FastScanLutView<'a> {

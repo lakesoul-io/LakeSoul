@@ -12,13 +12,15 @@ pub mod rotation;
 pub mod segment;
 
 pub(crate) mod fastscan;
-pub(crate) mod fastscan_kernel;
+pub mod fastscan_kernel;
 mod kmeans;
 pub(crate) mod simd;
 
 // Re-export key types at the rabitq module level for convenience
 pub use ivf::builder::IvfRabitqBuilder;
-pub use ivf::{IdAndVecBatch, IvfRabitqIndex, SearchParams, SearchResult};
+pub use ivf::{
+    IdAndVecBatch, IvfRabitqIndex, SearchDiagnostics, SearchParams, SearchResult,
+};
 pub use key::IndexKey;
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;
