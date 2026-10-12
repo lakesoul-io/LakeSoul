@@ -47,6 +47,10 @@ pub static OPTION_KEY_VECTOR_SEARCH_TOP_K: &str = "vector_search_top_k";
 pub static OPTION_KEY_VECTOR_SEARCH_NPROBE: &str = "vector_search_nprobe";
 /// Vector search: distance metric (default "L2")
 pub static OPTION_KEY_VECTOR_SEARCH_METRIC: &str = "vector_search_metric";
+/// Vector search: order the candidates by the index distance instead of the
+/// exact re-rank over the vector column (default false).  The reserved
+/// `__lakesoul_vector_distance` column carries the L2 (sqrt) distance.
+pub static OPTION_KEY_VECTOR_SEARCH_ORDER_BY: &str = "vector_search_order_by";
 /// Vector search: direct index prefix path (alternative to auto-detection from files)
 pub static OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX: &str = "vector_search_index_prefix";
 /// Text search: column name of the text index to query
