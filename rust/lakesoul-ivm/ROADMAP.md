@@ -161,8 +161,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| `ORDER BY … LIMIT k`（非 `rn <= k` 形式） | **M** | top-k 边界维护 |
-| RANGE/GROUPS 帧偏移等边角 | **M（需核实）** | 逐项确认现有帧支持范围 |
+| `ORDER BY … LIMIT k`（非 `rn <= k` 形式） | **M** | ✅ 已实现（PLAN §10.113）：全局 top-k（无分组）复用 TopK 视图（`group_keys` 为空；运行时 `partition by` 可选、唯一组恒受影响），边界并列由源主键打破；`OFFSET`、无 `ORDER BY`、聚合/窗口/连接之上、缺源主键、计算列输出均明确拒绝 |
+| RANGE/GROUPS 帧偏移等边角 | **M（需核实）** | ✅ 已核实并补测（PLAN §10.113）：帧文本本就完整渲染（`ROWS`/`RANGE`/`GROUPS` 与各 bound），引擎在重算分区上求值；新增 `window_range_frame.slt`（数值偏移 RANGE）与 `window_groups_frame.slt`（peer 组 GROUPS） |
 
 ### B8. 类型（P2）
 

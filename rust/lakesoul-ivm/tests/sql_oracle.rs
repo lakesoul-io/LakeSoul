@@ -1085,6 +1085,36 @@ async fn oracle_top_k_where_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_order_by_limit_matches_full_recompute() {
+    // `ORDER BY ... LIMIT k`: a global top-k.  The raw statement's boundary
+    // ties are arbitrary, so the reference ranks with the source primary key
+    // as the final tie-break, exactly like the maintained view.
+    let schema = nullable_source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", None),
+        (0, 1, "g1", Some(10)),
+        (0, 2, "g2", Some(20)),
+        (0, 3, "g0", Some(5)),
+        (0, 4, "g1", Some(15)),
+    ];
+    run_oracle_seeded(
+        "orderbylimit",
+        1,
+        schema.clone(),
+        true,
+        &seed,
+        top_k_mv_schema_for(&schema, &["k".to_string(), "v".to_string()]).unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 3",
+        "SELECT k, v FROM (SELECT k, v, \
+             ROW_NUMBER() OVER (ORDER BY v DESC NULLS FIRST, k) AS rn \
+             FROM __SRC__ WHERE op <> 'delete') t WHERE rn <= 3",
+        "SELECT k, v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_multi_window_matches_full_recompute() {
     // Several window functions sharing one window specification.
     let columns = vec![

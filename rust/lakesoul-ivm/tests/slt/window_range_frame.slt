@@ -1,0 +1,37 @@
+# A RANGE frame with a numeric offset: the frame covers the ordering values
+# within the offset, not a row count.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=12,op=insert; k=3,g=a,v=15,op=insert; k=4,g=a,v=16,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g ORDER BY v RANGE BETWEEN 2 PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__
+----
+a 1 10
+a 2 22
+a 3 15
+a 4 31
+
+# Moving a row changes the frames it belongs to.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=14,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g ORDER BY v RANGE BETWEEN 2 PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__
+----
+a 1 10
+a 2 22
+a 3 26
+a 4 30

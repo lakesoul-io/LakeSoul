@@ -3148,6 +3148,35 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （主键非空），而匹配到 NULL 键的行带有对方主键，两者在 MV 身份列上可区分。
   进一步方向：null-safe 表达式键与多表链（取决于 DataFusion 是否保留标记）。
 
+### 10.113 全局 top-k（`ORDER BY ... LIMIT k`）与窗口帧核实
+
+**全局 top-k**
+
+- 形状：优化器把 `LIMIT` 推入 `Sort { fetch: Some(k) }`（`OFFSET 0` 也被吸收）。
+  `analyze_select` 新增顶层 `Sort` 分支与 `Projection -> Sort` 分支（原 DISTINCT ON 分支扩展），
+  统一走 `analyze_order_by_limit`；顶层 `Limit` 明确拒绝（`OFFSET` / 无 `ORDER BY` 两种文案）。
+- 复用 TopK 视图：`group_keys` 为空表示全局组。运行时改动：
+  `top_k_computed_cte` 的 `partition by` 只在有分组时渲染；`top_k_affected_cte` 全局时返回
+  `affected as (select 1)`（唯一组恒受影响）；`top_k_refresh_sql` 的组匹配在全局时退化为 `1 = 1`；
+  `validate_top_k_view` 只再要求 order keys。
+- 并列打破：运行时 `top_k_computed_cte` 本就在排序后追加源主键，因此维护语义 =
+  `ROW_NUMBER() OVER (ORDER BY <order>, <pks>) <= k`；原始 `LIMIT` 在边界并列时本身任意，
+  README 记录该契约，oracle 的参考实现使用同一 tie-break。
+- 拒绝面：无 `ORDER BY` 的 `LIMIT`（保留行任意）、`LIMIT ... OFFSET`（窗口平移）、
+  聚合/窗口/连接之上的 top-k（两段视图）、LIMIT 之上的计算列、select list 缺源主键、
+  输出列不是源列。
+- 测试：分析器用例（形状 + 六种拒绝）、`tests/slt/top_k_limit.slt`（bootstrap / 增量 /
+  delete+update / definition change rebuild）、
+  `tests/sql_oracle.rs::oracle_order_by_limit_matches_full_recompute`
+  （nullable v 的 `NULLS FIRST` 排序；定制种子 7/23 × 30 轮通过）。
+
+**窗口帧核实（B7 的第二项）**
+
+- 结论：帧无需改动——`window_frame_sql` 本就完整渲染 `ROWS`/`RANGE`/`GROUPS` 与
+  `preceding`/`following`/`current row` 各 bound，运行时的窗口重算按分区重放、由引擎求值帧。
+  缺的只是覆盖：新增 slt `window_range_frame.slt`（数值偏移 RANGE）与
+  `window_groups_frame.slt`（peer 组 GROUPS），二者通过。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

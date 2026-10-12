@@ -1428,6 +1428,10 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
 /// The `affected` CTE of a top-k refresh: the groups in the delta plus the
 /// groups of the MV rows whose primary keys changed.
 fn top_k_affected_cte(view: &TopKView) -> String {
+    if view.group_keys.is_empty() {
+        // A global top-k has a single group: every refresh re-ranks it.
+        return "affected as (select 1 as \"__ivm_global\")".to_string();
+    }
     let groups = quoted_list(&view.group_keys);
     let pks = quoted_list(&view.source.primary_keys);
     let pk_match = key_join_condition("m", "d", &view.source.primary_keys);
@@ -1443,7 +1447,11 @@ fn top_k_affected_cte(view: &TopKView) -> String {
 /// The `computed` CTE of a top-k view: the projected rows with their row
 /// number inside the group (ties broken by the source primary keys).
 fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
-    let groups = quoted_list(&view.group_keys);
+    let partition = if view.group_keys.is_empty() {
+        String::new()
+    } else {
+        format!("partition by {} ", quoted_list(&view.group_keys))
+    };
     let mut order = order_items(&view.order_by, &view.order_keys);
     order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
     let orders = order.join(", ");
@@ -1456,7 +1464,7 @@ fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     let rank = quote_ident(IVM_TOP_K_RANK_COLUMN);
     format!(
         "computed as (select {output}, \
-         cast(row_number() over (partition by {groups} order by {orders}) as bigint) \
+         cast(row_number() over ({partition}order by {orders}) as bigint) \
              as {rank} \
          from {source_alias} where {filter})"
     )
@@ -1468,10 +1476,17 @@ fn top_k_refresh_sql(view: &TopKView, epoch: i64) -> String {
     let output = quoted_list(&top_k_output_columns(view));
     let pks = quoted_list(&view.source.primary_keys);
     let rank = quote_ident(IVM_TOP_K_RANK_COLUMN);
-    let group_match_computed = key_join_condition_null_safe("c", "a", &view.group_keys);
+    let group_match_computed = if view.group_keys.is_empty() {
+        "1 = 1".to_string()
+    } else {
+        key_join_condition_null_safe("c", "a", &view.group_keys)
+    };
     let pk_match_computed = key_join_condition("c", "a", &view.source.primary_keys);
-    let group_match_active =
-        key_join_condition_null_safe("active", "a", &view.group_keys);
+    let group_match_active = if view.group_keys.is_empty() {
+        "1 = 1".to_string()
+    } else {
+        key_join_condition_null_safe("active", "a", &view.group_keys)
+    };
     format!(
         "with {affected}, {computed}, \
          already as (select distinct {pks} from mv \
@@ -1556,11 +1571,8 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
             view.view_id
         ));
     }
-    if view.group_keys.is_empty() || view.order_keys.is_empty() {
-        return Err(report!(
-            "top-k view {} needs group and order keys",
-            view.view_id
-        ));
+    if view.order_keys.is_empty() {
+        return Err(report!("top-k view {} needs order keys", view.view_id));
     }
     if view.source.primary_keys.is_empty() {
         return Err(report!(

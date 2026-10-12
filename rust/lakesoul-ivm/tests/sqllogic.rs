@@ -1484,6 +1484,40 @@ fn sqllogic_window_sum_frame() {
 }
 
 #[test]
+fn sqllogic_window_range_frame() {
+    run_script_for_mv(
+        "windowrangeframe",
+        include_str!("slt/window_range_frame.slt"),
+        window_aggregate_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Sum,
+            Some("v"),
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_window_groups_frame() {
+    run_script_for_mv(
+        "windowgroupsframe",
+        include_str!("slt/window_groups_frame.slt"),
+        window_aggregate_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["g"]),
+            &group_keys(&["k"]),
+            WindowFunction::Sum,
+            Some("v"),
+        )
+        .unwrap(),
+        group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
 fn sqllogic_window_aggregate_where() {
     run_script_for_mv(
         "windowaggwhere",
@@ -1507,6 +1541,16 @@ fn sqllogic_top_k_where() {
         include_str!("slt/top_k_where.slt"),
         top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_top_k_limit() {
+    run_script_for_mv(
+        "topklimit",
+        include_str!("slt/top_k_limit.slt"),
+        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
+        group_keys(&["k"]),
     );
 }
 

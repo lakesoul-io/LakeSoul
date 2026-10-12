@@ -1,0 +1,62 @@
+# A global TOP-K: `ORDER BY ... LIMIT k` without a window function.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert; k=4,g=b,v=1,op=insert; k=5,g=a,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 2
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+1 10
+3 7
+
+# A new row enters the top and the boundary row leaves it.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+1 10
+6 9
+
+# A delete and an update in one window.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete; k=4,g=b,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+4 12
+6 9
+
+# A definition change (limit 3) rebuilds the view.
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 3
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+3 7
+4 12
+6 9

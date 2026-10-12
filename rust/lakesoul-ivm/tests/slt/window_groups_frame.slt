@@ -1,0 +1,35 @@
+# A GROUPS frame counts peer groups of the ordering, not rows.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=10,op=insert; k=3,g=a,v=12,op=insert; k=4,g=a,v=16,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g ORDER BY v GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__
+----
+a 1 20
+a 2 20
+a 3 32
+a 4 28
+
+# Removing one peer keeps the other groups' frames.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, SUM(v) OVER (PARTITION BY g ORDER BY v GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM __SRC__
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, k, sum_v FROM __MV__
+----
+a 1 10
+a 3 22
+a 4 28

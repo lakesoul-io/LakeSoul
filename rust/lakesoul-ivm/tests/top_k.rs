@@ -491,7 +491,7 @@ async fn top_k_validation() {
             .contains("positive limit")
     );
 
-    // Empty group or order keys.
+    // A global top-k (no group keys) is valid; the order keys are required.
     let view = TopKView::new(
         format!("valid_b_{suffix}"),
         source.clone(),
@@ -500,13 +500,23 @@ async fn top_k_validation() {
         vec!["ord".to_string()],
         1,
     );
+    assert!(runtime.refresh_top_k(&view).await.unwrap().is_none());
+
+    let view = TopKView::new(
+        format!("valid_b2_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        Vec::new(),
+        1,
+    );
     assert!(
         runtime
             .refresh_top_k(&view)
             .await
             .unwrap_err()
             .to_string()
-            .contains("group and order keys")
+            .contains("order keys")
     );
 
     // A keyed source is required.
