@@ -58,8 +58,8 @@ use lakesoul_io::vector::builder::VectorShardIndexBuilder;
 use lakesoul_io::writer::create_writer_with_io_config;
 use lakesoul_metadata::index_catalog::{CommitMode, VectorCatalog};
 use lakesoul_vector::{
-    IndexHeader, IndexStore, IvfRabitqIndex, Metric, RotatorType, SearchParams,
-    SegmentEntry, VectorIndexConfig,
+    IndexHeader, IndexStore, IvfRabitqIndex, Metric, RotatorType, SearchDiagnostics,
+    SearchParams, SegmentEntry, VectorIndexConfig,
 };
 use object_store::local::LocalFileSystem;
 use rand::SeedableRng;
@@ -165,6 +165,8 @@ struct Args {
     out: Option<PathBuf>,
     /// Reuse an existing index in `work_dir` instead of rebuilding it.
     reuse: bool,
+    /// Print the per-stage search counters at `--nprobe` (search scenario).
+    search_stats: bool,
     // ---- stream / trigger ----
     policy: Policy,
     max_delta_ratio: f32,
@@ -216,6 +218,7 @@ impl Default for Args {
             work_dir: PathBuf::from(DEFAULT_WORK_DIR),
             out: None,
             reuse: false,
+            search_stats: false,
             policy: Policy::Auto,
             max_delta_ratio: 1.0,
             period: 3,
@@ -261,6 +264,8 @@ OPTIONS:
   --work-dir <path>                         Data + index directory (default: {DEFAULT_WORK_DIR})
   --out <path.json>                         Write the result summary as JSON
   --reuse                                   Reuse an existing index in --work-dir
+  --search-stats                            Print the per-stage search counters at --nprobe
+                                            (search scenario)
 
 STREAM / TRIGGER:
   --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
@@ -375,6 +380,7 @@ fn parse_args() -> Result<Args, String> {
             "--work-dir" => args.work_dir = PathBuf::from(value(flag)?),
             "--out" => args.out = Some(PathBuf::from(value(flag)?)),
             "--reuse" => args.reuse = true,
+            "--search-stats" => args.search_stats = true,
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
             "--sql-hash-buckets" => {
@@ -1458,6 +1464,64 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         }));
     }
 
+    // Optional per-stage counters at the single `--nprobe` value.  The
+    // per-operation cost of each stage is in `lakesoul-vector`'s
+    // `fastscan_kernel` criterion bench, so counters x kernel cost attribute
+    // the search time between accumulation, post-processing and refinement.
+    let diagnostics = if args.search_stats {
+        let params = SearchParams::new(args.top_k, args.nprobe);
+        let mut total = SearchDiagnostics::default();
+        let mut total_ms = 0.0f64;
+        let mut n_ok = 0usize;
+        for qi in 0..dataset.queries.n {
+            let query = dataset.queries.query(qi);
+            let t = Instant::now();
+            let Ok((_results, diag)) = index.search_with_diagnostics(query, params)
+            else {
+                continue;
+            };
+            total_ms += t.elapsed().as_secs_f64() * 1000.0;
+            n_ok += 1;
+            total.clusters_probed += diag.clusters_probed;
+            total.batches_scanned += diag.batches_scanned;
+            total.vectors_scanned += diag.vectors_scanned;
+            total.estimated += diag.estimated;
+            total.skipped_by_lower_bound += diag.skipped_by_lower_bound;
+            total.extended_evaluations += diag.extended_evaluations;
+            total.fastscan_ns += diag.fastscan_ns;
+            total.scalar_ns += diag.scalar_ns;
+        }
+        let n = n_ok.max(1) as f64;
+        let value = json!({
+            "nprobe": args.nprobe,
+            "queries": n_ok,
+            "mean_ms": total_ms / n,
+            "clusters_probed": total.clusters_probed as f64 / n,
+            "batches_scanned": total.batches_scanned as f64 / n,
+            "vectors_scanned": total.vectors_scanned as f64 / n,
+            "heap_pushes": total.estimated as f64 / n,
+            "skipped_by_lower_bound": total.skipped_by_lower_bound as f64 / n,
+            "refined": total.extended_evaluations as f64 / n,
+            "fastscan_ms": total.fastscan_ns as f64 / n / 1e6,
+            "scalar_loop_ms": total.scalar_ns as f64 / n / 1e6,
+        });
+        println!(
+            "stats nprobe={}: mean={:.3}ms fastscan={:.3}ms scalar={:.3}ms vectors={:.0} pruned={:.0} refined={:.0} pushed={:.0} batches={:.0}",
+            args.nprobe,
+            value["mean_ms"].as_f64().unwrap_or(0.0),
+            value["fastscan_ms"].as_f64().unwrap_or(0.0),
+            value["scalar_loop_ms"].as_f64().unwrap_or(0.0),
+            value["vectors_scanned"].as_f64().unwrap_or(0.0),
+            value["skipped_by_lower_bound"].as_f64().unwrap_or(0.0),
+            value["refined"].as_f64().unwrap_or(0.0),
+            value["heap_pushes"].as_f64().unwrap_or(0.0),
+            value["batches_scanned"].as_f64().unwrap_or(0.0),
+        );
+        Some(value)
+    } else {
+        None
+    };
+
     let summary = json!({
         "scenario": "search",
         "format": "vortex",
@@ -1469,6 +1533,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "load_ms": load_ms,
         "index_size_bytes": index_size_bytes(&work_dir),
         "sweep": sweep,
+        "diagnostics": diagnostics,
     });
     print_summary(&summary);
     Ok(summary)
