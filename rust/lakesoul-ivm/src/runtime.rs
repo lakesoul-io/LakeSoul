@@ -245,6 +245,10 @@ pub enum ViewSpec {
         /// non-equality join conditions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pair_filter: Option<String>,
+        /// Whether a NULL join key matches another NULL join key
+        /// (`IS NOT DISTINCT FROM` keys).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        null_safe: bool,
     },
     /// `LEFT JOIN` over two keyed sources: every left row with all its
     /// matching right rows (a NULL-padded row when nothing matches).
@@ -2478,6 +2482,7 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 pair_filter,
+                null_safe,
             } => SpecView::Join(JoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2492,6 +2497,7 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 pair_filter: pair_filter.clone(),
+                null_safe: *null_safe,
                 refresh_interval_ms,
             }),
             ViewSpec::LeftJoin {

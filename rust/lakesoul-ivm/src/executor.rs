@@ -42,9 +42,9 @@ use crate::runtime::{
     left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
-    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
-    sum_count_groups_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for,
+    nullable_join_key_schema, row_expr_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
     wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
     wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
@@ -1055,60 +1055,69 @@ fn expected_mv_schema(
             left_value,
             right_value,
             output_columns,
+            null_safe,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            match (left.primary_keys.is_empty(), right.primary_keys.is_empty()) {
-                (false, false) => {
-                    if output_columns.is_empty() {
-                        keyed_join_view_schema_with_keys(
-                            &left.schema,
-                            &right.schema,
-                            &left.primary_keys,
-                            &right.primary_keys,
-                            join_keys,
-                            key_exprs,
-                            left_value,
-                            right_value,
-                        )?
-                    } else {
-                        wide_keyed_join_view_schema_with_keys(
-                            &left.schema,
-                            &right.schema,
-                            &left.primary_keys,
-                            &right.primary_keys,
-                            join_keys,
-                            key_exprs,
-                            output_columns,
-                        )?
+            let schema =
+                match (left.primary_keys.is_empty(), right.primary_keys.is_empty()) {
+                    (false, false) => {
+                        if output_columns.is_empty() {
+                            keyed_join_view_schema_with_keys(
+                                &left.schema,
+                                &right.schema,
+                                &left.primary_keys,
+                                &right.primary_keys,
+                                join_keys,
+                                key_exprs,
+                                left_value,
+                                right_value,
+                            )?
+                        } else {
+                            wide_keyed_join_view_schema_with_keys(
+                                &left.schema,
+                                &right.schema,
+                                &left.primary_keys,
+                                &right.primary_keys,
+                                join_keys,
+                                key_exprs,
+                                output_columns,
+                            )?
+                        }
                     }
-                }
-                (true, true) => {
-                    if output_columns.is_empty() {
-                        join_view_schema_with_keys(
-                            &left.schema,
-                            &right.schema,
-                            join_keys,
-                            key_exprs,
-                            left_value,
-                            right_value,
-                        )?
-                    } else {
-                        wide_join_view_schema_with_keys(
-                            &left.schema,
-                            &right.schema,
-                            join_keys,
-                            key_exprs,
-                            output_columns,
-                        )?
+                    (true, true) => {
+                        if output_columns.is_empty() {
+                            join_view_schema_with_keys(
+                                &left.schema,
+                                &right.schema,
+                                join_keys,
+                                key_exprs,
+                                left_value,
+                                right_value,
+                            )?
+                        } else {
+                            wide_join_view_schema_with_keys(
+                                &left.schema,
+                                &right.schema,
+                                join_keys,
+                                key_exprs,
+                                output_columns,
+                            )?
+                        }
                     }
-                }
-                _ => {
-                    return Err(rootcause::report!(
-                        "a join view needs both sources keyed or both append-only"
-                    ));
-                }
+                    _ => {
+                        return Err(rootcause::report!(
+                            "a join view needs both sources keyed or both append-only"
+                        ));
+                    }
+                };
+            if *null_safe && !join_keys.is_empty() {
+                // A null-safe join matches NULL keys with NULL keys, so its
+                // output can carry a NULL join key.
+                nullable_join_key_schema(&schema, join_keys.len())
+            } else {
+                schema
             }
         }
     })

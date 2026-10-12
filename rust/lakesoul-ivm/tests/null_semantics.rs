@@ -20,8 +20,9 @@ use lakesoul_ivm::{
     DistinctAggKind, DistinctAggView, IVM_ROW_KINDS_COLUMN, IVM_ROW_NUMBER_COLUMN,
     IVM_VALUE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinView, MinMaxKind,
     MinMaxView, SemiAntiView, SumCountView, WindowView, distinct_agg_mv_schema_for,
-    join_view_schema_for, min_max_mv_schema_for, semi_anti_mv_schema,
-    sum_count_mv_schema_for, value_count_state_schema_for, window_mv_schema_for,
+    join_view_schema_for, min_max_mv_schema_for, nullable_join_key_schema,
+    semi_anti_mv_schema, sum_count_mv_schema_for, value_count_state_schema_for,
+    window_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -854,11 +855,12 @@ async fn read_join_rows(runtime: &IvmRuntime, output: &IvmTable) -> Vec<JoinRow>
     rows
 }
 
-/// The SQL semantics of the equality join.
+/// The SQL semantics of a join with the given key predicate.
 async fn full_join_rows(
     runtime: &IvmRuntime,
     left: &IvmTable,
     right: &IvmTable,
+    predicate: &str,
 ) -> Vec<JoinRow> {
     let context = SessionContext::new();
     register(
@@ -873,10 +875,11 @@ async fn full_join_rows(
         right.read_current(runtime.client()).await.unwrap(),
         &right.schema,
     );
-    let frame = context
-        .sql("select distinct l.jk as jk, l.lv as lv, r.rv as rv from l join r on l.jk = r.jk")
-        .await
-        .unwrap();
+    let sql = format!(
+        "select distinct l.jk as jk, l.lv as lv, r.rv as rv from l join r \
+         on {predicate}"
+    );
+    let frame = context.sql(&sql).await.unwrap();
     let mut rows = Vec::new();
     for batch in frame.collect().await.unwrap() {
         let schema = batch.schema();
@@ -986,7 +989,7 @@ async fn null_join_keys_match_sql() {
     runtime.refresh_join(&view).await.unwrap().unwrap();
     assert_eq!(
         read_join_rows(&runtime, &output).await,
-        full_join_rows(&runtime, &left, &right).await
+        full_join_rows(&runtime, &left, &right, "l.jk = r.jk").await
     );
     assert_eq!(
         read_join_rows(&runtime, &output).await,
@@ -1008,7 +1011,7 @@ async fn null_join_keys_match_sql() {
     runtime.refresh_join(&view).await.unwrap().unwrap();
     assert_eq!(
         read_join_rows(&runtime, &output).await,
-        full_join_rows(&runtime, &left, &right).await
+        full_join_rows(&runtime, &left, &right, "l.jk = r.jk").await
     );
 
     // New NULL right rows join nothing.
@@ -1022,13 +1025,141 @@ async fn null_join_keys_match_sql() {
     runtime.refresh_join(&view).await.unwrap().unwrap();
     assert_eq!(
         read_join_rows(&runtime, &output).await,
-        full_join_rows(&runtime, &left, &right).await
+        full_join_rows(&runtime, &left, &right, "l.jk = r.jk").await
     );
 
     runtime.rebuild_join(&view).await.unwrap();
     assert_eq!(
         read_join_rows(&runtime, &output).await,
-        full_join_rows(&runtime, &left, &right).await
+        full_join_rows(&runtime, &left, &right, "l.jk = r.jk").await
+    );
+}
+
+#[test_log::test(tokio::test)]
+async fn null_safe_join_keys_match_sql() {
+    // `IS NOT DISTINCT FROM` keys: NULL matches NULL, which the append-only
+    // pair join must reproduce.
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let left = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_null_safe_join_l_{suffix}"),
+            table_path(&dir, "left"),
+            join_left_schema(),
+        ))
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_null_safe_join_r_{suffix}"),
+            table_path(&dir, "right"),
+            join_right_schema(),
+        ))
+        .await
+        .unwrap();
+    let join_keys = vec!["jk".to_string()];
+    let output = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_null_safe_join_out_{suffix}"),
+            table_path(&dir, "out"),
+            nullable_join_key_schema(
+                &join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &join_keys,
+                    "lv",
+                    "rv",
+                )
+                .unwrap(),
+                1,
+            ),
+        ))
+        .await
+        .unwrap();
+    let view = JoinView::new_with_join_keys(
+        format!("null_safe_join_{suffix}"),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        join_keys,
+        "lv",
+        "rv",
+    )
+    .with_null_safe(true);
+
+    // NULL keys match NULL keys on both sides.
+    left.append_batch(
+        runtime.client(),
+        join_left_batch(&[
+            (None, Some("L1")),
+            (Some("a"), Some("L2")),
+            (Some("a"), None),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            join_right_batch(&[
+                (None, Some(100)),
+                (Some("a"), Some(200)),
+                (Some("a"), None),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        full_join_rows(&runtime, &left, &right, "l.jk is not distinct from r.jk").await
+    );
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        vec![
+            (None, Some("L1".to_string()), Some(100)),
+            (Some("a".to_string()), None, None),
+            (Some("a".to_string()), None, Some(200)),
+            (Some("a".to_string()), Some("L2".to_string()), None),
+            (Some("a".to_string()), Some("L2".to_string()), Some(200)),
+        ]
+    );
+
+    // A new NULL-key left row matches the NULL-key right row; a new non-NULL
+    // key matches nothing yet.
+    left.append_batch(
+        runtime.client(),
+        join_left_batch(&[(None, Some("L4")), (Some("b"), Some("L5"))]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        full_join_rows(&runtime, &left, &right, "l.jk is not distinct from r.jk").await
+    );
+
+    // A new NULL right row matches every NULL-key left row; the new "b" key
+    // only matches the "b" left row.
+    right
+        .append_batch(
+            runtime.client(),
+            join_right_batch(&[(None, Some(300)), (Some("b"), Some(400))]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        full_join_rows(&runtime, &left, &right, "l.jk is not distinct from r.jk").await
+    );
+
+    runtime.rebuild_join(&view).await.unwrap();
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        full_join_rows(&runtime, &left, &right, "l.jk is not distinct from r.jk").await
     );
 }
 
