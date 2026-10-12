@@ -1197,6 +1197,57 @@ impl ViewSpec {
         ids
     }
 
+    /// Patch the identity of a derived spec: the analysis of a derived source
+    /// uses placeholder ids (the derived MV table does not exist yet), and the
+    /// executor sets the real view and MV table ids once it created the
+    /// table.
+    pub(crate) fn set_derived_identity(
+        &mut self,
+        view_id: &str,
+        mv_table_id: &str,
+    ) -> Result<()> {
+        match self {
+            ViewSpec::Join {
+                view_id: id,
+                output_table_id: mv,
+                ..
+            }
+            | ViewSpec::LookupJoin {
+                view_id: id,
+                output_table_id: mv,
+                ..
+            }
+            | ViewSpec::LeftJoin {
+                view_id: id,
+                output_table_id: mv,
+                ..
+            }
+            | ViewSpec::FullJoin {
+                view_id: id,
+                output_table_id: mv,
+                ..
+            }
+            | ViewSpec::CrossJoin {
+                view_id: id,
+                output_table_id: mv,
+                ..
+            }
+            | ViewSpec::MultiJoin {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            } => {
+                *id = view_id.to_string();
+                *mv = mv_table_id.to_string();
+                Ok(())
+            }
+            other => Err(report!(
+                "a derived view over {} is not materialized yet",
+                other.kind()
+            )),
+        }
+    }
+
     /// A stable label for the view kind, used by the metrics.
     pub fn kind(&self) -> &'static str {
         match self {

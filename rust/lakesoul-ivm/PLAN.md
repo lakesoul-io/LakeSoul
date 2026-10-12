@@ -3245,6 +3245,28 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   恢复后自愈 rebuild、菱形一次遍历 + 重放幂等（全 `Unchanged`）、执行器 opt-in 多上游
   与被动默认。
 
+### 10.117 派生表重写：复合源自动物化为内部视图（ROADMAP §B2）
+
+- **标记**：分析器解析输入时（`collect_filtered_source` / `collect_row` / `join_input`）
+  遇到复合节点（Join/Aggregate/Window/Union/Distinct）不再直接报错，而是返回带
+  `DerivedSource { plan }` attachment 的错误（`derived_sourceable` 判定的形状才带标记）。
+- **执行器物化**：`analyze_with_derived` 捕获标记 → `materialize_derived` 自底向上：
+  递归分析子计划 → 宽化紧凑 join（`widen_derived_join`：紧凑 join 的 MV 列名为
+  `left_value`/`right_value`，派生视图需暴露子计划列名，因此转为 wide 输出列）→ 校验派生
+  MV 暴露子计划全部列（缺列则明确拒绝，提示拆显式视图）→ 按名建/复用内部表
+  `<target>__ivm_step<i>`（`lakesoul.ivm.internal`；schema 变才重建并清理旧视图行）→
+  派生视图以**自己的表 id** 注册（与用户视图一致，链依赖图可按 source id 找到）→
+  rebuild/refresh（定义未变则增量）→ 用派生表的 scan 替换计划子树重分析。
+- **主键与范围**：`derived_primary_keys` 只支持 join 族（`keyed_join_output_primary_keys` /
+  LookupJoin 左键 / `multi_join_primary_keys`），其它 kind 明确拒绝
+  （「a derived view over <kind> is not materialized yet」）。
+- **执行**：`execute_inner` 改为 `analyze_with_derived`（两遍分析共用改写后的计划）；
+  内部步骤在语句分析阶段刷新/重建（内部依赖，先于外层）；定义变化时
+  `drop_stale_derived` 按名清理多余步骤（表 + 视图行）；链编排自动包含派生视图。
+- **测试**：`tests/derived_views.rs` 3 个：聚合读 join 的 bootstrap/增量（两侧
+  增删改）/链推进/步骤复用、定义收缩后步骤被清理且换回 join 定义可重建、非 join 派生源
+  明确拒绝。全量 IVM **445 passed / 0 failed**；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
