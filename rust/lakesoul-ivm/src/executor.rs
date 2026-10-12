@@ -24,6 +24,9 @@ use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::provider_as_source;
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
@@ -33,16 +36,17 @@ use datafusion::sql::sqlparser::ast::{
 use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
-    ChainPolicy, IVM_VALUE_COLUMN, IvmRuntime, ViewSpec,
+    ChainPolicy, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
     approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
     array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
     distinct_agg_groups_mv_schema_for, full_join_view_schema_for,
     grouping_sets_mv_schema_for, join_view_schema_with_keys,
-    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
-    left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_join_view_schema_for,
-    median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_join_append_schema_for, multi_join_mv_schema_for, multi_window_mv_schema_for,
+    keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
+    left_aggregate_mv_schema_with_outputs, left_join_view_schema_for,
+    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
+    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
     nullable_join_key_schema, row_expr_mv_schema_for, semi_anti_mv_schema_for,
     string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
     union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
@@ -51,12 +55,114 @@ use crate::runtime::{
     wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_for, window_columns_mv_schema_for,
 };
-use crate::sql::{AnalyzeRequest, analyze_select, definition_hash};
+use crate::sql::{AnalyzeRequest, DerivedSource, analyze_select, definition_hash};
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
 
 /// Placeholder state table id used to probe the query shape before the real
 /// state table exists.
 const STATE_PLACEHOLDER: &str = "__ivm_state_placeholder__";
+
+/// Placeholder identity of a derived spec: the derived table does not exist
+/// while its subplan is analyzed, so the executor patches the real ids
+/// afterwards ([`ViewSpec::set_derived_identity`]).
+const DERIVED_PLACEHOLDER: &str = "__ivm_derived__";
+
+/// The maximum number of derived views one statement may materialize.
+const MAX_DERIVED_STEPS: usize = 4;
+
+/// The table name of a derived step.
+fn derived_step_name(target_name: &str, index: usize) -> String {
+    format!("{target_name}__ivm_step{index}")
+}
+
+/// The table path of a derived step (a sibling directory of the target MV).
+fn derived_step_path(target_path: &str, index: usize) -> String {
+    format!("{}/__ivm_step{index}", target_path.trim_end_matches('/'))
+}
+
+/// The compact join shapes name their payload columns `left_value` /
+/// `right_value`; a derived view must expose the subplan's column names, so
+/// the compact shape is widened to one named output column per payload.
+fn widen_derived_join(spec: &mut ViewSpec) {
+    let (output_columns, left_value, right_value) = match spec {
+        ViewSpec::Join {
+            output_columns,
+            left_value,
+            right_value,
+            ..
+        }
+        | ViewSpec::LookupJoin {
+            output_columns,
+            left_value,
+            right_value,
+            ..
+        }
+        | ViewSpec::CrossJoin {
+            output_columns,
+            left_value,
+            right_value,
+            ..
+        } => (output_columns, left_value, right_value),
+        _ => return,
+    };
+    if !output_columns.is_empty() {
+        return;
+    }
+    *output_columns = vec![
+        JoinOutputColumn {
+            side: JoinSide::Left,
+            column: left_value.clone(),
+            name: left_value.clone(),
+        },
+        JoinOutputColumn {
+            side: JoinSide::Right,
+            column: right_value.clone(),
+            name: right_value.clone(),
+        },
+    ];
+}
+
+/// The subplan of a derived source in an analyzer error, if any.
+fn derived_source(error: &rootcause::Report) -> Option<LogicalPlan> {
+    error
+        .attachments()
+        .iter()
+        .find_map(|attachment| attachment.downcast_inner::<DerivedSource>())
+        .map(|source| source.plan.clone())
+}
+
+/// A scan of a derived MV table, for the rewritten plan.
+fn derived_scan(table: &IvmTable, runtime: &IvmRuntime) -> Result<LogicalPlan> {
+    let provider: Arc<dyn TableProvider> = Arc::new(runtime.table_provider(table));
+    Ok(LogicalPlanBuilder::scan(
+        table.table_name.as_str(),
+        provider_as_source(provider),
+        None,
+    )?
+    .build()?)
+}
+
+/// Replace every occurrence of `target` in `plan` with `replacement`.
+///
+/// Identical subplans map to the same derived view, so replacing all of their
+/// occurrences is the intended behavior.
+fn replace_plan(
+    plan: &LogicalPlan,
+    target: &LogicalPlan,
+    replacement: &LogicalPlan,
+) -> Result<LogicalPlan> {
+    let transformed = plan
+        .clone()
+        .transform_up(|node| {
+            if &node == target {
+                Ok(Transformed::yes(replacement.clone()))
+            } else {
+                Ok(Transformed::no(node))
+            }
+        })
+        .map_err(|error| rootcause::report!("rewriting the derived source: {error}"))?;
+    Ok(transformed.data)
+}
 
 /// What an execution did to the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,17 +317,24 @@ impl IvmSqlExecutor {
             mv_table_id: mv.table_id.clone(),
             state_table_id: Some(STATE_PLACEHOLDER.to_string()),
         };
-        let probe = analyze_select(&plan, &tables, &request)?;
+        // Compound sources the statement reads are materialized as derived
+        // views (internal keyed MVs) before the outer analysis succeeds; the
+        // derived steps are idempotent by name, while the target checks below
+        // still run before the target itself is touched.
+        let mut derived = Vec::new();
+        let (probe, plan) = self
+            .analyze_with_derived(&plan, &mut tables, &request, &mv, &mut derived)
+            .await?;
         // The definition hash ignores generated table ids, so the probe is a
         // valid identity even before the state table exists.
-        let definition = definition_hash(&probe.spec)?;
+        let definition = definition_hash(&probe)?;
         let stored = self.runtime.metadata().view_definition(&view_id).await?;
         let same_definition =
             stored.as_ref().is_some_and(|(hash, _)| hash == &definition);
 
-        // Validate before any side effect: a statement that cannot maintain
-        // this target must not create or drop state tables.
-        let expected = expected_mv_schema(&probe.spec, &tables)?;
+        // Validate before the target is touched: a statement that cannot
+        // maintain this target must not create or drop its state tables.
+        let expected = expected_mv_schema(&probe, &tables)?;
         if !schema_matches(&mv.schema, &expected) {
             return Err(rootcause::report!(
                 "target table `{}` does not match the view schema of this statement",
@@ -232,7 +345,7 @@ impl IvmSqlExecutor {
         // resolves the delete markers a refresh writes, so a keyed statement
         // needs one.  A global aggregate rewrites its single row wholesale and
         // needs no key; append-only statements are rejected by the analyzer.
-        if mv.primary_keys.is_empty() && !is_global_aggregate(&probe.spec) {
+        if mv.primary_keys.is_empty() && !is_global_aggregate(&probe) {
             return Err(rootcause::report!(
                 "target table `{}` needs a primary key: the view's refresh writes \
                  delete markers that the MV's primary key merges; declare the key \
@@ -246,15 +359,17 @@ impl IvmSqlExecutor {
         if stored.is_some() && !same_definition {
             self.drop_generated_state(&view_id).await?;
         }
-        let spec = if needs_state_table(&probe.spec) {
-            let state_table_id = self.ensure_state_table(&mv, &probe.spec).await?;
+        let spec = if needs_state_table(&probe) {
+            let state_table_id = self.ensure_state_table(&mv, &probe).await?;
             let request = AnalyzeRequest {
                 state_table_id: Some(state_table_id),
                 ..request
             };
-            analyze_select(&plan, &tables, &request)?.spec
+            self.analyze_with_derived(&plan, &mut tables, &request, &mv, &mut derived)
+                .await?
+                .0
         } else {
-            probe.spec
+            probe
         };
         if definition_hash(&spec)? != definition {
             return Err(rootcause::report!(
@@ -326,6 +441,12 @@ impl IvmSqlExecutor {
                 .set_view_error(&view_id, None)
                 .await?;
         }
+        // A changed definition may leave derived steps behind: drop them
+        // (their content is regenerated when a later definition needs the
+        // step again).
+        if stored.is_some() && !same_definition {
+            self.drop_stale_derived(&mv, derived.len()).await?;
+        }
 
         Ok(IvmExecution {
             action,
@@ -333,6 +454,203 @@ impl IvmSqlExecutor {
             view_id,
             definition_hash: definition,
         })
+    }
+
+    /// Analyze `plan`, materializing the derived views its compound sources
+    /// need (bottom-up), and return the outer spec with the rewritten plan.
+    async fn analyze_with_derived(
+        &self,
+        plan: &LogicalPlan,
+        tables: &mut HashMap<String, IvmTable>,
+        request: &AnalyzeRequest,
+        target: &IvmTable,
+        steps: &mut Vec<String>,
+    ) -> Result<(ViewSpec, LogicalPlan)> {
+        let mut plan = plan.clone();
+        loop {
+            match analyze_select(&plan, tables, request) {
+                Ok(analyzed) => return Ok((analyzed.spec, plan)),
+                Err(error) => {
+                    let Some(source) = derived_source(&error) else {
+                        return Err(error);
+                    };
+                    if steps.len() >= MAX_DERIVED_STEPS {
+                        return Err(rootcause::report!(
+                            "the statement needs more than {MAX_DERIVED_STEPS} \
+                             derived views; split it into explicit views"
+                        ));
+                    }
+                    let (table, view_id) = self
+                        .materialize_derived(&source, target, tables, steps)
+                        .await?;
+                    let scan = derived_scan(&table, &self.runtime)?;
+                    plan = replace_plan(&plan, &source, &scan)?;
+                    tables.insert(table.table_name.clone(), table);
+                    steps.push(view_id);
+                }
+            }
+        }
+    }
+
+    /// Materialize the subplan of a derived source as a registered view (with
+    /// its own internal MV table) and return the table and view id.
+    async fn materialize_derived(
+        &self,
+        subplan: &LogicalPlan,
+        target: &IvmTable,
+        tables: &mut HashMap<String, IvmTable>,
+        steps: &mut Vec<String>,
+    ) -> Result<(IvmTable, String)> {
+        let request = AnalyzeRequest {
+            view_id: DERIVED_PLACEHOLDER.to_string(),
+            mv_table_id: DERIVED_PLACEHOLDER.to_string(),
+            state_table_id: Some(STATE_PLACEHOLDER.to_string()),
+        };
+        // The subplan may itself need derived views; they are materialized
+        // first and take the lower step indices.
+        let (mut spec, _) =
+            Box::pin(self.analyze_with_derived(subplan, tables, &request, target, steps))
+                .await?;
+        // The derived view must expose the subplan's column names (the
+        // compact join shapes name their payloads left_value / right_value).
+        widen_derived_join(&mut spec);
+        let derived_schema = expected_mv_schema(&spec, tables)?;
+        for field in subplan.schema().fields() {
+            if derived_schema.field_with_name(field.name()).is_err() {
+                return Err(rootcause::report!(
+                    "a derived view does not expose the column {}; \
+                     split the statement into explicit views",
+                    field.name()
+                ));
+            }
+        }
+        let index = steps.len();
+        let table = self
+            .ensure_derived_table(target, index, &spec, tables)
+            .await?;
+        // The derived view is registered under its MV table id (the view
+        // identity of every view), so the chain graph finds it when the outer
+        // spec lists the derived table as a source.
+        let view_id = table.table_id.clone();
+        spec.set_derived_identity(&view_id, &view_id)?;
+        let definition = definition_hash(&spec)?;
+        let stored = self.runtime.metadata().view_definition(&view_id).await?;
+        let same_definition =
+            stored.as_ref().is_some_and(|(hash, _)| hash == &definition);
+        if same_definition {
+            self.runtime.refresh_spec(&spec).await?;
+        } else {
+            self.runtime.rebuild_spec(&spec).await?;
+            self.runtime
+                .metadata()
+                .set_view_definition(&view_id, &definition, "")
+                .await?;
+        }
+        Ok((table, view_id))
+    }
+
+    /// Create or reuse the internal MV table of a derived step.  The table is
+    /// reused by name while its schema and keys match; a changed step shape
+    /// recreates it (the dependent views rebuild through their new table id).
+    async fn ensure_derived_table(
+        &self,
+        target: &IvmTable,
+        index: usize,
+        spec: &ViewSpec,
+        tables: &HashMap<String, IvmTable>,
+    ) -> Result<IvmTable> {
+        let name = derived_step_name(&target.table_name, index);
+        let path = derived_step_path(&target.table_path, index);
+        let schema = expected_mv_schema(spec, tables)?;
+        let primary_keys = self.derived_primary_keys(spec).await?;
+        if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
+            if schema_matches(&existing.schema, &schema)
+                && existing.primary_keys == primary_keys
+            {
+                return Ok(existing);
+            }
+            self.runtime
+                .metadata()
+                .delete_view(&existing.table_id)
+                .await?;
+            self.runtime
+                .client()
+                .drop_table(&name, &target.namespace)
+                .await?;
+        }
+        self.runtime
+            .create_table(
+                IvmTableOptions::new(name, path, schema)
+                    .with_namespace(target.namespace.clone())
+                    .with_primary_keys(primary_keys),
+            )
+            .await
+    }
+
+    /// The primary keys a derived MV is created with.  Only the join shapes
+    /// are materialized for now; the other kinds are rejected explicitly.
+    async fn derived_primary_keys(&self, spec: &ViewSpec) -> Result<Vec<String>> {
+        Ok(match spec {
+            ViewSpec::Join {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::CrossJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            } => {
+                let left = self.runtime.open_table_by_id(left_table_id).await?;
+                let right = self.runtime.open_table_by_id(right_table_id).await?;
+                keyed_join_output_primary_keys(&left.primary_keys, &right.primary_keys)
+            }
+            ViewSpec::LookupJoin { left_table_id, .. } => self
+                .runtime
+                .open_table_by_id(left_table_id)
+                .await?
+                .primary_keys
+                .clone(),
+            ViewSpec::MultiJoin { sources, .. } => {
+                let mut keys = Vec::with_capacity(sources.len());
+                for source in sources {
+                    keys.push(
+                        self.runtime
+                            .open_table_by_id(&source.table_id)
+                            .await?
+                            .primary_keys
+                            .clone(),
+                    );
+                }
+                multi_join_primary_keys(&keys)
+            }
+            other => {
+                return Err(rootcause::report!(
+                    "a derived view over {} is not materialized yet",
+                    other.kind()
+                ));
+            }
+        })
+    }
+
+    /// Drop the derived steps beyond `needed` (a changed definition): the
+    /// step tables are addressed by name, and their views are registered
+    /// under the table id.
+    async fn drop_stale_derived(&self, target: &IvmTable, needed: usize) -> Result<()> {
+        for index in needed..=MAX_DERIVED_STEPS {
+            let name = derived_step_name(&target.table_name, index);
+            let Ok(table) = self.runtime.open_table(&name, &target.namespace).await
+            else {
+                continue;
+            };
+            self.runtime.metadata().delete_view(&table.table_id).await?;
+            let _ = self
+                .runtime
+                .client()
+                .drop_table(&name, &target.namespace)
+                .await;
+        }
+        Ok(())
     }
 
     /// The value-count state table of the view, reusing the registered one when

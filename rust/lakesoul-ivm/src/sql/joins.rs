@@ -1358,6 +1358,9 @@ pub(super) fn join_input<'a>(
                      subquery in a second view",
                 ));
             }
+            _ if derived_sourceable(node) => {
+                return Err(derived_source_error("a join side", node));
+            }
             _ => return Err(unsupported("join input must be a table")),
         }
     }

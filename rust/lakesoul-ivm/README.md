@@ -209,6 +209,17 @@ Supported within the shapes above:
   non-nullable primary key, so a NULL left key can never match).  The
   remaining key shapes (multi-table chains, computed keys) stay rejected
   rather than silently dropping the NULL matches;
+* **derived views**: an operator whose source is a compound subplan -- an
+  aggregate / DISTINCT / window / TOP-K / UNION reading an inner **join** --
+  is maintained by materializing the join as an internal derived view (named
+  `<target>__ivm_step0`, marked `lakesoul.ivm.internal`, registered as a view
+  under its table id): the statement is rewritten to read the derived MV, the
+  step refreshes before the statement through the same orchestration (so the
+  chain includes it and `refresh_view_chain` advances both), and a changed
+  definition reuses the step table or drops it when the definition shrinks.
+  A non-join derived source (an aggregate over an aggregate, a window over an
+  aggregate) and a derived view that would not expose a subplan column stay
+  rejected with a message pointing at explicit views;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -486,9 +497,10 @@ the backlog):
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * a top-k outside the maintained subset: `LIMIT` without `ORDER BY` (the
   kept rows are arbitrary), `LIMIT ... OFFSET` (the window shifts), a top-k
-  over an aggregate / window / join result (two chained views), computed
-  select-list columns above the limit, and a select list that omits the
-  source primary keys (the top-k rows are identified by them);
+  over an aggregate or window result (only an inner join source is
+  materialized automatically), computed select-list columns above the limit,
+  and a select list that omits the source primary keys (the top-k rows are
+  identified by them);
 * a decimal `SUM`/`AVG` whose precision leaves no headroom for the
   accumulator: DataFusion saturates the result type at 38 digits
   (`SUM(DECIMAL(p, s))` is `DECIMAL(min(38, p + 10), s)`) and wraps the

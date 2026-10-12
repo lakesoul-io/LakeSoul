@@ -30,6 +30,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::Unparser;
+use rootcause::report;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -281,8 +282,48 @@ fn collect_filtered_source(
             let source = resolve_table(tables, &scan.table_name)?.clone();
             Ok((source, scan_filter(&scan.filters)?))
         }
+        other if derived_sourceable(other) => Err(derived_source_error(shape, other)),
         other => Err(unsupported(format!("{shape} over {}", plan_label(other)))),
     }
+}
+
+/// The attachment the analyzer leaves on a compound source that must be
+/// materialized as a derived view: the executor catches it, materializes the
+/// subplan and retries the analysis against the derived MV.
+#[derive(Debug)]
+pub(crate) struct DerivedSource {
+    /// The subplan to materialize.
+    pub(crate) plan: LogicalPlan,
+}
+
+impl std::fmt::Display for DerivedSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a derived source")
+    }
+}
+
+/// Whether a compound source can be materialized as a derived view.  The
+/// executor materializes the subplan exactly like a registered view (its
+/// spec, MV table and refresh are the normal ones), so any shape the
+/// analyzer itself maintains qualifies.
+pub(crate) fn derived_sourceable(plan: &LogicalPlan) -> bool {
+    matches!(
+        peel(plan),
+        LogicalPlan::Join(_)
+            | LogicalPlan::Aggregate(_)
+            | LogicalPlan::Window(_)
+            | LogicalPlan::Union(_)
+            | LogicalPlan::Distinct(_)
+    )
+}
+
+/// The error asking the executor to materialize `plan` as a derived view.
+pub(crate) fn derived_source_error(shape: &str, plan: &LogicalPlan) -> rootcause::Report {
+    report!(
+        "{shape} reads {}: it is materialized as a derived view",
+        plan_label(plan)
+    )
+    .attach(DerivedSource { plan: plan.clone() })
 }
 /// `(previous) AND (rendered)` when a filter was already collected.
 fn combine_filter(previous: Option<String>, rendered: String) -> String {

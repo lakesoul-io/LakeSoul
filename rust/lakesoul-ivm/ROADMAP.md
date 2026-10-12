@@ -110,10 +110,10 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 单语句现状 | 难度 | 路径 |
 |---|---|---|---|
-| 聚合/去重叠加在 join 上（`SELECT g,SUM(f.v) FROM f JOIN d … GROUP BY g`） | 拒（an aggregate over a join） | **M** | join 视图 + 聚合视图；补拓扑编排 |
-| 窗口/TopK 叠加在 join / 聚合上 | 拒 | **M** | 同上 |
-| union 各分支为 join | 拒（row shape over a join） | **M** | 分支视图 + union 视图 |
-| 嵌套/不透明派生表 | 部分拒 | **M** | 分析器把派生表重写为视图链 |
+| 聚合/去重叠加在 join 上（`SELECT g,SUM(f.v) FROM f JOIN d … GROUP BY g`） | ✅ 已实现（PLAN §10.117，配合 §10.116 编排）：自动物化内部派生视图 `<target>__ivm_step0`（join 视图）+ 外层聚合；定义变更复用/清理步骤 | **M** | 已完成 |
+| 窗口/TopK 叠加在 join / 聚合上 | 部分 ✅：读 **join** 的窗口/TopK 自动派生；读聚合/窗口仍拒（派生主键未支持） | **M** | join 步已通；聚合/窗口步待后续 |
+| union 各分支为 join | 机制已覆盖（`collect_row` 标记 + join 派生），用例待补 | **M** | 分支视图 + union 视图 |
+| 嵌套/不透明派生表 | 部分 ✅：join 层嵌套与普通派生表已按需物化；其它算子层的嵌套仍拒 | **M** | 派生重写已落地，其余算子步逐项放开 |
 | **自动编排**（依赖图、拓扑刷新、失败重试） | ✅ 已实现（PLAN §10.116）：依赖从持久化 spec 现推；3 色拓扑 + 环报错；`ChainPolicy`（重试 1 次 → 重建回退 → dirty 自愈）与「下游绝不读落后上游」；多根一次遍历；`ViewRefresh` 动作返回；`list_views` + `last_error` | **M** | 已完成（原计划：注册时记录 MV + 自动先刷上游） |
 
 ### B3. 连接族（P1）

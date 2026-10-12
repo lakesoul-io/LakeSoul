@@ -149,6 +149,9 @@ pub(super) fn collect_row(
                 scalar_scan_filter(&scan.filters, tables, scalars)?,
             ))
         }
+        other if derived_sourceable(other) => {
+            Err(derived_source_error("a row shape", other))
+        }
         other => Err(unsupported(format!("row shape over {}", plan_label(other)))),
     }
 }
