@@ -16,8 +16,12 @@ from typing_extensions import override
 
 from lakesoul._lib._reader import _one_reader
 from lakesoul.metadata import LakeSoulScanPlanPartition
+from lakesoul.redaction import redacted_dataclass_repr
 
 DEFAULT_BATCH_SIZE: int = 2**10
+
+# Fields whose mappings are redacted in ``repr`` for diagnostics.
+_SCAN_CONFIG_SENSITIVE_FIELDS = frozenset({"object_store_options", "reader_options"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,9 @@ class LakeSoulScanConfig:
     world_size: int | None = None
     filter: ds.Expression | None = None
     reader_options: Mapping[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return redacted_dataclass_repr(self, _SCAN_CONFIG_SENSITIVE_FIELDS)
 
 
 @final

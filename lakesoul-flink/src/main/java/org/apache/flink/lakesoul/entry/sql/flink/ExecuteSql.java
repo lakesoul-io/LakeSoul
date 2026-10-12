@@ -6,8 +6,9 @@
 
 package org.apache.flink.lakesoul.entry.sql.flink;
 
+import com.dmetasoul.lakesoul.util.SensitiveConfig;
+
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamStatementSet;
@@ -45,24 +46,14 @@ public class ExecuteSql {
 
         StreamStatementSet statementSet = tableEnv.createStatementSet();
         Boolean hasModifiedOp = false;
+        int statementNumber = 0;
         for (String statement : statements) {
-            Operation operation;
-            try {
-                operation = parser.parse(statement).get(0);
-            } catch (Exception e) {
-                System.out.println("Parse statement " + statement + " failed: ");
-                System.out.println(ExceptionUtils.getRootCauseMessage(e));
-                throw e;
-            }
+            Operation operation = parseStatement(parser, statement, ++statementNumber);
+            System.out.println("Executing SQL statement #" + statementNumber);
             if (operation instanceof SetOperation) {
                 SetOperation setOperation = (SetOperation) operation;
                 if (setOperation.getKey().isPresent() && setOperation.getValue().isPresent()) {
-                    System.out.println(
-                            MessageFormatter.format(
-                                            "\n======Setting config: {}={}",
-                                            setOperation.getKey().get(),
-                                            setOperation.getValue().get())
-                                    .getMessage());
+                    printConfig(setOperation.getKey().get(), setOperation.getValue().get());
                     tableEnv.getConfig()
                             .getConfiguration()
                             .setString(setOperation.getKey().get(), setOperation.getValue().get());
@@ -71,35 +62,34 @@ public class ExecuteSql {
                             tableEnv.getConfig()
                                     .getConfiguration()
                                     .getString(setOperation.getKey().get(), "");
-                    System.out.println(
-                            MessageFormatter.format(
-                                            "Config {}={}", setOperation.getKey().get(), value)
-                                    .getMessage());
+                    printConfig(setOperation.getKey().get(), value);
                 } else {
                     System.out.println(
                             MessageFormatter.format(
                                             "All configs: {}",
-                                            tableEnv.getConfig().getConfiguration())
+                                            SensitiveConfig.redact(
+                                                    tableEnv.getConfig()
+                                                            .getConfiguration()
+                                                            .toMap()))
                                     .getMessage());
                 }
             } else if (operation instanceof CreateTableASOperation) {
-                String message = String.format("CTAS statement is not supported: %s", statement);
+                String message = "CTAS statement #" + statementNumber + " is not supported";
                 System.out.println(message);
                 throw new RuntimeException(message);
             } else if (operation instanceof BeginStatementSetOperation
                     || operation instanceof EndStatementSetOperation) {
-                System.out.println(statement);
                 continue;
             } else if (operation instanceof ModifyOperation) {
-                System.out.println(
-                        MessageFormatter.format("\n======Executing insertion:\n{}", statement)
-                                .getMessage());
                 // add insertion to statement set
                 hasModifiedOp = true;
                 statementSet.addInsertSql(statement);
             } else if ((operation instanceof QueryOperation)
                     || (operation instanceof AddJarOperation)) {
-                LOG.warn("SQL Statement {} is ignored", statement);
+                LOG.warn(
+                        "SQL statement #{} ({}) is ignored",
+                        statementNumber,
+                        operation.getClass().getSimpleName());
             } else if (operation instanceof CreateCatalogOperation) {
                 CreateCatalogOperation createCatalogOperation = (CreateCatalogOperation) operation;
                 if (createCatalogOperation.getCatalogName().equals("lakesoul")) {
@@ -108,11 +98,9 @@ public class ExecuteSql {
                     tableEnv.executeSql(statement);
                 }
             } else {
-                // for all show/alter/use but not select statements
-                // execute and print results
-                System.out.println(
-                        MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
-                tableEnv.executeSql(statement).print();
+                // SHOW results may contain credentials from table options. Execute without
+                // copying those diagnostic results into the job logs.
+                tableEnv.executeSql(statement);
             }
         }
         if (hasModifiedOp) {
@@ -124,6 +112,25 @@ public class ExecuteSql {
             env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID);
         } else {
             System.out.println("There's no INSERT INTO statement, the program will terminate");
+        }
+    }
+
+    static void printConfig(String key, String value) {
+        System.out.println(
+                MessageFormatter.format("Config {}={}", key, SensitiveConfig.redact(key, value))
+                        .getMessage());
+    }
+
+    static Operation parseStatement(Parser parser, String statement, int statementNumber) {
+        try {
+            return parser.parse(statement).get(0);
+        } catch (Exception e) {
+            // Preserve structured diagnostics, but never attach a cause that can echo SQL.
+            throw new IllegalArgumentException(
+                    "Failed to parse SQL statement #"
+                            + statementNumber
+                            + ": "
+                            + SqlParserDiagnostics.format(e));
         }
     }
 

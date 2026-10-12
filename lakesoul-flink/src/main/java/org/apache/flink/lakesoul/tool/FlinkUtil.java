@@ -24,6 +24,7 @@ import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.dmetasoul.lakesoul.util.SensitiveConfig;
 
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -511,9 +512,10 @@ public class FlinkUtil {
             throws IOException {
         String value = conf.getString(confKey, "");
         if (!value.isEmpty()) {
-            if (!fsConfKey.toLowerCase().contains("secret")) {
-                LOG.info("Set native object store option {}={}", fsConfKey, value);
-            }
+            LOG.info(
+                    "Set native object store option {}={}",
+                    fsConfKey,
+                    SensitiveConfig.redact(fsConfKey, value));
             io.setObjectStoreOption(fsConfKey, value);
         }
     }

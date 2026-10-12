@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul.exception
 
 import com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
+import com.dmetasoul.lakesoul.util.SensitiveConfig
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -454,10 +455,14 @@ object LakeSoulErrors {
       s"""The specified properties do not match the existing properties at $path.
          |
          |== Specified ==
-         |${specifiedProperties.map { case (k, v) => s"$k=$v" }.mkString("\n")}
+         |${specifiedProperties
+          .map { case (k, v) => s"$k=${SensitiveConfig.redact(k, v)}" }
+          .mkString("\n")}
          |
          |== Existing ==
-         |${existingProperties.map { case (k, v) => s"$k=$v" }.mkString("\n")}
+         |${existingProperties
+          .map { case (k, v) => s"$k=${SensitiveConfig.redact(k, v)}" }
+          .mkString("\n")}
         """.stripMargin
     )
   }

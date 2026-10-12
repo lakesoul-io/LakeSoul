@@ -423,7 +423,7 @@ pub async fn rebuild_text_index(
                 config.to_text_index_config(),
                 files,
                 pk_column.clone(),
-                object_store_options.clone().into(),
+                object_store_options.clone(),
                 None,
             )
             .build()

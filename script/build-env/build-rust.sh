@@ -68,7 +68,11 @@ docker run --rm -ti --net host \
     cd python
     uvx --from maturin[zig,patchelf] maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --features 'pyo3/extension-module,dist-ffi,hdfs' --out ../dist
     cd ..
-    cp rust/target/x86_64-unknown-linux-gnu/release/deps/liblakesoul_*.so rust/target/release
+    # Copy only Java C libraries; copying Python artifacts would corrupt its Cargo cache.
+    cp \
+      rust/target/x86_64-unknown-linux-gnu/release/deps/liblakesoul_io_c.so \
+      rust/target/x86_64-unknown-linux-gnu/release/deps/liblakesoul_metadata_c.so \
+      rust/target/release/
     echo
     echo "=== Build complete ==="
   '

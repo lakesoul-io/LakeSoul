@@ -38,7 +38,7 @@ impl JwtServer {
         &self,
         token: &str,
     ) -> Result<Claims, jsonwebtoken::errors::Error> {
-        info!("token is: {}", token);
+        info!("decoding token");
         let data = decode::<Claims>(token, &self.decoding_key, &Validation::default())?;
         Ok(data.claims)
     }
