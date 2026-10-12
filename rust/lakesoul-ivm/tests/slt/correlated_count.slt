@@ -1,0 +1,63 @@
+# A correlated COUNT comparison: the count of the other table's rows per key.
+# A key without rows counts 0 (the aggregate of no rows), so `v > 0` passes.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=2,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=5,op=insert*/
+
+statement ok
+/*ivm-append __DIM__: k=1,g=x,v=10,op=insert; k=1,g=y,v=10,op=insert; k=2,g=x,v=25,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT count(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+2 a 30
+3 b 5
+
+# k=3 reaches its threshold: five rows make the count 5.
+statement ok
+/*ivm-append __DIM__: k=3,g=a,v=1,op=insert; k=3,g=b,v=2,op=insert; k=3,g=c,v=3,op=insert; k=3,g=d,v=4,op=insert; k=3,g=e,v=5,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT count(u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+2 a 30
+
+# COUNT(DISTINCT): the repeated value of k=1 counts once, so v=2 passes.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT count(DISTINCT u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action rebuild*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+1 a 2
+2 a 30
+
+# A second distinct value raises k=1's threshold to two.
+statement ok
+/*ivm-append __DIM__: k=1,g=w,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ s WHERE v > (SELECT count(DISTINCT u.v) FROM __DIM__ u WHERE u.k = s.k)
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+2 a 30

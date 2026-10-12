@@ -585,6 +585,233 @@ fn analyze_correlated_scalar(
     })
 }
 
+/// The guarded COUNT comparison DataFusion decorrelates for the COUNT family:
+/// a comparison against `CASE WHEN guard IS NULL THEN 0 ELSE count(...) END`
+/// (the aggregate of no rows).  The rewrite returns the predicate with the
+/// CASE evaluated over the maintained aggregate column — a key without
+/// aggregate rows pads it with NULL, so the empty-set branch still fires —
+/// plus the aggregate output column the predicate refers to.
+fn rewrite_count_guard(predicate: &Expr) -> Option<(Expr, String)> {
+    let mut aggregate_column: Option<String> = None;
+    let rewritten = predicate
+        .clone()
+        .transform_down(|node| {
+            if aggregate_column.is_some() {
+                return Ok(Transformed::no(node));
+            }
+            let Expr::Case(case) = &node else {
+                return Ok(Transformed::no(node));
+            };
+            if case.expr.is_some() || case.when_then_expr.len() != 1 {
+                return Ok(Transformed::no(node));
+            }
+            let (when, then) = &case.when_then_expr[0];
+            let Some(else_expr) = case.else_expr.as_deref() else {
+                return Ok(Transformed::no(node));
+            };
+            // `CASE WHEN guard IS NULL THEN 0 ELSE count END` and its mirrored
+            // `CASE WHEN guard IS NOT NULL THEN count ELSE 0 END`.
+            let (guard, empty, value) = match (when.as_ref(), then.as_ref(), else_expr) {
+                (Expr::IsNull(guard), Expr::Literal(empty, _), Expr::Column(value)) => {
+                    (guard, empty, value)
+                }
+                (
+                    Expr::IsNotNull(guard),
+                    Expr::Column(value),
+                    Expr::Literal(empty, _),
+                ) => (guard, empty, value),
+                _ => return Ok(Transformed::no(node)),
+            };
+            if !matches!(guard.as_ref(), Expr::Column(_)) {
+                return Ok(Transformed::no(node));
+            }
+            aggregate_column = Some(value.name.clone());
+            let aggregate = Expr::Column(Column::from_name(IVM_RIGHT_AGG_COLUMN));
+            Ok(Transformed::yes(Expr::Case(Case::new(
+                None,
+                vec![(
+                    Box::new(Expr::IsNull(Box::new(aggregate.clone()))),
+                    Box::new(Expr::Literal(empty.clone(), None)),
+                )],
+                Some(Box::new(aggregate)),
+            ))))
+        })
+        .ok()?
+        .data;
+    aggregate_column.map(|column| (rewritten, column))
+}
+
+/// The aggregate call of a guarded COUNT comparison, the group keys that pair
+/// with the correlated keys, and the plan the aggregate reads.
+///
+/// `COUNT(DISTINCT x)` decorrelates into a two-level aggregate (a dedup
+/// aggregate under the counting one) with an always-true group guard; the
+/// guard is dropped here and the counting argument resolved back to the
+/// distinct expression.
+fn resolve_count_aggregate<'a>(
+    aggregate: &'a Aggregate,
+    subquery_projection: &'a Projection,
+    aggregate_column: &str,
+) -> Result<Option<(String, Vec<String>, &'a LogicalPlan)>> {
+    if aggregate.aggr_expr.len() != 1 {
+        return Err(unsupported("a scalar subquery with several aggregates"));
+    }
+    if subquery_projection
+        .schema
+        .field_with_name(None, aggregate_column)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let mut group_names = Vec::new();
+    for expr in &aggregate.group_expr {
+        let Some(column) = column_of(expr) else {
+            return Ok(None);
+        };
+        group_names.push(column.name.clone());
+    }
+    let mut right_plan: &LogicalPlan = &aggregate.input;
+    let mut call = None;
+    if let LogicalPlan::Projection(inner_projection) = peel(&aggregate.input)
+        && let LogicalPlan::Aggregate(dedup) = peel(&inner_projection.input)
+    {
+        let Expr::AggregateFunction(function) = &aggregate.aggr_expr[0] else {
+            return Ok(None);
+        };
+        let Some(argument) = function.params.args.first().and_then(column_of) else {
+            return Ok(None);
+        };
+        let Some(distinct) = dedup
+            .group_expr
+            .iter()
+            .find(|expr| expr.schema_name().to_string() == argument.name)
+        else {
+            return Ok(None);
+        };
+        let distinct = match distinct {
+            Expr::Alias(alias) => &alias.expr,
+            other => other,
+        };
+        call = Some(format!("count(distinct {})", render_expression(distinct)?));
+        // Drop the always-true group guard of the rewrite.
+        for expr in &inner_projection.expr {
+            if let Expr::Alias(alias) = expr
+                && matches!(
+                    alias.expr.as_ref(),
+                    Expr::Literal(ScalarValue::Boolean(Some(true)), _)
+                )
+            {
+                group_names.retain(|name| name != &alias.name);
+            }
+        }
+        right_plan = &dedup.input;
+    }
+    let call = match call {
+        Some(call) => call,
+        None => render_expression(&aggregate.aggr_expr[0])?,
+    };
+    Ok(Some((call, group_names, right_plan)))
+}
+
+/// A correlated COUNT-family comparison: DataFusion wraps the aggregate in an
+/// empty-set guard, so the shape arrives as a filter above a projection above
+/// a left-semi join.  The maintained view is the same semi join as the plain
+/// correlated scalar, with the guard evaluated over the aggregate column.
+pub(super) fn try_analyze_guarded_count(
+    projection: Option<&Projection>,
+    filter: &Filter,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<Option<ViewSpec>> {
+    let Some((predicate, aggregate_column)) = rewrite_count_guard(&filter.predicate)
+    else {
+        return Ok(None);
+    };
+    let mut node = peel(&filter.input);
+    if let LogicalPlan::Projection(mid) = node
+        && is_plain_projection(mid)
+    {
+        node = peel(&mid.input);
+    }
+    let LogicalPlan::Join(join) = node else {
+        return Ok(None);
+    };
+    // The decorrelated plan is a left join with the guarded comparison left
+    // in the filter above it; a semi join with the comparison pushed into its
+    // filter is the same shape (and the plain correlated scalar's).
+    if join.filter.is_some()
+        || !matches!(join.join_type, JoinType::Left | JoinType::LeftSemi)
+    {
+        return Ok(None);
+    }
+    let Some((aggregate, subquery_projection)) = aggregate_input(&join.right) else {
+        return Ok(None);
+    };
+    let Some((call, group_names, right_plan)) =
+        resolve_count_aggregate(aggregate, subquery_projection, &aggregate_column)?
+    else {
+        return Ok(None);
+    };
+    let mut join_keys = Vec::new();
+    let mut on_right_keys = Vec::new();
+    let mut right_qualifier = None;
+    for (left_expr, right_expr) in &join.on {
+        let left_column = column_of(left_expr)
+            .ok_or_else(|| unsupported("a scalar-subquery key must be a column"))?;
+        let right_column = column_of(right_expr)
+            .ok_or_else(|| unsupported("a scalar-subquery key must be a column"))?;
+        join_keys.push(left_column.name.clone());
+        on_right_keys.push(right_column.name.clone());
+        if right_column.relation.is_some() {
+            right_qualifier = right_column.relation.clone();
+        }
+    }
+    if join_keys.is_empty() {
+        return Err(unsupported("a scalar subquery needs a correlated key"));
+    }
+    let mut sorted_group = group_names.clone();
+    sorted_group.sort();
+    sorted_group.dedup();
+    let mut sorted_on = on_right_keys.clone();
+    sorted_on.sort();
+    sorted_on.dedup();
+    if sorted_group != sorted_on {
+        return Err(unsupported(
+            "a scalar subquery correlated on keys other than its grouping",
+        ));
+    }
+    let left_input = join_input(&join.left, tables)?;
+    let right_input = join_input(right_plan, tables)?;
+    let left = left_input.table;
+    let right = right_input.table;
+    let (left_alias, right_alias) =
+        (left_input.alias.as_deref(), right_input.alias.as_deref());
+    let predicate = render_match_predicate(
+        &predicate,
+        &[aggregate_column],
+        right_qualifier.as_ref(),
+    )?;
+    let output_columns =
+        semi_anti_output_columns(join, projection, left_alias, right_alias, left, right)?;
+    Ok(Some(ViewSpec::SemiAnti {
+        view_id: request.view_id.clone(),
+        left_table_id: left.table_id.clone(),
+        right_table_id: right.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        join_keys,
+        conditions: Vec::new(),
+        output_columns,
+        anti: false,
+        left_filter: left_input.filter.clone(),
+        right_filter: right_input.filter.clone(),
+        null_safe: false,
+        count_mode: false,
+        right_aggregate: Some(call),
+        right_keys: on_right_keys,
+        match_predicate: Some(predicate),
+    }))
+}
+
 /// A select-list correlated scalar subquery: `SELECT k, (SELECT AGG(w) FROM
 /// dim u WHERE u.k = s.k) AS m FROM src s` is maintained as a left join
 /// against one aggregate row per correlated key.
@@ -3130,8 +3357,8 @@ mod tests {
                 .contains(IVM_RIGHT_AGG_COLUMN)
         );
 
-        // A subquery filter is kept; a select-list scalar subquery and the
-        // DISTINCT rewrite are not semi joins.
+        // A subquery filter is kept; the computed select-list form is not a
+        // semi join.
         assert!(
             analyze_multi(
                 "select k, v from src s where v > \
@@ -3141,16 +3368,14 @@ mod tests {
             .await
             .is_ok()
         );
-        for sql in [
-            "select k, v from src s where v > \
-             (select count(distinct u.v) from src u where u.k = s.k)",
-            "select (select avg(u.v) from src u where u.k = s.k) + 1 as m from src s",
-        ] {
-            assert!(
-                analyze_multi(sql, vec![source_table("src")]).await.is_err(),
-                "{sql}"
-            );
-        }
+        assert!(
+            analyze_multi(
+                "select (select avg(u.v) from src u where u.k = s.k) + 1 as m from src s",
+                vec![source_table("src")],
+            )
+            .await
+            .is_err()
+        );
 
         // A select-list correlated scalar subquery is a left aggregate view.
         let analyzed = analyze_multi(
@@ -3175,6 +3400,75 @@ mod tests {
         assert_eq!(aggregate_column, "m");
         assert_eq!(output_columns, vec!["k".to_string(), "v".to_string()]);
         assert!(right_aggregate.contains("avg"), "{right_aggregate}");
+    }
+
+    #[tokio::test]
+    async fn analyzes_correlated_count_subqueries() {
+        // A COUNT comparison: DataFusion guards the empty set, and the
+        // maintained predicate evaluates the guard over the aggregate column,
+        // which a key without rows pads with NULL.
+        let analyzed = analyze_multi(
+            "select s.k, s.g, s.v from src s \
+             where s.v > (select count(u.v) from src u where u.k = s.k)",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            right_aggregate,
+            match_predicate,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(right_aggregate.as_deref(), Some("count(v)"));
+        let predicate = match_predicate.expect("a match predicate");
+        assert!(predicate.contains("__ivm_right_agg"), "{predicate}");
+        assert!(predicate.contains("IS NULL"), "{predicate}");
+
+        // COUNT(*): the empty set is zero rows.
+        let analyzed = analyze_multi(
+            "select s.k, s.g, s.v from src s \
+             where s.v > (select count(*) from src u where u.k = s.k)",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            right_aggregate, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(right_aggregate.as_deref(), Some("count(1)"));
+
+        // COUNT(DISTINCT): the two-level rewrite resolves back to the
+        // distinct expression.
+        let analyzed = analyze_multi(
+            "select s.k, s.g, s.v from src s \
+             where s.v > (select count(distinct u.v) from src u where u.k = s.k)",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            right_aggregate, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert_eq!(right_aggregate.as_deref(), Some("count(distinct v)"));
+
+        // The select-list COUNT family stays a two-view shape.
+        assert!(
+            analyze_multi(
+                "select s.k, (select count(u.v) from src u where u.k = s.k) from src s",
+                vec![source_table("src")],
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]

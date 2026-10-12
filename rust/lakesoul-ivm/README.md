@@ -80,7 +80,7 @@ used as row identities must be non-nullable.
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only; a lookup right side keyed by the join keys stays strict) | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
-| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
+| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key (a `COUNT` family aggregate keeps its empty-set semantics: a key without rows counts 0) | the projected left columns, kinds, epoch |
 | Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery), or a computed expression over it (`... * 2 + 1 AS m`) | the projected left columns, the aggregate column, the computed columns, kinds, epoch |
 | INTERSECT / EXCEPT | the distinct and `ALL` variants; a repeated left of an `ALL` variant competes the per-tuple match counts (`min(count_l, count_r)` copies for `INTERSECT ALL`, the surplus for `EXCEPT ALL`); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns (plus the left key), kinds, epoch |
 
@@ -166,7 +166,14 @@ Supported within the shapes above:
   a semi join against one aggregate row per correlated key: a change to the
   aggregate inputs re-evaluates only the left rows of the affected keys, a
   key without rows never matches (the subquery is NULL) and the comparison
-  keeps SQL NULL semantics; the subquery must be one plain aggregate over a
+  keeps SQL NULL semantics; a **COUNT family** aggregate (`COUNT(x)`,
+  `COUNT(*)`, `COUNT(DISTINCT x)`) keeps the empty-set semantics: a key
+  without rows counts 0, so its rows may still compare above zero (DataFusion
+  guards the decorrelated comparison, and the maintained predicate evaluates
+  the guard over the aggregate column, which the runtime pads with NULL for
+  such a key); a `COUNT(DISTINCT x)` subquery resolves the two-level rewrite
+  back to `count(distinct x)`, and several aggregates stay rejected; the
+  subquery must be one plain aggregate over a
   single table, and the left rows must be unique per correlated key; a
   **select-list** correlated scalar subquery
   (`SELECT ..., (SELECT AVG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s`)
@@ -473,8 +480,10 @@ the backlog):
   select-list columns above the limit, and a select list that omits the
   source primary keys (the top-k rows are identified by them);
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
-  with a `GROUP BY` (already per-key), a `DISTINCT` aggregate or
-  several aggregates, a computed value over left columns beside one, a
+  with a `GROUP BY` over columns other than its correlated keys (DataFusion's
+  own analyzer rejects those), several aggregates, a select-list `COUNT`
+  family (the guarded rewrite is only maintained in a `WHERE` comparison),
+  a computed value over left columns beside one, a
   `HAVING` subquery with several aggregates / nested subqueries / correlated
   on a non-group key, and a computed column over the lookup value),
   a subquery or window function **above** an aggregate, and the derived-table

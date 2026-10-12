@@ -2747,6 +2747,23 @@ fn sqllogic_correlated_scalar() {
 }
 
 #[test]
+fn sqllogic_correlated_count() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "corrcount",
+        include_str!("slt/correlated_count.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            // The value column may repeat inside a correlated key, so
+            // COUNT(v) and COUNT(DISTINCT v) differ.
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k", "g"])),
+        ],
+        semi_anti_mv_schema_for(&schema, &group_keys(&["k", "g", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_set_ops_nullable() {
     let schema = nullable_source_schema();
     run_script_for_sources(

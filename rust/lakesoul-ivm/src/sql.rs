@@ -24,9 +24,9 @@ use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatme
 use datafusion::logical_expr::expr::{BinaryExpr, Exists, InSubquery, SetComparison};
 use datafusion::logical_expr::utils::{merge_schema, split_conjunction};
 use datafusion::logical_expr::{
-    Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, LogicalPlanBuilder,
-    Operator, Projection, Sort, SortExpr, Subquery, Union, Window, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    Aggregate, Case, Distinct, Expr, Filter, Join, JoinType, LogicalPlan,
+    LogicalPlanBuilder, Operator, Projection, Sort, SortExpr, Subquery, Union, Window,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::Unparser;
@@ -146,8 +146,15 @@ pub fn analyze_select(
             }
             LogicalPlan::Filter(filter) => {
                 // `HAVING` is one or more filters directly above the
-                // aggregate; a filter on a window rank column is top-k.
-                if let Some((aggregate, having)) = having_aggregate(&projection.input) {
+                // aggregate; a filter on a window rank column is top-k; a
+                // guarded COUNT comparison is a correlated scalar subquery.
+                if let Some(spec) =
+                    try_analyze_guarded_count(Some(projection), filter, tables, request)?
+                {
+                    spec
+                } else if let Some((aggregate, having)) =
+                    having_aggregate(&projection.input)
+                {
                     analyze_aggregate(
                         aggregate,
                         Some(projection),
@@ -170,10 +177,13 @@ pub fn analyze_select(
                 )));
             }
         },
-        LogicalPlan::Filter(_) => {
+        LogicalPlan::Filter(filter) => {
             // The projection above an aggregate may be optimized away (e.g.
             // for MIN/MAX), leaving a bare `Filter -> Aggregate` plan.
-            if let Some((aggregate, having)) = having_aggregate(plan) {
+            if let Some(spec) = try_analyze_guarded_count(None, filter, tables, request)?
+            {
+                spec
+            } else if let Some((aggregate, having)) = having_aggregate(plan) {
                 analyze_aggregate(aggregate, None, &having, tables, request)?
             } else {
                 analyze_row(plan, tables, request)?

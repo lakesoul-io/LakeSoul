@@ -528,7 +528,7 @@ fn semi_aggregate_match(
         })?;
     let group_exprs = right_join_keys(view)
         .iter()
-        .map(|key| col(key.as_str()))
+        .map(|key| col(key.as_str()).alias(right_agg_key_alias(key)))
         .collect::<Vec<_>>();
     let aggregated =
         right.aggregate(group_exprs, vec![aggregate.alias(IVM_RIGHT_AGG_COLUMN)])?;
@@ -560,17 +560,35 @@ fn semi_aggregate_match(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
+    // The right group keys are aliased: a LEFT join keeps both sides'
+    // columns, and unaliased same-named keys would collide in the join
+    // schema.
     let right_keys = right_join_keys(view)
         .iter()
-        .map(String::as_str)
+        .map(|key| right_agg_key_alias(key))
         .collect::<Vec<_>>();
-    Ok(left.join(
+    let right_key_refs = right_keys.iter().map(String::as_str).collect::<Vec<_>>();
+    // The predicate is evaluated over a LEFT join: a left key without an
+    // aggregate row is padded with a NULL aggregate, which the predicate's
+    // empty-set form (`CASE WHEN ... IS NULL THEN 0 ...`, the COUNT family)
+    // turns into the aggregate of no rows.  A value aggregate keeps NULL
+    // there, so its comparison stays unknown and the row drops, exactly like
+    // the semi join this replaces.
+    let joined = left.join(
         aggregated,
-        JoinType::LeftSemi,
+        JoinType::Left,
         &left_keys,
-        &right_keys,
-        Some(filter),
-    )?)
+        &right_key_refs,
+        None,
+    )?;
+    Ok(joined.filter(filter)?)
+}
+
+/// The alias of an aggregate group key in the match join of a semi/anti view:
+/// the right keys are renamed so a LEFT join cannot collide with the left
+/// column names.
+fn right_agg_key_alias(key: &str) -> String {
+    format!("__ivm_right_agg_key_{key}")
 }
 
 /// The left rows that win the per-tuple multiplicity competition:
