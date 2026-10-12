@@ -109,6 +109,9 @@ pub struct JoinView {
     /// An optional filter over the joined pair's payload columns
     /// (`left_value` / `right_value`); non-equality join conditions.
     pub pair_filter: Option<String>,
+    /// Whether a NULL join key matches another NULL join key
+    /// (`IS NOT DISTINCT FROM` keys).
+    pub null_safe: bool,
     /// The wide output columns; empty means the compact payload shape.
     pub output_columns: Vec<JoinOutputColumn>,
     /// The refresh interval hint persisted with the view.
@@ -161,6 +164,7 @@ impl JoinView {
             left_filter: None,
             right_filter: None,
             pair_filter: None,
+            null_safe: false,
             refresh_interval_ms: 0,
         }
     }
@@ -196,6 +200,12 @@ impl JoinView {
         self
     }
 
+    /// Match NULL join keys with NULL join keys (`IS NOT DISTINCT FROM`).
+    pub fn with_null_safe(mut self, null_safe: bool) -> Self {
+        self.null_safe = null_safe;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::Join {
             view_id: self.view_id.clone(),
@@ -211,6 +221,7 @@ impl JoinView {
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             pair_filter: self.pair_filter.clone(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -296,6 +307,24 @@ pub fn keyed_join_output_primary_keys(
         .map(|key| left_pk_alias(key))
         .chain(right_primary_keys.iter().map(|key| right_pk_alias(key)))
         .collect()
+}
+
+/// Mark the leading join key columns nullable: a null-safe join matches NULL
+/// keys with NULL keys, so its output can carry a NULL join key.
+pub fn nullable_join_key_schema(schema: &SchemaRef, key_count: usize) -> SchemaRef {
+    let fields = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if index < key_count {
+                Arc::new(Field::new(field.name(), field.data_type().clone(), true))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
 /// The data type of one join key: the left expression when the key is
@@ -1053,6 +1082,7 @@ impl FullJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
+            null_safe: false,
         }
     }
 
@@ -1204,6 +1234,7 @@ impl CrossJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: self.pair_filter.as_deref(),
+            null_safe: false,
         }
     }
 }
@@ -2171,7 +2202,21 @@ fn join_projection(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let joined = left.join(right, JoinType::Inner, &key_names, &right_key_refs, None)?;
+    let joined = if view.null_safe {
+        // A NULL join key matches another NULL join key.
+        let plan = LogicalPlanBuilder::new(left.logical_plan().clone())
+            .join_detailed(
+                right.logical_plan().clone(),
+                JoinType::Inner,
+                (key_names.clone(), right_key_names.clone()),
+                None,
+                NullEquality::NullEqualsNull,
+            )?
+            .build()?;
+        DataFrame::new(context.state(), plan)
+    } else {
+        left.join(right, JoinType::Inner, &key_names, &right_key_refs, None)?
+    };
     let joined = apply_pair_filter(joined, view.pair_filter.as_deref())?;
 
     let mut output = view
@@ -2280,6 +2325,18 @@ fn keyed_join_projection(
         .cross_join(right.logical_plan().clone())?
         .build()?;
         DataFrame::new(context.state(), plan)
+    } else if parts.null_safe {
+        // A NULL join key matches another NULL join key.
+        let plan = LogicalPlanBuilder::new(left.logical_plan().clone())
+            .join_detailed(
+                right.logical_plan().clone(),
+                join_type,
+                (key_names.clone(), right_key_names.clone()),
+                None,
+                NullEquality::NullEqualsNull,
+            )?
+            .build()?;
+        DataFrame::new(context.state(), plan)
     } else {
         left.join(right, join_type, &key_names, &right_key_refs, None)?
     };
@@ -2361,6 +2418,8 @@ struct PairJoin<'a> {
     /// An optional filter over `left_value` / `right_value` the joined pair
     /// must satisfy (a non-equality join condition).
     pair_filter: Option<&'a str>,
+    /// Whether a NULL join key matches another NULL join key.
+    null_safe: bool,
 }
 
 impl JoinView {
@@ -2375,6 +2434,7 @@ impl JoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: self.pair_filter.as_deref(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -2391,6 +2451,7 @@ impl LeftJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
+            null_safe: false,
         }
     }
 }

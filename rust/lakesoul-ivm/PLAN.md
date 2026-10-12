@@ -3050,11 +3050,10 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全量 IVM **416 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
   `cargo clippy -p lakesoul-ivm --all-targets` 干净。
 
-### 10.112 空安全 inner join（待实现，设计稿；ROADMAP §B5 的一部分）
+### 10.112 空安全 inner join（已实现；ROADMAP §B5 的一部分）
 
 > 目标：`SELECT ... FROM a JOIN b ON a.k IS NOT DISTINCT FROM b.k`（NULL 与 NULL 匹配）。
-> 现状：`analyze_join` 把所有 `null_equality == NullEqualsNull` 的 join 送进
-> `analyze_set_operation`（`rust/lakesoul-ivm/src/sql/joins.rs:32`），非 semi/anti 形态被拒。
+> 实现方式：单 pair inner join 的 `null_safe` 键；outer join / 多表链 / 表达式键仍明确拒绝。
 
 **侦察结论（2026-10-12，已完成，实现前不必重复）**
 
@@ -3094,6 +3093,32 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
    - oracle：`nullable_source_schema()` + `run_oracle_seeded`（join 键选可空的 `v`），
      参考实现用同一 SQL 的 DataFusion 原生 `IS NOT DISTINCT FROM` 求值；
    - 全量 IVM 套件 + `cargo fmt --all --check` + clippy。
+
+**实施记录（2026-10-12，已在 keyed 与 append-only 两条路径落地）**
+
+- spec/runtime：`ViewSpec::Join.null_safe`（serde default，false 时不序列化）、`JoinView.null_safe`
+  （`with_null_safe`）、`PairJoin.null_safe`；`keyed_join_projection` 与 `join_projection`
+  在 `null_safe` 时改走 `join_detailed(..., NullEquality::NullEqualsNull)`（其余连接仍为严格等值）。
+- 输出 schema：`nullable_join_key_schema(schema, key_count)` 把前 N 个 join key 列标为可空；
+  `executor.rs::expected_mv_schema` 对 `ViewSpec::Join` 且 `null_safe` 时套用，
+  keyed 与 wide keyed 两种 schema 都覆盖（join key 列在 schema 中排在最前）。
+- 分析器：`sql/joins.rs` 的 `NullEqualsNull` 分流改为「非 inner 仍走 `analyze_set_operation`，
+  inner 继续 pair 分析并置 `null_safe = true`」；表达式键、filter 中的额外严格等值、
+  多表链中的 null-safe 步骤（`join_tree_has_null_safe_step`）都明确拒绝。
+- 测试：分析器用例（含四种拒绝形态）、`tests/null_semantics.rs::null_safe_join_keys_match_sql`
+  （append-only 确定性：NULL 匹配 NULL、NULL 不匹配非空、增量与全量一致、rebuild 一致）、
+  `tests/sql_oracle.rs::oracle_null_safe_inner_join_matches_full_recompute`
+  （keyed 随机差分，含 NULL↔非 NULL 的更新；定制种子 7/11 × 30 轮通过）。
+
+**DataFusion 事实（53.1.0，值得上游反馈）**
+
+- 单 pair 的 `ON a.v IS NOT DISTINCT FROM b.v`：`ExtractEquijoinPredicate` 正确生成
+  `null_equality = NullEqualsNull` 的 inner join（probe 验证）。
+- 但同一谓词作为三表链的一步时（例如 `a join b on a.v ≅ b.v join c on c.k = a.k`），
+  优化后该 join 变成 `on = [(a.v, b.v)]` 且 `null_equality = NullEqualsNothing`——
+  NULL 匹配语义在 DataFusion 侧就丢了（我们的分析器只能看到丢标记后的计划，
+  因此按严格等值维护，与优化计划的执行语义一致）。分析器的链守卫针对
+  「标记仍存在的多表链」拒绝；若上游修复该行为，守卫会立即把它们挡住而不是静默出错。
 
 **后续（outer join 扩展，未做）**
 

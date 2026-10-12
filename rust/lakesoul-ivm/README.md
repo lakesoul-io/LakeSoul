@@ -72,7 +72,7 @@ used as row identities must be non-nullable.
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
-| Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
+| Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only) | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
 | Multi-way join | inner `JOIN`s over three to sixteen sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | Lookup chain | a left-deep `[LEFT] JOIN` chain over a keyed base where every step joins a source keyed by its join keys (`a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.v = b.v` — a step key may reference any earlier source), optional step filters | one column per selected payload (aliases name the step payloads), kinds, epoch |
@@ -186,6 +186,11 @@ Supported within the shapes above:
   null-safe, so `NULL` matches `NULL` exactly as the set operations require
   (DataFusion evaluates a raw `INTERSECT ALL`/`EXCEPT ALL` as a plain
   membership join, without the counts);
+* an **inner join** may use null-safe keys (`a JOIN b ON a.v IS NOT DISTINCT
+  FROM b.v`, plain columns only): NULL then matches NULL on both sides, and
+  the join key columns of the output are nullable.  The other key shapes
+  (outer joins, multi-table chains, computed keys) stay rejected rather than
+  silently dropping the NULL matches;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -442,7 +447,9 @@ the backlog):
   repeat a join tuple is rejected rather than silently returning duplicate
   rows (the `ALL` variants count the matches on both sides through the count
   mode, and a null-aware predicate on a repeated left keeps plain membership
-  semantics);
+  semantics); a null-safe key on an outer join, a multi-table chain or a
+  computed expression is rejected (only the single two-source inner join over
+  plain columns is maintained);
 * quantified comparisons in a position that is not a plain predicate: a
   quantifier below a wider `NOT` or inside a disjunction keeps DataFusion's
   null-aware mark-join plan and is rejected rather than mistranslated (a

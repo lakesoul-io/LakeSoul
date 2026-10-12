@@ -26,10 +26,13 @@ pub(super) fn analyze_join(
 ) -> Result<ViewSpec> {
     // `INTERSECT`/`EXCEPT` plan as null-aware joins (a NULL row matches a
     // NULL row), and `IS NOT DISTINCT FROM` predicates are null-aware too.
-    // The maintained joins compare with equality (a NULL key never matches)
-    // and the set operations also need the per-row match counts, so these
-    // shapes are rejected instead of silently producing different rows.
-    if join.null_equality == NullEquality::NullEqualsNull {
+    // The set operations need the per-row match counts and stay in the
+    // semi/anti analyzer; an inner `IS NOT DISTINCT FROM` join is the one
+    // maintained pair join whose keys also match NULL with NULL.  Every
+    // other null-aware shape (outer joins, chains, computed keys) is
+    // rejected instead of silently producing different rows.
+    let null_safe = join.null_equality == NullEquality::NullEqualsNull;
+    if null_safe && join.join_type != JoinType::Inner {
         return analyze_set_operation(join, projection, tables, request);
     }
     // A correlated scalar subquery plans as a left-semi join against one
@@ -84,6 +87,11 @@ pub(super) fn analyze_join(
     // Three or more joined tables flatten into one chain: an outer step is a
     // left-deep lookup chain, anything else an inner chain.
     if join_tree_has_multiple_sources(join) {
+        if join_tree_has_null_safe_step(join) {
+            return Err(unsupported(
+                "null-safe join keys are only maintained for a single inner join",
+            ));
+        }
         if join.join_type != JoinType::Inner
             || join_tree_has_outer_step(&join.left)
             || join_tree_has_outer_step(&join.right)
@@ -139,6 +147,16 @@ pub(super) fn analyze_join(
                         ));
                     }
                 };
+                if null_safe {
+                    // The extracted `=` keeps its strict (NULL-rejecting)
+                    // semantics; the maintained join compares every key
+                    // null-safely, so this shape is rejected instead of
+                    // silently matching more rows.
+                    return Err(unsupported(
+                        "a null-safe join with an extra equality condition in \
+                         the residual filter is not supported",
+                    ));
+                }
                 key_pairs.push((left_column.name.clone(), right_column.name.clone()));
             } else if let Expr::IsNotTrue(inner) = conjunct {
                 // `(x op y) IS NOT TRUE`: the match condition of an `ALL`
@@ -172,6 +190,13 @@ pub(super) fn analyze_join(
         if !theta_semi_anti {
             return Err(unsupported("join without an equality key"));
         }
+    }
+    if null_safe && !expression_pairs.is_empty() {
+        // A computed key would be compared null-safely too; only plain
+        // columns are maintained for now.
+        return Err(unsupported(
+            "a null-safe join needs plain columns as its keys",
+        ));
     }
     key_pairs.sort();
     key_pairs.dedup();
@@ -304,6 +329,7 @@ pub(super) fn analyze_join(
                 left_filter,
                 right_filter,
                 pair_filter,
+                null_safe,
             })
         }
         JoinType::Left => {
@@ -1877,7 +1903,79 @@ mod tests {
                 left_filter: None,
                 right_filter: None,
                 pair_filter: None,
+                null_safe: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_null_safe_inner_join() {
+        // The key column must be nullable itself, otherwise the optimizer
+        // simplifies `IS NOT DISTINCT FROM` away.
+        let nullable_source = |name: &str| {
+            let mut table = source_table(name);
+            table.schema = Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("g", DataType::Utf8, false),
+                Field::new("v", DataType::Int64, true),
+            ]));
+            table
+        };
+        // `IS NOT DISTINCT FROM` keys plan as a null-aware inner join: the
+        // maintained pair join matches NULL keys with NULL keys.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.k from a join b on a.v is not distinct from b.v",
+            vec![nullable_source("a"), nullable_source("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            join_keys,
+            null_safe,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a null-safe join spec");
+        };
+        assert_eq!(join_keys, vec!["v".to_string()]);
+        assert!(null_safe);
+
+        // A computed null-safe key is not maintained.
+        assert!(
+            analyze_multi(
+                "select a.k, a.v, b.k from a join b \
+                 on a.v + 1 is not distinct from b.v",
+                vec![nullable_source("a"), nullable_source("b")],
+            )
+            .await
+            .is_err()
+        );
+
+        // A null-safe outer join stays rejected: the padded side is
+        // indistinguishable from a matched row whose key is NULL.
+        assert!(
+            analyze_multi(
+                "select a.k, a.v, b.k from a left join b \
+                 on a.v is not distinct from b.v",
+                vec![nullable_source("a"), nullable_source("b")],
+            )
+            .await
+            .is_err()
+        );
+
+        // A null-safe step inside a multi-table chain is not maintained.
+        assert!(
+            analyze_multi(
+                "select a.k from a join b on a.k = b.k \
+                 join c on a.v is not distinct from c.v",
+                vec![
+                    nullable_source("a"),
+                    nullable_source("b"),
+                    nullable_source("c"),
+                ],
+            )
+            .await
+            .is_err()
         );
     }
 
