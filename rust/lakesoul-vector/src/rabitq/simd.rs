@@ -1054,6 +1054,59 @@ pub fn accumulate_batch_avx2(
     accumulate_batch_scalar(packed_codes, lut, dim, results);
 }
 
+/// Bitmask of the batch slots whose lower bound can still enter a top-k with
+/// the given k-th distance.
+///
+/// A slot is kept when `lower_bound < distk`; non-finite bounds are always
+/// kept because [`crate::rabitq::fastscan_kernel::sanitize_lower_bound`] may
+/// still turn them into a competitive distance (pruning them by the raw
+/// comparison would change the result set).
+pub fn lower_bound_mask(lower_bounds: &[f32; FASTSCAN_BATCH_SIZE], distk: f32) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        return unsafe { lower_bound_mask_avx2(lower_bounds, distk) };
+    }
+    lower_bound_mask_scalar(lower_bounds, distk)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lower_bound_mask_avx2(
+    lower_bounds: &[f32; FASTSCAN_BATCH_SIZE],
+    distk: f32,
+) -> u32 {
+    unsafe {
+        use std::arch::x86_64::*;
+
+        let distk_v = _mm256_set1_ps(distk);
+        let inf = _mm256_set1_ps(f32::INFINITY);
+        let sign_mask = _mm256_set1_ps(-0.0);
+        let mut mask = 0u32;
+        for quarter in 0..4 {
+            let v = _mm256_loadu_ps(lower_bounds.as_ptr().add(quarter * 8));
+            let lt = _mm256_cmp_ps(v, distk_v, _CMP_LT_OQ);
+            let abs_v = _mm256_andnot_ps(sign_mask, v);
+            let non_finite = _mm256_or_ps(
+                _mm256_cmp_ps(abs_v, inf, _CMP_GE_OQ),
+                _mm256_cmp_ps(v, v, _CMP_UNORD_Q),
+            );
+            let keep = _mm256_or_ps(lt, non_finite);
+            mask |= (_mm256_movemask_ps(keep) as u32) << (quarter * 8);
+        }
+        mask
+    }
+}
+
+fn lower_bound_mask_scalar(lower_bounds: &[f32; FASTSCAN_BATCH_SIZE], distk: f32) -> u32 {
+    let mut mask = 0u32;
+    for (i, &bound) in lower_bounds.iter().enumerate() {
+        if bound < distk || !bound.is_finite() {
+            mask |= 1 << i;
+        }
+    }
+    mask
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn accumulate_batch_avx2_impl(
@@ -3318,6 +3371,30 @@ pub fn select_excode_ipfunc(ex_bits: usize) -> ExIpFunc {
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
+
+    #[test]
+    fn lower_bound_mask_matches_scalar() {
+        for step in 0..64usize {
+            let mut bounds = [0.0f32; FASTSCAN_BATCH_SIZE];
+            for (i, bound) in bounds.iter_mut().enumerate() {
+                *bound = match (i + step) % 7 {
+                    0 => -1.0,
+                    1 => 0.0,
+                    2 => 5.5,
+                    3 => 100.0,
+                    4 => f32::INFINITY,
+                    5 => f32::NEG_INFINITY,
+                    _ => f32::NAN,
+                };
+            }
+            let distk = ((step % 5) as f32) * 25.0;
+            assert_eq!(
+                lower_bound_mask(&bounds, distk),
+                lower_bound_mask_scalar(&bounds, distk),
+                "step {step} distk {distk}"
+            );
+        }
+    }
 
     #[test]
     fn test_select_excode_ipfunc_ex0() {

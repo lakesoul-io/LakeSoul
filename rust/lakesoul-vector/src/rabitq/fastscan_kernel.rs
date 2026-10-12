@@ -20,6 +20,14 @@ pub fn accumulate_batch(
     simd::accumulate_batch_avx2(packed_codes, lut_i8, dim, results);
 }
 
+/// Bitmask of the batch slots that can still enter the current top-k.
+///
+/// See [`simd::lower_bound_mask`]; exposed so the search loop does not have
+/// to reach into the SIMD module.
+pub fn candidate_mask(lower_bounds: &[f32; FASTSCAN_BATCH_SIZE], distk: f32) -> u32 {
+    simd::lower_bound_mask(lower_bounds, distk)
+}
+
 /// Build the i8 FastScan lookup table for one query.
 ///
 /// Returns `(lut_i8, delta, sum_vl_lut)`; exposed for micro-benchmarks.
@@ -181,4 +189,38 @@ pub fn refine_distance_with_ex(
 
     let total_term = binary_scale * ip_x0_qr + ex_dot + kbx_sum_q;
     f_add_ex + g_add + f_rescale_ex * total_term
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_mask_covers_all_32_slots() {
+        for slot in 0..FASTSCAN_BATCH_SIZE {
+            let mut bounds = [100.0f32; FASTSCAN_BATCH_SIZE];
+            bounds[slot] = 1.0;
+            let mask = candidate_mask(&bounds, 10.0);
+            assert_eq!(mask, 1u32 << slot, "slot {slot} must be the only one kept");
+        }
+    }
+
+    #[test]
+    fn candidate_mask_keeps_non_finite_bounds() {
+        let mut bounds = [100.0f32; FASTSCAN_BATCH_SIZE];
+        bounds[0] = f32::NAN;
+        bounds[1] = f32::INFINITY;
+        bounds[2] = f32::NEG_INFINITY;
+        let mask = candidate_mask(&bounds, 10.0);
+        assert_eq!(mask & 0b111, 0b111, "non-finite bounds must be kept");
+        assert_eq!(mask.count_ones(), 3);
+    }
+
+    #[test]
+    fn candidate_mask_prunes_at_or_above_distk() {
+        let bounds = [10.0f32; FASTSCAN_BATCH_SIZE];
+        assert_eq!(candidate_mask(&bounds, 10.0), 0, "== distk is pruned");
+        let bounds = [9.999f32; FASTSCAN_BATCH_SIZE];
+        assert_eq!(candidate_mask(&bounds, 10.0), u32::MAX);
+    }
 }
