@@ -77,7 +77,7 @@ used as row identities must be non-nullable.
 | Multi-way join | inner `JOIN`s over three to sixteen sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | Lookup chain | a left-deep `[LEFT] JOIN` chain over a keyed base where every step joins a source keyed by its join keys (`a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.v = b.v` — a step key may reference any earlier source), optional step filters | one column per selected payload (aliases name the step payloads), kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
-| LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
+| LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only; a lookup right side keyed by the join keys stays strict) | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
@@ -186,11 +186,13 @@ Supported within the shapes above:
   null-safe, so `NULL` matches `NULL` exactly as the set operations require
   (DataFusion evaluates a raw `INTERSECT ALL`/`EXCEPT ALL` as a plain
   membership join, without the counts);
-* an **inner join** may use null-safe keys (`a JOIN b ON a.v IS NOT DISTINCT
-  FROM b.v`, plain columns only): NULL then matches NULL on both sides, and
-  the join key columns of the output are nullable.  The other key shapes
-  (outer joins, multi-table chains, computed keys) stay rejected rather than
-  silently dropping the NULL matches;
+* an **inner or outer join** may use null-safe keys (`a JOIN b ON a.v IS NOT
+  DISTINCT FROM b.v`, plain columns only): NULL then matches NULL on both
+  sides, and the join key columns of the output are nullable.  A `LEFT JOIN`
+  right side keyed by the join keys stays a strict lookup (its keys are a
+  non-nullable primary key, so a NULL left key can never match).  The
+  remaining key shapes (multi-table chains, computed keys) stay rejected
+  rather than silently dropping the NULL matches;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -447,9 +449,9 @@ the backlog):
   repeat a join tuple is rejected rather than silently returning duplicate
   rows (the `ALL` variants count the matches on both sides through the count
   mode, and a null-aware predicate on a repeated left keeps plain membership
-  semantics); a null-safe key on an outer join, a multi-table chain or a
-  computed expression is rejected (only the single two-source inner join over
-  plain columns is maintained);
+  semantics); a null-safe key in a multi-table chain or on a computed
+  expression is rejected (a single two-source join over plain columns is
+  maintained, inner or outer);
 * quantified comparisons in a position that is not a plain predicate: a
   quantifier below a wider `NOT` or inside a disjunction keeps DataFusion's
   null-aware mark-join plan and is rejected rather than mistranslated (a

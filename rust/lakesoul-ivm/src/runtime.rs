@@ -285,6 +285,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// Whether a NULL join key matches another NULL join key
+        /// (`IS NOT DISTINCT FROM` keys).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        null_safe: bool,
     },
     /// `CROSS JOIN` of two keyed sources: every pair of rows, keyed by both
     /// row identities. A change on either side rewrites only the pairs of the
@@ -403,6 +407,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// Whether a NULL join key matches another NULL join key
+        /// (`IS NOT DISTINCT FROM` keys).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        null_safe: bool,
     },
     /// `LEFT JOIN` lookup: every left row with the right row its join keys
     /// reference (or NULL).
@@ -2512,6 +2520,7 @@ impl IvmRuntime {
                 output_columns,
                 left_filter,
                 right_filter,
+                null_safe,
             } => SpecView::LeftJoin(LeftJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2524,6 +2533,7 @@ impl IvmRuntime {
                 output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                null_safe: *null_safe,
                 refresh_interval_ms,
             }),
             ViewSpec::FullJoin {
@@ -2538,6 +2548,7 @@ impl IvmRuntime {
                 output_columns,
                 left_filter,
                 right_filter,
+                null_safe,
             } => SpecView::FullJoin(FullJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2550,6 +2561,7 @@ impl IvmRuntime {
                 output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                null_safe: *null_safe,
                 refresh_interval_ms,
             }),
             ViewSpec::LookupJoin {

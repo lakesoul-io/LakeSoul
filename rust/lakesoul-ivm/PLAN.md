@@ -3120,11 +3120,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   因此按严格等值维护，与优化计划的执行语义一致）。分析器的链守卫针对
   「标记仍存在的多表链」拒绝；若上游修复该行为，守卫会立即把它们挡住而不是静默出错。
 
-**后续（outer join 扩展，未做）**
+**outer join 扩展（2026-10-12 已实现）**
 
-- LEFT/RIGHT/FULL join 的“未匹配”用**对方主键为 NULL**表示（见 `ViewSpec::LeftJoin` 文档），
-  与 null-safe 的 join 键是不同列，不直接冲突；但仍需确认“未匹配行”与“匹配到 NULL 键的行”
-  在重算/撤回路径上的区分，以及 MV 身份列语义（`__pk` 系列）。建议 inner 闭环合入后单独设计。
+- `ViewSpec::LeftJoin` / `ViewSpec::FullJoin` 增加 `null_safe`（serde default、
+  false 不序列化）；`LeftJoinView` / `FullJoinView` 带 `with_null_safe`，
+  `parts()` 把它传给 `keyed_join_projection`，pair 计算因此走
+  `NullEquality::NullEqualsNull`（LEFT / RIGHT / FULL 各自的 padded 语义不变）。
+- **受影响行选择也必须 null-safe**：`refresh_left_join` 的「右端变更的键 → 左行」
+  与 `refresh_full_join` 的两条「变更键 → 对侧行」semi join 新增
+  `keyed_semi_join`（`null_safe` 时走 `join_detailed`），否则把键移入/移出 NULL
+  会漏刷受影响行、留下过期匹配（确定性用例专门覆盖该路径）。
+- 输出 schema：外层 join 的键列本就随源列可空（`JoinSchema::Left/Full`），
+  `expected_mv_schema` 对 `null_safe` 的 LeftJoin/FullJoin 仍套用
+  `nullable_join_key_schema`（FULL JOIN 的未匹配右行可能把右侧 NULL 键写进
+  左名键列）。
+- 分析器：`NullEqualsNull` 放行 Inner/Left/Right/Full（其余仍走 set-op 拒绝）；
+  `analyze_outer_join` 对 **lookup 形态**（右侧以 join key 为主键）不加标志：
+  主键非空，NULL 左键不可能匹配，语义与严格等值一致。
+- 测试：分析器（LEFT/FULL/RIGHT + lookup 形态 + 计算键拒绝）、
+  `tests/left_join.rs` 与 `tests/full_join.rs` 的确定性用例（NULL↔非 NULL 的
+  键更新与删除、padded 行区分、rebuild 一致）、`tests/sql_oracle.rs` 的
+  LEFT/FULL/内连接差分 oracle；定制种子 7/23 × 30 轮通过。
+
+**后续（仍未做）**
+
+- outer join 的“未匹配行 vs 匹配到 NULL 键”已解决：未匹配仍由**对方主键为 NULL**标识
+  （主键非空），而匹配到 NULL 键的行带有对方主键，两者在 MV 身份列上可区分。
+  进一步方向：null-safe 表达式键与多表链（取决于 DataFusion 是否保留标记）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

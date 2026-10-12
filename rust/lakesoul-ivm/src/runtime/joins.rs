@@ -899,6 +899,9 @@ pub struct LeftJoinView {
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
     pub right_filter: Option<String>,
+    /// Whether a NULL join key matches another NULL join key
+    /// (`IS NOT DISTINCT FROM` keys).
+    pub null_safe: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -947,6 +950,7 @@ impl LeftJoinView {
             output_columns: Vec::new(),
             left_filter: None,
             right_filter: None,
+            null_safe: false,
             refresh_interval_ms: 0,
         }
     }
@@ -960,6 +964,12 @@ impl LeftJoinView {
     /// Only right rows matching `filter` contribute to the view.
     pub fn with_right_filter(mut self, filter: impl Into<String>) -> Self {
         self.right_filter = Some(filter.into());
+        self
+    }
+
+    /// Match NULL join keys with NULL join keys (`IS NOT DISTINCT FROM`).
+    pub fn with_null_safe(mut self, null_safe: bool) -> Self {
+        self.null_safe = null_safe;
         self
     }
 
@@ -988,6 +998,7 @@ impl LeftJoinView {
             output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -1019,6 +1030,9 @@ pub struct FullJoinView {
     pub left_filter: Option<String>,
     /// An optional filter the contributing right rows must satisfy.
     pub right_filter: Option<String>,
+    /// Whether a NULL join key matches another NULL join key
+    /// (`IS NOT DISTINCT FROM` keys).
+    pub null_safe: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -1067,6 +1081,7 @@ impl FullJoinView {
             output_columns: Vec::new(),
             left_filter: None,
             right_filter: None,
+            null_safe: false,
             refresh_interval_ms: 0,
         }
     }
@@ -1082,7 +1097,7 @@ impl FullJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
-            null_safe: false,
+            null_safe: self.null_safe,
         }
     }
 
@@ -1110,6 +1125,12 @@ impl FullJoinView {
         self
     }
 
+    /// Match NULL join keys with NULL join keys (`IS NOT DISTINCT FROM`).
+    pub fn with_null_safe(mut self, null_safe: bool) -> Self {
+        self.null_safe = null_safe;
+        self
+    }
+
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::FullJoin {
             view_id: self.view_id.clone(),
@@ -1123,6 +1144,7 @@ impl FullJoinView {
             output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -1555,6 +1577,7 @@ fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
         output_columns: view.output_columns.clone(),
         left_filter: view.left_filter.clone(),
         right_filter: view.right_filter.clone(),
+        null_safe: view.null_safe,
         refresh_interval_ms: view.refresh_interval_ms,
     };
     validate_left_join_view(&left)
@@ -2238,6 +2261,41 @@ fn join_projection(
     Ok(joined.select(output)?)
 }
 
+/// A semi join on equality keys, matching NULL keys with NULL keys when the
+/// view is null-safe.  The key columns of the two sides may be named
+/// differently.
+fn keyed_semi_join(
+    context: &SessionContext,
+    left: DataFrame,
+    right: DataFrame,
+    left_keys: &[&str],
+    right_keys: &[&str],
+    null_safe: bool,
+) -> Result<DataFrame> {
+    if !null_safe {
+        return Ok(left.join(right, JoinType::LeftSemi, left_keys, right_keys, None)?);
+    }
+    let plan = LogicalPlanBuilder::new(left.logical_plan().clone())
+        .join_detailed(
+            right.logical_plan().clone(),
+            JoinType::LeftSemi,
+            (
+                left_keys
+                    .iter()
+                    .map(|key| key.to_string())
+                    .collect::<Vec<_>>(),
+                right_keys
+                    .iter()
+                    .map(|key| key.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            None,
+            NullEquality::NullEqualsNull,
+        )?
+        .build()?;
+    Ok(DataFrame::new(context.state(), plan))
+}
+
 /// Project an inner equi-join of two keyed sources onto
 /// `(join keys, left value, right value, left pk*, right pk*)`.
 fn keyed_join_projection(
@@ -2451,7 +2509,7 @@ impl LeftJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
-            null_safe: false,
+            null_safe: self.null_safe,
         }
     }
 }
@@ -3244,16 +3302,15 @@ impl IvmRuntime {
                 )?
                 .distinct()?;
             affected = affected.union(
-                left_now
-                    .clone()
-                    .join(
-                        changed_keys,
-                        JoinType::LeftSemi,
-                        &join_key_names,
-                        &join_key_names,
-                        None,
-                    )?
-                    .select(key_exprs.clone())?,
+                keyed_semi_join(
+                    &context,
+                    left_now.clone(),
+                    changed_keys,
+                    &join_key_names,
+                    &join_key_names,
+                    view.null_safe,
+                )?
+                .select(key_exprs.clone())?,
             )?;
         }
         let affected = affected.distinct()?;
@@ -3602,16 +3659,15 @@ impl IvmRuntime {
             )?;
             let changed_keys = delta_left.select(join_key_exprs.clone())?.distinct()?;
             affected_right = affected_right.union(
-                right_now
-                    .clone()
-                    .join(
-                        changed_keys,
-                        JoinType::LeftSemi,
-                        &right_join_key_names,
-                        &join_key_names,
-                        None,
-                    )?
-                    .select(right_key_exprs.clone())?,
+                keyed_semi_join(
+                    &context,
+                    right_now.clone(),
+                    changed_keys,
+                    &right_join_key_names,
+                    &join_key_names,
+                    view.null_safe,
+                )?
+                .select(right_key_exprs.clone())?,
             )?;
         }
         if !right_window.added_files.is_empty() {
@@ -3635,16 +3691,15 @@ impl IvmRuntime {
             )?;
             let changed_keys = delta_right.select(right_join_key_exprs)?.distinct()?;
             affected_left = affected_left.union(
-                left_now
-                    .clone()
-                    .join(
-                        changed_keys,
-                        JoinType::LeftSemi,
-                        &join_key_names,
-                        &right_join_key_names,
-                        None,
-                    )?
-                    .select(left_key_exprs.clone())?,
+                keyed_semi_join(
+                    &context,
+                    left_now.clone(),
+                    changed_keys,
+                    &join_key_names,
+                    &right_join_key_names,
+                    view.null_safe,
+                )?
+                .select(left_key_exprs.clone())?,
             )?;
         }
         let affected_left = affected_left.distinct()?;

@@ -145,7 +145,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | ✅ 已实现（PR-101，PLAN §10.107）：`SemiAntiView.count_mode`（rank vs 右侧 per-tuple count）；引擎自身对原始集合运算只做成员判定，oracle 用 Rust 独立计数 |
-| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | **inner join 已实现（PLAN §10.112）**：spec/runtime `null_safe`、`keyed_join_projection` + `join_projection` 走 `NullEquality::NullEqualsNull`、输出 join key 可空、分析器放行单 pair 普通列键并明确拒绝 outer/链式/表达式键；outer join 的“未匹配 vs 匹配到 NULL 键”语义与 MV 身份列待后续设计；另记录 DataFusion 53.1 对三表链 null-safe 谓词丢失 `NullEqualsNull` 标记的问题 |
+| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | **已实现（PLAN §10.112）**：单 pair 的 inner / LEFT / RIGHT / FULL 普通列键均可空安全（spec/runtime `null_safe`、pair 计算与受影响行选择走 `NullEquality::NullEqualsNull`、输出键列可空、lookup 形态保持严格语义）；多表链与表达式键仍明确拒绝；另记录 DataFusion 53.1 对三表链 null-safe 谓词丢失 `NullEqualsNull` 标记的行为 |
 
 ### B6. 子查询（P2）
 
