@@ -3267,6 +3267,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   增删改）/链推进/步骤复用、定义收缩后步骤被清理且换回 join 定义可重建、非 join 派生源
   明确拒绝。全量 IVM **445 passed / 0 failed**；fmt/clippy 干净。
 
+### 10.118 派生步扩展到 sum/count/avg 聚合（ROADMAP §B2）
+
+- **命名映射**：聚合步的 MV 列名（`sum_v`/`count_v`/`__ivm_nonnull_count`/`avg_v`）与
+  子计划输出名（DataFusion 的 `sum(<col>)` 自动名，或投影别名）不一致；分析器又会剥掉
+  投影别名，因此在计划重写时做**列引用改写**：`derived_output_mapping` 按聚合类型
+  （sum/count(*)/count(x)/avg）给出「子计划字段 → MV 列」，`rename_derived_columns`
+  在改写后的计划上把引用重命名（仅非恒等映射；join 步为恒等、无操作）。
+- **支持判定**：`derived_step_supported` 在物化前判定：join 形状与仅含
+  sum/count/avg 的聚合允许；其它（window/union/min-max/distinct 等，需自带状态表）
+  明确拒绝「a derived view over <label> is not materialized yet」。
+- **测试**：`tests/derived_views.rs` 新增 2 个：聚合叠加聚合（和=总和，增量含删除/更新，
+  步骤复用）、TOP-K 叠加聚合（新组进 top、边界组离开，步骤复用）；聚合叠加窗口仍明确拒绝。
+- 全量 IVM **447 passed / 0 failed**；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
