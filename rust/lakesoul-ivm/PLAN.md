@@ -3177,6 +3177,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   缺的只是覆盖：新增 slt `window_range_frame.slt`（数值偏移 RANGE）与
   `window_groups_frame.slt`（peer 组 GROUPS），二者通过。
 
+### 10.114 相关子查询的 COUNT 族与 GROUP BY 核实
+
+**COUNT 族（`COUNT(x)` / `COUNT(*)` / `COUNT(DISTINCT x)`）**
+
+- DataFusion 对 COUNT 族的 decorrelation 引入空集守卫：
+  `Filter(v OP CASE WHEN guard IS NULL THEN 0 ELSE count(...) END) -> Projection -> Left Join`。
+  分析器 `try_analyze_guarded_count`（`sql/joins.rs`）识别该形态：
+  `rewrite_count_guard` 把 CASE 重写为对 `__ivm_right_agg` 的等价 CASE
+  （左连接为缺失键填充 NULL → 空集结果 0）；`resolve_count_aggregate` 解析聚合调用与分组键，
+  其中 `COUNT(DISTINCT x)` 的两级聚合（去重聚合 + 计数聚合 + `Boolean(true)` 分组守卫）
+  解析回 `count(distinct x)` 并丢弃守卫；接受 `Left`/`LeftSemi` 两种 join（谓词在 Filter
+  或 join filter 中），`NOT (...)` 由 DataFusion 归一化为补谓词，按「补谓词的 semi」维护。
+- 运行时 `semi_aggregate_match` 从 `LeftSemi + filter` 改为 `Left join + filter`：
+  缺失键填充 NULL，COUNT 族由 CASE 得 0，值聚合（SUM/AVG/MIN/MAX）比较仍 unknown 而丢弃
+  （保持原语义）；右侧分组键加别名（`__ivm_right_agg_key_<key>`）避免左连接的列名冲突。
+- 测试：分析器（count / count(*) / count(distinct) 的 spec + select-list COUNT 仍拒绝）、
+  `tests/slt/correlated_count.slt`（空集 = 0、重复值只计一次、增量与 rebuild）、
+  `tests/sql_oracle.rs::oracle_correlated_count_matches_full_recompute`
+  （定制种子 7/23 × 30 轮通过）。
+
+**相关标量子查询 + GROUP BY 核实**
+
+- `GROUP BY` 只含相关键（`GROUP BY u.k`）：`WHERE` 与 select-list 两形态都已支持（既有路径）。
+- `GROUP BY` 含非相关列：DataFusion 分析器在优化阶段直接报
+  “A GROUP BY clause in a scalar correlated subquery cannot contain non-correlated columns”，
+  IVM 侧无需处理（多行标量子查询本身非法）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

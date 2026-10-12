@@ -3014,6 +3014,40 @@ async fn oracle_scalar_subquery_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_correlated_count_matches_full_recompute() {
+    // A correlated COUNT comparison: a key with no rows in the other source
+    // counts 0 (the empty-set result), so its rows may still match.
+    let schema = nullable_source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(10)),
+        (0, 1, "g1", None),
+        (0, 2, "g0", Some(20)),
+        (1, 0, "g0", Some(1)),
+        (1, 1, "g1", Some(2)),
+        (1, 3, "g2", Some(30)),
+    ];
+    run_oracle_seeded(
+        "corrcount",
+        2,
+        schema.clone(),
+        true,
+        &seed,
+        semi_anti_mv_schema_for(
+            &schema,
+            &["k".to_string(), "g".to_string(), "v".to_string()],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g, v FROM __SRC__ s \
+         WHERE v > (SELECT count(u.v) FROM __SRC1__ u WHERE u.k = s.k)",
+        "SELECT k, g, v FROM __SRC__ s WHERE s.op <> 'delete' AND v > \
+         (SELECT count(u.v) FROM __SRC1__ u WHERE u.k = s.k AND u.op <> 'delete')",
+        "SELECT k, g, v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_grouping_sets_expression_keys_matches_full_recompute() {
     // A ROLLUP over one plain key and one computed key.
     run_oracle(
