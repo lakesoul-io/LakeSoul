@@ -49,6 +49,8 @@ pub(crate) struct VectorSearchSpec {
     /// Order by the index distance instead of the exact re-rank: the rule
     /// removes the distance `Sort` and the scan returns index-ordered rows.
     pub order_by: bool,
+    /// Per-bucket candidate multiplier for the scan.
+    pub overfetch: usize,
 }
 
 fn is_marker(expr: &Expr) -> bool {
@@ -116,12 +118,14 @@ fn detect(
     }
 
     let mut current = Arc::clone(&sort.input);
+    let mut saw_filter = false;
     loop {
         match current.as_ref() {
             LogicalPlan::Projection(projection) => {
                 current = Arc::clone(&projection.input);
             }
             LogicalPlan::Filter(filter) => {
+                saw_filter = true;
                 current = Arc::clone(&filter.input);
             }
             LogicalPlan::TableScan(ts) => {
@@ -135,6 +139,13 @@ fn detect(
                 // the projection.  (L2 only for now — the IP estimator is
                 // not directly comparable with `inner_product`.)
                 let order_by = index_only && metric == "L2" && distance_calls(plan) == 1;
+                // Index-only ordering needs each bucket's top-k only (a
+                // globally top-k row is within its own bucket's top-k), so the
+                // per-bucket candidate count shrinks by the over-fetch factor.
+                // A filter between the scan and the sort can drop candidates,
+                // so it keeps the exact-mode margin; the exact re-rank itself
+                // needs the margin for the sort above the scan.
+                let overfetch = if order_by && !saw_filter { 2 } else { 10 };
                 return Some((
                     VectorSearchSpec {
                         vec_column,
@@ -142,6 +153,7 @@ fn detect(
                         top_k,
                         metric: metric.to_string(),
                         order_by,
+                        overfetch,
                     },
                     current,
                 ));
@@ -427,6 +439,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
         spec.top_k,
         &spec.metric,
         spec.order_by,
+        spec.overfetch,
     ));
     LogicalPlan::TableScan(TableScan {
         table_name: ts.table_name.clone(),

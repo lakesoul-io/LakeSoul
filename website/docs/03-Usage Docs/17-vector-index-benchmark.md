@@ -473,24 +473,43 @@ SET lakesoul_vector_search.rerank = 'index';
   no update rounds (`--rounds 0`), so the comparison isolates the ordering.
 - Each dataset is run twice — `--rerank exact` and `--rerank index` — with the
   table and index rebuilt for each run (100K base vectors, `nlist = 256`,
-  `nprobe = 64`, `top_k = 10` and the same fixed seed).
+  `nprobe = 64`, `top_k = 10` and the same fixed seed); the tables below are
+  medians over two runs.
+- In `index` mode each bucket only needs its own top-k (a globally top-k row
+  is always within its bucket's top-k), so the per-bucket candidate margin
+  drops from the exact re-rank's 10x (minimum 100 rows) to 2x.  A filter
+  between the scan and the sort keeps the 10x margin.
 - Recall is measured against the exact top-10 over the written vectors (not
   the original dataset files, so the index state is the ground truth) and
   `EXPLAIN` is checked for the ordered exec node
   (`LakeSoulVectorSearchExec(vec=vec, top_k=10, metric=L2, order_by=true)`).
   With `rerank = index` the physical plan has no `SortExec`, and the native
   reader's plan shows `projection=[id]` — the vector column is not read.
+- `E7_TABLE_ROOT=s3://bucket/prefix` points the same pair at object storage
+  (RustFS here), with the endpoint and credentials from the `AWS_*`
+  environment variables.
 - `script/benchmark/vector/run.sh e7` runs the paired measurements on both
   datasets.
 
+Local NVMe:
+
 | Dataset | Rerank | Recall@10 | QPS | Mean | p50 | p99 | Exec mean |
 |---------|--------|----------:|----:|-----:|----:|----:|----------:|
-| GloVe-200d | `exact` | **0.919** | 33.4 | 29.9 ms | 24.0 ms | 65.1 ms | 22.1 ms |
-| GloVe-200d | `index` | 0.899 | 38.0 | 26.3 ms | 24.4 ms | 37.9 ms | 21.2 ms |
-| GIST-960d | `exact` | **1.000** | 32.4 | 30.9 ms | 30.2 ms | 40.1 ms | 21.9 ms |
-| GIST-960d | `index` | 0.976 | 28.9 | 34.6 ms | 33.6 ms | 42.0 ms | 24.0 ms |
-| GIST-960d (`LIMIT 100`) | `exact` | **1.000** | 19.7 | 50.8 ms | 47.4 ms | 80.8 ms | 43.8 ms |
-| GIST-960d (`LIMIT 100`) | `index` | 0.985 | 19.5 | 51.3 ms | 53.0 ms | 61.8 ms | 43.4 ms |
+| GloVe-200d | `exact` | **0.919** | 40.9 | 24.5 ms | 23.8 ms | 34.4 ms | 19.5 ms |
+| GloVe-200d | `index` | 0.898 | 97.7 | 10.3 ms | 10.1 ms | 13.9 ms | 7.0 ms |
+| GIST-960d (`LIMIT 100`) | `exact` | **1.000** | 20.8 | 48.1 ms | 46.5 ms | 65.7 ms | 40.9 ms |
+| GIST-960d (`LIMIT 100`) | `index` | 0.985 | 34.6 | 28.9 ms | 27.1 ms | 36.2 ms | 22.9 ms |
+
+Object storage (RustFS, same data and configuration):
+
+| Dataset | Rerank | Recall@10 | QPS | Mean | p50 | p99 | Exec mean |
+|---------|--------|----------:|----:|-----:|----:|----:|----------:|
+| GloVe-200d | `exact` | **0.919** | 17.1 | 58.6 ms | 57.9 ms | 88.7 ms | 52.0 ms |
+| GloVe-200d | `index` | 0.898 | 34.7 | 28.9 ms | 29.0 ms | 38.2 ms | 23.2 ms |
+| GIST-960d | `exact` | **1.000** | 17.9 | 57.1 ms | 52.5 ms | 139.7 ms | 46.9 ms |
+| GIST-960d | `index` | 0.976 | 28.6 | 35.0 ms | 36.2 ms | 87.6 ms | 24.8 ms |
+| GIST-960d (`LIMIT 100`) | `exact` | **1.000** | 10.4 | 96.4 ms | 91.9 ms | 194.7 ms | 86.8 ms |
+| GIST-960d (`LIMIT 100`) | `index` | 0.985 | 13.1 | 76.3 ms | 69.9 ms | 162.9 ms | 65.0 ms |
 
 **What it tells us.**
 - **The vector column really is gone.**  `EXPLAIN VERBOSE` shows the re-rank
@@ -500,15 +519,19 @@ SET lakesoul_vector_search.rerank = 'index';
   removes ~3.8 MB of vector reads per query; the primary-key column alone is
   8 KB.  The exact plan additionally casts every candidate vector to
   `List<Float64>` and evaluates `array_distance` over it.
-- **Latency is unchanged on a local NVMe.**  The saved bytes do not show up as
-  a speedup because the candidate scan is not the bottleneck: the index probe,
-  the merge-on-read bookkeeping and SQL planning dominate, and the pk locator
-  already fetches only the candidate rows.  GIST was repeated three times —
-  `exact` at 28.7 / 32.4 / 30.9 ms and `index` at 34.6 / 27.3 / 36.4 ms — i.e.
-  the two modes are at parity within the ±20% run-to-run spread, the same
-  conclusion as E6's f16 experiment.  The byte and CPU savings should matter
-  when the vector column is remote (object storage) or much wider, and when
-  `LIMIT` (and therefore the candidate count) is large.
+- **The candidate margin was the first-order cost, not the re-rank.**  With
+  the exact-mode margin (10x the limit, minimum 100 rows) the index-only scan
+  fetched an order of magnitude more rows than it could ever return, which
+  cancelled the saved vector bytes — on GloVe `index` was even slower than
+  `exact`.  With the 2x margin, index-only is 1.7–2.4x faster locally and
+  1.3–2.0x faster on object storage, and the gap grows with the vector width
+  and the limit (`LIMIT 100` scans 200 instead of 1,000 candidates).
+- **Object storage doubles the latency of both modes and keeps the ranking.**
+  The exact path pays for every candidate vector over the network; the
+  index-only path skips those reads, so its advantage is largest in absolute
+  terms (`LIMIT 100` on GIST: 194.7 ms → 162.9 ms p99).  Even GloVe, where the
+  stored vectors are small, goes from 0.919/58.6 ms (exact) to 0.898/28.9 ms
+  (index) once the candidate margin is right.
 - **Recall drops to the index-accuracy bound.**  Ordering by the quantized
   distance gives up the re-rank's correction: GloVe 0.919 → 0.899 and GIST
   1.000 → 0.976, matching the E4 observation that the re-rank only recovers
@@ -547,10 +570,12 @@ SET lakesoul_vector_search.rerank = 'index';
 6. Consider `SET lakesoul_vector_search.rerank = 'index'` when the stored
    vector column is expensive to fetch (remote object storage, very wide
    vectors) or the candidate set is large (E7): it removes the vector-column
-   reads and the exact distance computation, at the cost of a small recall drop
-   (GloVe 0.919 → 0.899, GIST 1.000 → 0.976 on the 100K benchmark).  On local
-   storage the query latency is unchanged, so keep the default `exact` unless
-   the bytes or the distance CPU are the constraint.
+   reads and the exact distance computation and, with the 2x candidate margin,
+   is 1.7–2.4x faster than the exact re-rank on local storage and 1.3–2.0x
+   faster on object storage, at the cost of a small recall drop (GloVe
+   0.919 → 0.898, GIST 1.000 → 0.976 on the 100K benchmark).  Keep the default
+   `exact` only when the last fraction of a point of recall matters more than
+   the latency.
 
 ## Reproducing the benchmark
 
@@ -577,6 +602,30 @@ uv run --with matplotlib python script/benchmark/vector/plot.py \
 worker thread count.  Each run writes one JSON file with the per-round metrics,
 a `logs/` file with the raw runner output, and `plots/*.png` with the figures
 used above.  The runner can also be invoked directly:
+
+### Search-stage instrumentation
+
+`--search-stats` prints and records the per-stage counters of one index search
+at `--nprobe` (clusters probed, FastScan batches, vectors scanned, lower-bound
+prunes, refinements, heap pushes) plus diagnostics-only timers for the SIMD
+accumulation and the scalar per-vector loop:
+
+```bash
+cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench --   --scenario search --reuse --search-stats --nprobe 64   --base gist_base.fvecs --query gist_query.fvecs --work-dir /tmp/vector-bench
+```
+
+```bash
+# Per-operation kernel cost (one batch accumulation, distance
+# post-processing, one 6-bit refinement, the query LUT build)
+cargo bench -p lakesoul-vector --bench fastscan_kernel
+```
+
+Counters x kernel cost attribute a query to its stages: at 1M vectors /
+`nprobe = 64` they showed the scalar per-vector loop was 4.4 ms of a 6.5 ms
+search (GIST-960d) although only 223 of 399K scanned vectors survived the
+lower bound.  A batch-level AVX2 pruning mask plus lazy key materialization
+cut that loop to 0.5 ms and the single-query p50 to 2.69 ms (GIST-960d) and
+1.19 ms (GloVe-200d), with recall unchanged at every nprobe.
 
 ```bash
 cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- \

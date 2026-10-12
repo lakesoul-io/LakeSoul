@@ -39,6 +39,10 @@ pub struct VectorSearchRequest {
     /// Order the candidates by the index distance instead of the exact
     /// re-rank over the vector column (index-only ordering).
     pub order_by: bool,
+    /// Per-bucket candidate multiplier, chosen by the pushdown rule from the
+    /// plan shape (index-only ordering needs far fewer candidates than the
+    /// exact re-rank).
+    pub overfetch: usize,
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
@@ -48,6 +52,7 @@ pub fn marker_expr(
     top_k: usize,
     metric: &str,
     order_by: bool,
+    overfetch: usize,
 ) -> Expr {
     let query_csv = query
         .iter()
@@ -73,6 +78,10 @@ pub fn marker_expr(
                 datafusion::common::ScalarValue::Boolean(Some(order_by)),
                 None,
             ),
+            Expr::Literal(
+                datafusion::common::ScalarValue::Int64(Some(overfetch as i64)),
+                None,
+            ),
         ],
     ))
 }
@@ -92,7 +101,7 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
             let Expr::ScalarFunction(call) = marker else {
                 return None;
             };
-            if call.args.len() != 5 {
+            if call.args.len() != 6 {
                 return None;
             }
             let vec_column = match &call.args[0] {
@@ -124,12 +133,19 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 ) => *value,
                 _ => return None,
             };
+            let overfetch = match &call.args[5] {
+                Expr::Literal(datafusion::common::ScalarValue::Int64(Some(value)), _) => {
+                    (*value).max(1) as usize
+                }
+                _ => return None,
+            };
             Some(VectorSearchRequest {
                 vec_column,
                 query_csv,
                 top_k,
                 metric,
                 order_by,
+                overfetch,
             })
         })
 }
@@ -164,9 +180,9 @@ impl ScalarUDFImpl for VectorSearchMarkerUDF {
     /// `FixedSizeList`/`List` of floats) and the rest are the literals the
     /// pushdown rule produces.
     fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
-        if arg_types.len() != 5 {
+        if arg_types.len() != 6 {
             return Err(DataFusionError::Execution(format!(
-                "__lakesoul_vector_search expects 5 arguments, got {}",
+                "__lakesoul_vector_search expects 6 arguments, got {}",
                 arg_types.len()
             )));
         }
@@ -174,7 +190,7 @@ impl ScalarUDFImpl for VectorSearchMarkerUDF {
             let accepted = match index {
                 0 => true,
                 1 | 3 => matches!(data_type, DataType::Utf8),
-                2 => matches!(data_type, DataType::Int64),
+                2 | 5 => matches!(data_type, DataType::Int64),
                 4 => matches!(data_type, DataType::Boolean),
                 _ => false,
             };

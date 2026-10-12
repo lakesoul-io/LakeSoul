@@ -58,8 +58,8 @@ use lakesoul_io::vector::builder::VectorShardIndexBuilder;
 use lakesoul_io::writer::create_writer_with_io_config;
 use lakesoul_metadata::index_catalog::{CommitMode, VectorCatalog};
 use lakesoul_vector::{
-    IndexHeader, IndexStore, IvfRabitqIndex, Metric, RotatorType, SearchParams,
-    SegmentEntry, VectorIndexConfig,
+    IndexHeader, IndexStore, IvfRabitqIndex, Metric, RotatorType, SearchDiagnostics,
+    SearchParams, SegmentEntry, VectorIndexConfig,
 };
 use object_store::local::LocalFileSystem;
 use rand::SeedableRng;
@@ -165,6 +165,8 @@ struct Args {
     out: Option<PathBuf>,
     /// Reuse an existing index in `work_dir` instead of rebuilding it.
     reuse: bool,
+    /// Print the per-stage search counters at `--nprobe` (search scenario).
+    search_stats: bool,
     // ---- stream / trigger ----
     policy: Policy,
     max_delta_ratio: f32,
@@ -191,6 +193,10 @@ struct Args {
     /// Candidate ordering for the SQL scenario: `exact` re-ranks against the
     /// stored vector column, `index` orders by the index distance only.
     rerank: String,
+    /// Table location for the SQL scenario; defaults to `--work-dir`.  Set to
+    /// an `s3://bucket/prefix` URL to run the table (data + index) on object
+    /// storage, configured through the `AWS_*` environment variables.
+    table_root: Option<String>,
     /// Print full usage.
     help: bool,
 }
@@ -216,6 +222,7 @@ impl Default for Args {
             work_dir: PathBuf::from(DEFAULT_WORK_DIR),
             out: None,
             reuse: false,
+            search_stats: false,
             policy: Policy::Auto,
             max_delta_ratio: 1.0,
             period: 3,
@@ -230,6 +237,7 @@ impl Default for Args {
             sql_hash_buckets: 1,
             vector_type: VectorType::F32,
             rerank: "exact".to_string(),
+            table_root: None,
             help: false,
         }
     }
@@ -261,6 +269,8 @@ OPTIONS:
   --work-dir <path>                         Data + index directory (default: {DEFAULT_WORK_DIR})
   --out <path.json>                         Write the result summary as JSON
   --reuse                                   Reuse an existing index in --work-dir
+  --search-stats                            Print the per-stage search counters at --nprobe
+                                            (search scenario)
 
 STREAM / TRIGGER:
   --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
@@ -280,6 +290,9 @@ STREAM / TRIGGER:
                                              (default: f32; f16 stores half precision)
   --rerank <exact|index>                     SQL scenario candidate ordering (default: exact);
                                              index orders by the index distance only
+  --table-root <url>                         SQL scenario table location (default: --work-dir);
+                                             use s3://bucket/prefix for object storage
+                                             (endpoint and keys from AWS_* env vars)
 
   --help                                    Show this help
 "#
@@ -375,6 +388,7 @@ fn parse_args() -> Result<Args, String> {
             "--work-dir" => args.work_dir = PathBuf::from(value(flag)?),
             "--out" => args.out = Some(PathBuf::from(value(flag)?)),
             "--reuse" => args.reuse = true,
+            "--search-stats" => args.search_stats = true,
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
             "--sql-hash-buckets" => {
@@ -396,6 +410,7 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("unknown rerank mode: {other}")),
                 }
             }
+            "--table-root" => args.table_root = Some(value(flag)?.to_string()),
             "--policy" => {
                 args.policy = match value(flag)?.to_lowercase().as_str() {
                     "none" => Policy::None,
@@ -476,6 +491,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.rerank != "exact" && args.scenario != Scenario::Sql {
         return Err("--rerank is only supported by --scenario sql".to_string());
+    }
+    if args.table_root.is_some() && args.scenario != Scenario::Sql {
+        return Err("--table-root is only supported by --scenario sql".to_string());
     }
     Ok(args)
 }
@@ -1458,6 +1476,64 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         }));
     }
 
+    // Optional per-stage counters at the single `--nprobe` value.  The
+    // per-operation cost of each stage is in `lakesoul-vector`'s
+    // `fastscan_kernel` criterion bench, so counters x kernel cost attribute
+    // the search time between accumulation, post-processing and refinement.
+    let diagnostics = if args.search_stats {
+        let params = SearchParams::new(args.top_k, args.nprobe);
+        let mut total = SearchDiagnostics::default();
+        let mut total_ms = 0.0f64;
+        let mut n_ok = 0usize;
+        for qi in 0..dataset.queries.n {
+            let query = dataset.queries.query(qi);
+            let t = Instant::now();
+            let Ok((_results, diag)) = index.search_with_diagnostics(query, params)
+            else {
+                continue;
+            };
+            total_ms += t.elapsed().as_secs_f64() * 1000.0;
+            n_ok += 1;
+            total.clusters_probed += diag.clusters_probed;
+            total.batches_scanned += diag.batches_scanned;
+            total.vectors_scanned += diag.vectors_scanned;
+            total.estimated += diag.estimated;
+            total.skipped_by_lower_bound += diag.skipped_by_lower_bound;
+            total.extended_evaluations += diag.extended_evaluations;
+            total.fastscan_ns += diag.fastscan_ns;
+            total.scalar_ns += diag.scalar_ns;
+        }
+        let n = n_ok.max(1) as f64;
+        let value = json!({
+            "nprobe": args.nprobe,
+            "queries": n_ok,
+            "mean_ms": total_ms / n,
+            "clusters_probed": total.clusters_probed as f64 / n,
+            "batches_scanned": total.batches_scanned as f64 / n,
+            "vectors_scanned": total.vectors_scanned as f64 / n,
+            "heap_pushes": total.estimated as f64 / n,
+            "skipped_by_lower_bound": total.skipped_by_lower_bound as f64 / n,
+            "refined": total.extended_evaluations as f64 / n,
+            "fastscan_ms": total.fastscan_ns as f64 / n / 1e6,
+            "scalar_loop_ms": total.scalar_ns as f64 / n / 1e6,
+        });
+        println!(
+            "stats nprobe={}: mean={:.3}ms fastscan={:.3}ms scalar={:.3}ms vectors={:.0} pruned={:.0} refined={:.0} pushed={:.0} batches={:.0}",
+            args.nprobe,
+            value["mean_ms"].as_f64().unwrap_or(0.0),
+            value["fastscan_ms"].as_f64().unwrap_or(0.0),
+            value["scalar_loop_ms"].as_f64().unwrap_or(0.0),
+            value["vectors_scanned"].as_f64().unwrap_or(0.0),
+            value["skipped_by_lower_bound"].as_f64().unwrap_or(0.0),
+            value["refined"].as_f64().unwrap_or(0.0),
+            value["heap_pushes"].as_f64().unwrap_or(0.0),
+            value["batches_scanned"].as_f64().unwrap_or(0.0),
+        );
+        Some(value)
+    } else {
+        None
+    };
+
     let summary = json!({
         "scenario": "search",
         "format": "vortex",
@@ -1469,6 +1545,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "load_ms": load_ms,
         "index_size_bytes": index_size_bytes(&work_dir),
         "sweep": sweep,
+        "diagnostics": diagnostics,
     });
     print_summary(&summary);
     Ok(summary)
@@ -2044,13 +2121,21 @@ async fn run_stream(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 
 fn core_args() -> CoreArgs {
+    // Object-storage runs (`--table-root s3://...`) configure the endpoint and
+    // credentials through the `AWS_*` variables, matching `CoreArgs::from_env`.
     CoreArgs {
-        warehouse_prefix: None,
-        endpoint: None,
-        s3_bucket: None,
-        s3_access_key: None,
-        s3_secret_key: None,
-        s3_virtual_host_style: false,
+        // `LAKESOUL_WAREHOUSE=s3://<bucket>/` registers the object store on
+        // the session runtime; DataFusion requires a registration before any
+        // `s3://` path can be read or written.
+        warehouse_prefix: std::env::var("LAKESOUL_WAREHOUSE").ok(),
+        endpoint: std::env::var("AWS_ENDPOINT").ok(),
+        s3_bucket: std::env::var("AWS_BUCKET").ok(),
+        s3_access_key: std::env::var("AWS_ACCESS_KEY_ID").ok(),
+        s3_secret_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+        s3_virtual_host_style: std::env::var("AWS_S3_VIRTUAL_HOST_STYLE")
+            .ok()
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(false),
         worker_threads: 2,
     }
 }
@@ -2112,7 +2197,7 @@ fn sql_vector_batch(
 async fn create_sql_table(
     client: &lakesoul_datafusion::MetaDataClientRef,
     table_name: &str,
-    work_dir: &Path,
+    table_root: &str,
     vector_type: VectorType,
     hash_buckets: usize,
     file_format: &str,
@@ -2137,8 +2222,8 @@ async fn create_sql_table(
     ]));
     let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
         schema_to_metadata_parts(schema.as_ref());
-    let table_path = qualify_path(&work_dir.to_string_lossy())
-        .map_err(|e| format!("qualify table path: {e}"))?;
+    let table_path =
+        qualify_path(table_root).map_err(|e| format!("qualify table path: {e}"))?;
     let properties = serde_json::to_string(&LakeSoulTableProperty {
         hash_bucket_num: Some(hash_buckets.to_string()),
         vector_index_columns,
@@ -2207,6 +2292,12 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let work_dir = prepare_work_dir(&args.work_dir)?;
     clean_work_dir(&work_dir)?;
     let table_name = args.table.clone();
+    // The table (data + index) lives in `--table-root` when given — e.g. an
+    // `s3://bucket/prefix` URL — and falls back to the local work directory.
+    let table_root = args
+        .table_root
+        .clone()
+        .unwrap_or_else(|| work_dir.to_string_lossy().to_string());
 
     let client = Arc::new(
         lakesoul_datafusion::MetaDataClient::from_env()
@@ -2242,7 +2333,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     create_sql_table(
         &client,
         &table_name,
-        &work_dir,
+        &table_root,
         args.vector_type,
         args.sql_hash_buckets,
         &args.sql_format,
@@ -2439,6 +2530,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let summary = json!({
         "scenario": "sql",
         "table": table_name,
+        "table_root": table_root,
         "vector_type": args.vector_type.name(),
         "rerank": args.rerank,
         "gt_source": "original-f32",

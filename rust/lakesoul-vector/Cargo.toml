@@ -47,9 +47,14 @@ smallvec = "1.10"
 [dev-dependencies]
 tempfile = { workspace = true }
 async-trait = { workspace = true }
+criterion = { version = "0.7", features = ["html_reports"] }
 
 [lints]
 workspace = true
 
 [features]
 huge_pages = []
+
+[[bench]]
+name = "fastscan_kernel"
+harness = false

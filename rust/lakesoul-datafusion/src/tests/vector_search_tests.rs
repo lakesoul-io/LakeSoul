@@ -128,6 +128,34 @@ fn inner_product_expr() -> Expr {
     )
 }
 
+fn marker_request(
+    plan: &LogicalPlan,
+) -> Option<crate::udf::vector_search_marker::VectorSearchRequest> {
+    let mut request = None;
+    plan.apply(&mut |node: &LogicalPlan| {
+        if let LogicalPlan::TableScan(ts) = node {
+            request = crate::udf::vector_search_marker::parse_vector_search_request(
+                &ts.filters,
+            );
+        }
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    })
+    .unwrap();
+    request
+}
+
+/// An optimizer context with `lakesoul_vector_search.rerank = 'index'`.
+fn index_only_context() -> datafusion::optimizer::OptimizerContext {
+    use datafusion::common::config::ConfigOptions;
+    use datafusion::optimizer::OptimizerContext;
+
+    let mut options = ConfigOptions::default();
+    let mut config = LakeSoulVectorSearchConfig::default();
+    config.rerank = "index".to_string();
+    options.extensions.insert(config);
+    OptimizerContext::new_with_config_options(Arc::new(options))
+}
+
 fn has_marker(plan: &LogicalPlan) -> bool {
     let mut found = false;
     plan.apply(&mut |node: &LogicalPlan| {
@@ -164,6 +192,41 @@ fn rule_rewrites_array_distance_limit() {
         )
         .unwrap();
     assert!(!second.transformed);
+}
+
+#[test]
+fn rule_shrinks_index_only_candidate_overfetch() {
+    // Index-only ordering: each bucket only needs its own top-k (a globally
+    // top-k row is within its bucket's top-k), so the candidate margin drops
+    // from the exact re-rank's 10x to 2x.
+    let plan = build_limit_sort_plan(array_distance_expr(), 10).unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(request.order_by, "index mode must order by the index");
+    assert_eq!(request.overfetch, 2);
+
+    // A filter above the scan can drop candidates after the index ordered
+    // them, so the exact-mode margin stays.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .filter(col("id").gt(lit(0u64)))
+        .unwrap()
+        .sort(vec![array_distance_expr().sort(true, false)])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert_eq!(request.overfetch, 10);
 }
 
 #[test]

@@ -47,11 +47,35 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-#[derive(Debug, Default, Clone)]
-pub(crate) struct SearchDiagnostics {
+/// Per-query counters that split an IVF search into the stages an optimizer
+/// can trade against each other.
+///
+/// Returned by [`IvfRabitqIndex::search_with_diagnostics`].  The counters are
+/// per query: multiplying them with the per-operation cost measured in
+/// `benches/fastscan_kernel.rs` attributes the search time to the SIMD
+/// accumulation, the scalar post-processing and the refinement stage.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SearchDiagnostics {
+    /// Clusters scanned (the effective nprobe).
+    pub clusters_probed: usize,
+    /// 32-vector FastScan batches evaluated.
+    pub batches_scanned: usize,
+    /// Vectors visited by the per-vector loop (batched and pending).
+    pub vectors_scanned: usize,
+    /// Candidates that passed the lower-bound check and updated the heap.
     pub estimated: usize,
+    /// Vectors pruned by the lower-bound check (not refined, not pushed).
     pub skipped_by_lower_bound: usize,
+    /// Candidates refined with the extended (ex) codes.
     pub extended_evaluations: usize,
+    /// Wall time in the SIMD stage-1 accumulation.
+    ///
+    /// Only measured when diagnostics are requested — one `Instant` pair per
+    /// batch, which costs ~0.5 ms on a 1M-vector query at nprobe 64.  Use the
+    /// sweep run for latency and these totals for the stage split.
+    pub fastscan_ns: u64,
+    /// Wall time in the scalar per-vector loop (mask, pruning, heap, refine).
+    pub scalar_ns: u64,
 }
 
 // ============================================================================
@@ -1181,6 +1205,21 @@ impl IvfRabitqIndex {
         self.search_fastscan(query, params, None, Some(filter))
     }
 
+    /// Search and return the per-stage counters alongside the results.
+    ///
+    /// Same results and ordering as [`IvfRabitqIndex::search`]; the counters
+    /// are only maintained when this entry point is used.
+    pub fn search_with_diagnostics(
+        &self,
+        query: &[f32],
+        params: SearchParams,
+    ) -> Result<(Vec<SearchResult>, SearchDiagnostics), RabitqError> {
+        let mut diagnostics = SearchDiagnostics::default();
+        let results =
+            self.search_fastscan(query, params, Some(&mut diagnostics), None)?;
+        Ok((results, diagnostics))
+    }
+
     /// Batch search for multiple queries in parallel using rayon
     ///
     /// # Performance
@@ -1304,6 +1343,10 @@ impl IvfRabitqIndex {
 
         let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
 
+        if let Some(diag) = diagnostics.as_deref_mut() {
+            diag.clusters_probed += nprobe;
+        }
+
         // Use FastScan batch search with unified memory layout
         for &(cid, _) in cluster_scores.iter().take(nprobe) {
             let cluster = &self.clusters[cid];
@@ -1417,6 +1460,11 @@ impl IvfRabitqIndex {
                 (batch_start + simd::FASTSCAN_BATCH_SIZE).min(cluster.num_vectors);
             let actual_batch_size = batch_end - batch_start;
 
+            if let Some(diag) = diagnostics.as_deref_mut() {
+                diag.batches_scanned += 1;
+                diag.vectors_scanned += actual_batch_size;
+            }
+
             // Rely on CPU hardware prefetcher (like C++ version)
             // Manual prefetching removed to avoid cache pollution
 
@@ -1431,6 +1479,8 @@ impl IvfRabitqIndex {
             let mut est_distances = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
             let mut lower_bounds = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
 
+            let timing = diagnostics.is_some();
+            let t_accumulate = timing.then(std::time::Instant::now);
             crate::rabitq::fastscan_kernel::compute_fastscan_batch(
                 lut_view,
                 cluster.batch_bin_codes(batch_idx),
@@ -1445,19 +1495,49 @@ impl IvfRabitqIndex {
                 &mut est_distances,
                 &mut lower_bounds,
             );
+            let t_scalar = timing.then(std::time::Instant::now);
 
-            // Step 2: Process each vector in the batch (pruning and ex-code evaluation)
-            // Distances are now pre-computed in vectorized fashion (matching C++ Eigen)
-            for i in 0..actual_batch_size {
+            // Step 2: Visit only the slots that can still enter the top-k.
+            // The mask compares all 32 lower bounds at once, so a fully
+            // pruned batch (the common case with a tight index) skips the
+            // per-vector loop entirely.  The k-th distance is only read once
+            // per batch: it can only shrink while the batch is processed, and
+            // a candidate skipped with the (larger) batch-start distance
+            // could not have entered the heap anyway.
+            let distk_batch = if heap.len() < top_k {
+                f32::INFINITY
+            } else {
+                heap.peek()
+                    .map(|entry| entry.candidate.distance)
+                    .unwrap_or(f32::INFINITY)
+            };
+            let mut mask = crate::rabitq::fastscan_kernel::candidate_mask(
+                &lower_bounds,
+                distk_batch,
+            );
+            if actual_batch_size < simd::FASTSCAN_BATCH_SIZE {
+                mask &= (1u32 << actual_batch_size) - 1;
+            }
+            if let Some(diag) = diagnostics.as_deref_mut() {
+                diag.skipped_by_lower_bound +=
+                    actual_batch_size - mask.count_ones() as usize;
+            }
+
+            while mask != 0 {
+                let i = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
                 let global_idx = batch_start + i;
-                let vector_id = cluster.ids[global_idx].clone();
 
                 // Apply filter if provided
                 if let Some(filter_keys) = filter
-                    && !filter_keys.contains(&vector_id)
+                    && !filter_keys.contains(&cluster.ids[global_idx])
                 {
                     continue;
                 }
+
+                // Materialize the key only for candidates that survive the
+                // batch mask (the pruned majority never gets copied).
+                let vector_id = cluster.ids[global_idx].clone();
 
                 // Use pre-computed values (vectorized above)
                 let ip_x0_qr = ip_x0_qr_values[i];
@@ -1538,6 +1618,14 @@ impl IvfRabitqIndex {
                     heap.pop();
                 }
             }
+
+            if let (Some(t0), Some(t1)) = (t_accumulate, t_scalar) {
+                let t2 = std::time::Instant::now();
+                if let Some(diag) = diagnostics.as_deref_mut() {
+                    diag.fastscan_ns += (t1 - t0).as_nanos() as u64;
+                    diag.scalar_ns += (t2 - t1).as_nanos() as u64;
+                }
+            }
         }
 
         // Scan pending vectors (≤31, not yet in batch_data)
@@ -1564,10 +1652,14 @@ impl IvfRabitqIndex {
         filter: Option<&HashSet<IndexKey>>,
         heap: &mut BinaryHeap<HeapEntry>,
         top_k: usize,
-        _diagnostics: Option<&mut SearchDiagnostics>,
+        mut diagnostics: Option<&mut SearchDiagnostics>,
     ) {
         if cluster.pending_ids.is_empty() {
             return;
+        }
+
+        if let Some(diag) = diagnostics.as_deref_mut() {
+            diag.vectors_scanned += cluster.pending_vectors.len();
         }
 
         for (vec_id, qvec) in cluster
@@ -1594,6 +1686,9 @@ impl IvfRabitqIndex {
 
             // Ex-code refinement
             if self.ex_bits > 0 {
+                if let Some(diag) = diagnostics.as_deref_mut() {
+                    diag.extended_evaluations += 1;
+                }
                 let ex_dot = (self.ip_func)(
                     &query_precomp.rotated_query,
                     &qvec.ex_code_packed,
@@ -1618,6 +1713,9 @@ impl IvfRabitqIndex {
                 Metric::InnerProduct => -distance,
             };
 
+            if let Some(diag) = diagnostics.as_deref_mut() {
+                diag.estimated += 1;
+            }
             heap.push(HeapEntry {
                 candidate: HeapCandidate {
                     version: u32::MAX,
@@ -1630,18 +1728,6 @@ impl IvfRabitqIndex {
                 heap.pop();
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn _search_with_diagnostics(
-        &self,
-        query: &[f32],
-        params: SearchParams,
-    ) -> Result<(Vec<SearchResult>, SearchDiagnostics), RabitqError> {
-        let mut diagnostics = SearchDiagnostics::default();
-        let results =
-            self.search_fastscan(query, params, Some(&mut diagnostics), None)?;
-        Ok((results, diagnostics))
     }
 
     #[cfg(test)]

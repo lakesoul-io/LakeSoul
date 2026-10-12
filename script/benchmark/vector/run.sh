@@ -11,6 +11,9 @@
 #   script/benchmark/vector/run.sh [e1|e2|e3|e4|e5|e6|e7|all] [--quick] [--results DIR]
 #
 # Environment:
+#   E7_TABLE_ROOT object-storage table prefix for E7 (e.g. s3://bucket/prefix);
+#                 endpoint and credentials come from AWS_ENDPOINT/AWS_ACCESS_KEY_ID/
+#                 AWS_SECRET_ACCESS_KEY, and LAKESOUL_WAREHOUSE must cover the bucket
 #   DATA_DIR      dataset root (default: ~/program/opensource/rabitq-rs/data)
 #   RESULTS_DIR   output root (default: <repo>/benchmark-results/<timestamp>)
 #   THREADS       worker threads (default: 16)
@@ -304,12 +307,19 @@ run_e7() {
     # Both runs write the same fresh table (no deltas) so the only difference
     # is where the ordering comes from: the exact re-rank over the stored
     # vector column, or the quantized distance computed inside the index.
+    # Setting E7_TABLE_ROOT (e.g. s3://bucket/prefix) runs the table on object
+    # storage; the endpoint and credentials come from the AWS_* variables.
+    local root_args=(); local root_suffix=""
+    if [[ -n "${E7_TABLE_ROOT:-}" ]]; then
+        root_args=(--table-root "${E7_TABLE_ROOT%/}/${ds}")
+        root_suffix="_s3"
+    fi
     local mode
     for mode in exact index; do
-        run_one "e7_${ds}_${mode}" --base "$BASE" --query "$QUERY" \
+        run_one "e7_${ds}_${mode}${root_suffix}" --base "$BASE" --query "$QUERY" \
             --scenario sql --limit "$limit" --nlist "$nlist" --n-queries "$nq" \
             --top-k 10 --nprobe 64 --threads "$THREADS" --rounds 0 --per-round 0 \
-            --rerank "$mode" \
+            --rerank "$mode" "${root_args[@]}" \
             --sql-hash-buckets "${E7_HASH_BUCKETS:-1}" \
             --table "vec_bench_sql_e7_${ds}_${mode}" \
             --work-dir "$RESULTS_DIR/work/e7_${ds}_${mode}"
