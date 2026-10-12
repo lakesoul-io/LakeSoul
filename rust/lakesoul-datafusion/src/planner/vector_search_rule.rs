@@ -27,10 +27,12 @@ use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{Cast, Expr, LogicalPlan, SortExpr, TableScan};
+use datafusion::logical_expr::{Cast, Expr, LogicalPlan, Sort, SortExpr, TableScan};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
-use crate::udf::vector_search_marker::{VECTOR_SEARCH_MARKER, marker_expr};
+use crate::udf::vector_search_marker::{
+    LakeSoulVectorSearchConfig, RerankMode, VECTOR_SEARCH_MARKER, marker_expr,
+};
 
 /// Logical optimizer rule for the vector-search pushdown (see module docs).
 #[derive(Debug, Default)]
@@ -44,6 +46,9 @@ pub(crate) struct VectorSearchSpec {
     pub top_k: usize,
     /// `"L2"` or `"IP"`.
     pub metric: String,
+    /// Order by the index distance instead of the exact re-rank: the rule
+    /// removes the distance `Sort` and the scan returns index-ordered rows.
+    pub order_by: bool,
 }
 
 fn is_marker(expr: &Expr) -> bool {
@@ -62,11 +67,16 @@ impl OptimizerRule for VectorSearchPushdownRule {
     fn rewrite(
         &self,
         plan: LogicalPlan,
-        _config: &dyn OptimizerConfig,
+        config: &dyn OptimizerConfig,
     ) -> DFResult<Transformed<LogicalPlan>> {
-        match detect(&plan) {
+        let index_only = config
+            .options()
+            .extensions
+            .get::<LakeSoulVectorSearchConfig>()
+            .is_some_and(|options| options.rerank_mode() == RerankMode::Index);
+        match detect(&plan, index_only) {
             Some((spec, target)) => {
-                let rewritten = rewrite_chain(plan, &spec, &target)
+                let rewritten = rewrite_chain(plan, &spec, &target, true)
                     .expect("matching plan must be rewritable");
                 Ok(Transformed::yes(rewritten))
             }
@@ -78,7 +88,10 @@ impl OptimizerRule for VectorSearchPushdownRule {
 /// Match the `Limit → Sort(distance) → [Projection/Filter]* → TableScan`
 /// pattern.  Returns the spec and the `Arc` of the target `TableScan` (the
 /// same Arc stored inside the plan tree).
-fn detect(plan: &LogicalPlan) -> Option<(VectorSearchSpec, Arc<LogicalPlan>)> {
+fn detect(
+    plan: &LogicalPlan,
+    index_only: bool,
+) -> Option<(VectorSearchSpec, Arc<LogicalPlan>)> {
     let limit = match plan {
         LogicalPlan::Limit(limit) => limit,
         _ => return None,
@@ -116,12 +129,19 @@ fn detect(plan: &LogicalPlan) -> Option<(VectorSearchSpec, Arc<LogicalPlan>)> {
                     return None;
                 }
                 let (vec_column, query) = extract_distance_args(sort_expr, ts)?;
+                // Index-only ordering is safe while the distance is used
+                // only as the sort key: the scan then returns rows ordered
+                // by the index distance and the vector column drops out of
+                // the projection.  (L2 only for now — the IP estimator is
+                // not directly comparable with `inner_product`.)
+                let order_by = index_only && metric == "L2" && distance_calls(plan) == 1;
                 return Some((
                     VectorSearchSpec {
                         vec_column,
                         query,
                         top_k,
                         metric: metric.to_string(),
+                        order_by,
                     },
                     current,
                 ));
@@ -301,6 +321,7 @@ fn rewrite_chain(
     plan: LogicalPlan,
     spec: &VectorSearchSpec,
     target: &Arc<LogicalPlan>,
+    remove_sort: bool,
 ) -> Option<LogicalPlan> {
     if let LogicalPlan::TableScan(ts) = &plan
         && let LogicalPlan::TableScan(target_ts) = target.as_ref()
@@ -308,11 +329,33 @@ fn rewrite_chain(
     {
         return Some(rewrite_scan(&plan, spec));
     }
+    // Index-only ordering: drop the distance sort.  When the optimizer had
+    // folded the SQL `LIMIT` into the sort's fetch, put it back as a `Limit`
+    // node so the row count still shrinks.
+    if remove_sort
+        && spec.order_by
+        && let LogicalPlan::Sort(sort) = &plan
+        && sort_matches_spec(sort, spec)
+    {
+        // Keep descending so the scan itself still gets the marker.
+        let input = rewrite_chain((*sort.input).clone(), spec, target, false)?;
+        return Some(match sort.fetch {
+            Some(fetch) => LogicalPlan::Limit(datafusion::logical_expr::Limit {
+                skip: None,
+                fetch: Some(Box::new(Expr::Literal(
+                    ScalarValue::Int64(Some(fetch as i64)),
+                    None,
+                ))),
+                input: Arc::new(input),
+            }),
+            None => input,
+        });
+    }
     let mut changed = false;
     let rewritten = plan
         .map_children(|child| {
             let unchanged = child.clone();
-            match rewrite_chain(child, spec, target) {
+            match rewrite_chain(child, spec, target, remove_sort) {
                 Some(rewritten) => {
                     changed = true;
                     Ok(Transformed::yes(rewritten))
@@ -322,6 +365,54 @@ fn rewrite_chain(
         })
         .ok()?;
     changed.then_some(rewritten.data)
+}
+
+/// True when `sort` is the single distance sort this rule matched.
+fn sort_matches_spec(sort: &Sort, spec: &VectorSearchSpec) -> bool {
+    if sort.expr.len() != 1 {
+        return false;
+    }
+    let sort_expr = &sort.expr[0];
+    if sort_expr.asc != (spec.metric == "L2") {
+        return false;
+    }
+    let Some(call) = as_scalar_function(unwrap_cast(&sort_expr.expr)) else {
+        return false;
+    };
+    let Some(Expr::Column(column)) = call.args.first().map(unwrap_cast) else {
+        return false;
+    };
+    column.name == spec.vec_column
+}
+
+/// Number of `array_distance`/`inner_product` calls on the matched path,
+/// including projections below the sort (a projected distance must keep the
+/// exact plan).
+fn distance_calls(plan: &LogicalPlan) -> usize {
+    use datafusion::common::tree_node::TreeNodeRecursion;
+
+    let mut count = 0usize;
+    plan.apply(&mut |node: &LogicalPlan| {
+        let exprs: &[Expr] = match node {
+            LogicalPlan::Projection(projection) => &projection.expr,
+            LogicalPlan::Sort(sort) => {
+                count += sort
+                    .expr
+                    .iter()
+                    .filter(|sort_expr| distance_metric(&sort_expr.expr).is_some())
+                    .count();
+                return Ok(TreeNodeRecursion::Continue);
+            }
+            _ => return Ok(TreeNodeRecursion::Continue),
+        };
+        count += exprs
+            .iter()
+            .filter(|expr| distance_metric(expr).is_some())
+            .count();
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .ok();
+    count
 }
 
 /// Append the marker filter to a TableScan, preserving everything else.
@@ -335,6 +426,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
         &spec.query,
         spec.top_k,
         &spec.metric,
+        spec.order_by,
     ));
     LogicalPlan::TableScan(TableScan {
         table_name: ts.table_name.clone(),

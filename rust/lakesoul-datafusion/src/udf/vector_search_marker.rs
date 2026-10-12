@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use arrow::array::BooleanArray;
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::Result as DFResult;
+use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
@@ -36,10 +36,19 @@ pub struct VectorSearchRequest {
     pub top_k: usize,
     /// Distance metric: `"L2"` or `"IP"`.
     pub metric: String,
+    /// Order the candidates by the index distance instead of the exact
+    /// re-rank over the vector column (index-only ordering).
+    pub order_by: bool,
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
-pub fn marker_expr(vec_column: &str, query: &[f32], top_k: usize, metric: &str) -> Expr {
+pub fn marker_expr(
+    vec_column: &str,
+    query: &[f32],
+    top_k: usize,
+    metric: &str,
+    order_by: bool,
+) -> Expr {
     let query_csv = query
         .iter()
         .map(|v| v.to_string())
@@ -58,6 +67,10 @@ pub fn marker_expr(vec_column: &str, query: &[f32], top_k: usize, metric: &str) 
             ),
             Expr::Literal(
                 datafusion::common::ScalarValue::Utf8(Some(metric.to_string())),
+                None,
+            ),
+            Expr::Literal(
+                datafusion::common::ScalarValue::Boolean(Some(order_by)),
                 None,
             ),
         ],
@@ -79,7 +92,7 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
             let Expr::ScalarFunction(call) = marker else {
                 return None;
             };
-            if call.args.len() != 4 {
+            if call.args.len() != 5 {
                 return None;
             }
             let vec_column = match &call.args[0] {
@@ -104,11 +117,19 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 }
                 _ => return None,
             };
+            let order_by = match &call.args[4] {
+                Expr::Literal(
+                    datafusion::common::ScalarValue::Boolean(Some(value)),
+                    _,
+                ) => *value,
+                _ => return None,
+            };
             Some(VectorSearchRequest {
                 vec_column,
                 query_csv,
                 top_k,
                 metric,
+                order_by,
             })
         })
 }
@@ -138,6 +159,34 @@ impl ScalarUDFImpl for VectorSearchMarkerUDF {
         &self.signature
     }
 
+    /// `__lakesoul_vector_search` accepts `(vec, query, top_k, metric,
+    /// order_by)`; the vector column keeps whatever type it has (any
+    /// `FixedSizeList`/`List` of floats) and the rest are the literals the
+    /// pushdown rule produces.
+    fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
+        if arg_types.len() != 5 {
+            return Err(DataFusionError::Execution(format!(
+                "__lakesoul_vector_search expects 5 arguments, got {}",
+                arg_types.len()
+            )));
+        }
+        for (index, data_type) in arg_types.iter().enumerate() {
+            let accepted = match index {
+                0 => true,
+                1 | 3 => matches!(data_type, DataType::Utf8),
+                2 => matches!(data_type, DataType::Int64),
+                4 => matches!(data_type, DataType::Boolean),
+                _ => false,
+            };
+            if !accepted {
+                return Err(DataFusionError::Execution(format!(
+                    "__lakesoul_vector_search unsupported argument {index}: {data_type}"
+                )));
+            }
+        }
+        Ok(arg_types.to_vec())
+    }
+
     fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
         Ok(DataType::Boolean)
     }
@@ -157,19 +206,44 @@ pub fn marker_udf() -> Arc<ScalarUDF> {
     Arc::new(ScalarUDF::new_from_impl(VectorSearchMarkerUDF::default()))
 }
 
-/// Session-level options for LakeSoul vector search.
-///
-/// Set via `session_config.set_extension(Arc::new(LakeSoulVectorSearchOptions { nprobe: 8 }))`
-/// and read in the scan path with
-/// `session_state.config().get_extension::<LakeSoulVectorSearchOptions>()`.
-#[derive(Debug, Clone)]
-pub struct LakeSoulVectorSearchOptions {
-    /// Number of IVF clusters to probe in each bucket index.
-    pub nprobe: usize,
+/// How the vector search orders its candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RerankMode {
+    /// Exact re-rank over the stored vector column (default).
+    #[default]
+    Exact,
+    /// Order by the quantized distance computed inside the index; the vector
+    /// column is not read at all.
+    Index,
 }
 
-impl Default for LakeSoulVectorSearchOptions {
-    fn default() -> Self {
-        Self { nprobe: 64 }
+datafusion::common::extensions_options! {
+    /// Session-level LakeSoul vector-search options.
+    ///
+    /// Registered on the session `ConfigOptions` so both the logical
+    /// pushdown rule and the scan path can read them, and so they can be set
+    /// from SQL (`SET lakesoul_vector_search.rerank = 'index'`):
+    /// `session_config.options_mut().extensions.insert(LakeSoulVectorSearchConfig::default())`.
+    pub struct LakeSoulVectorSearchConfig {
+        /// Number of IVF clusters to probe in each bucket index.
+        pub nprobe: usize, default = 64
+        /// Candidate ordering: `"exact"` re-ranks against the stored vector
+        /// column; `"index"` orders by the index distance and never reads it.
+        pub rerank: String, default = String::new()
+    }
+}
+
+impl datafusion::common::config::ConfigExtension for LakeSoulVectorSearchConfig {
+    const PREFIX: &'static str = "lakesoul_vector_search";
+}
+
+impl LakeSoulVectorSearchConfig {
+    /// The parsed candidate ordering mode (`"exact"` unless `"index"`).
+    pub fn rerank_mode(&self) -> RerankMode {
+        if self.rerank.eq_ignore_ascii_case("index") {
+            RerankMode::Index
+        } else {
+            RerankMode::Exact
+        }
     }
 }

@@ -815,6 +815,7 @@ impl LakeSoulTableProvider {
         request: crate::udf::vector_search_marker::VectorSearchRequest,
         partition_filters: &[Expr],
         limit: Option<usize>,
+        projection: Option<&Vec<usize>>,
     ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
         let record_fallback = |reason: &'static str| {
             let span = tracing::Span::current();
@@ -896,9 +897,39 @@ impl LakeSoulTableProvider {
         span.record("bucket_group_count", bucket_group_count as u64);
         record_index_selected("vector");
 
-        let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
+        // Honour the scan projection: the reader must not read columns the
+        // plan above does not need — with index-only ordering the stored
+        // vector column is not referenced at all.  Primary keys and the CDC
+        // column stay in the read schema because merge-on-read needs them;
+        // the result is projected back to the requested columns below.
+        let projection_indices = self.scan_projection(projection)?;
+        let scan_schema = project_schema(&self.scan_schema, projection_indices.as_ref())?;
+        let merged_projection = compute_project_column_indices(
             self.scan_schema.clone(),
-            self.file_schema.clone(),
+            scan_schema.clone(),
+            &self.primary_keys,
+            &self.io_config.cdc_column(),
+        )
+        .unwrap_or_else(|| (0..self.scan_schema.fields().len()).collect());
+        let merged_schema = project_schema(&self.scan_schema, Some(&merged_projection))?;
+        let partition_names: std::collections::HashSet<&str> = self
+            .table_partition_cols()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let projected_file_schema = Arc::new(Schema::new_with_metadata(
+            merged_schema
+                .fields()
+                .iter()
+                .filter(|field| !partition_names.contains(field.name().as_str()))
+                .cloned()
+                .collect::<Vec<_>>(),
+            self.file_schema.metadata().clone(),
+        ));
+
+        let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
+            merged_schema.clone(),
+            projected_file_schema,
             self.table_partition_cols().to_vec(),
             groups,
             partition_values,
@@ -909,7 +940,24 @@ impl LakeSoulTableProvider {
             request,
             self.client.vector_index_catalog(),
         )?;
-        Ok(Some(Arc::new(exec)))
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(exec);
+        if Self::needs_output_projection(&scan_schema, &merged_schema) {
+            let mut projection_expr = vec![];
+            for field in scan_schema.fields() {
+                projection_expr.push((
+                    datafusion::physical_expr::expressions::col(
+                        field.name(),
+                        exec.schema().as_ref(),
+                    )?,
+                    field.name().clone(),
+                ));
+            }
+            return Ok(Some(Arc::new(ProjectionExec::try_new(
+                projection_expr,
+                exec,
+            )?)));
+        }
+        Ok(Some(exec))
     }
 
     /// Build the text-index candidate scan for a marker request.
@@ -1415,6 +1463,7 @@ impl TableProvider for LakeSoulTableProvider {
                     request,
                     &classified.partition_pruning,
                     limit,
+                    projection,
                 )
                 .await?
         {
