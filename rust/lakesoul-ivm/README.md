@@ -71,7 +71,7 @@ used as row identities must be non-nullable.
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
-| TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
+| TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k`, or a global `SELECT ... FROM src ORDER BY o LIMIT k` (the ordering may be a scalar expression; boundary ties are broken by the source primary keys) | projected columns, kinds, epoch |
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only) | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
 | Multi-way join | inner `JOIN`s over three to sixteen sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
@@ -126,6 +126,15 @@ Supported within the shapes above:
   support `FILTER`;
 * **ordering** may be a scalar expression in windows, TOP-K and the ordered
   aggregates (`ORDER BY v % 10`);
+* a **global `ORDER BY ... LIMIT k`** is a top-k without a partition: the
+  rows within the limit stay materialized, and the boundary ties are broken
+  by the source primary keys (a raw `LIMIT`'s own tie-break is arbitrary), so
+  the maintained rows are the
+  `ROW_NUMBER() OVER (ORDER BY <ordering>, <pks>) <= k` ones;
+* **window frames** are evaluated by the engine on the recomputed partition:
+  `ROWS`, `RANGE` (numeric or temporal offsets) and `GROUPS` frames all work
+  (`RANGE BETWEEN 2 PRECEDING AND CURRENT ROW`, `GROUPS BETWEEN 1 PRECEDING
+  AND CURRENT ROW`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
   operations;
 * **a `HAVING` subquery** over another source is joined into the recomputed
@@ -458,6 +467,11 @@ the backlog):
   `NOT` directly above a quantifier is rewritten with the complementary
   operator, and `= ANY` / `<> ALL` keep the exact `IN` / `NOT IN` forms); a
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
+* a top-k outside the maintained subset: `LIMIT` without `ORDER BY` (the
+  kept rows are arbitrary), `LIMIT ... OFFSET` (the window shifts), a top-k
+  over an aggregate / window / join result (two chained views), computed
+  select-list columns above the limit, and a select list that omits the
+  source primary keys (the top-k rows are identified by them);
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY` (already per-key), a `DISTINCT` aggregate or
   several aggregates, a computed value over left columns beside one, a

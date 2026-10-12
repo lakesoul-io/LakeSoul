@@ -88,6 +88,101 @@ pub(super) fn analyze_window(
     })
 }
 
+/// A global top-k over one keyed source: `ORDER BY ... LIMIT k`.
+///
+/// DataFusion plans the statement as a `Sort` with a `fetch`; the view keeps
+/// the rows whose `ROW_NUMBER()` over the ordering (the runtime appends the
+/// source primary keys as the final tie-break) is within the limit.  The raw
+/// ordering decides the ranking; the primary-key tie-break only makes the
+/// boundary deterministic, because the statement's own tie-break is
+/// arbitrary.
+pub(super) fn analyze_order_by_limit(
+    projection: Option<&Projection>,
+    sort: &Sort,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let Some(fetch) = sort.fetch else {
+        return Err(unsupported(
+            "ORDER BY without LIMIT is not materialized (add a LIMIT)",
+        ));
+    };
+    if fetch == 0 {
+        return Err(unsupported("LIMIT 0 is not maintained"));
+    }
+    let (source, filter) = collect_filtered_source(&sort.input, tables, "a top-k")?;
+    let mut order_keys = Vec::with_capacity(sort.expr.len());
+    let mut order_by = Vec::with_capacity(sort.expr.len());
+    for item in &sort.expr {
+        match column_name(&item.expr) {
+            Some(column) => {
+                order_by.push(render_order_key(&column, item.asc, item.nulls_first));
+                order_keys.push(column);
+            }
+            None => {
+                order_by.push(render_order_expr(&item.expr, item.asc, item.nulls_first)?);
+                order_keys.push(render_filter(&item.expr)?);
+            }
+        }
+    }
+    if order_keys.is_empty() {
+        return Err(unsupported("ORDER BY ... LIMIT needs an ordering"));
+    }
+    let order_by = if order_by == order_keys {
+        Vec::new()
+    } else {
+        order_by
+    };
+    let output_columns = match projection {
+        Some(projection) => projection
+            .expr
+            .iter()
+            .map(column_name)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| unsupported("computed columns above a LIMIT"))?,
+        // The select list was pruned into the input; its schema is the
+        // projected column set.
+        None => sort
+            .input
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect(),
+    };
+    // The identity of a top-k row is its source primary key, so the MV (and
+    // the select list) must carry it.
+    for key in &source.primary_keys {
+        if !output_columns.contains(key) {
+            return Err(unsupported(format!(
+                "the select list of an ORDER BY ... LIMIT view must include \
+                 the source primary key {key}"
+            )));
+        }
+    }
+    // The MV stores source columns; computed select-list columns (a
+    // projection referring to an expression alias) are not materialized.
+    for column in &output_columns {
+        if source.schema.field_with_name(column).is_err() {
+            return Err(unsupported(format!(
+                "the top-k select-list column {column} is not a source column; \
+                 computed columns above a LIMIT are not materialized"
+            )));
+        }
+    }
+    Ok(ViewSpec::TopK {
+        view_id: request.view_id.clone(),
+        source_table_id: source.table_id.clone(),
+        mv_table_id: request.mv_table_id.clone(),
+        group_keys: Vec::new(),
+        order_keys,
+        order_by,
+        output_columns,
+        limit: i64::try_from(fetch).map_err(|_| unsupported("the LIMIT is too large"))?,
+        filter,
+    })
+}
+
 /// The top `k` rows per group: a filter on the `row_number()` column of a
 /// window expression.
 pub(super) fn try_analyze_top_k(
@@ -579,6 +674,82 @@ fn window_shift_args(args: &[Expr]) -> Result<(String, Option<String>)> {
 mod tests {
     use super::*;
     use crate::sql::test_helpers::*;
+
+    #[tokio::test]
+    async fn analyzes_order_by_limit_top_k() {
+        // `ORDER BY ... LIMIT k` plans as a `Sort` with a fetch: a global
+        // top-k whose identity is the source primary key.
+        let analyzed = analyze_optimized("select k, v from src order by v desc limit 3")
+            .await
+            .unwrap();
+        let ViewSpec::TopK {
+            group_keys,
+            order_keys,
+            order_by,
+            output_columns,
+            limit,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert!(group_keys.is_empty());
+        assert_eq!(order_keys, vec!["v".to_string()]);
+        assert_eq!(order_by, vec!["\"v\" desc nulls first".to_string()]);
+        assert_eq!(output_columns, vec!["k".to_string(), "v".to_string()]);
+        assert_eq!(limit, 3);
+        assert!(filter.is_none());
+
+        // A filter and a computed ordering.
+        let analyzed = analyze_optimized(
+            "select k, v from src where g = 'g0' order by v % 10 desc, k limit 2",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::TopK {
+            order_keys,
+            order_by,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(order_keys, vec!["(v % 10)".to_string(), "k".to_string()]);
+        assert_eq!(
+            order_by,
+            vec!["((v % 10)) desc nulls first".to_string(), "k".to_string()]
+        );
+        assert!(filter.is_some());
+
+        // A projection above the sort carries the select list.
+        let analyzed = analyze_optimized("select k from src order by v desc limit 3")
+            .await
+            .unwrap();
+        let ViewSpec::TopK { output_columns, .. } = analyzed.spec else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(output_columns, vec!["k".to_string()]);
+
+        // The shapes outside the maintained subset.
+        for sql in [
+            // OFFSET shifts the window.
+            "select k, v from src order by v desc limit 2 offset 1",
+            // A limit without an ordering is arbitrary.
+            "select k, v from src limit 3",
+            // Ordering alone is not materialized.
+            "select k, v from src order by v desc",
+            // The primary key identifies the top-k rows.
+            "select v from src order by v desc limit 3",
+            // Computed select-list columns are not materialized.
+            "select k, v + 1 as w from src order by v desc limit 3",
+            // A top-k over an aggregate is a view chain, not one statement.
+            "select g, sum(v) as s from src group by g order by s desc limit 2",
+        ] {
+            assert!(analyze_optimized(sql).await.is_err(), "{sql}");
+        }
+    }
 
     #[tokio::test]
     async fn analyzes_multi_window_clauses() {

@@ -25,7 +25,7 @@ use datafusion::logical_expr::expr::{BinaryExpr, Exists, InSubquery, SetComparis
 use datafusion::logical_expr::utils::{merge_schema, split_conjunction};
 use datafusion::logical_expr::{
     Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, LogicalPlanBuilder,
-    Operator, Projection, SortExpr, Subquery, Union, Window, WindowFrame,
+    Operator, Projection, Sort, SortExpr, Subquery, Union, Window, WindowFrame,
     WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::prelude::SessionContext;
@@ -123,8 +123,11 @@ pub fn analyze_select(
                 // `DISTINCT ON (...) ... ORDER BY` keeps the final ordering in
                 // a Sort above the aggregate; the ordering is not
                 // materialized, but the `FIRST_VALUE` aggregates under it
-                // define the picked rows.
-                if let LogicalPlan::Aggregate(aggregate) = peel(&sort.input)
+                // define the picked rows.  A `fetch` is a `LIMIT`: a global
+                // top-k.
+                if sort.fetch.is_some() {
+                    analyze_order_by_limit(Some(projection), sort, tables, request)?
+                } else if let LogicalPlan::Aggregate(aggregate) = peel(&sort.input)
                     && aggregate.aggr_expr.iter().any(is_first_value_aggregate)
                 {
                     analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
@@ -177,6 +180,15 @@ pub fn analyze_select(
             }
         }
         LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
+        LogicalPlan::Sort(sort) => analyze_order_by_limit(None, sort, tables, request)?,
+        LogicalPlan::Limit(limit) => {
+            return Err(unsupported(if limit.skip.is_some() {
+                "LIMIT with OFFSET is not maintained"
+            } else {
+                "LIMIT without ORDER BY is not maintained (order the rows \
+                 with ORDER BY ... LIMIT k)"
+            }));
+        }
         LogicalPlan::Aggregate(aggregate) => {
             analyze_aggregate(aggregate, None, &[], tables, request)?
         }
