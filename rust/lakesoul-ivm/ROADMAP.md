@@ -114,7 +114,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 窗口/TopK 叠加在 join / 聚合上 | 拒 | **M** | 同上 |
 | union 各分支为 join | 拒（row shape over a join） | **M** | 分支视图 + union 视图 |
 | 嵌套/不透明派生表 | 部分拒 | **M** | 分析器把派生表重写为视图链 |
-| **自动编排**（依赖图、拓扑刷新、失败重试） | 无 | **M** | **本组的关键交付**：注册视图时记录引用的 MV，刷新时自动先刷新上游 |
+| **自动编排**（依赖图、拓扑刷新、失败重试） | ✅ 已实现（PLAN §10.116）：依赖从持久化 spec 现推；3 色拓扑 + 环报错；`ChainPolicy`（重试 1 次 → 重建回退 → dirty 自愈）与「下游绝不读落后上游」；多根一次遍历；`ViewRefresh` 动作返回；`list_views` + `last_error` | **M** | 已完成（原计划：注册时记录 MV + 自动先刷上游） |
 
 ### B3. 连接族（P1）
 
@@ -145,7 +145,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | ✅ 已实现（PR-101，PLAN §10.107）：`SemiAntiView.count_mode`（rank vs 右侧 per-tuple count）；引擎自身对原始集合运算只做成员判定，oracle 用 Rust 独立计数 |
-| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | **已实现（PLAN §10.112）**：单 pair 的 inner / LEFT / RIGHT / FULL 普通列键均可空安全（spec/runtime `null_safe`、pair 计算与受影响行选择走 `NullEquality::NullEqualsNull`、输出键列可空、lookup 形态保持严格语义）；多表链与表达式键仍明确拒绝；另记录 DataFusion 53.1 对三表链 null-safe 谓词丢失 `NullEqualsNull` 标记的行为 |
+| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | **已实现（PLAN §10.112）**：单 pair 的 inner / LEFT / RIGHT / FULL 普通列键均可空安全（spec/runtime `null_safe`、pair 计算与受影响行选择走 `NullEquality::NullEqualsNull`、输出键列可空、lookup 形态保持严格语义）；多表链与表达式键仍明确拒绝；另记录 DataFusion 55.1 对三表链 null-safe 谓词丢失 `NullEqualsNull` 标记的行为 |
 
 ### B6. 子查询（P2）
 

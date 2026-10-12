@@ -41,6 +41,7 @@ use crate::table::{
 };
 
 mod aggregates;
+mod chain;
 mod joins;
 mod lookup_chain;
 mod multi_join;
@@ -51,6 +52,7 @@ mod unions;
 mod windows;
 
 pub use self::aggregates::*;
+pub use self::chain::*;
 pub use self::joins::*;
 pub use self::lookup_chain::*;
 pub use self::multi_join::*;
@@ -3087,51 +3089,6 @@ impl IvmRuntime {
     }
 
     /// Refresh a view from its persisted [`ViewSpec`], opening every table by
-    /// id.  The spec is the only state needed to drive a refresh from any
-    /// process; the registered refresh interval is preserved.
-    /// Refresh a view and every view it reads, upstream first, so a scheduler
-    /// can drive a whole chain with one call.
-    ///
-    /// Returns `(view_id, epoch)` for every view that was refreshed, in
-    /// refresh order (`None` when the view had no changes).  The traversal is
-    /// iterative and cycle-safe: a table that is not a registered view is
-    /// skipped.
-    pub async fn refresh_view_chain(
-        &self,
-        view_id: &str,
-    ) -> Result<Vec<(String, Option<i64>)>> {
-        let mut visited = std::collections::HashSet::new();
-        let mut specs: HashMap<String, ViewSpec> = HashMap::new();
-        let mut refreshed = Vec::new();
-        let mut stack = vec![(view_id.to_string(), false)];
-        while let Some((id, expanded)) = stack.pop() {
-            if !expanded {
-                if visited.contains(&id) {
-                    continue;
-                }
-                let Some(value) = self.metadata.get_view_spec(&id).await? else {
-                    continue;
-                };
-                let spec: ViewSpec = serde_json::from_value(value)?;
-                visited.insert(id.clone());
-                let sources = spec
-                    .source_table_ids()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>();
-                specs.insert(id.clone(), spec);
-                stack.push((id, true));
-                for source in sources.into_iter().rev() {
-                    stack.push((source, false));
-                }
-            } else if let Some(spec) = specs.get(&id) {
-                let epoch = self.refresh_spec(spec).await?;
-                refreshed.push((id, epoch));
-            }
-        }
-        Ok(refreshed)
-    }
-
     pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
         let kind = spec.kind();
         let started = std::time::Instant::now();

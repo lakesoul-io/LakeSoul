@@ -15,8 +15,8 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, SumCountView, WindowFunction,
-    WindowView, sum_count_mv_schema_for, window_ranking_mv_schema_for,
+    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, RefreshAction, SumCountView,
+    WindowFunction, WindowView, sum_count_mv_schema_for, window_ranking_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -514,9 +514,9 @@ async fn chained_views_refresh_on_demand() {
         .await
         .unwrap();
     assert!(
-        refreshed
-            .iter()
-            .any(|(id, epoch)| id == &mv1.table_id && epoch.is_some()),
+        refreshed.iter().any(|view| view.view_id == mv1.table_id
+            && view.epoch.is_some()
+            && view.action == RefreshAction::Incremental),
         "{refreshed:?}"
     );
     let expected = vec![("a".to_string(), 30), ("b".to_string(), 20)];

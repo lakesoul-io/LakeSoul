@@ -3110,7 +3110,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `tests/sql_oracle.rs::oracle_null_safe_inner_join_matches_full_recompute`
   （keyed 随机差分，含 NULL↔非 NULL 的更新；定制种子 7/11 × 30 轮通过）。
 
-**DataFusion 事实（53.1.0，值得上游反馈）**
+**DataFusion 事实（55.1.0，值得上游反馈）**
 
 - 单 pair 的 `ON a.v IS NOT DISTINCT FROM b.v`：`ExtractEquijoinPredicate` 正确生成
   `null_equality = NullEqualsNull` 的 inner join（probe 验证）。
@@ -3206,7 +3206,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 ### 10.115 Decimal 溢出的 SUM/AVG 防护
 
-- 探测（DataFusion 53.1）：`SUM(DECIMAL(38, 0))` 两行最大值相加返回 **负数**
+- 探测（DataFusion 55.1）：`SUM(DECIMAL(38, 0))` 两行最大值相加返回 **负数**
   （约 `-1.4e38`）——accumulator 静默回绕、不报错；返回类型 `min(38, p+10)` 在精度大时
   没有余量；AVG 走同一累加路径（`min(38, p+4)`）。
 - 处置：分析器 `validate_decimal_accumulators`（`sql/aggregates.rs`）对
@@ -3217,6 +3217,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   相关子查询 `sum(DECIMAL(38, s))` 拒绝）。
 - 后续：若需真正支持，可在运行时以 Decimal256 累加并安全回写（需先核实 DataFusion 的
   CAST 溢出行为），或引入分段求和；嵌套类型（List/Struct）仍是独立的 L 项。
+
+### 10.116 视图链自动编排：依赖图、拓扑/环、重试与重建自愈（ROADMAP §B2）
+
+- **依赖图**：`ViewGraph` 从 `ivm.views` 的持久化 spec 现推（`source_table_ids()` 已穷尽
+  覆盖全部 spec 变体，含 MultiAgg 的 `having_lookup`、两表 join 双侧、MultiJoin/Union/
+  LookupChain 的 sources；内部状态表不在其中），调用内 memo；非注册视图的源表是叶子。
+- **拓扑与环**：3 色 DFS（根按调用顺序、其余按 id），环报错并给出路径
+  （`view chain cycle: a -> b -> a`）；原先「visited 去重」会把环静默跳过并可能给出错误
+  顺序，现在改为硬错误。
+- **策略**：`ChainPolicy { retries: 1, retry_backoff: 50ms, rebuild_on_failure: true }`。
+  每个视图：`dirty` → 直接 rebuild（自愈）；否则增量刷新（1 + retries 次）；
+  仍失败且允许回退 → `rebuild_spec` 全量重建；重建也失败 → 置 `dirty` + `last_error`
+  并中止整条链（下游绝不读落后上游）。成功后清理 status/error。
+- **API**：`refresh_view_chain(view_id)` / `refresh_view_chain_with(view_id, &policy)` /
+  `refresh_view_chains(&[roots], &policy)`（多根一次遍历，菱形共享上游只刷一次）；
+  返回 `Vec<ViewRefresh { view_id, epoch, action: Unchanged|Incremental|Rebuilt }>`
+  （替换原 `Vec<(String, Option<i64>)>`，调用点已同步）。
+- **元数据**：`ivm.views` 增加 `last_error text`（`add column if not exists`）；
+  新增 `set_view_error(view_id, Option<&str>)` 与 `list_views() -> Vec<ViewInfo>`；
+  状态扩展为 `active` / `rebuilding` / `dirty`。
+- **执行器**：`with_refresh_upstream(true)` 改为一次 `refresh_view_chains`（原按表循环）；
+  target 视图 `dirty` 时按定义变更路径强制 rebuild，成功后清 dirty/last_error；
+  默认仍不刷新上游（被动读语义）。
+- **测试**：`runtime/chain.rs` 5 个纯函数单测（链序/菱形/环/自环/叶子）；
+  `tests/view_chain.rs` 4 个集成：互指两视图报环、坏 spec → `dirty` + 下游不动 +
+  恢复后自愈 rebuild、菱形一次遍历 + 重放幂等（全 `Unchanged`）、执行器 opt-in 多上游
+  与被动默认。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
