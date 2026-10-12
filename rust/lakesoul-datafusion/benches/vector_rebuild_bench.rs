@@ -46,7 +46,7 @@ use lakesoul_common::IndexKind;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::index::IndexManagementConfig;
-use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchOptions;
+use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_datafusion::vector_index::{
     VectorIndexParams, VectorIndexTableConfig, auto_build_vector_index,
     vector_index_columns_to_json,
@@ -188,6 +188,9 @@ struct Args {
     sql_hash_buckets: usize,
     /// Vector column element type for the SQL scenario (`f32` or `f16`).
     vector_type: VectorType,
+    /// Candidate ordering for the SQL scenario: `exact` re-ranks against the
+    /// stored vector column, `index` orders by the index distance only.
+    rerank: String,
     /// Print full usage.
     help: bool,
 }
@@ -226,6 +229,7 @@ impl Default for Args {
             sql_format: "vortex".to_string(),
             sql_hash_buckets: 1,
             vector_type: VectorType::F32,
+            rerank: "exact".to_string(),
             help: false,
         }
     }
@@ -274,6 +278,8 @@ STREAM / TRIGGER:
   --sql-hash-buckets <n>                     Hash buckets for the SQL scenario (default: 1)
   --vector-type <f32|f16>                    Vector column element type for the SQL scenario
                                              (default: f32; f16 stores half precision)
+  --rerank <exact|index>                     SQL scenario candidate ordering (default: exact);
+                                             index orders by the index distance only
 
   --help                                    Show this help
 "#
@@ -383,6 +389,13 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("unknown vector type: {other}")),
                 }
             }
+            "--rerank" => {
+                args.rerank = match value(flag)?.to_lowercase().as_str() {
+                    "exact" => "exact".to_string(),
+                    "index" => "index".to_string(),
+                    other => return Err(format!("unknown rerank mode: {other}")),
+                }
+            }
             "--policy" => {
                 args.policy = match value(flag)?.to_lowercase().as_str() {
                     "none" => Policy::None,
@@ -460,6 +473,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.vector_type != VectorType::F32 && args.scenario != Scenario::Sql {
         return Err("--vector-type is only supported by --scenario sql".to_string());
+    }
+    if args.rerank != "exact" && args.scenario != Scenario::Sql {
+        return Err("--rerank is only supported by --scenario sql".to_string());
     }
     Ok(args)
 }
@@ -2311,12 +2327,16 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     // 4. Ground truth over the current dataset.
     let gt = brute_force_gt(&vectors, dim, &dataset.queries, args.top_k, args.threads);
 
-    // 5. Search session with the nprobe extension.
-    let session_config = lakesoul_datafusion::create_lakesoul_session_config()
-        .map_err(|e| format!("session config: {e}"))?
-        .with_extension(Arc::new(LakeSoulVectorSearchOptions {
-            nprobe: args.nprobe,
-        }));
+    // 5. Search session with the vector-search options.
+    let mut session_config = lakesoul_datafusion::create_lakesoul_session_config()
+        .map_err(|e| format!("session config: {e}"))?;
+    let mut vector_options = LakeSoulVectorSearchConfig::default();
+    vector_options.nprobe = args.nprobe;
+    vector_options.rerank = args.rerank.clone();
+    session_config
+        .options_mut()
+        .extensions
+        .insert(vector_options);
     let search_ctx = lakesoul_datafusion::create_lakesoul_session_ctx_with_config(
         client.clone(),
         &core,
@@ -2420,6 +2440,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "scenario": "sql",
         "table": table_name,
         "vector_type": args.vector_type.name(),
+        "rerank": args.rerank,
         "gt_source": "original-f32",
         "dim": dim,
         "n_base": dataset.base.n,
