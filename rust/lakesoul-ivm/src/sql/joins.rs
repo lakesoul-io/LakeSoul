@@ -27,12 +27,17 @@ pub(super) fn analyze_join(
     // `INTERSECT`/`EXCEPT` plan as null-aware joins (a NULL row matches a
     // NULL row), and `IS NOT DISTINCT FROM` predicates are null-aware too.
     // The set operations need the per-row match counts and stay in the
-    // semi/anti analyzer; an inner `IS NOT DISTINCT FROM` join is the one
-    // maintained pair join whose keys also match NULL with NULL.  Every
-    // other null-aware shape (outer joins, chains, computed keys) is
-    // rejected instead of silently producing different rows.
+    // semi/anti analyzer; a single two-source inner or outer join is
+    // maintained with null-safe keys.  Every other null-aware shape (chains,
+    // computed keys) is rejected instead of silently producing different
+    // rows.
     let null_safe = join.null_equality == NullEquality::NullEqualsNull;
-    if null_safe && join.join_type != JoinType::Inner {
+    if null_safe
+        && !matches!(
+            join.join_type,
+            JoinType::Inner | JoinType::Left | JoinType::Right | JoinType::Full
+        )
+    {
         return analyze_set_operation(join, projection, tables, request);
     }
     // A correlated scalar subquery plans as a left-semi join against one
@@ -348,6 +353,7 @@ pub(super) fn analyze_join(
                 right_keys,
                 left_filter,
                 right_filter,
+                null_safe,
                 request,
             )
         }
@@ -369,6 +375,7 @@ pub(super) fn analyze_join(
                 join_keys,
                 right_filter,
                 left_filter,
+                null_safe,
                 request,
             )
         }
@@ -426,6 +433,7 @@ pub(super) fn analyze_join(
                 output_columns,
                 left_filter,
                 right_filter,
+                null_safe,
             })
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
@@ -972,6 +980,7 @@ fn analyze_outer_join(
     right_keys: Vec<String>,
     left_filter: Option<String>,
     right_filter: Option<String>,
+    null_safe: bool,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
     // Same-named keys stay compact (the right keys default to the left ones).
@@ -1022,6 +1031,9 @@ fn analyze_outer_join(
         !expected.is_empty() && expected == keys
     };
     if lookup {
+        // The right side is keyed by the join keys, so its keys are a
+        // non-nullable primary key: a NULL left key never matches and the
+        // lookup needs no null-safe flag.
         Ok(ViewSpec::LookupJoin {
             view_id: request.view_id.clone(),
             left_table_id: left.table_id.clone(),
@@ -1048,6 +1060,7 @@ fn analyze_outer_join(
             output_columns,
             left_filter,
             right_filter,
+            null_safe,
         })
     } else {
         Err(unsupported(format!(
@@ -1908,24 +1921,25 @@ mod tests {
         );
     }
 
+    /// A source whose value column is nullable, so the optimizer keeps the
+    /// `IS NOT DISTINCT FROM` keys instead of simplifying them away.
+    fn nullable_key_source(name: &str) -> IvmTable {
+        let mut table = source_table(name);
+        table.schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, true),
+        ]));
+        table
+    }
+
     #[tokio::test]
     async fn analyzes_null_safe_inner_join() {
-        // The key column must be nullable itself, otherwise the optimizer
-        // simplifies `IS NOT DISTINCT FROM` away.
-        let nullable_source = |name: &str| {
-            let mut table = source_table(name);
-            table.schema = Arc::new(Schema::new(vec![
-                Field::new("k", DataType::Int64, false),
-                Field::new("g", DataType::Utf8, false),
-                Field::new("v", DataType::Int64, true),
-            ]));
-            table
-        };
         // `IS NOT DISTINCT FROM` keys plan as a null-aware inner join: the
         // maintained pair join matches NULL keys with NULL keys.
         let analyzed = analyze_multi(
             "select a.k, a.v, b.k from a join b on a.v is not distinct from b.v",
-            vec![nullable_source("a"), nullable_source("b")],
+            vec![nullable_key_source("a"), nullable_key_source("b")],
         )
         .await
         .unwrap();
@@ -1945,19 +1959,7 @@ mod tests {
             analyze_multi(
                 "select a.k, a.v, b.k from a join b \
                  on a.v + 1 is not distinct from b.v",
-                vec![nullable_source("a"), nullable_source("b")],
-            )
-            .await
-            .is_err()
-        );
-
-        // A null-safe outer join stays rejected: the padded side is
-        // indistinguishable from a matched row whose key is NULL.
-        assert!(
-            analyze_multi(
-                "select a.k, a.v, b.k from a left join b \
-                 on a.v is not distinct from b.v",
-                vec![nullable_source("a"), nullable_source("b")],
+                vec![nullable_key_source("a"), nullable_key_source("b")],
             )
             .await
             .is_err()
@@ -1969,10 +1971,78 @@ mod tests {
                 "select a.k from a join b on a.k = b.k \
                  join c on a.v is not distinct from c.v",
                 vec![
-                    nullable_source("a"),
-                    nullable_source("b"),
-                    nullable_source("c"),
+                    nullable_key_source("a"),
+                    nullable_key_source("b"),
+                    nullable_key_source("c"),
                 ],
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_null_safe_outer_joins() {
+        // A LEFT JOIN whose right source is not keyed by the join keys is the
+        // pair-keyed shape and keeps the null-safe flag.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.k from a left join b \
+             on a.v is not distinct from b.v",
+            vec![nullable_key_source("a"), nullable_key_source("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin { null_safe, .. } = analyzed.spec else {
+            panic!("expected a left join spec");
+        };
+        assert!(null_safe);
+
+        // A right source keyed by the join keys is the lookup shape: its keys
+        // are a non-nullable primary key, so a NULL left key never matches and
+        // the lookup keeps the strict semantics.
+        let mut lookup = nullable_key_source("b");
+        lookup.primary_keys = vec!["v".to_string()];
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.k from a left join b \
+             on a.v is not distinct from b.v",
+            vec![nullable_key_source("a"), lookup],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::LookupJoin { .. }));
+
+        // A FULL JOIN keeps the flag too.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.k from a full join b \
+             on a.v is not distinct from b.v",
+            vec![nullable_key_source("a"), nullable_key_source("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::FullJoin { null_safe, .. } = analyzed.spec else {
+            panic!("expected a full join spec");
+        };
+        assert!(null_safe);
+
+        // A RIGHT JOIN is analyzed as the swapped LEFT join.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.k from a right join b \
+             on a.v is not distinct from b.v",
+            vec![nullable_key_source("a"), nullable_key_source("b")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin { null_safe, .. } = analyzed.spec else {
+            panic!("expected a swapped left join spec");
+        };
+        assert!(null_safe);
+
+        // A computed null-safe key stays rejected.
+        assert!(
+            analyze_multi(
+                "select a.k, a.v, b.k from a left join b \
+                 on a.v + 1 is not distinct from b.v",
+                vec![nullable_key_source("a"), nullable_key_source("b")],
             )
             .await
             .is_err()
@@ -2799,6 +2869,7 @@ mod tests {
                 output_columns: Vec::new(),
                 left_filter: None,
                 right_filter: None,
+                null_safe: false,
             }
         );
 
@@ -2945,6 +3016,7 @@ mod tests {
                 output_columns: Vec::new(),
                 left_filter: None,
                 right_filter: None,
+                null_safe: false,
             }
         );
 

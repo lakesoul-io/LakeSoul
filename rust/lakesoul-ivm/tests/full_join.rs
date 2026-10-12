@@ -199,6 +199,7 @@ async fn sql_full_join_rows(
     runtime: &IvmRuntime,
     left: &IvmTable,
     right: &IvmTable,
+    predicate: &str,
 ) -> Vec<FullJoinRow> {
     let context = SessionContext::new();
     register(
@@ -218,7 +219,7 @@ async fn sql_full_join_rows(
             "select l.id, r.rid, coalesce(l.jk, r.jk) as jk, l.lv, r.rv from \
              (select * from l where \"{CHANGE_COLUMN}\" <> 'delete') l \
              full join (select * from r where \"{CHANGE_COLUMN}\" <> 'delete') r \
-             on l.jk = r.jk"
+             on {predicate}"
         ))
         .await
         .unwrap();
@@ -354,7 +355,7 @@ async fn full_join_keeps_unmatched_rows_of_both_sides() {
     runtime.refresh_full_join(view).await.unwrap().unwrap();
     assert_eq!(
         full_join_rows(runtime, output).await,
-        sql_full_join_rows(runtime, left, right).await
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A right update and a right delete that leaves a left row unmatched.
@@ -371,7 +372,7 @@ async fn full_join_keeps_unmatched_rows_of_both_sides() {
     runtime.refresh_full_join(view).await.unwrap().unwrap();
     assert_eq!(
         full_join_rows(runtime, output).await,
-        sql_full_join_rows(runtime, left, right).await
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A left join-key change to an unmatched right row matches it.
@@ -384,7 +385,7 @@ async fn full_join_keeps_unmatched_rows_of_both_sides() {
     runtime.refresh_full_join(view).await.unwrap().unwrap();
     assert_eq!(
         full_join_rows(runtime, output).await,
-        sql_full_join_rows(runtime, left, right).await
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A left delete removes its pairs; its right partner becomes unmatched.
@@ -398,12 +399,136 @@ async fn full_join_keeps_unmatched_rows_of_both_sides() {
     .await
     .unwrap();
     runtime.refresh_full_join(view).await.unwrap().unwrap();
-    let expected = sql_full_join_rows(runtime, left, right).await;
+    let expected = sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await;
     assert_eq!(full_join_rows(runtime, output).await, expected);
 
     // A rebuild agrees with the incremental state.
     runtime.rebuild_full_join(view).await.unwrap();
     assert_eq!(full_join_rows(runtime, output).await, expected);
+
+    fixture.cleanup().await;
+}
+
+#[test_log::test(tokio::test)]
+async fn null_safe_full_join_matches_null_keys_and_sql() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output) = (&fixture.left, &fixture.right, &fixture.output);
+    let view = fixture.view.clone().with_null_safe(true);
+    let predicate = "l.jk is not distinct from r.jk";
+
+    // NULL keys match NULL keys; the unmatched rows of both sides stay padded.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, None, "L1", "insert"),
+            (2, Some("a"), "L2", "insert"),
+            (3, Some("b"), "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, None, 100, "insert"),
+                (11, Some("a"), 101, "insert"),
+                (12, Some("c"), 102, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        vec![
+            (None, Some(12), Some("c".to_string()), None, Some(102)),
+            (Some(1), Some(10), None, Some("L1".to_string()), Some(100)),
+            (
+                Some(2),
+                Some(11),
+                Some("a".to_string()),
+                Some("L2".to_string()),
+                Some(101)
+            ),
+            (
+                Some(3),
+                None,
+                Some("b".to_string()),
+                Some("L3".to_string()),
+                None
+            ),
+        ]
+    );
+
+    // A right key moving from NULL to "b": the NULL-match of left 1 drops (the
+    // changed-right-key selection must find it null-safely), left 3 gains it.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(10, Some("b"), 110, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // A new NULL-key pair on both sides, currently unmatched.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(9, Some("x"), "L9", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(13, None, 113, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // The left key moving to NULL must find the NULL-key right row (the
+    // changed-left-key selection must be null-safe too).
+    left.append_batch(runtime.client(), left_batch(&[(9, None, "L9", "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // A right delete turns its partner into a padded left row.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(11, Some("a"), 101, "delete")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // A rebuild agrees with the incremental state.
+    runtime.rebuild_full_join(&view).await.unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
 
     fixture.cleanup().await;
 }

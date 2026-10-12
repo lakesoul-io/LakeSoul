@@ -199,6 +199,7 @@ async fn full_left_join_rows(
     runtime: &IvmRuntime,
     left: &IvmTable,
     right: &IvmTable,
+    predicate: &str,
 ) -> Vec<LeftJoinRow> {
     let context = SessionContext::new();
     register(
@@ -218,7 +219,7 @@ async fn full_left_join_rows(
             "select l.id, r.rid, l.jk, l.lv, r.rv from \
              (select * from l where \"{CHANGE_COLUMN}\" <> 'delete') l \
              left join (select * from r where \"{CHANGE_COLUMN}\" <> 'delete') r \
-             on l.jk = r.jk"
+             on {predicate}"
         ))
         .await
         .unwrap();
@@ -355,7 +356,7 @@ async fn left_join_keeps_all_matches_and_unmatched_rows() {
     runtime.refresh_left_join(view).await.unwrap().unwrap();
     assert_eq!(
         left_join_rows(runtime, output).await,
-        full_left_join_rows(runtime, left, right).await
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A right update and delete only touch the referencing left rows.
@@ -372,7 +373,7 @@ async fn left_join_keeps_all_matches_and_unmatched_rows() {
     runtime.refresh_left_join(view).await.unwrap().unwrap();
     assert_eq!(
         left_join_rows(runtime, output).await,
-        full_left_join_rows(runtime, left, right).await
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A new match for the previously unmatched left row.
@@ -386,7 +387,7 @@ async fn left_join_keeps_all_matches_and_unmatched_rows() {
     runtime.refresh_left_join(view).await.unwrap().unwrap();
     assert_eq!(
         left_join_rows(runtime, output).await,
-        full_left_join_rows(runtime, left, right).await
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A left join-key change replaces all of its pairs.
@@ -399,7 +400,7 @@ async fn left_join_keeps_all_matches_and_unmatched_rows() {
     runtime.refresh_left_join(view).await.unwrap().unwrap();
     assert_eq!(
         left_join_rows(runtime, output).await,
-        full_left_join_rows(runtime, left, right).await
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
     // A left delete removes all of its pairs.
@@ -410,12 +411,109 @@ async fn left_join_keeps_all_matches_and_unmatched_rows() {
     .await
     .unwrap();
     runtime.refresh_left_join(view).await.unwrap().unwrap();
-    let expected = full_left_join_rows(runtime, left, right).await;
+    let expected = full_left_join_rows(runtime, left, right, "l.jk = r.jk").await;
     assert_eq!(left_join_rows(runtime, output).await, expected);
 
     // A rebuild agrees with the incremental state.
     runtime.rebuild_left_join(view).await.unwrap();
     assert_eq!(left_join_rows(runtime, output).await, expected);
+
+    fixture.cleanup().await;
+}
+
+#[test_log::test(tokio::test)]
+async fn null_safe_left_join_matches_null_keys_and_sql() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output) = (&fixture.left, &fixture.right, &fixture.output);
+    let view = fixture.view.clone().with_null_safe(true);
+
+    // NULL keys match NULL keys on both sides; the "b" left row stays padded.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, None, "L1", "insert"),
+            (2, Some("a"), "L2", "insert"),
+            (3, Some("b"), "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, None, 100, "insert"),
+                (11, None, 101, "insert"),
+                (12, Some("a"), 102, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_left_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk is not distinct from r.jk").await
+    );
+    // A matched row carries its right identity; a padded row does not.
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        vec![
+            (1, Some(10), None, Some("L1".to_string()), Some(100)),
+            (1, Some(11), None, Some("L1".to_string()), Some(101)),
+            (
+                2,
+                Some(12),
+                Some("a".to_string()),
+                Some("L2".to_string()),
+                Some(102)
+            ),
+            (3, None, Some("b".to_string()), Some("L3".to_string()), None),
+        ]
+    );
+
+    // Moving the NULL-key right rows to real keys drops the NULL matches: the
+    // affected-left selection must find the left row by its NULL key.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(10, Some("a"), 110, "insert"), (11, None, 101, "delete")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_left_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk is not distinct from r.jk").await
+    );
+
+    // Moving a real key back to NULL matches the NULL left rows again.
+    right
+        .append_batch(runtime.client(), right_batch(&[(12, None, 112, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_left_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk is not distinct from r.jk").await
+    );
+
+    // A left key change from a real key to NULL flips its matches too.
+    left.append_batch(runtime.client(), left_batch(&[(2, None, "L2", "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_left_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk is not distinct from r.jk").await
+    );
+
+    // A rebuild agrees with the incremental state.
+    runtime.rebuild_left_join(&view).await.unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk is not distinct from r.jk").await
+    );
 
     fixture.cleanup().await;
 }

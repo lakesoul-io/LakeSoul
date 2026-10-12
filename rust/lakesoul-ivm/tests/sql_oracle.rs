@@ -24,22 +24,23 @@ use lakesoul_ivm::{
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
-    distinct_agg_mv_schema_for, grouping_sets_mv_schema_for, join_condition_column_name,
-    join_key_expression_name, keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_for,
-    left_aggregate_mv_schema_with_outputs, lookup_chain_mv_schema_for,
-    lookup_chain_step_id_column, median_groups_mv_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, nullable_join_key_schema, row_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    distinct_agg_mv_schema_for, full_join_view_schema_for, grouping_sets_mv_schema_for,
+    join_condition_column_name, join_key_expression_name, keyed_join_output_primary_keys,
+    keyed_join_view_schema_for, keyed_join_view_schema_with_keys,
+    left_aggregate_mv_schema_for, left_aggregate_mv_schema_with_outputs,
+    left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_chain_step_id_column,
+    median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
+    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
+    nullable_join_key_schema, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -449,6 +450,87 @@ async fn oracle_null_safe_inner_join_matches_full_recompute() {
         "SELECT a.v, a.k, b.k, a.k AS lpk, b.k AS rpk FROM __SRC__ a \
          JOIN __SRC1__ b ON a.v IS NOT DISTINCT FROM b.v \
          WHERE a.op <> 'delete' AND b.op <> 'delete'",
+        "SELECT v, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_null_safe_left_join_matches_full_recompute() {
+    // A null-safe LEFT join: NULL keys match, unmatched left rows stay padded.
+    let schema = nullable_source_schema();
+    let keys = vec!["k".to_string()];
+    let join_keys = vec!["v".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", None),
+        (0, 1, "g1", Some(10)),
+        (0, 2, "g2", None),
+        (1, 0, "g0", None),
+        (1, 1, "g1", Some(20)),
+        (1, 2, "g2", Some(10)),
+    ];
+    run_oracle_seeded(
+        "nullsafeleft",
+        2,
+        schema.clone(),
+        true,
+        &seed,
+        nullable_join_key_schema(
+            &left_join_view_schema_for(
+                &schema, &schema, &keys, &keys, &join_keys, "k", "k",
+            )
+            .unwrap(),
+            join_keys.len(),
+        ),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.v, a.k, b.k FROM __SRC__ a LEFT JOIN __SRC1__ b \
+         ON a.v IS NOT DISTINCT FROM b.v",
+        "SELECT a.v, a.k, b.k, a.k AS lpk, b.k AS rpk FROM \
+         (SELECT * FROM __SRC__ WHERE op <> 'delete') a LEFT JOIN \
+         (SELECT * FROM __SRC1__ WHERE op <> 'delete') b \
+         ON a.v IS NOT DISTINCT FROM b.v",
+        "SELECT v, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_null_safe_full_join_matches_full_recompute() {
+    // A null-safe FULL join: both sides may be padded, and the key column
+    // carries either side's key.
+    let schema = nullable_source_schema();
+    let keys = vec!["k".to_string()];
+    let join_keys = vec!["v".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", None),
+        (0, 1, "g1", Some(10)),
+        (0, 2, "g2", None),
+        (1, 0, "g0", None),
+        (1, 1, "g1", Some(20)),
+        (1, 2, "g2", Some(10)),
+    ];
+    run_oracle_seeded(
+        "nullsafefull",
+        2,
+        schema.clone(),
+        true,
+        &seed,
+        nullable_join_key_schema(
+            &full_join_view_schema_for(
+                &schema, &schema, &keys, &keys, &join_keys, "k", "k",
+            )
+            .unwrap(),
+            join_keys.len(),
+        ),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.v, a.k, b.k FROM __SRC__ a FULL JOIN __SRC1__ b \
+         ON a.v IS NOT DISTINCT FROM b.v",
+        "SELECT coalesce(a.v, b.v) AS v, a.k, b.k, a.k AS lpk, b.k AS rpk \
+         FROM (SELECT * FROM __SRC__ WHERE op <> 'delete') a FULL JOIN \
+         (SELECT * FROM __SRC1__ WHERE op <> 'delete') b \
+         ON a.v IS NOT DISTINCT FROM b.v",
         "SELECT v, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
          FROM __MV__",
     )

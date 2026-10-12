@@ -632,11 +632,12 @@ fn expected_mv_schema(
             left_value,
             right_value,
             output_columns,
+            null_safe,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            if output_columns.is_empty() {
+            let schema = if output_columns.is_empty() {
                 full_join_view_schema_for(
                     &left.schema,
                     &right.schema,
@@ -655,6 +656,11 @@ fn expected_mv_schema(
                     join_keys,
                     output_columns,
                 )?
+            };
+            if *null_safe && !join_keys.is_empty() {
+                nullable_join_key_schema(&schema, join_keys.len())
+            } else {
+                schema
             }
         }
         ViewSpec::LeftJoin {
@@ -664,11 +670,12 @@ fn expected_mv_schema(
             left_value,
             right_value,
             output_columns,
+            null_safe,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            if output_columns.is_empty() {
+            let schema = if output_columns.is_empty() {
                 left_join_view_schema_for(
                     &left.schema,
                     &right.schema,
@@ -687,6 +694,11 @@ fn expected_mv_schema(
                     join_keys,
                     output_columns,
                 )?
+            };
+            if *null_safe && !join_keys.is_empty() {
+                nullable_join_key_schema(&schema, join_keys.len())
+            } else {
+                schema
             }
         }
         ViewSpec::LookupJoin {
