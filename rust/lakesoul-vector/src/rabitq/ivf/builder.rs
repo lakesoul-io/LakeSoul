@@ -127,6 +127,7 @@ impl IvfRabitqBuilder {
             clusters.push(ClusterData {
                 centroid,
                 ids: Vec::new(),
+                ids_version: Vec::new(),
                 batch_data: Vec::new(),
                 ex_codes_packed: Vec::new(),
                 f_add_ex: Vec::new(),
@@ -137,6 +138,7 @@ impl IvfRabitqBuilder {
                 padded_dim: header.padded_dim,
                 ex_bits: header.ex_bits,
                 pending_ids: Vec::new(),
+                pending_ids_version: Vec::new(),
                 pending_vectors: Vec::new(),
             });
         }
@@ -300,6 +302,7 @@ impl IvfRabitqBuilder {
                     .map(|c| ClusterData {
                         centroid: c.clone(),
                         ids: Vec::new(),
+                        ids_version: Vec::new(),
                         batch_data: Vec::new(),
                         ex_codes_packed: Vec::new(),
                         f_add_ex: Vec::new(),
@@ -310,6 +313,7 @@ impl IvfRabitqBuilder {
                         padded_dim,
                         ex_bits,
                         pending_ids: Vec::new(),
+                        pending_ids_version: Vec::new(),
                         pending_vectors: Vec::new(),
                     })
                     .collect();
@@ -501,6 +505,7 @@ impl IvfRabitqBuilder {
                     let fname = segment_filename(cid_u32, new_version);
                     let seg_data = ClusterSegmentData::from_cluster_data(
                         cid_u32,
+                        new_version,
                         cluster.centroid.clone(),
                         cluster.padded_dim,
                         cluster.ex_bits,

@@ -197,6 +197,9 @@ impl QueryPrecomputed {
 pub(crate) struct HeapCandidate {
     pub(crate) id: crate::rabitq::key::IndexKey,
 
+    /// Segment version the entry came from (newest wins on duplicates).
+    pub(crate) version: u32,
+
     pub(crate) distance: f32,
 
     pub(crate) score: f32,

@@ -45,7 +45,11 @@ impl IndexCacheEntry for CachedVectorIndex {
 #[derive(Debug, Clone)]
 pub struct VectorHit {
     pub key: IndexKey,
+    /// Estimated distance (lower is closer for L2; see the metric).
     pub score: f32,
+    /// Segment version the entry came from; the newest entry of a key wins
+    /// when several delta segments contain it.
+    pub version: u32,
 }
 
 /// Search one resolved shard (base + deltas of its current commit).
@@ -216,6 +220,7 @@ fn search_loaded_index(
         .map(|result| VectorHit {
             key: result.id,
             score: result.score,
+            version: result.version,
         })
         .collect();
     info!(
