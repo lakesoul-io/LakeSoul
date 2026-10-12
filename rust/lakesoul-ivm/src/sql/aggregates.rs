@@ -7,6 +7,45 @@
 //! statements.
 
 use super::*;
+use datafusion::logical_expr::ExprSchemable;
+
+/// DataFusion accumulates a decimal `SUM`/`AVG` in the declared result type,
+/// which saturates at 38 digits: `SUM(DECIMAL(p, s))` returns
+/// `DECIMAL(min(38, p + 10), s)` and `AVG(DECIMAL(p, s))` returns
+/// `DECIMAL(min(38, p + 4), min(38, s + 4))`.  A precision that leaves no
+/// headroom (`p + 10 > 38` for SUM, `p + 4 > 38` for AVG) can overflow the
+/// accumulator, and DataFusion wraps it silently -- the view rejects the
+/// shape instead of maintaining a wrong value.
+pub(super) fn validate_decimal_accumulators(aggregate: &Aggregate) -> Result<()> {
+    let schema = aggregate.input.schema();
+    for expr in &aggregate.aggr_expr {
+        let Expr::AggregateFunction(function) = strip_alias(expr) else {
+            continue;
+        };
+        let (name, headroom) = match function.func.name() {
+            "sum" => ("sum", 10),
+            "avg" => ("avg", 4),
+            _ => continue,
+        };
+        for argument in &function.params.args {
+            let Ok(data_type) = argument.get_type(schema) else {
+                continue;
+            };
+            let (precision, scale, max) = match data_type {
+                DataType::Decimal128(precision, scale) => (precision, scale, 38),
+                DataType::Decimal256(precision, scale) => (precision, scale, 76),
+                _ => continue,
+            };
+            if precision + headroom > max {
+                return Err(unsupported(format!(
+                    "{name}(DECIMAL({precision}, {scale})) can overflow silently:                      DataFusion accumulates in the {max}-digit result type and                      wraps; use a precision of at most {}",
+                    max - headroom
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The materialized columns a `HAVING` predicate may reference.
 #[derive(Clone, Copy)]
@@ -1084,6 +1123,7 @@ pub(super) fn analyze_aggregate(
     {
         return analyze_union_distinct(union, tables, request);
     }
+    validate_decimal_accumulators(aggregate)?;
     let mut hoisted_exprs = hoisted_expressions(&aggregate.input);
     // A DISTINCT aggregate beside another aggregate optimizes into a nested
     // grouping the general path does not model; reject it explicitly (a lone
@@ -2779,6 +2819,7 @@ fn having_subquery_source(
     if aggregate.aggr_expr.len() != 1 {
         return Err(unsupported("a HAVING subquery with several aggregates"));
     }
+    validate_decimal_accumulators(aggregate)?;
     let (source, pushed) =
         collect_filtered_source(&aggregate.input, tables, "a HAVING subquery")?;
     Ok(HavingSubquery {
@@ -2962,6 +3003,7 @@ pub(super) fn analyze_having_join(
             "a HAVING subquery correlated on keys other than its grouping",
         ));
     }
+    validate_decimal_accumulators(right_aggregate)?;
     let (lookup_table, lookup_filter) =
         collect_filtered_source(&right_aggregate.input, tables, "a HAVING subquery")?;
     let filter = join
@@ -5021,5 +5063,96 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(mixed.spec, ViewSpec::GroupingSets { .. }));
+    }
+
+    #[tokio::test]
+    async fn rejects_overflowing_decimal_sums() {
+        // DataFusion saturates the decimal SUM result type at 38 digits and
+        // the accumulator wraps silently on overflow; a precision without
+        // headroom is rejected, a smaller one keeps the standard headroom.
+        // AVG has four digits of headroom instead of ten.
+        for (sql, value, accepted) in [
+            (
+                "select g, sum(v) from src group by g",
+                DataType::Decimal128(38, 2),
+                false,
+            ),
+            (
+                "select g, sum(v) from src group by g",
+                DataType::Decimal128(29, 2),
+                false,
+            ),
+            (
+                "select g, sum(v) from src group by g",
+                DataType::Decimal128(28, 2),
+                true,
+            ),
+            (
+                "select g, sum(v) from src group by g",
+                DataType::Decimal128(20, 2),
+                true,
+            ),
+            (
+                "select g, avg(v) from src group by g",
+                DataType::Decimal128(35, 2),
+                false,
+            ),
+            (
+                "select g, avg(v) from src group by g",
+                DataType::Decimal128(34, 2),
+                true,
+            ),
+        ] {
+            let mut table = source_table("src");
+            table.schema = Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("g", DataType::Utf8, false),
+                Field::new("v", value.clone(), false),
+            ]));
+            let ctx = SessionContext::new();
+            let mem = MemTable::try_new(table.schema.clone(), vec![vec![]]).unwrap();
+            ctx.register_table("src", Arc::new(mem)).unwrap();
+            let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+            let plan = crate::sql::normalize_quantified_comparisons(&plan).unwrap();
+            let optimized = ctx.state().optimize(&plan).unwrap();
+            let mut map = HashMap::new();
+            map.insert("src".to_string(), table);
+            let result = analyze_select(&optimized, &map, &request());
+            assert_eq!(result.is_ok(), accepted, "{sql} on {value:?}: {result:?}");
+        }
+
+        // A correlated scalar subquery's SUM is guarded the same way.
+        let decimal = |value: DataType| {
+            Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("g", DataType::Utf8, false),
+                Field::new("v", value, false),
+            ]))
+        };
+        let mut src = source_table("src");
+        src.schema = decimal(DataType::Decimal128(20, 2));
+        let mut dim = source_table("dim");
+        dim.schema = decimal(DataType::Decimal128(38, 2));
+        let ctx = SessionContext::new();
+        for table in [&src, &dim] {
+            let mem = MemTable::try_new(table.schema.clone(), vec![vec![]]).unwrap();
+            ctx.register_table(table.table_name.as_str(), Arc::new(mem))
+                .unwrap();
+        }
+        let plan = ctx
+            .sql(
+                "select s.k from src s where s.v > \
+                 (select sum(u.v) from dim u where u.k = s.k)",
+            )
+            .await
+            .unwrap()
+            .logical_plan()
+            .clone();
+        let plan = crate::sql::normalize_quantified_comparisons(&plan).unwrap();
+        let optimized = ctx.state().optimize(&plan).unwrap();
+        let mut map = HashMap::new();
+        map.insert("src".to_string(), src);
+        map.insert("dim".to_string(), dim);
+        assert!(analyze_select(&optimized, &map, &request()).is_err());
     }
 }

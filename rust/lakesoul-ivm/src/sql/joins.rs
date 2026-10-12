@@ -505,6 +505,7 @@ fn analyze_correlated_scalar(
     if aggregate.aggr_expr.len() != 1 {
         return Err(unsupported("a scalar subquery with several aggregates"));
     }
+    validate_decimal_accumulators(aggregate)?;
     // The correlated keys are the aggregate's group columns.
     let mut right_keys = Vec::new();
     for expr in &aggregate.group_expr {
@@ -831,6 +832,7 @@ fn analyze_left_aggregate(
     if aggregate.aggr_expr.len() != 1 {
         return Err(unsupported("a scalar subquery with several aggregates"));
     }
+    validate_decimal_accumulators(aggregate)?;
     // The correlated keys are the aggregate's group columns.
     let mut right_keys = Vec::new();
     for expr in &aggregate.group_expr {

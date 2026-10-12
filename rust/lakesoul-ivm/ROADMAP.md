@@ -168,8 +168,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 |
 |---|---|
-| Decimal > 38 的 SUM 溢出 | **M** |
-| 嵌套类型（List/Struct，除 array_agg 外） | **L** |
+| Decimal > 38 的 SUM 溢出 | **M** | ✅ 已实现（PLAN §10.115）：探测到 DataFusion 对 `DECIMAL(38, s)` 的 SUM 静默回绕；分析器对无余量的 `SUM`（`p+10>38`）与 `AVG`（`p+4>38`）明确拒绝（含相关标量子查询与 HAVING 子查询路径），有余量的精度保持原样 |
+| 嵌套类型（List/Struct，除 array_agg 外） | **L** | 待做 |
 
 ### B9. 源表能力（P0/P1）
 
