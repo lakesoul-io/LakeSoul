@@ -289,16 +289,22 @@ impl LakeSoulVectorSearchExec {
                 OPTION_KEY_VECTOR_SEARCH_QUERY,
                 self.vector_search.query_csv.clone(),
             )
-            // Fetch extra candidates per bucket so the exact global sort
-            // above has recall margin against the approximate within-shard
-            // ranking; the physical `Sort` + `Limit` trims back to top_k.
+            // Exact mode fetches extra candidates per bucket so the global
+            // sort above has margin against the approximate within-shard
+            // ranking; index-only mode needs each bucket's top-k only (with a
+            // small margin when a filter above the scan can drop candidates)
+            // because the ordering comes from the index itself.  Either way
+            // the physical `Limit` trims back to top_k.
             .with_option(
                 OPTION_KEY_VECTOR_SEARCH_TOP_K,
-                self.vector_search
-                    .top_k
-                    .saturating_mul(10)
-                    .max(100)
-                    .to_string(),
+                if self.vector_search.order_by {
+                    self.vector_search
+                        .top_k
+                        .saturating_mul(self.vector_search.overfetch.max(1))
+                } else {
+                    self.vector_search.top_k.saturating_mul(10).max(100)
+                }
+                .to_string(),
             )
             .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, nprobe.to_string())
             .with_option(
