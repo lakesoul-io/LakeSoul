@@ -33,11 +33,12 @@ use datafusion::sql::sqlparser::ast::{
 use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
-    IVM_VALUE_COLUMN, IvmRuntime, ViewSpec, approx_distinct_groups_mv_schema_for,
-    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
-    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
-    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    ChainPolicy, IVM_VALUE_COLUMN, IvmRuntime, ViewSpec,
+    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
+    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
+    distinct_agg_groups_mv_schema_for, full_join_view_schema_for,
+    grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
     left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
@@ -129,6 +130,11 @@ impl IvmSqlExecutor {
     /// it.  Off by default: a statement only reads their current state, and a
     /// scheduler drives the chain through
     /// [`IvmRuntime::refresh_view_chain`](crate::IvmRuntime::refresh_view_chain).
+    ///
+    /// When enabled, the referenced views are brought up to date in one
+    /// traversal with the default [`ChainPolicy`]: retried incrementally,
+    /// rebuilt on a persistent failure or when marked dirty, and the
+    /// statement is rejected when a view cannot be brought up to date.
     pub fn with_refresh_upstream(mut self, enabled: bool) -> Self {
         self.refresh_upstream = enabled;
         self
@@ -258,13 +264,27 @@ impl IvmSqlExecutor {
 
         // A cascading view reads other materialized views.  By default the
         // statement only reads their current state; with the opt-in flag the
-        // views it reads are brought up to date first, upstream first.
+        // views it reads are brought up to date first, in one traversal (the
+        // policy retries, rebuilds and marks a stuck view dirty).
         if self.refresh_upstream {
-            for table in tables.values() {
-                self.runtime.refresh_view_chain(&table.table_id).await?;
-            }
+            let roots = tables
+                .values()
+                .map(|table| table.table_id.clone())
+                .collect::<Vec<_>>();
+            self.runtime
+                .refresh_view_chains(&roots, &ChainPolicy::default())
+                .await?;
         }
 
+        // A view marked dirty (a failed chain refresh) has no trusted
+        // incremental state: it is rebuilt like a changed definition.
+        let dirty = self
+            .runtime
+            .metadata()
+            .view_status(&view_id)
+            .await?
+            .as_deref()
+            == Some("dirty");
         let (action, epoch) = if insert.overwrite {
             if same_definition {
                 let epoch = self.runtime.rebuild_spec(&spec).await?;
@@ -277,7 +297,7 @@ impl IvmSqlExecutor {
                     .await?;
                 (IvmExecutionAction::Rebuild, Some(epoch))
             }
-        } else if same_definition {
+        } else if same_definition && !dirty {
             (
                 IvmExecutionAction::Incremental,
                 self.runtime.refresh_spec(&spec).await?,
@@ -295,6 +315,17 @@ impl IvmSqlExecutor {
                 .await?;
             (action, Some(epoch))
         };
+        if dirty {
+            // The rebuild recovered the target; clear its failure marker.
+            self.runtime
+                .metadata()
+                .set_view_status(&view_id, "active")
+                .await?;
+            self.runtime
+                .metadata()
+                .set_view_error(&view_id, None)
+                .await?;
+        }
 
         Ok(IvmExecution {
             action,

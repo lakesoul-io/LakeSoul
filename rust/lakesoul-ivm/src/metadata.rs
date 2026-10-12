@@ -81,6 +81,11 @@ exception when duplicate_column or unique_violation then null;
 end $$;
 
 do $$ begin
+    alter table ivm.views add column if not exists last_error text;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
     create table if not exists ivm.cursors (
         view_id         text not null,
         source_table_id text not null,
@@ -268,6 +273,21 @@ pub struct Consumer {
     pub last_epoch: i64,
     /// The last update time (unix milliseconds).
     pub updated_at: i64,
+}
+
+/// One registered view with its scheduling state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewInfo {
+    /// The view id (its target table id).
+    pub view_id: String,
+    /// The lifecycle status (`active` / `rebuilding` / `dirty`).
+    pub status: String,
+    /// The registered refresh interval (0 when unset).
+    pub refresh_interval_ms: i64,
+    /// The last committed epoch.
+    pub last_epoch: i64,
+    /// The last chain failure, until the next successful refresh.
+    pub last_error: Option<String>,
 }
 
 /// One row of `ivm.epochs`: a refresh window.
@@ -605,6 +625,39 @@ impl IvmMetadata {
             )
             .await?;
         Ok(row.map(|row| row.get(0)))
+    }
+
+    /// The last recorded refresh error of a view (`None` clears it).
+    pub async fn set_view_error(&self, view_id: &str, error: Option<&str>) -> Result<()> {
+        self.execute_rw(
+            "update ivm.views set last_error = $2::TEXT where view_id = $1::TEXT",
+            &[&view_id, &error],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Every registered view with its scheduling state, ordered by id.
+    pub async fn list_views(&self) -> Result<Vec<ViewInfo>> {
+        let rows = self
+            .client
+            .query(
+                "select view_id, status, refresh_interval_ms, last_epoch, last_error
+                 from ivm.views order by view_id",
+                QueryType::RO,
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| ViewInfo {
+                view_id: row.get(0),
+                status: row.get(1),
+                refresh_interval_ms: row.get(2),
+                last_epoch: row.get(3),
+                last_error: row.get(4),
+            })
+            .collect())
     }
 
     /// Start a rebuild: bump the generation and return it. Epochs of older

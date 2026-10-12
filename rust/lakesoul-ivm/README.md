@@ -389,9 +389,19 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
   consistent.
 * **Cascading views**: a statement only reads the current state of the views
   it references.  A scheduler advances a whole chain with
-  `IvmRuntime::refresh_view_chain(view_id)` (upstream first, cycle-safe), and
-  `IvmSqlExecutor::with_refresh_upstream(true)` opts a statement into
-  refreshing the views it reads first.
+  `IvmRuntime::refresh_view_chain(view_id)` (`refresh_view_chains` covers
+  several roots in one traversal): the dependency graph is discovered from
+  the registered specs, the views refresh upstream first and each view once,
+  and a cycle is rejected with its path.  The default `ChainPolicy` retries a
+  failing view once, rebuilds it from the full source state when the
+  incremental refresh keeps failing (or when the view is marked `dirty`),
+  and aborts the chain -- leaving the view `dirty` with `last_error` set --
+  when even the rebuild fails, so downstream views never read an upstream
+  that stayed behind.  `IvmSqlExecutor::with_refresh_upstream(true)` opts a
+  statement into bringing the views it reads up to date first (same policy,
+  one traversal), and a `dirty` target view is rebuilt by the statement
+  itself.  `IvmMetadata::list_views` lists the views with their status,
+  interval and last error.
 * The window identity (source, partition, from/to versions) is recorded in
   `ivm.epochs`. Re-applying the same window is a no-op; a partially written
   window is completed by the retry because the affected keys are rewritten.
