@@ -26,7 +26,7 @@ use lakesoul_metadata::MetaDataClient;
 
 use crate::cli::CoreArgs;
 use crate::planner::vector_search_rule::VectorSearchPushdownRule;
-use crate::udf::vector_search_marker::LakeSoulVectorSearchOptions;
+use crate::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 
 const DIM: usize = 8;
 
@@ -47,6 +47,15 @@ fn vector_schema() -> SchemaRef {
 fn random_vectors(n: usize) -> Vec<Vec<f32>> {
     use rand::Rng;
     let mut rng = rand::thread_rng();
+    (0..n)
+        .map(|_| (0..DIM).map(|_| rng.r#gen::<f32>() * 2.0 - 1.0).collect())
+        .collect()
+}
+
+/// Deterministic vectors so the index-only recall assertions stay stable.
+fn seeded_vectors(n: usize, seed: u64) -> Vec<Vec<f32>> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| (0..DIM).map(|_| rng.r#gen::<f32>() * 2.0 - 1.0).collect())
         .collect()
@@ -532,10 +541,14 @@ async fn sql_vector_search_with_where_and_nprobe() {
         .unwrap();
     assert_vector_index_built(table_name);
 
-    // A session with a custom nprobe extension.
-    let session_config = crate::create_lakesoul_session_config()
-        .unwrap()
-        .with_extension(Arc::new(LakeSoulVectorSearchOptions { nprobe: 1 }));
+    // A session with a custom nprobe option.
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let mut vector_options = LakeSoulVectorSearchConfig::default();
+    vector_options.nprobe = 1;
+    session_config
+        .options_mut()
+        .extensions
+        .insert(vector_options);
     let ctx = crate::create_lakesoul_session_ctx_with_config(
         client,
         &default_args(),
@@ -1617,4 +1630,141 @@ async fn sql_vector_search_non_integer_primary_keys() {
         .map(|i| (ids[i as usize], tenants[i as usize].clone()))
         .collect();
     assert_eq!(returned, expected, "composite primary key search");
+}
+
+/// Index-only ordering: the SQL orders by the quantized index distance and
+/// no longer sorts (or reads) the vector column.  An `upsert`ed key must be
+/// ranked by its newest vector, which is what the version-aware score lookup
+/// in the reader provides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_index_only_ordering() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_index_only";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 400u64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<u64> = (0..n).collect();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    // Upsert the first 50 keys; row 0's new vector is exactly the query, so
+    // index-only ordering must rank it first only if the score of its newest
+    // version is used.
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let mut updated = seeded_vectors(50, 11);
+    updated[0] = query.to_vec();
+    let updated_ids: Vec<u64> = (0..50).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch(&updated_ids, &updated))
+        .await
+        .unwrap();
+
+    let mut merged = vectors.clone();
+    for (index, vector) in updated.iter().enumerate() {
+        merged[index] = vector.clone();
+    }
+
+    // Index-only session (nprobe covers every cluster of this tiny table).
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let mut options = LakeSoulVectorSearchConfig::default();
+    options.nprobe = 4;
+    options.rerank = "index".to_string();
+    session_config.options_mut().extensions.insert(options);
+    let ctx = crate::create_lakesoul_session_ctx_with_config(
+        client,
+        &default_args(),
+        session_config,
+    )
+    .unwrap();
+
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+    assert!(explain.contains("order_by=true"), "{explain}");
+    assert!(
+        !explain.contains("SortExec"),
+        "index-only must not sort on the vector column: {explain}"
+    );
+
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let column = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>();
+        if let Some(column) = column {
+            returned.extend(column.values().iter().map(|&value| value as u64));
+        } else {
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::UInt64Array>()
+                .unwrap();
+            returned.extend(column.values().iter().copied());
+        }
+    }
+    assert_eq!(
+        returned.first(),
+        Some(&0),
+        "the newest vector of key 0 must rank first; returned={returned:?}"
+    );
+    let expected = brute_force_topk(&merged, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    let recall = hits as f64 / 10.0;
+    assert!(
+        recall >= 0.5,
+        "index-only recall {recall}, returned={returned:?} expected={expected:?}"
+    );
+
+    // The option lives in the session config, so SQL can switch a session to
+    // index-only ordering without touching Rust code.
+    let set_ctx = crate::create_lakesoul_session_ctx(
+        Arc::new(MetaDataClient::from_env().await.unwrap()),
+        &default_args(),
+    )
+    .unwrap();
+    set_ctx
+        .sql("SET lakesoul_vector_search.rerank = 'index'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let explain = explain_plan(&set_ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("order_by=true"), "{explain}");
 }

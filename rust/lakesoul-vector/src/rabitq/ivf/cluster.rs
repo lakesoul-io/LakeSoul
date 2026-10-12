@@ -162,6 +162,9 @@ pub(crate) struct ClusterData {
     pub(crate) centroid: Vec<f32>,
     /// Vector IDs (all vectors in cluster)
     pub(crate) ids: Vec<IndexKey>,
+    /// Segment version of each entry in `ids` (parallel array), used to
+    /// prefer the newest version of a key when several segments contain it.
+    pub(crate) ids_version: Vec<u32>,
     /// Single contiguous memory block for all batches
     /// Layout: [Batch 0][Batch 1]...[Batch N]
     /// Each batch layout:
@@ -189,6 +192,8 @@ pub(crate) struct ClusterData {
     /// Pending vectors not yet packed into batch_data (O(1) insert).
     /// Flushed in groups of 32 when full.
     pub(crate) pending_ids: Vec<IndexKey>,
+    /// Version of each pending entry; pending vectors are the newest ones.
+    pub(crate) pending_ids_version: Vec<u32>,
     pub(crate) pending_vectors: Vec<QuantizedVector>,
 }
 
@@ -201,6 +206,7 @@ impl ClusterData {
         bytes += self.centroid.capacity() * f32_size;
         bytes += self.ids.capacity() * std::mem::size_of::<IndexKey>();
         bytes += self.ids.iter().map(|key| key.heap_bytes()).sum::<usize>();
+        bytes += self.ids_version.capacity() * 4;
         bytes += self.batch_data.capacity();
         bytes += self
             .ex_codes_packed
@@ -217,6 +223,7 @@ impl ClusterData {
             .iter()
             .map(|key| key.heap_bytes())
             .sum::<usize>();
+        bytes += self.pending_ids_version.capacity() * 4;
         bytes += self
             .pending_vectors
             .iter()
@@ -377,9 +384,11 @@ impl ClusterData {
     /// incremental flush to merge old on-disk data with new pending vectors).
     pub(crate) fn from_segment(seg: crate::rabitq::segment::ClusterSegmentData) -> Self {
         let nv = seg.ids.len();
+        let version = seg.version;
         Self {
             centroid: seg.centroid,
             ids: seg.ids,
+            ids_version: vec![version; nv],
             batch_data: seg.batch_data,
             ex_codes_packed: seg.ex_codes_packed,
             f_add_ex: seg.f_add_ex,
@@ -390,6 +399,7 @@ impl ClusterData {
             padded_dim: seg.padded_dim,
             ex_bits: seg.ex_bits,
             pending_ids: Vec::new(),
+            pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
         }
     }
@@ -444,6 +454,9 @@ impl ClusterData {
                     "segment dimension/ex_bits mismatch while merging",
                 ));
             }
+            merged
+                .ids_version
+                .extend(std::iter::repeat_n(seg.version, seg.ids.len()));
             merged.ids.extend(seg.ids);
             merged.batch_data.extend(seg.batch_data);
             merged.ex_codes_packed.extend(seg.ex_codes_packed);
@@ -484,6 +497,7 @@ impl ClusterData {
         let mut cds: Vec<ClusterData> = Vec::with_capacity(segments.len());
         let mut offsets: Vec<usize> = Vec::with_capacity(segments.len());
         let mut ids: Vec<IndexKey> = Vec::with_capacity(n_total);
+        let mut ids_version: Vec<u32> = Vec::with_capacity(n_total);
         let mut ex_codes_packed: Vec<Vec<u8>> = Vec::with_capacity(n_total);
         let mut f_add_ex: Vec<f32> = Vec::with_capacity(n_total);
         let mut f_rescale_ex: Vec<f32> = Vec::with_capacity(n_total);
@@ -498,6 +512,7 @@ impl ClusterData {
             }
             let mut cd = ClusterData::from_segment(seg);
             ids.extend_from_slice(&cd.ids);
+            ids_version.extend_from_slice(&cd.ids_version);
             ex_codes_packed.append(&mut cd.ex_codes_packed);
             f_add_ex.append(&mut cd.f_add_ex);
             f_rescale_ex.append(&mut cd.f_rescale_ex);
@@ -587,6 +602,7 @@ impl ClusterData {
 
         Ok(ClusterData {
             centroid,
+            ids_version,
             ids,
             batch_data,
             ex_codes_packed,
@@ -598,6 +614,7 @@ impl ClusterData {
             padded_dim,
             ex_bits,
             pending_ids: Vec::new(),
+            pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
         })
     }
@@ -608,6 +625,7 @@ impl ClusterData {
         Self {
             centroid,
             ids: Vec::new(),
+            ids_version: Vec::new(),
             batch_data: Vec::new(),
             ex_codes_packed: Vec::new(),
             f_add_ex: Vec::new(),
@@ -618,6 +636,7 @@ impl ClusterData {
             padded_dim,
             ex_bits,
             pending_ids: Vec::new(),
+            pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
         }
     }
@@ -630,6 +649,7 @@ impl ClusterData {
             + self.centroid.len() * 4
             + self.ids.capacity() * std::mem::size_of::<IndexKey>()
             + self.ids.iter().map(|key| key.heap_bytes()).sum::<usize>()
+            + self.ids_version.capacity() * 4
             + self.batch_data.capacity()
             + self.ex_codes_packed.capacity() * std::mem::size_of::<Vec<u8>>()
             + ex_codes_heap
@@ -733,6 +753,7 @@ impl ClusterData {
         }
         Self {
             centroid,
+            ids_version: vec![0; ids.len()],
             ids,
             batch_data,
             ex_codes_packed,
@@ -744,6 +765,7 @@ impl ClusterData {
             padded_dim,
             ex_bits,
             pending_ids: Vec::new(),
+            pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
         }
     }

@@ -41,7 +41,8 @@ use lakesoul_common::IndexKind;
 use lakesoul_io::config::{
     LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
     OPTION_KEY_VECTOR_SEARCH_METRIC, OPTION_KEY_VECTOR_SEARCH_NPROBE,
-    OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    OPTION_KEY_VECTOR_SEARCH_ORDER_BY, OPTION_KEY_VECTOR_SEARCH_QUERY,
+    OPTION_KEY_VECTOR_SEARCH_TOP_K,
 };
 use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
@@ -50,9 +51,7 @@ use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_metadata::index_catalog::VectorCatalog;
 use lakesoul_vector::SegmentEntry;
 
-use crate::udf::vector_search_marker::{
-    LakeSoulVectorSearchOptions, VectorSearchRequest,
-};
+use crate::udf::vector_search_marker::{LakeSoulVectorSearchConfig, VectorSearchRequest};
 
 /// Execution plan for the vector-index candidate scan.
 #[derive(Debug)]
@@ -306,6 +305,12 @@ impl LakeSoulVectorSearchExec {
                 OPTION_KEY_VECTOR_SEARCH_METRIC,
                 self.vector_search.metric.clone(),
             );
+        if self.vector_search.order_by {
+            // Index-only ordering: the reader appends the index distance per
+            // candidate row and the vector column drops out of the scan.
+            builder = builder
+                .with_option(OPTION_KEY_VECTOR_SEARCH_ORDER_BY, "true".to_string());
+        }
         Ok(builder.build())
     }
 }
@@ -381,8 +386,10 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         }
         let nprobe = context
             .session_config()
-            .get_extension::<LakeSoulVectorSearchOptions>()
-            .map(|o| o.nprobe)
+            .options()
+            .extensions
+            .get::<LakeSoulVectorSearchConfig>()
+            .map(|options| options.nprobe)
             .unwrap_or(64);
         let span = info_span!(
             "vector_search_execute",
@@ -489,6 +496,11 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                 Ok::<_, DataFusionError>(batches)
             })
         })?;
+        let batches = if self.vector_search.order_by {
+            order_by_index_distance(batches, &schema, &self.vector_search.metric)?
+        } else {
+            batches
+        };
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
         let stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream))
             as SendableRecordBatchStream;
@@ -505,14 +517,67 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
     }
 }
 
+/// Merge the per-bucket batches ordered by the reserved index-distance
+/// column and project to `output_schema` (dropping the internal column).
+///
+/// The row count is left to the plan's `Limit` so filters between the scan
+/// and the limit keep their semantics.
+fn order_by_index_distance(
+    batches: Vec<arrow::record_batch::RecordBatch>,
+    output_schema: &SchemaRef,
+    metric: &str,
+) -> DFResult<Vec<arrow::record_batch::RecordBatch>> {
+    use arrow::compute::{
+        SortColumn, SortOptions, lexsort_to_indices, take_record_batch,
+    };
+
+    let batches: Vec<_> = batches
+        .into_iter()
+        .filter(|batch| batch.num_rows() > 0)
+        .collect();
+    if batches.is_empty() {
+        return Ok(Vec::new());
+    }
+    let distance_index = batches[0]
+        .schema()
+        .index_of(lakesoul_io::vector::score::VECTOR_DISTANCE_FIELD)
+        .map_err(|error| {
+            DataFusionError::Execution(format!(
+                "vector index-distance column missing from the scan output: {error}"
+            ))
+        })?;
+    let combined = arrow::compute::concat_batches(&batches[0].schema(), &batches)?;
+    let indices = lexsort_to_indices(
+        &[SortColumn {
+            values: Arc::clone(combined.column(distance_index)),
+            options: Some(SortOptions {
+                descending: !metric.eq_ignore_ascii_case("L2"),
+                nulls_first: false,
+            }),
+        }],
+        None,
+    )?;
+    let sorted = take_record_batch(&combined, &indices)?;
+    let mut columns = Vec::with_capacity(output_schema.fields().len());
+    for field in output_schema.fields() {
+        let index = sorted.schema().index_of(field.name())?;
+        columns.push(Arc::clone(sorted.column(index)));
+    }
+    Ok(vec![arrow::record_batch::RecordBatch::try_new(
+        Arc::clone(output_schema),
+        columns,
+    )?])
+}
+
 impl DisplayAs for LakeSoulVectorSearchExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "LakeSoulVectorSearchExec(vec={}, top_k={}, metric={})",
+            "LakeSoulVectorSearchExec(vec={}, top_k={}, metric={}, order_by={})",
             self.vector_search.vec_column,
             self.vector_search.top_k,
-            self.vector_search.metric
+            self.vector_search.metric,
+            self.vector_search.order_by
         )
     }
 }

@@ -8,7 +8,7 @@
 # locations with DATA_DIR or the individual *_BASE/*_QUERY/*_GT variables.
 #
 # Usage:
-#   script/benchmark/vector/run.sh [e1|e2|e3|e4|e5|e6|all] [--quick] [--results DIR]
+#   script/benchmark/vector/run.sh [e1|e2|e3|e4|e5|e6|e7|all] [--quick] [--results DIR]
 #
 # Environment:
 #   DATA_DIR      dataset root (default: ~/program/opensource/rabitq-rs/data)
@@ -43,7 +43,7 @@ usage() {
 SCENARIOS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        e1|e2|e3|e4|e5|e6|all) SCENARIOS+=("$1"); shift ;;
+        e1|e2|e3|e4|e5|e6|e7|all) SCENARIOS+=("$1"); shift ;;
         --quick) QUICK=1; shift ;;
         --results) RESULTS_DIR="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
@@ -289,6 +289,34 @@ run_e6() {
 }
 
 # ---------------------------------------------------------------------------
+# E7: exact re-rank vs index-only ordering (SQL scenario)
+# ---------------------------------------------------------------------------
+run_e7() {
+    local ds="$1"
+    set_dataset "$ds"
+    local limit=100000 nlist=256 nq=100
+    if [[ "$ds" == gist ]]; then
+        nq=50
+    fi
+    if [[ "$QUICK" == 1 ]]; then
+        limit=20000; nlist=64; nq=20
+    fi
+    # Both runs write the same fresh table (no deltas) so the only difference
+    # is where the ordering comes from: the exact re-rank over the stored
+    # vector column, or the quantized distance computed inside the index.
+    local mode
+    for mode in exact index; do
+        run_one "e7_${ds}_${mode}" --base "$BASE" --query "$QUERY" \
+            --scenario sql --limit "$limit" --nlist "$nlist" --n-queries "$nq" \
+            --top-k 10 --nprobe 64 --threads "$THREADS" --rounds 0 --per-round 0 \
+            --rerank "$mode" \
+            --sql-hash-buckets "${E7_HASH_BUCKETS:-1}" \
+            --table "vec_bench_sql_e7_${ds}_${mode}" \
+            --work-dir "$RESULTS_DIR/work/e7_${ds}_${mode}"
+    done
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 echo "results: $RESULTS_DIR"
@@ -309,6 +337,8 @@ for scenario in "${SCENARIOS[@]}"; do
             run_e5 gist
             run_e6 glove
             run_e6 gist
+            run_e7 glove
+            run_e7 gist
             ;;
         e1) run_e1 glove; run_e1 gist ;;
         e2) run_e2 glove; run_e2 gist ;;
@@ -316,6 +346,7 @@ for scenario in "${SCENARIOS[@]}"; do
         e4) run_e4 glove; run_e4 gist ;;
         e5) run_e5 glove; run_e5 gist ;;
         e6) run_e6 glove; run_e6 gist ;;
+        e7) run_e7 glove; run_e7 gist ;;
     esac
 done
 

@@ -239,6 +239,8 @@ impl SegmentEntry {
 #[derive(Debug, Clone)]
 pub struct ClusterSegmentData {
     pub cluster_id: u32,
+    /// Delta version this segment was written as (0 = base segment).
+    pub version: u32,
     pub centroid: Vec<f32>,
     pub padded_dim: usize,
     pub ex_bits: usize,
@@ -297,8 +299,8 @@ pub async fn read_segment_full(
 
     let cluster_id = rle!(r, u32);
     hup!(Some(&mut h), &cluster_id.to_le_bytes());
-    let _sv = rle!(r, u32);
-    hup!(Some(&mut h), &_sv.to_le_bytes());
+    let version = rle!(r, u32);
+    hup!(Some(&mut h), &version.to_le_bytes());
     let pd = rle!(r, u32) as usize;
     hup!(Some(&mut h), &(pd as u32).to_le_bytes());
     let eb = rle!(r, u8) as usize;
@@ -373,6 +375,7 @@ pub async fn read_segment_full(
 
     Ok(ClusterSegmentData {
         cluster_id,
+        version,
         centroid,
         padded_dim: pd,
         ex_bits: eb,

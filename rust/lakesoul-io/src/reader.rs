@@ -328,7 +328,7 @@ impl LakeSoulReader {
                 .get_filter_exprs(table_schema.table_schema().as_ref())
                 .await?
         };
-        let (filters, text_candidate_scores, key_candidates) = self
+        let (filters, text_candidate_scores, key_candidates, vector_distances) = self
             .inject_index_search_filters(filters, &table_schema)
             .await?;
 
@@ -498,6 +498,14 @@ impl LakeSoulReader {
             }
             None => stream,
         };
+        // Index-only ordering: append the index distance of every candidate
+        // row; the SQL executor orders by it and drops the column again.
+        let stream: SendableRecordBatchStream = match vector_distances {
+            Some(distances) => {
+                crate::vector::score::append_vector_distances(stream, distances)
+            }
+            None => stream,
+        };
         let schema = stream.schema();
         debug!("reader schema: {}", schema);
         self.schema = Some(schema);
@@ -522,6 +530,7 @@ impl LakeSoulReader {
         Vec<datafusion_expr::Expr>,
         std::collections::HashMap<u64, f32>,
         Option<Vec<lakesoul_vector::IndexKey>>,
+        Option<crate::vector::score::VectorDistances>,
     )> {
         use lakesoul_common::IndexKind;
 
@@ -530,7 +539,7 @@ impl LakeSoulReader {
 
         let requests = parse_search_requests(self.io_session.io_config());
         if requests.is_empty() {
-            return Ok((filters, std::collections::HashMap::new(), None));
+            return Ok((filters, std::collections::HashMap::new(), None, None));
         }
 
         let io_config = self.io_session.io_config();
@@ -575,11 +584,17 @@ impl LakeSoulReader {
             "index search using caller-resolved index shards"
         );
 
+        // Index-only ordering: the index distance of every candidate becomes
+        // the ordering value, so the vector column is never read.
+        let order_by = io_config
+            .option(crate::config::OPTION_KEY_VECTOR_SEARCH_ORDER_BY)
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
         let mut filters = filters;
         // BM25 score of every text candidate, keyed by primary key; carried
         // to the verification stream so verified rows can expose it.
         let mut text_candidate_scores = std::collections::HashMap::new();
         let mut vector_keys: Option<Vec<lakesoul_vector::IndexKey>> = None;
+        let mut vector_distances: Option<crate::vector::score::VectorDistances> = None;
         for request in requests {
             match request.kind {
                 IndexKind::Vector => {
@@ -604,8 +619,27 @@ impl LakeSoulReader {
                         request.column,
                         hits.len()
                     );
+                    // The newest entry of a key wins: a delta segment may
+                    // hold a newer vector under the same key, and the score
+                    // that ranks a row must be its latest version's.
+                    let mut ordered: std::collections::HashMap<
+                        lakesoul_vector::IndexKey,
+                        (u32, f32),
+                    > = std::collections::HashMap::with_capacity(hits.len());
+                    for hit in hits {
+                        match ordered.entry(hit.key) {
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                if hit.version >= entry.get().0 {
+                                    entry.insert((hit.version, hit.score));
+                                }
+                            }
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert((hit.version, hit.score));
+                            }
+                        }
+                    }
                     let keys: Vec<lakesoul_vector::IndexKey> =
-                        hits.into_iter().map(|hit| hit.key).collect();
+                        ordered.keys().cloned().collect();
                     // Narrow the file scans to these keys exactly as the
                     // pre-key-generalization code did; the key locator (when
                     // available) fetches the rows directly instead.
@@ -619,6 +653,26 @@ impl LakeSoulReader {
                         None => keys,
                         Some(previous) => intersect_keys(previous, keys),
                     });
+                    if order_by {
+                        let metric = io_config
+                            .option(&crate::index::options::option_key(
+                                IndexKind::Vector,
+                                "metric",
+                            ))
+                            .unwrap_or_else(|| "L2".to_string());
+                        let sqrt = !matches!(
+                            metric.to_uppercase().as_str(),
+                            "IP" | "INNERPRODUCT"
+                        );
+                        vector_distances = Some(crate::vector::score::VectorDistances {
+                            codec: KeyCodec::new(key_codec.layout().clone())?,
+                            scores: ordered
+                                .into_iter()
+                                .map(|(key, (_version, score))| (key, score))
+                                .collect(),
+                            sqrt,
+                        });
+                    }
                 }
                 IndexKind::Text => {
                     let candidates = crate::text::search::search_request(
@@ -645,7 +699,12 @@ impl LakeSoulReader {
                 }
             }
         }
-        Ok((filters, text_candidate_scores, vector_keys))
+        Ok((
+            filters,
+            text_candidate_scores,
+            vector_keys,
+            vector_distances,
+        ))
     }
 
     /// Retrieves the next record batch from the reader.

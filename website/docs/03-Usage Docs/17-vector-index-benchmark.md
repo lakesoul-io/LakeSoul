@@ -23,6 +23,7 @@ The benchmark is a self-contained Rust scenario runner
 | **E4** | Search by index state | How do recall and QPS differ between a fresh index, one with accumulated deltas, and one that has just been rebuilt? |
 | **E5** | End-to-end DataFusion SQL | What do QPS and recall look like when the data is written with SQL `INSERT` and searched with `ORDER BY array_distance(...) LIMIT k` (index candidates + exact re-rank)? |
 | **E6** | f32 vs f16 vector storage | How much disk, memory and query latency does storing half-precision vectors buy, and what does it cost in recall? |
+| **E7** | Index-only ordering | How do recall and latency change when the candidates are ordered by the quantized distance from the index instead of an exact re-rank, and does the vector column still have to be read? |
 
 ## Test environment
 
@@ -453,6 +454,80 @@ unit-normalised embeddings such as GloVe).  It is not a retrieval-latency
 optimisation: the candidate-then-rerank path is dominated by index probing and
 planning, not by the precision of the candidate rows.
 
+### E7 — index-only ordering (no exact re-rank)
+
+**Goal.** E4–E6 order the candidates with an **exact re-rank**: the index
+returns candidate primary keys, the scan reads their stored vector column, and
+DataFusion sorts the rows by `array_distance`.  E7 instead orders by the
+quantized distance the index already computed and never reads the stored
+vector column, trading a small amount of recall for fewer bytes, less CPU and
+a simpler plan.  The mode is a session option — `exact` (default) or `index` —
+so a session or a single query can switch it on with SQL:
+
+```sql
+SET lakesoul_vector_search.rerank = 'index';
+```
+
+**Method.**
+- Same SQL scenario and index configuration as E5, but with a fresh index and
+  no update rounds (`--rounds 0`), so the comparison isolates the ordering.
+- Each dataset is run twice — `--rerank exact` and `--rerank index` — with the
+  table and index rebuilt for each run (100K base vectors, `nlist = 256`,
+  `nprobe = 64`, `top_k = 10` and the same fixed seed).
+- Recall is measured against the exact top-10 over the written vectors (not
+  the original dataset files, so the index state is the ground truth) and
+  `EXPLAIN` is checked for the ordered exec node
+  (`LakeSoulVectorSearchExec(vec=vec, top_k=10, metric=L2, order_by=true)`).
+  With `rerank = index` the physical plan has no `SortExec`, and the native
+  reader's plan shows `projection=[id]` — the vector column is not read.
+- `script/benchmark/vector/run.sh e7` runs the paired measurements on both
+  datasets.
+
+| Dataset | Rerank | Recall@10 | QPS | Mean | p50 | p99 | Exec mean |
+|---------|--------|----------:|----:|-----:|----:|----:|----------:|
+| GloVe-200d | `exact` | **0.919** | 33.4 | 29.9 ms | 24.0 ms | 65.1 ms | 22.1 ms |
+| GloVe-200d | `index` | 0.899 | 38.0 | 26.3 ms | 24.4 ms | 37.9 ms | 21.2 ms |
+| GIST-960d | `exact` | **1.000** | 32.4 | 30.9 ms | 30.2 ms | 40.1 ms | 21.9 ms |
+| GIST-960d | `index` | 0.976 | 28.9 | 34.6 ms | 33.6 ms | 42.0 ms | 24.0 ms |
+| GIST-960d (`LIMIT 100`) | `exact` | **1.000** | 19.7 | 50.8 ms | 47.4 ms | 80.8 ms | 43.8 ms |
+| GIST-960d (`LIMIT 100`) | `index` | 0.985 | 19.5 | 51.3 ms | 53.0 ms | 61.8 ms | 43.4 ms |
+
+**What it tells us.**
+- **The vector column really is gone.**  `EXPLAIN VERBOSE` shows the re-rank
+  and its `SortExec` removed, the exec node reports `order_by=true`, and the
+  reader plan contains `projection=[id]` instead of `projection=[id, vec]`.
+  For GIST with `LIMIT 100` (the scan fetches ~1,000 candidate rows) this
+  removes ~3.8 MB of vector reads per query; the primary-key column alone is
+  8 KB.  The exact plan additionally casts every candidate vector to
+  `List<Float64>` and evaluates `array_distance` over it.
+- **Latency is unchanged on a local NVMe.**  The saved bytes do not show up as
+  a speedup because the candidate scan is not the bottleneck: the index probe,
+  the merge-on-read bookkeeping and SQL planning dominate, and the pk locator
+  already fetches only the candidate rows.  GIST was repeated three times —
+  `exact` at 28.7 / 32.4 / 30.9 ms and `index` at 34.6 / 27.3 / 36.4 ms — i.e.
+  the two modes are at parity within the ±20% run-to-run spread, the same
+  conclusion as E6's f16 experiment.  The byte and CPU savings should matter
+  when the vector column is remote (object storage) or much wider, and when
+  `LIMIT` (and therefore the candidate count) is large.
+- **Recall drops to the index-accuracy bound.**  Ordering by the quantized
+  distance gives up the re-rank's correction: GloVe 0.919 → 0.899 and GIST
+  1.000 → 0.976, matching the E4 observation that the re-rank only recovers
+  the last fraction of a point.  For k-NN search where the index estimate is
+  acceptable, that is a fair trade; the re-rank stays the default.
+
+**Caveats.**
+- Only L2 is supported today.  The inner-product estimate is not directly
+  comparable with `inner_product`, so `ORDER BY inner_product(...)` always
+  stays exact.
+- When the distance expression is also projected (`SELECT
+  array_distance(vec, q)`), the vector column has to be read anyway; the rule
+  then keeps the exact plan.
+- The ordered scan still reads the primary key, the payload and the CDC column
+  so that merge-on-read (upserts and deletes) remains exact; only the vector
+  column drops out.
+- If a key is present in several delta segments, the newest segment's score is
+  the one used, so an upserted vector is ranked by its updated value.
+
 ## Recommendations
 
 1. Keep the default `rebuild_mode = "auto"` with `max_delta_ratio = 1.0` for
@@ -469,6 +544,13 @@ planning, not by the precision of the candidate rows.
    constraint and the data does not already compress well (E6): recall is
    unchanged but so is query latency, and vortex's float compression can already
    match the `f16` size for integer-valued vectors like GIST.
+6. Consider `SET lakesoul_vector_search.rerank = 'index'` when the stored
+   vector column is expensive to fetch (remote object storage, very wide
+   vectors) or the candidate set is large (E7): it removes the vector-column
+   reads and the exact distance computation, at the cost of a small recall drop
+   (GloVe 0.919 → 0.899, GIST 1.000 → 0.976 on the 100K benchmark).  On local
+   storage the query latency is unchanged, so keep the default `exact` unless
+   the bytes or the distance CPU are the constraint.
 
 ## Reproducing the benchmark
 
@@ -484,6 +566,7 @@ DATA_DIR=~/program/opensource/rabitq-rs/data \
 # Or one experiment at a time
 script/benchmark/vector/run.sh e1 --results /tmp/vector-bench
 script/benchmark/vector/run.sh e6 --results /tmp/vector-bench
+script/benchmark/vector/run.sh e7 --results /tmp/vector-bench
 
 # Render the plots (matplotlib is fetched ephemerally by uv)
 uv run --with matplotlib python script/benchmark/vector/plot.py \

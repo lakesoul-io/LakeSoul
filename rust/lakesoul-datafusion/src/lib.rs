@@ -81,6 +81,14 @@ pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
         .options_mut()
         .execution
         .listing_table_factory_infer_partitions = false;
+    // Registered up front so the pushdown rule and the scan always find the
+    // vector-search options (defaults: nprobe 64, exact re-rank) and so they
+    // can be changed per session with SQL, e.g.
+    // `SET lakesoul_vector_search.rerank = 'index'`.
+    session_config
+        .options_mut()
+        .extensions
+        .insert(crate::udf::vector_search_marker::LakeSoulVectorSearchConfig::default());
     Ok(session_config)
 }
 

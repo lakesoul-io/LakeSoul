@@ -41,6 +41,9 @@ impl SearchParams {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     pub id: IndexKey,
+    /// Segment version the entry came from; callers keep the newest entry
+    /// when a key is present in several delta segments.
+    pub version: u32,
     pub score: f32,
 }
 
@@ -373,6 +376,7 @@ impl IvfRabitqIndex {
             .map(|c| ClusterData {
                 centroid: c.clone(),
                 ids: Vec::new(),
+                ids_version: Vec::new(),
                 batch_data: Vec::new(),
                 ex_codes_packed: Vec::new(),
                 f_add_ex: Vec::new(),
@@ -383,6 +387,7 @@ impl IvfRabitqIndex {
                 padded_dim,
                 ex_bits,
                 pending_ids: Vec::new(),
+                pending_ids_version: Vec::new(),
                 pending_vectors: Vec::new(),
             })
             .collect();
@@ -1102,6 +1107,7 @@ impl IvfRabitqIndex {
 
             clusters.push(ClusterData {
                 centroid,
+                ids_version: vec![0; ids.len()],
                 ids,
                 batch_data,
                 ex_codes_packed,
@@ -1113,6 +1119,7 @@ impl IvfRabitqIndex {
                 padded_dim,
                 ex_bits,
                 pending_ids: Vec::new(),
+                pending_ids_version: Vec::new(),
                 pending_vectors: Vec::new(),
             });
         }
@@ -1343,6 +1350,7 @@ impl IvfRabitqIndex {
             .into_iter()
             .map(|candidate| SearchResult {
                 id: candidate.id,
+                version: candidate.version,
                 score: match self.metric {
                     Metric::L2 => candidate.distance,
                     Metric::InnerProduct => candidate.score,
@@ -1519,6 +1527,7 @@ impl IvfRabitqIndex {
                 // Step 7: Update heap
                 heap.push(HeapEntry {
                     candidate: HeapCandidate {
+                        version: cluster.ids_version[global_idx],
                         id: vector_id,
                         distance,
                         score,
@@ -1611,6 +1620,7 @@ impl IvfRabitqIndex {
 
             heap.push(HeapEntry {
                 candidate: HeapCandidate {
+                    version: u32::MAX,
                     id: vec_id.clone(),
                     distance,
                     score,
@@ -1727,6 +1737,7 @@ impl IvfRabitqIndex {
                 };
                 candidates.push(SearchResult {
                     id: cluster.ids[vec_idx].clone(),
+                    version: cluster.ids_version[vec_idx],
                     score,
                 });
             }
@@ -1788,6 +1799,7 @@ impl IvfRabitqIndex {
             let fname = segment_filename(cid, version);
             let seg_data = ClusterSegmentData::from_cluster_data(
                 cid,
+                version,
                 cluster.centroid.clone(),
                 self.padded_dim,
                 self.ex_bits,
@@ -2057,6 +2069,7 @@ impl crate::rabitq::segment::ClusterSegmentData {
     #[allow(clippy::too_many_arguments)]
     pub fn from_cluster_data(
         cluster_id: u32,
+        version: u32,
         centroid: Vec<f32>,
         padded_dim: usize,
         ex_bits: usize,
@@ -2070,6 +2083,7 @@ impl crate::rabitq::segment::ClusterSegmentData {
     ) -> Self {
         Self {
             cluster_id,
+            version,
             centroid,
             padded_dim,
             ex_bits,
@@ -2103,6 +2117,8 @@ impl ClusterData {
     /// Flushes a batch of 32 into `batch_data` when full.
     fn append_vector(&mut self, new_id: IndexKey, new_q: QuantizedVector) {
         self.pending_ids.push(new_id);
+        // Pending entries are newer than every persisted segment.
+        self.pending_ids_version.push(u32::MAX);
         self.pending_vectors.push(new_q);
         if self.pending_ids.len() >= simd::FASTSCAN_BATCH_SIZE {
             self.flush_pending();
@@ -2131,12 +2147,17 @@ impl ClusterData {
                 .pending_ids
                 .drain(..simd::FASTSCAN_BATCH_SIZE)
                 .collect();
+            let batch_versions: Vec<u32> = self
+                .pending_ids_version
+                .drain(..simd::FASTSCAN_BATCH_SIZE)
+                .collect();
 
             // Append this batch into batch_data
             let _batch_idx = self.num_vectors / simd::FASTSCAN_BATCH_SIZE;
 
             // Extend main ID list
             self.ids.extend(batch_ids);
+            self.ids_version.extend(batch_versions);
 
             // Extend batch_data by one batch stride
             let stride = Self::batch_stride(padded_dim);
@@ -2229,6 +2250,7 @@ impl ClusterData {
             let mut batch_qvecs: Vec<QuantizedVector> =
                 std::mem::take(&mut self.pending_vectors);
             let batch_ids: Vec<IndexKey> = std::mem::take(&mut self.pending_ids);
+            let batch_versions: Vec<u32> = std::mem::take(&mut self.pending_ids_version);
             let actual_count = batch_qvecs.len();
 
             // Pad to 32 with zeros.
@@ -2236,6 +2258,7 @@ impl ClusterData {
 
             // Extend ID list (only actual ids, not pads).
             self.ids.extend(batch_ids);
+            self.ids_version.extend(batch_versions);
 
             // Extend batch_data by one batch stride.
             let stride = Self::batch_stride(padded_dim);
