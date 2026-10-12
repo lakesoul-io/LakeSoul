@@ -3050,6 +3050,82 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全量 IVM **416 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
   `cargo clippy -p lakesoul-ivm --all-targets` 干净。
 
+### 10.112 空安全 inner join（已实现；ROADMAP §B5 的一部分）
+
+> 目标：`SELECT ... FROM a JOIN b ON a.k IS NOT DISTINCT FROM b.k`（NULL 与 NULL 匹配）。
+> 实现方式：单 pair inner join 的 `null_safe` 键；outer join / 多表链 / 表达式键仍明确拒绝。
+
+**侦察结论（2026-10-12，已完成，实现前不必重复）**
+
+1. **inner join 没有按 join key 建键的状态表**：`refresh_join` 只注册 `StateRole::Mv`
+   （`runtime/joins.rs:2406`），所以不需要“状态表键 NULL sentinel”。
+2. **受影响行按源主键选取**（`delta_left → left_now` 用主键 LeftSemi，`runtime/joins.rs:2537`
+   起），主键非空 → 天然 null-safe；MV 身份列是各源主键（`left_pk_alias`/`right_pk_alias`）
+   → 不需要 NULL 编码。最初担心的“全链路 sentinel”不成立。
+3. **唯一需要改的连接点是 pair 连接**：`keyed_join_projection`
+   （`runtime/joins.rs:2198`）里的
+   `left.join(right, join_type, &key_names, &right_key_refs, None)?`
+   → 在 `null_safe` 时改走 `join_detailed(..., NullEquality::NullEqualsNull)`
+   （`semi_anti.rs::semi_anti_join` 末尾有完全相同写法可照抄）；cross-join 分支无键、不受影响。
+4. 重算对 before-state 的读取同样走主键过滤，无需 NULL 感知的 `key_filters`。
+
+**实施步骤**
+
+1. `ViewSpec::Join` 增加
+   `#[serde(default, skip_serializing_if = "std::ops::Not::not")] null_safe: bool`；
+   `JoinView` 增加 `pub null_safe: bool`（`new()` 置 false、`with_null_safe`、`to_spec`、
+   `spec_view` 透传）。
+2. `PairJoin` 增加 `null_safe: bool`；`JoinView::parts()` 传 `self.null_safe`，其余三个
+   `PairJoin` 构造点（LeftJoin/FullJoin/CrossJoin）传 `false`。
+   ⚠️ `runtime/joins.rs` 中 `pair_filter: None` / `pair_filter: self.pair_filter.clone()`
+   在多个视图的构造器与 `to_spec` 里重复出现，补丁必须带足上下文或逐处精确编辑，
+   避免串位（2026-10-12 已踩坑并回退）。
+3. `keyed_join_projection` 增加 `parts.null_safe` 分支（见结论 3）。
+4. 分析器：`sql/joins.rs:32` 的 `if join.null_equality == NullEquality::NullEqualsNull`
+   改为仅对 **非 inner** 送 `analyze_set_operation`；inner 且 `on` 全为普通列时继续原
+   inner 分析并置 `null_safe = true`；表达式键 / outer join 继续明确拒绝（错误文案注明）。
+5. 校验：`null_safe` 仅 inner、键为普通列（`key_exprs` 为空）；可只在任一键列可空时置 true
+   （非空列上 `IS NOT DISTINCT FROM` ≡ `=`，置 false 更省）。
+6. 测试：
+   - 分析器用例：`on a.v is not distinct from b.v` → 新 spec 的 `null_safe = true`；
+     表达式键 / outer join 仍拒绝；
+   - 确定性用例：NULL 匹配 NULL、NULL 不匹配非空（含更新后由非空变 NULL）；
+   - oracle：`nullable_source_schema()` + `run_oracle_seeded`（join 键选可空的 `v`），
+     参考实现用同一 SQL 的 DataFusion 原生 `IS NOT DISTINCT FROM` 求值；
+   - 全量 IVM 套件 + `cargo fmt --all --check` + clippy。
+
+**实施记录（2026-10-12，已在 keyed 与 append-only 两条路径落地）**
+
+- spec/runtime：`ViewSpec::Join.null_safe`（serde default，false 时不序列化）、`JoinView.null_safe`
+  （`with_null_safe`）、`PairJoin.null_safe`；`keyed_join_projection` 与 `join_projection`
+  在 `null_safe` 时改走 `join_detailed(..., NullEquality::NullEqualsNull)`（其余连接仍为严格等值）。
+- 输出 schema：`nullable_join_key_schema(schema, key_count)` 把前 N 个 join key 列标为可空；
+  `executor.rs::expected_mv_schema` 对 `ViewSpec::Join` 且 `null_safe` 时套用，
+  keyed 与 wide keyed 两种 schema 都覆盖（join key 列在 schema 中排在最前）。
+- 分析器：`sql/joins.rs` 的 `NullEqualsNull` 分流改为「非 inner 仍走 `analyze_set_operation`，
+  inner 继续 pair 分析并置 `null_safe = true`」；表达式键、filter 中的额外严格等值、
+  多表链中的 null-safe 步骤（`join_tree_has_null_safe_step`）都明确拒绝。
+- 测试：分析器用例（含四种拒绝形态）、`tests/null_semantics.rs::null_safe_join_keys_match_sql`
+  （append-only 确定性：NULL 匹配 NULL、NULL 不匹配非空、增量与全量一致、rebuild 一致）、
+  `tests/sql_oracle.rs::oracle_null_safe_inner_join_matches_full_recompute`
+  （keyed 随机差分，含 NULL↔非 NULL 的更新；定制种子 7/11 × 30 轮通过）。
+
+**DataFusion 事实（53.1.0，值得上游反馈）**
+
+- 单 pair 的 `ON a.v IS NOT DISTINCT FROM b.v`：`ExtractEquijoinPredicate` 正确生成
+  `null_equality = NullEqualsNull` 的 inner join（probe 验证）。
+- 但同一谓词作为三表链的一步时（例如 `a join b on a.v ≅ b.v join c on c.k = a.k`），
+  优化后该 join 变成 `on = [(a.v, b.v)]` 且 `null_equality = NullEqualsNothing`——
+  NULL 匹配语义在 DataFusion 侧就丢了（我们的分析器只能看到丢标记后的计划，
+  因此按严格等值维护，与优化计划的执行语义一致）。分析器的链守卫针对
+  「标记仍存在的多表链」拒绝；若上游修复该行为，守卫会立即把它们挡住而不是静默出错。
+
+**后续（outer join 扩展，未做）**
+
+- LEFT/RIGHT/FULL join 的“未匹配”用**对方主键为 NULL**表示（见 `ViewSpec::LeftJoin` 文档），
+  与 null-safe 的 join 键是不同列，不直接冲突；但仍需确认“未匹配行”与“匹配到 NULL 键的行”
+  在重算/撤回路径上的区分，以及 MV 身份列语义（`__pk` 系列）。建议 inner 闭环合入后单独设计。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

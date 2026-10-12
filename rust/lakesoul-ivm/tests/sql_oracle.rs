@@ -31,15 +31,15 @@ use lakesoul_ivm::{
     lookup_chain_step_id_column, median_groups_mv_schema_for, median_mv_schema_for,
     min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
     multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    multi_window_mv_schema_for, nullable_join_key_schema, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -410,6 +410,46 @@ async fn oracle_join_key_expression_matches_full_recompute() {
          JOIN __SRC1__ b ON a.k = b.k WHERE a.op <> 'delete' \
          AND b.op <> 'delete' AND a.v + 1 = b.v",
         "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
+         FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_null_safe_inner_join_matches_full_recompute() {
+    // `IS NOT DISTINCT FROM` keys: NULL matches NULL, and the round mutations
+    // keep moving values between NULL and non-NULL on both sides.
+    let schema = nullable_source_schema();
+    let keys = vec!["k".to_string()];
+    let join_keys = vec!["v".to_string()];
+    let seed = vec![
+        (0usize, 0i64, "g0", None),
+        (0, 1, "g1", Some(10)),
+        (0, 2, "g2", None),
+        (1, 0, "g0", None),
+        (1, 1, "g1", Some(20)),
+        (1, 2, "g2", Some(10)),
+    ];
+    run_oracle_seeded(
+        "nullsafejoin",
+        2,
+        schema.clone(),
+        true,
+        &seed,
+        nullable_join_key_schema(
+            &keyed_join_view_schema_for(
+                &schema, &schema, &keys, &keys, &join_keys, "k", "k",
+            )
+            .unwrap(),
+            join_keys.len(),
+        ),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.v, a.k, b.k FROM __SRC__ a JOIN __SRC1__ b \
+         ON a.v IS NOT DISTINCT FROM b.v",
+        "SELECT a.v, a.k, b.k, a.k AS lpk, b.k AS rpk FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.v IS NOT DISTINCT FROM b.v \
+         WHERE a.op <> 'delete' AND b.op <> 'delete'",
+        "SELECT v, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
          FROM __MV__",
     )
     .await;

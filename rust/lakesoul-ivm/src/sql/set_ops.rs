@@ -25,7 +25,8 @@ pub(super) fn analyze_set_operation(
         JoinType::LeftAnti => true,
         _ => {
             return Err(unsupported(
-                "a null-aware join predicate is only maintained for semi/anti joins",
+                "a null-aware join predicate is only maintained for semi/anti \
+                 joins and a two-source inner join",
             ));
         }
     };
@@ -296,15 +297,18 @@ mod tests {
             .await
             .is_err()
         );
-        // A null-aware inner join is not a semi/anti join.
-        assert!(
-            analyze_multi(
-                "select a.k, b.v from src a join dim b \
-                 on a.k is not distinct from b.k",
-                vec![source_table("src"), source_table("dim")],
-            )
-            .await
-            .is_err()
-        );
+        // A null-aware inner join is not a semi/anti join: it is maintained
+        // as a null-safe pair join (a NULL key matches another NULL key).
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v from src a join dim b \
+             on a.k is not distinct from b.k",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join { null_safe, .. } = analyzed.spec else {
+            panic!("expected a null-safe join spec");
+        };
+        assert!(null_safe);
     }
 }

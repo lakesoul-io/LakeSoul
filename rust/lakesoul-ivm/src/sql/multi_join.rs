@@ -387,6 +387,37 @@ fn peel_chain_node(plan: &LogicalPlan) -> &LogicalPlan {
     }
 }
 
+/// Whether any step of a join tree matches its keys null-safely.
+///
+/// The flattened chain and the lookup chain compare with strict equality, so
+/// a null-safe step (including a nested one) is rejected instead of silently
+/// producing different rows.
+pub(super) fn join_tree_has_null_safe_step(join: &Join) -> bool {
+    /// One subtree: peel the wrappers a join node may carry, then recurse.
+    fn step(plan: &LogicalPlan) -> bool {
+        let mut node = peel(plan);
+        loop {
+            match node {
+                LogicalPlan::SubqueryAlias(alias) => node = &alias.input,
+                LogicalPlan::Projection(projection) => node = &projection.input,
+                LogicalPlan::Filter(filter) => node = &filter.input,
+                _ => break,
+            }
+        }
+        match node {
+            LogicalPlan::Join(join) => {
+                join.null_equality == NullEquality::NullEqualsNull
+                    || step(&join.left)
+                    || step(&join.right)
+            }
+            _ => false,
+        }
+    }
+    join.null_equality == NullEquality::NullEqualsNull
+        || step(&join.left)
+        || step(&join.right)
+}
+
 /// Whether a join tree contains a step that is not an inner join.
 pub(super) fn join_tree_has_outer_step(plan: &LogicalPlan) -> bool {
     let mut node = peel(plan);
