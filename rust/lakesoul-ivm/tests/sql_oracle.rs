@@ -27,18 +27,19 @@ use lakesoul_ivm::{
     distinct_agg_mv_schema_for, grouping_sets_mv_schema_for, join_condition_column_name,
     join_key_expression_name, keyed_join_output_primary_keys, keyed_join_view_schema_for,
     keyed_join_view_schema_with_keys, left_aggregate_mv_schema_for,
-    lookup_chain_mv_schema_for, lookup_chain_step_id_column, median_groups_mv_schema_for,
-    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_groups_mv_schema_for,
-    min_max_mv_schema_for, multi_agg_mv_schema_for, multi_join_mv_schema_for,
-    multi_join_primary_keys, multi_window_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    left_aggregate_mv_schema_with_outputs, lookup_chain_mv_schema_for,
+    lookup_chain_step_id_column, median_groups_mv_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -1926,6 +1927,177 @@ async fn oracle_bool_agg_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_quantified_comparisons_match_full_recompute() {
+    // The non-`IN` quantifiers keep the three-valued filter semantics: the
+    // analyzer rewrites them into EXISTS predicates while the reference uses
+    // DataFusion's native quantifier evaluation, with NULL values in play.
+    let schema = nullable_source_schema();
+    let left: &[SeedRow] = &[
+        (0, 1, "g0", Some(10)),
+        (0, 2, "g1", Some(50)),
+        (0, 3, "g2", Some(80)),
+    ];
+    let null_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(20)),
+        (1, 2, "g1", Some(60)),
+        (1, 3, "g2", None),
+    ];
+    let high_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(90)),
+        (1, 2, "g1", Some(70)),
+        (1, 3, "g2", Some(60)),
+    ];
+    let low_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(20)),
+        (1, 2, "g1", None),
+        (1, 3, "g2", Some(30)),
+    ];
+    let correlated_right: &[SeedRow] = &[
+        (1, 1, "g0", Some(5)),
+        (1, 2, "g1", Some(20)),
+        (1, 3, "g2", Some(70)),
+    ];
+    let cases: &[(&str, &str, &[SeedRow])] = &[
+        ("quantgtany", "v > ANY (SELECT v FROM __SRC1__)", null_right),
+        (
+            "quantgeany",
+            "v >= ANY (SELECT v FROM __SRC1__)",
+            null_right,
+        ),
+        ("quantltall", "v < ALL (SELECT v FROM __SRC1__)", high_right),
+        (
+            "quantleall",
+            "v <= ALL (SELECT v FROM __SRC1__)",
+            high_right,
+        ),
+        (
+            "quantnotgtany",
+            "NOT (v > ANY (SELECT v FROM __SRC1__))",
+            high_right,
+        ),
+        (
+            "quantnotleall",
+            "NOT (v <= ALL (SELECT v FROM __SRC1__))",
+            low_right,
+        ),
+        (
+            "quantcorrelated",
+            "v > ANY (SELECT v FROM __SRC1__ WHERE __SRC1__.g = __SRC__.g)",
+            correlated_right,
+        ),
+    ];
+    for (tag, predicate, right) in cases {
+        let definition = format!("SELECT k FROM __SRC__ WHERE {predicate}");
+        let reference = definition.clone();
+        let mut seeds = left.to_vec();
+        seeds.extend_from_slice(right);
+        run_oracle_seeded(
+            tag,
+            2,
+            schema.clone(),
+            true,
+            &seeds,
+            semi_anti_mv_schema_for(&schema, &["k".to_string()]).unwrap(),
+            vec!["k".to_string()],
+            &definition,
+            &reference,
+            "SELECT k FROM __MV__",
+        )
+        .await;
+    }
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_quantified_in_equivalents_match_full_recompute() {
+    // `= ANY` is maintained as `IN` and `<> ALL` as `NOT IN`; the reference
+    // uses the standard form, so the oracle checks the equivalence itself.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    for (tag, quantifier, predicate) in [
+        ("quantany", "= ANY", "IN"),
+        ("quantall", "<> ALL", "NOT IN"),
+    ] {
+        let definition = format!(
+            "SELECT k FROM __SRC__ WHERE k {quantifier} (SELECT k FROM __SRC1__)"
+        );
+        let reference = format!(
+            "SELECT k FROM (SELECT k FROM __SRC__ WHERE op <> 'delete') \
+             WHERE k {predicate} \
+             (SELECT k FROM (SELECT k FROM __SRC1__ WHERE op <> 'delete'))"
+        );
+        run_oracle_seeded(
+            tag,
+            2,
+            schema.clone(),
+            false,
+            &[
+                (0, 1, "g0", Some(10)),
+                (0, 2, "g0", Some(20)),
+                (0, 3, "g0", Some(30)),
+                (1, 1, "g0", Some(15)),
+                (1, 2, "g0", Some(25)),
+                (1, 3, "g0", Some(35)),
+            ],
+            semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+            keys.clone(),
+            &definition,
+            &reference,
+            "SELECT k FROM __MV__",
+        )
+        .await;
+    }
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_grouping_sets_plain_keys_matches_full_recompute() {
+    // A plain key mixed into GROUPING SETS: the planner normalizes it to the
+    // cross-product member sets, which the view maintains.
+    run_oracle(
+        "groupsetsplain",
+        1,
+        grouping_sets_mv_schema_for(
+            &source_schema(),
+            &["g".to_string(), "v".to_string()],
+            &[],
+            Some("v"),
+            None,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+        vec![
+            "__ivm_grouping".to_string(),
+            "g".to_string(),
+            "v".to_string(),
+        ],
+        "SELECT g, v, SUM(v), COUNT(*) FROM __SRC__ \
+         GROUP BY g, GROUPING SETS ((v), ())",
+        "SELECT g, v, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g, GROUPING SETS ((v), ())",
+        "SELECT g, v, sum_v, count_v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_having_computed_matches_full_recompute() {
+    // A computed HAVING predicate over the aggregate outputs.
+    run_oracle(
+        "havingcomputed",
+        1,
+        sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v")).unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE v > 30 GROUP BY g HAVING SUM(v) * 2 > 120",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v FROM __SRC__ \
+         WHERE op <> 'delete' AND v > 30 GROUP BY g HAVING SUM(v) * 2 > 120",
+        "SELECT g, sum_v, count_v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_grouping_sets_cube_matches_full_recompute() {
     // A CUBE over two keys: detail rows, both per-key subtotals and the grand
     // total share the MV.
@@ -2519,6 +2691,92 @@ async fn oracle_mixed_aggregates_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_computed_aggregate_outputs_match_full_recompute() {
+    // A computed select expression above an aggregate (`SUM(v) * 2`): the raw
+    // aggregate column stays materialized and the expression is recomputed
+    // with the affected groups.
+    let schema = source_schema();
+    run_oracle(
+        "computedagg",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) * 2 AS s2 FROM __SRC__ GROUP BY g",
+        "SELECT g, SUM(v) AS sum_v, SUM(v) * 2 AS s2 FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, sum_v, s2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_computed_aggregate_having_matches_full_recompute() {
+    // HAVING references the raw aggregate column while the computed outputs
+    // cover a count and a sum expression.
+    let schema = source_schema();
+    run_oracle(
+        "computedagghav",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("count".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+                ("c2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) * 2 AS s2, COUNT(*) + 1 AS c2 FROM __SRC__ \
+         GROUP BY g HAVING SUM(v) > 0",
+        "SELECT g, SUM(v) AS sum_v, COUNT(*) AS \"count\", SUM(v) * 2 AS s2, \
+         COUNT(*) + 1 AS c2 FROM __SRC__ WHERE op <> 'delete' GROUP BY g \
+         HAVING SUM(v) > 0",
+        "SELECT g, sum_v, \"count\", s2, c2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_global_computed_aggregate_matches_full_recompute() {
+    // A global computed aggregate: the single MV row holds the raw statistic
+    // and its computed output.
+    let schema = source_schema();
+    run_oracle(
+        "computedaggglobal",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &[],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        Vec::new(),
+        "SELECT SUM(v) * 2 AS s2 FROM __SRC__",
+        "SELECT SUM(v) AS sum_v, SUM(v) * 2 AS s2 FROM __SRC__ \
+         WHERE op <> 'delete'",
+        "SELECT sum_v, s2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_distinct_on_matches_full_recompute() {
     // `DISTINCT ON (g) ... ORDER BY g, v DESC` picks the first row per group;
     // the primary key breaks ties, so the pick is deterministic.
@@ -2719,6 +2977,99 @@ async fn oracle_left_aggregate_matches_full_recompute() {
         "SELECT k, g, v, m FROM __MV__",
     )
     .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_left_aggregate_outputs_match_full_recompute() {
+    // A computed select-list expression over the per-key aggregate: the view
+    // carries the raw value internally and the computed column.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    run_oracle_seeded(
+        "leftaggout",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+        ],
+        left_aggregate_mv_schema_with_outputs(
+            &schema,
+            &keys,
+            "__ivm_agg",
+            &DataType::Int64,
+            &[("m".to_string(), DataType::Int64)],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT s.k, (SELECT max(u.v) FROM __SRC1__ u WHERE u.k = s.k) * 2 + 1 \
+         AS m FROM __SRC0__ s",
+        "SELECT s.k, (SELECT max(u.v) FROM __SRC1__ u \
+                      WHERE u.op <> 'delete' AND u.k = s.k) * 2 + 1 AS m \
+         FROM __SRC0__ s WHERE s.op <> 'delete'",
+        "SELECT k, m FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_having_subquery_matches_full_recompute() {
+    // A single-statement HAVING scalar subquery: a global aggregate over the
+    // lookup source (a cross join) or a per-key aggregate (a keyed join).
+    // The reference is DataFusion's native evaluation of the same statement.
+    let schema = source_schema();
+    let mv_schema = multi_agg_mv_schema_for(
+        &schema,
+        &["g".to_string()],
+        &[],
+        &[("sum_v".to_string(), DataType::Int64)],
+    )
+    .unwrap();
+    let seeds = [
+        (0, 1, "g0", Some(10)),
+        (0, 2, "g1", Some(30)),
+        (0, 3, "g0", Some(20)),
+        (1, 1, "g0", Some(15)),
+        (1, 2, "g1", Some(25)),
+        (1, 3, "g0", Some(40)),
+    ];
+    for (tag, definition_having, reference_having) in [
+        (
+            "havingglob",
+            "SUM(v) > (SELECT MAX(v) FROM __SRC1__)",
+            "SUM(v) > (SELECT MAX(v) FROM __SRC1__ WHERE op <> 'delete')",
+        ),
+        (
+            "havingcorr",
+            "SUM(v) > (SELECT MAX(d.v) FROM __SRC1__ d WHERE d.g = __SRC__.g)",
+            "SUM(v) > (SELECT MAX(d.v) FROM __SRC1__ d \
+                       WHERE d.op <> 'delete' AND d.g = __SRC__.g)",
+        ),
+    ] {
+        let definition = format!(
+            "SELECT g, SUM(v) AS sum_v FROM __SRC__ GROUP BY g HAVING {definition_having}"
+        );
+        let reference = format!(
+            "SELECT g, SUM(v) AS sum_v FROM __SRC__ WHERE op <> 'delete' \
+             GROUP BY g HAVING {reference_having}"
+        );
+        run_oracle_seeded(
+            tag,
+            2,
+            schema.clone(),
+            false,
+            &seeds,
+            mv_schema.clone(),
+            vec!["g".to_string()],
+            &definition,
+            &reference,
+            "SELECT g, sum_v FROM __MV__",
+        )
+        .await;
+    }
 }
 
 #[test_log::test(tokio::test)]

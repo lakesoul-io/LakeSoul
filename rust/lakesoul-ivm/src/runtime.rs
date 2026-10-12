@@ -362,6 +362,10 @@ pub enum ViewSpec {
         /// An optional `HAVING` predicate over the materialized columns.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having: Option<String>,
+        /// The extra source a `HAVING` subquery reads, when the statement has
+        /// one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        having_lookup: Option<HavingLookupSpec>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -819,6 +823,11 @@ pub enum ViewSpec {
         /// operations and null-aware predicates do.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         null_safe: bool,
+        /// Whether left rows sharing the join keys compete for the right
+        /// multiplicity: `INTERSECT ALL` keeps the first `count_r` copies and
+        /// `EXCEPT ALL` the `count_l - count_r` surplus.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        count_mode: bool,
         /// The rendered aggregate call over the right columns; when present
         /// the right side contributes one value per join key (a correlated
         /// scalar subquery) instead of a row match.
@@ -864,6 +873,10 @@ pub enum ViewSpec {
         /// An optional filter the contributing right rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         right_filter: Option<String>,
+        /// The computed select-list expressions over the scalar subquery
+        /// value, appended after the aggregate column.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_exprs: Vec<LeftAggregateOutput>,
     },
     /// A left-deep chain of keyed 1:1 lookups over a base table: every base
     /// row appears once, with NULL payloads for the steps it does not match.
@@ -1085,9 +1098,6 @@ impl ViewSpec {
             | ViewSpec::ArrayAgg {
                 source_table_id, ..
             }
-            | ViewSpec::MultiAgg {
-                source_table_id, ..
-            }
             | ViewSpec::MinMax {
                 source_table_id, ..
             }
@@ -1110,6 +1120,16 @@ impl ViewSpec {
                 source_table_id, ..
             } => {
                 ids.push(source_table_id.as_str());
+            }
+            ViewSpec::MultiAgg {
+                source_table_id,
+                having_lookup,
+                ..
+            } => {
+                ids.push(source_table_id.as_str());
+                if let Some(lookup) = having_lookup {
+                    ids.push(lookup.table_id.as_str());
+                }
             }
             ViewSpec::Join {
                 left_table_id,
@@ -1277,6 +1297,43 @@ enum SpecView {
     UnionDistinct(UnionDistinctView),
     TopK(TopKView),
     MultiWindow(MultiWindowView),
+}
+
+/// The extra source a `HAVING` subquery reads: its rows are aggregated and
+/// joined into the affected groups before the predicate is evaluated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HavingLookupSpec {
+    /// The lookup source table id.
+    pub table_id: String,
+    /// The rendered aggregate over the lookup rows (for example `max("v")`).
+    pub aggregate: String,
+    /// The group keys joined to the lookup keys; empty means the aggregate is
+    /// global and joined with a cross join.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub join_keys: Vec<String>,
+    /// The lookup keys, aligned with `join_keys` (empty means the same names).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub right_keys: Vec<String>,
+    /// The name the joined lookup value carries in the recompute SQL; the
+    /// rendered `having` references it.
+    pub column: String,
+    /// An optional filter the lookup rows must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+/// One computed output of a [`ViewSpec::LeftAggregate`] view:
+/// the rendered expression over the scalar subquery value
+/// ([`crate::runtime::semi_anti::IVM_RIGHT_AGG_COLUMN`]) and the MV column
+/// holding it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftAggregateOutput {
+    /// The rendered expression over the right aggregate column.
+    pub call: String,
+    /// The MV column holding the value.
+    pub column: String,
+    /// The encoded result type of the expression.
+    pub result: String,
 }
 
 /// One aggregate of a [`ViewSpec::MultiAgg`] view.
@@ -2352,6 +2409,7 @@ impl IvmRuntime {
                 aggregates,
                 filter,
                 having,
+                having_lookup,
             } => SpecView::MultiAgg(MultiAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -2370,6 +2428,17 @@ impl IvmRuntime {
                     .collect::<Result<Vec<_>>>()?,
                 filter: filter.clone(),
                 having: having.clone(),
+                having_lookup: match having_lookup {
+                    Some(lookup) => Some(HavingLookup {
+                        table: self.open_table_by_id(&lookup.table_id).await?,
+                        aggregate: lookup.aggregate.clone(),
+                        join_keys: lookup.join_keys.clone(),
+                        right_keys: lookup.right_keys.clone(),
+                        column: lookup.column.clone(),
+                        filter: lookup.filter.clone(),
+                    }),
+                    None => None,
+                },
                 refresh_interval_ms,
             }),
             ViewSpec::MultiJoin {
@@ -2803,6 +2872,7 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 null_safe,
+                count_mode,
                 right_aggregate,
                 right_keys,
                 match_predicate,
@@ -2818,6 +2888,7 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 null_safe: *null_safe,
+                count_mode: *count_mode,
                 right_aggregate: right_aggregate.clone(),
                 right_keys: right_keys.clone(),
                 match_predicate: match_predicate.clone(),
@@ -2858,6 +2929,7 @@ impl IvmRuntime {
                 output_columns,
                 left_filter,
                 right_filter,
+                output_exprs,
             } => SpecView::LeftAggregate(LeftAggregateView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2870,6 +2942,16 @@ impl IvmRuntime {
                 output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
+                output_exprs: output_exprs
+                    .iter()
+                    .map(|output| {
+                        Ok((
+                            output.call.clone(),
+                            output.column.clone(),
+                            decode_data_type(&output.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
                 refresh_interval_ms,
             }),
             ViewSpec::Row {

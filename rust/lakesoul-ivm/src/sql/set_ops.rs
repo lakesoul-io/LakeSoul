@@ -69,13 +69,28 @@ pub(super) fn analyze_set_operation(
     if left.primary_keys.is_empty() {
         return Err(unsupported("a set operation needs a keyed left source"));
     }
-    for key in &left.primary_keys {
-        if !join_keys.contains(key) {
-            return Err(unsupported(
-                "a set operation left rows must be unique on the join columns",
-            ));
-        }
-    }
+    // A null-aware predicate (`EXISTS ... IS NOT DISTINCT FROM`) is
+    // decorrelated into a `__correlated_sq_*` subquery alias; a set operation
+    // is not.  Only the latter carries per-tuple match counts, so the left
+    // uniqueness requirement is only relaxed there.
+    let correlated = join.on.iter().any(|(_, right)| {
+        column_of(right)
+            .and_then(|column| column.relation.as_ref())
+            .is_some_and(|relation| relation.table().starts_with("__correlated_sq_"))
+    });
+    let distinct_variant = matches!(left_source, LogicalPlan::Aggregate(_));
+    let left_unique = left.primary_keys.iter().all(|key| join_keys.contains(key));
+    let count_mode = if left_unique || correlated {
+        // Membership semantics: every left row is checked on its own.
+        false
+    } else if distinct_variant {
+        return Err(unsupported(
+            "a set operation left rows must be unique on the join columns",
+        ));
+    } else {
+        // `INTERSECT ALL` / `EXCEPT ALL` over a repeated left.
+        true
+    };
     // A NULL-capable join column makes the join null-aware: NULL matches
     // NULL, exactly as the set operations do.
     let mut null_safe = false;
@@ -108,8 +123,15 @@ pub(super) fn analyze_set_operation(
             ));
         }
     }
-    let output_columns =
+    let mut output_columns =
         semi_anti_output_columns(join, projection, left_alias, right_alias, left, right)?;
+    // The MV is keyed by the left row identity; materialize the primary key
+    // when the select list does not carry it.
+    for key in &left.primary_keys {
+        if !output_columns.contains(key) {
+            output_columns.push(key.clone());
+        }
+    }
     Ok(ViewSpec::SemiAnti {
         view_id: request.view_id.clone(),
         left_table_id: left.table_id.clone(),
@@ -122,6 +144,7 @@ pub(super) fn analyze_set_operation(
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
         null_safe,
+        count_mode,
         right_aggregate: None,
         right_keys: Vec::new(),
         match_predicate: None,
@@ -197,6 +220,59 @@ mod tests {
             panic!("expected a semi/anti spec");
         };
         assert!(null_safe);
+    }
+
+    #[tokio::test]
+    async fn analyzes_count_set_operations() {
+        // A repeated left over a set operation keeps the multiplicity
+        // competition (`INTERSECT ALL` keeps min(count_l, count_r) copies,
+        // `EXCEPT ALL` the surplus); the MV materializes the left key.
+        for (sql, anti) in [
+            ("select g from src intersect all select g from dim", false),
+            ("select g from src except all select g from dim", true),
+        ] {
+            let analyzed =
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .unwrap();
+            let ViewSpec::SemiAnti {
+                count_mode,
+                anti: analyzed_anti,
+                output_columns,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("expected a semi/anti spec");
+            };
+            assert!(count_mode, "{sql}");
+            assert_eq!(analyzed_anti, anti, "{sql}");
+            assert_eq!(
+                output_columns,
+                vec!["g".to_string(), "k".to_string()],
+                "{sql}"
+            );
+        }
+
+        // A null-aware predicate keeps membership semantics: every left row is
+        // checked on its own, so duplicates are all kept and no count state is
+        // needed.
+        let analyzed = analyze_multi(
+            "select g from src where exists \
+             (select 1 from dim where dim.g is not distinct from src.g)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            count_mode,
+            output_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(!count_mode);
+        assert_eq!(output_columns, vec!["g".to_string(), "k".to_string()]);
     }
 
     #[tokio::test]

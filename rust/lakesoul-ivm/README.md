@@ -59,7 +59,7 @@ used as row identities must be non-nullable.
 | DISTINCT ON | `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` over a keyed source; the picked row is deterministic (the source primary keys break ties) | keys, one column per picked column (`first_value_v`), kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
 | MIN / MAX | `SELECT k, MIN(v) FROM src GROUP BY k`; without a `GROUP BY` a global MIN/MAX | keys, `value`, kinds, epoch (+ value-count state table) |
-| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` over a keyed source; plain or aliased computed keys; any mix of the supported aggregates (`SUM`/`COUNT`/`AVG` keep the incremental layout, other mixes are recomputed per set) | `__ivm_grouping`, every flat key (nullable), one column per aggregate (`sum_v`/`count_v`/`__ivm_nonnull_count`/`avg_v` for the `SUM`/`COUNT`/`AVG` layout), kinds, epoch |
+| GROUPING SETS / ROLLUP / CUBE | `GROUP BY GROUPING SETS ((a, b), (a), ())` over a keyed source; plain keys and several `ROLLUP`/`CUBE`/`GROUPING SETS` expressions may mix (the planner expands them to the cross-product member sets); plain or aliased computed keys; any mix of the supported aggregates (`SUM`/`COUNT`/`AVG` keep the incremental layout, other mixes are recomputed per set) | `__ivm_grouping`, every flat key (nullable), one column per aggregate (`sum_v`/`count_v`/`__ivm_nonnull_count`/`avg_v` for the `SUM`/`COUNT`/`AVG` layout), kinds, epoch |
 | COUNT / SUM DISTINCT | `SELECT k, COUNT(DISTINCT v) FROM src GROUP BY k`; globally without a `GROUP BY`; multi-column `COUNT(DISTINCT a, b)` needs a `GROUP BY` | keys, `value`, kinds, epoch (+ state) |
 | Variance / stddev | `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | keys, `variance_v` / `stddev_v`, kinds, epoch |
 | MEDIAN | `SELECT k, MEDIAN(v) FROM src GROUP BY k` | keys, `median_v`, kinds, epoch |
@@ -74,15 +74,15 @@ used as row identities must be non-nullable.
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k` | projected columns, kinds, epoch |
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
-| Multi-way join | inner `JOIN`s over three to eight sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
+| Multi-way join | inner `JOIN`s over three to sixteen sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | Lookup chain | a left-deep `[LEFT] JOIN` chain over a keyed base where every step joins a source keyed by its join keys (`a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.v = b.v` — a step key may reference any earlier source), optional step filters | one column per selected payload (aliases name the step payloads), kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns | as the inner join (or one column per selected payload), with nullable unmatched identities |
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
-| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
-| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery) | the projected left columns, the aggregate column, kinds, epoch |
-| INTERSECT / EXCEPT | over unique-per-row join columns (the distinct and `ALL` variants); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns, kinds, epoch |
+| Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key | the projected left columns, kinds, epoch |
+| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery), or a computed expression over it (`... * 2 + 1 AS m`) | the projected left columns, the aggregate column, the computed columns, kinds, epoch |
+| INTERSECT / EXCEPT | the distinct and `ALL` variants; a repeated left of an `ALL` variant competes the per-tuple match counts (`min(count_l, count_r)` copies for `INTERSECT ALL`, the surplus for `EXCEPT ALL`); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns (plus the left key), kinds, epoch |
 
 Supported within the shapes above:
 
@@ -128,6 +128,14 @@ Supported within the shapes above:
   aggregates (`ORDER BY v % 10`);
 * **aggregate `FILTER (WHERE ...)`**, `HAVING`, and per-branch `WHERE` in set
   operations;
+* **a `HAVING` subquery** over another source is joined into the recomputed
+  groups before the predicate runs: `GROUP BY g HAVING SUM(v) >
+  (SELECT MAX(d.v) FROM dim d WHERE d.g = src.g)` keeps the per-key lookup
+  (a keyed left join) and `HAVING SUM(v) > (SELECT MAX(v) FROM dim)` a global
+  one (a cross join).  A lookup change re-evaluates every group (global) or
+  the groups whose keys changed (per-key); the two-view pattern
+  (`INSERT INTO groups ...; INSERT INTO filtered SELECT ... WHERE sum_v >
+  (SELECT ...)`) remains available and is refreshed in dependency order;
 * **set-operation projections**: union branches may prune, rename and compute
   columns as long as every branch has the same output schema; a keyed
   `UNION ALL` branch must keep its primary keys as plain columns, and the CDC
@@ -154,13 +162,30 @@ Supported within the shapes above:
   **select-list** correlated scalar subquery
   (`SELECT ..., (SELECT AVG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s`)
   is maintained as a left join against the same per-key aggregate, with NULL
-  for a key without rows;
-* **`INTERSECT` / `EXCEPT`** (the distinct and `ALL` variants) when the
-  semi/anti semantics coincide with the set operation: the left rows are
-  unique per join tuple (their primary key is covered), which also covers
-  null-aware `IS NOT DISTINCT FROM` semi/anti predicates; a NULL-capable join
-  column makes the view null-safe, so `NULL` matches `NULL` exactly as the
-  set operations require;
+  for a key without rows; a computed select-list expression over the value
+  (`(SELECT MAX(w) FROM dim u WHERE u.k = s.k) * 2 + 1 AS m`) appends a view
+  column computed from the per-key aggregate (the raw value stays
+  materialized, named `__ivm_agg` when the select list does not carry it);
+* **quantified comparisons** (`x op ANY (S)`, `x op ALL (S)` and their
+  `NOT (...)` complements): rewritten before planning into an `EXISTS`
+  (`x op y`) or `NOT EXISTS` (`(x op y) IS NOT TRUE`) predicate, so they are
+  maintained as a theta semi/anti join whose comparison is the only
+  condition.  A NULL-capable comparison keeps the quantifier's three-valued
+  filter semantics (`> ALL` over an empty set is true, a NULL comparison
+  makes the result unknown and the row drops); a `NOT` directly above a
+  quantifier is pushed into it with the complementary operator
+  (`NOT (x > ANY S)` is `x <= ALL S`);
+* **`INTERSECT` / `EXCEPT`**: the distinct variants need left rows unique per
+  join tuple (their primary key is covered), which also covers null-aware
+  `IS NOT DISTINCT FROM` semi/anti predicates with a repeated left (every row
+  is checked on its own, plain membership).  The `ALL` variants keep the
+  standard per-tuple match counts: a repeated left row is ranked by its
+  primary key and stays while `rank <= count_r` (`INTERSECT ALL`) or
+  `rank > count_r` (`EXCEPT ALL`), so a left insertion or deletion
+  re-evaluates its whole tuple.  A NULL-capable join column makes the view
+  null-safe, so `NULL` matches `NULL` exactly as the set operations require
+  (DataFusion evaluates a raw `INTERSECT ALL`/`EXCEPT ALL` as a plain
+  membership join, without the counts);
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
@@ -188,8 +213,14 @@ Supported within the shapes above:
   `MEDIAN`, `APPROX_DISTINCT`, `STRING_AGG`, `ARRAY_AGG`, the bit / regression
   functions, ...) in one view; the affected groups are recomputed from their
   current rows, and a SUM/COUNT/AVG-only mix keeps the incremental sum/count
-  view;
-* **multi-way inner joins** (three to eight sources): the join tree flattens
+  view.  A **computed select expression over the aggregates** (`SELECT g,
+  SUM(v) * 2 AS s2 ... GROUP BY g`) routes to the same general view: the raw
+  aggregate columns stay materialized (HAVING and the expression reference
+  them) and each computed expression appends one view column.  A computed
+  output needs an alias; the DISTINCT split, a subquery or window function
+  output and a computed column over a plain `SELECT DISTINCT` or a
+  `GROUPING SETS` statement are rejected;
+* **multi-way inner joins** (three to sixteen sources): the join tree flattens
   into one chained inner join; a source without a key pair is cross joined
   (the chain's `FROM a, b, c` and mixed keyless steps) and the MV is keyed by
   every source's row identity (`__pk0_*`, `__pk1_*`, ...); a refresh rewrites
@@ -405,18 +436,29 @@ the backlog):
   condition may compare unmaterialized columns, they become hidden payload
   columns;
 * outer joins inside a multi-way chain outside the lookup-chain shape: a
-  right/full step, a bushy tree, or more than eight sources;
+  right/full step, a bushy tree, or more than sixteen sources;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
-  outside the maintained subset: they plan as *null-aware* joins, and the
-  `ALL` variants also count the matches on both sides, while the maintained
-  views keep one row per left row, so the shapes whose match counts can
-  differ are rejected rather than silently returning different rows;
+  outside the maintained subset: a `DISTINCT` set-op variant whose left rows
+  repeat a join tuple is rejected rather than silently returning duplicate
+  rows (the `ALL` variants count the matches on both sides through the count
+  mode, and a null-aware predicate on a repeated left keeps plain membership
+  semantics);
+* quantified comparisons in a position that is not a plain predicate: a
+  quantifier below a wider `NOT` or inside a disjunction keeps DataFusion's
+  null-aware mark-join plan and is rejected rather than mistranslated (a
+  `NOT` directly above a quantifier is rewritten with the complementary
+  operator, and `= ANY` / `<> ALL` keep the exact `IN` / `NOT IN` forms); a
+  multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
-  with a `GROUP BY`, a `DISTINCT` aggregate or
-  several aggregates, and a correlated value inside a computed expression)
-  and computed columns above an aggregate
-  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`); correlated `EXISTS` /
-  `IN` subqueries are supported as semi/anti joins;
+  with a `GROUP BY` (already per-key), a `DISTINCT` aggregate or
+  several aggregates, a computed value over left columns beside one, a
+  `HAVING` subquery with several aggregates / nested subqueries / correlated
+  on a non-group key, and a computed column over the lookup value),
+  a subquery or window function **above** an aggregate, and the derived-table
+  form of a computed aggregate output
+  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained
+  views; the direct `SELECT SUM(v) * 2 ... GROUP BY g` form is maintained);
+  correlated `EXISTS` / `IN` subqueries are supported as semi/anti joins;
 * append-only sources (with or without a change column): incremental views
   need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete`
   marker is never materialized as a row, but the matching insert row stays

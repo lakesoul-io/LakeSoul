@@ -69,6 +69,7 @@ pub(crate) async fn analyze_optimized(sql: &str) -> Result<AnalyzedView> {
     ctx.register_table("src", Arc::new(table)).unwrap();
     let tables = HashMap::from([("src".to_string(), source_table("src"))]);
     let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+    let plan = crate::sql::normalize_quantified_comparisons(&plan).unwrap();
     let optimized = ctx.state().optimize(&plan).unwrap();
     analyze_select(&optimized, &tables, &request())
 }
@@ -86,6 +87,7 @@ pub(crate) async fn analyze_multi(
         map.insert(table.table_name.clone(), table.clone());
     }
     let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+    let plan = crate::sql::normalize_quantified_comparisons(&plan).unwrap();
     let optimized = ctx.state().optimize(&plan).unwrap();
     analyze_select(&optimized, &map, &request())
 }

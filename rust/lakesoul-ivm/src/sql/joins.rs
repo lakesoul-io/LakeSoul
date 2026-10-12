@@ -34,6 +34,22 @@ pub(super) fn analyze_join(
     }
     // A correlated scalar subquery plans as a left-semi join against one
     // aggregate row per correlated key.
+    if let Some((aggregate, _)) = aggregate_input(&join.right) {
+        // The correlated `HAVING` form: a semi join between the grouped
+        // source and the per-key lookup aggregate.
+        if join.join_type == JoinType::LeftSemi
+            && let LogicalPlan::Aggregate(left_aggregate) = peel(&join.left)
+        {
+            return analyze_having_join(
+                join,
+                left_aggregate,
+                aggregate,
+                projection,
+                tables,
+                request,
+            );
+        }
+    }
     if let Some((aggregate, subquery_projection)) = aggregate_input(&join.right) {
         return match join.join_type {
             JoinType::LeftSemi => analyze_correlated_scalar(
@@ -124,6 +140,18 @@ pub(super) fn analyze_join(
                     }
                 };
                 key_pairs.push((left_column.name.clone(), right_column.name.clone()));
+            } else if let Expr::IsNotTrue(inner) = conjunct {
+                // `(x op y) IS NOT TRUE`: the match condition of an `ALL`
+                // quantifier (a false or unknown comparison disqualifies the
+                // left row).
+                let (left_column, right_column, op) =
+                    column_compare(inner, left_alias, right_alias, left, right)?;
+                conditions.push(SemiAntiCondition {
+                    left_column,
+                    right_column,
+                    op,
+                    is_not_true: true,
+                });
             } else {
                 let (left_column, right_column, op) =
                     column_compare(conjunct, left_alias, right_alias, left, right)?;
@@ -131,12 +159,19 @@ pub(super) fn analyze_join(
                     left_column,
                     right_column,
                     op,
+                    is_not_true: false,
                 });
             }
         }
     }
     if key_pairs.is_empty() && expression_pairs.is_empty() {
-        return Err(unsupported("join without an equality key"));
+        // A theta semi/anti join (the maintained `x op ANY/ALL` quantifiers)
+        // has no equality key at all: the condition is the whole predicate.
+        let theta_semi_anti = !conditions.is_empty()
+            && matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti);
+        if !theta_semi_anti {
+            return Err(unsupported("join without an equality key"));
+        }
     }
     key_pairs.sort();
     key_pairs.dedup();
@@ -388,6 +423,7 @@ pub(super) fn analyze_join(
                 left_filter,
                 right_filter,
                 null_safe: false,
+                count_mode: false,
                 right_aggregate: None,
                 right_keys: Vec::new(),
                 match_predicate: None,
@@ -508,6 +544,7 @@ fn analyze_correlated_scalar(
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
         null_safe: false,
+        count_mode: false,
         right_aggregate: Some(call),
         right_keys,
         match_predicate: Some(predicate),
@@ -587,15 +624,15 @@ fn analyze_left_aggregate(
     let right_input = join_input(&aggregate.input, tables)?;
     let left = left_input.table;
     let right = right_input.table;
-    // The outer projection: plain left columns plus the scalar value.
-    if !is_plain_projection(projection) {
-        return Err(unsupported(
-            "computed columns next to a select-list scalar subquery",
-        ));
-    }
+    // The outer projection: plain left columns plus the scalar value, or
+    // computed expressions over the scalar value (`(SELECT AGG(w) ...) + 1`).
     let mut output_columns = Vec::new();
-    let mut aggregate_column = None;
-    for expr in &projection.expr {
+    let mut aggregate_column: Option<String> = None;
+    let mut output_exprs = Vec::new();
+    let on_right = |relation: Option<&TableReference>| {
+        relation.is_some() && relation == right_qualifier.as_ref()
+    };
+    for (index, expr) in projection.expr.iter().enumerate() {
         let mut inner = expr;
         let mut alias = None;
         while let Expr::Alias(nested) = inner {
@@ -604,25 +641,79 @@ fn analyze_left_aggregate(
             }
             inner = &nested.expr;
         }
-        let Expr::Column(column) = inner else {
+        if let Expr::Column(column) = inner {
+            if on_right(column.relation.as_ref()) {
+                if aggregate_column.is_some() {
+                    return Err(unsupported("the scalar subquery value appears twice"));
+                }
+                aggregate_column = Some(alias.unwrap_or_else(|| column.name.clone()));
+            } else {
+                output_columns.push(alias.unwrap_or_else(|| column.name.clone()));
+            }
+            continue;
+        }
+        // A computed output: it must compute over the scalar subquery value
+        // and nothing else, and it is rendered against the runtime's raw
+        // aggregate column.
+        let Expr::Alias(output_alias) = expr else {
             return Err(unsupported(
-                "computed columns next to a select-list scalar subquery",
+                "a computed scalar subquery output needs an alias",
             ));
         };
-        if column.relation.is_some()
-            && column.relation.as_ref() == right_qualifier.as_ref()
+        if !output_alias
+            .name
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_')
         {
-            if aggregate_column.is_some() {
-                return Err(unsupported("the scalar subquery value appears twice"));
-            }
-            aggregate_column = Some(alias.unwrap_or_else(|| column.name.clone()));
-        } else {
-            output_columns.push(alias.unwrap_or_else(|| column.name.clone()));
+            return Err(unsupported(
+                "a computed scalar subquery output needs an alias",
+            ));
         }
+        let mut references = 0usize;
+        let mut left_reference = false;
+        inner
+            .apply(|node| {
+                if let Expr::Column(column) = node {
+                    if on_right(column.relation.as_ref()) {
+                        references += 1;
+                    } else {
+                        left_reference = true;
+                    }
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .map_err(|error| unsupported(format!("a scalar subquery output {error}")))?;
+        if references != 1 || left_reference {
+            return Err(unsupported(
+                "a computed scalar subquery output must compute over the \
+                 subquery value (computed left columns are not maintained)",
+            ));
+        }
+        let rewritten = inner
+            .clone()
+            .transform_down(|node| {
+                if let Expr::Column(column) = &node
+                    && on_right(column.relation.as_ref())
+                {
+                    return Ok(Transformed::yes(Expr::Column(Column::from_name(
+                        IVM_RIGHT_AGG_COLUMN,
+                    ))));
+                }
+                Ok(Transformed::no(node))
+            })
+            .map_err(|error| unsupported(format!("a scalar subquery output {error}")))?
+            .data;
+        let data_type = projection.schema.field(index).data_type().clone();
+        output_exprs.push(LeftAggregateOutput {
+            call: render_expression(&rewritten)?,
+            column: output_alias.name.clone(),
+            result: encode_data_type(&data_type)?,
+        });
     }
-    let aggregate_column = aggregate_column.ok_or_else(|| {
-        unsupported("the projection must contain the scalar subquery value")
-    })?;
+    // The raw subquery value stays materialized (it is what the runtime joins
+    // and sorts on); a computed-only select list names it internally.
+    let aggregate_column =
+        aggregate_column.unwrap_or_else(|| IVM_AGG_VALUE_COLUMN.to_string());
     for key in &left.primary_keys {
         if !output_columns.contains(key) {
             return Err(unsupported(format!(
@@ -643,6 +734,7 @@ fn analyze_left_aggregate(
         output_columns,
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
+        output_exprs,
     })
 }
 
@@ -788,6 +880,7 @@ fn analyze_cross_join(
                 left_column,
                 right_column,
                 op,
+                is_not_true: false,
             });
         }
     }
@@ -989,6 +1082,13 @@ pub(super) fn join_input<'a>(
                     alias,
                     filter,
                 });
+            }
+            LogicalPlan::Aggregate(_) => {
+                return Err(unsupported(
+                    "a HAVING subquery over a grouped source needs two views: \
+                     group the source in one view, then filter it against the \
+                     subquery in a second view",
+                ));
             }
             _ => return Err(unsupported("join input must be a table")),
         }
@@ -1353,6 +1453,278 @@ mod tests {
     use crate::sql::test_helpers::*;
 
     #[tokio::test]
+    async fn analyzes_quantified_comparisons() {
+        // `x > ANY (S)` keeps a left row when some right row satisfies the
+        // comparison: a theta semi join with no equality key.
+        let analyzed = analyze_multi(
+            "select k from src where v > any (select v from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            join_keys,
+            conditions,
+            anti,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(join_keys.is_empty());
+        assert!(!anti);
+        assert_eq!(
+            conditions,
+            vec![SemiAntiCondition {
+                left_column: "v".to_string(),
+                right_column: "v".to_string(),
+                op: CompareOp::Gt,
+                is_not_true: false,
+            }]
+        );
+
+        // `x > ALL (S)` keeps a left row when no right row makes the
+        // comparison false or unknown: an anti join on `IS NOT TRUE`.
+        let analyzed = analyze_multi(
+            "select k from src where v > all (select v from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            conditions, anti, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(anti);
+        assert_eq!(conditions[0].op, CompareOp::Gt);
+        assert!(conditions[0].is_not_true);
+
+        // `NOT (x > ANY S)` is exactly `x <= ALL S`.
+        let analyzed = analyze_multi(
+            "select k from src where not (v > any (select v from dim))",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            conditions, anti, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(anti);
+        assert_eq!(conditions[0].op, CompareOp::Le);
+        assert!(conditions[0].is_not_true);
+
+        // A side filter and a correlated key beside the quantifier are kept.
+        for (sql, keys) in [
+            (
+                "select k from src where g = 'x' and v > any (select v from dim)",
+                Vec::<String>::new(),
+            ),
+            (
+                "select k from src where v > any (select v from dim where dim.g = src.g)",
+                vec!["g".to_string()],
+            ),
+        ] {
+            let analyzed =
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .unwrap();
+            let ViewSpec::SemiAnti {
+                join_keys,
+                left_filter,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("expected a semi/anti spec");
+            };
+            assert_eq!(join_keys, keys, "{sql}");
+            if keys.is_empty() {
+                assert_eq!(
+                    normalized(left_filter.as_deref()),
+                    Some("g = 'x'".to_string())
+                );
+            }
+        }
+
+        // A quantifier below a disjunction keeps its mark-join plan: it is
+        // rejected rather than mistranslated.
+        assert!(
+            analyze_multi(
+                "select k from src where v > any (select v from dim) or g = 'x'",
+                vec![source_table("src"), source_table("dim")],
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_left_aggregate_outputs() {
+        // A computed select-list expression over the scalar subquery value:
+        // the raw value stays materialized (named internally when the select
+        // list does not carry it) and the expression appends a view column.
+        let analyzed = analyze_multi(
+            "select s.k, (select max(d.v) from dim d where d.k = s.k) * 2 + 1 \
+             as m from src s",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            aggregate_column,
+            output_columns,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert_eq!(aggregate_column, "__ivm_agg");
+        assert_eq!(output_columns, vec!["k".to_string()]);
+        assert_eq!(
+            output_exprs,
+            vec![LeftAggregateOutput {
+                call: "((__ivm_right_agg * 2) + 1)".to_string(),
+                column: "m".to_string(),
+                result: "int64".to_string(),
+            }]
+        );
+
+        // The plain value keeps the user's alias.
+        let analyzed = analyze_multi(
+            "select s.k, (select max(d.v) from dim d where d.k = s.k) as m \
+             from src s",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            aggregate_column,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert_eq!(aggregate_column, "m");
+        assert!(output_exprs.is_empty());
+
+        // A computed output must be aliased and may only compute over the
+        // subquery value.
+        for sql in [
+            "select s.k, (select max(d.v) from dim d where d.k = s.k) + 1 \
+             from src s",
+            "select s.k, s.v + 1 as x, \
+             (select max(d.v) from dim d where d.k = s.k) + 1 as m from src s",
+        ] {
+            assert!(
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_having_native() {
+        for sql in [
+            "select g, sum(v) from src group by g having sum(v) > (select max(v) from dim)",
+            "select g, sum(v) from src group by g having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+            "select g, sum(v) from src group by g having sum(v) > (select max(d.v) from dim d where d.g = src.g and d.v > 0)",
+            "select g, sum(v), count(*) from src group by g having count(*) > (select count(*) from dim)",
+            "select sum(v) from src having sum(v) > (select max(v) from dim)",
+        ] {
+            match analyze_multi(sql, vec![source_table("src"), source_table("dim")]).await
+            {
+                Ok(analyzed) => eprintln!("HAVING_OK {sql}:\n{:#?}\n", analyzed.spec),
+                Err(error) => eprintln!("HAVING_ERR {sql}:\n{error}\n"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn analyzes_having_subqueries() {
+        // A global lookup aggregate (a cross join) and a per-key one (a
+        // keyed join) both feed the recomputed groups before the predicate.
+        let analyzed = analyze_multi(
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(v) from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            having,
+            having_lookup,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert!(having.is_some());
+        let lookup = having_lookup.expect("a HAVING lookup");
+        assert_eq!(lookup.aggregate, "max(v)");
+        assert!(lookup.join_keys.is_empty());
+        assert_eq!(lookup.column, "__ivm_lookup");
+
+        let analyzed = analyze_multi(
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            group_keys,
+            having_lookup,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(group_keys, vec!["g".to_string()]);
+        let lookup = having_lookup.expect("a HAVING lookup");
+        assert_eq!(lookup.aggregate, "max(v)");
+        assert_eq!(lookup.join_keys, vec!["g".to_string()]);
+        assert_eq!(lookup.right_keys, vec!["g".to_string()]);
+
+        // An aliased group key keeps the alias in the lookup key.
+        let analyzed = analyze_multi(
+            "select g as bucket, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.g = src.g)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg { having_lookup, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
+        let lookup = having_lookup.expect("a HAVING lookup");
+        assert_eq!(lookup.join_keys, vec!["bucket".to_string()]);
+
+        // A lookup correlated on a non-group key stays rejected.
+        for sql in [
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.k = src.k)",
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(d.v) from dim d where d.g = src.g \
+             and d.v > (select min(v) from dim))",
+        ] {
+            assert!(
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn analyzes_semi_anti_subqueries() {
         // `WHERE EXISTS` / `NOT EXISTS` / `IN` decorrelate into LeftSemi /
         // LeftAnti joins over a correlated subquery alias.
@@ -1459,6 +1831,28 @@ mod tests {
                 .await
                 .unwrap();
         assert!(matches!(analyzed.spec, ViewSpec::CrossJoin { .. }));
+    }
+
+    #[tokio::test]
+    async fn probe_setop_vs_predicate_plans() {
+        for sql in [
+            "select g from src intersect all select g from dim",
+            "select g from src except all select g from dim",
+            "select g from src intersect select g from dim",
+            "select g from src where exists (select 1 from dim where dim.g is not distinct from src.g)",
+            "select g from src where not exists (select 1 from dim where dim.g is not distinct from src.g)",
+        ] {
+            let ctx = SessionContext::new();
+            let table = || {
+                Arc::new(MemTable::try_new(schema(), vec![vec![]]).unwrap())
+                    as Arc<dyn datafusion::catalog::TableProvider>
+            };
+            ctx.register_table("src", table()).unwrap();
+            ctx.register_table("dim", table()).unwrap();
+            let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+            let optimized = ctx.state().optimize(&plan).unwrap();
+            eprintln!("PROBE {sql}\n{}\n", optimized.display_indent());
+        }
     }
 
     #[tokio::test]
@@ -1727,6 +2121,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_quantified_in_equivalents() {
+        // `= ANY` is `IN` (a semi join) and `<> ALL` / `!= ALL` is `NOT IN`
+        // (an anti join) by the SQL standard.
+        let analyzed = analyze_multi(
+            "select k from src where k = any (select k from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            anti, join_keys, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi/anti spec");
+        };
+        assert!(!anti);
+        assert_eq!(join_keys, vec!["k".to_string()]);
+
+        for sql in [
+            "select k from src where k <> all (select k from dim)",
+            "select k from src where k != all (select k from dim)",
+        ] {
+            let analyzed =
+                analyze_multi(sql, vec![source_table("src"), source_table("dim")])
+                    .await
+                    .unwrap();
+            let ViewSpec::SemiAnti { anti, .. } = analyzed.spec else {
+                panic!("expected a semi/anti spec");
+            };
+            assert!(anti, "{sql}");
+        }
+
+        // The remaining quantifiers are rewritten into EXISTS predicates and
+        // maintained as theta semi/anti joins (see
+        // `analyzes_quantified_comparisons`).
+        let analyzed = analyze_multi(
+            "select k from src where k > any (select k from dim)",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::SemiAnti { .. }));
+    }
+
+    #[tokio::test]
     async fn analyzes_multi_join() {
         let analyzed = analyze_optimized(
             "select a.k, a.g, b.g as bg, c.v as cv from src a \
@@ -1787,6 +2226,22 @@ mod tests {
                 },
             ]
         );
+
+        // Up to sixteen sources: nine aliases of the same table flatten into
+        // one multi-way join.
+        let mut sql = String::from("select t0.k");
+        for index in 1..9 {
+            sql.push_str(&format!(", t{index}.k as k{index}"));
+        }
+        sql.push_str(" from src t0");
+        for index in 1..9 {
+            sql.push_str(&format!(" join src t{index} on t{index}.k = t0.k"));
+        }
+        let analyzed = analyze_optimized(&sql).await.unwrap();
+        let ViewSpec::MultiJoin { sources, .. } = analyzed.spec else {
+            panic!("expected a multi join spec");
+        };
+        assert_eq!(sources.len(), 9);
         assert!(conditions.is_empty());
 
         // A cross-source condition and a side filter.
@@ -2573,6 +3028,7 @@ mod tests {
                 left_filter: None,
                 right_filter: None,
                 null_safe: false,
+                count_mode: false,
                 right_aggregate: None,
                 right_keys: Vec::new(),
                 match_predicate: None,
@@ -2607,6 +3063,7 @@ mod tests {
                 left_column: "v".to_string(),
                 right_column: "v".to_string(),
                 op: CompareOp::Gt,
+                is_not_true: false,
             }]
         );
     }

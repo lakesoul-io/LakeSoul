@@ -2848,6 +2848,208 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `oracle_join_key_expression_matches_full_recompute`（`a.k = b.k AND a.v + 1 = b.v`，随机更新
   翻转匹配）。全量 IVM 397 passed / 0 failed；fmt/clippy 干净。
 
+### 10.105 分析器覆盖小批：多源上限、混合 GROUPING SETS、HAVING 计算表达式（PR-99）
+
+- **多表 join 源上限 8 → 16**：`analyze_multi_join` 的硬限制提高（运行时本来与源数无关）；
+  新增 9 源分析器用例（同一表 9 个别名链式等值 join 展平成 9 源 MultiJoin）；README/限制清单
+  同步。
+- **GROUP BY 混合普通键与 GROUPING SETS/ROLLUP/CUBE**：核实 DataFusion 在规划期已把
+  `GROUP BY g, GROUPING SETS ((v), ())`、多个 `GROUPING SETS` 表达式、`g, ROLLUP(v), CUBE(k)`
+  等形态归一化成一个 `GroupingSet::GroupingSets`（叉积成员集）；原分析器的两条拒绝分支对
+  常规 SQL 不可达。本 PR 把分析器改为显式做叉积展开（`grouping_member_sets`，对未归一化
+  计划也正确），并补分析器断言（含规划器的成员集顺序）与 oracle
+  `oracle_grouping_sets_plain_keys_matches_full_recompute`。
+- **HAVING 计算表达式**：补 oracle `oracle_having_computed_matches_full_recompute`
+  （`HAVING SUM(v) * 2 > N`），确认既有 `render_having`/`rewrite_having` 路径端到端正确。
+- 全量 IVM 399 passed / 0 failed；fmt/clippy 干净。
+
+### 10.106 `= ANY` / `<> ALL` 量化比较归一化为 `IN` / `NOT IN`（PR-100，ROADMAP §B3）
+
+- **背景**：DataFusion 55 把量化比较表示为 `Expr::SetComparison`（`x op ANY/ALL (S)`），优化器将其计划成
+  **LeftMark Join**（过滤器里带 `Boolean(NULL)` 的 3VL 编码），IVM 分析器无法安全映射。
+- **能力**：SQL 标准定义 `x = ANY (S)` ≡ `x IN (S)`、`x <> ALL (S)` ≡ `x NOT IN (S)`。
+  新增 `sql::normalize_quantified_comparisons`（约 30 行）：在**优化前**对计划做表达式重写
+  （`Expr::SetComparison { Any, Eq }` / `{ All, NotEq }` → `Expr::InSubquery{negated}`），
+  executor 与测试 helper 均先归一化再 `optimize`；`analyze_select` 顶部也做一次（直接传原始计划
+  的调用方同样受益，优化过的计划是 no-op）。
+- **范围**：仅上述两个精确等价；`> ANY`、`> ALL` 等仍明确拒绝（mark join 语义，见 ROADMAP 待办）。
+  多列 `IN` 在 DataFusion 计划期就报错，与 IVM 无关。
+- **测试**：分析器用例（`= ANY` → semi；`<> ALL`/`!= ALL` → anti；`> ANY` 仍拒绝）；
+  oracle `oracle_quantified_in_equivalents_match_full_recompute`（definition 用 ANY/ALL、
+  reference 用 IN/NOT IN，多组共享键 seed + 随机更新）。全量 IVM 401 passed / 0 failed；fmt/clippy 干净。
+- **下一批（已勘查，未完成）**：
+  1. **`INTERSECT ALL`/`EXCEPT ALL` 计数放宽**（M）：左侧按 tuple 非唯一时输出 `min(count_l, count_r)` /
+     `max(count_l-count_r, 0)`；需在 `SemiAntiView` 增加计数模式（右侧 per-tuple `COUNT(*)`、
+     左侧 per-tuple rank，撤回按受影响 tuple 的全部左行重写），并补 schema helper 与测试。
+  2. **聚合之上的计算列**（S-M）：`SELECT g, SUM(v) * 2 AS s2 … GROUP BY g`；现被
+     `analyze_aggregate` 前拒。路径：路由到 MultiAgg general 路径并扩展「输出表达式」
+     （spec 增加 per-output 渲染表达式 + schema helper + 重算 SQL 追加表达式），
+     或给 SumCount 增加输出表达式列。需先定设计稿再实现。
+
+### 10.107 集合运算计数放宽与聚合之上的计算列（PR-101，ROADMAP §B5 / §B4）
+
+#### A. `INTERSECT ALL` / `EXCEPT ALL` 计数模式
+
+- **语义**：每个 join tuple 输出 `min(count_l, count_r)` 份（`INTERSECT ALL`）或
+  `max(count_l - count_r, 0)` 份（`EXCEPT ALL`）；左侧按左主键排序取 rank，
+  `rank <= count_r` / `rank > count_r` 决定该左行是否保留。
+- **计划判别**：`analyze_set_operation` 看到的只是 `LeftSemi/LeftAnti` +
+  `NullEqualsNull`。DataFusion 的 decorrelation 会把 `EXISTS ... IS NOT DISTINCT FROM`
+  的右键列限定到 `__correlated_sq_*` 子查询别名，集合运算不会，因此以
+  「右键列是否来自 `__correlated_sq_*`」区分：correlated → 成员语义（左侧重复合法，
+  每行独立判定，不再要求唯一）；非 correlated 且左侧非唯一 → `count_mode=true`；
+  distinct 变体（左侧被去重聚合包住）仍要求左侧在 join 列上唯一（否则会输出重复行）。
+- **运行时**：新增 `semi_count_qualifying`（SQL 实现）：左侧
+  `row_number() over (partition by 连接键 order by 左主键)`，右侧
+  `group by 连接键 count(*)`，两者 `IS NOT DISTINCT FROM` 左连接后按模式过滤出合格左主键。
+  刷新/重建的 matched 集合改用它，插入改走 `LeftSemi`；左侧增删会改变同 tuple 其余行的
+  rank，受影响集合扩展为「该 tuple 的全部左行 ∪ 左 delta 主键」（新增
+  `null_safe_semi_join` helper 按同名列做空安全 semi join）。
+- **物化**：输出列必须含左主键（MV 按行主键撤回）；分析器在 select 列表缺失时补隐藏主键列。
+- **重要发现**：DataFusion 55 自身把原始 `INTERSECT ALL`/`EXCEPT ALL` 执行为**成员判定**
+  （无计数），因此 oracle 的参考实现不能直接使用引擎的集合运算；新增
+  `tests/count_set_ops.rs`：用 Rust 独立计算标准计数，两种运算 × 12 轮随机增删改 +
+  重复组种子，与 MV 逐轮比对。
+- **测试**：分析器用例（`INTERSECT ALL`/`EXCEPT ALL` 计数模式与补主键；distinct 变体仍拒绝；
+  空安全谓词保持成员语义且接受重复左侧）。
+
+#### B. 聚合之上的计算列（MultiAgg 输出表达式）
+
+- **背景**：`SELECT g, SUM(v) * 2 AS s2 ... GROUP BY g` 原先在 `sql.rs` 直接拒绝。
+- **实现**：`analyze_aggregate` 在单族分派前新增路由——投影非 plain（且非 GROUPING SETS
+  形态、非 distinct 拆分）→ `analyze_computed_agg`：保留 `parse_multi_aggregates` 的全部原始
+  聚合列（HAVING 与计算表达式引用它们），再按投影顺序为每个计算表达式追加一列
+  （`call` = 渲染后的表达式，`column` = 别名，类型取投影 schema 字段）。**运行时零改动**：
+  MultiAgg 重算 SQL 的 `select keys, <call> as <column> ... group by keys` 天然支持表达式
+  （含全局聚合），spec/列名/schema helper 沿用。
+- **替换**：优化器把聚合输出保留为计划列（`Column("sum(src.v)")`、`Column("count(Int64(1))")`），
+  渲染前按聚合 schema 字段名替换为对应渲染调用；分组键表达式同样按 `group_exprs` 映射。
+- **拒绝**（明确报错）：计算输出缺别名；DISTINCT 拆分之上的计算列；子查询 / 窗口函数
+  （整结果集求值，不能按组重算）；无聚合的 distinct 投影（如
+  `select g, (select max(v) from src) from src group by g`）；GROUPING SETS 投影仅允许
+  `GROUPING()`/普通列（恢复 `is_grouping_projection` guard，防静默丢列）。
+- **测试**：分析器用例（spec 形状 `[sum_v, s2]`/`[sum_v, count, s2, c1]`、HAVING 映射
+  `sum_v > 10`、全局计算列、各类拒绝）+ 3 个 oracle（分组计算列、HAVING + 混合计算列、
+  全局计算列）。
+
+两部分合计：全量 IVM **408 passed / 0 failed**（`--test-threads=1`），
+`cargo fmt --all --check` 与 `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
+### 10.108 量化比较（`> ANY` / `> ALL` 等）重写为 EXISTS（PR-102，ROADMAP §B3）
+
+- **背景**：DataFusion 把非 `= ANY` / `<> ALL` 的量化比较计划成多层 LeftMark Join
+  （`Filter: mark OR mark AND NOT mark AND Boolean(NULL)` 的 3VL 编码），直接映射不可行。
+- **实现**：在优化前（`normalize_quantified_comparisons`）做结构化重写，构造方式与
+  DataFusion 自带 `RewriteSetComparison` 一致（`Expr::OuterReferenceColumn` + 子查询 filter）：
+  - `NOT (SetComparison)` → De Morgan 补算子反转（`>` ↔ `<=`、`Any` ↔ `All`）；
+  - `(Any, Eq)` → `IN`、`(All, NotEq)` → `NOT IN`（原有精确等价，保持更廉价的形态）；
+  - `(Any, op)` → `EXISTS(subquery WHERE x op y)`；
+  - `(All, op)` → `EXISTS(negated; subquery WHERE (x op y) IS NOT TRUE)`（anti）——
+    filter 语义下精确：空集为 TRUE、NULL 比较 unknown 会被过滤。
+  重写只在**谓词真值**等价成立的场合做；`NOT` 直接包住量化比较时用补算子消化，
+  更宽的 `NOT` / 析取留下的量化比较仍是 mark join → 分析器明确拒绝（不静默错译）。
+- **运行时**：新增 `SemiAntiCondition.is_not_true`（serde 默认 false）：
+  - 分析器把 `IS NOT TRUE(l op r)` 解析成该标志；theta semi/anti（仅条件、无等值键）
+    放宽「join without an equality key」，DataFusion 用 nested-loop semi/anti 计划；
+  - `semi_anti_join` 对 `is_not_true` 条件生成 `Expr::IsNotTrue`，且不再作为 hash key；
+  - 顺带修复既有缺口：`semi_anti_left_columns` 现在总是包含 join keys
+    （此前关联键不在输出列时读取投影缺列，关联量化比较会暴露）。
+- **测试**：分析器用例（ANY/ALL/complement/side filter/correlated、析取拒绝）；
+  oracle `oracle_quantified_comparisons_match_full_recompute`：7 组（`>` `>=` `<` `<=` 的
+  ANY/ALL 与 `NOT (...)`、相关子查询），nullable 值 + 每算子定制种子，参考实现用
+  DataFusion 原生量化比较（独立实现），10 轮随机增删改 + 重复执行幂等检查。
+  全量 IVM **410 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+- **下一批（本次未完成，已勘查）**：
+  1. **LeftAggregate 输出表达式**（S-M）：`(SELECT AGG(w) …) + 1` 的计划是
+     `Projection: __scalar_sq_1.max(d.v) + 1` 覆盖同一个 Left Join；只需
+     `ViewSpec::LeftAggregate` / `LeftAggregateView` 增加 `output_exprs`（渲染表达式 + MV 列）、
+     schema helper 与 refresh/rebuild 行构造追加表达式列（原始聚合值列保留为内部列）。
+  2. **空安全 outer join**（M）：join 状态表主键含 join key，NULL 需要 sentinel 编码
+     （spec → 状态表键 → 运行时匹配 → MV 身份列），单独 PR。
+  3. **HAVING 子查询**（S-M）：非相关子查询需要「聚合 join 聚合」双源依赖视图；
+     相关子查询优化成「聚合 ⋈ 按键盘聚合」的 LeftSemi + 过滤，需要新形状。
+
+### 10.109 LeftAggregate 输出表达式（PR-103，ROADMAP §B6）
+
+- **形状**：`SELECT s.k, (SELECT MAX(w) FROM dim u WHERE u.k = s.k) * 2 + 1 AS m FROM src s`
+  ——计划是 `Projection: __scalar_sq_1.max(u.w) * 2 + 1` 覆盖同一个 Left Join，
+  只是投影不再是普通列。
+- **实现**：`ViewSpec::LeftAggregate` / `LeftAggregateView` 增加
+  `output_exprs: Vec<LeftAggregateOutput { call, column, result }>`（serde 默认空）。
+  - 分析器：投影里引用右键列的计算表达式必须带标识符别名、且只能引用**唯一**的子查询值列
+    （引用左列的计算列拒绝），渲染时把右键列替换为 `IVM_RIGHT_AGG_COLUMN`
+    （`__ivm_right_agg`）；原生值列继续物化（select 列表没有它时命名为
+    `IVM_AGG_VALUE_COLUMN`（`__ivm_agg`））。
+  - 运行时：新增 `left_aggregate_row_exprs` 统一生成 insert/delete 投影：
+    insert = 左输出列 + 原生值 + `create_logical_expr(call)` 计算列；delete = 对应 MV 列名列表；
+    refresh/rebuild 两处共用。
+  - schema：新增 `left_aggregate_mv_schema_with_outputs`（旧 helper 委托，保持兼容），
+    executor 的 expected schema 与 `lib.rs` re-export 同步。
+- **测试**：分析器用例（computed-only 的 `__ivm_agg` 命名、普通值别名、缺别名/左列计算拒绝）、
+  oracle `oracle_left_aggregate_outputs_match_full_recompute`（`max * 2 + 1` 差分 oracle）。
+- **HAVING 子查询（3b，未实现）**：相关形态计划为
+  `LeftSemi(Aggregate(src), SubqueryAlias(Aggregate(dim)))` 与
+  `Filter: sum(src.v) > __scalar_sq_1.max(d.v)`；非相关形态为
+  `Filter(Aggregate(src), Subquery(Aggregate(dim)))`——视图会依赖第二个源，需要
+  「聚合 ⋈ 按键盘/全局聚合」的新形状与按第二源变更重算受影响组的刷新协议；
+  当前明确拒绝（新增 `rejects_having_subqueries` 固化，避免静默丢条件）。
+  全量 IVM **413 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
+### 10.110 HAVING 子查询：两视图模式支持（PR-104，ROADMAP §B6）
+
+- **背景**：单语句 `... GROUP BY g HAVING sum(v) > (SELECT …)` 不可维护：相关形态计划为
+  「聚合 ⋈ 按键盘聚合」的 `LeftSemi + Filter`，非相关形态为
+  `Filter(分组聚合, 全局子查询聚合)`——视图会依赖第二个源，需要新的
+  「聚合 ⋈ 按键盘/全局聚合」形状与按第二源变更重算受影响组的刷新协议。
+- **本轮能力**：用现有能力以**两视图模式**覆盖（README「HAVING subquery」条目）：
+  1. `mv1 = INSERT INTO mv1 SELECT g, SUM(v) AS sum_v FROM src GROUP BY g`
+     （SUM/COUNT 增量视图）；
+  2. 相关：`mv2 = INSERT INTO mv2 SELECT g, sum_v FROM mv1 WHERE sum_v >
+     (SELECT MAX(d.v) FROM dim d WHERE d.g = mv1.g)`——即既有「WHERE 相关标量子查询」
+     semi 视图（`right_aggregate` + `match_predicate`），左源是 keyed MV；
+  3. 非相关：`mv2 = INSERT INTO mv2 SELECT g, sum_v FROM mv1 WHERE sum_v >
+     (SELECT MAX(v) FROM dim)`——即既有「WHERE 非相关标量子查询」row 视图
+     （`RowScalarSpec` 监视子查询表）。
+  刷新按依赖顺序（`mv1` → `mv2`；view chain 编排同样适用）。
+- **拒绝提示**：单语句形态的错误信息现在指向两视图模式（`join_input` 的聚合左输入分支、
+  `validate_filter` 的子查询分支），`rejects_having_subqueries` 断言错误信息包含
+  "two views"。
+- **测试**：`tests/having_subquery_views.rs`：相关与非相关各 10 轮随机增删改（同时变更
+  src/dim），每轮依次刷新两个视图并与对两个 provider 的全量重算比对。
+- **单语句原生实现（未做）**：需要在 MultiAgg 重算引擎上引入第二源（窗口、cursors、
+  affected groups 的按键扩展/全组扩展、HAVING 与 lookup 值的 SQL 组装），或新增专用
+  view kind；待需求驱动。
+  全量 IVM **414 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
+### 10.111 单语句 HAVING 子查询（PR-105，ROADMAP §B6）
+
+- **形状**：`SELECT g, SUM(v) FROM src GROUP BY g HAVING SUM(v) >
+  (SELECT MAX(d.v) FROM dim d WHERE d.g = src.g)`（相关）与
+  `... HAVING SUM(v) > (SELECT MAX(v) FROM dim)`（非相关），含全局聚合语句。
+- **实现**：`ViewSpec::MultiAgg` / `MultiAggView` 增加可选 `having_lookup`
+  （`HavingLookupSpec`：表、渲染聚合、`join_keys`/`right_keys`、列名、filter）：
+  - 分析器：`analyze_aggregate` 检测 HAVING 中的标量子查询 →
+    `having_subquery_source`（全局聚合）；`analyze_join` 在左输入是聚合、右输入是
+    按键盘聚合且 `LeftSemi` 时 → `analyze_having_join`（相关形态；`join_keys` 映射到
+    物化组键名，支持组键别名）。谓词重写：子查询/限定列 → `__ivm_lookup`、
+    聚合调用 → MV 列（`render_multi_agg_having` 增加 `extra_columns` 放行 lookup 列）。
+  - 运行时（`RecomputeParts.lookup`）：lookup 源与主源一起 collect 窗口/游标；
+    `group_now` 左连接（相关）或交叉连接（全局）lookup 聚合，HAVING 在 lookup 列
+    可见处过滤；相关形态把 lookup delta 投影到组键名并并入受影响组，全局形态在
+    lookup 变化时受影响组=全部当前组；rebuild 同样注册 lookup。9 个
+    `RecomputeParts` 构造点补 `lookup: None`。
+  - 校验：lookup 列不得与物化列冲突、左右键类型一致；`validate_recompute_view`
+    把 lookup 列加入 HAVING 的解析 schema。
+- **测试**：分析器（全局/相关/组键别名/拒绝：非组键相关、嵌套子查询）；
+  oracle `oracle_having_subquery_matches_full_recompute`（两种形态 × 随机增删改，
+  参考用 DataFusion 原生的 HAVING 子查询求值）。
+- **两视图模式（PR-104）**继续保留：`tests/having_subquery_views.rs` 覆盖。
+  全量 IVM **416 passed / 0 failed**（`--test-threads=1`），`cargo fmt --all --check` 与
+  `cargo clippy -p lakesoul-ivm --all-targets` 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

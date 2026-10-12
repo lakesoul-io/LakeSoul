@@ -1,31 +1,37 @@
 use crate::error::Result;
 use crate::runtime::{
     BoolAggKind, CompareOp, ComputedAggArg, ComputedAggResult, DistinctAggKind,
-    GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_MEDIAN_COLUMN,
+    GroupingColumn, HavingLookupSpec, IVM_AGG_VALUE_COLUMN, IVM_AVG_COLUMN,
+    IVM_COUNT_COLUMN, IVM_HAVING_LOOKUP_COLUMN, IVM_MEDIAN_COLUMN,
     IVM_NONNULL_COUNT_COLUMN, IVM_RIGHT_AGG_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    JoinKeyExprs, JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainSource,
-    LookupChainStep, MinMaxKind, MultiAggSpec, MultiJoinColumn, MultiJoinCondition,
-    MultiJoinKey, MultiJoinSource, RowScalarSpec, ScalarTableSpec, SemiAntiCondition,
-    UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn, WindowFunction,
-    WindowGroupSpec, approx_distinct_output_column, approx_percentile_output_column,
-    bool_agg_output_column, encode_data_type, join_condition_column_name,
-    join_key_expression_name, string_agg_output_column, union_output_schema_for,
-    wide_pair_alias,
+    JoinKeyExprs, JoinOutputColumn, JoinSide, LeftAggregateOutput, LookupChainColumn,
+    LookupChainSource, LookupChainStep, MinMaxKind, MultiAggSpec, MultiJoinColumn,
+    MultiJoinCondition, MultiJoinKey, MultiJoinSource, RowScalarSpec, ScalarTableSpec,
+    SemiAntiCondition, UnionSourceSpec, VarianceKind, ViewSpec, WindowColumn,
+    WindowFunction, WindowGroupSpec, approx_distinct_output_column,
+    approx_percentile_output_column, bool_agg_output_column, encode_data_type,
+    join_condition_column_name, join_key_expression_name, string_agg_output_column,
+    union_output_schema_for, wide_pair_alias,
 };
 use crate::table::IvmTable;
 use arrow_schema::{DataType, Schema};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue, TableReference};
+use datafusion::common::{
+    Column, DFSchema, ExprSchema, NullEquality, ScalarValue, TableReference,
+};
+use datafusion::logical_expr::expr::SetQuantifier;
 use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatment};
-use datafusion::logical_expr::utils::split_conjunction;
+use datafusion::logical_expr::expr::{BinaryExpr, Exists, InSubquery, SetComparison};
+use datafusion::logical_expr::utils::{merge_schema, split_conjunction};
 use datafusion::logical_expr::{
-    Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, Operator, Projection,
-    SortExpr, Subquery, Union, Window, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
+    Aggregate, Distinct, Expr, Filter, Join, JoinType, LogicalPlan, LogicalPlanBuilder,
+    Operator, Projection, SortExpr, Subquery, Union, Window, WindowFrame,
+    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::Unparser;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 mod aggregates;
 mod joins;
@@ -85,6 +91,11 @@ pub fn analyze_select(
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<AnalyzedView> {
+    // `x = ANY (S)` is `x IN (S)` and `x <> ALL (S)` is `x NOT IN (S)` by the
+    // SQL standard; normalizing them before planning makes DataFusion plan the
+    // semi/anti joins the analyzer models instead of mark joins.
+    let plan = normalize_quantified_comparisons(plan)?;
+    let plan = &plan;
     // Incremental views need keyed sources: the refresh folds the changelog
     // through merge-on-read and retracts by key.  Append-only sources (with or
     // without a change column) are rejected explicitly.
@@ -103,18 +114,9 @@ pub fn analyze_select(
     let spec = match plan {
         LogicalPlan::Projection(projection) => match peel(&projection.input) {
             LogicalPlan::Aggregate(aggregate) => {
-                // A `GROUPING()` column is a computed column over the grouping
-                // sets, which the grouping-sets analyzer materializes.
-                let grouping_projection = aggregate
-                    .group_expr
-                    .iter()
-                    .any(|expr| matches!(strip_alias(expr), Expr::GroupingSet(_)))
-                    && is_grouping_projection(projection);
-                if !is_plain_projection(projection) && !grouping_projection {
-                    return Err(unsupported(
-                        "computed columns above an aggregate are not supported",
-                    ));
-                }
+                // Computed columns above the aggregate (a `GROUPING()` column
+                // or an expression over the aggregate outputs) are materialized
+                // by the aggregate analyzers.
                 analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
             }
             LogicalPlan::Sort(sort) => {
@@ -143,15 +145,6 @@ pub fn analyze_select(
                 // `HAVING` is one or more filters directly above the
                 // aggregate; a filter on a window rank column is top-k.
                 if let Some((aggregate, having)) = having_aggregate(&projection.input) {
-                    let grouping_projection =
-                        aggregate.group_expr.iter().any(|expr| {
-                            matches!(strip_alias(expr), Expr::GroupingSet(_))
-                        }) && is_grouping_projection(projection);
-                    if !is_plain_projection(projection) && !grouping_projection {
-                        return Err(unsupported(
-                            "computed columns above an aggregate are not supported",
-                        ));
-                    }
                     analyze_aggregate(
                         aggregate,
                         Some(projection),
@@ -307,6 +300,155 @@ fn render_filter(expr: &Expr) -> Result<String> {
 }
 /// Render an expression to SQL over unqualified columns, for the runtime to
 /// parse back (aggregate calls and join predicates included).
+/// Rewrite the quantified comparisons into the maintained semi/anti shapes.
+///
+/// `x = ANY (S)` is exactly `x IN (S)` and `x <> ALL (S)` is exactly
+/// `x NOT IN (S)`, so those keep the cheaper `IN` forms.  The remaining
+/// quantifiers are rewritten into `EXISTS` predicates whose filter sees the
+/// comparison truth: `x op ANY (S)` keeps a left row exactly when some right
+/// row satisfies `x op y`, and `x op ALL (S)` exactly when no right row makes
+/// `x op y` false or unknown.  A `NOT` directly above a quantifier is pushed
+/// into it with the complementary operator (`NOT (x op ANY S)` is
+/// `x complement(op) ALL S`), so a quantifier below a wider `NOT` keeps its
+/// mark-join plan and is rejected by the analyzer rather than mistranslated.
+pub(crate) fn normalize_quantified_comparisons(
+    plan: &LogicalPlan,
+) -> Result<LogicalPlan> {
+    plan.clone()
+        .transform_down(|node| {
+            // The expressions of a node resolve against its inputs.
+            let schema = merge_schema(&node.inputs());
+            node.map_expressions(|expr| {
+                expr.transform_down(|expr| {
+                    rewrite_set_comparison(expr, &schema).map_err(|error| {
+                        datafusion::error::DataFusionError::Plan(error.to_string())
+                    })
+                })
+            })
+        })
+        .map(|transformed| transformed.data)
+        .map_err(|error| {
+            unsupported(format!("normalize quantified comparisons: {error}"))
+        })
+}
+
+/// The complementary operator: `NOT (x op y)` is `x complement(op) y`.
+fn complement_operator(op: Operator) -> Result<Operator> {
+    Ok(match op {
+        Operator::Eq => Operator::NotEq,
+        Operator::NotEq => Operator::Eq,
+        Operator::Lt => Operator::GtEq,
+        Operator::LtEq => Operator::Gt,
+        Operator::Gt => Operator::LtEq,
+        Operator::GtEq => Operator::Lt,
+        other => {
+            return Err(unsupported(format!("quantified comparison {other}")));
+        }
+    })
+}
+
+fn rewrite_set_comparison(
+    expr: Expr,
+    outer_schema: &DFSchema,
+) -> Result<Transformed<Expr>> {
+    match expr {
+        Expr::Not(inner) if matches!(inner.as_ref(), Expr::SetComparison(_)) => {
+            let Expr::SetComparison(comparison) = *inner else {
+                unreachable!("the guard checked the variant");
+            };
+            let comparison = SetComparison {
+                quantifier: match comparison.quantifier {
+                    SetQuantifier::Any => SetQuantifier::All,
+                    SetQuantifier::All => SetQuantifier::Any,
+                },
+                op: complement_operator(comparison.op)?,
+                ..comparison
+            };
+            Ok(Transformed::yes(build_set_comparison(
+                comparison,
+                outer_schema,
+            )?))
+        }
+        Expr::SetComparison(comparison) => Ok(Transformed::yes(build_set_comparison(
+            comparison,
+            outer_schema,
+        )?)),
+        other => Ok(Transformed::no(other)),
+    }
+}
+
+fn build_set_comparison(
+    comparison: SetComparison,
+    outer_schema: &DFSchema,
+) -> Result<Expr> {
+    let SetComparison {
+        expr,
+        subquery,
+        op,
+        quantifier,
+    } = comparison;
+    match (quantifier, op) {
+        (SetQuantifier::Any, Operator::Eq) => {
+            return Ok(Expr::InSubquery(InSubquery::new(expr, subquery, false)));
+        }
+        (SetQuantifier::All, Operator::NotEq) => {
+            return Ok(Expr::InSubquery(InSubquery::new(expr, subquery, true)));
+        }
+        _ => {}
+    }
+    let left = to_outer_reference(*expr, outer_schema)?;
+    let subquery_schema = subquery.subquery.schema();
+    if subquery_schema.fields().is_empty() {
+        return Err(unsupported(
+            "a quantified comparison needs a single subquery column",
+        ));
+    }
+    let right = Expr::Column(Column::from(subquery_schema.qualified_field(0)));
+    let comparison =
+        Expr::BinaryExpr(BinaryExpr::new(Box::new(left), op, Box::new(right)));
+    // The EXISTS filter holds where the comparison is true (`ANY`) or where
+    // no row makes it false or unknown (`ALL`, as an anti join).
+    let (filter, negated) = match quantifier {
+        SetQuantifier::Any => (comparison, false),
+        SetQuantifier::All => (Expr::IsNotTrue(Box::new(comparison)), true),
+    };
+    let plan = LogicalPlanBuilder::from(subquery.subquery.as_ref().clone())
+        .filter(filter)?
+        .build()?;
+    let outer_ref_columns = plan.all_out_ref_exprs();
+    Ok(Expr::Exists(Exists {
+        subquery: Subquery {
+            subquery: Arc::new(plan),
+            outer_ref_columns,
+            spans: subquery.spans,
+        },
+        negated,
+    }))
+}
+
+/// Mark every outer column of a quantified comparison's left expression, so
+/// the subquery can reference it (the same form DataFusion's own
+/// `RewriteSetComparison` rule builds).
+fn to_outer_reference(expr: Expr, outer_schema: &DFSchema) -> Result<Expr> {
+    expr.transform_up(|expr| match expr {
+        Expr::Column(column) => {
+            let field = outer_schema.field_from_column(&column).map_err(|error| {
+                datafusion::error::DataFusionError::Plan(format!(
+                    "quantified comparison {error}"
+                ))
+            })?;
+            Ok(Transformed::yes(Expr::OuterReferenceColumn(
+                Arc::clone(field),
+                column,
+            )))
+        }
+        Expr::OuterReferenceColumn(_, _) => Ok(Transformed::no(expr)),
+        other => Ok(Transformed::no(other)),
+    })
+    .map(|transformed| transformed.data)
+    .map_err(|error| unsupported(format!("quantified comparison {error}")))
+}
+
 fn render_expression(expr: &Expr) -> Result<String> {
     let stripped = strip_relations(expr.clone())?;
     let ast = Unparser::default()
@@ -327,11 +469,18 @@ fn strip_relations(expr: Expr) -> Result<Expr> {
 fn validate_filter(expr: &Expr) -> Result<()> {
     expr.apply(|node| {
         match node {
+            Expr::ScalarSubquery(_) => {
+                return Err(datafusion::error::DataFusionError::Plan(
+                    "a filter may not contain a subquery; a HAVING subquery \
+                     needs two views: group the source in one view, then \
+                     filter it against the subquery in a second view"
+                        .to_string(),
+                ));
+            }
             Expr::AggregateFunction(_)
             | Expr::WindowFunction(_)
             | Expr::Exists { .. }
-            | Expr::InSubquery(_)
-            | Expr::ScalarSubquery(_) => {
+            | Expr::InSubquery(_) => {
                 return Err(datafusion::error::DataFusionError::Plan(
                     "filters may not contain aggregates, windows or subqueries"
                         .to_string(),
