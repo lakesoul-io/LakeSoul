@@ -3204,6 +3204,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   “A GROUP BY clause in a scalar correlated subquery cannot contain non-correlated columns”，
   IVM 侧无需处理（多行标量子查询本身非法）。
 
+### 10.115 Decimal 溢出的 SUM/AVG 防护
+
+- 探测（DataFusion 53.1）：`SUM(DECIMAL(38, 0))` 两行最大值相加返回 **负数**
+  （约 `-1.4e38`）——accumulator 静默回绕、不报错；返回类型 `min(38, p+10)` 在精度大时
+  没有余量；AVG 走同一累加路径（`min(38, p+4)`）。
+- 处置：分析器 `validate_decimal_accumulators`（`sql/aggregates.rs`）对
+  `SUM` 精度 `p + 10 > 38`、`AVG` 精度 `p + 4 > 38`（Decimal128；Decimal256 对应 76）
+  明确拒绝，错误信息给出「使用更小精度」的建议；调用点覆盖主聚合分析、
+  非相关/相关 HAVING 子查询、相关标量子查询（WHERE）与 select-list 相关标量子查询。
+- 测试：分析器用例（SUM 38/29 拒绝、28/20 通过；AVG 35 拒绝、34 通过；
+  相关子查询 `sum(DECIMAL(38, s))` 拒绝）。
+- 后续：若需真正支持，可在运行时以 Decimal256 累加并安全回写（需先核实 DataFusion 的
+  CAST 溢出行为），或引入分段求和；嵌套类型（List/Struct）仍是独立的 L 项。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

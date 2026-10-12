@@ -479,6 +479,11 @@ the backlog):
   over an aggregate / window / join result (two chained views), computed
   select-list columns above the limit, and a select list that omits the
   source primary keys (the top-k rows are identified by them);
+* a decimal `SUM`/`AVG` whose precision leaves no headroom for the
+  accumulator: DataFusion saturates the result type at 38 digits
+  (`SUM(DECIMAL(p, s))` is `DECIMAL(min(38, p + 10), s)`) and wraps the
+  accumulator silently on overflow, so a source precision above 28 (`AVG`
+  above 34) is rejected instead of maintaining a wrong value;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY` over columns other than its correlated keys (DataFusion's
   own analyzer rejects those), several aggregates, a select-list `COUNT`
