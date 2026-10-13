@@ -246,8 +246,12 @@ def _is_compatible_daft_type(
 
 
 def _list_value_type(dtype: pa.DataType) -> pa.DataType | None:
-    """Value type of regular/large lists; Daft emits large lists for ``list``."""
-    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+    """List element type; safe casting validates fixed-size lengths later."""
+    if (
+        pa.types.is_list(dtype)
+        or pa.types.is_large_list(dtype)
+        or pa.types.is_fixed_size_list(dtype)
+    ):
         return dtype.value_type
     return None
 
