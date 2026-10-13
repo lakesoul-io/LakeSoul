@@ -490,9 +490,13 @@ metadata records the fallback mode and its reason.
 | `lakesoul_ivm_rebuilds_total` | `kind` | full rebuilds |
 | `lakesoul_ivm_rebuild_duration_seconds` | `kind` | rebuild duration |
 | `lakesoul_ivm_epochs_total` | `kind` | committed epochs |
+| `lakesoul_ivm_fallbacks_total` | — | Tier-2 fallback recomputes |
+| `lakesoul_ivm_fallback_rows` | — | rows written by fallback recomputes (a cost proxy) |
 
 The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
-`union_distinct`, ...); view and table ids are never used as labels.
+`union_distinct`, ...); view and table ids are never used as labels.  A
+fallback view's kind is `fallback`, so its refreshes and rebuilds are also
+visible per view kind.
 
 ## Rust API
 
