@@ -146,11 +146,11 @@ cross:
 
 # Create the test_tables fixtures: 1M synthetic rows + full TPC-H SF 0.1.
 test-tables:
-    ./postgres-lakesoul/test_tables.sh 
+    ./postgres-lakesoul/test_tables.sh
 
 # Larger fixtures: 10M synthetic rows + full TPC-H SF 1.
 test-tables-large:
-    ROWS=10000000 SF=1 ./postgres-lakesoul/test_tables.sh 
+    ROWS=10000000 SF=1 ./postgres-lakesoul/test_tables.sh
 
 # Same fixtures on S3 (RustFS); the warehouse prefix overrides the LOCATION clauses.
 test-tables-s3:
