@@ -104,6 +104,10 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 ### B2. 组合类（P0，机制已具备，缺编排）——编排已实现（opt-in：`refresh_view_chain` + 语句开关，PLAN §10.99，PR-93）
 
+下列形状的**增量**维护边界见各行说明；自 PLAN §10.123 起，未增量维护的形状默认由
+**Tier-2 全量回退**兜底（§B10），只有显式关闭回退（`lakesoul.ivm.allow_fallback=false`）
+或 MV schema 与语句输出不匹配时才报错。
+
 `tests/cascading_views.rs` 已证明：下游视图把上游 MV 当普通 keyed 源（`rowKinds` 当变更列、
 墓碑照常过滤），**调用方按拓扑序刷新**即可。因此下列单语句形状虽被分析器拒绝，但拆两段
 视图即可增量维护：
@@ -180,6 +184,13 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 ---
 
+### B10. 两层刷新契约（Tier-2 全量回退）（P0，已实现）
+
+| 形状 | 难度 | 说明 |
+|---|---|---|
+| 未增量维护的形状默认全量重算 | **M** | ✅ 已实现（PLAN §10.123）：分析器拒绝（`UnsupportedShape` 标记）→ 执行器注册 `ViewSpec::Fallback{statement,tables,reason}`；刷新先看各源变更窗口（全无变化即 no-op），有变化则**先在内存算出结果**、再 truncate + 按 epoch 写回（`rowKinds`/`__ivm_epoch`）；`action=Fallback`、metrics label、`list_views` 的 `fallback/fallback_reason` 均可见；无主键 MV 允许（append-only 全量替换），有主键则校验结果唯一（重复主键明确拒绝）；`with_allow_fallback(false)`/表属性 `lakesoul.ivm.allow_fallback=false` 恢复严格拒绝；Tier-1 视图不得读 fallback 视图（`ensure_incremental_upstreams`）|
+| 增量能力补齐（RIGHT/FULL 链、嵌套类型、多窗口链…） | — | 变为**性能优化**：可用性已由 Tier-2 保证，按价值逐项增量实现 |
+
 ## C. 执行顺序（建议）
 
 1. **P0（小步，正确性）**：A1 MV 主键存在性校验 → A2 CDC 契约测试 → A3 非契约源策略。
@@ -190,8 +201,9 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
    → B5 INTERSECT/EXCEPT ALL + B4 聚合之上的计算列（✅ PR-101）→ 其余量化比较
    （✅ PR-102，含 theta semi/anti 与 `IS NOT TRUE` 条件）。
 4. **P2**：B4/B6/B7/B8 按需求；B3 的 >8 源随手做（✅ PR-99）；其余量化比较待专门映射。
-5. 若某类形状长期不做，纳入「两层刷新契约（Tier-2 全量回退）」的覆盖范围
-   （设计见 `ivm-tier1-tier2-refresh-contract.md`），保证用户 SQL 可用、只是非增量。
+5. ✅ 已落地：未增量维护的形状纳入「两层刷新契约（Tier-2 全量回退）」
+   （设计见 `ivm-tier1-tier2-refresh-contract.md`，实现见 PLAN §10.123 与 §B10），
+   用户 SQL 可用、只是非增量；增量能力继续按价值补齐。
 
 ## D. 验收与流程
 

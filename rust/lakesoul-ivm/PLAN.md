@@ -3343,6 +3343,32 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   DISTINCT 形态——WHERE `sum/avg(DISTINCT)`、select-list `sum/avg/count(DISTINCT)`——均报含
   “DISTINCT” 的明确错误）。
 
+### 10.123 两层刷新契约：Tier-2 全量回退（ROADMAP §B10）
+
+- **判定**：`sql.rs::unsupported()` 在每条形状拒绝上附加 `UnsupportedShape` 标记；执行器仅在
+  “分析失败 + 该标记 + 目标表 `allow_fallback`（表属性 `lakesoul.ivm.allow_fallback`，默认 true）”
+  时进入 Tier-2——planning/optimize/schema/契约错误保持致命。
+  `IvmTableOptions::with_allow_fallback(false)` 恢复严格拒绝。
+- **注册**：`ViewSpec::Fallback { view_id, statement, tables, reason, mv_table_id }`（`kind` 标签
+  `fallback`；定义哈希为语句 identity，`reason` 在哈希前清空）；MV schema = **已规划语句**的输出
+  + `rowKinds`/`__ivm_epoch`（因此 `expected_mv_schema` 对 fallback 报错，由执行器单独校验）；
+  schema 不匹配时错误附带拒绝原因，用户仍能看到形状为何不被增量维护。分析失败前已物化的派生步
+  被 `drop_stale_derived(0)` 清理，其表 id 也不进入 fallback 的来源列表。
+- **运行时**（`runtime/fallback.rs`）：`refresh_fallback` 逐源 `collect_source_window`，全空即
+  `Ok(None)`（幂等 no-op）；否则 `begin_window`（同窗口重放走 `AlreadyApplied`）→ 在内存执行语句
+  （`table_provider` = 当前合并态；表按 `name` 与 `ns.name` 双注册）→ 主键唯一性校验（MemTable +
+  `group by … having count(*)>1`）→ `truncate` → 追加 `'insert' as "rowKinds"`（**加引号**，SQL 会把
+  未引用的 `rowKinds` 小写化成 `rowkinds`，写入器按精确列名查找）与 epoch 列 → `mark_epoch_committed`
+  + 推进游标。`rebuild_fallback` 同实现但走 `source_baseline` + 新 generation。结果先算后 truncate，
+  失败不破坏上次状态。
+- **链与可见性**：`ensure_incremental_upstreams` 在 `refresh_spec`/`rebuild_spec` 校验来源视图不含
+  fallback（fallback 重写 MV，下游增量看不到它删掉的行；fallback 视图之间可互相读取）；
+  `IvmExecutionAction::Fallback`、`action="fallback"` 指标、`list_views` 新增
+  `fallback`/`fallback_reason`（`spec->>'kind' = 'fallback'`，因 spec 是内部标签 JSON）。
+- **测试**：`tests/fallback_views.rs` 6 例：LIMIT+OFFSET 形状 bootstrap/删除/新增/无变化 no-op +
+  `list_views` 元数据、append-only MV 保留重复行、带主键 MV 重复主键明确拒绝、`allow_fallback=false`
+  恢复拒绝、坏语句仍致命、Tier-1 读 fallback 明确拒绝。全量 IVM 套件 **458 passed / 0 failed**。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

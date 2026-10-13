@@ -69,6 +69,11 @@ pub struct IvmTable {
     pub cdc_column: Option<String>,
     /// The physical file format of the table.
     pub file_format: PhysicalFormat,
+    /// Whether a statement shape the incremental analyzer cannot maintain
+    /// falls back to a full recompute (Tier-2) instead of being rejected.
+    /// Persisted as the `lakesoul.ivm.allow_fallback` table property and true
+    /// by default.
+    pub allow_fallback: bool,
 }
 
 /// The data files of one storage partition of a table.
@@ -134,6 +139,9 @@ pub struct IvmTableOptions {
     /// The physical file format of the table (parquet by default; vortex
     /// enables the row-level primary-key locator).
     pub file_format: PhysicalFormat,
+    /// Whether an unsupported statement shape falls back to a full recompute
+    /// (Tier-2) instead of being rejected.
+    pub allow_fallback: bool,
 }
 
 impl IvmTableOptions {
@@ -154,6 +162,7 @@ impl IvmTableOptions {
             hash_bucket_num: "4".to_string(),
             cdc_column: None,
             file_format: PhysicalFormat::Parquet,
+            allow_fallback: true,
         }
     }
 
@@ -195,6 +204,13 @@ impl IvmTableOptions {
         self.file_format = file_format;
         self
     }
+
+    /// Disable the Tier-2 full-recompute fallback for the table: an
+    /// unsupported statement shape is then rejected as before.
+    pub fn with_allow_fallback(mut self, allow_fallback: bool) -> Self {
+        self.allow_fallback = allow_fallback;
+        self
+    }
 }
 
 /// Create an internal LakeSoul table.
@@ -211,6 +227,8 @@ pub async fn create_ivm_table(
         properties["lakesoul.ivm.bucket_columns"] =
             serde_json::Value::String(options.bucket_columns.join(","));
     }
+    properties["lakesoul.ivm.allow_fallback"] =
+        serde_json::Value::Bool(options.allow_fallback);
     if let Some(cdc_column) = &options.cdc_column {
         if options.schema.field_with_name(cdc_column).is_err() {
             return Err(rootcause::report!(
@@ -266,6 +284,7 @@ pub async fn create_ivm_table(
         hash_bucket_num: options.hash_bucket_num,
         cdc_column: options.cdc_column,
         file_format: options.file_format,
+        allow_fallback: options.allow_fallback,
     })
 }
 
@@ -333,6 +352,10 @@ impl IvmTable {
             .and_then(|value| value.as_str())
             .and_then(|name| name.parse::<PhysicalFormat>().ok())
             .unwrap_or_default();
+        let allow_fallback = properties
+            .get("lakesoul.ivm.allow_fallback")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
         Ok(Self {
             table_id: info.table_id.clone(),
             table_name: info.table_name.clone(),
@@ -345,6 +368,7 @@ impl IvmTable {
             hash_bucket_num,
             cdc_column,
             file_format,
+            allow_fallback,
         })
     }
 

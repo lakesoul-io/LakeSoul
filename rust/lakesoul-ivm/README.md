@@ -48,7 +48,9 @@ Ordinary SQL execution is untouched; callers opt in by going through
 ## Supported query shapes
 
 Every source is keyed (a LakeSoul primary key, i.e. upsert semantics);
-append-only sources are rejected (see [Sources](#sources)). Aggregates and
+append-only sources are rejected (see [Sources](#sources)) — unless the
+statement falls back to a full recompute (Tier-2, see
+[Refresh semantics](#refresh-semantics)). Aggregates and
 windows follow SQL NULL semantics; primary keys
 used as row identities must be non-nullable.
 
@@ -436,12 +438,32 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
   through `requires_rebuild`.
 * One writer per view: refreshes of the same view serialize through the epoch
   protocol.
+* **Two-tier refresh contract**: a statement whose shape the incremental
+  analyzer does not maintain defines a **fallback** view instead of being
+  rejected — the whole statement is recomputed on every refresh (the result
+  is exactly the full recompute over the current source state) and the
+  execution reports `IvmExecutionAction::Fallback` (`action = "fallback"` in
+  the metrics; `list_views` marks the view and carries the rejection reason).
+  A fallback refresh first collects the change windows of every source: when
+  none changed it is a no-op, otherwise the statement runs against the current
+  state, the MV is truncated and the result is written in one epoch.  The
+  result is computed before the MV is touched, so a failing statement leaves
+  the previous state in place.  A fallback MV may be **append-only**; when it
+  declares primary keys the result must be unique on them (a repeated key
+  would be collapsed by merge-on-read) and a violation is reported
+  explicitly.  Create the target with `with_allow_fallback(false)` to keep
+  the strict behavior (unsupported shapes are then rejected, as before), and
+  note that a Tier-1 view must not read a fallback view: the fallback rewrites
+  its MV, so a downstream incremental refresh cannot see what it removed.
 
 ## Observability
 
 The runtime and the SQL entry emit [`metrics`](https://docs.rs/metrics)
 counters and histograms, so any recorder (for example the Prometheus exporter
 used by the IO layer) can export them:
+A fallback refresh is visible as `action="fallback"` on the statement
+counter and `kind="fallback"` on the refresh/rebuild counters, and the view
+metadata records the fallback mode and its reason.
 
 | Metric | Labels | Meaning |
 |---|---|---|
@@ -487,8 +509,14 @@ source state.
 
 ## Limitations
 
-The following shapes are currently rejected (see [PLAN.md](PLAN.md) §10.5 for
-the backlog):
+The following shapes are **not maintained incrementally**.  By default a
+statement of such a shape still defines the view: the executor recomputes it
+in full on every refresh (Tier-2, see
+[Refresh semantics](#refresh-semantics)) and the analyzer's rejection becomes
+the fallback reason.  Create the target with `with_allow_fallback(false)`
+(the `lakesoul.ivm.allow_fallback = false` table property) to have the shapes
+rejected outright; the notes below describe the incremental analyzer's
+boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 
 * computed equality keys outside the two-source inner join (a lookup, outer,
   multi-way or chain join whose key is an expression); a non-equality
