@@ -213,18 +213,19 @@ Supported within the shapes above:
   maintained by materializing the subplan as an internal derived view (named
   `<target>__ivm_step0`, marked `lakesoul.ivm.internal`, registered as a view
   under its table id).  The materialized steps are an inner **join** (for an
-  aggregate / DISTINCT / window / TOP-K / UNION reading it) and a
-  **sum/count/avg aggregate** (for an aggregate, window or TOP-K reading it):
-  the statement is rewritten to read the derived MV (a compact join widens
-  its payloads to the subplan's column names, and an aggregate step's
-  materialized columns such as `sum_v` are mapped back to the subplan output
-  they replace), the step refreshes before the statement through the same
-  orchestration (so the chain includes it and `refresh_view_chain` advances
-  both), and a changed definition reuses the step table or drops it when the
-  definition shrinks.  The remaining step kinds (a window, a union, a
-  `MIN`/`MAX` or `DISTINCT` aggregate, which would also need their own state
-  tables) and a derived view that would not expose a subplan column stay
-  rejected with a message pointing at explicit views;
+  aggregate / DISTINCT / window / TOP-K / UNION reading it), a
+  **sum/count/avg aggregate**, and a **`MIN`/`MAX` or `DISTINCT` aggregate**
+  (the value-count layouts; their step state tables are created next to the
+  step MV).  The statement is rewritten to read the derived MV (a compact
+  join widens its payloads to the subplan's column names, and an aggregate
+  step's materialized columns such as `sum_v` or `value` are mapped back to
+  the subplan output they replace by renaming the plan's column references),
+  the step refreshes before the statement through the same orchestration (so
+  the chain includes it and `refresh_view_chain` advances both), and a
+  changed definition reuses the step table or drops it when the definition
+  shrinks.  The remaining step kinds (a window, a union, a mixed aggregate)
+  and a derived view that would not expose a subplan column stay rejected
+  with a message pointing at explicit views;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
