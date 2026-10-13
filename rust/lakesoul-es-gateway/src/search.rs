@@ -2214,6 +2214,9 @@ async fn collect_vector_candidates(
                             query,
                             top_k,
                             nprobe,
+                            // The gateway serves many concurrent searches from
+                            // one thread pool; keep each search sequential.
+                            1,
                             expected_key_kind,
                         )
                         .await

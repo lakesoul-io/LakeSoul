@@ -58,12 +58,14 @@ pub struct VectorHit {
 /// `expected_key_kind` (or its header cannot be read), i.e. the search
 /// results could not be turned into row lookups; the caller then scans
 /// normally instead of narrowing.
+#[allow(clippy::too_many_arguments)]
 pub async fn search_resolved_shard(
     store: &Arc<dyn ObjectStore>,
     resolved: &ResolvedIndex,
     query: &[f32],
     top_k: usize,
     nprobe: usize,
+    parallelism: usize,
     expected_key_kind: u64,
 ) -> IoResult<Option<Vec<VectorHit>>> {
     if !resolved.is_kind(IndexKind::Vector) {
@@ -122,8 +124,15 @@ pub async fn search_resolved_shard(
                 e
             )
         })?;
-    search_loaded_index(&entry.index, &resolved.index_prefix, query, top_k, nprobe)
-        .map(Some)
+    search_loaded_index(
+        &entry.index,
+        &resolved.index_prefix,
+        query,
+        top_k,
+        nprobe,
+        parallelism,
+    )
+    .map(Some)
 }
 
 /// Search the vector index matching a single bucket's files.
@@ -142,6 +151,7 @@ pub async fn search_matching_shards(
     query: &[f32],
     top_k: usize,
     nprobe: usize,
+    parallelism: usize,
     metric: Metric,
     resolved_shards: &[ResolvedIndex],
     expected_key_kind: u64,
@@ -163,7 +173,16 @@ pub async fn search_matching_shards(
             normalized
         ));
     };
-    search_resolved_shard(store, resolved, query, top_k, nprobe, expected_key_kind).await
+    search_resolved_shard(
+        store,
+        resolved,
+        query,
+        top_k,
+        nprobe,
+        parallelism,
+        expected_key_kind,
+    )
+    .await
 }
 
 /// Run the vector search selected by a parsed [`SearchRequest`].
@@ -178,6 +197,10 @@ pub async fn search_request(
         .option(&option_key(request.kind, "nprobe"))
         .and_then(|s| s.parse().ok())
         .unwrap_or(64);
+    let parallelism: usize = config
+        .option(&option_key(request.kind, "parallelism"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
     let metric = match config
         .option(&option_key(request.kind, "metric"))
         .map(|s| s.to_uppercase())
@@ -197,6 +220,7 @@ pub async fn search_request(
         &query,
         request.top_k,
         nprobe,
+        parallelism,
         metric,
         config.resolved_index_shards_slice(),
         expected_key_kind,
@@ -210,8 +234,9 @@ fn search_loaded_index(
     query: &[f32],
     top_k: usize,
     nprobe: usize,
+    parallelism: usize,
 ) -> IoResult<Vec<VectorHit>> {
-    let params = SearchParams::new(top_k, nprobe);
+    let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
     let results = index.search(query, params).map_err(|e| {
         rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
     })?;
