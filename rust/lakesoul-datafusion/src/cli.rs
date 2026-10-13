@@ -225,9 +225,10 @@ pub struct DistributedArgs {
     pub distributed_fallback_local: bool,
 
     /// Overrides the distributed planner's bytes-per-partition scan estimate.
-    /// Lower values fan a scan out over more tasks (and therefore workers);
-    /// scans whose estimated size stays below the default (16 MiB) per
-    /// partition are kept on the coordinator.
+    /// A scan runs as `ceil(bytes / (this * target_partitions))` tasks, capped
+    /// at the number of workers; a scan left with one task runs on the
+    /// coordinator. The library default (16 MiB) at the default 4 target
+    /// partitions keeps scans up to 64 MiB on the coordinator.
     #[clap(long, env = "LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION")]
     pub distributed_bytes_per_partition: Option<usize>,
 }

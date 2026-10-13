@@ -44,38 +44,50 @@ use crate::stream::empty_schema::EmptySchemaStream;
 
 pub mod sorted;
 
-/// Merge-on-read requires every input stream to be sorted by the primary
-/// keys: the k-way merge only merges rows with equal keys when they surface
-/// adjacently across streams. Declare the primary key ordering on each scan
-/// config so file sources preserve file order — the vortex reader otherwise
-/// scans row-group splits concurrently and yields batches out of order,
-/// silently breaking merge-on-read deduplication.
-fn with_primary_key_ordering(
+/// Builds the scan feeding one file into a [`MergeParquetExec`].
+///
+/// The k-way merge consumes each input as one stream sorted by the primary
+/// keys: it only merges rows with equal keys when they surface adjacently
+/// across streams, and `execute` rejects an input with more than one
+/// partition. The scan therefore declares
+///
+/// - the primary key ordering, so file sources keep file order — the vortex
+///   reader otherwise scans splits concurrently and yields batches out of
+///   order, silently breaking merge-on-read deduplication;
+/// - its file groups as its output partitioning, which makes
+///   `FileScanConfig::repartitioned` refuse to byte-split the file:
+///   `EnforceDistribution` splits every file scan of at least
+///   `repartition_file_min_size` bytes into `target_partitions` ranges,
+///   whatever its parent consumes.
+pub fn merge_input_scan(
     config: FileScanConfig,
     primary_keys: &[String],
-) -> FileScanConfig {
-    if primary_keys.is_empty() {
-        return config;
+) -> Arc<dyn ExecutionPlan> {
+    let partitions = config.file_groups.len();
+    let ordering = primary_key_ordering(&config, primary_keys);
+    let mut builder = FileScanConfigBuilder::from(config)
+        .with_output_partitioning(Some(Partitioning::UnknownPartitioning(partitions)));
+    if let Some(ordering) = ordering {
+        builder = builder.with_output_ordering(vec![ordering]);
     }
-    let table_schema = config.file_source.table_schema().table_schema().clone();
-    let Some(ordering) = LexOrdering::new(
+    DataSourceExec::from_data_source(builder.build())
+}
+
+fn primary_key_ordering(
+    config: &FileScanConfig,
+    primary_keys: &[String],
+) -> Option<LexOrdering> {
+    let table_schema = config.file_source.table_schema().table_schema();
+    LexOrdering::new(
         primary_keys
             .iter()
             .filter_map(|pk| {
-                Column::new_with_schema(pk, &table_schema).ok().map(|col| {
+                Column::new_with_schema(pk, table_schema).ok().map(|col| {
                     PhysicalSortExpr::new(Arc::new(col), SortOptions::default())
                 })
             })
             .collect::<Vec<_>>(),
-    ) else {
-        return config;
-    };
-    if ordering.is_empty() {
-        return config;
-    }
-    FileScanConfigBuilder::from(config)
-        .with_output_ordering(vec![ordering])
-        .build()
+    )
 }
 
 /// [`ExecutionPlan`] implementation for the merge on read operation.
@@ -142,10 +154,7 @@ impl MergeParquetExec {
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for (i, config) in flatten_configs.into_iter().enumerate() {
             debug!("flatten_configs[{i}]:{:?}", config);
-            let config =
-                with_primary_key_ordering(config, io_config.primary_keys.as_slice());
-            let single_exec = DataSourceExec::from_data_source(config);
-            inputs.push(single_exec);
+            inputs.push(merge_input_scan(config, io_config.primary_keys.as_slice()));
         }
         // Compute Nullability
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
