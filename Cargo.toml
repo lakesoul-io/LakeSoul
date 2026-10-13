@@ -44,6 +44,14 @@ license = "Apache-2.0"
 readme = "README.md"
 version = "4.1.0-dev.0"
 
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev-full]
+inherits = "dev"
+debug = "full"
+
 [profile.bench]
 debug = true
 strip = false
