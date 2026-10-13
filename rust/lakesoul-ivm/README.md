@@ -467,7 +467,9 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
   the previous state in place.  A fallback MV may be **append-only**; when it
   declares primary keys the result must be unique on them (a repeated key
   would be collapsed by merge-on-read) and a violation is reported
-  explicitly.  Create the target with `with_allow_fallback(false)` to keep
+  explicitly.  The differential oracle covers a fallback view across random
+  insert/update/delete rounds, so its rows are checked against the reference
+  recompute every round.  Create the target with `with_allow_fallback(false)` to keep
   the strict behavior (unsupported shapes are then rejected, as before), and
   note that a Tier-1 view must not read a fallback view: the fallback rewrites
   its MV, so a downstream incremental refresh cannot see what it removed.

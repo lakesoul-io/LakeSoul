@@ -3442,6 +3442,14 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`tests/metrics.rs` 新增用例——回退执行一次计入 1 次/2 行，无源变化的重跑为 no-op 不增加；
   `statements_total{action=fallback}` 计 2 ✓（注意无标签指标的 key 形如 `name{}`）。
 
+### 10.129 Tier-2 差分 oracle（ROADMAP §B10 收尾）
+
+- 设计稿要求「Tier-2 视图的 MV 与同一 SQL 的全量重算比较，多轮随机变更（含 update/delete）」。
+- **实现**：`tests/sql_oracle.rs` 新增 `oracle_fallback_matches_full_recompute`——沿用通用 oracle 脚手架
+  （10 轮随机 insert/update/delete + 每轮重放 no-op + 与参考重算逐行比较），definition 取被增量分析器
+  拒绝的形状（`LIMIT … OFFSET`），MV 带主键（每轮重算都会走主键唯一性校验）。
+- **多种子验证**：`IVM_ORACLE_SEED=7/99/12345 IVM_ORACLE_ROUNDS=30` 均通过。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
