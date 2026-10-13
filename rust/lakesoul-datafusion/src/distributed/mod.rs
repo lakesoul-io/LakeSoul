@@ -73,10 +73,11 @@ pub struct DistributedOptions {
     ///
     /// Production deployments must leave this `false`: such a failure then
     /// fails the query instead of silently degrading to coordinator-only
-    /// execution. Only planning failures are covered — a query the distributed
-    /// planner can plan by itself (including every query while no worker is
-    /// ready, which such a planner plans single-node, and any plan it decides
-    /// to keep on the coordinator) is executed as planned in either mode.
+    /// execution. Only planning failures are covered: a plan the distributed
+    /// planner keeps on the coordinator (a stage capped at one task, or every
+    /// query while a static worker list is empty) runs as planned in either
+    /// mode, and a worker resolver error (Kubernetes discovery without an
+    /// eligible worker, or a stale snapshot) fails the query in either mode.
     pub fallback_to_local: bool,
     /// `target_partitions` applied to distributed sessions.
     ///

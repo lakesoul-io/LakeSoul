@@ -16,10 +16,12 @@ Included:
   by name, TLS/token handling reads the mounted service account token from
   disk on every request;
 - bounded start-up: the coordinator waits (max 30 s) for the first successful
-  refresh that contains at least one protocol-compatible worker, and exits
-  reporting the reason otherwise; snapshots older than
-  `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` fail newly distributed queries
-  instead of silently planning against outdated workers.
+  EndpointSlice refresh and exits reporting the reason otherwise (token/CA,
+  RBAC, unreachable API). Zero ready workers is not a start-up failure: the
+  coordinator serves, queries fail with `no eligible worker` until a worker
+  turns Ready, and the next poll picks it up without a restart. Snapshots
+  older than `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` fail newly
+  distributed queries instead of silently planning against outdated workers.
 
 Deliberately **not** included (later phases):
 
@@ -271,6 +273,13 @@ Scenarios, each with concrete expected state:
    the planner still decides stage-by-stage. Force a scan-fanout (large
    warehouse table, or lower `LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION`)
    when the workload defaults to single-node execution.
+
+7. **Scale workers to 0** (`kubectl -n lakesoul scale deployment
+   lakesoul-worker --replicas=0`): within one poll the snapshot empties and
+   every query fails with `no eligible worker` (`LAKESOUL_DISTRIBUTED_FALLBACK_LOCAL`
+   does not apply: it covers planner failures only). A coordinator restarted
+   meanwhile starts anyway and logs `starting without an eligible worker`.
+   Scaling back up restores queries on the next poll, without a restart.
 
 No automated acceptance run exists in this phase; step 6's assertion values
 must be read from the coordinator's log output at the time you execute it.

@@ -356,9 +356,9 @@ impl DistributedArgs {
     ///
     /// Kubernetes mode is bounded startup synchronization: waits up to
     /// [`DISCOVERY_STARTUP_SYNC_TIMEOUT`] for the first successful
-    /// EndpointSlice refresh and at least one eligible worker, propagation of
-    /// the failure (missing token/CA, authorization errors, no ready worker)
-    /// to the caller instead of a first-query failure.
+    /// EndpointSlice refresh, propagating its failure (missing token/CA,
+    /// authorization errors) to the caller instead of a first-query failure.
+    /// Zero eligible workers is not a startup failure.
     pub async fn resolve_distributed_options(
         &self,
     ) -> Result<Option<DistributedOptions>> {

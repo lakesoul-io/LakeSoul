@@ -36,8 +36,8 @@ use datafusion_distributed::{
 };
 use parking_lot::RwLock;
 use reqwest::StatusCode;
-use rootcause::prelude::ResultExt;
 use rootcause::markers::Cloneable;
+use rootcause::prelude::ResultExt;
 use rootcause::{Report, bail, report};
 use url::Url;
 
@@ -297,9 +297,8 @@ struct DiscoveryStatus {
 }
 
 impl KubernetesDiscoveryState {
-    fn has_eligible_worker(&self) -> bool {
+    fn has_synced(&self) -> bool {
         self.status.read().last_success.is_some()
-            && !&self.snapshot.read().urls.is_empty()
     }
 }
 
@@ -396,12 +395,14 @@ impl KubernetesWorkerResolver {
     }
 
     /// Starts the polling task and waits, bounded, for the first successful
-    /// refresh that produced at least one eligible worker.
+    /// refresh.
     ///
     /// Coordinator processes build the resolver at start-up with this instead
     /// of the first PG connection: once serving, the shared resolver is only
-    /// read. Authorization errors, missing token/CA and "no ready worker" all
-    /// fail here with the refresh status instead of inside a query.
+    /// read. Authorization errors, missing token/CA and uninterpretable API
+    /// responses fail here with the refresh status instead of inside a query.
+    /// An empty worker set is a valid start: queries fail with "no eligible
+    /// worker" until a worker turns Ready and a later refresh lists it.
     pub async fn start_and_wait_for_first_sync(
         discovery: &KubernetesDiscovery,
         timeout: Duration,
@@ -409,29 +410,31 @@ impl KubernetesWorkerResolver {
         let resolver = Self::start(discovery)?;
         let deadline = Instant::now() + timeout;
         loop {
-            if resolver.state.has_eligible_worker() {
+            if resolver.state.has_synced() {
+                let (candidates, eligible) = {
+                    let status = resolver.state.status.read();
+                    (status.candidates, status.eligible)
+                };
+                if eligible == 0 {
+                    warn!(
+                        candidates,
+                        "LakeSoul worker discovery: starting without an eligible \
+                         worker ({}); queries fail until one is Ready",
+                        resolver.description
+                    );
+                }
                 return Ok(resolver);
             }
             if Instant::now() >= deadline {
-                let (last_error, candidates, eligible) = {
-                    let status = resolver.state.status.read();
-                    (
-                        status.last_error.clone(),
-                        status.candidates,
-                        status.eligible,
-                    )
-                };
+                let last_error = resolver.state.status.read().last_error.clone();
                 let summary = format!(
-                    "kubernetes worker discovery did not produce an eligible \
-                     worker within {timeout:?} ({})",
+                    "kubernetes worker discovery did not complete an EndpointSlice \
+                     refresh within {timeout:?} ({})",
                     resolver.description
                 );
                 return Err(match last_error {
                     Some(error) => error.context(summary).into_dynamic(),
-                    None => report!(
-                        "{summary}: last refresh listed {candidates} candidates, \
-                         {eligible} eligible"
-                    ),
+                    None => report!("{summary}: no refresh attempt finished"),
                 });
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -784,23 +787,23 @@ pub fn ready_worker_urls(list_json: &str) -> Result<Vec<Url>> {
 /// EndpointSliceList JSON node (the list returned by the API server).
 #[derive(serde::Deserialize)]
 struct EndpointSliceList {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     items: Vec<EndpointSlice>,
 }
 
 /// One EndpointSlice JSON node.
 #[derive(serde::Deserialize)]
 struct EndpointSlice {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     endpoints: Vec<SliceEndpoint>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     ports: Vec<SlicePort>,
 }
 
 /// One endpoint JSON node of a slice.
 #[derive(serde::Deserialize)]
 struct SliceEndpoint {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     addresses: Vec<String>,
     #[serde(default)]
     conditions: Option<SliceEndpointConditions>,
@@ -824,6 +827,21 @@ struct SlicePort {
     port: Option<i64>,
     #[serde(default)]
     protocol: Option<String>,
+}
+
+/// Reads a JSON list that may be `null` as empty. The API server encodes nil Go
+/// slices of fields without `omitempty` as `null`: the placeholder EndpointSlice
+/// the controller keeps for a Service without Pods carries
+/// `"endpoints":null,"ports":null`.
+fn null_as_empty<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(
+        <Option<Vec<T>> as serde::Deserialize>::deserialize(deserializer)?
+            .unwrap_or_default(),
+    )
 }
 
 /// Whether `port` is a valid TCP port value.

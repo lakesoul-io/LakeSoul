@@ -27,6 +27,11 @@ fn slice_json(endpoints: &str, ports: &str) -> String {
     format!(r#"{{"items":[{{"endpoints":{endpoints},"ports":{ports}}}]}}"#)
 }
 
+/// The API server's EndpointSliceList for a Service without Pods: the
+/// controller's placeholder slice encodes its empty lists as `null`.
+const NO_WORKER_SLICES: &str =
+    r#"{"items":[{"addressType":"IPv4","endpoints":null,"ports":null}]}"#;
+
 /// Polls `url` with the public channel resolver until the worker's gRPC
 /// endpoint answers (used instead of resolver.rs's private `probe_version`).
 async fn worker_answers_version_probe(url: &Url) -> bool {
@@ -601,16 +606,42 @@ async fn discovery_empty_snapshot_replaces_workers() {
     .unwrap();
     assert_eq!(resolver.get_urls().unwrap(), vec![worker]);
 
-    // The Service loses its workers: the next successful refresh with
-    // zero eligible endpoints must replace the snapshot, not keep
-    // routing to workers that disappeared.
-    api.set_response(mocked(200, r#"{"items":[]}"#.to_string()));
+    // The Service loses its workers (scaled to zero): the next successful
+    // refresh with zero eligible endpoints must replace the snapshot, not
+    // keep routing to workers that disappeared.
+    api.set_response(mocked(200, NO_WORKER_SLICES.to_string()));
     api.wait_for_requests(3).await;
     let error = resolver.get_urls().unwrap_err().to_string();
     assert!(
         error.contains("no eligible worker"),
         "an empty successful refresh is a fact, not silent local planning: {error}"
     );
+}
+
+#[tokio::test]
+async fn discovery_starts_without_workers_and_picks_them_up() {
+    // A coordinator may start before any worker is Ready (or while workers
+    // are scaled to zero): it starts on the first successful refresh, fails
+    // queries with "no eligible worker", and uses a worker as soon as a later
+    // refresh lists it, without a restart.
+    let api = MockK8sApi::start(vec![mocked(200, NO_WORKER_SLICES.to_string())]);
+    let discovery = with_token(mock_discovery(&api), "token-1");
+    let resolver = KubernetesWorkerResolver::start_and_wait_for_first_sync(
+        &discovery,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    let error = resolver.get_urls().unwrap_err().to_string();
+    assert!(
+        error.contains("no eligible worker"),
+        "an empty start must fail queries, not plan them locally: {error}"
+    );
+
+    let worker = spawn_test_worker(DISTRIBUTED_PROTOCOL_VERSION).await;
+    api.set_response(mocked(200, slice_list_json(&[worker.as_ref()])));
+    wait_for_snapshot(&resolver, &[&worker]).await;
+    assert_eq!(resolver.get_urls().unwrap(), vec![worker]);
 }
 
 #[tokio::test]
