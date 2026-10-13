@@ -278,10 +278,14 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::datasource::table_schema::TableSchema;
     use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::physical_expr::utils::collect_columns;
     use datafusion_datasource::PartitionedFile;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
     use lakesoul_io::config::LakeSoulIOConfigBuilder;
     use lakesoul_io::config::OPTION_KEY_IS_COMPACTED;
+    use lakesoul_io::file_format::{
+        LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec,
+    };
     fn merge_exec(inputs: Vec<Arc<dyn ExecutionPlan>>) -> MergeParquetExec {
         let schema: SchemaRef = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -364,6 +368,100 @@ mod tests {
                 .collect::<Vec<_>>(),
             [object_store::path::Path::from("s3://bucket/t/a.vortex").to_string()]
         );
+    }
+
+    /// An append-only leaf reading `p_brand` and `p_size` of the TPC-H `part`
+    /// table in `physical_format`, with `p_size IN (1, 2, 3, 4, 5) AND
+    /// p_brand <> 'Brand#45'` built against the whole table, as the table
+    /// provider builds it.
+    fn narrowed_part_leaf(physical_format: PhysicalFormat) -> Arc<dyn ExecutionPlan> {
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{binary, col, in_list, lit};
+
+        let table = Schema::new(vec![
+            Field::new("p_partkey", DataType::Int64, false),
+            Field::new("p_name", DataType::Utf8, false),
+            Field::new("p_mfgr", DataType::Utf8, false),
+            Field::new("p_brand", DataType::Utf8, false),
+            Field::new("p_type", DataType::Utf8, false),
+            Field::new("p_size", DataType::Int32, false),
+        ]);
+        let predicates = vec![
+            in_list(
+                col("p_size", &table).unwrap(),
+                (1..=5).map(lit).collect(),
+                &false,
+                &table,
+            )
+            .unwrap(),
+            binary(
+                col("p_brand", &table).unwrap(),
+                Operator::NotEq,
+                lit("Brand#45"),
+                &table,
+            )
+            .unwrap(),
+        ];
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfigBuilder::new().build(), false)
+                .unwrap();
+        let format = registry.file_format(physical_format);
+        let state = datafusion::prelude::SessionContext::new().state();
+        let source = format
+            .file_source(TableSchema::new(Arc::new(table), Vec::new()))
+            .try_pushdown_filters(predicates, state.config_options())
+            .unwrap()
+            .updated_node
+            .expect("the source takes the predicates");
+        let file = PartitionedFile::new(
+            format!("s3://bucket/part/a.{}", physical_format.extension()),
+            1024,
+        );
+        let config =
+            FileScanConfigBuilder::new(ObjectStoreUrl::parse("file://").unwrap(), source)
+                .with_file_groups(vec![FileGroup::new(vec![file])])
+                .build();
+        let merged: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("p_brand", DataType::Utf8, false),
+            Field::new("p_size", DataType::Int32, false),
+        ]));
+        append_only_scan_exec(&state, format.as_ref(), &[config], &merged)
+            .expect("the leaf builder must not fail")
+            .expect("an append-only work unit scans as a plain leaf")
+    }
+
+    /// A worker decodes a scan leaf's predicate against the leaf's own schema,
+    /// and an `IN` list of more than three items checks its column while
+    /// decoding. A leaf whose predicate stayed bound to the table schema
+    /// failed every such stage on the workers (TPC-H q16 and q19) in either
+    /// file format.
+    #[test]
+    fn narrowed_scan_leaf_predicate_decodes_against_the_leaf_schema() {
+        for physical_format in [PhysicalFormat::Parquet, PhysicalFormat::Vortex] {
+            let decoded = roundtrip(narrowed_part_leaf(physical_format))
+                .unwrap_or_else(|err| panic!("{physical_format}: {err}"));
+
+            let config = decoded
+                .downcast_ref::<DataSourceExec>()
+                .and_then(|exec| exec.data_source().downcast_ref::<FileScanConfig>())
+                .unwrap_or_else(|| panic!("{physical_format}: not a file scan"));
+            let schema = config.file_source().table_schema().table_schema();
+            let filter = config.file_source().filter().unwrap_or_else(|| {
+                panic!("{physical_format}: predicate lost on the wire")
+            });
+            let columns = collect_columns(&filter);
+            assert_eq!(columns.len(), 2, "{physical_format}: {filter}");
+            for column in columns {
+                assert_eq!(
+                    schema
+                        .fields()
+                        .get(column.index())
+                        .map(|field| field.name().as_str()),
+                    Some(column.name()),
+                    "{physical_format}: {filter} is not bound to {schema}"
+                );
+            }
+        }
     }
 
     #[test]

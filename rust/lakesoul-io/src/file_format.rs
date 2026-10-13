@@ -24,8 +24,10 @@ use datafusion::datasource::physical_plan::{
     ParquetSource,
 };
 use datafusion::datasource::table_schema::TableSchema;
+use datafusion::physical_expr::utils::{collect_columns, reassign_expr_columns};
 use datafusion::physical_expr::{
-    LexRequirement, PhysicalExpr, expressions::Column, projection::ProjectionExprs,
+    LexRequirement, PhysicalExpr, conjunction_opt, expressions::Column,
+    projection::ProjectionExprs, split_conjunction,
 };
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -721,7 +723,15 @@ pub async fn flatten_file_scan_config(
                                 .ok_or(DataFusionError::Internal("file source".into()))?
                                 .clone();
                             if let Some(predicate) = conf.file_source.filter() {
-                                parquet_source = parquet_source.with_predicate(predicate);
+                                let rebound = rebind_predicate(
+                                    &predicate,
+                                    conf.file_source.table_schema().table_schema(),
+                                    parquet_source.table_schema().table_schema(),
+                                )?;
+                                if let Some(predicate) = conjunction_opt(rebound) {
+                                    parquet_source =
+                                        parquet_source.with_predicate(predicate);
+                                }
                             }
                             if let Some(metadata_size_hint) = format.metadata_size_hint()
                             {
@@ -834,13 +844,12 @@ pub async fn flatten_file_scan_config_for_format(
                                 &conf,
                             )?;
                             if let Some(predicate) = conf.file_source.filter() {
-                                let result = source.try_pushdown_filters(
-                                    vec![predicate],
-                                    state.config_options(),
+                                source = push_predicate_into(
+                                    source,
+                                    &predicate,
+                                    conf.file_source.table_schema().table_schema(),
+                                    state,
                                 )?;
-                                if let Some(updated_source) = result.updated_node {
-                                    source = updated_source;
-                                }
                             }
                             let config = FileScanConfigBuilder::from(conf)
                                 .with_source(source)
@@ -938,6 +947,63 @@ fn adapt_file_source_for_single_file(
     }
 
     Ok(Arc::new(parquet_source))
+}
+
+/// Rebinds the conjuncts of `predicate`, bound to schema `from`, to schema
+/// `to` by column name.
+///
+/// A physical column is bound by index. The per-file sources and the
+/// append-only scan leaf declare other schemas than the scan they are built
+/// from — a file's own columns, or only the columns the scan reads — so an
+/// index into the outer schema names another column of theirs, or none. A
+/// local vortex reader converts columns by name and hides that, but a worker
+/// decodes the leaf's predicate against the leaf's own schema and fails, or
+/// binds the wrong column.
+///
+/// A conjunct is left out when `to` lacks one of its columns or declares it
+/// with another type (a file written before the column was added or
+/// widened): the source cannot evaluate it as built. Leaving it out only
+/// weakens a best-effort filter, since LakeSoul hands scan predicates to
+/// DataFusion as `Inexact` and the `FilterExec` above the scan re-evaluates
+/// every conjunct.
+fn rebind_predicate(
+    predicate: &Arc<dyn PhysicalExpr>,
+    from: &Schema,
+    to: &Schema,
+) -> DFResult<Vec<Arc<dyn PhysicalExpr>>> {
+    split_conjunction(predicate)
+        .into_iter()
+        .filter(|conjunct| {
+            collect_columns(conjunct).iter().all(|column| {
+                match (
+                    from.field_with_name(column.name()),
+                    to.field_with_name(column.name()),
+                ) {
+                    (Ok(from), Ok(to)) => from.data_type() == to.data_type(),
+                    _ => false,
+                }
+            })
+        })
+        .map(|conjunct| reassign_expr_columns(Arc::clone(conjunct), to))
+        .collect()
+}
+
+/// Offers `predicate`, bound to schema `from`, to `source` conjunct by
+/// conjunct, rebound to the source's own table schema (see
+/// [`rebind_predicate`]).
+fn push_predicate_into(
+    source: Arc<dyn FileSource>,
+    predicate: &Arc<dyn PhysicalExpr>,
+    from: &Schema,
+    state: &dyn Session,
+) -> DFResult<Arc<dyn FileSource>> {
+    let filters =
+        rebind_predicate(predicate, from, source.table_schema().table_schema())?;
+    if filters.is_empty() {
+        return Ok(source);
+    }
+    let result = source.try_pushdown_filters(filters, state.config_options())?;
+    Ok(result.updated_node.unwrap_or(source))
 }
 
 pub fn compute_project_column_indices(
@@ -1057,11 +1123,12 @@ pub fn append_only_scan_exec(
     let mut source = format.file_source(table_schema);
     source = adapt_file_source_for_single_file(source, format, base)?;
     if let Some(predicate) = base.file_source.filter() {
-        let result =
-            source.try_pushdown_filters(vec![predicate], state.config_options())?;
-        if let Some(updated_node) = result.updated_node {
-            source = updated_node;
-        }
+        source = push_predicate_into(
+            source,
+            &predicate,
+            base.file_source.table_schema().table_schema(),
+            state,
+        )?;
     }
 
     // `merged_schema` selects this leaf's columns the way its consumers order
@@ -1344,6 +1411,130 @@ mod tests {
         assert!(
             leaf.is_none(),
             "files read differently cannot share one scan leaf"
+        );
+    }
+
+    /// The TPC-H `part` columns up to `p_size`: `p_brand` and `p_size` sit at
+    /// indices 3 and 5 of the table, and at 0 and 1 of a leaf reading only
+    /// them.
+    fn part_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("p_partkey", DataType::Int64, false),
+            Field::new("p_name", DataType::Utf8, false),
+            Field::new("p_mfgr", DataType::Utf8, false),
+            Field::new("p_brand", DataType::Utf8, false),
+            Field::new("p_type", DataType::Utf8, false),
+            Field::new("p_size", DataType::Int32, false),
+        ]))
+    }
+
+    /// `p_size IN (1, 2, 3, 4, 5)` and `p_brand <> 'Brand#45'`, bound to
+    /// `schema`. An `IN` list of more than three items stays an `InListExpr`,
+    /// which checks its column against the schema it is decoded with.
+    fn part_predicates(schema: &Schema) -> Vec<Arc<dyn PhysicalExpr>> {
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{binary, col, in_list, lit};
+
+        let sizes = (1..=5).map(lit).collect();
+        vec![
+            in_list(col("p_size", schema).unwrap(), sizes, &false, schema).unwrap(),
+            binary(
+                col("p_brand", schema).unwrap(),
+                Operator::NotEq,
+                lit("Brand#45"),
+                schema,
+            )
+            .unwrap(),
+        ]
+    }
+
+    /// A leaf reading fewer columns than its table rebinds the predicate it
+    /// takes over to its own schema, for both file formats.
+    ///
+    /// Left bound to the table, the predicate names `p_size` at index 5 of a
+    /// two-column leaf: a worker decoding the leaf fails on the `IN` list, and
+    /// a comparison binds whatever column sits at the stale index.
+    #[test]
+    fn append_only_scan_exec_binds_its_predicate_to_the_leaf_schema() {
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
+        let table = part_schema();
+        let merged: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("p_brand", DataType::Utf8, false),
+            Field::new("p_size", DataType::Int32, false),
+        ]));
+        let state = SessionContext::new().state();
+
+        for physical_format in [PhysicalFormat::Parquet, PhysicalFormat::Vortex] {
+            let format = registry.file_format(physical_format);
+            let source = format
+                .file_source(TableSchema::new(Arc::clone(&table), vec![]))
+                .try_pushdown_filters(part_predicates(&table), state.config_options())
+                .unwrap()
+                .updated_node
+                .unwrap_or_else(|| {
+                    panic!("{physical_format}: source refused the filters")
+                });
+            let file = PartitionedFile::new_from_meta(object_meta("part-0"));
+            let config =
+                FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
+                    .with_file_groups(vec![FileGroup::new(vec![file])])
+                    .build();
+
+            let leaf = append_only_scan_exec(&state, format.as_ref(), &[config], &merged)
+                .expect("the leaf builder must not fail")
+                .expect("an append-only work unit scans as a plain leaf");
+
+            let scan = leaf_scan_config(leaf.as_ref());
+            let leaf_schema = scan.file_source.table_schema().table_schema();
+            let filter = scan.file_source.filter().unwrap_or_else(|| {
+                panic!("{physical_format}: the leaf lost its predicate")
+            });
+            let mut names = vec![];
+            for column in collect_columns(&filter) {
+                assert_eq!(
+                    leaf_schema
+                        .fields()
+                        .get(column.index())
+                        .map(|field| field.name().as_str()),
+                    Some(column.name()),
+                    "{physical_format}: {filter} is not bound to the leaf schema \
+                     {leaf_schema}"
+                );
+                names.push(column.name().to_string());
+            }
+            names.sort();
+            assert_eq!(names, ["p_brand", "p_size"], "{physical_format}: {filter}");
+        }
+    }
+
+    /// A conjunct moves to a narrower schema only when that schema declares
+    /// its columns with the same types; otherwise it stays with the
+    /// `FilterExec` above the scan. Here a file was written before `p_brand`
+    /// existed, and another while `p_size` was still narrower.
+    #[test]
+    fn rebind_predicate_keeps_the_conjuncts_the_target_can_evaluate() {
+        let table = part_schema();
+        let predicate = conjunction_opt(part_predicates(&table)).unwrap();
+
+        let without_brand = Schema::new(vec![
+            Field::new("p_size", DataType::Int32, false),
+            Field::new("p_partkey", DataType::Int64, false),
+        ]);
+        let rebound = rebind_predicate(&predicate, &table, &without_brand).unwrap();
+        assert_eq!(
+            rebound.iter().flat_map(collect_columns).collect::<Vec<_>>(),
+            [Column::new("p_size", 0)]
+        );
+
+        let narrower_size = Schema::new(vec![
+            Field::new("p_brand", DataType::Utf8, false),
+            Field::new("p_size", DataType::Int16, false),
+        ]);
+        let rebound = rebind_predicate(&predicate, &table, &narrower_size).unwrap();
+        assert_eq!(
+            rebound.iter().flat_map(collect_columns).collect::<Vec<_>>(),
+            [Column::new("p_brand", 0)]
         );
     }
 }
