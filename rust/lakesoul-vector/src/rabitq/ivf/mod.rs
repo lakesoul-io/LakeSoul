@@ -29,11 +29,27 @@ use lut::*;
 pub struct SearchParams {
     pub top_k: usize,
     pub nprobe: usize,
+    /// Number of clusters to probe concurrently (1 = sequential).
+    ///
+    /// The probed clusters are partitioned into that many groups; each group
+    /// keeps its own top-k and the groups are merged, so the result set is the
+    /// same as the sequential probe.
+    pub parallelism: usize,
 }
 
 impl SearchParams {
     pub fn new(top_k: usize, nprobe: usize) -> Self {
-        Self { top_k, nprobe }
+        Self {
+            top_k,
+            nprobe,
+            parallelism: 1,
+        }
+    }
+
+    /// Probe the clusters in parallel (clamped to `nprobe` groups).
+    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
+        self.parallelism = parallelism.max(1);
+        self
     }
 }
 
@@ -76,6 +92,20 @@ pub struct SearchDiagnostics {
     pub fastscan_ns: u64,
     /// Wall time in the scalar per-vector loop (mask, pruning, heap, refine).
     pub scalar_ns: u64,
+}
+
+impl SearchDiagnostics {
+    /// Accumulate the counters of another search (parallel probe merge).
+    pub fn merge(&mut self, other: SearchDiagnostics) {
+        self.clusters_probed += other.clusters_probed;
+        self.batches_scanned += other.batches_scanned;
+        self.vectors_scanned += other.vectors_scanned;
+        self.estimated += other.estimated;
+        self.skipped_by_lower_bound += other.skipped_by_lower_bound;
+        self.extended_evaluations += other.extended_evaluations;
+        self.fastscan_ns += other.fastscan_ns;
+        self.scalar_ns += other.scalar_ns;
+    }
 }
 
 // ============================================================================
@@ -1341,46 +1371,32 @@ impl IvfRabitqIndex {
         //     cluster_scores.iter().take(nprobe).map(|(cid, score)| (*cid, *score)).collect::<Vec<_>>()
         // );
 
-        let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
-
-        if let Some(diag) = diagnostics.as_deref_mut() {
-            diag.clusters_probed += nprobe;
-        }
-
         // Use FastScan batch search with unified memory layout
-        for &(cid, _) in cluster_scores.iter().take(nprobe) {
-            let cluster = &self.clusters[cid];
-
-            let centroid_dist =
-                l2_distance_sqr(&query_precomp.rotated_query, &cluster.centroid);
-            let dot_query_centroid = dot(&query_precomp.rotated_query, &cluster.centroid);
-            let g_add = match self.metric {
-                Metric::L2 => centroid_dist,
-                Metric::InnerProduct => -dot_query_centroid,
-            };
-            let centroid_norm = centroid_dist.sqrt();
-            let g_error = centroid_norm;
-
-            // Use batched search (3-10x faster than naive, further optimized with unified layout)
-            self.search_cluster_v2_batched(
-                cid,
-                cluster,
+        let mut candidates: Vec<HeapCandidate> = if params.parallelism > 1 && nprobe > 1 {
+            self.search_clusters_parallel(
+                &cluster_scores[..nprobe],
                 &query_precomp,
-                g_add,
-                g_error,
-                dot_query_centroid,
                 filter,
-                &mut heap,
-                params.top_k,
+                &params,
                 &mut diagnostics,
-            );
-        }
-
-        let mut candidates: Vec<HeapCandidate> = heap
-            .into_sorted_vec()
-            .into_iter()
-            .map(|entry| entry.candidate)
-            .collect();
+            )
+        } else {
+            let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+            for &(cid, _) in cluster_scores.iter().take(nprobe) {
+                self.probe_cluster(
+                    cid,
+                    &query_precomp,
+                    filter,
+                    &mut heap,
+                    params.top_k,
+                    &mut diagnostics,
+                );
+            }
+            heap.into_sorted_vec()
+                .into_iter()
+                .map(|entry| entry.candidate)
+                .collect()
+        };
 
         match self.metric {
             Metric::L2 => candidates.sort_by(|a, b| a.distance.total_cmp(&b.distance)),
@@ -1400,6 +1416,110 @@ impl IvfRabitqIndex {
                 },
             })
             .collect())
+    }
+
+    /// Probe one cluster into `heap`: centroid setup plus the batched scan.
+    fn probe_cluster(
+        &self,
+        cluster_id: usize,
+        query_precomp: &QueryPrecomputed,
+        filter: Option<&HashSet<IndexKey>>,
+        heap: &mut BinaryHeap<HeapEntry>,
+        top_k: usize,
+        diagnostics: &mut Option<&mut SearchDiagnostics>,
+    ) {
+        let cluster = &self.clusters[cluster_id];
+        let centroid_dist =
+            l2_distance_sqr(&query_precomp.rotated_query, &cluster.centroid);
+        let dot_query_centroid = dot(&query_precomp.rotated_query, &cluster.centroid);
+        let g_add = match self.metric {
+            Metric::L2 => centroid_dist,
+            Metric::InnerProduct => -dot_query_centroid,
+        };
+        let g_error = centroid_dist.sqrt();
+        if let Some(diag) = diagnostics.as_deref_mut() {
+            diag.clusters_probed += 1;
+        }
+        self.search_cluster_v2_batched(
+            cluster_id,
+            cluster,
+            query_precomp,
+            g_add,
+            g_error,
+            dot_query_centroid,
+            filter,
+            heap,
+            top_k,
+            diagnostics,
+        );
+    }
+
+    /// Probe the given clusters in parallel and merge the per-group top-k.
+    ///
+    /// Every group probes the same clusters with the same estimator as the
+    /// sequential path, and a candidate that loses to its group's k-th
+    /// distance cannot enter the global top-k either, so the merged result set
+    /// matches the sequential one.  The groups are filled round-robin so the
+    /// skewed cluster sizes do not unbalance them.
+    fn search_clusters_parallel(
+        &self,
+        cluster_scores: &[(usize, f32)],
+        query_precomp: &QueryPrecomputed,
+        filter: Option<&HashSet<IndexKey>>,
+        params: &SearchParams,
+        diagnostics: &mut Option<&mut SearchDiagnostics>,
+    ) -> Vec<HeapCandidate> {
+        let top_k = params.top_k;
+        let groups = params.parallelism.max(1).min(cluster_scores.len());
+        let mut assignments: Vec<Vec<usize>> = vec![Vec::new(); groups];
+        for (index, &(cid, _)) in cluster_scores.iter().enumerate() {
+            assignments[index % groups].push(cid);
+        }
+        let collect_diagnostics = diagnostics.is_some();
+
+        let locals: Vec<(Vec<HeapCandidate>, Option<SearchDiagnostics>)> = assignments
+            .par_iter()
+            .map(|cluster_ids| {
+                let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+                let mut local = collect_diagnostics.then(SearchDiagnostics::default);
+                for &cid in cluster_ids {
+                    let mut local_ref = local.as_mut();
+                    self.probe_cluster(
+                        cid,
+                        query_precomp,
+                        filter,
+                        &mut heap,
+                        top_k,
+                        &mut local_ref,
+                    );
+                }
+                (
+                    heap.into_sorted_vec()
+                        .into_iter()
+                        .map(|entry| entry.candidate)
+                        .collect(),
+                    local,
+                )
+            })
+            .collect();
+
+        let mut merged: Vec<HeapCandidate> = Vec::with_capacity(groups * top_k);
+        for (local, local_diagnostics) in locals {
+            merged.extend(local);
+            if let (Some(total), Some(local_diagnostics)) =
+                (diagnostics.as_deref_mut(), local_diagnostics)
+            {
+                total.merge(local_diagnostics);
+            }
+        }
+        if merged.len() > top_k {
+            // The heap key is the distance for both metrics, so the global
+            // top-k is the `top_k` smallest distances.
+            merged
+                .select_nth_unstable_by(top_k, |a, b| a.distance.total_cmp(&b.distance));
+            merged.truncate(top_k);
+        }
+        merged
     }
 
     /// Helper method to search a cluster using batch FastScan with unified memory layout
@@ -2987,4 +3107,91 @@ fn assign_batch_to_centroids(
         assignments.push(best_cid);
     }
     assignments
+}
+
+#[cfg(test)]
+mod parallel_probe_tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    /// Eight well separated clusters with 64 vectors each.
+    fn synthetic_index() -> IvfRabitqIndex {
+        let dim = 32usize;
+        let config = RabitqConfig::new(1);
+        let rotator = DynamicRotator::new(dim, RotatorType::FhtKacRotator, 42);
+        let padded_dim = rotator.padded_dim();
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut clusters = Vec::new();
+        let mut next_id = 0u64;
+        for c in 0..8usize {
+            let centroid_raw: Vec<f32> = (0..dim)
+                .map(|j| (((c * 7 + j) as f32) * 0.11).sin() * 5.0)
+                .collect();
+            let centroid = rotator.rotate(&centroid_raw);
+            let mut ids = Vec::new();
+            let mut quantized = Vec::new();
+            for _ in 0..64 {
+                let v: Vec<f32> = centroid_raw
+                    .iter()
+                    .map(|x| x + rng.r#gen::<f32>() * 0.1 - 0.05)
+                    .collect();
+                let rotated = rotator.rotate(&v);
+                quantized.push(quantize_with_centroid(
+                    &rotated,
+                    &centroid,
+                    &config,
+                    Metric::L2,
+                ));
+                ids.push(IndexKey::new(next_id.to_le_bytes()));
+                next_id += 1;
+            }
+            clusters.push(ClusterData::from_quantized_vectors(
+                centroid, ids, quantized, padded_dim, 0,
+            ));
+        }
+        IvfRabitqIndex {
+            dim,
+            padded_dim,
+            metric: Metric::L2,
+            rotator,
+            clusters,
+            ex_bits: 0,
+            ip_func: crate::rabitq::simd::select_excode_ipfunc(0),
+            key_kind: 0,
+        }
+    }
+
+    #[test]
+    fn parallel_probe_matches_sequential() {
+        let index = synthetic_index();
+        let query: Vec<f32> = (0..32).map(|j| ((j as f32) * 0.11).sin() * 5.0).collect();
+        let sequential = index.search(&query, SearchParams::new(5, 8)).unwrap();
+        let seq_ids: Vec<_> = sequential.iter().map(|r| r.id.clone()).collect();
+        for parallelism in [2usize, 3, 8, 64] {
+            let parallel = index
+                .search(
+                    &query,
+                    SearchParams::new(5, 8).with_parallelism(parallelism),
+                )
+                .unwrap();
+            let par_ids: Vec<_> = parallel.iter().map(|r| r.id.clone()).collect();
+            assert_eq!(
+                par_ids, seq_ids,
+                "parallelism {parallelism} must return the sequential result"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_probe_merges_diagnostics() {
+        let index = synthetic_index();
+        let query: Vec<f32> = (0..32).map(|j| ((j as f32) * 0.11).sin() * 5.0).collect();
+        let (results, diag) = index
+            .search_with_diagnostics(&query, SearchParams::new(5, 8).with_parallelism(4))
+            .unwrap();
+        assert_eq!(results.len(), 5);
+        assert_eq!(diag.clusters_probed, 8, "each cluster counted once");
+        assert!(diag.vectors_scanned > 0);
+    }
 }
