@@ -222,10 +222,12 @@ Supported within the shapes above:
   aggregate / DISTINCT / window / TOP-K / UNION reading it), a
   **sum/count/avg aggregate**, a **`MIN`/`MAX` or `DISTINCT` aggregate**
   (the value-count layouts; their step state tables are created next to the
-  step MV), a **roster window** (a single ranking or value window, keyed like
-  the window MV by its partition keys plus the source primary keys), and a
-  **`UNION ALL`** (a keyed branch the consuming operator does not select its
-  primary keys from is widened with them again).
+  step MV), a **mixed aggregate** (any aggregate mix the multi-aggregate view
+  maintains, materialized one column per aggregate), a **roster window** (a
+  single ranking or value window, keyed like the window MV by its partition
+  keys plus the source primary keys), and a **`UNION ALL`** (a keyed branch the
+  consuming operator does not select its primary keys from is widened with
+  them again).
   The statement is rewritten to read the derived MV (a compact join widens
   its payloads to the subplan's column names, and an aggregate step's
   materialized columns such as `sum_v` or `value`, or a window step's

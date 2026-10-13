@@ -114,7 +114,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 单语句现状 | 难度 | 路径 |
 |---|---|---|---|
-| 聚合/去重叠加在 join 上（`SELECT g,SUM(f.v) FROM f JOIN d … GROUP BY g`） | ✅ 已实现（PLAN §10.117–§10.119，配合 §10.116 编排）：自动物化内部派生视图 `<target>__ivm_step0`（join 步或聚合步：sum/count/avg、MIN/MAX、DISTINCT，后者随步创建状态表）+ 外层算子；定义变更复用/清理步骤 | **M** | 已完成（聚合叠加聚合亦已支持） |
+| 聚合/去重叠加在 join 上（`SELECT g,SUM(f.v) FROM f JOIN d … GROUP BY g`） | ✅ 已实现（PLAN §10.117–§10.124，配合 §10.116 编排）：自动物化内部派生视图 `<target>__ivm_step0`（join 步、聚合步：sum/count/avg、MIN/MAX、DISTINCT（随步创建状态表）、**混合聚合**（PLAN §10.124）、窗口步）；定义变更复用/清理步骤 | **M** | 已完成（聚合叠加聚合亦已支持） |
 | 窗口/TopK 叠加在 join / 聚合上 | ✅ 已实现：读 **join** 与读 **sum/count/avg 聚合** 的窗口/TopK 自动派生；派生**窗口**步（单个排名/取值窗口，键=分区键+源主键）亦已支持（PLAN §10.118/§10.120），多窗口链仍拒 | **M** | 已完成 |
 | union 各分支为 join | ✅ 已覆盖：分支为已注册 keyed 源（含 join/分支视图）时 `UNION ALL` 即可；派生 **union 步**（父算子读 union）已实现——优化器剪掉的分支主键由 `AnalyzeRequest.derived` 自动补齐（PLAN §10.121），混合键集合的分支明确拒绝 | **M** | 已完成 |
 | 嵌套/不透明派生表 | 部分 ✅：join 层嵌套与普通派生表已按需物化；其它算子层的嵌套仍拒 | **M** | 派生重写已落地，其余算子步逐项放开 |

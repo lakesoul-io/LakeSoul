@@ -3369,6 +3369,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `list_views` 元数据、append-only MV 保留重复行、带主键 MV 重复主键明确拒绝、`allow_fallback=false`
   恢复拒绝、坏语句仍致命、Tier-1 读 fallback 明确拒绝。全量 IVM 套件 **458 passed / 0 failed**。
 
+### 10.124 派生步扩展到混合聚合（ROADMAP §B2）
+
+- **分析入口**：`derived_step_supported` 放行所有 `LogicalPlan::Aggregate`（混合聚合由多聚合视图
+  `MultiAgg` 维护，命名/类型由分析器按聚合函数与参数标签推导，如 `sum_v`/`min_v`），并删除
+  sum/count/avg 与单 MIN/MAX 的白名单及 `DerivedAggKind`。
+- **映射/主键/身份**：`derived_output_mapping` 增加 `ViewSpec::MultiAgg` 臂——分组字段按位置映射到
+  `group_keys`、聚合字段按位置映射到 `aggregates[].column`；`derived_primary_keys` 与
+  `set_derived_identity` 增加 MultiAgg 臂（分组键 / 表 id）。
+- **能力性限制统一兜底**：执行器自身的形状限制错误（派生形状不支持、multi-window 步、派生视图不暴露
+  某列、超过 `MAX_DERIVED_STEPS`）也附加 `UnsupportedShape` 标记，因此在 Tier-2 目标上同样走全量回退，
+  而不是成为绕过回退契约的硬错误。
+- **测试**：`tests/derived_views.rs` 新增“混合聚合步”（`SUM(v)`+`MIN(v)` 内层 → 外层 SUM 叠加：
+  bootstrap、删除组最小值后再增量、步骤复用）；原“明确拒绝”用例改为 **multi-window 链**形状（两个
+  窗口子句且外层同时引用两列，避免优化器剪掉未被引用的窗口），断言回退原因仍含 “not materialized yet”。
+  全量 IVM 套件 **460 passed / 0 failed**。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
