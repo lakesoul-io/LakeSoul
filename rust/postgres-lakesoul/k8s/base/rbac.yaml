@@ -9,6 +9,9 @@ metadata:
 # The coordinator's worker discovery reads the mounted service account token
 # (rotated by Kubernetes) and the in-cluster CA on every refresh.
 automountServiceAccountToken: true
+# Private SWR image; the Secret is created out of band (README, Lifecycle 3).
+imagePullSecrets:
+  - name: lakesoul-registry
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -18,6 +21,8 @@ metadata:
 # Workers never call the Kubernetes API in this phase: token auto-mount off
 # (discovery is a coordinator concern).
 automountServiceAccountToken: false
+imagePullSecrets:
+  - name: lakesoul-registry
 ---
 # Discovery API access is namespaced and read-only: only the EndpointSlices
 # of the worker Service in the same namespace.

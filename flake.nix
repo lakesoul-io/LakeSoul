@@ -278,7 +278,9 @@
 
     lakesoulImage = pkgs.dockerTools.streamLayeredImage {
       name = "lakesoul-k8s";
-      tag = gitCommit;
+      # Development stage: one moving tag, pulled with `imagePullPolicy:
+      # Always`; the commit stays visible in `--version` and `build_info`.
+      tag = "dev";
       contents = [
         lakesoulBins
         pkgs.cacert

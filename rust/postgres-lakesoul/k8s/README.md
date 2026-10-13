@@ -36,13 +36,13 @@ Deliberately **not** included (later phases):
 ## Lifecycle
 
 1. Images build from this repository; a single image carries both binaries
-   (`/app/postgres-lakesoul`, `/app/lakesoul-worker`). The manifests use
-   `lakesoul-k8s:local` with `imagePullPolicy: IfNotPresent`. Build it with
-   the root `flake.nix` (crane + `dockerTools.streamLayeredImage`):
+   (`/app/postgres-lakesoul`, `/app/lakesoul-worker`). During development the
+   manifests use one moving tag, `lakesoul-k8s:dev`, with
+   `imagePullPolicy: Always`. Build it with the root `flake.nix` (crane +
+   `dockerTools.streamLayeredImage`):
 
    ```sh
    nix build .#image && ./result | docker load
-   docker tag "lakesoul-k8s:$(nix eval --raw .#image.imageTag)" lakesoul-k8s:local
    ```
 
    `nix build .#lakesoul` builds only the two binaries. Rust is the
@@ -52,10 +52,32 @@ Deliberately **not** included (later phases):
    `Cargo.lock`, `.cargo/config.toml` or the toolchain change; a source
    change recompiles the workspace crates only. The image has no distro
    base: it holds the binaries' Nix closure (glibc included), CA
-   certificates and `/etc/passwd`, runs as `nobody` (65534), and is
-   tagged with the 12-character git commit (`-dirty` for uncommitted
-   changes) that `--version` also reports. The flake sees only git-tracked
-   files.
+   certificates and `/etc/passwd`, and runs as `nobody` (65534). The flake
+   sees only git-tracked files.
+
+   The tag does not identify a build: `--version` and the `build_info`
+   metric report the 12-character git commit (`-dirty` for uncommitted
+   changes).
+
+   With `Always` the kubelet resolves the tag against the registry on every
+   Pod start and downloads only the layers it lacks, so nodes must reach a
+   registry: an image only copied onto a node (`docker load`, `kind load`)
+   fails with `ErrImagePull`. The `images:` entry in `base/kustomization.yaml`
+   points `lakesoul-k8s` at
+   `swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-k8s`; edit its
+   `newName` for another registry (`kubectl` bundles kustomize for `apply -k`
+   but has no `kustomize edit`). Push after each build:
+
+   ```sh
+   docker tag lakesoul-k8s:dev swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-k8s:dev
+   docker push swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-k8s:dev
+   ```
+
+   The SWR repository is private: both ServiceAccounts list the pull Secret
+   `lakesoul-registry` in `imagePullSecrets` (created in step 3). Pushing a
+   new `dev` leaves the Pod spec unchanged, so `kubectl apply` restarts
+   nothing; after each push run
+   `kubectl -n lakesoul rollout restart deployment/lakesoul-coordinator deployment/lakesoul-worker`.
 
    The build applies `.cargo/config.toml` (`-Ctarget-feature=+avx2`), so
    every node that runs the image needs AVX2 (`grep -m1 -o avx2 /proc/cpuinfo`).
@@ -70,12 +92,28 @@ Deliberately **not** included (later phases):
    - object store (S3 or RustFS) with the warehouse bucket initialized,
      reachable from coordinator and workers.
 
-   Create the secret once, out of this repository (never commit credentials):
-   `kubectl -n lakesoul create secret generic lakesoul-secrets --from-literal=...`
-   with the keys `pg-url`, `pg-username`, `pg-password`, `warehouse`,
-   `aws-endpoint`, `aws-access-key-id`, `aws-secret-access-key`.
-   Secrets are referenced through `secretKeyRef`, not inline in CLI args, so
-   plain `kubectl describe` does not print credentials.
+   Create the secrets once, out of this repository (never commit credentials),
+   after `kubectl apply -f rust/postgres-lakesoul/k8s/base/namespace.yaml`:
+   - `kubectl -n lakesoul create secret generic lakesoul-secrets --from-literal=...`
+     with the keys `pg-url`, `pg-username`, `pg-password`, `warehouse`,
+     `aws-endpoint`, `aws-bucket`, `aws-access-key-id`, `aws-secret-access-key`.
+     Secrets are referenced through `secretKeyRef`, not inline in CLI args, so
+     plain `kubectl describe` does not print credentials.
+   - the image pull Secret, from SWR's long-term login command
+     (`docker login -u <region>@<AK> -p <login key> swr...`; temporary login
+     keys expire):
+
+     ```sh
+     kubectl -n lakesoul create secret docker-registry lakesoul-registry \
+       --docker-server=swr.cn-southwest-2.myhuaweicloud.com \
+       --docker-username='cn-southwest-2@<AK>' --docker-password='<login key>'
+     ```
+
+     The ServiceAccount admission controller copies `imagePullSecrets` into a
+     Pod only at Pod creation, and the kubelet reads the Secret at each pull:
+     Pods created before the Secret existed recover on their next pull retry;
+     Pods created before the ServiceAccount listed it need
+     `kubectl -n lakesoul rollout restart`.
 
 ## Observability (optional overlay)
 

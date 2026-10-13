@@ -24,8 +24,8 @@ spec:
       serviceAccountName: lakesoul-worker
       containers:
         - name: lakesoul-worker
-          image: lakesoul-k8s:local
-          imagePullPolicy: IfNotPresent
+          image: lakesoul-k8s:dev
+          imagePullPolicy: Always
           command: ["/app/lakesoul-worker"]
           args: []
           envFrom:
@@ -43,6 +43,12 @@ spec:
                 secretKeyRef:
                   name: lakesoul-secrets
                   key: aws-endpoint
+                  optional: false
+            - name: AWS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-bucket
                   optional: false
             - name: AWS_ACCESS_KEY_ID
               valueFrom:

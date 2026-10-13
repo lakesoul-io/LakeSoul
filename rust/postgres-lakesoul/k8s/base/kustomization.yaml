@@ -12,3 +12,8 @@ resources:
   - worker-deployment.yaml
   # configmap.yaml: plain runtime settings (no credentials).
   - configmap.yaml
+images:
+  # Pods pull with `imagePullPolicy: Always`; the tag (`dev`) comes from the
+  # Deployments.
+  - name: lakesoul-k8s
+    newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-k8s

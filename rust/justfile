@@ -176,3 +176,6 @@ pg:
      --s3-access-key "rustfsadmin" \
      --s3-secret-key "rustfsadmin" \
      --distributed-workers http://127.0.0.1:50051,http://127.0.0.1:50052 2>&1 | tee -a {{ log_dir }}/postgres-lakesoul.pg.log
+
+image:
+    nix build ..#image && ./result | docker load

@@ -25,8 +25,8 @@ spec:
       containers:
         - name: postgres-lakesoul
           # Single image, binary selected per Pod.
-          image: lakesoul-k8s:local
-          imagePullPolicy: IfNotPresent
+          image: lakesoul-k8s:dev
+          imagePullPolicy: Always
           command: ["/app/postgres-lakesoul"]
           args: []
           # All configuration is environment; no secrets or URLs inlined in
@@ -69,6 +69,12 @@ spec:
                 secretKeyRef:
                   name: lakesoul-secrets
                   key: aws-endpoint
+                  optional: false
+            - name: AWS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-bucket
                   optional: false
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
