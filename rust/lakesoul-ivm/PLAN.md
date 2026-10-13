@@ -3385,6 +3385,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   窗口子句且外层同时引用两列，避免优化器剪掉未被引用的窗口），断言回退原因仍含 “not materialized yet”。
   全量 IVM 套件 **460 passed / 0 failed**。
 
+### 10.125 派生步扩展到窗口链（ROADMAP §B2/§B7）
+
+- **映射**：`derived_output_mapping` 的 multi-window 臂按**链序**逐节点配对——分析器把链从顶层
+  窗口节点向下收集（`windows` 顺序 = 链序），每个节点把其**尾部输出**（该子句的窗口列）映射到
+  `columns[].column`；中间投影按分析器同样的规则跳过，输入列中 MV 不保留的列不映射（被引用时由
+  schema 校验报错、并由 Tier-2 兜底）。`derived_primary_keys`/`set_derived_identity` 增加
+  MultiWindow 臂（源主键 / 表 id）。
+- **聚合参数解析（通用修复）**：派生步上方的投影别名此前不会被混合聚合路径解析，
+  `parse_multi_aggregates` 现在接受 `hoisted_expressions(&aggregate.input)` 并把每个聚合的**实参**
+  先 `resolve_hoisted`（命名与渲染都用解析后的实参）——`SUM(rn)` 因此渲染为 `sum(row_number)`，
+  指向步 MV 的真实列。四类调用点（GROUPING SETS、计算列、HAVING 子查询、DISTINCT ON/多聚合）同步传入。
+- **结果类型改为按源 schema 推导**：`parse_multi_aggregates` 的 `aggregates[].result` 由
+  `expression_type(&source.schema, &call)` 得出（原先取计划列类型）。运行时是在源列上求值渲染后的
+  call，计划类型可能与之不符（如 DataFusion 的 `row_number()` 是 UInt64，而 IVM 窗口 MV 物化为
+  Int64）；普通视图两者一致，定义哈希不变。
+- **测试**：`tests/derived_views.rs` 新增“窗口链步”（两个窗口子句 → 外层多聚合：bootstrap、新增
+  行重排名、删除行重排名、步骤复用；参考值由 DataFusion 全量重算给出）；原“明确拒绝”用例改为
+  `LIMIT` without `ORDER BY`（不再有被拒的派生步形状），断言回退原因出现在 schema 校验错误中。
+  全量 IVM 套件 **461 passed / 0 failed**；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

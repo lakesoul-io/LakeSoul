@@ -376,7 +376,7 @@ async fn a_shrunken_definition_drops_the_derived_step() {
 }
 
 #[test_log::test(tokio::test)]
-async fn an_unsupported_derived_step_is_rejected_explicitly() {
+async fn an_unsupported_shape_reports_its_reason() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -384,18 +384,14 @@ async fn an_unsupported_derived_step_is_rejected_explicitly() {
     let fact = create_source(&runtime, &dir, &format!("ivm_der3_f_{suffix}")).await;
     let mv = create_source(&runtime, &dir, &format!("ivm_der3_mv_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
-    // A multi-window step (two window clauses over one source) has no derived
-    // layout yet; the statement falls into the Tier-2 fallback, whose schema
-    // check reports the shape rejection.
+    // `LIMIT` without an `ORDER BY` is not maintained; the statement falls
+    // into the Tier-2 fallback, whose schema check reports the shape reason.
     let statement = format!(
-        "INSERT INTO {} SELECT g, SUM(rn) AS sum_v, SUM(cnt) AS cnt_sum \
-         FROM (SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn, \
-                      SUM(v) OVER (PARTITION BY v) AS cnt \
-               FROM {}) t GROUP BY g",
+        "INSERT INTO {} SELECT k, g, v FROM {} LIMIT 2",
         mv.table_name, fact.table_name
     );
     let error = executor.execute(&statement).await.unwrap_err().to_string();
-    assert!(error.contains("not materialized yet"), "{error}");
+    assert!(error.contains("not maintained"), "{error}");
 }
 
 /// The full recompute of `SUM(v)` per `g` over the fact table.
@@ -1198,4 +1194,222 @@ async fn a_mixed_aggregate_step_makes_aggregate_over_aggregate_maintainable() {
         read_sum_mv(runtime, &mv).await,
         full_group_sum(runtime, &fact).await
     );
+}
+
+/// The full recompute of `SUM(rn)` and `SUM(cnt)` per `g` for the two-clause
+/// window chain below.
+async fn full_multi_window_sum(
+    runtime: &IvmRuntime,
+    fact: &IvmTable,
+) -> Vec<(String, i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("f", Arc::new(runtime.table_provider(fact)))
+        .unwrap();
+    let batches = context
+        .sql(
+            "select g, sum(cast(rn as bigint)) as sum_rn, sum(cnt) as sum_cnt from (\
+             select k, g, row_number() over (partition by g order by v, k) as rn, \
+                    sum(v) over (partition by v) as cnt \
+             from f where op <> 'delete') t group by g order by g",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let counts = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                groups.value(row).to_string(),
+                sums.value(row),
+                counts.value(row),
+            ));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_multi_window_step_makes_an_aggregate_over_it_maintainable() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der12_f_{suffix}")).await;
+    // The step is a two-clause window chain; its MV keeps the source key, the
+    // partition-key values and the window columns, in the analyzer's order
+    // (the top clause first).
+    let groups = vec![
+        lakesoul_ivm::WindowGroupSpec {
+            partition_keys: vec!["v".to_string()],
+            order_keys: Vec::new(),
+            order_by: Vec::new(),
+            columns: vec![lakesoul_ivm::WindowColumn {
+                function: lakesoul_ivm::WindowFunction::Sum,
+                value_column: Some("v".to_string()),
+                window_args: None,
+                window_filter: None,
+                ignore_nulls: false,
+                window_frame: None,
+                column: "sum_v".to_string(),
+            }],
+        },
+        lakesoul_ivm::WindowGroupSpec {
+            partition_keys: vec!["g".to_string()],
+            order_keys: vec!["v".to_string()],
+            order_by: Vec::new(),
+            columns: vec![lakesoul_ivm::WindowColumn {
+                function: lakesoul_ivm::WindowFunction::RowNumber,
+                value_column: None,
+                window_args: None,
+                window_filter: None,
+                ignore_nulls: false,
+                window_frame: None,
+                column: "row_number".to_string(),
+            }],
+        },
+    ];
+    let step_schema = lakesoul_ivm::multi_window_mv_schema_for(
+        &source_schema(),
+        &["k".to_string()],
+        &groups,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der12_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::multi_agg_mv_schema_for(
+                    &step_schema,
+                    &["g".to_string()],
+                    &[],
+                    &[
+                        // The arguments resolve to the step's materialized
+                        // columns, so the result types come from them.
+                        ("sum_row_number".to_string(), DataType::Int64),
+                        ("sum_sum_v".to_string(), DataType::Int64),
+                    ],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT g, SUM(rn) AS sum_rn, SUM(cnt) AS sum_cnt \
+         FROM (SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn, \
+                      SUM(v) OVER (PARTITION BY v) AS cnt \
+               FROM {}) t GROUP BY g",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 10, "insert"),
+            (3, "b", 20, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_step_view(runtime, &mv)
+        .await
+        .expect("the window chain is a derived step");
+    assert_eq!(
+        read_multi_window_mv(runtime, &mv).await,
+        full_multi_window_sum(runtime, &fact).await
+    );
+
+    // A new row re-ranks its partition and joins the other partition's sum.
+    fact.append_batch(runtime.client(), source_batch(&[(4, "b", 10, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_multi_window_mv(runtime, &mv).await,
+        full_multi_window_sum(runtime, &fact).await
+    );
+
+    // Deleting a row re-ranks again; the step is reused.
+    fact.append_batch(runtime.client(), source_batch(&[(3, "b", 20, "delete")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        derived_step_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+    assert_eq!(
+        read_multi_window_mv(runtime, &mv).await,
+        full_multi_window_sum(runtime, &fact).await
+    );
+}
+
+/// The `g, sum_rn, sum_cnt` rows of the target MV.
+async fn read_multi_window_mv(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> Vec<(String, i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_row_number, sum_sum_v from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let counts = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                groups.value(row).to_string(),
+                sums.value(row),
+                counts.value(row),
+            ));
+        }
+    }
+    rows
 }

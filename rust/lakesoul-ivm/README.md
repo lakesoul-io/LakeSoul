@@ -225,9 +225,12 @@ Supported within the shapes above:
   step MV), a **mixed aggregate** (any aggregate mix the multi-aggregate view
   maintains, materialized one column per aggregate), a **roster window** (a
   single ranking or value window, keyed like the window MV by its partition
-  keys plus the source primary keys), and a **`UNION ALL`** (a keyed branch the
-  consuming operator does not select its primary keys from is widened with
-  them again).
+  keys plus the source primary keys), a **window chain** (several window
+  clauses, whose columns are mapped per chain node), and a **`UNION ALL`** (a
+  keyed branch the consuming operator does not select its primary keys from is
+  widened with them again).  An aggregate argument that names a projection
+  above the step (for example `SUM(rn)` over a window step) resolves to the
+  step's materialized column, so the rendered calls run against the step MV.
   The statement is rewritten to read the derived MV (a compact join widens
   its payloads to the subplan's column names, and an aggregate step's
   materialized columns such as `sum_v` or `value`, or a window step's

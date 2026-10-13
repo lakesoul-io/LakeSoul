@@ -305,11 +305,41 @@ fn derived_output_mapping(
         }
         return Ok(mapping);
     }
-    if matches!(spec, ViewSpec::MultiWindow { .. }) {
-        return Err(rootcause::report!(
-            "a derived multi-window view is not materialized yet"
-        )
-        .attach(UnsupportedShape));
+    if let ViewSpec::MultiWindow { windows, .. } = spec {
+        // The chain nodes are materialized top-down: the analyzer collected
+        // them from the subplan's top window, and every node's trailing
+        // outputs are that clause's window columns.  The leading input columns
+        // the MV does not keep stay unmapped.
+        let mut mapping = Vec::new();
+        let mut node = peel(subplan);
+        for group in windows {
+            let LogicalPlan::Window(window) = node else {
+                return Err(rootcause::report!(
+                    "a derived multi-window view needs its window chain"
+                )
+                .attach(UnsupportedShape));
+            };
+            let fields = node.schema().fields();
+            let outputs = group.columns.len();
+            if fields.len() < outputs {
+                return Err(rootcause::report!(
+                    "a derived multi-window view does not expose its columns"
+                )
+                .attach(UnsupportedShape));
+            }
+            let start = fields.len() - outputs;
+            for (index, field) in fields.iter().enumerate().skip(start) {
+                mapping.push((
+                    field.name().clone(),
+                    group.columns[index - start].column.clone(),
+                ));
+            }
+            node = match peel(&window.input) {
+                LogicalPlan::Projection(projection) => peel(&projection.input),
+                other => other,
+            };
+        }
+        return Ok(mapping);
     }
     if let ViewSpec::MultiAgg {
         group_keys,
@@ -917,6 +947,13 @@ impl IvmSqlExecutor {
                 let mut keys = partition_keys.clone();
                 keys.extend(source.primary_keys.clone());
                 keys
+            }
+            ViewSpec::MultiWindow {
+                source_table_id, ..
+            } => {
+                // The multi-window MV is keyed by the source primary keys.
+                let source = self.runtime.open_table_by_id(source_table_id).await?;
+                source.primary_keys.clone()
             }
             ViewSpec::UnionAll { sources, .. }
             | ViewSpec::UnionDistinct { sources, .. } => {
