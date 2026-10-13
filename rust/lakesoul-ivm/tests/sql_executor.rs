@@ -18,6 +18,7 @@ use lakesoul_ivm::{
     IvmTableOptions, MinMaxKind, StateRole, min_max_mv_schema_for,
     sum_count_mv_schema_for,
 };
+use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
 use tempfile::tempdir;
 
 const CHANGE_COLUMN: &str = "op";
@@ -532,4 +533,106 @@ async fn rejects_keyless_target_for_keyed_views() {
         .await
         .unwrap_err();
     assert!(format!("{error}").contains("has no primary key"), "{error}");
+}
+
+/// An update commit on the source (a window that needs a snapshot) makes the
+/// next statement rebuild the view instead of failing.
+#[test_log::test(tokio::test)]
+async fn an_update_commit_on_the_source_rebuilds_the_view() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_upd_src_{suffix}"),
+                table_path(&dir, "src"),
+                schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_upd_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&source.schema, &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_upd_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_upd_src_{suffix} GROUP BY g"
+    );
+    source
+        .append_batch(
+            executor.runtime().client(),
+            batch(&[(1, "a", 10, "insert"), (2, "a", 5, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(read_value(runtime, &mv, "sum_v").await.get("a"), Some(&15));
+
+    // An update commit carries no new files but needs a snapshot: the window
+    // is no longer incremental.
+    let partitions = runtime
+        .client()
+        .get_all_partition_info(&source.table_id)
+        .await
+        .unwrap();
+    let partition = partitions.first().expect("the source has a partition");
+    let table_info = runtime
+        .client()
+        .get_table_info_by_table_id(&source.table_id)
+        .await
+        .unwrap()
+        .expect("the source table is registered");
+    runtime
+        .client()
+        .commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: partition.partition_desc.clone(),
+                    commit_op: CommitOp::UpdateCommit.into(),
+                    snapshot: partition.snapshot.clone(),
+                    ..Default::default()
+                }],
+                read_partition_info: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: partition.partition_desc.clone(),
+                    version: partition.version,
+                    ..Default::default()
+                }],
+            },
+            CommitOp::UpdateCommit,
+        )
+        .await
+        .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "rebuild");
+    assert_eq!(read_value(runtime, &mv, "sum_v").await.get("a"), Some(&15));
+
+    // The rebuilt view refreshes incrementally again.
+    source
+        .append_batch(runtime.client(), batch(&[(3, "a", 7, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(read_value(runtime, &mv, "sum_v").await.get("a"), Some(&22));
 }
