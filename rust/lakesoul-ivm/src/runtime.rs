@@ -1830,6 +1830,18 @@ pub struct IvmRuntime {
 #[derive(Debug)]
 pub(crate) struct PartitionDropped;
 
+/// The attachment a refresh failure carries when the incremental path cannot
+/// continue (a source window that needs a snapshot, a cursor window that no
+/// longer aligns with the committed history): the caller rebuilds.
+#[derive(Debug)]
+pub(crate) struct RebuildRequired;
+
+impl std::fmt::Display for RebuildRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a window that requires a rebuild")
+    }
+}
+
 impl std::fmt::Display for PartitionDropped {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("a dropped source partition")
@@ -3525,12 +3537,14 @@ impl IvmRuntime {
         })
     }
 
-    /// Whether a refresh failed because a source partition was dropped.
-    pub(crate) fn partition_dropped(error: &rootcause::Report) -> bool {
-        error
-            .attachments()
-            .iter()
-            .any(|attachment| attachment.downcast_inner::<PartitionDropped>().is_some())
+    /// Whether a refresh failed in a way that requires a rebuild: a dropped
+    /// source partition, a source window that needs a snapshot, or a cursor
+    /// window that no longer aligns with the committed history.
+    pub(crate) fn rebuild_required(error: &rootcause::Report) -> bool {
+        error.attachments().iter().any(|attachment| {
+            attachment.downcast_inner::<PartitionDropped>().is_some()
+                || attachment.downcast_inner::<RebuildRequired>().is_some()
+        })
     }
 
     /// Read the changelog window of every partition of a source.
@@ -3575,7 +3589,8 @@ impl IvmRuntime {
                 return Err(report!(
                     "view {view_id} source partition {} requires a rebuild",
                     partition.partition_desc
-                ));
+                )
+                .attach(RebuildRequired));
             }
             // A dropped partition must remove its rows from the view, which
             // the file-level window cannot express: the caller rebuilds.
@@ -3699,7 +3714,8 @@ impl IvmRuntime {
                     range.source_table_id,
                     range.partition_desc,
                     range.from_version
-                ));
+                )
+                .attach(RebuildRequired));
             }
         }
 

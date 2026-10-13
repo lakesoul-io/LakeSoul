@@ -444,9 +444,14 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
 * The window identity (source, partition, from/to versions) is recorded in
   `ivm.epochs`. Re-applying the same window is a no-op; a partially written
   window is completed by the retry because the affected keys are rewritten.
-* A view whose source history is no longer consumable (for example a compaction
-  that removed the cursor versions) must be rebuilt; the metadata signals this
-  through `requires_rebuild`.
+* A view whose source history is no longer consumable (for example a
+  compaction that removed the cursor versions, or an **update commit** whose
+  window needs a snapshot) must be rebuilt; the metadata signals this through
+  `requires_rebuild`, and a statement that hits it — or a cursor window that
+  no longer aligns with the committed history — **rebuilds the view
+  automatically** and reports `Rebuild`, so the view stays correct without a
+  manual rebuild; a statement chain treats it like any other rebuild and skips
+  the retry.  The same applies to a dropped source partition.
 * One writer per view: refreshes of the same view serialize through the epoch
   protocol.
 * **Two-tier refresh contract**: a statement whose shape the incremental

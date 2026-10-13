@@ -220,8 +220,9 @@ impl IvmRuntime {
                         break;
                     }
                     Err(error) => {
-                        // A dropped partition needs the rebuild, not a retry.
-                        let dropped = IvmRuntime::partition_dropped(&error);
+                        // A dropped partition or a source window that needs a
+                        // snapshot needs the rebuild, not a retry.
+                        let dropped = IvmRuntime::rebuild_required(&error);
                         failure = Some(error);
                         if dropped {
                             break;

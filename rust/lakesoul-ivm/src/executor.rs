@@ -723,9 +723,10 @@ impl IvmSqlExecutor {
         } else if same_definition && !dirty {
             match self.runtime.refresh_spec(&spec).await {
                 Ok(epoch) => (IvmExecutionAction::Incremental, epoch),
-                // A dropped source partition cannot be retracted through the
-                // file window: rebuild the view from the current state.
-                Err(error) if IvmRuntime::partition_dropped(&error) => {
+                // A dropped source partition (or a source window that needs a
+                // snapshot) cannot be retried through the file window: rebuild
+                // the view from the current state.
+                Err(error) if IvmRuntime::rebuild_required(&error) => {
                     let epoch = self.runtime.rebuild_spec(&spec).await?;
                     (IvmExecutionAction::Rebuild, Some(epoch))
                 }

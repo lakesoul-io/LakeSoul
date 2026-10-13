@@ -3419,6 +3419,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `action = rebuild` 且 MV 只剩 d1 → 再 append 后仍为 `incremental`。
 - 只重算被删分区、变化分区裁剪与 MV 分区写仍属二期后续优化。
 
+### 10.127 增量路径「需要重建」的统一自愈（ROADMAP §B1/B9）
+
+- **问题**：`collect_source_window` 的 `requires_rebuild`（update commit 进入窗口、基线快照缺失）与
+  `begin_window` 的「游标窗口与已提交历史不对齐」此前直接作为错误返回：链内 `ChainPolicy` 会重试后重建
+  （partition 场景已在 §10.126 跳过重试），但**直接语句**只报错并把视图留在滞后状态。
+- **实现**：新增 `RebuildRequired` 标记（与 `PartitionDropped` 并列），统一判定
+  `IvmRuntime::rebuild_required(error)`；执行器在增量分支捕获后直接 `rebuild_spec`（action=`Rebuild`），
+  链策略跳过重试直接重建。
+- **测试**：`tests/sql_executor.rs` 新增用例——bootstrap → 对源提交 `CommitOp::UpdateCommit`
+  （提交需带当前 `snapshot` 与 `read_partition_info`，见 §10.126 的同类注意点）→ 下一次执行
+  `action = rebuild` 且数据正确 → 再 append 后回到 `incremental`。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
