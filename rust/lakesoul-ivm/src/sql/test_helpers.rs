@@ -34,6 +34,7 @@ pub(crate) fn source_table(name: &str) -> IvmTable {
         hash_bucket_num: "1".to_string(),
         cdc_column: None,
         file_format: PhysicalFormat::Parquet,
+        allow_fallback: true,
     }
 }
 

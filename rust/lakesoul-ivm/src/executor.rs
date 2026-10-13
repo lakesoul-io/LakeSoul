@@ -22,7 +22,7 @@ use std::fmt;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -37,13 +37,14 @@ use datafusion::sql::sqlparser::ast::{
 use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
-    ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,
-    IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn,
-    JoinSide, ViewSpec, approx_distinct_groups_mv_schema_for,
-    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
-    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
-    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
+    IVM_NONNULL_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN,
+    IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
+    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
+    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
+    distinct_agg_groups_mv_schema_for, full_join_view_schema_for,
+    grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_for,
     lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
@@ -58,7 +59,8 @@ use crate::runtime::{
     wide_outer_join_view_schema_for, window_columns_mv_schema_for,
 };
 use crate::sql::{
-    AnalyzeRequest, DerivedSource, analyze_select, definition_hash, peel, plan_label,
+    AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
+    peel, plan_label,
 };
 use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
 
@@ -133,6 +135,55 @@ fn derived_source(error: &rootcause::Report) -> Option<LogicalPlan> {
         .iter()
         .find_map(|attachment| attachment.downcast_inner::<DerivedSource>())
         .map(|source| source.plan.clone())
+}
+
+/// Whether the analysis failed because the analyzer does not maintain the
+/// statement's shape (as opposed to a broken statement, an unknown table or a
+/// schema mismatch), which the Tier-2 fallback may recompute in full.
+fn unsupported_shape(error: &rootcause::Report) -> bool {
+    error
+        .attachments()
+        .iter()
+        .any(|attachment| attachment.downcast_inner::<UnsupportedShape>().is_some())
+}
+
+/// The one-line reason a statement fell back, for the view metadata.
+fn rejection_reason(error: &rootcause::Report) -> String {
+    error
+        .to_string()
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.trim_start_matches('●').trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The MV schema a Tier-2 fallback statement must produce: its own output
+/// columns plus the row kind and epoch columns every MV carries.
+fn fallback_mv_schema(plan: &LogicalPlan) -> Result<SchemaRef> {
+    let mut fields = plan
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            Arc::new(Field::new(
+                field.name(),
+                field.data_type().clone(),
+                field.is_nullable(),
+            )) as arrow_schema::FieldRef
+        })
+        .collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 /// A scan of a derived MV table, for the rewritten plan.
@@ -353,6 +404,9 @@ pub enum IvmExecutionAction {
     /// `INSERT OVERWRITE` with an unchanged definition: the view was recomputed
     /// from the current source state.
     Overwrite,
+    /// The statement's shape is not maintained incrementally: the view was
+    /// recomputed in full (Tier-2).
+    Fallback,
 }
 
 impl IvmExecutionAction {
@@ -363,6 +417,7 @@ impl IvmExecutionAction {
             IvmExecutionAction::Incremental => "incremental",
             IvmExecutionAction::Rebuild => "rebuild",
             IvmExecutionAction::Overwrite => "overwrite",
+            IvmExecutionAction::Fallback => "fallback",
         }
     }
 }
@@ -374,6 +429,7 @@ impl fmt::Display for IvmExecutionAction {
             IvmExecutionAction::Incremental => "incremental",
             IvmExecutionAction::Rebuild => "rebuild",
             IvmExecutionAction::Overwrite => "overwrite",
+            IvmExecutionAction::Fallback => "fallback",
         })
     }
 }
@@ -499,9 +555,39 @@ impl IvmSqlExecutor {
         // derived steps are idempotent by name, while the target checks below
         // still run before the target itself is touched.
         let mut derived = Vec::new();
-        let (probe, plan) = self
+        let analyzed = self
             .analyze_with_derived(&plan, &mut tables, &request, &mv, &mut derived)
-            .await?;
+            .await;
+        let (probe, fallback, expected, plan) = match analyzed {
+            Ok((probe, rewritten)) => {
+                let expected = expected_mv_schema(&probe, &tables)?;
+                (probe, false, expected, rewritten)
+            }
+            Err(error) if unsupported_shape(&error) && mv.allow_fallback => {
+                // Tier-2: the analyzer does not maintain the shape, so the
+                // statement is recomputed in full on every refresh.  The
+                // derived steps a failed analysis materialized are not part
+                // of the fallback definition.
+                if !derived.is_empty() {
+                    self.drop_stale_derived(&mv, 0).await?;
+                }
+                let source_ids = tables
+                    .values()
+                    .filter(|table| !derived.contains(&table.table_id))
+                    .map(|table| table.table_id.clone())
+                    .collect();
+                let probe = ViewSpec::Fallback {
+                    view_id: view_id.clone(),
+                    statement: select_sql.clone(),
+                    tables: source_ids,
+                    reason: rejection_reason(&error),
+                    mv_table_id: mv.table_id.clone(),
+                };
+                let expected = fallback_mv_schema(&plan)?;
+                (probe, true, expected, plan.clone())
+            }
+            Err(error) => return Err(error),
+        };
         // The definition hash ignores generated table ids, so the probe is a
         // valid identity even before the state table exists.
         let definition = definition_hash(&probe)?;
@@ -511,18 +597,27 @@ impl IvmSqlExecutor {
 
         // Validate before the target is touched: a statement that cannot
         // maintain this target must not create or drop its state tables.
-        let expected = expected_mv_schema(&probe, &tables)?;
         if !schema_matches(&mv.schema, &expected) {
+            // A fallback reports the shape rejection too: the user needs to
+            // know why the statement is recomputed in full (and why its
+            // output columns must match the MV exactly).
+            let reason = match &probe {
+                ViewSpec::Fallback { reason, .. } => {
+                    format!(" (the shape is not maintained incrementally: {reason})")
+                }
+                _ => String::new(),
+            };
             return Err(rootcause::report!(
-                "target table `{}` does not match the view schema of this statement",
+                "target table `{}` does not match the view schema of this statement{reason}",
                 mv.table_name
             ));
         }
         // The keyed contract: the MV's primary key is the merge key that
         // resolves the delete markers a refresh writes, so a keyed statement
         // needs one.  A global aggregate rewrites its single row wholesale and
-        // needs no key; append-only statements are rejected by the analyzer.
-        if mv.primary_keys.is_empty() && !is_global_aggregate(&probe) {
+        // needs no key; a Tier-2 fallback truncates and rewrites the whole MV,
+        // so it may be append-only.
+        if !fallback && mv.primary_keys.is_empty() && !is_global_aggregate(&probe) {
             return Err(rootcause::report!(
                 "target table `{}` needs a primary key: the view's refresh writes \
                  delete markers that the MV's primary key merges; declare the key \
@@ -536,7 +631,7 @@ impl IvmSqlExecutor {
         if stored.is_some() && !same_definition {
             self.drop_generated_state(&view_id).await?;
         }
-        let spec = if needs_state_table(&probe) {
+        let spec = if !fallback && needs_state_table(&probe) {
             let state_table_id = self.ensure_state_table(&mv, &probe).await?;
             let request = AnalyzeRequest {
                 state_table_id: Some(state_table_id),
@@ -577,7 +672,24 @@ impl IvmSqlExecutor {
             .await?
             .as_deref()
             == Some("dirty");
-        let (action, epoch) = if insert.overwrite {
+        let (action, epoch) = if fallback {
+            // Every fallback refresh recomputes the statement; the action says
+            // so even when the definition is unchanged.  A no-op refresh (no
+            // source change) reports no epoch.
+            if same_definition && !insert.overwrite && !dirty {
+                (
+                    IvmExecutionAction::Fallback,
+                    self.runtime.refresh_spec(&spec).await?,
+                )
+            } else {
+                let epoch = self.runtime.rebuild_spec(&spec).await?;
+                self.runtime
+                    .metadata()
+                    .set_view_definition(&view_id, &definition, sql)
+                    .await?;
+                (IvmExecutionAction::Fallback, Some(epoch))
+            }
+        } else if insert.overwrite {
             if same_definition {
                 let epoch = self.runtime.rebuild_spec(&spec).await?;
                 (IvmExecutionAction::Overwrite, Some(epoch))
@@ -1148,6 +1260,13 @@ fn expected_mv_schema(
     tables: &HashMap<String, IvmTable>,
 ) -> Result<SchemaRef> {
     Ok(match spec {
+        // A Tier-2 fallback is validated against its planned statement, never
+        // against the spec.
+        ViewSpec::Fallback { .. } => {
+            return Err(rootcause::report!(
+                "a fallback view's schema comes from its statement"
+            ));
+        }
         ViewSpec::LookupChain {
             sources,
             steps,

@@ -308,6 +308,19 @@ impl std::fmt::Display for DerivedSource {
     }
 }
 
+/// The attachment every unsupported-shape rejection carries, so the executor
+/// can tell a shape the analyzer does not maintain (which may fall back to a
+/// full recompute, Tier-2) from a plain error (a broken statement, a schema
+/// mismatch) that must stay fatal.
+#[derive(Debug)]
+pub(crate) struct UnsupportedShape;
+
+impl std::fmt::Display for UnsupportedShape {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an unsupported view shape")
+    }
+}
+
 /// Whether a compound source can be materialized as a derived view.  The
 /// executor materializes the subplan exactly like a registered view (its
 /// spec, MV table and refresh are the normal ones), so any shape the
@@ -647,6 +660,11 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
         | ViewSpec::DistinctAgg { state_table_id, .. } => {
             *state_table_id = String::new();
         }
+        // The rejection reason depends on the analyzer's message, not on the
+        // view's meaning.
+        ViewSpec::Fallback { reason, .. } => {
+            reason.clear();
+        }
         _ => {}
     }
     let bytes = serde_json::to_vec(&normalized)?;
@@ -767,6 +785,7 @@ pub(crate) fn plan_label(plan: &LogicalPlan) -> &'static str {
 }
 fn unsupported(what: impl std::fmt::Display) -> rootcause::Report {
     rootcause::report!("unsupported incremental view shape: {what}")
+        .attach(UnsupportedShape)
 }
 
 #[cfg(test)]
@@ -797,6 +816,33 @@ mod tests {
                 Err(error) => println!("PLAN_ERR {sql}: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn fallback_definition_hash_ignores_the_reason() {
+        let first = ViewSpec::Fallback {
+            view_id: "view_1".to_string(),
+            statement: "select 1".to_string(),
+            tables: vec!["table_src".to_string()],
+            reason: "unsupported incremental view shape: one".to_string(),
+            mv_table_id: "table_mv".to_string(),
+        };
+        let mut second = first.clone();
+        if let ViewSpec::Fallback { reason, .. } = &mut second {
+            *reason = "unsupported incremental view shape: two".to_string();
+        }
+        assert_eq!(
+            definition_hash(&first).unwrap(),
+            definition_hash(&second).unwrap()
+        );
+        let mut third = first.clone();
+        if let ViewSpec::Fallback { statement, .. } = &mut third {
+            *statement = "select 2".to_string();
+        }
+        assert_ne!(
+            definition_hash(&first).unwrap(),
+            definition_hash(&third).unwrap()
+        );
     }
 
     #[tokio::test]

@@ -288,6 +288,11 @@ pub struct ViewInfo {
     pub last_epoch: i64,
     /// The last chain failure, until the next successful refresh.
     pub last_error: Option<String>,
+    /// Whether the view is recomputed in full on every refresh (Tier-2): its
+    /// shape is not maintained incrementally.
+    pub fallback: bool,
+    /// Why the view fell back, when it did (for example the rejected shape).
+    pub fallback_reason: Option<String>,
 }
 
 /// One row of `ivm.epochs`: a refresh window.
@@ -642,7 +647,9 @@ impl IvmMetadata {
         let rows = self
             .client
             .query(
-                "select view_id, status, refresh_interval_ms, last_epoch, last_error
+                "select view_id, status, refresh_interval_ms, last_epoch, last_error,
+                        (spec->>'kind' = 'fallback') as fallback,
+                        spec->>'reason' as fallback_reason
                  from ivm.views order by view_id",
                 QueryType::RO,
                 &[],
@@ -656,6 +663,8 @@ impl IvmMetadata {
                 refresh_interval_ms: row.get(2),
                 last_epoch: row.get(3),
                 last_error: row.get(4),
+                fallback: row.get(5),
+                fallback_reason: row.get(6),
             })
             .collect())
     }

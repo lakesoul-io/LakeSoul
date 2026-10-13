@@ -35,13 +35,12 @@ use crate::metadata::{
     SourceVersionRange, StateRole, StateTable,
 };
 use crate::provider::IvmTableProvider;
-use crate::table::{
-    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, PartitionFiles,
-    create_ivm_table,
-};
+pub use crate::table::{IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN};
+use crate::table::{IvmTable, IvmTableOptions, PartitionFiles, create_ivm_table};
 
 mod aggregates;
 mod chain;
+mod fallback;
 mod joins;
 mod lookup_chain;
 mod multi_join;
@@ -53,6 +52,7 @@ mod windows;
 
 pub use self::aggregates::*;
 pub use self::chain::*;
+pub use self::fallback::*;
 pub use self::joins::*;
 pub use self::lookup_chain::*;
 pub use self::multi_join::*;
@@ -1043,6 +1043,22 @@ pub enum ViewSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
     },
+    /// A statement the incremental analyzer does not maintain: every refresh
+    /// recomputes it in full (Tier-2) against the current source state.  The
+    /// view has no state tables and its definition identity is the statement.
+    Fallback {
+        /// The view id.
+        view_id: String,
+        /// The `SELECT` that produces the MV rows, exactly as written.
+        statement: String,
+        /// The source table ids the statement reads.
+        tables: Vec<String>,
+        /// Why the incremental analyzer rejected the shape, for the metadata.
+        /// It is not part of the definition identity.
+        reason: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+    },
 }
 
 impl ViewSpec {
@@ -1076,7 +1092,8 @@ impl ViewSpec {
             | ViewSpec::UnionAll { view_id, .. }
             | ViewSpec::UnionDistinct { view_id, .. }
             | ViewSpec::MultiWindow { view_id, .. }
-            | ViewSpec::TopK { view_id, .. } => view_id,
+            | ViewSpec::TopK { view_id, .. }
+            | ViewSpec::Fallback { view_id, .. } => view_id,
         }
     }
 
@@ -1144,6 +1161,9 @@ impl ViewSpec {
                 if let Some(lookup) = having_lookup {
                     ids.push(lookup.table_id.as_str());
                 }
+            }
+            ViewSpec::Fallback { tables, .. } => {
+                ids.extend(tables.iter().map(String::as_str));
             }
             ViewSpec::Join {
                 left_table_id,
@@ -1331,6 +1351,7 @@ impl ViewSpec {
             ViewSpec::UnionDistinct { .. } => "union_distinct",
             ViewSpec::TopK { .. } => "top_k",
             ViewSpec::MultiWindow { .. } => "multi_window",
+            ViewSpec::Fallback { .. } => "fallback",
         }
     }
 }
@@ -1414,6 +1435,7 @@ enum SpecView {
     UnionDistinct(UnionDistinctView),
     TopK(TopKView),
     MultiWindow(MultiWindowView),
+    Fallback(FallbackView),
 }
 
 /// The extra source a `HAVING` subquery reads: its rows are aggregated and
@@ -3188,11 +3210,56 @@ impl IvmRuntime {
                 filter: filter.clone(),
                 refresh_interval_ms,
             }),
+            ViewSpec::Fallback {
+                view_id,
+                statement,
+                tables,
+                reason,
+                mv_table_id,
+            } => {
+                let mut opened = Vec::with_capacity(tables.len());
+                for table_id in tables {
+                    opened.push(self.open_table_by_id(table_id).await?);
+                }
+                SpecView::Fallback(FallbackView {
+                    view_id: view_id.clone(),
+                    statement: statement.clone(),
+                    tables: opened,
+                    reason: reason.clone(),
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    refresh_interval_ms,
+                })
+            }
         })
+    }
+
+    /// A Tier-1 view must not read a Tier-2 fallback: the fallback rewrites its
+    /// whole MV, so a downstream incremental refresh cannot see the rows its
+    /// truncate removed.  A fallback view itself may read other fallbacks.
+    async fn ensure_incremental_upstreams(&self, spec: &ViewSpec) -> Result<()> {
+        if matches!(spec, ViewSpec::Fallback { .. }) {
+            return Ok(());
+        }
+        for table_id in spec.source_table_ids() {
+            let Some(value) = self.metadata.get_view_spec(table_id).await? else {
+                continue;
+            };
+            let upstream: ViewSpec = serde_json::from_value(value)?;
+            if matches!(upstream, ViewSpec::Fallback { .. }) {
+                return Err(report!(
+                    "view {} reads the fallback view {table_id}: a Tier-2 fallback \
+                     rewrites its materialized view, so a downstream incremental \
+                     view cannot track what it removed",
+                    spec.view_id()
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Refresh a view from its persisted [`ViewSpec`], opening every table by
     pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
+        self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();
         let view = self.spec_view(spec).await;
@@ -3229,6 +3296,7 @@ impl IvmRuntime {
             Ok(SpecView::UnionDistinct(view)) => self.refresh_union_distinct(&view).await,
             Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
             Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
+            Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
             Err(error) => Err(error),
         };
         crate::observability::record_refresh(
@@ -3243,6 +3311,7 @@ impl IvmRuntime {
     /// recomputed, the MV is replaced and the cursors are reset to the current
     /// source versions.
     pub async fn rebuild_spec(&self, spec: &ViewSpec) -> Result<i64> {
+        self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();
         let view = self.spec_view(spec).await;
@@ -3279,6 +3348,7 @@ impl IvmRuntime {
             Ok(SpecView::UnionDistinct(view)) => self.rebuild_union_distinct(&view).await,
             Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
             Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
+            Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
             Err(error) => Err(error),
         };
         if result.is_ok() {
