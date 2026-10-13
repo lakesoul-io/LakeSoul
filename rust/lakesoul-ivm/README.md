@@ -375,8 +375,14 @@ needs none).  A typical trap: the two branches of a
   changelog window, current state, before state and rebuild baseline alike —
   so filters, group keys and join keys can reference them. Merge-on-read runs
   within a partition, and as in LakeSoul a key must not span partitions (the
-  partition is also the unit of the cursors). Dropping a partition is not
-  incremental yet: rebuild the view when a partition disappears.
+  partition is also the unit of the cursors).  A **dropped partition**
+  (a delete commit that clears its snapshot) cannot be retracted file by file,
+  so the next refresh rebuilds the view from the current source state — the
+  statement reports a rebuild and the dropped rows disappear — and the view
+  keeps refreshing incrementally afterwards.  A **statement chain** treats the
+  same case like any other rebuild: the retry is skipped and the view rebuilds
+  in place.  (Recomputing only the dropped partition's rows is a later
+  optimization.)
 * The **keyed CDC contract** is exactly three markers — the values the
   LakeSoul Flink CDC ingestion writes: `insert`, `update`, `delete` (any other
   value is treated as a live version).  A keyed source folds markers through

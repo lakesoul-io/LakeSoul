@@ -1823,6 +1823,19 @@ pub struct IvmRuntime {
     metadata: IvmMetadata,
 }
 
+/// The attachment a refresh failure carries when a source partition was
+/// dropped: the incremental window cannot retract the rows it contributed, so
+/// the view is rebuilt from the current source state instead of silently
+/// keeping them.
+#[derive(Debug)]
+pub(crate) struct PartitionDropped;
+
+impl std::fmt::Display for PartitionDropped {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a dropped source partition")
+    }
+}
+
 /// The changelog window of every partition of one source.
 struct SourceWindow {
     added_files: Vec<PartitionFiles>,
@@ -3512,6 +3525,14 @@ impl IvmRuntime {
         })
     }
 
+    /// Whether a refresh failed because a source partition was dropped.
+    pub(crate) fn partition_dropped(error: &rootcause::Report) -> bool {
+        error
+            .attachments()
+            .iter()
+            .any(|attachment| attachment.downcast_inner::<PartitionDropped>().is_some())
+    }
+
     /// Read the changelog window of every partition of a source.
     async fn collect_source_window(
         &self,
@@ -3556,9 +3577,17 @@ impl IvmRuntime {
                     partition.partition_desc
                 ));
             }
-            // A deleted partition keeps its old cursor; it no longer exists in
-            // the table so it will not be scanned again.
-            if partition.partition_deleted || partition.to_version <= last_version {
+            // A dropped partition must remove its rows from the view, which
+            // the file-level window cannot express: the caller rebuilds.
+            if partition.partition_deleted {
+                return Err(report!(
+                    "view {view_id} source partition {} of table {} was dropped",
+                    partition.partition_desc,
+                    source.table_name
+                )
+                .attach(PartitionDropped));
+            }
+            if partition.to_version <= last_version {
                 continue;
             }
 

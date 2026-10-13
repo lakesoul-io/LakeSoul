@@ -179,7 +179,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| **分区源表**（keyed 分区表） | **M** | ✅ 一期已实现（PR-94，PLAN §10.100）：分区值进读取（IO 注入）、按分区 before-state、keyed 视图 guard 全部移除；二期（变化分区裁剪、MV 分区写）见 `ivm-partitioned-sources.md` |
+| **分区源表**（keyed 分区表） | **M** | ✅ 一期已实现（PR-94，PLAN §10.100）：分区值进读取（IO 注入）、按分区 before-state、keyed 视图 guard 全部移除；**分区删除**已实现（PLAN §10.126）：检测到 delete commit 后自动重建、删掉该分区在 MV 中的行，链内跳过重试直接重建；二期其余项（变化分区裁剪、MV 分区写、只重算被删分区）见 `ivm-partitioned-sources.md` |
 | append-only / append-only CDC 源 | **不做** | 见 A3；无 key 场景的后续方向见 §F3（推迟，只覆盖易增量子集） |
 
 ---

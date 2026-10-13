@@ -3405,6 +3405,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `LIMIT` without `ORDER BY`（不再有被拒的派生步形状），断言回退原因出现在 schema 校验错误中。
   全量 IVM 套件 **461 passed / 0 failed**；fmt/clippy 干净。
 
+### 10.126 源分区删除语义（ROADMAP §B9 二期）
+
+- **问题**：`collect_source_window` 此前对 `partition_deleted` 直接 `continue`（“已删除的分区保留旧游标”），
+  于是分区被 drop 后 MV 里该分区的行**永久残留**且无任何提示——静默给出错误结果。
+- **实现**：读取窗口时对 `partition_deleted` 返回带 `PartitionDropped { source_table_id,
+  partition_desc }` 附件的错误（“the view must be rebuilt”语义）；执行器在增量分支捕获该错误后
+  `rebuild_spec`（action 记为 `Rebuild`，重建会 `delete_cursors` 后按当前分区基线重算，被删分区的行随之消失，
+  之后继续增量）；`ChainPolicy` 的重试循环对该错误**跳过重试**直接进入重建。
+- **测试**：`tests/partitioned_sources.rs` 新增用例——分区源 append 两个分区（d1/d2）→ bootstrap →
+  用 `commit_data(DeleteCommit)`（delete commit 需要 `read_partition_info` 作为并发读集，否则
+  `commit_data_files_with_commit_op` 的删除分支会空转，测试里已注明）清除 d2 的 snapshot → 下一次执行
+  `action = rebuild` 且 MV 只剩 d1 → 再 append 后仍为 `incremental`。
+- 只重算被删分区、变化分区裁剪与 MV 分区写仍属二期后续优化。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

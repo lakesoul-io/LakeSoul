@@ -17,6 +17,7 @@ use lakesoul_ivm::{
     JoinView, keyed_join_output_primary_keys, keyed_join_view_schema_for,
     row_mv_schema_for, sum_count_mv_schema_for,
 };
+use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
 use tempfile::tempdir;
 
 const CHANGE_COLUMN: &str = "op";
@@ -516,5 +517,123 @@ async fn keyed_join_reads_partitioned_left() {
     assert_eq!(
         read_join_pairs(&runtime, &output).await,
         vec![(2, 25, "B".to_string())]
+    );
+}
+
+/// A dropped source partition removes its rows from the view: the next
+/// refresh rebuilds the view instead of silently keeping them.
+#[test_log::test(tokio::test)]
+async fn a_dropped_source_partition_rebuilds_the_view() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_drop_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &source.schema,
+                    &["day".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["day".to_string(), "g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_part_drop_mv_{suffix} \
+         SELECT day, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_part_src_{suffix} GROUP BY day, g"
+    );
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 10),
+            ("d2".to_string(), "b".to_string(), 5),
+        ]
+    );
+
+    // Drop the `d2` partition of the source (a delete commit).
+    let runtime = executor.runtime();
+    let partitions = runtime
+        .client()
+        .get_all_partition_info(&source.table_id)
+        .await
+        .unwrap();
+    let dropped = partitions
+        .iter()
+        .find(|partition| partition.partition_desc.contains("d2"))
+        .expect("the d2 partition exists");
+    let files = runtime
+        .client()
+        .get_data_files_of_single_partition(dropped)
+        .await
+        .unwrap();
+    assert!(!files.is_empty(), "the dropped partition has files");
+    // A delete commit clears the partition's snapshot; the commit needs the
+    // partition in `read_partition_info` (the optimistic-concurrency read set).
+    let table_info = runtime
+        .client()
+        .get_table_info_by_table_id(&source.table_id)
+        .await
+        .unwrap()
+        .expect("the source table is registered");
+    runtime
+        .client()
+        .commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    commit_op: CommitOp::DeleteCommit.into(),
+                    ..Default::default()
+                }],
+                read_partition_info: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    ..Default::default()
+                }],
+            },
+            CommitOp::DeleteCommit,
+        )
+        .await
+        .unwrap();
+
+    // The refresh rebuilds from the current state: the dropped rows are gone.
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "rebuild");
+    assert_eq!(
+        read_day_groups(runtime, &mv).await,
+        vec![("d1".to_string(), "a".to_string(), 10)]
+    );
+
+    // The rebuilt view keeps refreshing incrementally.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(3, "a", 7, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_groups(runtime, &mv).await,
+        vec![("d1".to_string(), "a".to_string(), 17)]
     );
 }
