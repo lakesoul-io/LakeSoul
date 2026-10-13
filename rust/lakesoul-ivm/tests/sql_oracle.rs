@@ -17,10 +17,11 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
-    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions, JoinKeyExprs,
-    JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainStep, MinMaxKind,
-    MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
-    WindowGroupSpec, approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmRuntime,
+    IvmSqlExecutor, IvmTableOptions, JoinKeyExprs, JoinOutputColumn, JoinSide,
+    LookupChainColumn, LookupChainStep, MinMaxKind, MultiJoinColumn, PhysicalFormat,
+    VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
+    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
     array_agg_expr_mv_schema_for, array_agg_groups_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, distinct_agg_groups_mv_schema_for,
@@ -3407,6 +3408,35 @@ async fn oracle_lookup_chain_1n_matches_full_recompute() {
          LEFT JOIN (SELECT k, g, v FROM __SRC1__ WHERE op <> 'delete') b ON b.g = a.g \
          LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON c.k = b.k",
         "SELECT k, v, bv, cv FROM __MV__",
+    )
+    .await;
+}
+
+/// The Tier-2 fallback's differential oracle: the same statement that the
+/// incremental analyzer rejects is recomputed in full on every round, so its
+/// rows must keep matching the reference recompute (including updates and
+/// deletes).
+#[test_log::test(tokio::test)]
+async fn oracle_fallback_matches_full_recompute() {
+    // The statement's output (`k, g, v`) plus the row kind and epoch columns.
+    let mv_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    // `LIMIT ... OFFSET` is not maintained incrementally; the key stays
+    // unique, so the MV keeps a primary key and the result is checked for
+    // uniqueness on every recompute.
+    run_oracle(
+        "fallback",
+        1,
+        mv_schema,
+        vec!["k".to_string()],
+        "SELECT k, g, v FROM __SRC__ ORDER BY k LIMIT 2 OFFSET 1",
+        "SELECT k, g, v FROM __SRC__ WHERE op <> 'delete' ORDER BY k LIMIT 2 OFFSET 1",
+        "SELECT k, g, v FROM __MV__",
     )
     .await;
 }
