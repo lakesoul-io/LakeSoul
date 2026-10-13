@@ -800,6 +800,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_distinct_correlated_aggregates() {
+        async fn optimized(ctx: &SessionContext, sql: &str) -> LogicalPlan {
+            let frame = ctx.sql(sql).await.unwrap();
+            ctx.state().optimize(&frame.logical_plan().clone()).unwrap()
+        }
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        let dim = MemTable::try_new(schema(), vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(table)).unwrap();
+        ctx.register_table("dim", Arc::new(dim)).unwrap();
+        let tables = HashMap::from([
+            ("src".to_string(), source_table("src")),
+            ("dim".to_string(), source_table("dim")),
+        ]);
+        // The non-distinct correlated aggregates keep analyzing.
+        for sql in [
+            "select k, v from src s where v > (select sum(v) from dim u where u.k = s.k)",
+            "select k, (select sum(v) from dim u where u.k = s.k) as m from src s",
+        ] {
+            let plan = optimized(&ctx, sql).await;
+            assert!(analyze_select(&plan, &tables, &request()).is_ok(), "{sql}");
+        }
+        // A DISTINCT aggregate is rejected explicitly instead of failing on
+        // the distinct rewrite's internals later.
+        for sql in [
+            "select k, v from src s where v > (select sum(DISTINCT v) from dim u where u.k = s.k)",
+            "select k, v from src s where v > (select avg(DISTINCT v) from dim u where u.k = s.k)",
+            "select k, (select sum(DISTINCT v) from dim u where u.k = s.k) as m from src s",
+            "select k, (select avg(DISTINCT v) from dim u where u.k = s.k) as m from src s",
+            "select k, (select count(DISTINCT v) from dim u where u.k = s.k) as m from src s",
+        ] {
+            let plan = optimized(&ctx, sql).await;
+            let Err(error) = analyze_select(&plan, &tables, &request()) else {
+                panic!("{sql} should be rejected");
+            };
+            let error = error.to_string();
+            assert!(error.contains("DISTINCT"), "{sql}: {error}");
+        }
+    }
+
+    #[tokio::test]
     async fn analyzes_projection_and_filters() {
         let analyzed = analyze("select v, k from src where v > 5 and g = 'a'")
             .await

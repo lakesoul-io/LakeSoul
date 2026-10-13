@@ -3327,6 +3327,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`tests/derived_views.rs` 新增 union 步用例（聚合读两 keyed 源 `UNION ALL`：bootstrap、
   分支内删除、另一分支插入、步骤复用）。全量 IVM 套件 451 passed / 0 failed；fmt/clippy 干净。
 
+### 10.122 相关 DISTINCT 聚合的明确拒绝（ROADMAP §B2 收尾）
+
+- **背景**：相关子查询里的 `SUM/AVG(DISTINCT x)`（WHERE 与 select-list 两种形式）此前虽也被拒绝，
+  但报错来自形状兜底（“only maintained as a WHERE comparison or a select-list value”“correlated on
+  keys other than its grouping”），指向的错误原因不对——真实原因是优化器 `single_distinct_to_groupby`
+  已把 `sum(DISTINCT v)` 改写为**两层聚合**（内层 `Aggregate(group=[k, v AS alias1], aggr=[])`
+  去重 + 外层 `Aggregate(group=[k, group_alias_1], aggr=[sum(alias1)])`），外层已无 `DISTINCT` 标记。
+- **实现**：`joins.rs` 新增 `is_distinct_aggregate`（直接检查 `params.distinct`）与
+  `subtree_has_distinct_aggregate`（递归检测「聚合祖先下的空聚合」即拆分后的去重层，或直接的
+  DISTINCT 聚合）；`analyze_correlated_scalar`/`analyze_left_aggregate`（`join.right` 的子树）与
+  `analyze_having_join` 在原有长度/键检查前统一报
+  “a correlated scalar subquery with a DISTINCT aggregate”，分发兜底亦按同一判定给出该消息。
+- **测试**：`src/sql.rs` 新增单元回归（非 DISTINCT 的 WHERE/select-list 相关聚合仍可分析；5 个
+  DISTINCT 形态——WHERE `sum/avg(DISTINCT)`、select-list `sum/avg/count(DISTINCT)`——均报含
+  “DISTINCT” 的明确错误）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
