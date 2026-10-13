@@ -3299,6 +3299,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   移动、新低值再获胜、步骤复用）、SUM 叠加 COUNT(DISTINCT)（重复值不改变计数、删除后计数下降、
   步骤复用）。全量 IVM **449 passed / 0 failed**；fmt/clippy 干净。
 
+### 10.120 派生步扩展到窗口（ROADMAP §B7）
+
+- **分析入口**：`analyze_window(projection, ...)` 的投影参数改为 `Option<&Projection>`，并在 `analyze_select` 增加
+  `LogicalPlan::Window(window) => analyze_window(None, ...)` 分支——派生标记携带的裸 `Window` 节点此前无分析入口
+  （普通语句总是 `Projection(Window)`，不受影响）。无投影时窗口列沿用函数默认名（`row_number` 等）。
+- **支持判定/映射**：`derived_step_supported` 放行 `LogicalPlan::Window`；`derived_output_mapping` 对 `ViewSpec::Window`
+  把子计划的**尾部窗口输出**按位置映射到 spec 的 `columns[].column`（别名/默认名差异由此消除），前导输入列不映射；
+  `ViewSpec::MultiWindow` 明确拒绝（“not materialized yet”）。
+- **主键/身份**：`derived_primary_keys` 对窗口步 = 分区键 + 源表主键（与窗口 MV 约定一致）；
+  `set_derived_identity` 增加 `Window` 分支。
+- **测试**：`tests/derived_views.rs` 新增窗口步用例（聚合读窗口步：新行重排名、删除重排名、步骤复用）；
+  原“拒绝”用例改为**混合聚合步**（sum+min，优化器不会剪掉的形状）以继续覆盖明确拒绝路径。
+  全量 IVM 套件见提交说明；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

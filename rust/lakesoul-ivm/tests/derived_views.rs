@@ -384,12 +384,11 @@ async fn an_unsupported_derived_step_is_rejected_explicitly() {
     let fact = create_source(&runtime, &dir, &format!("ivm_der3_f_{suffix}")).await;
     let mv = create_source(&runtime, &dir, &format!("ivm_der3_mv_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
-    // An aggregate over a window: the derived step would be the window,
-    // which is not materialized yet.
+    // A mixed-aggregate step (a sum next to a min) has no single derived
+    // layout, so it stays rejected.
     let statement = format!(
-        "INSERT INTO {} SELECT g, SUM(rn) AS sum_v, COUNT(*) AS count_v \
-         FROM (SELECT g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v) AS rn \
-         FROM {}) t GROUP BY g",
+        "INSERT INTO {} SELECT g, SUM(s) AS sum_v, MAX(mn) AS max_mn \
+         FROM (SELECT g, SUM(v) AS s, MIN(v) AS mn FROM {} GROUP BY g) t GROUP BY g",
         mv.table_name, fact.table_name
     );
     let error = executor.execute(&statement).await.unwrap_err().to_string();
@@ -777,6 +776,128 @@ async fn a_min_max_step_makes_min_over_min_maintainable() {
     assert_eq!(
         read_value_mv(runtime, &mv).await,
         full_min(runtime, &fact).await
+    );
+}
+
+/// The full recompute of the `ROW_NUMBER()` sum per `g`.
+async fn full_window_sum(runtime: &IvmRuntime, fact: &IvmTable) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("f", Arc::new(runtime.table_provider(fact)))
+        .unwrap();
+    let batches = context
+        .sql(
+            "select g, sum(cast(rn as bigint)) as sum_v from (\
+             select k, g, row_number() over (partition by g order by v, k) as rn \
+             from f where op <> 'delete') t group by g order by g",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), sums.value(row)));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_window_step_makes_an_aggregate_over_it_maintainable() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der8_f_{suffix}")).await;
+    let step_schema = lakesoul_ivm::window_ranking_mv_schema_for(
+        &source_schema(),
+        &["g".to_string()],
+        &["k".to_string()],
+        lakesoul_ivm::WindowFunction::RowNumber,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der8_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &step_schema,
+                    &["g".to_string()],
+                    Some("row_number"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    // The step is a ranking window over the fact table.
+    let statement = format!(
+        "INSERT INTO {} SELECT g, SUM(rn) AS sum_v, COUNT(*) AS count_v \
+         FROM (SELECT k, g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY v, k) AS rn \
+         FROM {}) t GROUP BY g",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 20, "insert"),
+            (3, "b", 5, "insert"),
+            (4, "a", 30, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_step_view(runtime, &mv)
+        .await
+        .expect("the inner window is a derived step");
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_window_sum(runtime, &fact).await
+    );
+
+    // A new row re-ranks its partition and the step maintains the ranks.
+    fact.append_batch(runtime.client(), source_batch(&[(5, "a", 15, "insert")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_window_sum(runtime, &fact).await
+    );
+
+    // Deleting a row re-ranks again; the step is reused.
+    fact.append_batch(runtime.client(), source_batch(&[(2, "a", 20, "delete")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        derived_step_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_window_sum(runtime, &fact).await
     );
 }
 

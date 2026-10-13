@@ -8,7 +8,7 @@ use super::*;
 
 /// A window view: one window function over one source.
 pub(super) fn analyze_window(
-    projection: &Projection,
+    projection: Option<&Projection>,
     window: &Window,
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
@@ -36,22 +36,25 @@ pub(super) fn analyze_window(
         .iter()
         .flat_map(|window| window.window_expr.iter())
         .collect::<Vec<_>>();
-    for expr in &projection.expr {
-        let mut inner = expr;
-        while let Expr::Alias(alias) = inner {
-            inner = &alias.expr;
-        }
-        if column_name(inner).is_none() && !window_exprs.contains(&inner) {
-            return Err(unsupported(
-                "computed columns above a window function are not supported",
-            ));
+    if let Some(projection) = projection {
+        for expr in &projection.expr {
+            let mut inner = expr;
+            while let Expr::Alias(alias) = inner {
+                inner = &alias.expr;
+            }
+            if column_name(inner).is_none() && !window_exprs.contains(&inner) {
+                return Err(unsupported(
+                    "computed columns above a window function are not supported",
+                ));
+            }
         }
     }
     // Every clause is parsed against the top projection, which names the
-    // materialized columns.
+    // materialized columns; a derived window node (a compound source) has no
+    // projection and keeps the function names.
     let parts = chain
         .iter()
-        .map(|window| window_function_spec(window, Some(projection)))
+        .map(|window| window_function_spec(window, projection))
         .collect::<Result<Vec<_>>>()?;
     if parts.len() == 1 {
         let WindowParts {
