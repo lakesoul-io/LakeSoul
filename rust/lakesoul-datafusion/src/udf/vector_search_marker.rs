@@ -246,6 +246,11 @@ datafusion::common::extensions_options! {
         /// Candidate ordering: `"exact"` re-ranks against the stored vector
         /// column; `"index"` orders by the index distance and never reads it.
         pub rerank: String, default = String::new()
+        /// Clusters probed concurrently per search (1 = sequential).  The
+        /// probed clusters are partitioned into that many groups and merged,
+        /// so the result set is unchanged; it trades per-query latency for
+        /// throughput because the groups share the thread pool.
+        pub parallelism: usize, default = 1
     }
 }
 

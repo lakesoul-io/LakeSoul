@@ -513,6 +513,45 @@ async fn sql_vector_search_end_to_end() {
         "recall too low: {recall} (got {ids_result:?}, truth {truth:?})"
     );
 
+    // 4b. The parallel cluster probe partitions the clusters and merges the
+    //     per-group top-k; it must return the same rows.
+    let mut parallel_config = crate::create_lakesoul_session_config().unwrap();
+    let mut parallel_options = LakeSoulVectorSearchConfig::default();
+    parallel_options.parallelism = 4;
+    parallel_config
+        .options_mut()
+        .extensions
+        .insert(parallel_options);
+    let parallel_ctx = crate::create_lakesoul_session_ctx_with_config(
+        Arc::new(MetaDataClient::from_env().await.unwrap()),
+        &default_args(),
+        parallel_config,
+    )
+    .unwrap();
+    let batches = parallel_ctx
+        .sql(&sql)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut parallel_ids = Vec::new();
+    for batch in &batches {
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+        parallel_ids.extend(arr.values().iter().copied());
+    }
+    let mut expected = ids_result.clone();
+    expected.sort_unstable();
+    parallel_ids.sort_unstable();
+    assert_eq!(
+        parallel_ids, expected,
+        "parallel probe must return the sequential rows"
+    );
+
     // 5. The physical plan uses the vector-index scan.
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
     assert!(
