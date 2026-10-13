@@ -137,7 +137,7 @@ pub fn analyze_select(
                 }
             }
             LogicalPlan::Window(window) => {
-                analyze_window(projection, window, tables, request)?
+                analyze_window(Some(projection), window, tables, request)?
             }
             LogicalPlan::Join(join) => {
                 analyze_join(join, Some(projection), tables, request)?
@@ -192,6 +192,7 @@ pub fn analyze_select(
         }
         LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
         LogicalPlan::Sort(sort) => analyze_order_by_limit(None, sort, tables, request)?,
+        LogicalPlan::Window(window) => analyze_window(None, window, tables, request)?,
         LogicalPlan::Limit(limit) => {
             return Err(unsupported(if limit.skip.is_some() {
                 "LIMIT with OFFSET is not maintained"

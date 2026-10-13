@@ -186,7 +186,7 @@ enum DerivedAggKind {
 /// shapes, the sum/count/avg aggregates and a single min/max aggregate.
 fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
     match peel(subplan) {
-        LogicalPlan::Join(_) => Ok(()),
+        LogicalPlan::Join(_) | LogicalPlan::Window(_) => Ok(()),
         LogicalPlan::Aggregate(aggregate) => {
             let mut kinds = Vec::with_capacity(aggregate.aggr_expr.len());
             for expr in &aggregate.aggr_expr {
@@ -277,6 +277,23 @@ fn derived_output_mapping(
             mapping.push((field.name().clone(), column));
         }
         return Ok(mapping);
+    }
+    if let ViewSpec::Window { columns, .. } = spec {
+        // The trailing subplan fields are the window outputs; the leading
+        // input columns that the MV does not keep stay unmapped and fail
+        // naturally when a consumer references them.
+        let outputs = columns.len();
+        let start = fields.len().saturating_sub(outputs);
+        let mut mapping = Vec::with_capacity(outputs);
+        for (index, field) in fields.iter().enumerate().skip(start) {
+            mapping.push((field.name().clone(), columns[index - start].column.clone()));
+        }
+        return Ok(mapping);
+    }
+    if matches!(spec, ViewSpec::MultiWindow { .. }) {
+        return Err(rootcause::report!(
+            "a derived multi-window view is not materialized yet"
+        ));
     }
     if let ViewSpec::MinMax { group_keys, .. }
     | ViewSpec::DistinctAgg { group_keys, .. } = spec
@@ -785,6 +802,16 @@ impl IvmSqlExecutor {
             ViewSpec::SumCount { group_keys, .. }
             | ViewSpec::MinMax { group_keys, .. }
             | ViewSpec::DistinctAgg { group_keys, .. } => group_keys.clone(),
+            ViewSpec::Window {
+                source_table_id,
+                partition_keys,
+                ..
+            } => {
+                let source = self.runtime.open_table_by_id(source_table_id).await?;
+                let mut keys = partition_keys.clone();
+                keys.extend(source.primary_keys.clone());
+                keys
+            }
             ViewSpec::LookupJoin { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)
