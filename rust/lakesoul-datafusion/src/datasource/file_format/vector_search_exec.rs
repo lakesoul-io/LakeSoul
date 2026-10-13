@@ -41,8 +41,8 @@ use lakesoul_common::IndexKind;
 use lakesoul_io::config::{
     LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
     OPTION_KEY_VECTOR_SEARCH_METRIC, OPTION_KEY_VECTOR_SEARCH_NPROBE,
-    OPTION_KEY_VECTOR_SEARCH_ORDER_BY, OPTION_KEY_VECTOR_SEARCH_QUERY,
-    OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    OPTION_KEY_VECTOR_SEARCH_ORDER_BY, OPTION_KEY_VECTOR_SEARCH_PARALLELISM,
+    OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
 };
 use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
@@ -135,6 +135,7 @@ impl LakeSoulVectorSearchExec {
         files: &[PartitionedFile],
         partition_values: &[ScalarValue],
         nprobe: usize,
+        parallelism: usize,
     ) -> DFResult<LakeSoulIOConfig> {
         let file_uris = files
             .iter()
@@ -308,6 +309,10 @@ impl LakeSoulVectorSearchExec {
             )
             .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, nprobe.to_string())
             .with_option(
+                OPTION_KEY_VECTOR_SEARCH_PARALLELISM,
+                parallelism.max(1).to_string(),
+            )
+            .with_option(
                 OPTION_KEY_VECTOR_SEARCH_METRIC,
                 self.vector_search.metric.clone(),
             );
@@ -390,13 +395,13 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                 "LakeSoulVectorSearchExec only supports 1 partition, got {partition}"
             )));
         }
-        let nprobe = context
+        let (nprobe, parallelism) = context
             .session_config()
             .options()
             .extensions
             .get::<LakeSoulVectorSearchConfig>()
-            .map(|options| options.nprobe)
-            .unwrap_or(64);
+            .map(|options| (options.nprobe, options.parallelism))
+            .unwrap_or((64, 1));
         let span = info_span!(
             "vector_search_execute",
             partition,
@@ -424,8 +429,13 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         let mut configs = Vec::with_capacity(self.file_groups.len());
         for (group, values) in self.file_groups.iter().zip(&self.partition_values) {
             let config = tokio::task::block_in_place(|| {
-                lakesoul_io::session::GLOBAL_RUNTIME
-                    .block_on(self.reader_config(&store, group, values, nprobe))
+                lakesoul_io::session::GLOBAL_RUNTIME.block_on(self.reader_config(
+                    &store,
+                    group,
+                    values,
+                    nprobe,
+                    parallelism,
+                ))
             })?;
             configs.push(config);
         }

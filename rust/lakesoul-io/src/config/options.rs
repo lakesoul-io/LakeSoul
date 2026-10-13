@@ -45,6 +45,8 @@ pub static OPTION_KEY_VECTOR_SEARCH_QUERY: &str = "vector_search_query";
 pub static OPTION_KEY_VECTOR_SEARCH_TOP_K: &str = "vector_search_top_k";
 /// Vector search: number of IVF clusters to probe (default 64)
 pub static OPTION_KEY_VECTOR_SEARCH_NPROBE: &str = "vector_search_nprobe";
+/// Vector search: clusters probed concurrently, 1 = sequential (default 1)
+pub static OPTION_KEY_VECTOR_SEARCH_PARALLELISM: &str = "vector_search_parallelism";
 /// Vector search: distance metric (default "L2")
 pub static OPTION_KEY_VECTOR_SEARCH_METRIC: &str = "vector_search_metric";
 /// Vector search: order the candidates by the index distance instead of the

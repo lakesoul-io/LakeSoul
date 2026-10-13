@@ -627,6 +627,30 @@ lower bound.  A batch-level AVX2 pruning mask plus lazy key materialization
 cut that loop to 0.5 ms and the single-query p50 to 2.69 ms (GIST-960d) and
 1.19 ms (GloVe-200d), with recall unchanged at every nprobe.
 
+### Cluster parallelism
+
+The probed clusters are independent, so they can be partitioned into groups
+that each keep their own top-k and are merged afterwards; the merge keeps the
+global top-k by the same estimator, so the result set is unchanged.  The
+session option `lakesoul_vector_search.parallelism` (default 1 = sequential)
+enables it, as does `--search-parallelism` in the search scenario:
+
+```sql
+SET lakesoul_vector_search.parallelism = 8;
+```
+
+| Dataset | nprobe | sequential | 4 groups | 8 groups | Recall@10 |
+|---------|-------:|-----------:|---------:|---------:|-----------|
+| GIST-960d 100K | 64 | 0.67 ms | 0.22 ms | 0.20 ms | 0.976 (unchanged) |
+| GloVe-200d 100K | 64 | 0.24 ms | 0.19 ms | 0.18 ms | 0.905 → 0.907 (tie order) |
+| GIST-960d 1M | 64 | 2.85 ms | 1.25 ms | 1.17 ms | 0.968 → 0.970 (tie order) |
+| GIST-960d 1M | 128 | 5.01 ms | 2.14 ms | 2.00 ms | 0.968 → 0.970 (tie order) |
+
+The groups share the thread pool, so batch throughput (`batch_search` with
+many queries in parallel) is highest with the sequential probe: enable the
+groups for latency-sensitive single-query workloads (interactive k-NN, the
+gateway) and keep `1` when many queries run concurrently.
+
 ```bash
 cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- \
   --scenario stream --base gist_base.fvecs --query gist_query.fvecs \

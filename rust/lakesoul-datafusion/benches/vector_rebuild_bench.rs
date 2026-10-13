@@ -167,6 +167,8 @@ struct Args {
     reuse: bool,
     /// Print the per-stage search counters at `--nprobe` (search scenario).
     search_stats: bool,
+    /// Cluster-probe parallelism for the search scenario (1 = sequential).
+    search_parallelism: usize,
     // ---- stream / trigger ----
     policy: Policy,
     max_delta_ratio: f32,
@@ -223,6 +225,7 @@ impl Default for Args {
             out: None,
             reuse: false,
             search_stats: false,
+            search_parallelism: 1,
             policy: Policy::Auto,
             max_delta_ratio: 1.0,
             period: 3,
@@ -271,6 +274,8 @@ OPTIONS:
   --reuse                                   Reuse an existing index in --work-dir
   --search-stats                            Print the per-stage search counters at --nprobe
                                             (search scenario)
+  --search-parallelism <n>                  Probe n clusters concurrently in the search scenario
+                                            (default: 1 = sequential)
 
 STREAM / TRIGGER:
   --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
@@ -389,6 +394,11 @@ fn parse_args() -> Result<Args, String> {
             "--out" => args.out = Some(PathBuf::from(value(flag)?)),
             "--reuse" => args.reuse = true,
             "--search-stats" => args.search_stats = true,
+            "--search-parallelism" => {
+                args.search_parallelism = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --search-parallelism: {e}"))?
+            }
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
             "--sql-hash-buckets" => {
@@ -853,8 +863,9 @@ fn measure_index(
     gt: &Ivecs,
     top_k: usize,
     nprobe: usize,
+    parallelism: usize,
 ) -> SearchMetrics {
-    let params = SearchParams::new(top_k, nprobe);
+    let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
     let query_refs: Vec<&[f32]> = (0..queries.n).map(|i| queries.query(i)).collect();
 
     // Multi-threaded throughput (batch_search uses the rayon pool).
@@ -1460,7 +1471,14 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 
     let mut sweep = Vec::new();
     for &nprobe in &args.nprobe_sweep {
-        let m = measure_index(&index, &dataset.queries, &gt, args.top_k, nprobe);
+        let m = measure_index(
+            &index,
+            &dataset.queries,
+            &gt,
+            args.top_k,
+            nprobe,
+            args.search_parallelism,
+        );
         println!(
             "nprobe={:<4} recall@{}={:.4} qps={:>10.1} p50={:.3}ms p99={:.3}ms",
             m.nprobe, args.top_k, m.recall_at_k, m.qps, m.p50_ms, m.p99_ms
@@ -1542,6 +1560,7 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "n_queries": dataset.queries.n,
         "top_k": args.top_k,
         "gt_source": dataset.gt_source,
+        "search_parallelism": args.search_parallelism,
         "load_ms": load_ms,
         "index_size_bytes": index_size_bytes(&work_dir),
         "sweep": sweep,
@@ -2009,7 +2028,14 @@ async fn run_stream_inner(
             let t = Instant::now();
             let index = load_index(&catalog, &stream_prefix).await?;
             let load_ms = t.elapsed().as_secs_f64() * 1000.0;
-            let m = measure_index(&index, &queries, &gt, args.top_k, args.nprobe);
+            let m = measure_index(
+                &index,
+                &queries,
+                &gt,
+                args.top_k,
+                args.nprobe,
+                args.search_parallelism,
+            );
             min_recall = min_recall.min(m.recall_at_k);
             last_recall = Some(m.recall_at_k);
             recall_here = Some(m.recall_at_k);
@@ -2424,6 +2450,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let mut vector_options = LakeSoulVectorSearchConfig::default();
     vector_options.nprobe = args.nprobe;
     vector_options.rerank = args.rerank.clone();
+    vector_options.parallelism = args.search_parallelism;
     session_config
         .options_mut()
         .extensions
@@ -2540,6 +2567,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "n_queries": nq,
         "top_k": args.top_k,
         "nprobe": args.nprobe,
+        "search_parallelism": args.search_parallelism,
         "base_insert_ms": base_insert_ms,
         "round_insert_ms": round_insert_ms,
         "recall_at_k": recall_sum / nq.max(1) as f64,
