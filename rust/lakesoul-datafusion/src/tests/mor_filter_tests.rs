@@ -47,6 +47,7 @@ use crate::Result;
 use crate::catalog::LakeSoulProviderOptions;
 use crate::cli::CoreArgs;
 use crate::lakesoul_table::LakeSoulTable;
+use crate::tests::mor_nullability_tests::write_storage_batch;
 use crate::tests::{assert_batches_eq, create_table_with_file_format};
 
 /// `part` is the range partition, `id` the primary key of the pk tables,
@@ -532,4 +533,119 @@ async fn test_file_source_pushdown_accepts_each_conjunct_separately_inner() -> R
     }
 
     Ok(())
+}
+
+#[test]
+fn test_mor_non_nullable_value_aggregate() {
+    Runtime::new().unwrap().block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let table = unique_table("mor_non_nullable_aggregate");
+        seed_pk(client.clone(), &table, PhysicalFormat::VortexCompact)
+            .await
+            .unwrap();
+        let storage_schema = Arc::new(Schema::new(vec![
+            Field::new("part", DataType::Int32, false),
+            Field::new("id", DataType::Int32, false),
+            Field::new("v", DataType::Int32, true),
+        ]));
+        let update = RecordBatch::try_new(
+            storage_schema,
+            batch(&[0, 1], &[1, 2], &[100, 200]).columns().to_vec(),
+        )
+        .unwrap();
+        LakeSoulTable::for_name(&table)
+            .await
+            .unwrap()
+            .execute_upsert(update)
+            .await
+            .unwrap();
+        let ctx = session_with_pushdown(client, true).unwrap();
+        let df = ctx
+            .sql(&format!("SELECT avg(v) AS mean FROM {table}"))
+            .await
+            .unwrap();
+        assert!(df.schema().field(0).is_nullable());
+        let batches = df.collect().await.unwrap();
+        assert!(batches[0].schema().field(0).is_nullable());
+        let mean = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap();
+        assert!(
+            mean.iter().eq([Some(150.0)]),
+            "unexpected AVG values: {mean:?}"
+        );
+    });
+}
+
+#[test]
+fn test_mor_partial_update_count_respects_nulls() {
+    Runtime::new().unwrap().block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let table = unique_table("mor_partial_nullability");
+        seed_pk(client.clone(), &table, PhysicalFormat::VortexCompact)
+            .await
+            .unwrap();
+        let partial = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("part", DataType::Int32, false),
+                Field::new("id", DataType::Int32, false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![0, 0])) as ArrayRef,
+                Arc::new(Int32Array::from(vec![1, 3])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        // `execute_upsert` enforces the stored NOT NULL on `v` and rejects a
+        // contribution without it; commit the sparse file natively, as data
+        // written before `v` existed or by another engine would be.
+        let handle = LakeSoulTable::for_name(&table).await.unwrap();
+        write_storage_batch(
+            client.clone(),
+            &handle,
+            PhysicalFormat::VortexCompact,
+            partial,
+        )
+        .await
+        .unwrap();
+        let ctx = session_with_pushdown(client, true).unwrap();
+        let df = ctx
+            .sql(&format!("SELECT id, v FROM {table} ORDER BY id"))
+            .await
+            .unwrap();
+        assert!(
+            df.schema()
+                .field_with_unqualified_name("v")
+                .unwrap()
+                .is_nullable()
+        );
+        let batches = df.collect().await.unwrap();
+        assert_batches_eq(
+            &table,
+            &[
+                "+----+-----+",
+                "| id | v   |",
+                "+----+-----+",
+                "| 1  | 100 |",
+                "| 2  | 200 |",
+                "| 3  |     |",
+                "+----+-----+",
+            ],
+            &batches,
+        );
+        for batch in &batches {
+            assert!(batch.schema().field_with_name("v").unwrap().is_nullable());
+        }
+        let count =
+            run_sql(&ctx, &format!("SELECT count(v) AS present FROM {table}")).await;
+        let present = count[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(present.value(0), 2);
+        assert!(!count[0].schema().field(0).is_nullable());
+    });
 }

@@ -522,7 +522,10 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
             if !self.loser_tree_has_updated {
                 self.update();
             }
-            let winner = self.loser_tree[0];
+            // A merge without input streams builds an empty loser tree.
+            let Some(&winner) = self.loser_tree.first() else {
+                return RangeCombinerResult::None;
+            };
             if let Some(mut range) = self.ranges[winner].take() {
                 self.loser_tree_has_updated = false;
                 if self.current_sort_key_range.match_row(&range) {
