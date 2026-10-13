@@ -1241,6 +1241,16 @@ impl ViewSpec {
                 view_id: id,
                 mv_table_id: mv,
                 ..
+            }
+            | ViewSpec::MinMax {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::DistinctAgg {
+                view_id: id,
+                mv_table_id: mv,
+                ..
             } => {
                 *id = view_id.to_string();
                 *mv = mv_table_id.to_string();
@@ -1248,6 +1258,28 @@ impl ViewSpec {
             }
             other => Err(report!(
                 "a derived view over {} is not materialized yet",
+                other.kind()
+            )),
+        }
+    }
+
+    /// Patch the state table id of a derived spec whose value-count view
+    /// needs one (`MIN`/`MAX` and the `DISTINCT` aggregates).
+    pub(crate) fn set_derived_state_table(&mut self, state_table_id: &str) -> Result<()> {
+        match self {
+            ViewSpec::MinMax {
+                state_table_id: state,
+                ..
+            }
+            | ViewSpec::DistinctAgg {
+                state_table_id: state,
+                ..
+            } => {
+                *state = state_table_id.to_string();
+                Ok(())
+            }
+            other => Err(report!(
+                "a derived {} view does not use a state table",
                 other.kind()
             )),
         }

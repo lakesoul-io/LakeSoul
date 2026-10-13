@@ -173,20 +173,56 @@ fn rename_derived_columns(
     Ok(transformed.data)
 }
 
+/// The step kind of a derived aggregate output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DerivedAggKind {
+    /// A sum/count/avg aggregate (the sum-count layout).
+    SumCount,
+    /// A single min/max aggregate (the value-count layout).
+    MinMax,
+}
+
 /// Whether a subplan can be materialized as a derived view for now: the join
-/// shapes and the sum/count/avg aggregates.
+/// shapes, the sum/count/avg aggregates and a single min/max aggregate.
 fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
     match peel(subplan) {
         LogicalPlan::Join(_) => Ok(()),
         LogicalPlan::Aggregate(aggregate) => {
+            let mut kinds = Vec::with_capacity(aggregate.aggr_expr.len());
             for expr in &aggregate.aggr_expr {
-                sum_count_column(expr)?;
+                kinds.push(derived_aggregate_kind(expr)?);
+            }
+            let sum_count = kinds.iter().all(|kind| *kind == DerivedAggKind::SumCount);
+            let min_max = kinds.len() <= 1
+                && kinds.iter().all(|kind| *kind == DerivedAggKind::MinMax);
+            if !sum_count && !min_max {
+                return Err(rootcause::report!(
+                    "a derived view over a mixed aggregate is not materialized yet"
+                ));
             }
             Ok(())
         }
         other => Err(rootcause::report!(
             "a derived view over {} is not materialized yet",
             plan_label(other)
+        )),
+    }
+}
+
+/// The step kind of one aggregate output of a derived aggregate.
+fn derived_aggregate_kind(expr: &Expr) -> Result<DerivedAggKind> {
+    let Expr::AggregateFunction(function) = expr else {
+        return Err(rootcause::report!(
+            "a derived view over a non-aggregate output is not materialized yet"
+        ));
+    };
+    match function.func.name() {
+        "sum" | "count" | "avg" if !function.params.distinct => {
+            Ok(DerivedAggKind::SumCount)
+        }
+        "min" | "max" if !function.params.distinct => Ok(DerivedAggKind::MinMax),
+        other => Err(rootcause::report!(
+            "a derived view over {other}(...) is not materialized yet"
         )),
     }
 }
@@ -239,6 +275,23 @@ fn derived_output_mapping(
                 sum_count_column(&aggregate.aggr_expr[index - groups])?.to_string()
             };
             mapping.push((field.name().clone(), column));
+        }
+        return Ok(mapping);
+    }
+    if let ViewSpec::MinMax { group_keys, .. }
+    | ViewSpec::DistinctAgg { group_keys, .. } = spec
+    {
+        // The value-count layouts materialize the single aggregate under
+        // `value`; the group keys keep their names.  The distinct rewrite's
+        // internal dedup key is neither and stays unmapped.
+        let mut mapping = Vec::with_capacity(fields.len());
+        let last = fields.len().saturating_sub(1);
+        for (index, field) in fields.iter().enumerate() {
+            if index == last {
+                mapping.push((field.name().clone(), IVM_VALUE_COLUMN.to_string()));
+            } else if group_keys.contains(field.name()) {
+                mapping.push((field.name().clone(), field.name().clone()));
+            }
         }
         return Ok(mapping);
     }
@@ -650,6 +703,12 @@ impl IvmSqlExecutor {
         // spec lists the derived table as a source.
         let view_id = table.table_id.clone();
         spec.set_derived_identity(&view_id, &view_id)?;
+        // A `MIN`/`MAX` or `DISTINCT` aggregate step carries its own
+        // value-count state table, created next to the step MV.
+        if needs_state_table(&spec) {
+            let state_table_id = self.ensure_state_table(&table, &spec).await?;
+            spec.set_derived_state_table(&state_table_id)?;
+        }
         let definition = definition_hash(&spec)?;
         let stored = self.runtime.metadata().view_definition(&view_id).await?;
         let same_definition =
@@ -704,10 +763,9 @@ impl IvmSqlExecutor {
             .await
     }
 
-    /// The primary keys a derived MV is created with.  The join shapes and
-    /// the sum/count aggregates are materialized for now; the other kinds
-    /// (which would also need their own state tables) are rejected
-    /// explicitly.
+    /// The primary keys a derived MV is created with.  The join shapes, the
+    /// sum/count/avg aggregates and the `MIN`/`MAX` and `DISTINCT` aggregates
+    /// are materialized for now; the other kinds are rejected explicitly.
     async fn derived_primary_keys(&self, spec: &ViewSpec) -> Result<Vec<String>> {
         Ok(match spec {
             ViewSpec::Join {
@@ -724,7 +782,9 @@ impl IvmSqlExecutor {
                 let right = self.runtime.open_table_by_id(right_table_id).await?;
                 keyed_join_output_primary_keys(&left.primary_keys, &right.primary_keys)
             }
-            ViewSpec::SumCount { group_keys, .. } => group_keys.clone(),
+            ViewSpec::SumCount { group_keys, .. }
+            | ViewSpec::MinMax { group_keys, .. }
+            | ViewSpec::DistinctAgg { group_keys, .. } => group_keys.clone(),
             ViewSpec::LookupJoin { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)

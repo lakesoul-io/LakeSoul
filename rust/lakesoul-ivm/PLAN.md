@@ -3281,6 +3281,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   步骤复用）、TOP-K 叠加聚合（新组进 top、边界组离开，步骤复用）；聚合叠加窗口仍明确拒绝。
 - 全量 IVM **447 passed / 0 failed**；fmt/clippy 干净。
 
+### 10.119 派生步扩展到 MIN/MAX 与 DISTINCT 聚合（ROADMAP §B2）
+
+- **支持判定**：`derived_aggregate_kind` 归类每个聚合输出：`sum/count/avg`（非 DISTINCT）为
+  SumCount 步，单个 `min`/`max` 为 MinMax 步；混合聚合明确拒绝。DISTINCT 聚合经
+  `distinct_split` 后外层是 `count(alias)`/`sum(alias)`（归类为 SumCount）→ 实际 spec 为
+  DistinctAgg ✓。
+- **状态表**：物化派生步时若 `needs_state_table`（MinMax/DistinctAgg），调用既有
+  `ensure_state_table(&step_mv, &spec)` 在步 MV 旁创建/复用状态表，并用新的
+  `ViewSpec::set_derived_state_table` 回填 id（定义哈希本就清除该 id，不受影响）。
+- **命名映射**：value-count 布局（MinMax/DistinctAgg）的 MV 值列固定为 `value`；
+  `derived_output_mapping` 把子计划末字段映射到 `value`、分组键保持同名、DISTINCT 重写的
+  内部去重键（`alias1`）不映射（父语句不引用它）。
+- **主键/身份**：`derived_primary_keys` 与 `set_derived_identity` 扩展到 MinMax/DistinctAgg
+  （分组键 / 表 id）。
+- **测试**：`tests/derived_views.rs` 新增 2 个：MIN 叠加 MIN（删除当前最小值后 min 经步状态表
+  移动、新低值再获胜、步骤复用）、SUM 叠加 COUNT(DISTINCT)（重复值不改变计数、删除后计数下降、
+  步骤复用）。全量 IVM **449 passed / 0 failed**；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

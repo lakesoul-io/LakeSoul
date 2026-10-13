@@ -611,3 +611,252 @@ async fn full_top_groups(runtime: &IvmRuntime, fact: &IvmTable) -> Vec<(String, 
     rows.sort();
     rows
 }
+
+/// The logical `g -> value` rows of a value-count MV.
+async fn read_value_mv(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, value from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), values.value(row)));
+        }
+    }
+    rows
+}
+
+/// The full recompute of `MIN(v)` per `g`.
+async fn full_min(runtime: &IvmRuntime, fact: &IvmTable) -> Vec<(String, i64)> {
+    full_single_value(runtime, fact, "min(v)").await
+}
+
+/// The full recompute of `COUNT(DISTINCT v)` per `g`.
+async fn full_distinct(runtime: &IvmRuntime, fact: &IvmTable) -> Vec<(String, i64)> {
+    full_single_value(runtime, fact, "count(distinct v)").await
+}
+
+async fn full_single_value(
+    runtime: &IvmRuntime,
+    fact: &IvmTable,
+    expression: &str,
+) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("f", Arc::new(runtime.table_provider(fact)))
+        .unwrap();
+    let batches = context
+        .sql(&format!(
+            "select g, {expression} as value from f where op <> 'delete' \
+             group by g order by g"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), values.value(row)));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_min_max_step_makes_min_over_min_maintainable() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der6_f_{suffix}")).await;
+    let step_schema = lakesoul_ivm::min_max_mv_schema_for(
+        &source_schema(),
+        &["g".to_string()],
+        "v",
+        lakesoul_ivm::MinMaxKind::Min,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der6_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::min_max_mv_schema_for(
+                    &step_schema,
+                    &["g".to_string()],
+                    "value",
+                    lakesoul_ivm::MinMaxKind::Min,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    // The step is a MIN aggregate with its own value-count state table.
+    let statement = format!(
+        "INSERT INTO {} SELECT g, MIN(value) AS value \
+         FROM (SELECT g, MIN(v) AS value FROM {} GROUP BY g) t GROUP BY g",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 20, "insert"),
+            (3, "b", 5, "insert"),
+            (4, "a", 30, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_step_view(runtime, &mv)
+        .await
+        .expect("the inner MIN is a derived step");
+    assert_eq!(
+        read_value_mv(runtime, &mv).await,
+        full_min(runtime, &fact).await
+    );
+
+    // Deleting the current minimum moves the group's minimum through the
+    // step's state table.
+    fact.append_batch(runtime.client(), source_batch(&[(1, "a", 10, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_value_mv(runtime, &mv).await,
+        full_min(runtime, &fact).await
+    );
+
+    // A new lower value wins again; the step is reused.
+    fact.append_batch(runtime.client(), source_batch(&[(5, "a", 7, "insert")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        derived_step_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+    assert_eq!(
+        read_value_mv(runtime, &mv).await,
+        full_min(runtime, &fact).await
+    );
+}
+
+#[test_log::test(tokio::test)]
+async fn a_distinct_step_makes_an_aggregate_over_it_maintainable() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der7_f_{suffix}")).await;
+    let step_schema = lakesoul_ivm::distinct_agg_mv_schema_for(
+        &source_schema(),
+        &["g".to_string()],
+        "v",
+        lakesoul_ivm::DistinctAggKind::Count,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der7_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&step_schema, &["g".to_string()], Some("value"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    // The step is a COUNT(DISTINCT) aggregate with its own state table.
+    let statement = format!(
+        "INSERT INTO {} SELECT g, SUM(dc) AS sum_v, COUNT(*) AS count_v \
+         FROM (SELECT g, COUNT(DISTINCT v) AS dc FROM {} GROUP BY g) t GROUP BY g",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 10, "insert"),
+            (3, "a", 20, "insert"),
+            (4, "b", 5, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_step_view(runtime, &mv)
+        .await
+        .expect("the inner COUNT(DISTINCT) is a derived step");
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_distinct(runtime, &fact).await
+    );
+
+    // A duplicate does not change the distinct count.
+    fact.append_batch(runtime.client(), source_batch(&[(5, "a", 10, "insert")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_distinct(runtime, &fact).await
+    );
+
+    // Deleting the only `20` lowers the count; the step is reused.
+    fact.append_batch(runtime.client(), source_batch(&[(3, "a", 20, "delete")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        derived_step_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_distinct(runtime, &fact).await
+    );
+}
