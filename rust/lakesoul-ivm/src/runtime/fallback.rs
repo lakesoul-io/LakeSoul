@@ -192,12 +192,15 @@ impl IvmRuntime {
 
         let rows = rows_with_epoch(&context, batches, epoch).await?;
         view.mv.truncate(&self.client).await?;
+        let mut written = 0u64;
         let mut commit_ids = Vec::new();
         for batch in rows {
             if batch.num_rows() > 0 {
+                written += batch.num_rows() as u64;
                 commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
             }
         }
+        crate::observability::record_fallback(written);
         Ok(commit_ids)
     }
 

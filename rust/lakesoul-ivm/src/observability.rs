@@ -19,6 +19,8 @@ const REFRESH_DURATION: &str = "lakesoul_ivm_refresh_duration_seconds";
 const REBUILDS_TOTAL: &str = "lakesoul_ivm_rebuilds_total";
 const REBUILD_DURATION: &str = "lakesoul_ivm_rebuild_duration_seconds";
 const EPOCHS_TOTAL: &str = "lakesoul_ivm_epochs_total";
+const FALLBACKS_TOTAL: &str = "lakesoul_ivm_fallbacks_total";
+const FALLBACK_ROWS: &str = "lakesoul_ivm_fallback_rows";
 
 static DESCRIBE_METRICS: Once = Once::new();
 
@@ -55,6 +57,14 @@ fn describe_metrics() {
             EPOCHS_TOTAL,
             "Total number of committed epochs by view kind"
         );
+        metrics::describe_counter!(
+            FALLBACKS_TOTAL,
+            "Total number of Tier-2 fallback recomputes (whole-statement refreshes)"
+        );
+        metrics::describe_counter!(
+            FALLBACK_ROWS,
+            "Rows written by Tier-2 fallback recomputes (a cost proxy)"
+        );
     });
 }
 
@@ -83,6 +93,15 @@ pub(crate) fn record_refresh(kind: &str, applied: bool, duration: Duration) {
     if applied {
         metrics::counter!(EPOCHS_TOTAL, "kind" => kind.to_string()).increment(1);
     }
+}
+
+/// One Tier-2 fallback recompute: the whole statement ran because its shape
+/// is not maintained incrementally.  `rows` counts the rows it wrote, so a
+/// cost spike is visible without a view id label.
+pub(crate) fn record_fallback(rows: u64) {
+    describe_metrics();
+    metrics::counter!(FALLBACKS_TOTAL).increment(1);
+    metrics::counter!(FALLBACK_ROWS).increment(rows);
 }
 
 /// One view rebuild from the full source state.

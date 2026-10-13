@@ -11,7 +11,8 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTableOptions, PhysicalFormat, sum_count_mv_schema_for,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
+    PhysicalFormat, sum_count_mv_schema_for,
 };
 use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
@@ -273,6 +274,97 @@ fn executor_and_engine_record_metrics() {
     );
     assert_eq!(
         state.histogram("lakesoul_ivm_rebuild_duration_seconds{kind=sum_count}"),
+        2
+    );
+}
+
+/// A Tier-2 fallback recompute is visible: the fallback counters count the
+/// recomputes and the rows they wrote.
+#[test_log::test]
+fn fallback_recomputes_are_counted() {
+    let state = Arc::new(Metrics::default());
+    let recorder = TestRecorder {
+        metrics: state.clone(),
+    };
+    metrics::with_local_recorder(&recorder, || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let runtime = IvmRuntime::from_env().await.unwrap();
+            runtime.init_schema().await.unwrap();
+            let dir = tempdir().unwrap();
+            let suffix = uuid::Uuid::new_v4().simple();
+            let source = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_metrics_fb_src_{suffix}"),
+                        format!("file://{}", dir.path().join("src").display()),
+                        schema(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_cdc_column(CHANGE_COLUMN),
+                )
+                .await
+                .unwrap();
+            // A fallback MV: the statement's output plus the row kind and
+            // epoch columns.
+            let mv = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_metrics_fb_mv_{suffix}"),
+                        format!("file://{}", dir.path().join("mv").display()),
+                        Arc::new(Schema::new(vec![
+                            Field::new("k", DataType::Int64, false),
+                            Field::new("g", DataType::Utf8, false),
+                            Field::new("v", DataType::Int64, false),
+                            Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                            Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                        ])),
+                    )
+                    .with_primary_keys(vec!["k".to_string()]),
+                )
+                .await
+                .unwrap();
+            let context = SessionContext::new();
+            context
+                .register_table(
+                    source.table_name.as_str(),
+                    Arc::new(runtime.table_provider(&source)),
+                )
+                .unwrap();
+            let executor = IvmSqlExecutor::new(runtime).with_session(context);
+            source
+                .append_batch(
+                    executor.runtime().client(),
+                    batch(&[
+                        (1, "a", 10, "insert"),
+                        (2, "b", 20, "insert"),
+                        (3, "c", 30, "insert"),
+                    ]),
+                )
+                .await
+                .unwrap();
+            // `LIMIT ... OFFSET` is not maintained incrementally.
+            let sql = format!(
+                "INSERT INTO {} SELECT k, g, v FROM {} ORDER BY k LIMIT 2 OFFSET 1",
+                mv.table_name, source.table_name
+            );
+            let execution = executor.execute(&sql).await.unwrap();
+            assert_eq!(execution.action.label(), "fallback");
+            // A second run without source changes is a no-op, so the counters
+            // stay where they are.
+            let execution = executor.execute(&sql).await.unwrap();
+            assert_eq!(execution.action.label(), "fallback");
+            assert!(execution.epoch.is_none());
+        });
+    });
+
+    assert_eq!(state.counter("lakesoul_ivm_fallbacks_total{}"), 1);
+    assert_eq!(state.counter("lakesoul_ivm_fallback_rows{}"), 2);
+    assert_eq!(
+        state.counter("lakesoul_ivm_statements_total{action=fallback}"),
         2
     );
 }

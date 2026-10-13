@@ -3431,6 +3431,17 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （提交需带当前 `snapshot` 与 `read_partition_info`，见 §10.126 的同类注意点）→ 下一次执行
   `action = rebuild` 且数据正确 → 再 append 后回到 `incremental`。
 
+### 10.128 Tier-2 回退的成本指标（ROADMAP §B10 收尾）
+
+- **背景**：设计稿要求 `ivm_fallback_total` 与 `ivm_fallback_source_rows` 让回退的成本尖峰可见；
+  指标模块的约定是**低基数标签**（kind/action，绝不用 view/table id）✓，因此不加视图标签，视图可经
+  `list_views` 定位。
+- **实现**：observability 新增 `lakesoul_ivm_fallbacks_total`（回退重算次数）与
+  `lakesoul_ivm_fallback_rows`（本次重算写入的行数，成本代理）；`recompute_fallback` 在写完后记录
+  （no-op 刷新不计）✓。
+- **测试**：`tests/metrics.rs` 新增用例——回退执行一次计入 1 次/2 行，无源变化的重跑为 no-op 不增加；
+  `statements_total{action=fallback}` 计 2 ✓（注意无标签指标的 key 形如 `name{}`）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
