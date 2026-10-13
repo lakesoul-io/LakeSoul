@@ -220,7 +220,12 @@ impl IvmRuntime {
                         break;
                     }
                     Err(error) => {
+                        // A dropped partition needs the rebuild, not a retry.
+                        let dropped = IvmRuntime::partition_dropped(&error);
                         failure = Some(error);
+                        if dropped {
+                            break;
+                        }
                         if attempt < policy.retries && !policy.retry_backoff.is_zero() {
                             tokio::time::sleep(policy.retry_backoff).await;
                         }

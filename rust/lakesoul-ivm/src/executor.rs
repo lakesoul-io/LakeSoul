@@ -721,10 +721,16 @@ impl IvmSqlExecutor {
                 (IvmExecutionAction::Rebuild, Some(epoch))
             }
         } else if same_definition && !dirty {
-            (
-                IvmExecutionAction::Incremental,
-                self.runtime.refresh_spec(&spec).await?,
-            )
+            match self.runtime.refresh_spec(&spec).await {
+                Ok(epoch) => (IvmExecutionAction::Incremental, epoch),
+                // A dropped source partition cannot be retracted through the
+                // file window: rebuild the view from the current state.
+                Err(error) if IvmRuntime::partition_dropped(&error) => {
+                    let epoch = self.runtime.rebuild_spec(&spec).await?;
+                    (IvmExecutionAction::Rebuild, Some(epoch))
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             let action = if stored.is_some() {
                 IvmExecutionAction::Rebuild
