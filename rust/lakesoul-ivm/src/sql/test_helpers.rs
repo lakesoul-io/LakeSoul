@@ -49,6 +49,7 @@ pub(crate) fn request() -> AnalyzeRequest {
         view_id: "view_1".to_string(),
         mv_table_id: "table_mv".to_string(),
         state_table_id: Some("table_state".to_string()),
+        derived: false,
     }
 }
 

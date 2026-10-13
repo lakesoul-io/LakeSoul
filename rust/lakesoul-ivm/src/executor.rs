@@ -38,12 +38,12 @@ use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_NONNULL_COUNT_COLUMN,
-    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
-    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
-    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
-    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
-    distinct_agg_groups_mv_schema_for, full_join_view_schema_for,
-    grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn,
+    JoinSide, ViewSpec, approx_distinct_groups_mv_schema_for,
+    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
+    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
+    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
+    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_for,
     lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
@@ -186,7 +186,7 @@ enum DerivedAggKind {
 /// shapes, the sum/count/avg aggregates and a single min/max aggregate.
 fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
     match peel(subplan) {
-        LogicalPlan::Join(_) | LogicalPlan::Window(_) => Ok(()),
+        LogicalPlan::Join(_) | LogicalPlan::Window(_) | LogicalPlan::Union(_) => Ok(()),
         LogicalPlan::Aggregate(aggregate) => {
             let mut kinds = Vec::with_capacity(aggregate.aggr_expr.len());
             for expr in &aggregate.aggr_expr {
@@ -492,6 +492,7 @@ impl IvmSqlExecutor {
             view_id: view_id.clone(),
             mv_table_id: mv.table_id.clone(),
             state_table_id: Some(STATE_PLACEHOLDER.to_string()),
+            derived: false,
         };
         // Compound sources the statement reads are materialized as derived
         // views (internal keyed MVs) before the outer analysis succeeds; the
@@ -689,6 +690,7 @@ impl IvmSqlExecutor {
             view_id: DERIVED_PLACEHOLDER.to_string(),
             mv_table_id: DERIVED_PLACEHOLDER.to_string(),
             state_table_id: Some(STATE_PLACEHOLDER.to_string()),
+            derived: true,
         };
         // The subplan may itself need derived views; they are materialized
         // first and take the lower step indices.
@@ -810,6 +812,28 @@ impl IvmSqlExecutor {
                 let source = self.runtime.open_table_by_id(source_table_id).await?;
                 let mut keys = partition_keys.clone();
                 keys.extend(source.primary_keys.clone());
+                keys
+            }
+            ViewSpec::UnionAll { sources, .. }
+            | ViewSpec::UnionDistinct { sources, .. } => {
+                // A keyed union is keyed by `(__ivm_source, primary keys)`;
+                // every keyed branch keeps its primary keys in the output.
+                // An append-only union stays keyless.
+                let mut keys = Vec::new();
+                for source in sources {
+                    let table = self.runtime.open_table_by_id(&source.table_id).await?;
+                    if table.primary_keys.is_empty() {
+                        continue;
+                    }
+                    if keys.is_empty() {
+                        keys.push(IVM_SOURCE_COLUMN.to_string());
+                    }
+                    for key in &table.primary_keys {
+                        if !keys.contains(key) {
+                            keys.push(key.clone());
+                        }
+                    }
+                }
                 keys
             }
             ViewSpec::LookupJoin { left_table_id, .. } => self

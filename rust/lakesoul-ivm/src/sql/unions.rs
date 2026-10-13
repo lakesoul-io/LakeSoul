@@ -42,6 +42,58 @@ pub(super) fn analyze_union(
     if sources.len() < 2 {
         return Err(unsupported("UNION ALL needs at least two branches"));
     }
+    // The keyed maintenance matches the MV rows by the source primary keys,
+    // so a keyed branch must project them unchanged.  A derived step widens
+    // the branch with the keys its consumer does not select; a user statement
+    // keeps them part of the output.  The widening runs before the schema
+    // check so a widened branch that no longer matches its siblings is
+    // rejected explicitly.
+    let keyed = !sources[0].source.primary_keys.is_empty();
+    for branch in &mut sources {
+        let keys = branch.source.primary_keys.clone();
+        if keyed != !keys.is_empty() {
+            return Err(unsupported(
+                "UNION ALL branches must be all keyed or all append-only",
+            ));
+        }
+        if !keyed {
+            continue;
+        }
+        let projected = if branch.columns.is_empty() {
+            branch
+                .source
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>()
+        } else {
+            branch.columns.clone()
+        };
+        for key in &keys {
+            let position = projected.iter().position(|column| column == key);
+            let unchanged = match position {
+                Some(_) if branch.exprs.is_empty() => true,
+                Some(position) => branch.exprs[position] == *key,
+                None => false,
+            };
+            if unchanged {
+                continue;
+            }
+            if !request.derived {
+                return Err(unsupported(format!(
+                    "a keyed UNION ALL branch must keep the primary key \
+                     {key} as a plain column"
+                )));
+            }
+            if !branch.columns.is_empty() {
+                branch.columns.push(key.clone());
+            }
+            if !branch.exprs.is_empty() {
+                branch.exprs.push(key.clone());
+            }
+        }
+    }
     let first = &sources[0];
     let first_schema =
         union_output_schema_for(&first.source.schema, &first.columns, &first.exprs)?;
@@ -55,45 +107,6 @@ pub(super) fn analyze_union(
             return Err(unsupported(
                 "UNION ALL branches must have identical output schemas",
             ));
-        }
-    }
-    let keyed = !first.source.primary_keys.is_empty();
-    for branch in &sources {
-        let source = &branch.source;
-        let columns = &branch.columns;
-        let exprs = &branch.exprs;
-        if keyed != !source.primary_keys.is_empty() {
-            return Err(unsupported(
-                "UNION ALL branches must be all keyed or all append-only",
-            ));
-        }
-        if keyed {
-            // The keyed maintenance matches the MV rows by the source primary
-            // keys, so a keyed branch must project them unchanged.
-            let projected = if columns.is_empty() {
-                source
-                    .schema
-                    .fields()
-                    .iter()
-                    .map(|field| field.name().clone())
-                    .collect::<Vec<_>>()
-            } else {
-                columns.clone()
-            };
-            for key in &source.primary_keys {
-                let position = projected.iter().position(|column| column == key);
-                let unchanged = match position {
-                    Some(_) if exprs.is_empty() => true,
-                    Some(position) => exprs[position] == *key,
-                    None => false,
-                };
-                if !unchanged {
-                    return Err(unsupported(format!(
-                        "a keyed UNION ALL branch must keep the primary key \
-                         {key} as a plain column"
-                    )));
-                }
-            }
         }
     }
     Ok(ViewSpec::UnionAll {

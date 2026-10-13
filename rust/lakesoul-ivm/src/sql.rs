@@ -64,6 +64,11 @@ pub struct AnalyzeRequest {
     /// The executor creates it (and replaces it on a definition change), so it
     /// is only known after the shape is known.
     pub state_table_id: Option<String>,
+    /// Whether the statement is an internal derived step.  A derived step
+    /// widens a union branch with the primary keys the maintenance needs when
+    /// the consuming operator does not select them; a user statement keeps
+    /// them an explicit part of the output contract.
+    pub derived: bool,
 }
 impl AnalyzeRequest {
     fn state_table(&self) -> Result<String> {
