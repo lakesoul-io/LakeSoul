@@ -216,8 +216,10 @@ Supported within the shapes above:
   aggregate / DISTINCT / window / TOP-K / UNION reading it), a
   **sum/count/avg aggregate**, a **`MIN`/`MAX` or `DISTINCT` aggregate**
   (the value-count layouts; their step state tables are created next to the
-  step MV), and a **roster window** (a single ranking or value window, keyed
-  like the window MV by its partition keys plus the source primary keys).
+  step MV), a **roster window** (a single ranking or value window, keyed like
+  the window MV by its partition keys plus the source primary keys), and a
+  **`UNION ALL`** (a keyed branch the consuming operator does not select its
+  primary keys from is widened with them again).
   The statement is rewritten to read the derived MV (a compact join widens
   its payloads to the subplan's column names, and an aggregate step's
   materialized columns such as `sum_v` or `value`, or a window step's
@@ -226,9 +228,9 @@ Supported within the shapes above:
   statement through the same orchestration (so the chain includes it and
   `refresh_view_chain` advances both), and a changed definition reuses the
   step table or drops it when the definition shrinks.  The remaining step
-  kinds (a union, a mixed aggregate, a multi-window chain) and a derived
-  view that would not expose a subplan column stay rejected with a message
-  pointing at explicit views;
+  kinds (a mixed aggregate, a multi-window chain, and a union whose branches
+  need different key columns) and a derived view that would not expose a
+  subplan column stay rejected with a message pointing at explicit views;
 * an **inner join**, a **cross join** and a pair-keyed **`LEFT JOIN`** may
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving

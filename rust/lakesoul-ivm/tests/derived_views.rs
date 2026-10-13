@@ -981,3 +981,134 @@ async fn a_distinct_step_makes_an_aggregate_over_it_maintainable() {
         full_distinct(runtime, &fact).await
     );
 }
+
+/// The full recompute of `SUM(v)` per `g` over the union of two sources.
+async fn full_union_sum(
+    runtime: &IvmRuntime,
+    first: &IvmTable,
+    second: &IvmTable,
+) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("f0", Arc::new(runtime.table_provider(first)))
+        .unwrap();
+    context
+        .register_table("f1", Arc::new(runtime.table_provider(second)))
+        .unwrap();
+    let batches = context
+        .sql(
+            "select g, sum(v) as sum_v from (\
+             select k, g, v from f0 where op <> 'delete' \
+             union all select k, g, v from f1 where op <> 'delete') t \
+             group by g order by g",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), sums.value(row)));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_union_step_makes_an_aggregate_over_it_maintainable() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let first = create_source(&runtime, &dir, &format!("ivm_der9_a_{suffix}")).await;
+    let second = create_source(&runtime, &dir, &format!("ivm_der9_b_{suffix}")).await;
+    let output = lakesoul_ivm::union_output_schema_for(
+        &source_schema(),
+        &["k".to_string(), "g".to_string(), "v".to_string()],
+        &[],
+    )
+    .unwrap();
+    let step_schema = lakesoul_ivm::union_all_mv_schema_for(&output).unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der9_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&step_schema, &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    // The step is the union of the two keyed sources.
+    let statement = format!(
+        "INSERT INTO {} SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM (SELECT k, g, v FROM {} UNION ALL SELECT k, g, v FROM {}) t GROUP BY g",
+        mv.table_name, first.table_name, second.table_name
+    );
+    first
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "insert"), (2, "b", 5, "insert")]),
+        )
+        .await
+        .unwrap();
+    second
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(3, "a", 20, "insert"), (4, "c", 7, "insert")]),
+        )
+        .await
+        .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_step_view(runtime, &mv)
+        .await
+        .expect("the union is a derived step");
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_union_sum(runtime, &first, &second).await
+    );
+
+    // A delete in one branch flows through the union step.
+    first
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 10, "delete")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_union_sum(runtime, &first, &second).await
+    );
+
+    // An insert in the other branch; the step is reused.
+    second
+        .append_batch(runtime.client(), source_batch(&[(5, "a", 15, "insert")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        derived_step_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_union_sum(runtime, &first, &second).await
+    );
+}

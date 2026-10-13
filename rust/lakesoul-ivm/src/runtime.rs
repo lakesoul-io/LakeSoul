@@ -1256,6 +1256,16 @@ impl ViewSpec {
                 view_id: id,
                 mv_table_id: mv,
                 ..
+            }
+            | ViewSpec::UnionAll {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::UnionDistinct {
+                view_id: id,
+                mv_table_id: mv,
+                ..
             } => {
                 *id = view_id.to_string();
                 *mv = mv_table_id.to_string();

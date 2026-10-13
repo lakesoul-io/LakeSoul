@@ -3313,6 +3313,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   原“拒绝”用例改为**混合聚合步**（sum+min，优化器不会剪掉的形状）以继续覆盖明确拒绝路径。
   全量 IVM 套件见提交说明；fmt/clippy 干净。
 
+### 10.121 派生步扩展到 UNION ALL（ROADMAP §B2）
+
+- **支持判定/主键/身份**：`derived_step_supported` 放行 `LogicalPlan::Union`；`derived_primary_keys` 对
+  `UnionAll`/`UnionDistinct` 取 `(__ivm_source, 各 keyed 分支主键的并集)`（append-only 分支保持无键）；
+  `set_derived_identity` 增加两个 union 分支臂。
+- **主键加宽**：消费算子不选 union 的主键列时，优化器会把分支的 `TableScan`/`Projection` 剪成仅剩被选列
+  （实测 `select g, sum(v) from (... union all ...) group by g` 得到 `TableScan projection=[g, v]`），
+  而 keyed union 的维护必须按源主键匹配 MV 行。为此 `AnalyzeRequest` 增加 `derived: bool`（仅
+  `materialize_derived` 置 true）：union 分析器对缺少的主键**追加为普通列**（`columns`/`exprs` 同步），
+  用户语句仍得到原来的明确报错。加宽在分支 schema 相等性检查**之前**执行，键集合不同的混合分支因此
+  仍显式拒绝。
+- **测试**：`tests/derived_views.rs` 新增 union 步用例（聚合读两 keyed 源 `UNION ALL`：bootstrap、
+  分支内删除、另一分支插入、步骤复用）。全量 IVM 套件 451 passed / 0 failed；fmt/clippy 干净。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
