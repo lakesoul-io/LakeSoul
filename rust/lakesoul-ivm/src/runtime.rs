@@ -1262,6 +1262,11 @@ impl ViewSpec {
                 mv_table_id: mv,
                 ..
             }
+            | ViewSpec::MultiAgg {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
             | ViewSpec::MinMax {
                 view_id: id,
                 mv_table_id: mv,

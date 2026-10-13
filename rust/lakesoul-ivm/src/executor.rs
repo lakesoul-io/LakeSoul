@@ -224,57 +224,19 @@ fn rename_derived_columns(
     Ok(transformed.data)
 }
 
-/// The step kind of a derived aggregate output.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DerivedAggKind {
-    /// A sum/count/avg aggregate (the sum-count layout).
-    SumCount,
-    /// A single min/max aggregate (the value-count layout).
-    MinMax,
-}
-
-/// Whether a subplan can be materialized as a derived view for now: the join
-/// shapes, the sum/count/avg aggregates and a single min/max aggregate.
+/// Whether a subplan can be materialized as a derived view: the join shapes
+/// and any aggregate the analyzer itself maintains (a mixed aggregate becomes
+/// a multi-aggregate step).  A rejected shape carries the fallback marker, so
+/// a Tier-2 target recomputes the statement in full instead of failing.
 fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
     match peel(subplan) {
         LogicalPlan::Join(_) | LogicalPlan::Window(_) | LogicalPlan::Union(_) => Ok(()),
-        LogicalPlan::Aggregate(aggregate) => {
-            let mut kinds = Vec::with_capacity(aggregate.aggr_expr.len());
-            for expr in &aggregate.aggr_expr {
-                kinds.push(derived_aggregate_kind(expr)?);
-            }
-            let sum_count = kinds.iter().all(|kind| *kind == DerivedAggKind::SumCount);
-            let min_max = kinds.len() <= 1
-                && kinds.iter().all(|kind| *kind == DerivedAggKind::MinMax);
-            if !sum_count && !min_max {
-                return Err(rootcause::report!(
-                    "a derived view over a mixed aggregate is not materialized yet"
-                ));
-            }
-            Ok(())
-        }
+        LogicalPlan::Aggregate(_) => Ok(()),
         other => Err(rootcause::report!(
             "a derived view over {} is not materialized yet",
             plan_label(other)
-        )),
-    }
-}
-
-/// The step kind of one aggregate output of a derived aggregate.
-fn derived_aggregate_kind(expr: &Expr) -> Result<DerivedAggKind> {
-    let Expr::AggregateFunction(function) = expr else {
-        return Err(rootcause::report!(
-            "a derived view over a non-aggregate output is not materialized yet"
-        ));
-    };
-    match function.func.name() {
-        "sum" | "count" | "avg" if !function.params.distinct => {
-            Ok(DerivedAggKind::SumCount)
-        }
-        "min" | "max" if !function.params.distinct => Ok(DerivedAggKind::MinMax),
-        other => Err(rootcause::report!(
-            "a derived view over {other}(...) is not materialized yet"
-        )),
+        )
+        .attach(UnsupportedShape)),
     }
 }
 
@@ -283,7 +245,8 @@ fn sum_count_column(expr: &Expr) -> Result<&'static str> {
     let Expr::AggregateFunction(function) = expr else {
         return Err(rootcause::report!(
             "a derived view over a non-aggregate output is not materialized yet"
-        ));
+        )
+        .attach(UnsupportedShape));
     };
     match function.func.name() {
         "sum" => Ok(IVM_SUM_COLUMN),
@@ -315,7 +278,8 @@ fn derived_output_mapping(
         let LogicalPlan::Aggregate(aggregate) = peel(subplan) else {
             return Err(rootcause::report!(
                 "a derived sum-count view needs an aggregate input"
-            ));
+            )
+            .attach(UnsupportedShape));
         };
         let groups = aggregate.group_expr.len();
         let mut mapping = Vec::with_capacity(fields.len());
@@ -344,7 +308,32 @@ fn derived_output_mapping(
     if matches!(spec, ViewSpec::MultiWindow { .. }) {
         return Err(rootcause::report!(
             "a derived multi-window view is not materialized yet"
-        ));
+        )
+        .attach(UnsupportedShape));
+    }
+    if let ViewSpec::MultiAgg {
+        group_keys,
+        aggregates,
+        ..
+    } = spec
+    {
+        // A mixed aggregate step keeps the group keys by name and materializes
+        // one column per aggregate, in select order.
+        let mut mapping = Vec::with_capacity(fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            let column = match index.checked_sub(group_keys.len()) {
+                None => group_keys
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| field.name().clone()),
+                Some(position) => aggregates
+                    .get(position)
+                    .map(|aggregate| aggregate.column.clone())
+                    .unwrap_or_else(|| field.name().clone()),
+            };
+            mapping.push((field.name().clone(), column));
+        }
+        return Ok(mapping);
     }
     if let ViewSpec::MinMax { group_keys, .. }
     | ViewSpec::DistinctAgg { group_keys, .. } = spec
@@ -767,7 +756,8 @@ impl IvmSqlExecutor {
                         return Err(rootcause::report!(
                             "the statement needs more than {MAX_DERIVED_STEPS} \
                              derived views; split it into explicit views"
-                        ));
+                        )
+                        .attach(UnsupportedShape));
                     }
                     let (table, view_id, mapping) = self
                         .materialize_derived(&source, target, tables, steps)
@@ -822,7 +812,8 @@ impl IvmSqlExecutor {
                 return Err(rootcause::report!(
                     "a derived view does not expose the column {column}; \
                      split the statement into explicit views"
-                ));
+                )
+                .attach(UnsupportedShape));
             }
         }
         let index = steps.len();
@@ -915,7 +906,8 @@ impl IvmSqlExecutor {
             }
             ViewSpec::SumCount { group_keys, .. }
             | ViewSpec::MinMax { group_keys, .. }
-            | ViewSpec::DistinctAgg { group_keys, .. } => group_keys.clone(),
+            | ViewSpec::DistinctAgg { group_keys, .. }
+            | ViewSpec::MultiAgg { group_keys, .. } => group_keys.clone(),
             ViewSpec::Window {
                 source_table_id,
                 partition_keys,
