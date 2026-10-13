@@ -84,8 +84,12 @@ pub(super) fn analyze_join(
                 )
             }
             _ => Err(unsupported(
-                "a join against an aggregate input (a correlated scalar subquery) \
-                 is only maintained as a WHERE comparison or a select-list value",
+                if subtree_has_distinct_aggregate(&join.right) {
+                    "a correlated scalar subquery with a DISTINCT aggregate"
+                } else {
+                    "a join against an aggregate input (a correlated scalar subquery) \
+                 is only maintained as a WHERE comparison or a select-list value"
+                },
             )),
         };
     }
@@ -475,6 +479,32 @@ pub(super) fn analyze_join(
 /// the projection away.
 /// The aggregate node and its projection of a join input that is a derived
 /// aggregate (`SubqueryAlias -> Projection -> Aggregate`).
+/// Whether an expression is a `DISTINCT` aggregate.
+pub(super) fn is_distinct_aggregate(expr: &Expr) -> bool {
+    matches!(expr, Expr::AggregateFunction(function) if function.params.distinct)
+}
+
+/// Whether a plan's subtree contains a `DISTINCT` aggregate, either written
+/// directly or in the dedup group-by the optimizer splits a lone `DISTINCT`
+/// aggregate into (an aggregate with no aggregate functions feeding the
+/// aggregate that consumes its output).
+pub(super) fn subtree_has_distinct_aggregate(plan: &LogicalPlan) -> bool {
+    fn walk(plan: &LogicalPlan, under_aggregate: bool) -> bool {
+        if let LogicalPlan::Aggregate(aggregate) = plan {
+            if aggregate.aggr_expr.iter().any(is_distinct_aggregate)
+                || (under_aggregate && aggregate.aggr_expr.is_empty())
+            {
+                return true;
+            }
+            return walk(&aggregate.input, true);
+        }
+        plan.inputs()
+            .iter()
+            .any(|input| walk(input, under_aggregate))
+    }
+    walk(plan, false)
+}
+
 fn aggregate_input(plan: &LogicalPlan) -> Option<(&Aggregate, &Projection)> {
     let plan = peel(plan);
     let LogicalPlan::Projection(projection) = plan else {
@@ -504,6 +534,11 @@ fn analyze_correlated_scalar(
         .ok_or_else(|| unsupported("a scalar subquery comparison needs a filter"))?;
     if aggregate.aggr_expr.len() != 1 {
         return Err(unsupported("a scalar subquery with several aggregates"));
+    }
+    if subtree_has_distinct_aggregate(&join.right) {
+        return Err(unsupported(
+            "a correlated scalar subquery with a DISTINCT aggregate",
+        ));
     }
     validate_decimal_accumulators(aggregate)?;
     // The correlated keys are the aggregate's group columns.
@@ -831,6 +866,11 @@ fn analyze_left_aggregate(
     }
     if aggregate.aggr_expr.len() != 1 {
         return Err(unsupported("a scalar subquery with several aggregates"));
+    }
+    if subtree_has_distinct_aggregate(&join.right) {
+        return Err(unsupported(
+            "a correlated scalar subquery with a DISTINCT aggregate",
+        ));
     }
     validate_decimal_accumulators(aggregate)?;
     // The correlated keys are the aggregate's group columns.

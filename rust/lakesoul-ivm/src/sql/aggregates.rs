@@ -2939,6 +2939,11 @@ pub(super) fn analyze_having_join(
     if right_aggregate.aggr_expr.len() != 1 {
         return Err(unsupported("a HAVING subquery with several aggregates"));
     }
+    if subtree_has_distinct_aggregate(&join.right) {
+        return Err(unsupported(
+            "a correlated HAVING subquery with a DISTINCT aggregate",
+        ));
+    }
     let (source, source_filter) =
         collect_filtered_source(&left_aggregate.input, tables, "an aggregate")?;
     // The group keys are plain columns, named by the statement projection.

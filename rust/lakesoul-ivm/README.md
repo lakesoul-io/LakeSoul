@@ -172,7 +172,11 @@ Supported within the shapes above:
   guards the decorrelated comparison, and the maintained predicate evaluates
   the guard over the aggregate column, which the runtime pads with NULL for
   such a key); a `COUNT(DISTINCT x)` subquery resolves the two-level rewrite
-  back to `count(distinct x)`, and several aggregates stay rejected; the
+  back to `count(distinct x)`, and several aggregates stay rejected; a
+  **`DISTINCT`** aggregate other than the `COUNT` family is rejected with a
+  message naming it (the optimizer splits it into a dedup group-by whose
+  internals a correlated view does not maintain), for both the `WHERE` and
+  the select-list form; the
   subquery must be one plain aggregate over a
   single table, and the left rows must be unique per correlated key; a
   **select-list** correlated scalar subquery
