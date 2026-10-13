@@ -10,18 +10,35 @@ import java.util.Map;
 
 public class LakeSoulConfig {
 
+    public static final String MAX_PARTITIONS_PER_SCAN = "lakesoul.max-partitions-per-scan";
+    public static final int DEFAULT_MAX_PARTITIONS_PER_SCAN = 500;
+
     private static LakeSoulConfig instance = null;
 
     public static synchronized LakeSoulConfig getInstance() {
         return instance;
     }
 
-    public static synchronized void initInstance(Map<String, String> config) {
+    public static synchronized LakeSoulConfig initInstance(Map<String, String> config) {
         instance = new LakeSoulConfig(config);
+        return instance;
     }
 
     private LakeSoulConfig(Map<String, String> config) {
         requireNonNull(config, "config should not be null!");
+        String partitionLimit =
+                config.getOrDefault(
+                        MAX_PARTITIONS_PER_SCAN, Integer.toString(DEFAULT_MAX_PARTITIONS_PER_SCAN));
+        try {
+            this.maxPartitionsPerScan = Integer.parseInt(partitionLimit);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    MAX_PARTITIONS_PER_SCAN + " must be a positive integer: " + partitionLimit, e);
+        }
+        if (maxPartitionsPerScan <= 0) {
+            throw new IllegalArgumentException(
+                    MAX_PARTITIONS_PER_SCAN + " must be a positive integer: " + partitionLimit);
+        }
         this.accessKey = config.get("fs.s3a.access.key");
         this.accessSecret = config.get("fs.s3a.secret.key");
         this.region = config.get("fs.s3a.endpoint.region");
@@ -35,6 +52,12 @@ public class LakeSoulConfig {
         this.timeZone = config.getOrDefault("timezone", "");
         this.caseSensitiveNameMatching =
                 Boolean.parseBoolean(config.getOrDefault("case-sensitive-name-matching", "false"));
+    }
+
+    private final int maxPartitionsPerScan;
+
+    public int getMaxPartitionsPerScan() {
+        return maxPartitionsPerScan;
     }
 
     private String accessKey;

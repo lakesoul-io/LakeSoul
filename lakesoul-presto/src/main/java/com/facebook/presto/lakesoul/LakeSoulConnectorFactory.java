@@ -14,7 +14,6 @@ import java.util.Map;
 public class LakeSoulConnectorFactory implements ConnectorFactory {
     public static final String CONNECTOR_NAME = "lakesoul";
     private LakeSoulMetadata metadata;
-    private final LakeSoulSplitManager manager = new LakeSoulSplitManager();
     private final LakeSoulRecordSetProvider provider = new LakeSoulRecordSetProvider();
     private final ConnectorHandleResolver handleResolver = new LakeSoulHandleResolver();
 
@@ -31,7 +30,8 @@ public class LakeSoulConnectorFactory implements ConnectorFactory {
     @Override
     public Connector create(
             String catalogName, Map<String, String> config, ConnectorContext context) {
-        LakeSoulConfig.initInstance(config);
+        LakeSoulConfig lakeSoulConfig = LakeSoulConfig.initInstance(config);
+        LakeSoulSplitManager manager = new LakeSoulSplitManager(lakeSoulConfig);
         metadata = new LakeSoulMetadata(context.getTypeManager());
         return new LakeSoulConnector(metadata, manager, provider);
     }
