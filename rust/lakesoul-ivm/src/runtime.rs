@@ -1282,6 +1282,11 @@ impl ViewSpec {
                 mv_table_id: mv,
                 ..
             }
+            | ViewSpec::MultiWindow {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
             | ViewSpec::UnionAll {
                 view_id: id,
                 mv_table_id: mv,

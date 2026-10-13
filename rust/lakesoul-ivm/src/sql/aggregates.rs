@@ -7,6 +7,7 @@
 //! statements.
 
 use super::*;
+use crate::runtime::expression_type;
 use datafusion::logical_expr::ExprSchemable;
 
 /// DataFusion accumulates a decimal `SUM`/`AVG` in the declared result type,
@@ -914,7 +915,12 @@ fn analyze_grouping_sets(
             )
         });
     if !legacy_shape {
-        let aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+        let aggregates = parse_multi_aggregates(
+            aggregate,
+            &group_keys,
+            source,
+            &hoisted_expressions(&aggregate.input),
+        )?;
         if aggregates.is_empty() {
             return Err(unsupported(
                 "GROUPING SETS needs at least one aggregate over a non-key column",
@@ -2500,18 +2506,11 @@ fn parse_multi_aggregates(
     aggregate: &Aggregate,
     group_keys: &[String],
     source: &IvmTable,
+    hoisted: &HashMap<String, Expr>,
 ) -> Result<Vec<(String, String, DataType)>> {
     let mut aggregates: Vec<(String, String, DataType)> = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    // Hidden columns (for example the grouping-set id) may sit between the
-    // group keys and the aggregates, so locate the aggregate outputs from the
-    // end of the schema.
-    let aggregate_offset = aggregate
-        .schema
-        .fields()
-        .len()
-        .saturating_sub(aggregate.aggr_expr.len());
-    for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
+    for expr in &aggregate.aggr_expr {
         let inner = strip_alias(expr);
         let Expr::AggregateFunction(function) = inner else {
             return Err(unsupported("non-aggregate expression in the select list"));
@@ -2532,18 +2531,32 @@ fn parse_multi_aggregates(
         if !multi_agg_supported(name) {
             return Err(unsupported(format!("aggregate function {name}")));
         }
+        // An argument that names a hoisted alias (the projection above a
+        // derived step, for example) resolves to the expression the source
+        // carries, so the rendered call runs against the source columns.
+        let mut resolved_expr = inner.clone();
+        if let Expr::AggregateFunction(resolved) = &mut resolved_expr {
+            let args = std::mem::take(&mut resolved.params.args);
+            resolved.params.args = args
+                .iter()
+                .map(|arg| resolve_hoisted(arg, hoisted))
+                .collect();
+        }
+        let Expr::AggregateFunction(resolved_function) = &resolved_expr else {
+            return Err(unsupported("non-aggregate expression in the select list"));
+        };
         // A `FIRST_VALUE` over a group key is the key itself.
         if name == "first_value"
-            && function.params.args.len() == 1
-            && column_of(&function.params.args[0])
+            && resolved_function.params.args.len() == 1
+            && column_of(&resolved_function.params.args[0])
                 .is_some_and(|column| group_keys.contains(&column.name))
         {
             continue;
         }
         let call = if name == "first_value" {
-            render_first_value_call(function, source)?
+            render_first_value_call(resolved_function, source)?
         } else {
-            render_aggregate_call(inner)?
+            render_aggregate_call(&resolved_expr)?
         };
         if function.params.distinct
             && (!matches!(name, "count" | "sum") || function.params.args.len() != 1)
@@ -2561,7 +2574,7 @@ fn parse_multi_aggregates(
         {
             "count".to_string()
         } else {
-            let labels = function
+            let labels = resolved_function
                 .params
                 .args
                 .iter()
@@ -2580,11 +2593,12 @@ fn parse_multi_aggregates(
             )));
         }
         names.push(column.clone());
-        let data_type = aggregate
-            .schema
-            .field(aggregate_offset + index)
-            .data_type()
-            .clone();
+        // The runtime evaluates the rendered call over the source columns, so
+        // the result type is derived from the call and the source schema.  A
+        // derived step's plan may type a column differently (for example
+        // `row_number()` is UInt64 while the step MV materializes it as
+        // Int64).
+        let data_type = expression_type(&source.schema, &call)?.0;
         encode_data_type(&data_type)?;
         aggregates.push((call, column, data_type));
     }
@@ -2626,7 +2640,8 @@ fn analyze_computed_agg(
     filter: Option<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let mut aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+    let mut aggregates =
+        parse_multi_aggregates(aggregate, &group_keys, source, hoisted_exprs)?;
     if aggregates.is_empty() {
         return Err(unsupported(
             "a computed aggregate output needs an aggregate function",
@@ -2854,7 +2869,12 @@ fn analyze_having_aggregate(
     lookup: HavingSubquery,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+    let aggregates = parse_multi_aggregates(
+        aggregate,
+        &group_keys,
+        source,
+        &hoisted_expressions(&aggregate.input),
+    )?;
     if aggregates.is_empty() {
         return Err(unsupported(
             "a HAVING subquery needs at least one aggregate",
@@ -3047,7 +3067,12 @@ fn analyze_multi_agg(
     filter: Option<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let aggregates = parse_multi_aggregates(aggregate, &group_keys, source)?;
+    let aggregates = parse_multi_aggregates(
+        aggregate,
+        &group_keys,
+        source,
+        &hoisted_expressions(&aggregate.input),
+    )?;
     if aggregates.is_empty() {
         return Err(unsupported(
             "DISTINCT ON needs at least one non-key column; use SELECT DISTINCT for plain key deduplication",
