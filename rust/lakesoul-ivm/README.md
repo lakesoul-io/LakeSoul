@@ -389,13 +389,15 @@ needs none).  A typical trap: the two branches of a
   so filters, group keys and join keys can reference them. Merge-on-read runs
   within a partition, and as in LakeSoul a key must not span partitions (the
   partition is also the unit of the cursors).  A **dropped partition**
-  (a delete commit that clears its snapshot) cannot be retracted file by file,
-  so the next refresh rebuilds the view from the current source state — the
-  statement reports a rebuild and the dropped rows disappear — and the view
-  keeps refreshing incrementally afterwards.  A **statement chain** treats the
-  same case like any other rebuild: the retry is skipped and the view rebuilds
-  in place.  (Recomputing only the dropped partition's rows is a later
-  optimization.)
+  (a delete commit that clears its snapshot) cannot be retracted file by file.
+  When the view's group keys carry the partition columns — the dropped
+  partition's output rows are then exactly the MV rows matching its values —
+  the refresh retracts those rows under its own epoch and advances the
+  partition's cursor to the deletion version: the statement reports an
+  incremental cleanup, the dropped rows disappear and the rest of the window
+  still applies.  Every other view rebuilds from the current source state
+  instead (the statement reports a rebuild).  A **statement chain** treats
+  either case like any other refresh action.
 * The **keyed CDC contract** is exactly three markers — the values the
   LakeSoul Flink CDC ingestion writes: `insert`, `update`, `delete` (any other
   value is treated as a live version).  A keyed source folds markers through

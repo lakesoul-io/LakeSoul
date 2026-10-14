@@ -3534,6 +3534,23 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 仍明确拒绝：步骤 payload 列同名（`join output column v is materialized twice; add distinct aliases`，
   用带别名的子查询规避）。
 
+### 10.135 二期（性能）：分区删除的确定性清理（ROADMAP §B4）
+
+- 之前：源分区删除（`DeleteCommit`）→ `PartitionDropped` → 整视图 `rebuild_spec`（全量重算）。
+- 现在：视图的**分组键**覆盖该源全部 range 分区列、且这些列在 MV schema 中时，执行器走
+  `cleanup_dropped_partitions`：按分区值（`parse_partition_values`）构造谓词，把 MV 中匹配行以
+  `rowKinds='delete'` 在本窗口 epoch 下撤回（`begin_window` 保证重放幂等），并把该分区游标**推进**到
+  删除版本——而不是删除游标：游标删除会让该分区在后续每次刷新中重新上报，清理分支只做 AlreadyApplied
+  而丢掉同一窗口里的其它增量（首个实现踩到、已被测试覆盖：删分区后同窗口的 d1 增量仍生效）。
+- 回退：分组键不含分区列（或非 SumCount、多源）→ 仍 `rebuild`（正确性优先）。`collect_source_window` 现在
+  收集**全部**被删分区（不再在第一个处 bail），错误附件携带 `(partition_desc, to_version, to_timestamp)`。
+- 测试：`partitioned_sources.rs`——删分区后 `action=incremental` 且行正确、后续增量仍生效、键不含分区列时
+  仍 `rebuild`。
+- 二期其余项现状：**变化分区裁剪**已有 `key_filters`（读/状态读裁剪到受影响区分组）；**MV 分区写**已定位
+  两个 IO 层阻塞点：① `RepartitionByRangeAndHashExec` 的顺序检查未对 range 列去重（writer 自身按
+  range+pk 排序且 LexOrdering 去重）；② v2 window-sliding 合并器对「读取注入的常量列」（分区列进主键）
+  产出 null（旧 combiner 正常）。两者均未在本轮落地，留待后续 PR。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

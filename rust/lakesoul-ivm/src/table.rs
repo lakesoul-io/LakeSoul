@@ -99,7 +99,7 @@ fn split_partition_keys(keys: &str) -> Vec<String> {
 /// Mirrors the DataFusion provider: the desc must list `column=value` pairs in
 /// the table column order, otherwise `None` is returned and the read leaves the
 /// partition columns null.
-fn parse_partition_values(
+pub(crate) fn parse_partition_values(
     partition_desc: &str,
     columns: &[String],
 ) -> Option<Vec<String>> {

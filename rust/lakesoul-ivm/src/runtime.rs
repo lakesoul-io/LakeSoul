@@ -36,7 +36,9 @@ use crate::metadata::{
 };
 use crate::provider::IvmTableProvider;
 pub use crate::table::{IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN};
-use crate::table::{IvmTable, IvmTableOptions, PartitionFiles, create_ivm_table};
+use crate::table::{
+    IvmTable, IvmTableOptions, PartitionFiles, create_ivm_table, parse_partition_values,
+};
 
 mod aggregates;
 mod chain;
@@ -1886,11 +1888,20 @@ pub struct IvmRuntime {
 }
 
 /// The attachment a refresh failure carries when a source partition was
-/// dropped: the incremental window cannot retract the rows it contributed, so
-/// the view is rebuilt from the current source state instead of silently
-/// keeping them.
-#[derive(Debug)]
-pub(crate) struct PartitionDropped;
+/// dropped: the incremental window cannot retract the rows it contributed.
+/// The executor removes the view rows that belong to the partition when the
+/// view's keys carry its columns
+/// ([`IvmRuntime::cleanup_dropped_partitions`]), and rebuilds from the current
+/// source state otherwise.
+#[derive(Debug, Clone)]
+pub(crate) struct PartitionDropped {
+    /// The table whose partitions were dropped.
+    pub(crate) source_table_id: String,
+    /// The dropped partitions: `(partition_desc, to_version, to_timestamp)`,
+    /// in changelog order. The cursor is advanced to the deletion's version so
+    /// the partition is not reported again.
+    pub(crate) partitions: Vec<(String, i64, i64)>,
+}
 
 /// The attachment a refresh failure carries when the incremental path cannot
 /// continue (a source window that needs a snapshot, a cursor window that no
@@ -2042,7 +2053,12 @@ fn filter_deletes(frame: DataFrame, change_column: Option<&str>) -> Result<DataF
 }
 
 /// Aggregate sum/count batches into `group_key -> (sum, count)`.
-fn quote_ident(name: &str) -> String {
+/// A SQL string literal.
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
@@ -3618,6 +3634,103 @@ impl IvmRuntime {
         })
     }
 
+    /// Remove the rows of dropped source partitions from a view whose keys
+    /// carry the partition columns.
+    ///
+    /// A dropped source partition removes its rows from every view, and the
+    /// file-level window cannot retract them; the caller otherwise rebuilds.
+    /// When the view's group keys carry all of the source's range partition
+    /// columns, the affected output rows are exactly the MV rows matching the
+    /// partition values: they are retracted under their own epoch and the
+    /// partition's cursor is dropped, so the partition may be recreated later
+    /// without stale state.  Views whose keys do not carry the partition
+    /// columns return `None` and are rebuilt.
+    pub async fn cleanup_dropped_partitions(
+        &self,
+        spec: &ViewSpec,
+        error: &rootcause::Report,
+    ) -> Result<Option<i64>> {
+        let Some(dropped) = error
+            .attachments()
+            .iter()
+            .find_map(|attachment| attachment.downcast_inner::<PartitionDropped>())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let Ok(SpecView::SumCount(view)) = self.spec_view(spec).await else {
+            return Ok(None);
+        };
+        let partitions = view.source.range_partition_columns.clone();
+        if dropped.source_table_id != view.source.table_id
+            || partitions.is_empty()
+            || view.group_keys.is_empty()
+            || !partitions
+                .iter()
+                .all(|column| view.group_keys.contains(column))
+            || !partitions
+                .iter()
+                .all(|column| view.mv.schema.field_with_name(column).is_ok())
+        {
+            return Ok(None);
+        }
+        let mut predicate_parts = Vec::new();
+        let mut identity = Vec::new();
+        let mut cursors = Vec::new();
+        for (partition, to_version, to_timestamp) in &dropped.partitions {
+            let Some(values) = parse_partition_values(partition, &partitions) else {
+                return Ok(None);
+            };
+            let parts = partitions
+                .iter()
+                .zip(values)
+                .map(|(column, value)| {
+                    format!("{} = {}", quote_ident(column), sql_literal(&value))
+                })
+                .collect::<Vec<_>>();
+            predicate_parts.push(format!("({})", parts.join(" and ")));
+            identity.push((view.source.table_id.clone(), partition.clone(), 0, 0));
+            cursors.push(Cursor {
+                source_table_id: view.source.table_id.clone(),
+                partition_desc: partition.clone(),
+                last_version: *to_version,
+                last_timestamp: *to_timestamp,
+            });
+        }
+        self.register_view(&view).await?;
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => return Ok(Some(epoch)),
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let context = SessionContext::new();
+        register_table(
+            &context,
+            "mv",
+            view.mv.read_current(&self.client).await?,
+            &view.mv.schema,
+        )?;
+        let sql =
+            sum_count_cleanup_delete_sql(&view, &predicate_parts.join(" or "), epoch);
+        let mut commit_ids = Vec::new();
+        for batch in context.sql(&sql).await?.collect().await? {
+            if batch.num_rows() > 0 {
+                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+            }
+        }
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        // The cursor advances past the deletion: the partition is not reported
+        // again, and a partition recreated later starts above it.
+        self.advance_cursors(&view.view_id, cursors).await?;
+        Ok(Some(epoch))
+    }
+
     /// Read the changelog window of every partition of a source.
     async fn collect_source_window(
         &self,
@@ -3651,6 +3764,7 @@ impl IvmRuntime {
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
         let mut before_versions = HashMap::new();
+        let mut dropped = Vec::new();
         for partition in window.partitions {
             let last_version = cursors
                 .get(&partition.partition_desc)
@@ -3664,14 +3778,15 @@ impl IvmRuntime {
                 .attach(RebuildRequired));
             }
             // A dropped partition must remove its rows from the view, which
-            // the file-level window cannot express: the caller rebuilds.
+            // the file-level window cannot express: the caller removes them
+            // through the partition's keys or rebuilds.
             if partition.partition_deleted {
-                return Err(report!(
-                    "view {view_id} source partition {} of table {} was dropped",
-                    partition.partition_desc,
-                    source.table_name
-                )
-                .attach(PartitionDropped));
+                dropped.push((
+                    partition.partition_desc.clone(),
+                    partition.to_version,
+                    partition.to_timestamp,
+                ));
+                continue;
             }
             if partition.to_version <= last_version {
                 continue;
@@ -3703,6 +3818,22 @@ impl IvmRuntime {
                 last_version: partition.to_version,
                 last_timestamp: partition.to_timestamp,
             });
+        }
+
+        if !dropped.is_empty() {
+            return Err(report!(
+                "view {view_id} source partitions [{}] of table {} were dropped",
+                dropped
+                    .iter()
+                    .map(|(desc, _, _)| desc.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                source.table_name
+            )
+            .attach(PartitionDropped {
+                source_table_id: source.table_id.clone(),
+                partitions: dropped,
+            }));
         }
 
         Ok(SourceWindow {

@@ -520,10 +520,11 @@ async fn keyed_join_reads_partitioned_left() {
     );
 }
 
-/// A dropped source partition removes its rows from the view: the next
-/// refresh rebuilds the view instead of silently keeping them.
+/// A dropped source partition removes its rows from the view: when the group
+/// keys carry the partition column, the refresh retracts exactly those rows
+/// instead of rebuilding.
 #[test_log::test(tokio::test)]
-async fn a_dropped_source_partition_rebuilds_the_view() {
+async fn a_dropped_source_partition_removes_its_rows() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -614,9 +615,10 @@ async fn a_dropped_source_partition_rebuilds_the_view() {
         .await
         .unwrap();
 
-    // The refresh rebuilds from the current state: the dropped rows are gone.
+    // The dropped rows are retracted through the partition value without a
+    // rebuild; the untouched partition keeps its state.
     let execution = executor.execute(&statement).await.unwrap();
-    assert_eq!(execution.action.label(), "rebuild");
+    assert_eq!(execution.action.label(), "incremental");
     assert_eq!(
         read_day_groups(runtime, &mv).await,
         vec![("d1".to_string(), "a".to_string(), 10)]
@@ -636,4 +638,130 @@ async fn a_dropped_source_partition_rebuilds_the_view() {
         read_day_groups(runtime, &mv).await,
         vec![("d1".to_string(), "a".to_string(), 17)]
     );
+}
+
+/// A source partition dropped outside the view's keys cannot be retracted by
+/// value: the refresh rebuilds from the current state instead.
+#[test_log::test(tokio::test)]
+async fn a_dropped_source_partition_outside_the_group_keys_rebuilds() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_drop_all_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&source.schema, &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_part_drop_all_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_part_src_{suffix} GROUP BY g"
+    );
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_group_sums(executor.runtime(), &mv).await,
+        vec![("a".to_string(), 10), ("b".to_string(), 5)]
+    );
+
+    // Drop the `d2` partition of the source (a delete commit).
+    let runtime = executor.runtime();
+    let partitions = runtime
+        .client()
+        .get_all_partition_info(&source.table_id)
+        .await
+        .unwrap();
+    let dropped = partitions
+        .iter()
+        .find(|partition| partition.partition_desc.contains("d2"))
+        .expect("the d2 partition exists");
+    let files = runtime
+        .client()
+        .get_data_files_of_single_partition(dropped)
+        .await
+        .unwrap();
+    assert!(!files.is_empty(), "the dropped partition has files");
+    let table_info = runtime
+        .client()
+        .get_table_info_by_table_id(&source.table_id)
+        .await
+        .unwrap()
+        .expect("the source table is registered");
+    runtime
+        .client()
+        .commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    commit_op: CommitOp::DeleteCommit.into(),
+                    ..Default::default()
+                }],
+                read_partition_info: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    ..Default::default()
+                }],
+            },
+            CommitOp::DeleteCommit,
+        )
+        .await
+        .unwrap();
+
+    // The group key does not carry `day`, so the refresh rebuilds.
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "rebuild");
+    assert_eq!(
+        read_group_sums(runtime, &mv).await,
+        vec![("a".to_string(), 10)]
+    );
+}
+
+/// The `(g, sum_v)` rows of a sum/count MV ordered by `g`.
+async fn read_group_sums(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), values.value(row)));
+        }
+    }
+    rows
 }
