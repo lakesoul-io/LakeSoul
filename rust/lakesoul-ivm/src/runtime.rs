@@ -438,6 +438,11 @@ pub enum ViewSpec {
         /// them under these names.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         payload_names: Vec<String>,
+        /// Whether the view materializes a non-null row identity
+        /// ([`IVM_PAIR_IDENTITY_COLUMN`], both sides' encoded primary keys),
+        /// so its MV can be read as a keyed source: a derived full-join step.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        identity_column: bool,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -1353,11 +1358,14 @@ impl ViewSpec {
     /// identity column ([`IVM_PAIR_IDENTITY_COLUMN`]), so a consumer can read
     /// the step's MV as a keyed source.  Other kinds are left untouched.
     pub(crate) fn set_derived_identity_column(&mut self) -> Result<()> {
-        if let ViewSpec::LeftJoin {
-            identity_column, ..
-        } = self
-        {
-            *identity_column = true;
+        match self {
+            ViewSpec::LeftJoin {
+                identity_column, ..
+            }
+            | ViewSpec::FullJoin {
+                identity_column, ..
+            } => *identity_column = true,
+            _ => {}
         }
         Ok(())
     }
@@ -2763,6 +2771,7 @@ impl IvmRuntime {
                 output_table_id,
                 join_keys,
                 right_keys,
+                identity_column,
                 left_value,
                 right_value,
                 output_columns,
@@ -2771,6 +2780,7 @@ impl IvmRuntime {
                 right_filter,
                 null_safe,
             } => SpecView::FullJoin(FullJoinView {
+                identity_column: *identity_column,
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
                 right: self.open_table_by_id(right_table_id).await?,

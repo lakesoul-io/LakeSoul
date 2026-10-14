@@ -229,17 +229,16 @@ Supported within the shapes above:
   clauses, whose columns are mapped per chain node), an **inner-join side**
   (the right or left side of a join is the subquery form of another join: the
   side is materialized with its plain-column projection, so a bushy tree works
-  — `a LEFT JOIN (b JOIN c ON …) x ON x.k = a.k` and
-  `a LEFT JOIN (b LEFT JOIN c ON …) x ON x.k = a.k` — and a payload the
-  select list renamed keeps that name in the step MV), and a **`UNION ALL`**
-  (a keyed branch the consuming operator does not select its primary keys from
-  is widened with them again).  An outer-join side materializes a **non-null
-  row identity** (`__ivm_pair_id`: the right side's primary keys encoded as a
-  collision-free string, the same length-prefixed form the lookup chain uses
-  for its 1:N steps), so the consumer can read the step as a keyed source; the
-  step's primary keys are the aliased left identities plus that column.  A
-  join side that is a **right or full** join still needs its identity work and
-  stays rejected explicitly.  An aggregate argument that names a projection
+  for every join type — `a LEFT JOIN (b JOIN c ON …) x ON x.k = a.k`,
+  `a LEFT JOIN (b LEFT JOIN c ON …) x ON x.k = a.k` and the **full**-join form
+  — and a payload the select list renamed keeps that name in the step MV),
+  and a **`UNION ALL`** (a keyed branch the consuming operator does not select
+  its primary keys from is widened with them again).  An outer-join side
+  materializes a **non-null row identity** (`__ivm_pair_id`: both sides'
+  primary keys encoded as a collision-free string, the same length-prefixed
+  form the lookup chain uses for its 1:N steps), so the consumer can read the
+  step as a keyed source; a left-join step is keyed by the aliased left
+  identities plus that column, a full-join step by the column alone.  An aggregate argument that names a projection
   above the step (for example `SUM(rn)` over a window step) resolves to the
   step's materialized column, so the rendered calls run against the step MV.
   The statement is rewritten to read the derived MV (a compact join widens

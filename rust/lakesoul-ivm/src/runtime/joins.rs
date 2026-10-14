@@ -680,6 +680,40 @@ pub fn wide_left_join_view_schema_with_identity(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The schema of a wide `FULL JOIN` view whose MV also materializes the
+/// non-null row identity column ([`IVM_PAIR_IDENTITY_COLUMN`]): a derived
+/// step a consumer reads as a keyed source.  Both sides may be unmatched, so
+/// both identity sets are nullable and the identity column alone is the key.
+pub fn wide_full_join_view_schema_with_identity(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+    join_keys: &[String],
+    output_columns: &[JoinOutputColumn],
+) -> Result<SchemaRef> {
+    let base = wide_outer_join_view_schema_for(
+        left_schema,
+        right_schema,
+        left_primary_keys,
+        right_primary_keys,
+        join_keys,
+        output_columns,
+    )?;
+    let mut fields = base.fields().iter().map(Arc::clone).collect::<Vec<_>>();
+    // The base ends with the kinds and epoch columns; insert the identity
+    // before them.
+    let split = fields.len().saturating_sub(2);
+    let mut identity =
+        vec![
+            Arc::new(Field::new(IVM_PAIR_IDENTITY_COLUMN, DataType::Utf8, false))
+                as Arc<Field>,
+        ];
+    identity.append(&mut fields.split_off(split));
+    fields.append(&mut identity);
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// The schema of a wide [`LookupJoinView`] output: the left fields keep their
 /// nullability and the right fields are nullable (NULL without a match).
 pub fn wide_lookup_join_view_schema_for(
@@ -1084,6 +1118,8 @@ impl LeftJoinView {
 /// unmatched rows of either side (NULL-padded).
 #[derive(Debug, Clone)]
 pub struct FullJoinView {
+    /// Whether the MV materializes the non-null row identity column.
+    pub identity_column: bool,
     /// The view id.
     pub view_id: String,
     /// The left source (keyed/upsert).
@@ -1147,6 +1183,7 @@ impl FullJoinView {
         right_value: impl Into<String>,
     ) -> Self {
         Self {
+            identity_column: false,
             view_id: view_id.into(),
             left,
             right,
@@ -1174,7 +1211,7 @@ impl FullJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
-            identity_column: false,
+            identity_column: self.identity_column,
             null_safe: self.null_safe,
         }
     }
@@ -1211,6 +1248,7 @@ impl FullJoinView {
 
     fn to_spec(&self) -> ViewSpec {
         ViewSpec::FullJoin {
+            identity_column: self.identity_column,
             view_id: self.view_id.clone(),
             left_table_id: self.left.table_id.clone(),
             right_table_id: self.right.table_id.clone(),
@@ -2541,31 +2579,46 @@ fn keyed_join_output_columns(
         output.push(col(right_pk_alias(key).as_str()));
     }
     if parts.identity_column {
-        output.push(pair_identity_expr(parts.right_primary_keys));
+        output.push(pair_identity_expr(
+            parts.left_primary_keys,
+            parts.right_primary_keys,
+        ));
     }
     output
 }
 
-/// The non-null row identity of a derived outer-join step: the right side's
+/// The non-null row identity of a derived outer-join step: both sides'
 /// primary keys, length prefixed (`v<octets>:<text>`) so concatenating them
-/// cannot collide; an unmatched row (NULL key) encodes as `n`.
-fn pair_identity_expr(right_primary_keys: &[String]) -> Expr {
+/// cannot collide; an unmatched row (NULL key) encodes as `n`.  A left join
+/// needs the right side and a full join both, so encoding both keeps one
+/// collision-free identity for every outer join.
+fn pair_identity_expr(
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+) -> Expr {
     let mut parts = Vec::new();
+    for key in left_primary_keys {
+        let value = col(left_pk_alias(key).as_str());
+        parts.push(encoded_identity_part(value));
+    }
     for key in right_primary_keys {
         let value = col(right_pk_alias(key).as_str());
-        let text = Expr::Cast(Cast::new(Box::new(value.clone()), DataType::Utf8));
-        let length = Expr::Cast(Cast::new(
-            Box::new(octet_length(text.clone())),
-            DataType::Utf8,
-        ));
-        let encoded = concat(vec![lit("v"), length, lit(":"), text]);
-        parts.push(
-            when(value.is_null(), lit("n"))
-                .otherwise(encoded)
-                .unwrap_or_else(|_| lit("n")),
-        );
+        parts.push(encoded_identity_part(value));
     }
     concat(parts).alias(IVM_PAIR_IDENTITY_COLUMN)
+}
+
+/// One length-prefixed component of a pair identity; NULL encodes as `n`.
+fn encoded_identity_part(value: Expr) -> Expr {
+    let text = Expr::Cast(Cast::new(Box::new(value.clone()), DataType::Utf8));
+    let length = Expr::Cast(Cast::new(
+        Box::new(octet_length(text.clone())),
+        DataType::Utf8,
+    ));
+    let encoded = concat(vec![lit("v"), length, lit(":"), text]);
+    when(value.is_null(), lit("n"))
+        .otherwise(encoded)
+        .unwrap_or_else(|_| lit("n"))
 }
 
 /// The shape of a pair-keyed join used by the projection helpers.
@@ -3849,9 +3902,14 @@ impl IvmRuntime {
             JoinType::Right,
             true,
         )?;
-        let inserts = left_pairs
-            .union(right_pairs)?
-            .distinct()?
+        let mut inserts = left_pairs.union(right_pairs)?.distinct()?;
+        if view.identity_column {
+            inserts = inserts.with_column(
+                IVM_PAIR_IDENTITY_COLUMN,
+                pair_identity_expr(&view.left.primary_keys, &view.right.primary_keys),
+            )?;
+        }
+        let inserts = inserts
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let deletes = mv
@@ -3987,9 +4045,14 @@ impl IvmRuntime {
             JoinType::Right,
             true,
         )?;
-        for batch in left_pairs
-            .union(right_pairs)?
-            .distinct()?
+        let mut inserts = left_pairs.union(right_pairs)?.distinct()?;
+        if view.identity_column {
+            inserts = inserts.with_column(
+                IVM_PAIR_IDENTITY_COLUMN,
+                pair_identity_expr(&view.left.primary_keys, &view.right.primary_keys),
+            )?;
+        }
+        for batch in inserts
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             .collect()
