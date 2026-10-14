@@ -439,6 +439,18 @@ pub(super) fn join_tree_has_outer_step(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// Whether a chain side is a compound subplan (a derived source) rather than
+/// a plain table: the projection above it may keep the columns under aliases.
+fn chain_side_is_derived(plan: &LogicalPlan) -> bool {
+    if derived_sourceable(plan) {
+        return true;
+    }
+    match peel(plan) {
+        LogicalPlan::Projection(projection) => derived_sourceable(&projection.input),
+        _ => false,
+    }
+}
+
 /// A left-deep chain of keyed 1:1 lookups over a base table: the shape a
 /// star-schema `[LEFT] JOIN` chain flattens to.
 pub(super) fn analyze_lookup_chain(
@@ -452,6 +464,14 @@ pub(super) fn analyze_lookup_chain(
     };
     if !is_plain_projection(projection) {
         return Err(unsupported("computed columns in a lookup chain output"));
+    }
+    // A chain whose outermost join is a RIGHT or FULL join is not a
+    // left-deep lookup chain: materialize its left side as a derived step
+    // and let the two-source outer-join paths handle the outer join.
+    if matches!(outer.join_type, JoinType::Right | JoinType::Full)
+        && chain_side_is_derived(&outer.left)
+    {
+        return Err(derived_source_error("a lookup chain step", &outer.left));
     }
     // Collect the left-deep steps from the outermost join inward.  The
     // aliases are kept: the base alias names its columns in the step keys.
@@ -468,8 +488,20 @@ pub(super) fn analyze_lookup_chain(
                 node = &projection.input;
             }
             LogicalPlan::Join(join) => {
+                // An inner step that is a RIGHT or FULL join is not part of
+                // a left-deep lookup chain: materialize it as a derived step
+                // for the two-source outer-join paths.
+                if matches!(join.join_type, JoinType::Right | JoinType::Full) {
+                    return Err(derived_source_error("a lookup chain step", node));
+                }
                 joins.push(join);
                 node = &join.left;
+            }
+            // A chain side that is a compound subplan (for example a join
+            // under a projection) is materialized as a derived step first;
+            // the two-source join paths then handle the outer step.
+            _ if chain_side_is_derived(node) => {
+                return Err(derived_source_error("a lookup chain side", node));
             }
             _ => break,
         }

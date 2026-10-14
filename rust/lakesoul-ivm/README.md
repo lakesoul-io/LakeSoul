@@ -232,7 +232,10 @@ Supported within the shapes above:
   for every join type — `a LEFT JOIN (b JOIN c ON …) x ON x.k = a.k`,
   `a LEFT JOIN (b LEFT JOIN c ON …) x ON x.k = a.k` and the **full**-join form
   — and a payload the select list renamed keeps that name in the step MV),
-  and a **`UNION ALL`** (a keyed branch the consuming operator does not select
+  a **right/full chain step** (`a LEFT JOIN b ON … RIGHT JOIN c ON …`
+  materializes the inner join as the step; `a RIGHT JOIN b ON … LEFT JOIN c
+  ON …` materializes the right-join step itself, so a chain with a right or
+  full step stays incremental), and a **`UNION ALL`** (a keyed branch the consuming operator does not select
   its primary keys from is widened with them again).  An outer-join side
   materializes a **non-null row identity** (`__ivm_pair_id`: both sides'
   primary keys encoded as a collision-free string, the same length-prefixed
@@ -555,8 +558,9 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   multi-way or chain join whose key is an expression); a non-equality
   condition may compare unmaterialized columns, they become hidden payload
   columns;
-* outer joins inside a multi-way chain outside the lookup-chain shape: a
-  right/full step, a bushy tree, or more than sixteen sources;
+* a multi-way chain with more than sixteen sources; a chain step whose
+  payload columns collide by name (a step the statement does not project
+  names its payloads after the source columns: alias them in a subquery);
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: a `DISTINCT` set-op variant whose left rows
   repeat a join tuple is rejected rather than silently returning duplicate

@@ -3519,6 +3519,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `list_views` 的 mode/reason、差分 oracle、slt 约定、文档。设计稿中「Tier-2 按变化分区重算」仍为
   后续性能优化（任意语句跨分区，语义需专门设计）。
 
+### 10.134 链内 RIGHT/FULL 步骤（ROADMAP §B3）
+
+- 链（left-deep lookup chain）本身只维护 INNER/LEFT 步。RIGHT/FULL 步改由**派生步**路线承载，
+  用户可见形状全部支持：
+  - `(子查询) x RIGHT/FULL JOIN a`：走链遇到复合侧（`chain_side_is_derived`）抛派生标记，复核后只剩两个源，
+    转两源外连接路径；
+  - `a LEFT JOIN b RIGHT/FULL JOIN c`：最外层是 RIGHT/FULL 时物化其左侧（内层 join）；
+  - `a RIGHT/FULL JOIN b LEFT JOIN c`：走链遇到内层 RIGHT/FULL 步时直接物化该 join 本身。
+- 关键修复：`replace_plan` 替换派生标记计划时保留 `SubqueryAlias`（标记覆盖别名时父计划的 `x.k` 引用必须继续
+  解析；此前别名被一并替换，`side_of` 归类失败报 ambiguous）。
+- 测试：`derived_views.rs` 五用例（子查询形 RIGHT/FULL、自然写法 RIGHT、内层 RIGHT/FULL），每条含 bootstrap、
+  增量删除与全量重算对照；全量 476 passed。
+- 仍明确拒绝：步骤 payload 列同名（`join output column v is materialized twice; add distinct aliases`，
+  用带别名的子查询规避）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

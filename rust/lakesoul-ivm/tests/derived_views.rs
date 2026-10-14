@@ -1218,6 +1218,947 @@ async fn a_computed_join_side_is_not_materialized_yet() {
     );
 }
 
+/// The three chain sources: `a LEFT JOIN b LEFT JOIN c`-style fixtures with
+/// one distinct payload column each.
+struct ChainSources {
+    dir: tempfile::TempDir,
+    a: IvmTable,
+    b: IvmTable,
+    c: IvmTable,
+    a_schema: Arc<Schema>,
+    b_schema: Arc<Schema>,
+    c_schema: Arc<Schema>,
+}
+
+async fn chain_sources(runtime: &IvmRuntime, tag: &str) -> ChainSources {
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("av", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_k", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("bv", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_k", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("cv", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let mut sources = Vec::new();
+    for (label, schema, keys) in [
+        ("a", a_schema.clone(), "k"),
+        ("b", b_schema.clone(), "b_k"),
+        ("c", c_schema.clone(), "c_k"),
+    ] {
+        let table = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_{tag}_{label}_{suffix}"),
+                    table_path(&dir, label),
+                    schema,
+                )
+                .with_primary_keys(vec![keys.to_string()])
+                .with_cdc_column("op"),
+            )
+            .await
+            .unwrap();
+        sources.push(table);
+    }
+    ChainSources {
+        dir,
+        a: sources[0].clone(),
+        b: sources[1].clone(),
+        c: sources[2].clone(),
+        a_schema,
+        b_schema,
+        c_schema,
+    }
+}
+
+fn chain_ints(values: &[i64]) -> Arc<dyn arrow::array::Array> {
+    Arc::new(Int64Array::from_iter_values(values.iter().copied()))
+}
+
+fn chain_ops(values: &[&str]) -> Arc<dyn arrow::array::Array> {
+    Arc::new(StringArray::from_iter_values(values.iter().copied()))
+}
+
+/// The `(av, bv, cv)` rows of a chain MV ordered for comparison.
+async fn read_chain_rows(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+    columns: &[&str],
+) -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let order = columns
+        .iter()
+        .map(|column| format!("{column} nulls last"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let batches = context
+        .sql(&format!(
+            "select {} from mv order by {order}",
+            columns.join(", ")
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    triple_rows(&batches)
+}
+
+/// The full recompute of a chain statement over the current source rows.
+async fn full_chain_rows(
+    runtime: &IvmRuntime,
+    a: &IvmTable,
+    b: &IvmTable,
+    c: &IvmTable,
+    sql: &str,
+) -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+    let context = SessionContext::new();
+    for (name, table) in [("a", a), ("b", b), ("c", c)] {
+        context
+            .register_table(name, Arc::new(runtime.table_provider(table)))
+            .unwrap();
+    }
+    let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
+    triple_rows(&batches)
+}
+
+fn triple_rows(batches: &[RecordBatch]) -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+    let mut rows = Vec::new();
+    for batch in batches {
+        for index in 0..batch.num_rows() {
+            let value = |column: usize| {
+                let array = batch
+                    .column(column)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                (!array.is_null(index)).then(|| array.value(index))
+            };
+            rows.push((value(0), value(1), value(2)));
+        }
+    }
+    rows
+}
+
+/// A chain whose outermost step is a RIGHT JOIN: the left side (the inner
+/// LEFT JOIN) is materialized as a derived step and the outer join reads it
+/// as a keyed source, so the whole chain stays incremental.
+#[test_log::test(tokio::test)]
+async fn a_chain_with_a_right_step_materializes_its_left_side() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "cr").await;
+    let ChainSources {
+        dir: _dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+
+    let step_schema = lakesoul_ivm::wide_left_join_view_schema_with_identity(
+        b_schema,
+        c_schema,
+        &["b_k".to_string()],
+        &["c_k".to_string()],
+        &["k".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "cv".to_string(),
+                name: "cv".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let step_keys = {
+        let mut keys =
+            lakesoul_ivm::keyed_join_output_primary_keys(&["b_k".to_string()], &[]);
+        keys.push(lakesoul_ivm::IVM_PAIR_IDENTITY_COLUMN.to_string());
+        keys
+    };
+    let target_schema = lakesoul_ivm::wide_outer_join_view_schema_for(
+        a_schema,
+        &step_schema,
+        &["k".to_string()],
+        &step_keys,
+        &["k".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "av".to_string(),
+                name: "av".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "cv".to_string(),
+                name: "cv".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_cr_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(&sources.dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["k".to_string()],
+                &step_keys,
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT a.av, x.bv, x.cv \
+         FROM (SELECT b.bv, c.cv, b.k FROM {} b LEFT JOIN {} c ON c.k = b.k) x \
+         RIGHT JOIN {} a ON a.k = x.k",
+        mv.table_name, b.table_name, c.table_name, a.table_name
+    );
+    let reference = "select a.av, x.bv, x.cv from (\
+         select b.bv, c.cv, b.k from b left join c on c.k = b.k) x \
+         right join a on a.k = x.k order by a.av nulls last, x.bv nulls last, x.cv nulls last";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[10, 12]),
+                chain_ints(&[1, 7]),
+                chain_ints(&[70, 90]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20]),
+                chain_ints(&[1]),
+                chain_ints(&[5]),
+                chain_ops(&["insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert!(derived_right_view(runtime, &mv).await.is_some());
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["av", "bv", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // Deleting the matched right row keeps the inner left rows with a NULL
+    // payload; the outer step sees the same rows with cv cleared.
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20]),
+                chain_ints(&[1]),
+                chain_ints(&[5]),
+                chain_ops(&["delete"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["av", "bv", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // Deleting an inner left row removes its pair from the outer step too.
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[12]),
+                chain_ints(&[7]),
+                chain_ints(&[90]),
+                chain_ops(&["delete"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["av", "bv", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+}
+
+/// The same outermost RIGHT JOIN without a subquery around the inner join:
+/// the chain's left side is materialized directly from the join tree.
+#[test_log::test(tokio::test)]
+async fn a_plain_chain_with_a_right_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "pr").await;
+    let ChainSources {
+        dir: _dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+
+    let step_schema = lakesoul_ivm::wide_left_join_view_schema_with_identity(
+        a_schema,
+        b_schema,
+        &["k".to_string()],
+        &["b_k".to_string()],
+        &["k".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "av".to_string(),
+                name: "av".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let step_keys = {
+        let mut keys =
+            lakesoul_ivm::keyed_join_output_primary_keys(&["k".to_string()], &[]);
+        keys.push(lakesoul_ivm::IVM_PAIR_IDENTITY_COLUMN.to_string());
+        keys
+    };
+    let target_schema = lakesoul_ivm::wide_outer_join_view_schema_for(
+        c_schema,
+        &step_schema,
+        &["c_k".to_string()],
+        &step_keys,
+        &["k".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "cv".to_string(),
+                name: "cv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "av".to_string(),
+                name: "av".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pr_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(&sources.dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["c_k".to_string()],
+                &step_keys,
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT c.cv, a.av, b.bv FROM {} a LEFT JOIN {} b ON b.k = a.k \
+         RIGHT JOIN {} c ON c.k = b.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let reference = "select c.cv, a.av, b.bv from a left join b on b.k = a.k \
+         right join c on c.k = b.k order by c.cv nulls last, a.av nulls last, b.bv nulls last";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[10, 12]),
+                chain_ints(&[1, 7]),
+                chain_ints(&[70, 90]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20, 21]),
+                chain_ints(&[1, 3]),
+                chain_ints(&[5, 6]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["cv", "av", "bv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // `a`'s row for `k = 2` matches no `b` row, so the step keeps it with a
+    // NULL payload; the RIGHT join still preserves every `c` row.
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![chain_ints(&[2]), chain_ints(&[200]), chain_ops(&["delete"])],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["cv", "av", "bv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+}
+
+/// A chain whose outermost step is a FULL JOIN: the step's own rows may be
+/// unmatched by the chain's other sources and still appear.
+#[test_log::test(tokio::test)]
+async fn a_chain_with_a_full_step_keeps_unmatched_step_rows() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "cf").await;
+    let ChainSources {
+        dir: _dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+
+    let step_schema = lakesoul_ivm::wide_left_join_view_schema_with_identity(
+        b_schema,
+        c_schema,
+        &["b_k".to_string()],
+        &["c_k".to_string()],
+        &["k".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "cv".to_string(),
+                name: "cv".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let step_keys = {
+        let mut keys =
+            lakesoul_ivm::keyed_join_output_primary_keys(&["b_k".to_string()], &[]);
+        keys.push(lakesoul_ivm::IVM_PAIR_IDENTITY_COLUMN.to_string());
+        keys
+    };
+    let target_schema = lakesoul_ivm::wide_outer_join_view_schema_for(
+        &step_schema,
+        a_schema,
+        &step_keys,
+        &["k".to_string()],
+        &["k".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "cv".to_string(),
+                name: "cv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "av".to_string(),
+                name: "av".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_cf_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(&sources.dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &step_keys,
+                &["k".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT x.bv, x.cv, a.av \
+         FROM (SELECT b.bv, c.cv, b.k FROM {} b LEFT JOIN {} c ON c.k = b.k) x \
+         FULL JOIN {} a ON a.k = x.k",
+        mv.table_name, b.table_name, c.table_name, a.table_name
+    );
+    let reference = "select x.bv, x.cv, a.av from (\
+         select b.bv, c.cv, b.k from b left join c on c.k = b.k) x \
+         full join a on a.k = x.k order by x.bv nulls last, x.cv nulls last, a.av nulls last";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[10, 12]),
+                chain_ints(&[1, 7]),
+                chain_ints(&[70, 90]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20]),
+                chain_ints(&[1]),
+                chain_ints(&[5]),
+                chain_ops(&["insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["bv", "cv", "av"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // The step row for `b_k = 12` matches no `a` row and still appears.
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[10]),
+                chain_ints(&[1]),
+                chain_ints(&[70]),
+                chain_ops(&["delete"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["bv", "cv", "av"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+}
+
+/// A plain left-deep chain whose first step is a FULL JOIN: the step's
+/// unmatched rows of both sides flow through the rest of the chain.
+#[test_log::test(tokio::test)]
+async fn a_chain_with_an_inner_full_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "if").await;
+    let ChainSources {
+        dir: _dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("av", DataType::Int64, true),
+        Field::new("bv", DataType::Int64, true),
+        Field::new("cv", DataType::Int64, true),
+        Field::new("__left_pk___ivm_pair_id", DataType::Utf8, true),
+        Field::new("__right_pk_c_k", DataType::Int64, true),
+        Field::new(lakesoul_ivm::IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(lakesoul_ivm::IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_if_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(&sources.dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &[lakesoul_ivm::IVM_PAIR_IDENTITY_COLUMN.to_string()],
+                &["c_k".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT a.av, b.bv, c.cv FROM {} a FULL JOIN {} b ON b.k = a.k \
+         LEFT JOIN {} c ON c.k = b.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let reference = "select a.av, b.bv, c.cv from a full join b on b.k = a.k \
+         left join c on c.k = b.k order by a.av nulls last, b.bv nulls last, c.cv nulls last";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[10, 12]),
+                chain_ints(&[1, 7]),
+                chain_ints(&[70, 90]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20]),
+                chain_ints(&[1]),
+                chain_ints(&[5]),
+                chain_ops(&["insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["av", "bv", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // The unmatched `b` row leaves the step with a NULL `av` and still shows.
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[12]),
+                chain_ints(&[7]),
+                chain_ints(&[90]),
+                chain_ops(&["delete"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["av", "bv", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+}
+
+/// A plain left-deep chain whose first step is a RIGHT JOIN: the step itself
+/// is materialized and the rest of the chain reads it as a keyed source.
+#[test_log::test(tokio::test)]
+async fn a_chain_with_an_inner_right_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "ir").await;
+    let ChainSources {
+        dir: _dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+
+    // The outer join reads the materialized right-join step as a keyed
+    // source: its payloads (`bv`, `av`) and the aliased primary keys make up
+    // the MV, whose key is the pair of both sides' keys.
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("bv", DataType::Int64, true),
+        Field::new("av", DataType::Int64, true),
+        Field::new("cv", DataType::Int64, true),
+        Field::new("__left_pk_b_k", DataType::Int64, true),
+        Field::new("__right_pk_c_k", DataType::Int64, true),
+        Field::new(lakesoul_ivm::IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(lakesoul_ivm::IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ir_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(&sources.dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["b_k".to_string()],
+                &["c_k".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT b.bv, a.av, c.cv FROM {} a RIGHT JOIN {} b ON b.k = a.k \
+         LEFT JOIN {} c ON c.k = b.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let reference = "select b.bv, a.av, c.cv from a right join b on b.k = a.k \
+         left join c on c.k = b.k order by b.bv nulls last, a.av nulls last, c.cv nulls last";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[10, 12]),
+                chain_ints(&[1, 7]),
+                chain_ints(&[70, 90]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20]),
+                chain_ints(&[1]),
+                chain_ints(&[5]),
+                chain_ops(&["insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["bv", "av", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // Deleting the preserved side's row keeps the step row with a NULL `av`;
+    // the outer step still matches it on the key.
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![chain_ints(&[1]), chain_ints(&[100]), chain_ops(&["delete"])],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["bv", "av", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+
+    // Deleting the last right row removes the step row and the outer row.
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[20]),
+                chain_ints(&[1]),
+                chain_ints(&[5]),
+                chain_ops(&["delete"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_rows(runtime, &mv, &["bv", "av", "cv"]).await,
+        full_chain_rows(runtime, a, b, c, reference).await
+    );
+}
+
 /// The full recompute of `SUM(v)` per `g` over the fact table.
 async fn full_group_sum(runtime: &IvmRuntime, fact: &IvmTable) -> Vec<(String, i64)> {
     let context = SessionContext::new();
