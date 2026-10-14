@@ -1378,3 +1378,332 @@ async fn nested_payloads_match_a_full_recompute() {
         assert_eq!(actual, expected, "round {round}");
     }
 }
+
+/// A nested **join key**: the struct column matches by value, and the pair
+/// join materializes it as the join key column of the MV.
+#[test_log::test(tokio::test)]
+async fn a_join_on_a_struct_key_matches_by_value() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_nkey_l_{suffix}"),
+                table_path(&dir, "left"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_nkey_r_{suffix}"),
+                table_path(&dir, "right"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_nkey_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::left_join_view_schema_for(
+                    &source_schema(),
+                    &source_schema(),
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    &["s".to_string()],
+                    "l",
+                    "m",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["k".to_string()],
+                &["k".to_string()],
+            ))
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        source_batch(&[
+            Row {
+                k: 1,
+                g: "a",
+                s: Some((10, Some("x"))),
+                l: Some(vec![1]),
+                m: None,
+                op: "insert",
+            },
+            Row {
+                k: 2,
+                g: "b",
+                s: Some((20, None)),
+                l: Some(vec![2]),
+                m: None,
+                op: "insert",
+            },
+            Row {
+                k: 3,
+                g: "c",
+                s: None,
+                l: Some(vec![3]),
+                m: None,
+                op: "insert",
+            },
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            source_batch(&[Row {
+                k: 7,
+                g: "r",
+                s: Some((10, Some("x"))),
+                l: None,
+                m: Some(vec![("p", Some(1))]),
+                op: "insert",
+            }]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_nkey_mv_{suffix} SELECT a.l, b.m \
+         FROM ivm_nkey_l_{suffix} a LEFT JOIN ivm_nkey_r_{suffix} b ON b.s = a.s"
+    );
+    let outcome = executor.execute(&statement).await;
+    match outcome {
+        Ok(execution) => assert_eq!(execution.action.label(), "bootstrap"),
+        Err(error) => panic!("the nested join key was rejected: {error}"),
+    }
+    let runtime = executor.runtime();
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select right_value from mv order by __left_pk_k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let array = batch.column(0);
+        for row in 0..batch.num_rows() {
+            rows.push(arrow::util::display::array_value_to_string(array, row).unwrap());
+        }
+    }
+    assert_eq!(
+        rows,
+        vec!["{p: 1}".to_string(), "".to_string(), "".to_string()]
+    );
+
+    // A matching struct inserted on the right completes the unmatched pair.
+    right
+        .append_batch(
+            runtime.client(),
+            source_batch(&[Row {
+                k: 8,
+                g: "r",
+                s: Some((20, None)),
+                l: None,
+                m: Some(vec![("q", Some(2))]),
+                op: "insert",
+            }]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    let batches = context
+        .sql("select right_value from mv order by __left_pk_k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let array = batch.column(0);
+        for row in 0..batch.num_rows() {
+            rows.push(arrow::util::display::array_value_to_string(array, row).unwrap());
+        }
+    }
+    assert_eq!(
+        rows,
+        vec!["{p: 1}".to_string(), "{q: 2}".to_string(), "".to_string()]
+    );
+}
+
+/// A **list** join key: lists match element-wise, NULL never matches, and the
+/// pair join materializes the key column.
+#[test_log::test(tokio::test)]
+async fn a_join_on_a_list_key_matches_by_value() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lkey_l_{suffix}"),
+                table_path(&dir, "left"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lkey_r_{suffix}"),
+                table_path(&dir, "right"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lkey_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::left_join_view_schema_for(
+                    &source_schema(),
+                    &source_schema(),
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    &["l".to_string()],
+                    "s",
+                    "m",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["k".to_string()],
+                &["k".to_string()],
+            ))
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        source_batch(&[
+            Row {
+                k: 1,
+                g: "a",
+                s: Some((10, None)),
+                l: Some(vec![1, 2]),
+                m: None,
+                op: "insert",
+            },
+            Row {
+                k: 2,
+                g: "b",
+                s: Some((20, None)),
+                l: Some(vec![]),
+                m: None,
+                op: "insert",
+            },
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            source_batch(&[Row {
+                k: 7,
+                g: "r",
+                s: None,
+                l: Some(vec![1, 2]),
+                m: Some(vec![("p", Some(1))]),
+                op: "insert",
+            }]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_lkey_mv_{suffix} SELECT a.s, b.m \
+         FROM ivm_lkey_l_{suffix} a LEFT JOIN ivm_lkey_r_{suffix} b ON b.l = a.l"
+    );
+    let outcome = executor.execute(&statement).await;
+    match outcome {
+        Ok(execution) => assert_eq!(execution.action.label(), "bootstrap"),
+        Err(error) => panic!("the nested join key was rejected: {error}"),
+    }
+    let runtime = executor.runtime();
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select right_value from mv order by __left_pk_k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let array = batch.column(0);
+        for row in 0..batch.num_rows() {
+            rows.push(arrow::util::display::array_value_to_string(array, row).unwrap());
+        }
+    }
+    assert_eq!(rows, vec!["{p: 1}".to_string(), "".to_string()]);
+
+    // The empty list matches an empty list on the right.
+    right
+        .append_batch(
+            runtime.client(),
+            source_batch(&[Row {
+                k: 8,
+                g: "r",
+                s: None,
+                l: Some(vec![]),
+                m: Some(vec![("q", Some(2))]),
+                op: "insert",
+            }]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    let batches = context
+        .sql("select right_value from mv order by __left_pk_k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let array = batch.column(0);
+        for row in 0..batch.num_rows() {
+            rows.push(arrow::util::display::array_value_to_string(array, row).unwrap());
+        }
+    }
+    assert_eq!(rows, vec!["{p: 1}".to_string(), "{q: 2}".to_string()]);
+}
