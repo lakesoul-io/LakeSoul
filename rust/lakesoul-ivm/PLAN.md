@@ -3473,6 +3473,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   明确拒绝）；`tests/sql_oracle.rs` 新增 `oracle_bushy_left_over_inner_matches_full_recompute`
   （三源随机变更 10 轮 + 每轮 no-op 重放 + 与参考重算比对；多种子 30 轮通过）。
 
+### 10.131 外连接步的非空行身份（bushy 的 LEFT JOIN 侧，ROADMAP §B3）
+
+- **问题**：外连接 MV 的 pair 身份（`__left_pk_*`/`__right_pk_*`）在未匹配行为 NULL；把它当 keyed 源读取
+  时 `validate_left_join_view` 会拒绝（`key column ... must be non-nullable`）。
+- **实现**：`ViewSpec::LeftJoin` 新增 `identity_column: bool`（serde-default，仅派生步置位）：
+  - 写入路径 `keyed_join_output_columns` 追加 `IVM_PAIR_IDENTITY_COLUMN`（`__ivm_pair_id`）——把**右侧**
+    主键逐段「`v<octet_length>:<text>`」拼接（NULL → `n`），与链 1:N 的行标识编码同构、无碰撞且恒非空；
+  - schema：新公开助手 `wide_left_join_view_schema_with_identity`（左侧身份**非空**、右侧可空 + 身份列，
+    区别于 FULL 语义共用的 `wide_outer_join_view_schema_for`）；执行器 `expected_mv_schema` 的 LeftJoin
+    臂按开关选它；
+  - 主键：`derived_primary_keys` 在置位时 = 左侧身份的**别名列**（`keyed_join_output_primary_keys(left, [])`）
+    + `__ivm_pair_id`；消费方（外层 join）因此满足 keyed 源校验；
+  - `set_derived_identity_column` 在 `materialize_derived` 分析后、加宽前调用；`Projection(LeftJoin)` 步
+    放行，RIGHT/FULL 侧保持明确拒绝（需两侧编码）。
+- **测试**：`tests/derived_views.rs` 新增「LEFT JOIN 侧」bushy 用例（bootstrap + 删除内层右行使内层
+  左行 payload 变 NULL、外层失去匹配 + 步骤复用 + 参考重算比对）；原拒绝用例改为 FULL 侧。全量套件
+  **470 passed / 0 failed**。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

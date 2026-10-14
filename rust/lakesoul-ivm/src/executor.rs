@@ -38,13 +38,13 @@ use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
-    IVM_NONNULL_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN,
-    IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
-    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
-    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
-    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
-    distinct_agg_groups_mv_schema_for, full_join_view_schema_for,
-    grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN, IVM_ROW_KINDS_COLUMN,
+    IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn,
+    JoinSide, ViewSpec, approx_distinct_groups_mv_schema_for,
+    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
+    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
+    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
+    full_join_view_schema_for, grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_for,
     lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
@@ -55,8 +55,9 @@ use crate::runtime::{
     union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
     wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
-    wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_columns_mv_schema_for,
+    wide_keyed_join_view_schema_with_keys, wide_left_join_view_schema_with_identity,
+    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_columns_mv_schema_for,
 };
 use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
@@ -258,13 +259,16 @@ fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
         // analyzer reads it for the output columns and the projection stays
         // part of the step, so the parent's references keep resolving.
         LogicalPlan::Projection(projection) => match peel(&projection.input) {
-            // An outer join's row identity may be NULL, which the keyed read
-            // of a joined step cannot use; a derived outer-join step needs a
-            // non-null encoded identity first.
-            LogicalPlan::Join(join) if !matches!(join.join_type, JoinType::Inner) => {
+            // A derived LEFT JOIN side materializes a non-null row identity,
+            // so a consumer can read it; a right or full join needs the same
+            // for both sides first.
+            LogicalPlan::Join(join)
+                if !matches!(join.join_type, JoinType::Inner | JoinType::Left) =>
+            {
                 Err(rootcause::report!(
-                    "a derived view over a join side that is an outer join is not \
-                     materialized yet; use an inner join side or split the statement"
+                    "a derived view over a join side that is a right or full join is \
+                     not materialized yet; use an inner or left join side, or split \
+                     the statement"
                 )
                 .attach(UnsupportedShape))
             }
@@ -881,6 +885,9 @@ impl IvmSqlExecutor {
         let (mut spec, _) =
             Box::pin(self.analyze_with_derived(subplan, tables, &request, target, steps))
                 .await?;
+        // A derived outer-join step gets a non-null row identity, so a
+        // consumer can read its MV as a keyed source.
+        spec.set_derived_identity_column()?;
         // A compact join names its payloads left_value / right_value; the
         // derived view widens them to the subplan's column names so the
         // rewritten plan resolves its columns.
@@ -982,11 +989,6 @@ impl IvmSqlExecutor {
                 right_table_id,
                 ..
             }
-            | ViewSpec::LeftJoin {
-                left_table_id,
-                right_table_id,
-                ..
-            }
             | ViewSpec::FullJoin {
                 left_table_id,
                 right_table_id,
@@ -1000,6 +1002,26 @@ impl IvmSqlExecutor {
             | ViewSpec::MinMax { group_keys, .. }
             | ViewSpec::DistinctAgg { group_keys, .. }
             | ViewSpec::MultiAgg { group_keys, .. } => group_keys.clone(),
+            ViewSpec::LeftJoin {
+                left_table_id,
+                right_table_id,
+                identity_column,
+                ..
+            } => {
+                let left = self.runtime.open_table_by_id(left_table_id).await?;
+                let right = self.runtime.open_table_by_id(right_table_id).await?;
+                // The MV's key columns are the aliased identities, so the
+                // pair helper names them.
+                let mut keys = keyed_join_output_primary_keys(&left.primary_keys, &[]);
+                if *identity_column {
+                    // The right identities may be NULL; the encoded column
+                    // keeps the key non-null so a consumer can read the step.
+                    keys.push(IVM_PAIR_IDENTITY_COLUMN.to_string());
+                } else {
+                    keys.extend(keyed_join_output_primary_keys(&[], &right.primary_keys));
+                }
+                keys
+            }
             ViewSpec::Window {
                 source_table_id,
                 partition_keys,
@@ -1460,12 +1482,22 @@ fn expected_mv_schema(
             left_value,
             right_value,
             output_columns,
+            identity_column,
             null_safe,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            let schema = if output_columns.is_empty() {
+            let schema = if *identity_column {
+                wide_left_join_view_schema_with_identity(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    output_columns,
+                )?
+            } else if output_columns.is_empty() {
                 left_join_view_schema_for(
                     &left.schema,
                     &right.schema,

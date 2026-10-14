@@ -109,6 +109,12 @@ pub const IVM_MEDIAN_COLUMN: &str = "median_v";
 /// The source index column of a [`UnionAllView`] materialized view.
 pub const IVM_SOURCE_COLUMN: &str = "__ivm_source";
 
+/// The non-null row identity a derived outer-join step materializes: the
+/// right side's primary keys encoded as a collision-free string (the left
+/// keys are already non-null).  A consumer can then read the step as a keyed
+/// source.
+pub const IVM_PAIR_IDENTITY_COLUMN: &str = "__ivm_pair_id";
+
 /// The grouping-set index of a `GROUPING SETS` row.
 pub const IVM_GROUPING_COLUMN: &str = "__ivm_grouping";
 
@@ -293,6 +299,11 @@ pub enum ViewSpec {
         /// them under these names.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         payload_names: Vec<String>,
+        /// Whether the view materializes a non-null row identity
+        /// ([`IVM_PAIR_IDENTITY_COLUMN`], the encoded right primary keys), so
+        /// its MV can be read as a keyed source: a derived outer-join step.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        identity_column: bool,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -1336,6 +1347,19 @@ impl ViewSpec {
                 other.kind()
             )),
         }
+    }
+
+    /// Mark a derived outer-join step to materialize the non-null row
+    /// identity column ([`IVM_PAIR_IDENTITY_COLUMN`]), so a consumer can read
+    /// the step's MV as a keyed source.  Other kinds are left untouched.
+    pub(crate) fn set_derived_identity_column(&mut self) -> Result<()> {
+        if let ViewSpec::LeftJoin {
+            identity_column, ..
+        } = self
+        {
+            *identity_column = true;
+        }
+        Ok(())
     }
 
     /// Patch the state table id of a derived spec whose value-count view
@@ -2715,7 +2739,9 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 null_safe,
+                identity_column,
             } => SpecView::LeftJoin(LeftJoinView {
+                identity_column: *identity_column,
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
                 right: self.open_table_by_id(right_table_id).await?,
