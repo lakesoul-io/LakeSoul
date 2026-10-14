@@ -2146,6 +2146,61 @@ fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
     )
 }
 
+/// The MV range partitions that may hold affected groups, derived from the
+/// refresh window.
+///
+/// When the MV is partitioned by columns the group keys carry, a group lies
+/// entirely inside one partition, so the other partitions cannot feed an
+/// affected group.  Skipping them is only sound when no source key can move
+/// between partitions, which is exactly when the source's primary keys carry
+/// all of its range partition columns.  `None` disables the pruning.
+fn mv_partition_restriction(
+    view: &SumCountView,
+    window: &SourceWindow,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let mv_partitions = &view.mv.range_partition_columns;
+    if mv_partitions.is_empty()
+        || !mv_partitions
+            .iter()
+            .all(|column| view.group_keys.contains(column))
+        || !mv_partitions
+            .iter()
+            .all(|column| view.source.range_partition_columns.contains(column))
+        || !view
+            .source
+            .range_partition_columns
+            .iter()
+            .all(|column| view.source.primary_keys.contains(column))
+    {
+        return None;
+    }
+    let mut restriction = mv_partitions
+        .iter()
+        .map(|column| (column.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    for files in &window.added_files {
+        let values = parse_partition_values(
+            &files.partition_desc,
+            &view.source.range_partition_columns,
+        )?;
+        for (column, allowed) in restriction.iter_mut() {
+            let index = view
+                .source
+                .range_partition_columns
+                .iter()
+                .position(|candidate| candidate == column)?;
+            let value = values.get(index)?.clone();
+            if !allowed.contains(&value) {
+                allowed.push(value);
+            }
+        }
+    }
+    restriction
+        .iter()
+        .all(|(_, allowed)| !allowed.is_empty())
+        .then_some(restriction)
+}
+
 /// The delete rows removing a dropped partition's contribution: every MV row
 /// matching the partition predicate is retracted under `epoch`.
 pub fn sum_count_cleanup_delete_sql(
@@ -2210,6 +2265,10 @@ impl IvmRuntime {
             }
             WindowStart::Apply(record) => record,
         };
+        // Changed-partition pruning: with a partitioned MV whose partition
+        // columns the group keys carry, only the changed partitions can hold
+        // affected groups.
+        let mv_partitions = mv_partition_restriction(view, &window);
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
@@ -2315,12 +2374,15 @@ impl IvmRuntime {
             .await?;
             register_table(&context, "src", batches, &view.source.schema)?;
         }
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current_filtered(&self.client, filters).await?,
-            &view.mv.schema,
-        )?;
+        let mv_batches = match &mv_partitions {
+            Some(partitions) => {
+                view.mv
+                    .read_current_filtered_partitions(&self.client, filters, partitions)
+                    .await?
+            }
+            None => view.mv.read_current_filtered(&self.client, filters).await?,
+        };
+        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
         let sql = sum_count_refresh_sql(view, keyed, epoch);
         for batch in context.sql(&sql).await?.collect().await? {
             if batch.num_rows() > 0 {

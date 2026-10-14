@@ -179,7 +179,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| **分区源表**（keyed 分区表） | **M** | ✅ 一期已实现（PR-94，PLAN §10.100）：分区值进读取（IO 注入）、按分区 before-state、keyed 视图 guard 全部移除；**分区删除二期**已实现（PLAN §10.135）：分组键覆盖分区列时按值撤回 MV 行（action=incremental，不再全量重建），游标推进到删除版本；键不含分区列仍 rebuild（PLAN §10.126）。二期其余项：变化分区裁剪（`key_filters` 读裁剪已就位）、MV 分区写（IO 层阻塞点见 PLAN §10.135） |
+| **分区源表**（keyed 分区表） | **M** | ✅ 一期已实现（PR-94，PLAN §10.100）：分区值进读取（IO 注入）、按分区 before-state、keyed 视图 guard 全部移除；**分区删除二期**已实现（PLAN §10.135）：分组键覆盖分区列时按值撤回 MV 行（action=incremental，不再全量重建），游标推进到删除版本；键不含分区列仍 rebuild（PLAN §10.126）。MV 分区写与变化分区裁剪已实现（PLAN §10.136）：MV 可声明 range 分区（分区列须含于主键，否则明确拒绝）；SumCount 刷新按变化分区裁剪 MV 状态读（源键不可能跨区迁移时），并修复了写入端排序检查与 merge-on-read 注入常量列的两个 IO 问题 |
 | append-only / append-only CDC 源 | **不做** | 见 A3；无 key 场景的后续方向见 §F3（推迟，只覆盖易增量子集） |
 
 ---

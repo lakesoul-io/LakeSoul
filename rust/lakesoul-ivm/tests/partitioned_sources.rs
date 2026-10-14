@@ -520,6 +520,466 @@ async fn keyed_join_reads_partitioned_left() {
     );
 }
 
+/// Drop one source partition (a delete commit); `needle` selects it by name.
+async fn drop_partition(runtime: &IvmRuntime, source: &IvmTable, needle: &str) {
+    let partitions = runtime
+        .client()
+        .get_all_partition_info(&source.table_id)
+        .await
+        .unwrap();
+    let dropped = partitions
+        .iter()
+        .find(|partition| partition.partition_desc.contains(needle))
+        .expect("the dropped partition exists");
+    let files = runtime
+        .client()
+        .get_data_files_of_single_partition(dropped)
+        .await
+        .unwrap();
+    assert!(!files.is_empty(), "the dropped partition has files");
+    let table_info = runtime
+        .client()
+        .get_table_info_by_table_id(&source.table_id)
+        .await
+        .unwrap()
+        .expect("the source table is registered");
+    runtime
+        .client()
+        .commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    commit_op: CommitOp::DeleteCommit.into(),
+                    ..Default::default()
+                }],
+                read_partition_info: vec![PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    ..Default::default()
+                }],
+            },
+            CommitOp::DeleteCommit,
+        )
+        .await
+        .unwrap();
+}
+
+/// `(day, v)` rows of an MV ordered by day.
+async fn read_day_values(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select day, v from mv order by day")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let days = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((days.value(row).to_string(), values.value(row)));
+        }
+    }
+    rows
+}
+
+/// A range-partitioned MV: the refresh writes every output partition into its
+/// own directory and reads inject the partition values back.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_mv_materializes_its_partitions() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmv_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &source.schema,
+                    &["day".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["day".to_string(), "g".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_pmv_mv_{suffix} \
+         SELECT day, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_part_src_{suffix} GROUP BY day, g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_day_groups(runtime, &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 10),
+            ("d2".to_string(), "b".to_string(), 5),
+        ]
+    );
+
+    // The MV is stored as one data partition per day.
+    let mut descs = runtime
+        .client()
+        .get_all_partition_info(&mv.table_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|partition| partition.partition_desc)
+        .collect::<Vec<_>>();
+    descs.sort();
+    assert_eq!(descs, vec!["day=d1".to_string(), "day=d2".to_string()]);
+
+    // An update and a new row in d1 and a delete in d2 flow through the
+    // partitioned write; the d2 group disappears.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 12, "d1", "insert"),
+                (3, "c", 7, "d1", "insert"),
+                (2, "b", 5, "d2", "delete"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_groups(runtime, &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 12),
+            ("d1".to_string(), "c".to_string(), 7),
+        ]
+    );
+}
+
+/// A source whose primary key contains the partition column: the injected
+/// value is part of the merge key, so an upsert in a partition replaces the
+/// stored row instead of duplicating it.
+#[test_log::test(tokio::test)]
+async fn a_partition_key_inside_the_source_primary_keys_merges_injected_values() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_pk_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let output_columns = ["k", "g", "v", "day"].map(String::from);
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_pk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_mv_schema_for(&source.schema, &output_columns).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (1, "a", 20, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_part_pk_mv_{suffix} \
+         SELECT k, g, v, day FROM ivm_part_pk_src_{suffix}"
+    );
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_day_values(executor.runtime(), &mv).await,
+        vec![("d1".to_string(), 10), ("d2".to_string(), 20)]
+    );
+
+    // The same `(k, day)` is upserted: the injected value merges the previous
+    // file's row away.
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(1, "a", 12, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_values(executor.runtime(), &mv).await,
+        vec![("d1".to_string(), 12), ("d2".to_string(), 20)]
+    );
+
+    // A delete removes the row of its own partition only.
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(1, "a", 12, "d1", "delete")]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_day_values(executor.runtime(), &mv).await,
+        vec![("d2".to_string(), 20)]
+    );
+}
+
+/// A dropped source partition on a range-partitioned MV: the cleanup retracts
+/// the rows through the MV's own partitions.
+#[test_log::test(tokio::test)]
+async fn a_dropped_source_partition_cleans_a_partitioned_mv() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmv_drop_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &source.schema,
+                    &["day".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["day".to_string(), "g".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_pmv_drop_mv_{suffix} \
+         SELECT day, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_part_src_{suffix} GROUP BY day, g"
+    );
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 10),
+            ("d2".to_string(), "b".to_string(), 5),
+        ]
+    );
+
+    drop_partition(executor.runtime(), &source, "d2").await;
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![("d1".to_string(), "a".to_string(), 10)]
+    );
+}
+
+/// A refresh that only touches one partition does not read the MV's other
+/// partitions: the group keys carry the partition column and no source key can
+/// move between partitions (its primary keys carry the partition column too).
+#[test_log::test(tokio::test)]
+async fn a_partitioned_mv_refresh_prunes_unchanged_partitions() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmv_prune_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmv_prune_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &source.schema,
+                    &["day".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["day".to_string(), "g".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_pmv_prune_mv_{suffix} \
+         SELECT day, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_pmv_prune_src_{suffix} GROUP BY day, g"
+    );
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 10),
+            ("d2".to_string(), "b".to_string(), 5),
+        ]
+    );
+
+    // Only d1 changes: the refresh may prune the d2 partition of the MV.
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(1, "a", 12, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 12),
+            ("d2".to_string(), "b".to_string(), 5),
+        ]
+    );
+
+    // Only d2 changes: the pruned side flips.
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(2, "b", 7, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![
+            ("d1".to_string(), "a".to_string(), 12),
+            ("d2".to_string(), "b".to_string(), 7),
+        ]
+    );
+}
+
+/// A range-partitioned MV must carry its partition columns in the primary
+/// keys: merge-on-read runs within a partition, so a key spanning partitions
+/// would read back as several rows.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_mv_needs_its_partition_columns_in_the_keys() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmv_bad_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &source.schema,
+                    &["day".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_pmv_bad_mv_{suffix} \
+         SELECT day, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_part_src_{suffix} GROUP BY day, g"
+    );
+    let error = executor.execute(&statement).await.unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("primary keys must contain every partition column"),
+        "unexpected error: {message}"
+    );
+    // The rejection happens before the target is registered or touched.
+    assert!(
+        executor
+            .runtime()
+            .metadata()
+            .get_view_spec(&mv.table_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// A dropped source partition removes its rows from the view: when the group
 /// keys carry the partition column, the refresh retracts exactly those rows
 /// instead of rebuilding.

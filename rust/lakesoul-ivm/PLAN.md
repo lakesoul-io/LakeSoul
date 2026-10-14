@@ -3546,10 +3546,29 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   收集**全部**被删分区（不再在第一个处 bail），错误附件携带 `(partition_desc, to_version, to_timestamp)`。
 - 测试：`partitioned_sources.rs`——删分区后 `action=incremental` 且行正确、后续增量仍生效、键不含分区列时
   仍 `rebuild`。
-- 二期其余项现状：**变化分区裁剪**已有 `key_filters`（读/状态读裁剪到受影响区分组）；**MV 分区写**已定位
-  两个 IO 层阻塞点：① `RepartitionByRangeAndHashExec` 的顺序检查未对 range 列去重（writer 自身按
-  range+pk 排序且 LexOrdering 去重）；② v2 window-sliding 合并器对「读取注入的常量列」（分区列进主键）
-  产出 null（旧 combiner 正常）。两者均未在本轮落地，留待后续 PR。
+- 二期其余项（变化分区裁剪、MV 分区写）已在 §10.136 完成：其中 MV 分区写的两个 IO 层阻塞点
+  （顺序检查未去重 range 列、v2 combiner 对注入常量产出 null）也一并修复。
+
+### 10.136 二期收尾：MV 分区写与变化分区裁剪（ROADMAP §B4）
+
+- **IO 层修复（前置）**：
+  1. `RepartitionByRangeAndHashExec` 的顺序检查对 range 列去重——writer 自身按 `range+pk` 排序且
+     `LexOrdering` 去重，检查原先拿未去重的 `[day, day, g]` 比较，range 列在 pk 中时误拒；
+  2. merge-on-read 在「主键含读取注入的常量列」（分区列）时改在 **merged schema** 上合并（常量按流为定值，
+     不改变合并顺序；其余情况保持原「物理 schema」路径），使分区列可进主键；
+  3. 合并输入流的 `fields_map` 在 schema 完全一致时按**位置**映射——分区读取的 table schema 会重复附加
+     分区列（`[day, g, sum_v, …, day]`），按名映射把两处都映到首个、末位目标列无人映射，v2 combiner 便
+     产出全 null 列 → 非空校验失败。
+- **MV 分区写**：MV 可声明 `with_range_partition_columns`，但分区列必须写进主键（执行器明确拒绝：
+  “its primary keys must contain every partition column”——merge-on-read 在分区内进行，跨区键会读成多行）。
+  写入按输出行的分区值落目录（`day=d1/…`），读取经分区值注入在分区内合并还原。
+- **变化分区裁剪**：`SumCount` 刷新在条件成立时按**变化分区**限制 MV 状态读
+  （`IvmTable::read_current_filtered_partitions`）：MV 分区列 ⊆ 分组键，且源的 range 分区列 ⊆ 源主键
+  （键不可能跨区迁移）→ 只读窗口触及的分区；其余情况保持全量读（正确性不变）。被跳过的分区记
+  `tracing::debug`。
+- 测试：`partitioned_sources.rs` 新增 5 例——分区 MV 落目录与增量、源主键含分区列的 merge、分区 MV 上的
+  删分区清理、主键缺分区列的拒绝（且未注册/未触碰目标）、刷新裁剪两个方向（单分区变更只读该分区）。
+  全量 482 passed；IO 套件 219 passed。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

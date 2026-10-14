@@ -113,6 +113,30 @@ pub(crate) fn parse_partition_values(
     (values.len() == columns.len()).then_some(values)
 }
 
+/// Whether a partition (by its descriptor) satisfies a value restriction
+/// `(column, allowed values)`.  A column outside the table's range columns and
+/// a descriptor that cannot be parsed both match: the read keeps such
+/// partitions rather than dropping rows.
+fn partition_matches(
+    partition_desc: &str,
+    range_columns: &[String],
+    restriction: &[(String, Vec<String>)],
+) -> bool {
+    let Some(values) = parse_partition_values(partition_desc, range_columns) else {
+        return true;
+    };
+    restriction.iter().all(|(column, allowed)| {
+        match range_columns
+            .iter()
+            .position(|candidate| candidate == column)
+            .and_then(|index| values.get(index))
+        {
+            Some(value) => allowed.iter().any(|allowed| allowed == value),
+            None => true,
+        }
+    })
+}
+
 /// Options for [`create_ivm_table`].
 #[derive(Debug, Clone)]
 pub struct IvmTableOptions {
@@ -672,8 +696,49 @@ impl IvmTable {
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
+        self.read_current_with_partitions(client, filters, projection, None)
+            .await
+    }
+
+    /// Read the current state restricted to the range partitions whose values
+    /// satisfy `partitions` (`(column, allowed values)`), projected to
+    /// `filters`-pruned state.
+    ///
+    /// Used to skip partitions the refresh cannot touch (changed-partition
+    /// pruning); a partition whose descriptor cannot be parsed is kept.
+    pub async fn read_current_filtered_partitions(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+        partitions: &[(String, Vec<String>)],
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_current_with_partitions(client, filters, None, Some(partitions))
+            .await
+    }
+
+    async fn read_current_with_partitions(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        partitions: Option<&[(String, Vec<String>)]>,
+    ) -> Result<Vec<RecordBatch>> {
         let mut groups = Vec::new();
         for partition in client.get_all_partition_info(&self.table_id).await? {
+            if let Some(restriction) = partitions
+                && !partition_matches(
+                    &partition.partition_desc,
+                    &self.range_partition_columns,
+                    restriction,
+                )
+            {
+                tracing::debug!(
+                    table = %self.table_name,
+                    partition = %partition.partition_desc,
+                    "pruned by the partition restriction"
+                );
+                continue;
+            }
             let files = client
                 .get_data_files_of_single_partition(&partition)
                 .await?;
