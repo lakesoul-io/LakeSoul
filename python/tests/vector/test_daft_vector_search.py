@@ -338,3 +338,64 @@ def test_daft_vector_search_multiple_columns() -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_daft_vector_search_index_rerank() -> None:
+    """rerank='index' ranks by the index distance and skips the vector column."""
+    from lakesoul.daft import vector_search
+
+    train = read_fvecs(TRAIN_PATH, 300)
+    query = read_fvecs(TEST_PATH, 1)[0]
+    top_k = 5
+    _, table, table_path = _create_and_write(train)
+    try:
+        exact = (
+            vector_search(table, query.tolist(), top_k=top_k, nprobe=8)
+            .collect()
+            .to_arrow()
+        )
+        assert "vec" in exact.column_names
+        exact_ids = exact.column("id").to_pylist()
+
+        ranked = (
+            vector_search(
+                table,
+                query.tolist(),
+                top_k=top_k,
+                nprobe=8,
+                rerank="index",
+                parallelism=2,
+            )
+            .collect()
+            .to_arrow()
+        )
+        # The index-only scan does not read the stored vector column.
+        assert ranked.column_names == ["id"], ranked.column_names
+        ids = ranked.column("id").to_pylist()
+        assert len(ids) == top_k
+        assert set(ids) & set(exact_ids), "index ranking lost the exact neighbours"
+
+        truth = _brute_force_topk(train, query, top_k, "L2")
+        recall = len(set(ids) & set(truth)) / top_k
+        assert recall >= 0.5, f"index-rerank recall too low: {recall:.2f}"
+
+        # The approximate distance is exposed on request, nearest first.
+        scored = (
+            vector_search(
+                table,
+                query.tolist(),
+                top_k=top_k,
+                nprobe=8,
+                rerank="index",
+                with_distance=True,
+            )
+            .collect()
+            .to_arrow()
+        )
+        assert "vector_distance" in scored.column_names, scored.column_names
+        distances = scored.column("vector_distance").to_pylist()
+        assert distances == sorted(distances)
+        assert set(scored.column("id").to_pylist()) == set(ids)
+    finally:
+        table.drop()
+        shutil.rmtree(table_path, ignore_errors=True)
