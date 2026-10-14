@@ -296,6 +296,107 @@ where
     Ok(())
 }
 
+/// Hash a struct by combining the hashes of its children: equal structs hash
+/// equally, which is what the bucket partitioning needs (a collision only puts
+/// both rows in one bucket, which the merge resolves by comparing keys).
+fn hash_struct_array(
+    array: &StructArray,
+    hashes_buffer: &mut [u32],
+    rehash: bool,
+) -> Result<()> {
+    let children = array.columns().to_vec();
+    if children.is_empty() {
+        hash_null(hashes_buffer, rehash);
+        return Ok(());
+    }
+    let mut child_hashes = vec![0u32; array.len()];
+    create_hashes(&children, &mut child_hashes)?;
+    for (i, hash) in hashes_buffer.iter_mut().enumerate() {
+        if array.is_null(i) {
+            *hash = if rehash {
+                1.hash_one(*hash)
+            } else {
+                1.hash_one(HASH_SEED)
+            };
+            continue;
+        }
+        let child_hash = child_hashes[i];
+        *hash = if rehash {
+            hash.hash_one(child_hash)
+        } else {
+            child_hash
+        };
+    }
+    Ok(())
+}
+
+/// Hash a map like a list of its `(key, value)` entries.
+fn hash_map_array(
+    array: &MapArray,
+    hashes_buffer: &mut [u32],
+    rehash: bool,
+) -> Result<()> {
+    let keys: ArrayRef = array.keys().clone();
+    let values: ArrayRef = array.values().clone();
+    let mut entry_hashes = vec![0u32; array.entries().len()];
+    create_hashes(&[keys, values], &mut entry_hashes)?;
+    let offsets = array.value_offsets();
+    for (i, hash) in hashes_buffer.iter_mut().enumerate() {
+        if array.is_null(i) {
+            *hash = if rehash {
+                1.hash_one(*hash)
+            } else {
+                1.hash_one(HASH_SEED)
+            };
+            continue;
+        }
+        let mut row_hash = 0u32;
+        let start = offsets[i].as_usize();
+        let stop = offsets[i + 1].as_usize();
+        for entry_hash in &entry_hashes[start..stop] {
+            row_hash = row_hash.hash_one(*entry_hash);
+        }
+        *hash = if rehash {
+            hash.hash_one(row_hash)
+        } else {
+            row_hash
+        };
+    }
+    Ok(())
+}
+
+/// Hash a fixed-size list like a list over its fixed-size slices.
+fn hash_fixed_size_list_array(
+    array: &FixedSizeListArray,
+    hashes_buffer: &mut [u32],
+    rehash: bool,
+) -> Result<()> {
+    let values: ArrayRef = array.values().clone();
+    let size = array.value_length() as usize;
+    let mut values_hashes = vec![0u32; values.len()];
+    create_hashes(&[values], &mut values_hashes)?;
+    for (row, hash) in hashes_buffer.iter_mut().enumerate() {
+        if array.is_null(row) {
+            *hash = if rehash {
+                1.hash_one(*hash)
+            } else {
+                1.hash_one(HASH_SEED)
+            };
+            continue;
+        }
+        let mut row_hash = 0u32;
+        for value_hash in &values_hashes[row * size..(row + 1) * size] {
+            row_hash = row_hash.hash_one(*value_hash);
+        }
+        *hash = if rehash {
+            hash.hash_one(row_hash)
+        } else {
+            row_hash
+        };
+    }
+    Ok(())
+}
+
 /// Creates hash values for every row, based on the values in the
 /// columns.
 ///
@@ -347,6 +448,32 @@ pub fn create_hashes<'a>(
                 hash_list_array(array,
                     // random_state,
                     hashes_buffer)?;
+            }
+            DataType::Struct(_) => {
+                let array = array
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .ok_or_else(|| rootcause::report!("not a struct array: {}", col.data_type()))?;
+                hash_struct_array(array, hashes_buffer, rehash)?;
+            }
+            DataType::Map(_, _) => {
+                let array = array
+                    .as_any()
+                    .downcast_ref::<MapArray>()
+                    .ok_or_else(|| rootcause::report!("not a map array: {}", col.data_type()))?;
+                hash_map_array(array, hashes_buffer, rehash)?;
+            }
+            DataType::FixedSizeList(_, _) => {
+                let array = array
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or_else(|| {
+                        rootcause::report!(
+                            "not a fixed size list array: {}",
+                            col.data_type()
+                        )
+                    })?;
+                hash_fixed_size_list_array(array, hashes_buffer, rehash)?;
             }
             _ => {
                 // This is internal because we should have caught this before.

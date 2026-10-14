@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue};
 use datafusion::logical_expr::ExprSchemable;
@@ -1560,7 +1560,13 @@ pub struct MultiAggSpec {
     pub result: String,
 }
 
-/// A portable encoding of the aggregate result types.
+/// A portable encoding of the view column types.
+///
+/// Scalars use their short names.  Nested types recurse through JSON field
+/// descriptors (`{"name":…,"nullable":…,"type":…}`), so element and field
+/// names survive the round trip exactly: a list carries its element
+/// descriptor, a struct an array of descriptors and a map the descriptor of
+/// its entries struct.
 pub(crate) fn encode_data_type(data_type: &DataType) -> Result<String> {
     Ok(match data_type {
         DataType::Boolean => "boolean".to_string(),
@@ -1576,8 +1582,10 @@ pub(crate) fn encode_data_type(data_type: &DataType) -> Result<String> {
         DataType::Float64 => "float64".to_string(),
         DataType::Utf8 => "utf8".to_string(),
         DataType::LargeUtf8 => "largeutf8".to_string(),
+        DataType::Utf8View => "utf8view".to_string(),
         DataType::Binary => "binary".to_string(),
         DataType::LargeBinary => "largebinary".to_string(),
+        DataType::BinaryView => "binaryview".to_string(),
         DataType::Date32 => "date32".to_string(),
         DataType::Date64 => "date64".to_string(),
         DataType::Timestamp(unit, timezone) => format!(
@@ -1596,15 +1604,43 @@ pub(crate) fn encode_data_type(data_type: &DataType) -> Result<String> {
         DataType::Decimal256(precision, scale) => {
             format!("decimal256:{precision}:{scale}")
         }
-        DataType::List(field) => {
-            format!("list:{}", encode_data_type(field.data_type())?)
+        DataType::List(field) => format!("list:{}", encode_field(field)?),
+        DataType::LargeList(field) => format!("large_list:{}", encode_field(field)?),
+        DataType::FixedSizeList(field, size) => {
+            format!("fixed_list:{size}:{}", encode_field(field)?)
+        }
+        DataType::Struct(fields) => format!(
+            "struct:[{}]",
+            fields
+                .iter()
+                .map(|field| encode_field(field))
+                .collect::<Result<Vec<_>>>()?
+                .join(",")
+        ),
+        DataType::Map(field, sorted) => {
+            format!(
+                "map:{}:{}",
+                if *sorted { 1 } else { 0 },
+                encode_field(field)?
+            )
         }
         other => {
-            return Err(report!(
-                "the aggregate result type {other} is not supported"
-            ));
+            return Err(crate::sql::unsupported(format!(
+                "the view column type {other} is not supported"
+            )));
         }
     })
+}
+
+/// One field of a nested type as a JSON descriptor: its name, nullability and
+/// the recursive type encoding.
+fn encode_field(field: &Field) -> Result<String> {
+    Ok(serde_json::json!({
+        "name": field.name(),
+        "nullable": field.is_nullable(),
+        "type": encode_data_type(field.data_type())?,
+    })
+    .to_string())
 }
 
 pub(crate) fn decode_data_type(text: &str) -> Result<DataType> {
@@ -1622,22 +1658,24 @@ pub(crate) fn decode_data_type(text: &str) -> Result<DataType> {
         "float64" => DataType::Float64,
         "utf8" => DataType::Utf8,
         "largeutf8" => DataType::LargeUtf8,
+        "utf8view" => DataType::Utf8View,
         "binary" => DataType::Binary,
         "largebinary" => DataType::LargeBinary,
+        "binaryview" => DataType::BinaryView,
         "date32" => DataType::Date32,
         "date64" => DataType::Date64,
         other => {
             if let Some(rest) = other.strip_prefix("timestamp:") {
                 let (unit, timezone) = rest
                     .split_once(':')
-                    .ok_or_else(|| report!("invalid aggregate result type {other}"))?;
+                    .ok_or_else(|| report!("invalid view column type {other}"))?;
                 let unit = match unit {
                     "s" => TimeUnit::Second,
                     "ms" => TimeUnit::Millisecond,
                     "us" => TimeUnit::Microsecond,
                     "ns" => TimeUnit::Nanosecond,
                     _ => {
-                        return Err(report!("invalid aggregate result type {other}"));
+                        return Err(report!("invalid view column type {other}"));
                     }
                 };
                 let timezone = if timezone.is_empty() {
@@ -1649,38 +1687,87 @@ pub(crate) fn decode_data_type(text: &str) -> Result<DataType> {
             } else if let Some(rest) = other.strip_prefix("decimal128:") {
                 let (precision, scale) = rest
                     .split_once(':')
-                    .ok_or_else(|| report!("invalid aggregate result type {other}"))?;
+                    .ok_or_else(|| report!("invalid view column type {other}"))?;
                 DataType::Decimal128(
                     precision
                         .parse()
-                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                        .map_err(|_| report!("invalid view column type {other}"))?,
                     scale
                         .parse()
-                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                        .map_err(|_| report!("invalid view column type {other}"))?,
                 )
             } else if let Some(rest) = other.strip_prefix("decimal256:") {
                 let (precision, scale) = rest
                     .split_once(':')
-                    .ok_or_else(|| report!("invalid aggregate result type {other}"))?;
+                    .ok_or_else(|| report!("invalid view column type {other}"))?;
                 DataType::Decimal256(
                     precision
                         .parse()
-                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                        .map_err(|_| report!("invalid view column type {other}"))?,
                     scale
                         .parse()
-                        .map_err(|_| report!("invalid aggregate result type {other}"))?,
+                        .map_err(|_| report!("invalid view column type {other}"))?,
                 )
-            } else if let Some(inner) = other.strip_prefix("list:") {
-                DataType::List(Arc::new(Field::new(
-                    "item",
-                    decode_data_type(inner)?,
-                    true,
-                )))
+            } else if let Some(rest) = other.strip_prefix("list:") {
+                DataType::List(Arc::new(decode_field(rest)?))
+            } else if let Some(rest) = other.strip_prefix("large_list:") {
+                DataType::LargeList(Arc::new(decode_field(rest)?))
+            } else if let Some(rest) = other.strip_prefix("fixed_list:") {
+                let (size, field) = rest
+                    .split_once(':')
+                    .ok_or_else(|| report!("invalid view column type {other}"))?;
+                DataType::FixedSizeList(
+                    Arc::new(decode_field(field)?),
+                    size.parse()
+                        .map_err(|_| report!("invalid view column type {other}"))?,
+                )
+            } else if let Some(rest) = other.strip_prefix("struct:") {
+                DataType::Struct(decode_fields(rest)?)
+            } else if let Some(rest) = other.strip_prefix("map:") {
+                let (sorted, entries) = rest
+                    .split_once(':')
+                    .ok_or_else(|| report!("invalid view column type {other}"))?;
+                DataType::Map(Arc::new(decode_field(entries)?), sorted == "1")
             } else {
-                return Err(report!("invalid aggregate result type {other}"));
+                return Err(report!("invalid view column type {other}"));
             }
         }
     })
+}
+
+/// A struct's field list, decoded from an array of JSON field descriptors.
+fn decode_fields(text: &str) -> Result<Fields> {
+    let descriptors: Vec<serde_json::Value> = serde_json::from_str(text)
+        .map_err(|error| report!("invalid view struct type {text}: {error}"))?;
+    let fields = descriptors
+        .iter()
+        .map(decode_field_value)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Fields::from(fields))
+}
+
+/// One JSON field descriptor.
+fn decode_field(text: &str) -> Result<Field> {
+    let descriptor: serde_json::Value = serde_json::from_str(text)
+        .map_err(|error| report!("invalid view field {text}: {error}"))?;
+    decode_field_value(&descriptor)
+}
+
+fn decode_field_value(descriptor: &serde_json::Value) -> Result<Field> {
+    let invalid = || report!("invalid view field {descriptor}");
+    let name = descriptor
+        .get("name")
+        .and_then(|name| name.as_str())
+        .ok_or_else(invalid)?;
+    let nullable = descriptor
+        .get("nullable")
+        .and_then(|nullable| nullable.as_bool())
+        .ok_or_else(invalid)?;
+    let data_type = descriptor
+        .get("type")
+        .and_then(|data_type| data_type.as_str())
+        .ok_or_else(invalid)?;
+    Ok(Field::new(name, decode_data_type(data_type)?, nullable))
 }
 
 /// Accepts either a single `group_key` string or a `group_keys` array when
@@ -3953,5 +4040,115 @@ impl IvmRuntime {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod type_encoding_tests {
+    use super::*;
+
+    fn round_trip(data_type: DataType) {
+        let encoded = encode_data_type(&data_type).expect("the type encodes");
+        let decoded = decode_data_type(&encoded).expect("the type decodes");
+        assert_eq!(decoded, data_type, "round trip through {encoded:?}");
+    }
+
+    #[test]
+    fn scalar_types_round_trip() {
+        for data_type in [
+            DataType::Boolean,
+            DataType::Int64,
+            DataType::Float64,
+            DataType::Utf8,
+            DataType::LargeUtf8,
+            DataType::Utf8View,
+            DataType::BinaryView,
+            DataType::Date32,
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(Arc::from("UTC"))),
+            DataType::Timestamp(TimeUnit::Second, None),
+            DataType::Decimal128(20, 2),
+            DataType::Decimal256(40, 4),
+        ] {
+            round_trip(data_type);
+        }
+    }
+
+    #[test]
+    fn nested_types_round_trip() {
+        let list_of_struct = DataType::List(Arc::new(Field::new(
+            "element",
+            DataType::Struct(Fields::from(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, true),
+            ])),
+            true,
+        )));
+        round_trip(list_of_struct.clone());
+        round_trip(DataType::LargeList(Arc::new(Field::new(
+            "items",
+            list_of_struct.clone(),
+            false,
+        ))));
+        round_trip(DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            3,
+        ));
+        round_trip(DataType::Struct(Fields::from(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("tags", list_of_struct, true),
+            Field::new(
+                "scores",
+                DataType::Struct(Fields::from(vec![Field::new(
+                    "score",
+                    DataType::Float64,
+                    true,
+                )])),
+                true,
+            ),
+        ])));
+        round_trip(DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("key", DataType::Utf8, false),
+                    Field::new("value", DataType::Int64, true),
+                ])),
+                false,
+            )),
+            false,
+        ));
+    }
+
+    #[test]
+    fn nested_names_with_delimiters_round_trip() {
+        // Field names may contain the delimiters a compact form would use.
+        round_trip(DataType::Struct(Fields::from(vec![Field::new(
+            "a:b,c\"d",
+            DataType::Int64,
+            true,
+        )])));
+    }
+
+    #[test]
+    fn unsupported_types_reject_the_shape() {
+        let error = encode_data_type(&DataType::Null).unwrap_err();
+        assert!(
+            error.to_string().contains("is not supported"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.attachments().iter().any(|attachment| attachment
+                .downcast_inner::<crate::sql::UnsupportedShape>()
+                .is_some()),
+            "the rejection must carry the unsupported-shape marker"
+        );
+    }
+
+    #[test]
+    fn invalid_encodings_are_rejected() {
+        assert!(decode_data_type("no_such_type").is_err());
+        assert!(decode_data_type("struct:[{]").is_err());
+        assert!(decode_data_type("list:{\"name\":\"i\"}").is_err());
+        assert!(decode_data_type("map:1:{}").is_err());
     }
 }
