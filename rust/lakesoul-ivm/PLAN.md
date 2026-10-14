@@ -3469,7 +3469,9 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （链 PR-95 的长度前缀拼接）。在此之前：join 侧是外连接子查询在分析期**早期拒绝**
   （`outer join is not materialized yet`，带标记 → Tier-2 兜底）。
 - **测试**：`tests/derived_views.rs` 新增 3 例（内连接侧 bushy：bootstrap+删除内层右行+步骤复用+参考
-  比对；外连接侧明确拒绝；计算列侧明确拒绝）。
+  比对，内层 payload 以 `b.bv AS rv` **重命名**从而覆盖 `payload_names` 路径；外连接侧明确拒绝；计算列侧
+  明确拒绝）；`tests/sql_oracle.rs` 新增 `oracle_bushy_left_over_inner_matches_full_recompute`
+  （三源随机变更 10 轮 + 每轮 no-op 重放 + 与参考重算比对；多种子 30 轮通过）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

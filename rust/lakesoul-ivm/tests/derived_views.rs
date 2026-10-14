@@ -461,9 +461,9 @@ async fn a_bushy_outer_tree_makes_the_join_side_a_derived_step() {
         .await
         .unwrap();
 
-    // The step keeps one payload per side (`bv` from `b`, `k` from `c`) and
-    // the rewrite widens the compact payloads, so its MV carries the select
-    // names.
+    // The step keeps one payload per side (`b.v AS rv`, `c.k`) and the
+    // rewrite widens the compact payloads, so its MV carries the select
+    // names the consumer references.
     let step_schema = lakesoul_ivm::wide_keyed_join_view_schema_with_keys(
         &b_schema,
         &c_schema,
@@ -475,7 +475,10 @@ async fn a_bushy_outer_tree_makes_the_join_side_a_derived_step() {
             lakesoul_ivm::JoinOutputColumn {
                 side: lakesoul_ivm::JoinSide::Left,
                 column: "bv".to_string(),
-                name: "bv".to_string(),
+                // The select list renamed the payload; the step exposes it
+                // under the new name and the consuming plan's reference
+                // resolves against it.
+                name: "rv".to_string(),
             },
             lakesoul_ivm::JoinOutputColumn {
                 side: lakesoul_ivm::JoinSide::Right,
@@ -496,7 +499,7 @@ async fn a_bushy_outer_tree_makes_the_join_side_a_derived_step() {
         &step_keys,
         &["k".to_string()],
         "av",
-        "bv",
+        "rv",
     )
     .unwrap();
     let mv = runtime
@@ -516,8 +519,8 @@ async fn a_bushy_outer_tree_makes_the_join_side_a_derived_step() {
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
     let statement = format!(
-        "INSERT INTO {} SELECT a.av, x.bv \
-         FROM {} a LEFT JOIN (SELECT b.bv, c.k \
+        "INSERT INTO {} SELECT a.av, x.rv \
+         FROM {} a LEFT JOIN (SELECT b.bv AS rv, c.k \
                               FROM {} b JOIN {} c ON c.v = b.v) x \
          ON x.k = a.k",
         mv.table_name, a.table_name, b.table_name, c.table_name
@@ -638,8 +641,8 @@ async fn full_bushy_pairs(
     }
     let batches = context
         .sql(
-            "select a.av, x.bv from a left join (\
-             select b.bv, c.k from b join c on c.v = b.v) x \
+            "select a.av, x.rv from a left join (\
+             select b.bv as rv, c.k from b join c on c.v = b.v) x \
              on x.k = a.k order by a.av",
         )
         .await
