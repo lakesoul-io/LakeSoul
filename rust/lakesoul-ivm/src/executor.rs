@@ -28,7 +28,7 @@ use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
-use datafusion::prelude::{Expr, SessionContext};
+use datafusion::prelude::{Expr, JoinType, SessionContext};
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
     ObjectName, ObjectNamePart, Query, Statement, TableObject, Visit, Visitor,
@@ -88,42 +88,66 @@ fn derived_step_path(target_path: &str, index: usize) -> String {
 
 /// The compact join shapes name their payload columns `left_value` /
 /// `right_value`; a derived view must expose the subplan's column names, so
-/// the compact shape is widened to one named output column per payload.
+/// the compact shape is widened to one named output column per payload.  A
+/// payload the select list renamed keeps that name (the analyzer recorded it
+/// in `payload_names`), because the consuming plan references it.
 fn widen_derived_join(spec: &mut ViewSpec) {
-    let (output_columns, left_value, right_value) = match spec {
+    let (output_columns, left_value, right_value, payload_names) = match spec {
         ViewSpec::Join {
             output_columns,
             left_value,
             right_value,
+            payload_names,
             ..
         }
         | ViewSpec::LookupJoin {
             output_columns,
             left_value,
             right_value,
+            payload_names,
             ..
         }
         | ViewSpec::CrossJoin {
             output_columns,
             left_value,
             right_value,
+            payload_names,
             ..
-        } => (output_columns, left_value, right_value),
+        }
+        | ViewSpec::LeftJoin {
+            output_columns,
+            left_value,
+            right_value,
+            payload_names,
+            ..
+        }
+        | ViewSpec::FullJoin {
+            output_columns,
+            left_value,
+            right_value,
+            payload_names,
+            ..
+        } => (output_columns, left_value, right_value, payload_names),
         _ => return,
     };
     if !output_columns.is_empty() {
         return;
     }
+    let names = if payload_names.len() == 2 {
+        (payload_names[0].clone(), payload_names[1].clone())
+    } else {
+        (left_value.clone(), right_value.clone())
+    };
     *output_columns = vec![
         JoinOutputColumn {
             side: JoinSide::Left,
             column: left_value.clone(),
-            name: left_value.clone(),
+            name: names.0,
         },
         JoinOutputColumn {
             side: JoinSide::Right,
             column: right_value.clone(),
-            name: right_value.clone(),
+            name: names.1,
         },
     ];
 }
@@ -230,6 +254,27 @@ fn rename_derived_columns(
 /// a Tier-2 target recomputes the statement in full instead of failing.
 fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
     match peel(subplan) {
+        // A projection over a join is the subquery form of a join side; the
+        // analyzer reads it for the output columns and the projection stays
+        // part of the step, so the parent's references keep resolving.
+        LogicalPlan::Projection(projection) => match peel(&projection.input) {
+            // An outer join's row identity may be NULL, which the keyed read
+            // of a joined step cannot use; a derived outer-join step needs a
+            // non-null encoded identity first.
+            LogicalPlan::Join(join) if !matches!(join.join_type, JoinType::Inner) => {
+                Err(rootcause::report!(
+                    "a derived view over a join side that is an outer join is not \
+                     materialized yet; use an inner join side or split the statement"
+                )
+                .attach(UnsupportedShape))
+            }
+            LogicalPlan::Join(_) => Ok(()),
+            other => Err(rootcause::report!(
+                "a derived view over a projection of {} is not materialized yet",
+                plan_label(other)
+            )
+            .attach(UnsupportedShape)),
+        },
         LogicalPlan::Join(_) | LogicalPlan::Window(_) | LogicalPlan::Union(_) => Ok(()),
         LogicalPlan::Aggregate(_) => Ok(()),
         other => Err(rootcause::report!(
@@ -933,6 +978,16 @@ impl IvmSqlExecutor {
                 ..
             }
             | ViewSpec::CrossJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::LeftJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::FullJoin {
                 left_table_id,
                 right_table_id,
                 ..
