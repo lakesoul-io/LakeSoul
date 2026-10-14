@@ -5,6 +5,10 @@
 package com.facebook.presto.lakesoul;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
+import static com.facebook.presto.spi.StandardErrorCode.GENERIC_USER_ERROR;
+
+import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
@@ -21,6 +25,7 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 
@@ -38,6 +43,27 @@ import java.util.stream.Collectors;
 
 public class LakeSoulSplitManager implements ConnectorSplitManager {
     private static final Logger log = Logger.get(LakeSoulSplitManager.class);
+    private final int maxPartitionsPerScan;
+
+    public LakeSoulSplitManager(LakeSoulConfig config) {
+        this.maxPartitionsPerScan =
+                requireNonNull(config, "config is null").getMaxPartitionsPerScan();
+    }
+
+    void checkPartitionLimit(String tableName, int partitionCount) {
+        if (partitionCount > maxPartitionsPerScan) {
+            throw new PrestoException(
+                    GENERIC_USER_ERROR,
+                    format(
+                            "LakeSoul table %s scan selects %s partitions, exceeding %s=%s. Add a"
+                                    + " partition filter or ask the administrator to increase the"
+                                    + " limit.",
+                            tableName,
+                            partitionCount,
+                            LakeSoulConfig.MAX_PARTITIONS_PER_SCAN,
+                            maxPartitionsPerScan));
+        }
+    }
 
     @Override
     public ConnectorSplitSource getSplits(
@@ -112,10 +138,16 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                             allPartitionInfo, partitionSchema, partitionFilterPlan);
 
             if (filteredPartitionInfo != null) {
+                checkPartitionLimit(
+                        tableLayout.getTableHandle().getNames().toString(),
+                        filteredPartitionInfo.size());
                 for (PartitionInfo pInfo : filteredPartitionInfo) {
                     partitions.add(pInfo.getPartitionDesc());
                 }
             }
+        } catch (PrestoException e) {
+            log.warn("LakeSoul scan rejected for table %s: %s", tableName, e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error(e, "Error generating splits for LakeSoul table %s", tableName);
             throw new RuntimeException("Failed to get splits for LakeSoul table: " + tableName, e);
