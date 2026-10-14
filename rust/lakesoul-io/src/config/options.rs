@@ -55,6 +55,12 @@ pub static OPTION_KEY_VECTOR_SEARCH_METRIC: &str = "vector_search_metric";
 pub static OPTION_KEY_VECTOR_SEARCH_ORDER_BY: &str = "vector_search_order_by";
 /// Vector search: direct index prefix path (alternative to auto-detection from files)
 pub static OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX: &str = "vector_search_index_prefix";
+/// Vector search: JSON list of several column queries, e.g.
+/// `[{"column":"a","query":"0.1,0.2","top_k":10,"weight":0.7}]`.  The
+/// candidate sets are intersected; with `vector_search_order_by` the
+/// reserved distance column carries the weighted sum of the per-column
+/// index distances.
+pub static OPTION_KEY_VECTOR_SEARCH_REQUESTS: &str = "vector_search_requests";
 /// Text search: column name of the text index to query
 pub static OPTION_KEY_TEXT_SEARCH_COLUMN: &str = "text_search_column";
 /// Text search: query string parsed by the text index

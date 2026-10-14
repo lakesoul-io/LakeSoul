@@ -605,6 +605,13 @@ impl LakeSoulReader {
         let mut text_candidate_scores = std::collections::HashMap::new();
         let mut vector_keys: Option<Vec<lakesoul_vector::IndexKey>> = None;
         let mut vector_distances: Option<crate::vector::score::VectorDistances> = None;
+        // Per-request converted scores (sqrt-ed L2, IP as reported) with their
+        // fusion weights; combined into the reserved distance column after the
+        // loop.
+        let mut vector_scores: Vec<(
+            f32,
+            std::collections::HashMap<lakesoul_vector::IndexKey, f32>,
+        )> = Vec::new();
         for request in requests {
             match request.kind {
                 IndexKind::Vector => {
@@ -663,26 +670,25 @@ impl LakeSoulReader {
                         None => keys,
                         Some(previous) => intersect_keys(previous, keys),
                     });
-                    if order_by {
-                        let metric = io_config
+                    let metric = request.metric.clone().unwrap_or_else(|| {
+                        io_config
                             .option(&crate::index::options::option_key(
                                 IndexKind::Vector,
                                 "metric",
                             ))
-                            .unwrap_or_else(|| "L2".to_string());
-                        let sqrt = !matches!(
-                            metric.to_uppercase().as_str(),
-                            "IP" | "INNERPRODUCT"
-                        );
-                        vector_distances = Some(crate::vector::score::VectorDistances {
-                            codec: KeyCodec::new(key_codec.layout().clone())?,
-                            scores: ordered
-                                .into_iter()
-                                .map(|(key, (_version, score))| (key, score))
-                                .collect(),
-                            sqrt,
-                        });
-                    }
+                            .unwrap_or_else(|| "L2".to_string())
+                    });
+                    let is_l2 =
+                        !matches!(metric.to_uppercase().as_str(), "IP" | "INNERPRODUCT");
+                    vector_scores.push((
+                        request.weight,
+                        ordered
+                            .into_iter()
+                            .map(|(key, (_version, score))| {
+                                (key, if is_l2 { score.max(0.0).sqrt() } else { score })
+                            })
+                            .collect(),
+                    ));
                 }
                 IndexKind::Text => {
                     let candidates = crate::text::search::search_request(
@@ -709,6 +715,42 @@ impl LakeSoulReader {
                 }
             }
         }
+        // Index-only ordering: the reserved column carries the per-request
+        // distance (one request) or the weighted fusion over the candidate
+        // intersection (several requests), so no vector column is read.
+        if order_by && !vector_scores.is_empty() {
+            let codec = KeyCodec::new(key_codec.layout().clone())?;
+            let scores = if vector_scores.len() == 1 {
+                vector_scores.pop().expect("one request").1
+            } else {
+                let mut fused = std::collections::HashMap::new();
+                for key in vector_scores[0].1.keys() {
+                    let mut total = 0.0f32;
+                    let mut present = true;
+                    for (weight, scores) in &vector_scores {
+                        match scores.get(key) {
+                            Some(score) => total += weight * score,
+                            None => {
+                                present = false;
+                                break;
+                            }
+                        }
+                    }
+                    if present {
+                        fused.insert(key.clone(), total);
+                    }
+                }
+                fused
+            };
+            vector_distances = Some(crate::vector::score::VectorDistances {
+                codec,
+                scores,
+                // Every per-request score is already the caller-facing
+                // distance (sqrt for L2), so the fusion needs no conversion.
+                sqrt: false,
+            });
+        }
+
         Ok((
             filters,
             text_candidate_scores,
