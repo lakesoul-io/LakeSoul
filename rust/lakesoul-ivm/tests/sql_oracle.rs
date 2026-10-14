@@ -3440,3 +3440,76 @@ async fn oracle_fallback_matches_full_recompute() {
     )
     .await;
 }
+
+/// A bushy tree: the right side of an outer join is an inner join (a derived
+/// step) and the inner payload is renamed, so every mutation round checks the
+/// step's widened columns against the reference recompute.
+#[test_log::test(tokio::test)]
+async fn oracle_bushy_left_over_inner_matches_full_recompute() {
+    let schema = source_schema();
+    // The step keeps one payload per side (`b.g AS rv`, `c.k`) and widens to
+    // the select names (the join key is `v` on both sides, so both payloads
+    // are non-key columns).
+    let step_schema = lakesoul_ivm::wide_keyed_join_view_schema_with_keys(
+        &schema,
+        &schema,
+        &["k".to_string()],
+        &["k".to_string()],
+        &["v".to_string()],
+        &lakesoul_ivm::JoinKeyExprs::default(),
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "g".to_string(),
+                name: "rv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "k".to_string(),
+                name: "k".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let step_keys = lakesoul_ivm::keyed_join_output_primary_keys(
+        &["k".to_string()],
+        &["k".to_string()],
+    );
+    let mv_schema = lakesoul_ivm::left_join_view_schema_for(
+        &schema,
+        &step_schema,
+        &["k".to_string()],
+        &step_keys,
+        &["k".to_string()],
+        "v",
+        "rv",
+    )
+    .unwrap();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(10i64)),
+        (0, 1, "g1", Some(20)),
+        (1, 0, "g0", Some(11)),
+        (1, 1, "g1", Some(21)),
+        (2, 0, "g0", Some(10)),
+        (2, 1, "g1", Some(21)),
+    ];
+    run_oracle_seeded(
+        "bushy",
+        3,
+        schema,
+        false,
+        &seed,
+        mv_schema,
+        lakesoul_ivm::keyed_join_output_primary_keys(&["k".to_string()], &step_keys),
+        "SELECT a.v, x.rv FROM __SRC0__ a LEFT JOIN \
+         (SELECT b.g AS rv, c.k FROM __SRC1__ b JOIN __SRC2__ c ON c.v = b.v) x \
+         ON x.k = a.k",
+        "SELECT a.v, x.rv FROM (SELECT k, v FROM __SRC0__ WHERE op <> 'delete') a \
+         LEFT JOIN (SELECT b.g AS rv, c.k FROM \
+                    (SELECT v, g FROM __SRC1__ WHERE op <> 'delete') b \
+                    JOIN (SELECT v, k FROM __SRC2__ WHERE op <> 'delete') c \
+                    ON c.v = b.v) x ON x.k = a.k",
+        "SELECT left_value, right_value FROM __MV__",
+    )
+    .await;
+}
