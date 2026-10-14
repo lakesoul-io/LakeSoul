@@ -3509,6 +3509,16 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   的 key 变 NULL、外层失去匹配 + 恢复插入 + 步骤复用 + 参考重算比对）；原「FULL 侧拒绝」用例删除。
   全量套件 **470 passed / 0 failed**。
 
+### 10.133 A2 收尾：Tier-2 的 slt action 约定（ROADMAP §B10）
+
+- 设计稿要求 slt 约定 `/*ivm-expect-action fallback*/`。运行器无需改动（既有实现按 `action.label()`
+  比对 ✓），本轮补齐脚本与接线：`tests/slt/fallback.slt`（`LIMIT … OFFSET` 定义 → bootstrap 的
+  `fallback` 动作 + 删除移位 + 无变化 no-op 仍报 `fallback`）+ `sqllogic.rs` 的 `sqllogic_fallback`
+  （MV schema = 语句输出 + `rowKinds`/`__ivm_epoch`，主键 `k`）。
+- 至此 A2 清单闭合：动作枚举/指标（`fallbacks_total`/`fallback_rows`，低基数不带视图标签）、
+  `list_views` 的 mode/reason、差分 oracle、slt 约定、文档。设计稿中「Tier-2 按变化分区重算」仍为
+  后续性能优化（任意语句跨分区，语义需专门设计）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -30,12 +30,13 @@ use arrow::util::display::array_value_to_string;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
-    IVM_SOURCE_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainStep,
-    MinMaxKind, MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn,
-    WindowFunction, WindowGroupSpec, approx_distinct_mv_schema_for,
-    approx_percentile_mv_schema_for, array_agg_mv_schema_for, avg_mv_schema_for,
-    bool_agg_mv_schema_for, computed_agg_mv_schema_for, cross_join_view_schema_for,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmExecutionAction,
+    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinOutputColumn, JoinSide,
+    LookupChainColumn, LookupChainStep, MinMaxKind, MultiJoinColumn, PhysicalFormat,
+    VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
+    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
     full_join_view_schema_for, grouping_sets_mv_schema_for,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
@@ -997,6 +998,26 @@ fn sqllogic_window_desc() {
         )
         .unwrap(),
         group_keys(&["g", "k"]),
+    );
+}
+
+#[test]
+fn sqllogic_fallback() {
+    // `LIMIT ... OFFSET` is not maintained incrementally: the view is Tier-2
+    // and every statement reports the `fallback` action.  The MV is the
+    // statement's output plus the row kind and epoch columns.
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("k", DataType::Int64, false),
+        arrow::datatypes::Field::new("g", DataType::Utf8, false),
+        arrow::datatypes::Field::new("v", DataType::Int64, false),
+        arrow::datatypes::Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        arrow::datatypes::Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    run_script_for_mv(
+        "fallback",
+        include_str!("slt/fallback.slt"),
+        schema,
+        group_keys(&["k"]),
     );
 }
 

@@ -1,0 +1,45 @@
+# A Tier-2 fallback view: `LIMIT ... OFFSET` is not maintained incrementally,
+# so every statement recomputes the whole query and reports the
+# `fallback` action (bootstrap, change and no-op alike).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=b,v=20,op=insert; k=3,g=c,v=30,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ ORDER BY k LIMIT 2 OFFSET 1
+
+statement ok
+/*ivm-expect-action fallback*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+2 b 20
+3 c 30
+
+# A delete shifts the window; the query is recomputed in full again.
+statement ok
+/*ivm-append __SRC__: k=2,g=b,v=20,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ ORDER BY k LIMIT 2 OFFSET 1
+
+statement ok
+/*ivm-expect-action fallback*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+3 c 30
+
+# No source change: the refresh is a no-op and the action still says fallback.
+statement ok
+INSERT INTO __MV__ SELECT k, g, v FROM __SRC__ ORDER BY k LIMIT 2 OFFSET 1
+
+statement ok
+/*ivm-expect-action fallback*/
+
+query ITI rowsort
+SELECT k, g, v FROM __MV__
+----
+3 c 30
