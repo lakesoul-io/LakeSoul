@@ -183,6 +183,9 @@ Supported `reader_options`:
 | `vector_search_column` | Vector column to search | auto-detected when the table has one vector column |
 | `vector_search_top_k` | Candidate count per bucket | 10 |
 | `vector_search_nprobe` | Number of IVF clusters to probe | 64 |
+| `vector_search_metric` | `L2` or `IP` | the table property |
+| `vector_search_order_by` | Rank by the index distance instead of the exact re-rank; adds the reserved `__lakesoul_vector_distance` column (L2 only) | false |
+| `vector_search_parallelism` | Clusters probed concurrently per reader | 1 |
 
 The vector column and the metric are read from the table properties, so for a single vector column you only need to provide the query. When the table has multiple vector columns, set `vector_search_column` explicitly.
 
@@ -210,6 +213,26 @@ print(result.column("id").to_pylist())  # nearest first, global top-10
 ```
 
 `vector_search` accepts either a table or a configured scan. When a scan is passed, its partition pruning and runtime options are kept — for example, searching only one range partition. The primary key and the vector column are always read; the returned rows are ordered by distance (nearest first) and the distance column itself is not included.
+
+### Index-only ranking
+
+With `rerank="index"` the candidates are ordered by the quantized distance computed inside the index, so the stored vector column is never read — the same mode as `SET lakesoul_vector_search.rerank = 'index'` in SQL. It trades a small amount of recall for fewer scanned bytes and less CPU, and is only supported for L2 (inner product keeps the exact re-rank):
+
+```python
+df = vector_search(
+    table,
+    query,
+    top_k=10,
+    nprobe=64,
+    rerank="index",       # rank by the index distance
+    parallelism=8,        # probe 8 clusters concurrently (latency/throughput trade-off)
+    with_distance=True,   # keep the approximate distance in `vector_distance`
+)
+result = df.collect().to_arrow()
+# columns: id, vector_distance (no vector column was read)
+```
+
+The distance column carries the index estimate (`sqrt` of the L2 estimate, matching `array_distance`). Keep the default `rerank="exact"` when the last fraction of a point of recall matters more than the read costs.
 
 `scan.to_daft()` with `reader_options` remains available for callers that only need the per-bucket candidates, e.g. to run their own merge logic.
 

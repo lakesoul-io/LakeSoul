@@ -36,6 +36,9 @@ DEFAULT_SCAN_BATCH_SIZE: int = 2**10
 #: Reserved output column carrying the per-row BM25 score when the scan
 #: requests ``text_search_scores=true``.
 TEXT_SEARCH_SCORE_COLUMN = "__lakesoul_text_score"
+#: Reserved output column carrying the per-row index distance when the scan
+#: requests ``vector_search_order_by=true``.
+VECTOR_DISTANCE_COLUMN = "__lakesoul_vector_distance"
 PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
 _ASCII_LOWER_TRANS = str.maketrans(
     {chr(code): chr(code + 32) for code in range(ord("A"), ord("Z") + 1)}
@@ -1675,6 +1678,8 @@ class LakeSoulScan:
         reader_options = self._resolved_reader_options()
         if reader_options.get("text_search_scores") == "true":
             schema = _with_text_score_column(schema)
+        if reader_options.get("vector_search_order_by") == "true":
+            schema = _with_vector_distance_column(schema)
         return LakeSoulScanConfig(
             table_name=self._table.name,
             namespace=self._table.namespace,
@@ -1720,6 +1725,15 @@ class LakeSoulScan:
             and TEXT_SEARCH_SCORE_COLUMN not in columns
         ):
             values["columns"] = (*columns, TEXT_SEARCH_SCORE_COLUMN)
+        # The index distance is a reserved column too: a scan that ranks by it
+        # must read it, so add it to an explicit projection to survive schema
+        # projection.
+        if (
+            options.get("vector_search_order_by") == "true"
+            and values.get("columns") is not None
+            and VECTOR_DISTANCE_COLUMN not in values["columns"]
+        ):
+            values["columns"] = (*values["columns"], VECTOR_DISTANCE_COLUMN)
         return LakeSoulScan(**values)
 
 
@@ -1728,6 +1742,13 @@ def _with_text_score_column(schema: pa.Schema) -> pa.Schema:
     if TEXT_SEARCH_SCORE_COLUMN in schema.names:
         return schema
     return schema.append(pa.field(TEXT_SEARCH_SCORE_COLUMN, pa.float32(), True))
+
+
+def _with_vector_distance_column(schema: pa.Schema) -> pa.Schema:
+    """Append the reserved index-distance column to a scan schema."""
+    if VECTOR_DISTANCE_COLUMN in schema.names:
+        return schema
+    return schema.append(pa.field(VECTOR_DISTANCE_COLUMN, pa.float32(), False))
 
 
 def _validate_string_mapping(name: str, value: Mapping[str, str]) -> dict[str, str]:

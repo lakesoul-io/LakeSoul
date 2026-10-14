@@ -39,6 +39,9 @@ def vector_search(
     column: str | None = None,
     metric: str | None = None,
     extra_columns: Sequence[str] = (),
+    rerank: str = "exact",
+    parallelism: int = 1,
+    with_distance: bool = False,
 ) -> Any:
     """Search the nearest ``top_k`` rows to ``query`` and return a Daft DataFrame.
 
@@ -46,6 +49,14 @@ def vector_search(
     per-bucket reader returns its approximate top-``top_k`` candidates, and
     the candidates are re-ranked by exact vector distance in Daft before the
     global top-``top_k`` is returned.
+
+    With ``rerank="index"`` the reader instead ranks the candidates by the
+    quantized distance computed inside the index and returns the reserved
+    ``__lakesoul_vector_distance`` column; the scan never reads the stored
+    vector column.  This is only supported for L2 (inner product keeps the
+    exact rerank) and trades a small amount of recall for fewer bytes and
+    less CPU; ``parallelism`` probes that many clusters concurrently per
+    reader.
 
     Args:
         source: A :class:`lakesoul.catalog.LakeSoulTable` or a configured
@@ -63,6 +74,15 @@ def vector_search(
             table property.
         extra_columns: Additional columns to return alongside the primary
             key and the vector column.
+        rerank: ``"exact"`` (default) re-ranks the candidates against the
+            stored vector column; ``"index"`` orders by the index distance
+            and skips the vector column entirely (L2 only).
+        parallelism: Number of clusters to probe concurrently per reader
+            (default 1); it lowers single-query latency at the cost of
+            throughput when many queries run at once.
+        with_distance: Also return the distance of each row in a
+            ``vector_distance`` column (the exact distance for ``"exact"``,
+            the index distance for ``"index"``).
 
     Returns:
         A lazy ``daft.DataFrame`` with the top-``top_k`` rows (nearest first),
@@ -123,6 +143,48 @@ def vector_search(
     pk_column = primary_keys[0]
 
     metric = "IP" if metric.upper() in ("IP", "INNERPRODUCT") else "L2"
+    if rerank not in ("exact", "index"):
+        raise ValueError(f"rerank must be 'exact' or 'index', got {rerank!r}")
+    if parallelism < 1:
+        raise ValueError("parallelism must be >= 1")
+    # Index-distance ordering is only comparable with L2 for now; IP keeps
+    # the exact rerank.
+    index_only = rerank == "index" and metric == "L2"
+
+    if index_only:
+        from lakesoul.catalog import VECTOR_DISTANCE_COLUMN
+
+        # Each shard only needs its own top-k (a globally top-k row is inside
+        # its own shard's top-k); the small margin backfills rows dropped by
+        # the merge-on-read pass (deletes, stale versions).
+        candidates_per_shard = max(top_k * 2, top_k + 8)
+        columns = _dedup_columns((pk_column, *extra_columns, VECTOR_DISTANCE_COLUMN))
+        reader_options = {
+            "vector_search_query": ",".join(f"{v:.6f}" for v in query),
+            "vector_search_column": column,
+            "vector_search_top_k": str(candidates_per_shard),
+            "vector_search_nprobe": str(nprobe),
+            "vector_search_metric": metric,
+            "vector_search_order_by": "true",
+            "vector_search_parallelism": str(parallelism),
+        }
+        if isinstance(source, LakeSoulScan):
+            scan = source._replace(
+                columns=tuple(columns), _reader_options=reader_options
+            )
+        else:
+            scan = source.scan(columns=tuple(columns)).options(
+                reader_options=reader_options
+            )
+
+        dataframe = scan.to_daft()
+        if with_distance:
+            dataframe = dataframe.with_column(
+                _DISTANCE_COLUMN, col(VECTOR_DISTANCE_COLUMN)
+            )
+        dataframe = dataframe.sort(VECTOR_DISTANCE_COLUMN).limit(top_k)
+        return dataframe.exclude(VECTOR_DISTANCE_COLUMN)
+
     columns = _dedup_columns((pk_column, column, *extra_columns))
     reader_options = {
         "vector_search_query": ",".join(f"{v:.6f}" for v in query),
@@ -144,6 +206,8 @@ def vector_search(
         _DISTANCE_COLUMN, _exact_distance_udf(col(column), query, metric)
     )
     dataframe = dataframe.sort(_DISTANCE_COLUMN).limit(top_k)
+    if with_distance:
+        return dataframe
     return dataframe.exclude(_DISTANCE_COLUMN)
 
 
