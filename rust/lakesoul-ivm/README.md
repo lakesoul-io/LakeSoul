@@ -479,7 +479,8 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
   would be collapsed by merge-on-read) and a violation is reported
   explicitly.  The differential oracle covers a fallback view across random
   insert/update/delete rounds, so its rows are checked against the reference
-  recompute every round.  Create the target with `with_allow_fallback(false)` to keep
+  recompute every round, and the sqllogic harness accepts
+  `/*ivm-expect-action fallback*/` (`tests/slt/fallback.slt`).  Create the target with `with_allow_fallback(false)` to keep
   the strict behavior (unsupported shapes are then rejected, as before), and
   note that a Tier-1 view must not read a fallback view: the fallback rewrites
   its MV, so a downstream incremental refresh cannot see what it removed.
