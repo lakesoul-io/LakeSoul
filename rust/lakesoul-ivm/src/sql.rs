@@ -783,7 +783,7 @@ pub(crate) fn plan_label(plan: &LogicalPlan) -> &'static str {
         _ => "an unsupported plan node",
     }
 }
-fn unsupported(what: impl std::fmt::Display) -> rootcause::Report {
+pub(crate) fn unsupported(what: impl std::fmt::Display) -> rootcause::Report {
     rootcause::report!("unsupported incremental view shape: {what}")
         .attach(UnsupportedShape)
 }

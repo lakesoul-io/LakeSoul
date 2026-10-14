@@ -3570,6 +3570,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   删分区清理、主键缺分区列的拒绝（且未注册/未触碰目标）、刷新裁剪两个方向（单分区变更只读该分区）。
   全量 482 passed；IO 套件 219 passed。
 
+### 10.137 D 阶段：嵌套类型 List/Struct/Map（ROADMAP §D）
+
+- **P1 类型编解码**：`runtime.rs` 的 `encode_data_type`/`decode_data_type` 是各视图结果类型与 join 载荷的
+  **唯一类型闸门**。标量保持短名；嵌套类型改为 JSON 字段描述符递归——`list:`/`large_list:`/`fixed_list:<n>:`
+  后跟 `{"name","nullable","type"}`，`struct:[…]` 为字段描述符数组，`map:<sorted>:<entries 描述符>`；
+  字段名（可含分隔符）与可空性精确往返。未知类型抛 `UnsupportedShape`（→ 明确报错 + Tier-2 回退）。
+  IVM 未发布，spec 编码无需向前兼容。单测：标量/嵌套往返、含 `:`/`,`/`"` 的字段名、不支持类型带标记、坏编码报错。
+- **P2 载荷放行**：闸门扩展后 Row/Sum/Join/Union/Window 的嵌套载荷全部直通（Row/Union/Window 本就无闸门）。
+  测试 6 例：行视图 Struct/List/Map 直通（NULL/空/嵌套 NULL + 增量）、`SUM(s['a'])`、`array_agg(s ORDER BY k)`
+  得 `List<Struct>`、lookup join 嵌套载荷、union 嵌套列、`lag(s)` 窗口嵌套值。
+- **P3 嵌套分组键**：Struct/List/Map 作分组键（状态表与 MV 以嵌套值为键）；`lakesoul-io` 哈希器补
+  Struct（递归组合子列哈希）、Map（按键值条目）、FixedSizeList——哈希只决定分桶，等值 ⇒ 等哈希即可。
+  测试 3 例：按 struct/list/map 分组的 COUNT（含 NULL/空/嵌套 NULL 组与分组迁移的增量）。
+- 仍按能力拒绝：嵌套 join 键、外连接/链步骤的行身份（键需 cast 成字符串），见 README 限制清单。
+- **差分 oracle**：`nested_payloads_match_a_full_recompute`——24 轮随机 insert/update/delete（结构体键 +
+  SUM/COUNT，`allow_fallback=false` 强制走增量路径）与全量重算逐轮比对。
+- 全量 497 passed；`lakesoul-io` 219 passed。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

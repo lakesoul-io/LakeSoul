@@ -377,6 +377,13 @@ needs none).  A typical trap: the two branches of a
 * Every source must be **keyed**: the refresh folds the changelog through
   merge-on-read and retracts by key, so an append-only source (with or without
   a change column) is rejected when the statement is analyzed.
+* Columns may be **nested** (`Struct`, `List`, `Map`): they are opaque
+  payloads the refresh copies through, so row views, aggregates, joins, unions
+  and windows all carry them (including NULL, empty and nested-NULL values),
+  single fields are readable in expressions (`s['a']`, `l[1]`), and a nested
+  column may be a **group key**.  `array_agg` over a struct column materializes
+  a list of structs.  A nested **join key** and an outer join or chain step
+  whose key cannot be cast to a string stay rejected.
 * A source may declare a CDC change column (`lakesoul_cdc_change_column`,
   [`IvmTableOptions::with_cdc_column`](src/table.rs)): `delete` retracts and
   `update` asserts the new version of the key. Without one the internal
@@ -570,6 +577,10 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * a multi-way chain with more than sixteen sources; a chain step whose
   payload columns collide by name (a step the statement does not project
   names its payloads after the source columns: alias them in a subquery);
+* nested **join keys**, and outer-join or chain keys that cannot be cast to a
+  string: payloads, group keys and expressions take `Struct`/`List`/`Map`
+  values, but an outer join or a chain step materializes its row identity by
+  casting the key to a string;
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: a `DISTINCT` set-op variant whose left rows
   repeat a join tuple is rejected rather than silently returning duplicate
