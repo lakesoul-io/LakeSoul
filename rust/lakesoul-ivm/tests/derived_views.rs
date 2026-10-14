@@ -394,6 +394,359 @@ async fn an_unsupported_shape_reports_its_reason() {
     assert!(error.contains("not maintained"), "{error}");
 }
 
+/// A bushy outer tree: the right side of an outer join is itself an outer
+/// join, which becomes a derived step and leaves the outer join a plain
+/// two-source shape.  Each side has its own schema, so every payload is a
+/// source column.
+#[test_log::test(tokio::test)]
+async fn a_bushy_outer_tree_makes_the_join_side_a_derived_step() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let op = |values: &[&str]| StringArray::from_iter_values(values.iter().copied());
+    let ints = |values: &[i64]| Int64Array::from_iter_values(values.iter().copied());
+
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("av", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let a = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_bu_a_{suffix}"),
+                table_path(&dir, "a"),
+                a_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("bv", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let b = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_bu_b_{suffix}"),
+                table_path(&dir, "b"),
+                b_schema.clone(),
+            )
+            .with_primary_keys(vec!["b_k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let c = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_bu_c_{suffix}"),
+                table_path(&dir, "c"),
+                c_schema.clone(),
+            )
+            .with_primary_keys(vec!["c_k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+
+    // The step keeps one payload per side (`bv` from `b`, `k` from `c`) and
+    // the rewrite widens the compact payloads, so its MV carries the select
+    // names.
+    let step_schema = lakesoul_ivm::wide_keyed_join_view_schema_with_keys(
+        &b_schema,
+        &c_schema,
+        &["b_k".to_string()],
+        &["c_k".to_string()],
+        &["v".to_string()],
+        &lakesoul_ivm::JoinKeyExprs::default(),
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "k".to_string(),
+                name: "k".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let step_keys = lakesoul_ivm::keyed_join_output_primary_keys(
+        &["b_k".to_string()],
+        &["c_k".to_string()],
+    );
+    let target_schema = lakesoul_ivm::left_join_view_schema_for(
+        &a_schema,
+        &step_schema,
+        &["k".to_string()],
+        &step_keys,
+        &["k".to_string()],
+        "av",
+        "bv",
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_bu_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["k".to_string()],
+                &step_keys,
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT a.av, x.bv \
+         FROM {} a LEFT JOIN (SELECT b.bv, c.k \
+                              FROM {} b JOIN {} c ON c.v = b.v) x \
+         ON x.k = a.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                Arc::new(ints(&[1, 2])),
+                Arc::new(ints(&[100, 200])),
+                Arc::new(op(&["insert", "insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                Arc::new(ints(&[10])),
+                Arc::new(ints(&[7])),
+                Arc::new(ints(&[70])),
+                Arc::new(op(&["insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                Arc::new(ints(&[20])),
+                Arc::new(ints(&[7])),
+                Arc::new(ints(&[1])),
+                Arc::new(op(&["insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_pairs(runtime, &mv).await,
+        full_bushy_pairs(runtime, &a, &b, &c).await
+    );
+    let step = derived_right_view(runtime, &mv)
+        .await
+        .expect("the inner join is a derived step");
+
+    // Dropping the inner right row removes the inner match, so the matching
+    // outer row loses its payload too.
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                Arc::new(ints(&[20])),
+                Arc::new(ints(&[7])),
+                Arc::new(ints(&[1])),
+                Arc::new(op(&["delete"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_pairs(runtime, &mv).await,
+        full_bushy_pairs(runtime, &a, &b, &c).await
+    );
+    assert_eq!(
+        derived_right_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+}
+
+/// The derived step behind an outer join's right side, when one exists.
+async fn derived_right_view(runtime: &IvmRuntime, mv: &IvmTable) -> Option<String> {
+    let spec = runtime
+        .metadata()
+        .get_view_spec(&mv.table_id)
+        .await
+        .unwrap()?;
+    let right = spec["right_table_id"].as_str()?.to_string();
+    runtime
+        .metadata()
+        .get_view_spec(&right)
+        .await
+        .unwrap()
+        .map(|_| right)
+}
+
+/// The full recompute of the bushy statement: every left row with the inner
+/// payload it matches (NULL without one).
+async fn full_bushy_pairs(
+    runtime: &IvmRuntime,
+    a: &IvmTable,
+    b: &IvmTable,
+    c: &IvmTable,
+) -> Vec<(i64, Option<i64>)> {
+    let context = SessionContext::new();
+    for (name, table) in [("a", a), ("b", b), ("c", c)] {
+        context
+            .register_table(name, Arc::new(runtime.table_provider(table)))
+            .unwrap();
+    }
+    let batches = context
+        .sql(
+            "select a.av, x.bv from a left join (\
+             select b.bv, c.k from b join c on c.v = b.v) x \
+             on x.k = a.k order by a.av",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    pair_rows(&batches)
+}
+
+/// The `av, bv` payload rows of the target MV, ordered by `av`.  The compact
+/// join layout names them `left_value` / `right_value`.
+async fn read_pairs(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, Option<i64>)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select left_value as av, right_value as bv from mv order by av")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    pair_rows(&batches)
+}
+
+fn pair_rows(batches: &[RecordBatch]) -> Vec<(i64, Option<i64>)> {
+    let mut rows = Vec::new();
+    for batch in batches {
+        let lefts = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let rights = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                lefts.value(row),
+                if rights.is_null(row) {
+                    None
+                } else {
+                    Some(rights.value(row))
+                },
+            ));
+        }
+    }
+    rows
+}
+
+/// A join side that is itself an outer join needs a non-null row identity
+/// first; until then the statement falls back with an explicit reason.
+#[test_log::test(tokio::test)]
+async fn a_join_side_that_is_an_outer_join_is_not_materialized_yet() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let a = create_source(&runtime, &dir, &format!("ivm_der5_a_{suffix}")).await;
+    let b = create_source(&runtime, &dir, &format!("ivm_der5_b_{suffix}")).await;
+    let c = create_source(&runtime, &dir, &format!("ivm_der5_c_{suffix}")).await;
+    let mv = create_source(&runtime, &dir, &format!("ivm_der5_mv_{suffix}")).await;
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT a.k, x.bv \
+         FROM {} a LEFT JOIN (SELECT b.v AS bv, c.k AS k \
+                              FROM {} b LEFT JOIN {} c ON c.g = b.g) x \
+         ON x.k = a.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let error = executor.execute(&statement).await.unwrap_err().to_string();
+    assert!(
+        error.contains("outer join is not materialized yet"),
+        "{error}"
+    );
+}
+
+/// A computed side projection has no column layout to materialize yet.
+#[test_log::test(tokio::test)]
+async fn a_computed_join_side_is_not_materialized_yet() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let a = create_source(&runtime, &dir, &format!("ivm_der13_a_{suffix}")).await;
+    let b = create_source(&runtime, &dir, &format!("ivm_der13_b_{suffix}")).await;
+    let c = create_source(&runtime, &dir, &format!("ivm_der13_c_{suffix}")).await;
+    let mv = create_source(&runtime, &dir, &format!("ivm_der13_mv_{suffix}")).await;
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT a.k, x.w \
+         FROM {} a LEFT JOIN (SELECT b.v * 2 AS w, c.k AS k \
+                              FROM {} b JOIN {} c ON c.g = b.g) x \
+         ON x.k = a.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let error = executor.execute(&statement).await.unwrap_err().to_string();
+    assert!(
+        error.contains("a table or a plain column projection"),
+        "{error}"
+    );
+}
+
 /// The full recompute of `SUM(v)` per `g` over the fact table.
 async fn full_group_sum(runtime: &IvmRuntime, fact: &IvmTable) -> Vec<(String, i64)> {
     let context = SessionContext::new();

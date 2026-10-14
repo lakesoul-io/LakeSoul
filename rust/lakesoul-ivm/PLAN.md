@@ -3450,6 +3450,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   拒绝的形状（`LIMIT … OFFSET`），MV 带主键（每轮重算都会走主键唯一性校验）。
 - **多种子验证**：`IVM_ORACLE_SEED=7/99/12345 IVM_ORACLE_ROUNDS=30` 均通过。
 
+### 10.130 join 侧子查询（bushy 内连接已落地；外连接步待非空行身份）
+
+- **标记携带投影**（`sql/joins.rs::join_input`）：join 侧的纯列投影现在允许**别名**，且最外层投影随
+  `DerivedSource` 标记一起上报——步的分析据此知道输出列，投影也留在步内，父计划引用继续可解析。
+  `derived_step_supported` 放行 `Projection(Join)`；`derived_primary_keys`/`set_derived_identity`/
+  `widen_derived_join` 补 `LeftJoin`/`FullJoin` 臂。
+- **compact payload 命名**：外连接 compact 布局的 MV 字段名固定为 `left_value`/`right_value`
+  （`keyed_join_schema_for`），而派生步需要暴露消费方引用的名字。新增
+  `payload_names: Vec<String>`（serde-default，**仅在 compact payload 被重命名时**由分析器写入）：
+  单语句布局/定义哈希不变；`widen_derived_join` 用它给派生步命名（为空则沿用源列名）。
+- **落地范围**：`a LEFT JOIN (b JOIN c ON …) x ON x.k = a.k`（外层外连接 + 内层内连接步）已端到端
+  支持（bootstrap/增量/步骤复用 + 参考重算比对）；侧投影含计算列明确拒绝
+  （`a table or a plain column projection`）。
+- **Phase 0 发现（外连接步阻塞点）**：外连接步的 pair 身份（`__left_pk_*`/`__right_pk_*`）在未匹配行
+  为 NULL，而 `validate_left_join_view` 要求**作为 keyed 源**的表的键列非空 → 运行期报
+  `key column __left_pk_b_k must be non-nullable`。修法即 ROADMAP 已有的「1:N 非空行标识编码」
+  （链 PR-95 的长度前缀拼接）。在此之前：join 侧是外连接子查询在分析期**早期拒绝**
+  （`outer join is not materialized yet`，带标记 → Tier-2 兜底）。
+- **测试**：`tests/derived_views.rs` 新增 3 例（内连接侧 bushy：bootstrap+删除内层右行+步骤复用+参考
+  比对；外连接侧明确拒绝；计算列侧明确拒绝）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

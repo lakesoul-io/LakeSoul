@@ -236,6 +236,12 @@ pub enum ViewSpec {
         /// compact `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output_columns: Vec<JoinOutputColumn>,
+        /// The compact payload names the select list renamed, in
+        /// `left_value` / `right_value` order; empty means the payload
+        /// columns keep their own names.  A derived step materializes
+        /// them under these names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_names: Vec<String>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -281,6 +287,12 @@ pub enum ViewSpec {
         /// `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output_columns: Vec<JoinOutputColumn>,
+        /// The compact payload names the select list renamed, in
+        /// `left_value` / `right_value` order; empty means the payload
+        /// columns keep their own names.  A derived step materializes
+        /// them under these names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_names: Vec<String>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -312,6 +324,12 @@ pub enum ViewSpec {
         /// `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output_columns: Vec<JoinOutputColumn>,
+        /// The compact payload names the select list renamed, in
+        /// `left_value` / `right_value` order; empty means the payload
+        /// columns keep their own names.  A derived step materializes
+        /// them under these names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_names: Vec<String>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -403,6 +421,12 @@ pub enum ViewSpec {
         /// `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output_columns: Vec<JoinOutputColumn>,
+        /// The compact payload names the select list renamed, in
+        /// `left_value` / `right_value` order; empty means the payload
+        /// columns keep their own names.  A derived step materializes
+        /// them under these names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_names: Vec<String>,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -450,6 +474,12 @@ pub enum ViewSpec {
         /// `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output_columns: Vec<JoinOutputColumn>,
+        /// The compact payload names the select list renamed, in
+        /// `left_value` / `right_value` order; empty means the payload
+        /// columns keep their own names.  A derived step materializes
+        /// them under these names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_names: Vec<String>,
     },
     /// `group_key`, `MIN(value_column)` or `MAX(value_column)` over the source
     /// changelog, backed by a value-count state table.
@@ -2649,6 +2679,7 @@ impl IvmRuntime {
                 left_value,
                 right_value,
                 output_columns,
+                payload_names: _,
                 left_filter,
                 right_filter,
                 pair_filter,
@@ -2680,6 +2711,7 @@ impl IvmRuntime {
                 left_value,
                 right_value,
                 output_columns,
+                payload_names: _,
                 left_filter,
                 right_filter,
                 null_safe,
@@ -2708,6 +2740,7 @@ impl IvmRuntime {
                 left_value,
                 right_value,
                 output_columns,
+                payload_names: _,
                 left_filter,
                 right_filter,
                 null_safe,
@@ -2738,6 +2771,7 @@ impl IvmRuntime {
                 left_value,
                 right_value,
                 output_columns,
+                payload_names: _,
             } => SpecView::LookupJoin(LookupJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -2760,6 +2794,7 @@ impl IvmRuntime {
                 left_value,
                 right_value,
                 output_columns,
+                payload_names: _,
                 left_filter,
                 right_filter,
                 pair_filter,

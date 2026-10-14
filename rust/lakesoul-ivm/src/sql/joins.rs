@@ -294,36 +294,47 @@ pub(super) fn analyze_join(
                         payloads.right_value.as_deref().expect("one right payload"),
                     )
                 });
-            let (left_value, right_value, output_columns, pair_filter) = if compact {
-                let left_value = payloads.left_value.clone().expect("one left payload");
-                let right_value =
-                    payloads.right_value.clone().expect("one right payload");
-                let pair_filter = render_pair_conditions(
-                    &conditions,
-                    &left_value,
-                    &right_value,
-                    "inner join",
-                )?;
-                (left_value, right_value, Vec::new(), pair_filter)
-            } else {
-                if payloads.left_count == 0 || payloads.right_count == 0 {
-                    return Err(unsupported(
-                        "a join view needs at least one column from each side",
-                    ));
-                }
-                let left_value = payloads.left_value.clone().expect("one left payload");
-                let right_value =
-                    payloads.right_value.clone().expect("one right payload");
-                let mut output_columns = payloads.output_columns;
-                materialize_condition_columns(&mut output_columns, &conditions);
-                check_wide_output_names(&output_columns, &key_names)?;
-                let pair_filter = render_wide_pair_conditions(
-                    &conditions,
-                    &output_columns,
-                    "inner join",
-                )?;
-                (left_value, right_value, output_columns, pair_filter)
-            };
+            let (left_value, right_value, output_columns, pair_filter, payload_names) =
+                if compact {
+                    let left_value =
+                        payloads.left_value.clone().expect("one left payload");
+                    let right_value =
+                        payloads.right_value.clone().expect("one right payload");
+                    let pair_filter = render_pair_conditions(
+                        &conditions,
+                        &left_value,
+                        &right_value,
+                        "inner join",
+                    )?;
+                    let names =
+                        compact_payload_names(&payloads, &left_value, &right_value);
+                    (left_value, right_value, Vec::new(), pair_filter, names)
+                } else {
+                    if payloads.left_count == 0 || payloads.right_count == 0 {
+                        return Err(unsupported(
+                            "a join view needs at least one column from each side",
+                        ));
+                    }
+                    let left_value =
+                        payloads.left_value.clone().expect("one left payload");
+                    let right_value =
+                        payloads.right_value.clone().expect("one right payload");
+                    let mut output_columns = payloads.output_columns;
+                    materialize_condition_columns(&mut output_columns, &conditions);
+                    check_wide_output_names(&output_columns, &key_names)?;
+                    let pair_filter = render_wide_pair_conditions(
+                        &conditions,
+                        &output_columns,
+                        "inner join",
+                    )?;
+                    (
+                        left_value,
+                        right_value,
+                        output_columns,
+                        pair_filter,
+                        Vec::new(),
+                    )
+                };
             Ok(ViewSpec::Join {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
@@ -335,6 +346,7 @@ pub(super) fn analyze_join(
                 left_value,
                 right_value,
                 output_columns,
+                payload_names,
                 left_filter,
                 right_filter,
                 pair_filter,
@@ -423,7 +435,7 @@ pub(super) fn analyze_join(
                     right_key_list,
                 )?,
             };
-            let (left_value, right_value, output_columns) =
+            let (left_value, right_value, output_columns, payload_names) =
                 compact_or_wide(payloads, &key_names, "FULL JOIN")?;
             Ok(ViewSpec::FullJoin {
                 view_id: request.view_id.clone(),
@@ -435,6 +447,7 @@ pub(super) fn analyze_join(
                 left_value,
                 right_value,
                 output_columns,
+                payload_names,
                 left_filter,
                 right_filter,
                 null_safe,
@@ -1227,6 +1240,7 @@ fn analyze_cross_join(
         left_value,
         right_value,
         output_columns,
+        payload_names: Vec::new(),
         left_filter,
         right_filter,
         pair_filter,
@@ -1290,7 +1304,7 @@ fn analyze_outer_join(
             &effective_right_keys,
         )?,
     };
-    let (left_value, right_value, output_columns) =
+    let (left_value, right_value, output_columns, payload_names) =
         compact_or_wide(payloads, &key_names, kind)?;
     let lookup = {
         let mut expected = right.primary_keys.clone();
@@ -1315,6 +1329,7 @@ fn analyze_outer_join(
             left_value,
             right_value,
             output_columns,
+            payload_names,
         })
     } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
         Ok(ViewSpec::LeftJoin {
@@ -1327,6 +1342,7 @@ fn analyze_outer_join(
             left_value,
             right_value,
             output_columns,
+            payload_names,
             left_filter,
             right_filter,
             null_safe,
@@ -1352,6 +1368,12 @@ pub(super) fn join_input<'a>(
     // A side filter is pushed below the join as a `Filter`; column pruning
     // may add a plain projection above it. Scan-level filters land in the
     // scan's pushed filters. The alias may sit anywhere in the chain.
+    //
+    // The derived marker carries the outermost projection (when there is
+    // one): the step's analysis reads it for the output columns and the
+    // projection stays part of the step, so the parent's references keep
+    // resolving.
+    let mut projection_plan: Option<&LogicalPlan> = None;
     let mut alias = None;
     let mut filter = None;
     let mut node = plan;
@@ -1369,14 +1391,20 @@ pub(super) fn join_input<'a>(
                 node = &predicate.input;
             }
             LogicalPlan::Projection(projection) => {
+                // A plain column projection may alias its columns
+                // (`SELECT b.k AS k FROM b`), which is what a subquery over a
+                // join side normally looks like.
                 if !projection
                     .expr
                     .iter()
-                    .all(|expr| matches!(expr, Expr::Column(_)))
+                    .all(|expr| matches!(strip_alias(expr), Expr::Column(_)))
                 {
                     return Err(unsupported(
                         "join input must be a table or a plain column projection",
                     ));
+                }
+                if projection_plan.is_none() {
+                    projection_plan = Some(node);
                 }
                 node = &projection.input;
             }
@@ -1399,7 +1427,8 @@ pub(super) fn join_input<'a>(
                 ));
             }
             _ if derived_sourceable(node) => {
-                return Err(derived_source_error("a join side", node));
+                let plan = projection_plan.unwrap_or(node);
+                return Err(derived_source_error("a join side", plan));
             }
             _ => return Err(unsupported("join input must be a table")),
         }
@@ -1599,6 +1628,10 @@ struct JoinPayloads {
     left_value: Option<String>,
     /// The first right output column (the compact payload fallback).
     right_value: Option<String>,
+    /// The selected name of the first left payload.
+    left_name: Option<String>,
+    /// The selected name of the first right payload.
+    right_name: Option<String>,
     /// How many payload columns the left side contributes.
     left_count: usize,
     /// How many payload columns the right side contributes.
@@ -1613,12 +1646,14 @@ impl JoinPayloads {
                 self.left_count += 1;
                 if self.left_value.is_none() {
                     self.left_value = Some(column.clone());
+                    self.left_name = Some(name.clone());
                 }
             }
             Side::Right => {
                 self.right_count += 1;
                 if self.right_value.is_none() {
                     self.right_value = Some(column.clone());
+                    self.right_name = Some(name.clone());
                 }
             }
         }
@@ -1719,13 +1754,20 @@ fn compact_or_wide(
     payloads: JoinPayloads,
     key_names: &[String],
     shape: &str,
-) -> Result<(String, String, Vec<JoinOutputColumn>)> {
+) -> Result<(String, String, Vec<JoinOutputColumn>, Vec<String>)> {
     if payloads.left_count == 1 && payloads.right_count == 1 {
-        return Ok((
-            payloads.left_value.clone().expect("one left payload"),
-            payloads.right_value.clone().expect("one right payload"),
-            Vec::new(),
-        ));
+        let left_value = payloads.left_value.clone().expect("one left payload");
+        let right_value = payloads.right_value.clone().expect("one right payload");
+        // A renamed payload keeps its select name (a derived step materializes
+        // it under that name); the untouched compact layout keeps the fixed
+        // `left_value` / `right_value` names.
+        let names = match (payloads.left_name.clone(), payloads.right_name.clone()) {
+            (Some(left), Some(right)) if left != left_value || right != right_value => {
+                vec![left, right]
+            }
+            _ => Vec::new(),
+        };
+        return Ok((left_value, right_value, Vec::new(), names));
     }
     if payloads.left_count == 0 || payloads.right_count == 0 {
         return Err(unsupported(format!(
@@ -1737,7 +1779,24 @@ fn compact_or_wide(
         payloads.left_value.clone().expect("one left payload"),
         payloads.right_value.clone().expect("one right payload"),
         payloads.output_columns,
+        Vec::new(),
     ))
+}
+
+/// The compact payload names the statement selected, when a rename makes
+/// them differ from the payload columns: the derived-step rewrite then
+/// materializes the columns under the select names.
+fn compact_payload_names(
+    payloads: &JoinPayloads,
+    left_value: &str,
+    right_value: &str,
+) -> Vec<String> {
+    match (payloads.left_name.clone(), payloads.right_name.clone()) {
+        (Some(left), Some(right)) if left != left_value || right != right_value => {
+            vec![left, right]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The wide output names must be unique and must not shadow the join keys.
@@ -2185,6 +2244,7 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                payload_names: Vec::new(),
                 left_filter: None,
                 right_filter: None,
                 pair_filter: None,
@@ -3111,6 +3171,7 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                payload_names: Vec::new(),
             }
         );
 
@@ -3139,6 +3200,7 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                payload_names: Vec::new(),
                 left_filter: None,
                 right_filter: None,
                 null_safe: false,
@@ -3173,6 +3235,7 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                payload_names: Vec::new(),
             }
         );
 
@@ -3239,6 +3302,7 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                payload_names: Vec::new(),
             }
         );
 
@@ -3286,6 +3350,7 @@ mod tests {
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
+                payload_names: Vec::new(),
                 left_filter: None,
                 right_filter: None,
                 null_safe: false,

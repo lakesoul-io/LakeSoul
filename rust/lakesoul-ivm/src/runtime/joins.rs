@@ -218,6 +218,7 @@ impl JoinView {
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
+            payload_names: Vec::new(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             pair_filter: self.pair_filter.clone(),
@@ -996,6 +997,7 @@ impl LeftJoinView {
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
+            payload_names: Vec::new(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             null_safe: self.null_safe,
@@ -1142,6 +1144,7 @@ impl FullJoinView {
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
+            payload_names: Vec::new(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             null_safe: self.null_safe,
@@ -1239,6 +1242,7 @@ impl CrossJoinView {
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
+            payload_names: Vec::new(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             pair_filter: self.pair_filter.clone(),
@@ -1393,6 +1397,7 @@ impl LookupJoinView {
             left_value: self.left_value.clone(),
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
+            payload_names: Vec::new(),
         }
     }
 }
