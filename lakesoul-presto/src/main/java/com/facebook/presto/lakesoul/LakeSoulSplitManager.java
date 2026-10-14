@@ -56,8 +56,8 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                     GENERIC_USER_ERROR,
                     format(
                             "LakeSoul table %s scan selects %s partitions, exceeding %s=%s. Add a"
-                                + " partition filter or ask the administrator to increase the"
-                                + " limit.",
+                                    + " partition filter or ask the administrator to increase the"
+                                    + " limit.",
                             tableName,
                             partitionCount,
                             LakeSoulConfig.MAX_PARTITIONS_PER_SCAN,
