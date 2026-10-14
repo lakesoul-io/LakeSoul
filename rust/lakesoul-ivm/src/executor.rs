@@ -258,18 +258,21 @@ fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
         // A projection over a join is the subquery form of a join side; the
         // analyzer reads it for the output columns and the projection stays
         // part of the step, so the parent's references keep resolving.
-        LogicalPlan::Projection(projection) => match peel(&projection.input) {
-            // Every join type works as a derived side: an outer join
-            // materializes the non-null row identity its consumer needs.
-            LogicalPlan::Join(_) => Ok(()),
-            other => Err(rootcause::report!(
-                "a derived view over a projection of {} is not materialized yet",
-                plan_label(other)
-            )
-            .attach(UnsupportedShape)),
-        },
-        LogicalPlan::Join(_) | LogicalPlan::Window(_) | LogicalPlan::Union(_) => Ok(()),
-        LogicalPlan::Aggregate(_) => Ok(()),
+        // A projection over a materializable subplan is the subquery form of
+        // an operator source; the projection stays part of the step, so the
+        // parent's references keep resolving.
+        LogicalPlan::Projection(projection) => derived_step_supported(&projection.input),
+        // Every join type works as a derived side: an outer join materializes
+        // the non-null row identity its consumer needs.  A `Sort` with a fetch
+        // and a `Limit` are the top-k sources, and a `Distinct` subquery is a
+        // row-distinct source.
+        LogicalPlan::Join(_)
+        | LogicalPlan::Window(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Limit(_) => Ok(()),
         other => Err(rootcause::report!(
             "a derived view over {} is not materialized yet",
             plan_label(other)
@@ -1104,6 +1107,15 @@ impl IvmSqlExecutor {
             ViewSpec::LookupJoin { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)
+                .await?
+                .primary_keys
+                .clone(),
+            // A top-k row's identity is its source primary key.
+            ViewSpec::TopK {
+                source_table_id, ..
+            } => self
+                .runtime
+                .open_table_by_id(source_table_id)
                 .await?
                 .primary_keys
                 .clone(),

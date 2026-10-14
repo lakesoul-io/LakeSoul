@@ -1171,10 +1171,17 @@ fn analyze_cross_join(
         None => {
             // The optimizer drops the projection when the pruned join output
             // is exactly the select list: every column of the output belongs
-            // to one side.
+            // to one side.  The join schema keeps each side's qualifier, which
+            // disambiguates columns the two sides share a name with.
             let mut payloads = JoinPayloads::default();
-            for field in join.schema.fields() {
-                let column = datafusion::common::Column::new_unqualified(field.name());
+            for (qualifier, field) in join.schema.iter() {
+                let column = match qualifier {
+                    Some(qualifier) => datafusion::common::Column::new(
+                        Some(qualifier.clone()),
+                        field.name(),
+                    ),
+                    None => datafusion::common::Column::new_unqualified(field.name()),
+                };
                 let side =
                     side_of(&column, left_alias, right_alias, left, right).ok_or_else(|| {
                         unsupported(format!(
@@ -3139,17 +3146,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_filtered_join_inputs() {
-        // The same through an EXISTS subquery whose sides carry filters is
-        // maintained (see `analyzes_filtered_semi_anti_inputs`).
-        // A cross-side predicate on a CROSS JOIN stays unsupported.
-        assert!(
-            analyze_optimized(
-                "select a.v, b.v from src a cross join src b where a.v < b.v"
-            )
-            .await
-            .is_err()
-        );
+    async fn analyzes_a_filtered_cross_join() {
+        // A cross-side predicate on a CROSS JOIN is evaluated on the joined
+        // pair: every column of the join output classifies by its qualifier,
+        // even when the two sides share the name.
+        let analyzed = analyze_optimized(
+            "select a.v, b.v from src a cross join src b where a.v < b.v",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::CrossJoin { .. }));
     }
 
     #[tokio::test]

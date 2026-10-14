@@ -251,7 +251,10 @@ Supported within the shapes above:
   renaming the plan's column references), the step refreshes before the
   statement through the same orchestration (so the chain includes it and
   `refresh_view_chain` advances both), and a changed definition reuses the
-  step table or drops it when the definition shrinks.  The remaining step
+  step table or drops it when the definition shrinks.  A subquery the
+  statement only orders (`ORDER BY` without a limit) is read through, and an
+  `ORDER BY … LIMIT` subquery materializes as a top-k step when the statement
+  consumes the source primary keys (a top-k row is identified by them).  The remaining step
   kinds (a mixed aggregate, a multi-window chain, and a union whose branches
   need different key columns) and a derived view that would not expose a
   subplan column stay rejected with a message pointing at explicit views;
