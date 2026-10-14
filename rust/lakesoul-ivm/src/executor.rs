@@ -27,7 +27,7 @@ use datafusion::catalog::TableProvider;
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::provider_as_source;
-use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, SubqueryAlias};
 use datafusion::prelude::{Expr, SessionContext};
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
@@ -439,6 +439,16 @@ fn replace_plan(
         .clone()
         .transform_up(|node| {
             if &node == target {
+                // A marker may cover a subquery alias (`(SELECT ...) x`);
+                // keep the alias around the replacement so the parent's
+                // references like `x.k` still resolve.
+                if let LogicalPlan::SubqueryAlias(alias) = &node {
+                    let aliased = LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(
+                        Arc::new(replacement.clone()),
+                        alias.alias.clone(),
+                    )?);
+                    return Ok(Transformed::yes(aliased));
+                }
                 Ok(Transformed::yes(replacement.clone()))
             } else {
                 Ok(Transformed::no(node))
