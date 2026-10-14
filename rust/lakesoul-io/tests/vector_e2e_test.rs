@@ -450,3 +450,197 @@ async fn test_reader_with_vector_search() {
     }
     println!("✓ LakeSoulReader + vector search test PASSED");
 }
+
+/// The caller may declare the reserved index-distance column up front (as the
+/// Daft scan does): the reader strips it from the scan plan, attaches the
+/// sqrt-ed L2 estimate per row and returns exactly the declared schema.
+#[tokio::test]
+async fn test_reader_exposes_index_distance_column() {
+    use arrow::array::Float32Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use lakesoul_io::config::{
+        LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
+        OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_ORDER_BY,
+        OPTION_KEY_VECTOR_SEARCH_PARALLELISM, OPTION_KEY_VECTOR_SEARCH_QUERY,
+        OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    };
+    use lakesoul_io::reader::LakeSoulReader;
+    use lakesoul_io::vector::score::VECTOR_DISTANCE_FIELD;
+
+    let tmp = TempDir::new().unwrap();
+    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let parquet_path = format!("{}/part-dist_0000.parquet", tmp_path);
+    let pk_col = "id";
+    let vec_col = "vec";
+
+    let train_vecs = read_fvecs(&format!("{}/train_700.fvecs", DATA_DIR), Some(300));
+    let test_vecs = read_fvecs(&format!("{}/test_5.fvecs", DATA_DIR), Some(5));
+    let n_train = train_vecs.len();
+    let dim = train_vecs[0].len();
+
+    {
+        use arrow_array::{FixedSizeListArray, RecordBatch, UInt64Array};
+        let schema = std::sync::Arc::new(Schema::new(vec![
+            Field::new(pk_col, DataType::UInt64, false),
+            Field::new(
+                vec_col,
+                DataType::FixedSizeList(
+                    std::sync::Arc::new(Field::new("item", DataType::Float32, true)),
+                    dim as i32,
+                ),
+                false,
+            ),
+        ]));
+        let ids = UInt64Array::from((0..n_train as u64).collect::<Vec<_>>());
+        let flat: Vec<f32> = train_vecs.iter().flatten().copied().collect();
+        let vec_arr = FixedSizeListArray::new(
+            std::sync::Arc::new(Field::new("item", DataType::Float32, true)),
+            dim as i32,
+            std::sync::Arc::new(Float32Array::from(flat)),
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![std::sync::Arc::new(ids), std::sync::Arc::new(vec_arr)],
+        )
+        .unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    let store = Arc::new(LocalFileSystem::new());
+    let config = VectorIndexConfig {
+        column_name: vec_col.to_string(),
+        dim,
+        nlist: 8,
+        total_bits: 7,
+        metric: Metric::L2,
+        rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
+        seed: 42,
+        use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
+    };
+    let builder = VectorShardIndexBuilder::new(
+        store.clone(),
+        config,
+        vec![format!("file://{}", parquet_path)],
+        vec![pk_col.to_string()],
+        SecretMap::new(),
+        Some(format!("file://{}", tmp_path)),
+    );
+    let outcome = builder.build().await.unwrap();
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: outcome.index_prefix.clone(),
+        commit_id: 1,
+        generation: 1,
+        version: 1,
+        header: outcome.header.clone(),
+        segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+    };
+
+    let query_vec = &test_vecs[0];
+    let query_str: String = query_vec
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // The caller declares the reserved field up front: the scan plan must drop
+    // it (it is not a file column) and the output must carry it in place.
+    let read_schema = std::sync::Arc::new(Schema::new(vec![
+        Field::new(pk_col, DataType::UInt64, false),
+        Field::new(
+            vec_col,
+            DataType::FixedSizeList(
+                std::sync::Arc::new(Field::new("item", DataType::Float32, true)),
+                dim as i32,
+            ),
+            false,
+        ),
+        Field::new(VECTOR_DISTANCE_FIELD, DataType::Float32, false),
+    ]));
+
+    let config = LakeSoulIOConfigBuilder::new()
+        .with_files(vec![format!("file://{}", parquet_path)])
+        .with_prefix(format!("file://{}", tmp_path))
+        .with_schema(read_schema)
+        .with_primary_keys(vec![pk_col.to_string()])
+        .with_batch_size(8192)
+        .with_thread_num(2)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, vec_col)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_QUERY, query_str)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_TOP_K, "5")
+        .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, "4")
+        .with_option(OPTION_KEY_VECTOR_SEARCH_ORDER_BY, "true")
+        .with_option(OPTION_KEY_VECTOR_SEARCH_PARALLELISM, "2")
+        .with_option("skip_merge_on_read", "true")
+        .with_option("file_filter_pushdown", "false")
+        .with_resolved_index_shards(vec![resolved])
+        .build();
+
+    let mut reader = LakeSoulReader::new(config).unwrap();
+    reader.start().await.unwrap();
+
+    let mut rows: Vec<(u64, f32)> = Vec::new();
+    let mut output_fields: Option<Vec<String>> = None;
+    while let Some(batch_result) = reader.next_rb().await {
+        let batch = batch_result.unwrap();
+        output_fields.get_or_insert_with(|| {
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect()
+        });
+        let ids = batch
+            .column_by_name(pk_col)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        let distances = batch
+            .column_by_name(VECTOR_DISTANCE_FIELD)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((ids.value(row), distances.value(row)));
+        }
+    }
+    assert!(!rows.is_empty(), "the search must return candidates");
+    assert_eq!(
+        output_fields.expect("at least one batch"),
+        vec![
+            pk_col.to_string(),
+            vec_col.to_string(),
+            VECTOR_DISTANCE_FIELD.to_string()
+        ],
+        "the declared reserved column must be filled in place"
+    );
+
+    // Every attached distance is the (sqrt-ed) L2 estimate of that row: close
+    // to the exact distance and never larger than the worst returned row.
+    for (id, distance) in &rows {
+        assert!(
+            distance.is_finite() && *distance >= 0.0,
+            "bad distance {distance}"
+        );
+        let exact: f32 = train_vecs[*id as usize]
+            .iter()
+            .zip(query_vec)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        let exact = exact.sqrt();
+        assert!(
+            (*distance - exact).abs() <= 0.35 * exact.max(1.0),
+            "index distance {distance} too far from exact {exact} for id {id}"
+        );
+    }
+}

@@ -352,6 +352,14 @@ impl LakeSoulReader {
         } else {
             original_schema.clone()
         };
+        // The index distance is computed by the distance stream below, not
+        // read from the files: drop the reserved field from the scan plan and
+        // add it back on the output stream.
+        let vector_distances_requested = vector_distances.is_some();
+        if vector_distances_requested {
+            plan_schema =
+                crate::vector::score::without_vector_distance_field(&plan_schema);
+        }
         if let Some(request) = &verify_request
             && plan_schema.field_with_name(&request.column).is_err()
         {
@@ -501,9 +509,11 @@ impl LakeSoulReader {
         // Index-only ordering: append the index distance of every candidate
         // row; the SQL executor orders by it and drops the column again.
         let stream: SendableRecordBatchStream = match vector_distances {
-            Some(distances) => {
-                crate::vector::score::append_vector_distances(stream, distances)
-            }
+            Some(distances) => crate::vector::score::append_vector_distances(
+                stream,
+                distances,
+                &original_schema,
+            ),
             None => stream,
         };
         let schema = stream.schema();

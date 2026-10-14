@@ -68,28 +68,70 @@ impl VectorDistances {
     }
 }
 
+/// Drop the reserved distance field from a schema.
+///
+/// Callers may declare the field up front (so a lazy engine can plan against
+/// it); it is not a physical file column, so the reader removes it before
+/// building the scan plan and [`append_vector_distances`] adds it back at the
+/// same position.
+pub fn without_vector_distance_field(schema: &SchemaRef) -> SchemaRef {
+    if schema.field_with_name(VECTOR_DISTANCE_FIELD).is_err() {
+        return Arc::clone(schema);
+    }
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .filter(|field| field.name() != VECTOR_DISTANCE_FIELD)
+        .map(|field| field.as_ref().clone())
+        .collect();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+/// The caller-visible output schema once the distance column is attached.
+///
+/// When the caller declared the reserved field it is kept at its position,
+/// otherwise it is appended.
+pub fn vector_distance_output_schema(original: &SchemaRef) -> SchemaRef {
+    if original.field_with_name(VECTOR_DISTANCE_FIELD).is_ok() {
+        return Arc::clone(original);
+    }
+    let mut fields: Vec<Field> = original
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone())
+        .collect();
+    fields.push(Field::new(VECTOR_DISTANCE_FIELD, DataType::Float32, false));
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        original.metadata().clone(),
+    ))
+}
+
 /// Append the reserved distance column to a candidate stream.
+///
+/// `original_schema` is the caller-visible schema (the reserved field may
+/// already be declared); the returned stream has exactly that schema.
 pub fn append_vector_distances(
     stream: SendableRecordBatchStream,
     distances: VectorDistances,
+    original_schema: &SchemaRef,
 ) -> SendableRecordBatchStream {
-    let schema = stream.schema();
-    let mut fields = schema.fields().to_vec();
-    fields.push(Arc::new(Field::new(
-        VECTOR_DISTANCE_FIELD,
-        DataType::Float32,
-        false,
-    )));
-    let output_schema: SchemaRef =
-        Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+    let output_schema = vector_distance_output_schema(original_schema);
     let batch_schema = Arc::clone(&output_schema);
     let mapped = stream.map(move |batch| {
         batch.and_then(|batch| {
             let distance = distances.batch_distances(&batch).map_err(|error| {
                 DataFusionError::External(report!("{error}").into_boxed_error())
             })?;
-            let mut columns = batch.columns().to_vec();
-            columns.push(distance);
+            let mut columns = Vec::with_capacity(batch_schema.fields().len());
+            for field in batch_schema.fields() {
+                if field.name() == VECTOR_DISTANCE_FIELD {
+                    columns.push(Arc::clone(&distance));
+                } else {
+                    let index = batch.schema().index_of(field.name())?;
+                    columns.push(Arc::clone(batch.column(index)));
+                }
+            }
             RecordBatch::try_new(Arc::clone(&batch_schema), columns)
                 .map_err(DataFusionError::from)
         })
