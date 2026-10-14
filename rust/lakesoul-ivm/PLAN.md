@@ -3588,6 +3588,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   SUM/COUNT，`allow_fallback=false` 强制走增量路径）与全量重算逐轮比对。
 - 全量 497 passed；`lakesoul-io` 219 passed。
 
+### 10.138 派生步逐项放开（ROADMAP §「嵌套/不透明派生表」）
+
+- 探针（9 种算子步形状）显示大多数已可用——聚合/窗口/union/过滤/嵌套 join 的派生源在早前 PR 已放开；
+  本轮补齐三处：
+  1. **无 fetch 的 `ORDER BY` 子查询**：`Sort`（无 limit）不改变多重集，`collect_filtered_source` 直接透视，
+     `SELECT … FROM (SELECT … ORDER BY x) y` 不再被拒；
+  2. **TopK 子查询作派生步**：`Sort{fetch}`/`Limit` 纳入 `derived_sourceable` 与 `derived_step_supported`，
+     并补 `ViewSpec::TopK` 的步身份（`set_derived_identity`）与步主键（顶行的身份 = 源主键）——因此
+     `… FROM (SELECT … ORDER BY v DESC LIMIT k) x GROUP BY <源主键>, …` 可增量维护（外层须消费源主键，
+     以满足 top-k 视图自身既有校验）；
+  3. **cross join 输出列分类**：无投影时按 `DFSchema` 的**限定符**分类，两列同名不再误报 ambiguous，
+     只剩真正的要求（“两侧各取至少一列”）。
+- 步闸门泛化：`Projection` 递归判定（不再只放行 `Projection(Join)`），并加入 `Distinct`。
+- 测试：`derived_views.rs` 新增 2 例——有序子查询直读（bootstrap/增量）、TopK 步（顶行进出）。
+- 仍按能力拒绝：join/cross join 的“两侧各取至少一列”载荷规则；外连接/链步骤的行身份（键需 cast 成字符串）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

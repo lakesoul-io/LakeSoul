@@ -1308,10 +1308,10 @@ async fn nested_payloads_match_a_full_recompute() {
             .register_table("src", Arc::new(runtime.table_provider(&source)))
             .unwrap();
         let reference = context
-            .sql(&format!(
+            .sql(
                 "SELECT s, SUM(k) AS sum_v, COUNT(*) AS count_v \
-                 FROM src GROUP BY s"
-            ))
+                 FROM src GROUP BY s",
+            )
             .await
             .unwrap()
             .collect()

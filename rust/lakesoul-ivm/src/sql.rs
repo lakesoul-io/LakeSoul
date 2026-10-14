@@ -288,6 +288,11 @@ fn collect_filtered_source(
             let source = resolve_table(tables, &scan.table_name)?.clone();
             Ok((source, scan_filter(&scan.filters)?))
         }
+        // A plain `ORDER BY` (without a limit) does not change the multiset a
+        // source contributes, so an operator below it reads through.
+        LogicalPlan::Sort(sort) if sort.fetch.is_none() => {
+            collect_filtered_source(&sort.input, tables, shape)
+        }
         other if derived_sourceable(other) => Err(derived_source_error(shape, other)),
         other => Err(unsupported(format!("{shape} over {}", plan_label(other)))),
     }
@@ -333,6 +338,8 @@ pub(crate) fn derived_sourceable(plan: &LogicalPlan) -> bool {
             | LogicalPlan::Window(_)
             | LogicalPlan::Union(_)
             | LogicalPlan::Distinct(_)
+            | LogicalPlan::Sort(_)
+            | LogicalPlan::Limit(_)
     )
 }
 

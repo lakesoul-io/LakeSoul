@@ -13,6 +13,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, sum_count_mv_schema_for,
+    top_k_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -2157,6 +2158,173 @@ async fn a_chain_with_an_inner_right_step_is_materialized() {
         read_chain_rows(runtime, &mv, &["bv", "av", "cv"]).await,
         full_chain_rows(runtime, a, b, c, reference).await
     );
+}
+
+/// A subquery that only orders its rows contributes the same multiset: the
+/// operator below it reads through the sort.
+#[test_log::test(tokio::test)]
+async fn an_ordered_subquery_is_read_through() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &format!("ivm_ord_src_{suffix}")).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ord_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&source_schema(), &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "insert"),
+                (2, "a", 4, "insert"),
+                (3, "b", 7, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_ord_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM (SELECT g, v FROM ivm_ord_src_{suffix} ORDER BY v DESC) x GROUP BY g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        vec![("a".to_string(), 14), ("b".to_string(), 7)]
+    );
+
+    // An update and a delete flow through the ordered subquery.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(2, "a", 11, "insert"), (3, "b", 7, "delete")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(read_sum_mv(runtime, &mv).await, vec![("a".to_string(), 21)]);
+}
+
+/// A `ORDER BY ... LIMIT` subquery materialized as a derived step: the outer
+/// aggregate reads the step's current top-k rows.
+#[test_log::test(tokio::test)]
+async fn a_top_k_subquery_is_materialized_as_a_step() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &format!("ivm_topk_src_{suffix}")).await;
+    let step_schema =
+        top_k_mv_schema_for(&source_schema(), &["k", "g", "v"].map(String::from))
+            .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &step_schema,
+                    &["k".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "insert"),
+                (2, "a", 4, "insert"),
+                (3, "b", 7, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_topk_mv_{suffix} \
+         SELECT k, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM (SELECT k, g, v FROM ivm_topk_src_{suffix} ORDER BY v DESC LIMIT 2) x \
+         GROUP BY k, g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_key_sums(runtime, &mv).await,
+        vec![(1, "a".to_string(), 10), (3, "b".to_string(), 7)]
+    );
+
+    // A row enters the top-k and another leaves it.
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, "a", 20, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_key_sums(runtime, &mv).await,
+        vec![(1, "a".to_string(), 10), (2, "a".to_string(), 20)]
+    );
+}
+
+/// The `(k, g, sum_v)` rows of a sum/count MV ordered by `k`.
+async fn read_key_sums(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, g, sum_v from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let groups = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row),
+                groups.value(row).to_string(),
+                sums.value(row),
+            ));
+        }
+    }
+    rows
 }
 
 /// The full recompute of `SUM(v)` per `g` over the fact table.
