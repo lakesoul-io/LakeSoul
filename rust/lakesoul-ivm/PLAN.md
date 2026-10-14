@@ -3491,6 +3491,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   左行 payload 变 NULL、外层失去匹配 + 步骤复用 + 参考重算比对）；原拒绝用例改为 FULL 侧。全量套件
   **470 passed / 0 failed**。
 
+### 10.132 外连接步扩展到 FULL JOIN 侧（bushy 收口）
+
+- **两侧编码**：`pair_identity_expr(left_pks, right_pks)` 现在把**两侧**身份逐段编码（左段在前、
+  各自 NULL→`n`），`keyed_join_output_columns` 相应地编码两侧——同一条无碰撞、恒非空的行身份
+  同时服务 LEFT 与 FULL 步。
+- **spec/视图**：`ViewSpec::FullJoin` 增加 `identity_column`（serde-default，仅派生步置位），
+  `FullJoinView` 同步携带并在 `spec_view`/`to_spec`/`parts` 透传；`derived_primary_keys` 对置位的
+  FULL 步返回 **仅 `__ivm_pair_id`**（两侧身份都可能为 NULL，唯一恒非空的就是它）。
+- **schema**：新公开助手 `wide_full_join_view_schema_with_identity`（在 wide-full 布局基础上把身份列
+  插到 rowKinds/epoch 之前），执行器 `expected_mv_schema` 的 FullJoin 臂按开关选用。
+- **写路径坑**：FULL join 的**插入**批次走 `keyed_join_projection`（自建列），而**删除**批次走
+  `keyed_join_output_columns`——只补后者会得到「batch 7 列 vs MV 8 列」。修复：在两处 insert 的
+  `union(...).distinct()` 之后、kinds/epoch 之前按开关 `with_column(IVM_PAIR_IDENTITY_COLUMN, ...)`。
+- **放行**：`derived_step_supported` 对投影下的任意 join 类型放行（RIGHT 会被优化器规范成 LEFT）。
+- **测试**：`tests/derived_views.rs` 新增 FULL 侧 bushy 用例（bootstrap + 删除内层匹配右行使内层左行
+  的 key 变 NULL、外层失去匹配 + 恢复插入 + 步骤复用 + 参考重算比对）；原「FULL 侧拒绝」用例删除。
+  全量套件 **470 passed / 0 failed**。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -125,7 +125,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | 链中 **1:N 右侧**外连接（维表按 join key 不唯一） | **L** | ✅ 已实现（PR-95，PLAN §10.101）：每步非空行标识编码列（长度前缀拼接，无碰撞）纳入 MV 主键；受影响集合按基表键重放，INNER/LEFT 均支持；设计见 `ivm-lookup-chain-1n.md` |
-| 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | 内连接 bushy 已支持（多连接展平）；**派生步方式**：join 侧是内连接子查询（PLAN §10.130）与 **LEFT JOIN 子查询**（PLAN §10.131，步物化非空行身份 `__ivm_pair_id`，键=左侧身份别名+该列，消费方可作 keyed 源）均已支持；**RIGHT/FULL** 侧仍需两侧身份的编码，保持明确拒绝；链内 RIGHT/FULL **步骤**仍待设计 |
+| 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | **bushy 外连接树已支持**（PLAN §10.130–§10.132）：join 侧的内连接/LEFT/FULL 子查询都物化为派生步，外连接步物化非空行身份 `__ivm_pair_id`（两侧主键长度前缀编码；LEFT 步键=左侧身份别名+该列，FULL 步键=该列），消费方可作 keyed 源；链内 RIGHT/FULL **步骤**仍待设计 |
 | 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
 | 连接键是**表达式**（`ON a.x+1=b.y`，两源 inner join） | **M** | ✅ 已实现（PR-98，PLAN §10.104）：两侧求值 + 隐藏 key 列 `__ivm_key_<n>`；lookup/outer/multi/chain 的表达式键仍拒绝 |
 | `= ANY` / `<> ALL` 量化比较 | **S** | ✅ 已实现（PR-100，PLAN §10.106）：标准精确等价，优化前重写为 `IN` / `NOT IN` |

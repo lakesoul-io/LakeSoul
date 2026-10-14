@@ -28,7 +28,7 @@ use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
-use datafusion::prelude::{Expr, JoinType, SessionContext};
+use datafusion::prelude::{Expr, SessionContext};
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
     ObjectName, ObjectNamePart, Query, Statement, TableObject, Visit, Visitor,
@@ -54,10 +54,10 @@ use crate::runtime::{
     string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
     union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, variance_groups_mv_schema_for,
-    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
-    wide_keyed_join_view_schema_with_keys, wide_left_join_view_schema_with_identity,
-    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_columns_mv_schema_for,
+    wide_full_join_view_schema_with_identity, wide_join_view_schema_with_keys,
+    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
+    wide_left_join_view_schema_with_identity, wide_lookup_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_columns_mv_schema_for,
 };
 use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
@@ -259,19 +259,8 @@ fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
         // analyzer reads it for the output columns and the projection stays
         // part of the step, so the parent's references keep resolving.
         LogicalPlan::Projection(projection) => match peel(&projection.input) {
-            // A derived LEFT JOIN side materializes a non-null row identity,
-            // so a consumer can read it; a right or full join needs the same
-            // for both sides first.
-            LogicalPlan::Join(join)
-                if !matches!(join.join_type, JoinType::Inner | JoinType::Left) =>
-            {
-                Err(rootcause::report!(
-                    "a derived view over a join side that is a right or full join is \
-                     not materialized yet; use an inner or left join side, or split \
-                     the statement"
-                )
-                .attach(UnsupportedShape))
-            }
+            // Every join type works as a derived side: an outer join
+            // materializes the non-null row identity its consumer needs.
             LogicalPlan::Join(_) => Ok(()),
             other => Err(rootcause::report!(
                 "a derived view over a projection of {} is not materialized yet",
@@ -988,15 +977,29 @@ impl IvmSqlExecutor {
                 left_table_id,
                 right_table_id,
                 ..
-            }
-            | ViewSpec::FullJoin {
-                left_table_id,
-                right_table_id,
-                ..
             } => {
                 let left = self.runtime.open_table_by_id(left_table_id).await?;
                 let right = self.runtime.open_table_by_id(right_table_id).await?;
                 keyed_join_output_primary_keys(&left.primary_keys, &right.primary_keys)
+            }
+            ViewSpec::FullJoin {
+                left_table_id,
+                right_table_id,
+                identity_column,
+                ..
+            } => {
+                let left = self.runtime.open_table_by_id(left_table_id).await?;
+                let right = self.runtime.open_table_by_id(right_table_id).await?;
+                if *identity_column {
+                    // Both sides may be unmatched, so only the encoded
+                    // identity is non-null.
+                    vec![IVM_PAIR_IDENTITY_COLUMN.to_string()]
+                } else {
+                    keyed_join_output_primary_keys(
+                        &left.primary_keys,
+                        &right.primary_keys,
+                    )
+                }
             }
             ViewSpec::SumCount { group_keys, .. }
             | ViewSpec::MinMax { group_keys, .. }
@@ -1444,12 +1447,22 @@ fn expected_mv_schema(
             left_value,
             right_value,
             output_columns,
+            identity_column,
             null_safe,
             ..
         } => {
             let left = find_table(tables, left_table_id)?;
             let right = find_table(tables, right_table_id)?;
-            let schema = if output_columns.is_empty() {
+            let schema = if *identity_column {
+                wide_full_join_view_schema_with_identity(
+                    &left.schema,
+                    &right.schema,
+                    &left.primary_keys,
+                    &right.primary_keys,
+                    join_keys,
+                    output_columns,
+                )?
+            } else if output_columns.is_empty() {
                 full_join_view_schema_for(
                     &left.schema,
                     &right.schema,

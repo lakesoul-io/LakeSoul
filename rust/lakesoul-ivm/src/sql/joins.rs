@@ -438,6 +438,7 @@ pub(super) fn analyze_join(
             let (left_value, right_value, output_columns, payload_names) =
                 compact_or_wide(payloads, &key_names, "FULL JOIN")?;
             Ok(ViewSpec::FullJoin {
+                identity_column: false,
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
                 right_table_id: right.table_id.clone(),
@@ -3343,6 +3344,7 @@ mod tests {
         assert_eq!(
             analyzed.spec,
             ViewSpec::FullJoin {
+                identity_column: false,
                 view_id: "view_1".to_string(),
                 left_table_id: "table_src".to_string(),
                 right_table_id: "table_src".to_string(),
