@@ -186,6 +186,7 @@ Supported `reader_options`:
 | `vector_search_metric` | `L2` or `IP` | the table property |
 | `vector_search_order_by` | Rank by the index distance instead of the exact re-rank; adds the reserved `__lakesoul_vector_distance` column (L2 only) | false |
 | `vector_search_parallelism` | Clusters probed concurrently per reader | 1 |
+| `vector_search_requests` | JSON list of several column queries (`[{"column","query","top_k","weight","metric"}]`); candidate sets are intersected and, with `vector_search_order_by`, the reserved column carries the weighted sum of the index distances | - |
 
 The vector column and the metric are read from the table properties, so for a single vector column you only need to provide the query. When the table has multiple vector columns, set `vector_search_column` explicitly.
 
@@ -233,6 +234,28 @@ result = df.collect().to_arrow()
 ```
 
 The distance column carries the index estimate (`sqrt` of the L2 estimate, matching `array_distance`). Keep the default `rerank="exact"` when the last fraction of a point of recall matters more than the read costs.
+
+### Multi-column fusion
+
+`multi_vector_search` queries several indexed vector columns in one scan. Each column is searched independently; a row must be a candidate in **every** column's index (the candidate sets are intersected) and the rows are ranked by the weighted sum of the per-column distances:
+
+```python
+from lakesoul.daft import multi_vector_search
+
+df = multi_vector_search(
+    table,
+    {"text_vec": text_query, "image_vec": image_query},
+    top_k=10,
+    weights={"text_vec": 0.7, "image_vec": 0.3},
+    rerank="index",       # fuse the index distances; no vector column is read
+    parallelism=8,
+    with_distance=True,   # keep the fused distance in `vector_distance`
+)
+result = df.collect().to_arrow()
+print(result.column("id").to_pylist())  # nearest by the fused distance
+```
+
+Fusion is defined for L2 columns only, and every queried column must carry the same metric. With the default `rerank="exact"` the weighted sum is computed exactly on the candidate rows inside Daft (the queried vector columns are read for that), while `rerank="index"` ranks by the fused distance computed inside the indexes.
 
 `scan.to_daft()` with `reader_options` remains available for callers that only need the per-bucket candidates, e.g. to run their own merge logic.
 
