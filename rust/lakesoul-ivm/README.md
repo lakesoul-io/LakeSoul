@@ -262,6 +262,9 @@ Supported within the shapes above:
   filter their sides (`WHERE fact.amount > 0 AND dim.active`): the analyzer
   keeps the predicates pushed below the join and a row entering or leaving
   its filter adds, retracts or NULL-pads its pairs;
+* a **single-sided inner join** whose right side is keyed by the join keys is
+  maintained as the semi shape: the match is unique, so the view is exactly
+  the left rows that have one (changes on either side add and remove them);
 * **`DISTINCT ON`**: one row per grouping key, the first row of the ordering
   (the source primary keys are appended as a deterministic tie-break; a
   key-only `SELECT DISTINCT ON (key) key` is rejected with a hint to write
@@ -580,6 +583,10 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * a multi-way chain with more than sixteen sources; a chain step whose
   payload columns collide by name (a step the statement does not project
   names its payloads after the source columns: alias them in a subquery);
+* a single-sided inner join whose right side is not keyed by the join key:
+  several matches would duplicate the left row, which the semi shape such a
+  statement is maintained as cannot express (a right side keyed by the join
+  key stays supported);
 * nested **join keys**, and outer-join or chain keys that cannot be cast to a
   string: payloads, group keys and expressions take `Struct`/`List`/`Map`
   values, but an outer join or a chain step materializes its row identity by
