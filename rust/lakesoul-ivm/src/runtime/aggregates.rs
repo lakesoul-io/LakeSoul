@@ -2146,6 +2146,32 @@ fn grouping_sets_rebuild_sql(view: &GroupingSetsView, epoch: i64) -> String {
     )
 }
 
+/// The delete rows removing a dropped partition's contribution: every MV row
+/// matching the partition predicate is retracted under `epoch`.
+pub fn sum_count_cleanup_delete_sql(
+    view: &SumCountView,
+    predicates: &str,
+    epoch: i64,
+) -> String {
+    let columns = view
+        .mv
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+        .map(|name| quote_ident(&name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "select {columns}, 'delete' as \"{kinds}\", {epoch} as \"{epoch_column}\" \
+         from mv where \"{kinds}\" = 'insert' and \"{epoch_column}\" <> {epoch} \
+         and ({predicates})",
+        kinds = IVM_ROW_KINDS_COLUMN,
+        epoch_column = IVM_EPOCH_COLUMN,
+    )
+}
+
 impl IvmRuntime {
     /// Persist a sum/count view spec (idempotent).
     pub async fn register_view(&self, view: &SumCountView) -> Result<()> {

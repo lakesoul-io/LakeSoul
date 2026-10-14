@@ -775,8 +775,20 @@ impl IvmSqlExecutor {
                 // snapshot) cannot be retried through the file window: rebuild
                 // the view from the current state.
                 Err(error) if IvmRuntime::rebuild_required(&error) => {
-                    let epoch = self.runtime.rebuild_spec(&spec).await?;
-                    (IvmExecutionAction::Rebuild, Some(epoch))
+                    // A dropped source partition whose columns are part of the
+                    // view's keys is removed deterministically; everything else
+                    // still rebuilds.
+                    match self
+                        .runtime
+                        .cleanup_dropped_partitions(&spec, &error)
+                        .await?
+                    {
+                        Some(epoch) => (IvmExecutionAction::Incremental, Some(epoch)),
+                        None => {
+                            let epoch = self.runtime.rebuild_spec(&spec).await?;
+                            (IvmExecutionAction::Rebuild, Some(epoch))
+                        }
+                    }
                 }
                 Err(error) => return Err(error),
             }
