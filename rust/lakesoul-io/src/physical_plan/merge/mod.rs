@@ -535,7 +535,23 @@ fn merge_stream(
                 .collect::<Vec<_>>(),
         ));
 
-        let merge_ops = physical_schema
+        // A primary key may contain a constant a data file does not store (a
+        // partition column injected on read): the merge key then only resolves
+        // when the merge runs on the merged schema, with the constants part of
+        // the batches.  The constant is fixed per stream (one partition per
+        // read), so it cannot change the merged order.  When the primary keys
+        // are all physically stored, the previous physical-schema merge is
+        // kept.
+        let keys_need_defaults = primary_keys
+            .iter()
+            .any(|key| default_column_value.contains_key(key));
+        let merge_schema = if keys_need_defaults {
+            merged_schema.clone()
+        } else {
+            physical_schema.clone()
+        };
+
+        let merge_ops = merge_schema
             .fields()
             .iter()
             .map(|field| {
@@ -550,10 +566,19 @@ fn merge_stream(
         let streams = streams
             .into_iter()
             .map(|s| {
-                SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(
-                    s,
-                    physical_schema.clone(),
-                )))
+                let stream: SendableRecordBatchStream = if keys_need_defaults {
+                    Box::pin(DefaultColumnStream::new_from_streams_with_default(
+                        vec![s],
+                        merged_schema.clone(),
+                        default_column_value.clone(),
+                    ))
+                } else {
+                    Box::pin(DefaultColumnStream::new_from_stream(
+                        s,
+                        physical_schema.clone(),
+                    ))
+                };
+                SortedStream::new(stream)
             })
             .collect();
         let is_compacted = config
@@ -565,7 +590,7 @@ fn merge_stream(
         build_sorted_stream_merger(
             streams,
             primary_keys,
-            physical_schema,
+            merge_schema,
             merged_schema.clone(),
             batch_size,
             default_column_value.clone(),

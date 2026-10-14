@@ -328,8 +328,22 @@ pub(crate) fn build_sorted_stream_merger(
     let fields_map = streams
         .iter()
         .map(|s| {
-            s.stream
-                .schema()
+            let stream_schema = s.stream.schema();
+            // Identical schemas map by position: a duplicated field name (a
+            // partition column the reader appends although the schema already
+            // carries it) would otherwise map both occurrences to the first
+            // one and leave the second unmapped, which the v2 combiner turns
+            // into an all-null column.
+            if stream_schema.fields().len() == physical_schema.fields().len()
+                && stream_schema
+                    .fields()
+                    .iter()
+                    .zip(physical_schema.fields())
+                    .all(|(left, right)| left.name() == right.name())
+            {
+                return Ok((0..stream_schema.fields().len()).collect::<Vec<usize>>());
+            }
+            stream_schema
                 .fields()
                 .iter()
                 .map(|f| Ok(physical_schema.index_of(f.name())?))

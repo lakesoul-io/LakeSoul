@@ -679,6 +679,21 @@ impl IvmSqlExecutor {
                 mv.table_name
             ));
         }
+        // A range-partitioned MV must carry its partition columns in the
+        // primary key: merge-on-read runs within a partition, so a key that
+        // spans partitions would read back as several rows.
+        if !mv.range_partition_columns.is_empty()
+            && !mv
+                .range_partition_columns
+                .iter()
+                .all(|column| mv.primary_keys.contains(column))
+        {
+            return Err(rootcause::report!(
+                "target table `{}` is range partitioned by [{}]: its primary keys must contain every partition column",
+                mv.table_name,
+                mv.range_partition_columns.join(", ")
+            ));
+        }
         // The keyed contract: the MV's primary key is the merge key that
         // resolves the delete markers a refresh writes, so a keyed statement
         // needs one.  A global aggregate rewrites its single row wholesale and

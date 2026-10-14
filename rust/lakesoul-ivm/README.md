@@ -398,6 +398,13 @@ needs none).  A typical trap: the two branches of a
   still applies.  Every other view rebuilds from the current source state
   instead (the statement reports a rebuild).  A **statement chain** treats
   either case like any other refresh action.
+  An MV may be range partitioned the same way
+  (`IvmTableOptions::with_range_partition_columns`): its primary keys must
+  contain every partition column (the statement is rejected otherwise),
+  the refresh writes each output partition into its own directory, and a
+  `SUM`/`COUNT` refresh reads only the partitions the window touched when the
+  group keys carry the partition columns and the source's primary keys carry
+  all of its partition columns (a key then cannot move between partitions).
 * The **keyed CDC contract** is exactly three markers — the values the
   LakeSoul Flink CDC ingestion writes: `insert`, `update`, `delete` (any other
   value is treated as a live version).  A keyed source folds markers through

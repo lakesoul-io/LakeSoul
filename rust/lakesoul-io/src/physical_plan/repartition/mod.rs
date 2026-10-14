@@ -470,9 +470,20 @@ impl RepartitionByRangeAndHashExec {
         // Require that sequence to be a prefix of the input ordering: `SortExec`
         // keeps the input's pre-existing ordering after the sort prefix, so the
         // ordering it exposes can be longer than `range + hash`. An absent or
-        // unrelated ordering must still be rejected.
-        let required_order: Vec<Arc<dyn PhysicalExpr>> =
-            [range_partitioning_expr.clone(), hash_exprs].concat();
+        // unrelated ordering must still be rejected.  The required sequence is
+        // deduplicated: the writer sorts by `range + primary keys`, and a
+        // primary key that contains the range columns collapses to a single
+        // occurrence in the resulting ordering.
+        let mut required_order: Vec<Arc<dyn PhysicalExpr>> =
+            range_partitioning_expr.clone();
+        for hash_expr in &hash_exprs {
+            let single = std::slice::from_ref(hash_expr);
+            if !required_order.iter().any(|existing| {
+                physical_exprs_equal(std::slice::from_ref(existing), single)
+            }) {
+                required_order.push(hash_expr.clone());
+            }
+        }
         let input_ordering = match input.output_ordering() {
             Some(ordering) => ordering,
             None => bail!(
