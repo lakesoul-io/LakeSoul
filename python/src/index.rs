@@ -101,21 +101,57 @@ where
 {
     let column_key = format!("{}_column", kind.option_prefix());
     let query_key = format!("{}_query", kind.option_prefix());
-    let Some(column) = option_value(options, &column_key) else {
-        return (Vec::new(), Vec::new());
-    };
-    if option_value(options, &query_key).is_none() {
+    let requests_key = format!("{}_requests", kind.option_prefix());
+    // Several columns may be searched in one scan (`{kind}_search_requests`
+    // JSON list); every requested column gets its shards resolved.  The
+    // single-column shorthand still requires its query option.
+    let mut columns: Vec<String> = option_value(options, &requests_key)
+        .and_then(|raw| serde_json::from_str::<Vec<serde_json::Value>>(raw).ok())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .get("column")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(column) = option_value(options, &column_key)
+        && option_value(options, &query_key).is_some()
+        && !columns.iter().any(|c| c == column)
+    {
+        columns.push(column.to_string());
+    }
+    if columns.is_empty() {
         return (Vec::new(), Vec::new());
     }
     let Some(first) = file_urls.first() else {
         return (Vec::new(), Vec::new());
     };
     let table_prefix = derive_prefix_from_url(first);
-    let prefixes =
-        lakesoul_io::index::prefix::derive_index_prefixes(file_urls, &table_prefix, kind, column);
+    let mut prefixes = Vec::new();
+    for column in &columns {
+        prefixes.extend(
+            lakesoul_io::index::prefix::derive_index_prefixes(
+                file_urls,
+                &table_prefix,
+                kind,
+                column,
+            )
+            .into_iter()
+            .map(|(prefix, _bucket)| prefix),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
     let mut shards = Vec::with_capacity(prefixes.len());
     let mut leases = Vec::with_capacity(prefixes.len());
-    for (index_prefix, _bucket) in prefixes {
+    for index_prefix in prefixes {
+        if !seen.insert(index_prefix.clone()) {
+            continue;
+        }
         let view = match catalog.resolve_cached(&index_prefix).await {
             Ok(Some(view)) => view,
             Ok(None) => continue,
