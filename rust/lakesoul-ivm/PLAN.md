@@ -3604,6 +3604,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 测试：`derived_views.rs` 新增 2 例——有序子查询直读（bootstrap/增量）、TopK 步（顶行进出）。
 - 仍按能力拒绝：join/cross join 的“两侧各取至少一列”载荷规则；外连接/链步骤的行身份（键需 cast 成字符串）。
 
+### 10.139 单侧 inner join 改写为 semi 形状（可用性）
+
+- 之前：`SELECT a.v FROM a JOIN b ON b.jk = a.jk`（只消费左列）被拒——“a join view needs at least one
+  column from each side”。
+- 现在：当**右侧被连接键唯一化**（右侧主键 == 右侧连接键，即 1:1）时，匹配至多一个，视图恰好是
+  “有匹配的左行”= semi 形状，于是直接构造 `ViewSpec::SemiAnti { anti: false, output_columns: 投影的左列 }`
+  （复用既有 semi/anti 维护路径：连接键、左右 filter、附加条件原样传入）。
+- 边界：右侧不唯一（主键 ≠ 连接键，1:N）仍明确拒绝——每左行可能多行，membership 形状无法表达；
+  右侧唯一但**只消费右列**的情形也需要左侧唯一，暂不放开（文档记录）。
+- 测试：`semi_anti_ext.rs` 新增 2 例——单侧 inner join 的 bootstrap 与增量（右侧删除/回插、左侧新增
+  行），以及非唯一右侧仍拒绝且带清晰信息。全量 501 passed。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

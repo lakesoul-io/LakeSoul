@@ -13,8 +13,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    CompareOp, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
-    SemiAntiCondition, SemiAntiView, semi_anti_mv_schema_for,
+    CompareOp, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
+    IvmTableOptions, SemiAntiCondition, SemiAntiView, semi_anti_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -555,4 +555,206 @@ async fn conditions_and_projection_are_validated() {
 
     // An unknown projected column is rejected by the schema helper.
     assert!(semi_anti_mv_schema_for(&left_schema(), &["missing".to_string()]).is_err());
+}
+
+/// A single-sided inner join over a right side keyed by the join key is a
+/// membership test: the statement is maintained as the semi shape (the match
+/// is unique, so the view is exactly the left rows that have one).
+#[test_log::test(tokio::test)]
+async fn a_single_sided_inner_join_maintains_the_semi_shape() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_single_left_{suffix}"),
+                table_path(&dir, "left"),
+                left_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_single_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema(),
+            )
+            .with_primary_keys(vec!["jk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_single_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                semi_anti_mv_schema_for(
+                    &left_schema(),
+                    &["k".to_string(), "v".to_string()],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(1, 10, 100, "insert"), (2, 20, 200, "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(7, 10, 1, "insert")]))
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_single_mv_{suffix} SELECT a.k, a.v \
+         FROM ivm_single_left_{suffix} a JOIN ivm_single_right_{suffix} b \
+         ON b.jk = a.jk"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(read_kvs(runtime, &mv).await, vec![(1, 100)]);
+
+    // Deleting the right row drops the left row from the view; re-inserting it
+    // restores it, and a new left row with a match joins.
+    right
+        .append_batch(runtime.client(), right_batch(&[(7, 10, 1, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(read_kvs(runtime, &mv).await, Vec::<(i64, i64)>::new());
+    right
+        .append_batch(runtime.client(), right_batch(&[(7, 10, 1, "insert")]))
+        .await
+        .unwrap();
+    left.append_batch(runtime.client(), left_batch(&[(3, 10, 300, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(read_kvs(runtime, &mv).await, vec![(1, 100), (3, 300)]);
+}
+
+/// A single-sided inner join over a right side that is not keyed by the join
+/// key keeps a clear rejection: several matches per left row would duplicate
+/// it, which the membership shape cannot express.
+#[test_log::test(tokio::test)]
+async fn a_single_sided_inner_join_over_a_non_keyed_right_stays_rejected() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_single2_left_{suffix}"),
+                table_path(&dir, "left"),
+                left_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_single2_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema(),
+            )
+            .with_primary_keys(vec!["rk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_single2_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                semi_anti_mv_schema_for(
+                    &left_schema(),
+                    &["k".to_string(), "v".to_string()],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(runtime.client(), left_batch(&[(1, 10, 100, "insert")]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(7, 10, 1, "insert")]))
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_single2_mv_{suffix} SELECT a.k, a.v \
+         FROM ivm_single2_left_{suffix} a JOIN ivm_single2_right_{suffix} b \
+         ON b.jk = a.jk"
+    );
+    let error = executor.execute(&statement).await.unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("at least one column from each side"),
+        "unexpected error: {message}"
+    );
+    // The rejection happens before the target is registered.
+    assert!(
+        executor
+            .runtime()
+            .metadata()
+            .get_view_spec(&mv.table_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// The `(k, v)` rows of a semi MV ordered by `k`.
+async fn read_kvs(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, v from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), values.value(row)));
+        }
+    }
+    rows
 }

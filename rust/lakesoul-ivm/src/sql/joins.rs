@@ -311,6 +311,46 @@ pub(super) fn analyze_join(
                     (left_value, right_value, Vec::new(), pair_filter, names)
                 } else {
                     if payloads.left_count == 0 || payloads.right_count == 0 {
+                        // A single-sided inner join is a membership test: with
+                        // the right side keyed by the join keys the match is
+                        // unique, so the view is exactly the left rows that
+                        // have one - the semi shape, which the semi/anti view
+                        // already maintains.
+                        let right_join_keys: &[String] =
+                            if same_names { &join_keys } else { &right_keys };
+                        let right_is_keyed = payloads.left_count > 0
+                            && right.primary_keys.len() == right_join_keys.len()
+                            && right
+                                .primary_keys
+                                .iter()
+                                .all(|key| right_join_keys.contains(key));
+                        if right_is_keyed {
+                            let output_columns = semi_anti_output_columns(
+                                join,
+                                projection,
+                                left_alias,
+                                right_alias,
+                                left,
+                                right,
+                            )?;
+                            return Ok(ViewSpec::SemiAnti {
+                                view_id: request.view_id.clone(),
+                                left_table_id: left.table_id.clone(),
+                                right_table_id: right.table_id.clone(),
+                                mv_table_id: request.mv_table_id.clone(),
+                                join_keys: join_keys.clone(),
+                                conditions,
+                                output_columns,
+                                anti: false,
+                                left_filter,
+                                right_filter,
+                                null_safe: false,
+                                count_mode: false,
+                                right_aggregate: None,
+                                right_keys: Vec::new(),
+                                match_predicate: None,
+                            });
+                        }
                         return Err(unsupported(
                             "a join view needs at least one column from each side",
                         ));
@@ -2865,14 +2905,25 @@ mod tests {
             Some("__left_v < __right_bv")
         );
 
-        // A side without a payload is rejected (duplicate or ambiguous
-        // select names are already rejected by the planner).
-        let error = analyze_optimized(
+        // A side without a payload becomes the membership shape when the
+        // right side is keyed by the join key: the match is unique, so the
+        // view is exactly the left rows that have one (the select list's
+        // `b.k` equals the left's `k` under the join condition).
+        let analyzed = analyze_optimized(
             "select a.k, a.g, a.v, b.k from src a join src b on a.k = b.k",
         )
         .await
-        .unwrap_err();
-        assert!(error.to_string().contains("each side"), "{error}");
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            anti,
+            output_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected the semi shape");
+        };
+        assert!(!anti);
+        assert_eq!(output_columns, vec!["k", "g", "v"]);
     }
 
     #[tokio::test]
