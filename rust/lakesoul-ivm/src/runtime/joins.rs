@@ -6,6 +6,8 @@
 //! and cross joins.
 
 use super::*;
+use datafusion::functions::string::expr_fn::{concat, octet_length};
+use datafusion::logical_expr::Cast;
 
 /// Which side of a join an output column comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -609,6 +611,75 @@ pub fn wide_outer_join_view_schema_for(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The schema of a wide `LEFT JOIN` view whose MV also materializes the
+/// non-null row identity column ([`IVM_PAIR_IDENTITY_COLUMN`]): a derived
+/// step a consumer reads as a keyed source.  A left join keeps every left
+/// row, so the left identities stay non-null while the right ones may be
+/// NULL.
+#[allow(clippy::too_many_arguments)]
+pub fn wide_left_join_view_schema_with_identity(
+    left_schema: &Schema,
+    right_schema: &Schema,
+    left_primary_keys: &[String],
+    right_primary_keys: &[String],
+    join_keys: &[String],
+    output_columns: &[JoinOutputColumn],
+) -> Result<SchemaRef> {
+    if left_primary_keys.is_empty() || right_primary_keys.is_empty() {
+        return Err(report!(
+            "an outer join view needs primary keys on both sources"
+        ));
+    }
+    let mut fields = Vec::new();
+    for key in join_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            !field.is_nullable(),
+        )));
+    }
+    fields.extend(wide_output_fields_with(
+        left_schema,
+        right_schema,
+        output_columns,
+        false,
+        true,
+    )?);
+    for key in left_primary_keys {
+        let field = left_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            left_pk_alias(key),
+            field.data_type().clone(),
+            false,
+        )));
+    }
+    for key in right_primary_keys {
+        let field = right_schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            right_pk_alias(key),
+            field.data_type().clone(),
+            true,
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_PAIR_IDENTITY_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// The schema of a wide [`LookupJoinView`] output: the left fields keep their
 /// nullability and the right fields are nullable (NULL without a match).
 pub fn wide_lookup_join_view_schema_for(
@@ -877,6 +948,8 @@ fn keyed_join_schema_for(
 /// touches the left rows that reference it.
 #[derive(Debug, Clone)]
 pub struct LeftJoinView {
+    /// Whether the MV materializes the non-null row identity column.
+    pub identity_column: bool,
     /// The view id.
     pub view_id: String,
     /// The left source (keyed/upsert).
@@ -940,6 +1013,7 @@ impl LeftJoinView {
         right_value: impl Into<String>,
     ) -> Self {
         Self {
+            identity_column: false,
             view_id: view_id.into(),
             left,
             right,
@@ -998,6 +1072,7 @@ impl LeftJoinView {
             right_value: self.right_value.clone(),
             output_columns: self.output_columns.clone(),
             payload_names: Vec::new(),
+            identity_column: self.identity_column,
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             null_safe: self.null_safe,
@@ -1099,6 +1174,7 @@ impl FullJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
+            identity_column: false,
             null_safe: self.null_safe,
         }
     }
@@ -1260,6 +1336,7 @@ impl CrossJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: self.pair_filter.as_deref(),
+            identity_column: false,
             null_safe: false,
         }
     }
@@ -1571,6 +1648,7 @@ fn lookup_join_output_columns(view: &LookupJoinView) -> Vec<Expr> {
 /// Validate that a full join view can be maintained.
 fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
     let left = LeftJoinView {
+        identity_column: false,
         view_id: view.view_id.clone(),
         left: view.left.clone(),
         right: view.right.clone(),
@@ -2462,7 +2540,32 @@ fn keyed_join_output_columns(
     for key in parts.right_primary_keys {
         output.push(col(right_pk_alias(key).as_str()));
     }
+    if parts.identity_column {
+        output.push(pair_identity_expr(parts.right_primary_keys));
+    }
     output
+}
+
+/// The non-null row identity of a derived outer-join step: the right side's
+/// primary keys, length prefixed (`v<octets>:<text>`) so concatenating them
+/// cannot collide; an unmatched row (NULL key) encodes as `n`.
+fn pair_identity_expr(right_primary_keys: &[String]) -> Expr {
+    let mut parts = Vec::new();
+    for key in right_primary_keys {
+        let value = col(right_pk_alias(key).as_str());
+        let text = Expr::Cast(Cast::new(Box::new(value.clone()), DataType::Utf8));
+        let length = Expr::Cast(Cast::new(
+            Box::new(octet_length(text.clone())),
+            DataType::Utf8,
+        ));
+        let encoded = concat(vec![lit("v"), length, lit(":"), text]);
+        parts.push(
+            when(value.is_null(), lit("n"))
+                .otherwise(encoded)
+                .unwrap_or_else(|_| lit("n")),
+        );
+    }
+    concat(parts).alias(IVM_PAIR_IDENTITY_COLUMN)
 }
 
 /// The shape of a pair-keyed join used by the projection helpers.
@@ -2481,6 +2584,8 @@ struct PairJoin<'a> {
     /// An optional filter over `left_value` / `right_value` the joined pair
     /// must satisfy (a non-equality join condition).
     pair_filter: Option<&'a str>,
+    /// Whether the MV materializes the non-null row identity column.
+    identity_column: bool,
     /// Whether a NULL join key matches another NULL join key.
     null_safe: bool,
 }
@@ -2497,6 +2602,7 @@ impl JoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: self.pair_filter.as_deref(),
+            identity_column: false,
             null_safe: self.null_safe,
         }
     }
@@ -2514,6 +2620,7 @@ impl LeftJoinView {
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
             pair_filter: None,
+            identity_column: self.identity_column,
             null_safe: self.null_safe,
         }
     }

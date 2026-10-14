@@ -697,6 +697,246 @@ fn pair_rows(batches: &[RecordBatch]) -> Vec<(i64, Option<i64>)> {
     rows
 }
 
+/// A join side that is itself a LEFT JOIN: the step materializes a non-null
+/// row identity (the encoded right keys), so the outer join reads it as a
+/// keyed source and the bushy tree works incrementally.
+#[test_log::test(tokio::test)]
+async fn a_left_join_side_materializes_a_non_null_row_identity() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let op = |values: &[&str]| StringArray::from_iter_values(values.iter().copied());
+    let ints = |values: &[i64]| Int64Array::from_iter_values(values.iter().copied());
+
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("av", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let a = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_li_a_{suffix}"),
+                table_path(&dir, "a"),
+                a_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("bv", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let b = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_li_b_{suffix}"),
+                table_path(&dir, "b"),
+                b_schema.clone(),
+            )
+            .with_primary_keys(vec!["b_k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let c = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_li_c_{suffix}"),
+                table_path(&dir, "c"),
+                c_schema.clone(),
+            )
+            .with_primary_keys(vec!["c_k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+
+    // The step is a LEFT JOIN whose MV also carries the non-null row
+    // identity, so its key columns are the left keys plus that identity.
+    let step_schema = lakesoul_ivm::wide_left_join_view_schema_with_identity(
+        &b_schema,
+        &c_schema,
+        &["b_k".to_string()],
+        &["c_k".to_string()],
+        &["v".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "bv".to_string(),
+                name: "bv".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "k".to_string(),
+                name: "k".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let step_keys = {
+        // The MV's key columns: the aliased left identity plus the encoded
+        // row identity.
+        let mut keys =
+            lakesoul_ivm::keyed_join_output_primary_keys(&["b_k".to_string()], &[]);
+        keys.push(lakesoul_ivm::IVM_PAIR_IDENTITY_COLUMN.to_string());
+        keys
+    };
+    let target_schema = lakesoul_ivm::left_join_view_schema_for(
+        &a_schema,
+        &step_schema,
+        &["k".to_string()],
+        &step_keys,
+        &["k".to_string()],
+        "av",
+        "bv",
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_li_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(lakesoul_ivm::keyed_join_output_primary_keys(
+                &["k".to_string()],
+                &step_keys,
+            )),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT a.av, x.bv \
+         FROM {} a LEFT JOIN (SELECT b.bv, c.k \
+                              FROM {} b LEFT JOIN {} c ON c.v = b.v) x \
+         ON x.k = a.k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                Arc::new(ints(&[1, 2])),
+                Arc::new(ints(&[100, 200])),
+                Arc::new(op(&["insert", "insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                Arc::new(ints(&[10])),
+                Arc::new(ints(&[7])),
+                Arc::new(ints(&[70])),
+                Arc::new(op(&["insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                Arc::new(ints(&[20])),
+                Arc::new(ints(&[7])),
+                Arc::new(ints(&[1])),
+                Arc::new(op(&["insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_right_view(runtime, &mv)
+        .await
+        .expect("the left join is a derived step");
+    assert_eq!(
+        read_pairs(runtime, &mv).await,
+        full_left_side_pairs(runtime, &a, &b, &c).await
+    );
+
+    // Deleting the inner right row keeps the inner left row with a NULL
+    // payload, which no longer matches the outer key.
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                Arc::new(ints(&[20])),
+                Arc::new(ints(&[7])),
+                Arc::new(ints(&[1])),
+                Arc::new(op(&["delete"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_pairs(runtime, &mv).await,
+        full_left_side_pairs(runtime, &a, &b, &c).await
+    );
+    assert_eq!(
+        derived_right_view(runtime, &mv).await.as_deref(),
+        Some(step.as_str())
+    );
+}
+
+/// The full recompute of the left-join-side statement.
+async fn full_left_side_pairs(
+    runtime: &IvmRuntime,
+    a: &IvmTable,
+    b: &IvmTable,
+    c: &IvmTable,
+) -> Vec<(i64, Option<i64>)> {
+    let context = SessionContext::new();
+    for (name, table) in [("a", a), ("b", b), ("c", c)] {
+        context
+            .register_table(name, Arc::new(runtime.table_provider(table)))
+            .unwrap();
+    }
+    let batches = context
+        .sql(
+            "select a.av, x.bv from a left join (\
+             select b.bv, c.k from b left join c on c.v = b.v) x \
+             on x.k = a.k order by a.av",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    pair_rows(&batches)
+}
+
 /// A join side that is itself an outer join needs a non-null row identity
 /// first; until then the statement falls back with an explicit reason.
 #[test_log::test(tokio::test)]
@@ -713,15 +953,12 @@ async fn a_join_side_that_is_an_outer_join_is_not_materialized_yet() {
     let statement = format!(
         "INSERT INTO {} SELECT a.k, x.bv \
          FROM {} a LEFT JOIN (SELECT b.v AS bv, c.k AS k \
-                              FROM {} b LEFT JOIN {} c ON c.g = b.g) x \
+                              FROM {} b FULL JOIN {} c ON c.g = b.g) x \
          ON x.k = a.k",
         mv.table_name, a.table_name, b.table_name, c.table_name
     );
     let error = executor.execute(&statement).await.unwrap_err().to_string();
-    assert!(
-        error.contains("outer join is not materialized yet"),
-        "{error}"
-    );
+    assert!(error.contains("right or full join is"), "{error}");
 }
 
 /// A computed side projection has no column layout to materialize yet.
