@@ -129,24 +129,30 @@ fn text_index_json(
     Ok(text_index_columns_to_json(&configs))
 }
 
-/// Vector index declaration of the embedding column, when a dimension is
-/// configured.  Vectors are normalized on write and queried with the IP
-/// metric, which is cosine similarity for unit vectors.
+/// Vector index declaration of every declared vector column.  Vectors are
+/// normalized on write and queried with the IP metric, which is cosine
+/// similarity for unit vectors.
 fn vector_index_json(runtime: &IndexRuntime) -> anyhow::Result<Option<String>> {
-    let Some(dim) = runtime.dim else {
+    if runtime.vectors.is_empty() {
         return Ok(None);
-    };
-    let raw = serde_json::json!([{
-        "column": runtime.config.embedding_column,
-        "dim": dim,
-        "nlist": 256,
-        "total_bits": 7,
-        "metric": "IP",
-        "rotator_type": "FhtKac",
-        "seed": 42,
-        "use_faster_config": true,
-    }])
-    .to_string();
+    }
+    let columns: Vec<serde_json::Value> = runtime
+        .vectors
+        .iter()
+        .map(|(column, dim)| {
+            serde_json::json!({
+                "column": column,
+                "dim": dim,
+                "nlist": 256,
+                "total_bits": 7,
+                "metric": "IP",
+                "rotator_type": "FhtKac",
+                "seed": 42,
+                "use_faster_config": true,
+            })
+        })
+        .collect();
+    let raw = serde_json::Value::Array(columns).to_string();
     let configs = parse_vector_index_columns(Some(&raw))
         .map_err(|error| anyhow::anyhow!("vector index config: {error}"))?;
     validate_vector_index_configs(
@@ -228,22 +234,17 @@ fn validate_existing(runtime: &IndexRuntime, info: &TableInfo) -> anyhow::Result
         content.data_type()
     );
 
-    match (
-        runtime.dim,
-        schema.field_with_name(&runtime.config.embedding_column),
-    ) {
-        (Some(dim), Ok(field)) => match field.data_type() {
-            DataType::FixedSizeList(_, size) if *size == dim as i32 => {}
-            other => anyhow::bail!(
-                "embedding column '{}' must be FixedSizeList<Float32, {dim}>, got {other}",
-                runtime.config.embedding_column
-            ),
-        },
-        (Some(_), Err(_)) => anyhow::bail!(
-            "table is missing the embedding column '{}'",
-            runtime.config.embedding_column
-        ),
-        (None, _) => {}
+    for (column, dim) in &runtime.vectors {
+        match schema.field_with_name(column) {
+            Ok(field) => match field.data_type() {
+                DataType::FixedSizeList(_, size) if *size == *dim as i32 => {}
+                other => anyhow::bail!(
+                    "vector column '{column}' must be FixedSizeList<Float32, \
+                     {dim}>, got {other}"
+                ),
+            },
+            Err(_) => anyhow::bail!("table is missing the vector column '{column}'"),
+        }
     }
 
     anyhow::ensure!(
@@ -263,27 +264,26 @@ fn validate_existing(runtime: &IndexRuntime, info: &TableInfo) -> anyhow::Result
         runtime.config.content_column
     );
 
-    if let Some(dim) = runtime.dim {
+    if !runtime.vectors.is_empty() {
         let vector_configs =
             parse_vector_index_columns(properties.vector_index_columns.as_deref())
                 .map_err(|error| {
                     anyhow::anyhow!("invalid vector index properties: {error}")
                 })?;
-        let declared = vector_configs
-            .iter()
-            .find(|config| config.column == runtime.config.embedding_column);
-        let declared = declared.ok_or_else(|| {
-            anyhow::anyhow!(
-                "table has no vector index on '{}'",
-                runtime.config.embedding_column
-            )
-        })?;
-        anyhow::ensure!(
-            declared.params.dim == dim,
-            "vector index dimension mismatch on '{}': table has {}, config has {dim}",
-            runtime.config.embedding_column,
-            declared.params.dim
-        );
+        for (column, dim) in &runtime.vectors {
+            let declared = vector_configs
+                .iter()
+                .find(|config| config.column == *column)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("table has no vector index on '{column}'")
+                })?;
+            anyhow::ensure!(
+                declared.params.dim == *dim,
+                "vector index dimension mismatch on '{column}': table has {}, \
+                 config has {dim}",
+                declared.params.dim
+            );
+        }
     }
     Ok(())
 }

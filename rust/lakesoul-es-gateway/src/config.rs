@@ -166,11 +166,41 @@ pub struct IndexConfig {
     pub content_column: String,
     #[serde(default = "default_embedding_column")]
     pub embedding_column: String,
+    /// Additional vector columns beyond the `dim` / `embedding_column`
+    /// shorthand.  Each one is indexed with the same parameters and its
+    /// vectors are normalized on write like the primary column.
+    #[serde(default)]
+    pub vectors: Vec<VectorColumnConfig>,
+}
+
+/// One additional vector column declared by an index.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VectorColumnConfig {
+    /// Column name in the LakeSoul table (and the `_source` field).
+    pub column: String,
+    /// Embedding dimension of this column.
+    pub dim: usize,
 }
 
 impl IndexConfig {
     pub fn table_name(&self) -> &str {
         self.table.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Declared vector columns in schema order: the `dim`/`embedding_column`
+    /// shorthand first, then the extra `vectors` entries.  An empty list is a
+    /// keyword-only index.
+    pub fn vector_columns(&self) -> Vec<(&str, usize)> {
+        let mut columns: Vec<(&str, usize)> = Vec::new();
+        if let Some(dim) = self.dim {
+            columns.push((self.embedding_column.as_str(), dim));
+        }
+        for extra in &self.vectors {
+            if !columns.iter().any(|(column, _)| *column == extra.column) {
+                columns.push((extra.column.as_str(), extra.dim));
+            }
+        }
+        columns
     }
 }
 
@@ -222,6 +252,33 @@ impl GatewayConfig {
                     "index '{}': embedding_column must not be empty",
                     index.name
                 );
+            }
+            let mut declared: Vec<&str> = Vec::new();
+            if index.dim.is_some() {
+                declared.push(index.embedding_column.as_str());
+            }
+            for extra in &index.vectors {
+                if extra.column.trim().is_empty() {
+                    anyhow::bail!(
+                        "index '{}': a vector column name must not be empty",
+                        index.name
+                    );
+                }
+                if extra.dim == 0 {
+                    anyhow::bail!(
+                        "index '{}': vector column '{}' must have dim > 0",
+                        index.name,
+                        extra.column
+                    );
+                }
+                if declared.contains(&extra.column.as_str()) {
+                    anyhow::bail!(
+                        "index '{}': duplicate vector column '{}'",
+                        index.name,
+                        extra.column
+                    );
+                }
+                declared.push(extra.column.as_str());
             }
         }
         Ok(())

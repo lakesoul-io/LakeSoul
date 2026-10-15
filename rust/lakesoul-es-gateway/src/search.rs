@@ -83,6 +83,14 @@ struct SourceFilter {
 #[derive(Debug, Clone)]
 struct SearchBody {
     query: Value,
+    /// Top-level `knn` request (one clause object or an array of clauses).
+    knn: Option<Value>,
+    /// `knn_fusion`: `"max"` (default, Elasticsearch-like) or `"sum"` (the
+    /// LakeSoul weighted-sum fusion over the candidate intersection).
+    knn_fusion: Option<String>,
+    /// Body-level minimum score (applies to the combined `knn` score, like
+    /// Elasticsearch's top-level `min_score`).
+    min_score: Option<f32>,
     from: usize,
     size: usize,
     source: SourceFilter,
@@ -195,6 +203,15 @@ impl SearchBody {
             .ok_or_else(|| EsError::bad_request("search body must be a JSON object"))?;
         Ok(Self {
             query: map.get("query").cloned().unwrap_or_else(|| json!({})),
+            knn: map.get("knn").cloned(),
+            knn_fusion: map
+                .get("knn_fusion")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            min_score: map
+                .get("min_score")
+                .and_then(Value::as_f64)
+                .map(|value| value as f32),
             from: map.get("from").and_then(Value::as_u64).unwrap_or(0) as usize,
             // The v7 keyword search sends no size; Elasticsearch's default
             // of 10 applies.
@@ -935,6 +952,151 @@ struct VectorQuery {
     min_score: Option<f32>,
 }
 
+/// One parsed `knn` clause.
+#[derive(Debug, Clone)]
+struct KnnClause {
+    field: String,
+    vector: Vec<f32>,
+    /// Nearest neighbours requested from this clause (defaults to `size`).
+    k: usize,
+    /// Weight applied to this clause's similarity.
+    boost: f32,
+    /// Per-clause candidate budget (Elasticsearch's `num_candidates`).
+    num_candidates: Option<usize>,
+    /// Minimum boosted similarity for this clause to score a row.
+    min_score: Option<f32>,
+    /// Clause-level filter (merged with the body filter).
+    filter: Option<ParsedQuery>,
+}
+
+/// How several `knn` clauses are combined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KnnFusion {
+    /// Elasticsearch semantics: the best clause wins,
+    /// `score = max(boost_i * similarity_i)`.
+    Max,
+    /// LakeSoul extension: `score = Σ boost_i * similarity_i` over the rows
+    /// that are candidates in *every* clause (candidate sets intersected).
+    Sum,
+}
+
+impl KnnFusion {
+    fn parse(value: Option<&str>) -> Result<Self, EsError> {
+        match value {
+            None | Some("max") => Ok(Self::Max),
+            Some("sum") => Ok(Self::Sum),
+            Some(other) => Err(EsError::bad_request(format!(
+                "knn_fusion must be 'max' or 'sum', got '{other}'"
+            ))),
+        }
+    }
+}
+
+/// Parse the top-level `knn` request: one clause object or an array.
+///
+/// `k` defaults to the search `size` and `boost` to 1.0, matching
+/// Elasticsearch's `knn` search.
+fn parse_knn(
+    value: &Value,
+    runtime: &IndexRuntime,
+    default_k: usize,
+) -> Result<Vec<KnnClause>, EsError> {
+    let values: Vec<&Value> = match value {
+        Value::Array(values) => values.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => {
+            return Err(EsError::bad_request(
+                "'knn' must be an object or an array of objects",
+            ));
+        }
+    };
+    if values.is_empty() {
+        return Err(EsError::bad_request(
+            "'knn' must contain at least one clause",
+        ));
+    }
+    let mut clauses = Vec::with_capacity(values.len());
+    for value in values {
+        let map = value
+            .as_object()
+            .ok_or_else(|| EsError::bad_request("each 'knn' clause must be an object"))?;
+        let field = map
+            .get("field")
+            .and_then(Value::as_str)
+            .ok_or_else(|| EsError::bad_request("'knn' requires a 'field'"))?
+            .to_string();
+        let Some(dim) = runtime.vector_dim(&field) else {
+            let declared = runtime
+                .vectors
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(EsError::bad_request(if declared.is_empty() {
+                "'knn' is not supported: the index is keyword-only".to_string()
+            } else {
+                format!(
+                    "'knn' on '{field}' is not supported: declared vector                      columns are {declared}"
+                )
+            }));
+        };
+        let numbers = map
+            .get("query_vector")
+            .ok_or_else(|| EsError::bad_request("'knn' requires a 'query_vector'"))?
+            .as_array()
+            .ok_or_else(|| {
+                EsError::bad_request("'knn.query_vector' must be an array of numbers")
+            })?;
+        if numbers.len() != dim {
+            return Err(EsError::bad_request(format!(
+                "query_vector dimension {} does not match the index dimension                  {dim} of '{field}'",
+                numbers.len()
+            )));
+        }
+        let mut vector = Vec::with_capacity(dim);
+        for number in numbers {
+            let number = number.as_f64().ok_or_else(|| {
+                EsError::bad_request("'knn.query_vector' must be an array of numbers")
+            })?;
+            vector.push(number as f32);
+        }
+        let k = map
+            .get("k")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(default_k)
+            .max(1);
+        let boost = map
+            .get("boost")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(1.0);
+        let num_candidates = map
+            .get("num_candidates")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .filter(|value| *value > 0);
+        let min_score = map
+            .get("min_score")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32);
+        let filter = map
+            .get("filter")
+            .map(|filter| ParsedQuery::parse(filter, runtime))
+            .transpose()?;
+        clauses.push(KnnClause {
+            field,
+            vector,
+            k,
+            boost,
+            num_candidates,
+            min_score,
+            filter,
+        });
+    }
+    Ok(clauses)
+}
+
 /// A parsed `match` clause.
 #[derive(Debug, Clone)]
 struct MatchQuery {
@@ -971,6 +1133,11 @@ impl ParsedQuery {
         let map = node
             .as_object()
             .ok_or_else(|| EsError::bad_request("query must be a JSON object"))?;
+        // An empty query object (a search without `query`, or a `knn`-only
+        // request) imposes no constraint, like Elasticsearch's match_all.
+        if map.is_empty() {
+            return Ok(());
+        }
         if let Some(terms) = map.get("terms") {
             let terms = terms
                 .as_object()
@@ -1297,21 +1464,44 @@ async fn search_impl(
             "a query cannot combine match and script_score",
         ));
     }
+    let knn = body
+        .knn
+        .as_ref()
+        .map(|value| parse_knn(value, runtime, body.size))
+        .transpose()?;
+    let has_knn = knn.is_some();
+    if has_knn && (parsed.vector_query.is_some() || parsed.match_query.is_some()) {
+        return Err(EsError::bad_request(
+            "a query cannot combine knn with match or script_score",
+        ));
+    }
+    let knn_fusion = KnnFusion::parse(body.knn_fusion.as_deref())?;
     // Keyword/vector queries only search their relevance candidate budget, so
     // an explicit sort that needs the complete match set would silently drop
     // the true top hits; reject it instead of returning a wrong order.
-    if (parsed.match_query.is_some() || parsed.vector_query.is_some())
+    if (parsed.match_query.is_some() || parsed.vector_query.is_some() || has_knn)
         && sort_requires_complete_set(&body.sort_fields)
     {
         return Err(EsError::unsupported(
-            "only '_score' descending can be sorted on a match/script_score \
-             query: its candidate budget cannot provide a complete sort set; \
-             use a filter-only query for field sorting",
+            "only '_score' descending can be sorted on a match/script_score/\
+             knn query: its candidate budget cannot provide a complete sort \
+             set; use a filter-only query for field sorting",
         ));
     }
 
     let computed = &body.computed_fields;
-    let (mut hits, shards) = if let Some(vector) = &parsed.vector_query {
+    let (mut hits, shards) = if let Some(clauses) = knn {
+        knn_hits(
+            Arc::clone(&state),
+            runtime.clone(),
+            clauses,
+            knn_fusion,
+            parsed.clone(),
+            body.clone(),
+            computed,
+        )
+        .await?
+    } else if let Some(vector) = &parsed.vector_query {
         vector_hits(
             Arc::clone(&state),
             runtime.clone(),
@@ -1396,7 +1586,7 @@ async fn search_impl(
         .collect();
 
     if timing_enabled() {
-        let kind = if parsed.vector_query.is_some() {
+        let kind = if parsed.vector_query.is_some() || has_knn {
             "vector"
         } else if parsed.match_query.is_some() {
             "keyword"
@@ -1444,18 +1634,23 @@ async fn vector_hits(
     body: SearchBody,
     computed_fields: &[String],
 ) -> Result<(Vec<Hit>, usize), EsError> {
-    let Some(dim) = runtime.dim else {
-        return Err(EsError::unsupported(
-            "the index is keyword-only: no embedding dimension is configured",
-        ));
+    let Some(dim) = runtime.vector_dim(&vector.field) else {
+        let declared = runtime
+            .vectors
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(EsError::unsupported(if declared.is_empty() {
+            "the index is keyword-only: no vector column is configured".to_string()
+        } else {
+            format!(
+                "script_score on '{}' is not supported: declared vector \
+                 columns are {declared}",
+                vector.field
+            )
+        }));
     };
-    if vector.field != runtime.config.embedding_column {
-        return Err(EsError::unsupported(format!(
-            "script_score on '{}' is not supported: only the indexed \
-             embedding column '{}' can be searched",
-            vector.field, runtime.config.embedding_column
-        )));
-    }
     if vector.vector.len() != dim {
         return Err(EsError::bad_request(format!(
             "query_vector dimension {} does not match the index dimension {dim}",
@@ -1472,6 +1667,7 @@ async fn vector_hits(
         let (candidates, shards) = collect_vector_candidates(
             Arc::clone(&state),
             runtime.clone(),
+            &vector.field,
             query.clone(),
             candidate_k,
         )
@@ -1499,7 +1695,7 @@ async fn vector_hits(
                 .as_primitive::<arrow_array::types::UInt64Type>();
             let embedding_index = batch
                 .schema()
-                .index_of(&runtime.config.embedding_column)
+                .index_of(&vector.field)
                 .map_err(crate::error::internal)?;
             let embeddings = batch.column(embedding_index);
             for row in 0..batch.num_rows() {
@@ -1540,6 +1736,173 @@ async fn vector_hits(
         }
         retries += 1;
         candidate_k = candidate_k.saturating_mul(4);
+    }
+}
+
+/// `knn` search: per-clause index candidates, exact rerank, and either the
+/// Elasticsearch-like `max` combination or the LakeSoul `sum` fusion.
+async fn knn_hits(
+    state: Arc<GatewayState>,
+    runtime: IndexRuntime,
+    clauses: Vec<KnnClause>,
+    fusion: KnnFusion,
+    parsed: ParsedQuery,
+    body: SearchBody,
+    computed_fields: &[String],
+) -> Result<(Vec<Hit>, usize), EsError> {
+    // The body filter and every clause filter narrow the candidate fetch.
+    let mut filter = parsed;
+    for clause in &clauses {
+        if let Some(clause_filter) = &clause.filter {
+            filter
+                .positive
+                .extend(clause_filter.positive.iter().cloned());
+            filter
+                .negative
+                .extend(clause_filter.negative.iter().cloned());
+        }
+    }
+    let filter = filter_expr(&filter, &runtime)?;
+
+    let normalized: Vec<Vec<f32>> = clauses
+        .iter()
+        .map(|clause| normalize_vector(&clause.vector))
+        .collect();
+
+    // A full candidate budget can be the binding constraint when stale
+    // candidates lose the exact rerank; widen it before under-filling.
+    let mut widening = 1usize;
+    let mut retries = 0usize;
+    let mut shards = 0usize;
+    loop {
+        let mut per_clause: Vec<Vec<Candidate>> = Vec::with_capacity(clauses.len());
+        let mut exhausted = true;
+        for (index, clause) in clauses.iter().enumerate() {
+            let budget = clause
+                .num_candidates
+                .unwrap_or_else(|| clause.k.saturating_mul(10).max(100))
+                .saturating_mul(widening);
+            let (candidates, shard_count) = collect_vector_candidates(
+                Arc::clone(&state),
+                runtime.clone(),
+                &clause.field,
+                normalized[index].clone(),
+                budget,
+            )
+            .await?;
+            shards = shard_count;
+            exhausted &= candidates.len() >= budget;
+            per_clause.push(candidates);
+        }
+
+        // Elasticsearch combines several `knn` clauses as a dis_max: a row
+        // may come from a single clause.  The fused mode intersects the
+        // candidate sets instead, so a row must be a plausible match in
+        // every column.
+        let candidates: Vec<u64> = match fusion {
+            KnnFusion::Max => {
+                let mut ids: Vec<u64> = per_clause
+                    .iter()
+                    .flatten()
+                    .map(|candidate| candidate.id)
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            }
+            KnnFusion::Sum => {
+                let mut ids: Vec<u64> =
+                    per_clause[0].iter().map(|candidate| candidate.id).collect();
+                for clause_candidates in &per_clause[1..] {
+                    let keys: HashSet<u64> = clause_candidates
+                        .iter()
+                        .map(|candidate| candidate.id)
+                        .collect();
+                    ids.retain(|id| keys.contains(id));
+                }
+                ids
+            }
+        };
+        if candidates.is_empty() {
+            return Ok((Vec::new(), shards));
+        }
+
+        let ids: Vec<Expr> = candidates
+            .iter()
+            .map(|id| Expr::Literal(ScalarValue::UInt64(Some(*id)), None))
+            .collect();
+        let candidate_filter = col(PK_COLUMN).in_list(ids, false);
+        let batches = fetch_rows(
+            Arc::clone(&state),
+            runtime.clone(),
+            and(Some(filter.clone()), candidate_filter),
+        )
+        .await?;
+
+        let mut hits = Vec::new();
+        for batch in &batches {
+            let ids = batch
+                .column_by_name(PK_COLUMN)
+                .ok_or_else(|| EsError::internal("primary key column missing"))?
+                .as_primitive::<arrow_array::types::UInt64Type>();
+            let mut clause_columns = Vec::with_capacity(clauses.len());
+            for clause in &clauses {
+                let dim = runtime.vector_dim(&clause.field).unwrap_or(0);
+                let values = batch.column_by_name(&clause.field).ok_or_else(|| {
+                    EsError::internal(format!(
+                        "vector column '{}' missing from the fetched rows",
+                        clause.field
+                    ))
+                })?;
+                clause_columns.push((clause, dim, Arc::clone(values)));
+            }
+            for row in 0..batch.num_rows() {
+                let mut best = f32::NEG_INFINITY;
+                let mut sum = 0.0f32;
+                let mut all_covered = true;
+                for (index, (clause, dim, values)) in clause_columns.iter().enumerate() {
+                    match embedding_at(values, row, *dim) {
+                        Some(stored)
+                            if clause.min_score.is_none_or(|min_score| {
+                                clause.boost * cosine(&normalized[index], &stored)
+                                    >= min_score
+                            }) =>
+                        {
+                            let contribution =
+                                clause.boost * cosine(&normalized[index], &stored);
+                            best = best.max(contribution);
+                            sum += contribution;
+                        }
+                        _ => all_covered = false,
+                    }
+                }
+                let score = match fusion {
+                    KnnFusion::Max => best,
+                    KnnFusion::Sum if all_covered => sum,
+                    KnnFusion::Sum => continue,
+                };
+                if score == f32::NEG_INFINITY {
+                    continue;
+                }
+                if let Some(min_score) = body.min_score
+                    && score < min_score
+                {
+                    continue;
+                }
+                hits.push(Hit {
+                    id: ids.value(row),
+                    score,
+                    source: source_for_row(batch, &runtime, row, &body.source)?,
+                    highlight: None,
+                    computed: computed_for_row(batch, row, computed_fields)?,
+                });
+            }
+        }
+        if hits.len() >= body.size || !exhausted || retries >= 2 {
+            return Ok((hits, shards));
+        }
+        retries += 1;
+        widening = widening.saturating_mul(4);
     }
 }
 
@@ -2135,15 +2498,16 @@ async fn collect_candidates(
 async fn collect_vector_candidates(
     state: Arc<GatewayState>,
     runtime: IndexRuntime,
+    column: &str,
     query: Vec<f32>,
     top_k: usize,
 ) -> Result<(Vec<Candidate>, usize), EsError> {
     let started = Instant::now();
-    let column = runtime.config.embedding_column.clone();
-    let Some(dim) = runtime.dim else {
-        return Err(EsError::unsupported(
-            "the index is keyword-only: no embedding dimension is configured",
-        ));
+    let column = column.to_string();
+    let Some(dim) = runtime.vector_dim(&column) else {
+        return Err(EsError::unsupported(format!(
+            "'{column}' is not a declared vector column of this index"
+        )));
     };
     let files = state
         .client
