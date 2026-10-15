@@ -387,7 +387,8 @@ needs none).  A typical trap: the two branches of a
   payloads the refresh copies through, so row views, aggregates, joins, unions
   and windows all carry them (including NULL, empty and nested-NULL values),
   single fields are readable in expressions (`s['a']`, `l[1]`), and a nested
-  column may be a **group key**.  `array_agg` over a struct column materializes
+  column may be a **group key** or a **join key** (structs and lists match by
+  value; NULL never matches).  `array_agg` over a struct column materializes
   a list of structs.  A nested **join key** and an outer join or chain step
   whose key cannot be cast to a string stay rejected.
 * A source may declare a CDC change column (`lakesoul_cdc_change_column`,
@@ -587,10 +588,10 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   several matches would duplicate the left row, which the semi shape such a
   statement is maintained as cannot express (a right side keyed by the join
   key stays supported);
-* nested **join keys**, and outer-join or chain keys that cannot be cast to a
-  string: payloads, group keys and expressions take `Struct`/`List`/`Map`
-  values, but an outer join or a chain step materializes its row identity by
-  casting the key to a string;
+* a nested **primary key** on a side of an outer-join or chain **step**: the
+  step's row identity is built by casting both sides' primary keys to a string
+  (join keys themselves may be nested - they compare and materialize by
+  value);
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: a `DISTINCT` set-op variant whose left rows
   repeat a join tuple is rejected rather than silently returning duplicate
