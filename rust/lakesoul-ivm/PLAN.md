@@ -3823,6 +3823,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   含窗口平移的两轮）；`tests/slt/top_k_offset.slt` + `sqllogic_top_k_offset` 注册；`fallback.slt` 的 Tier-2
   形状改为「`LIMIT` 无 `ORDER BY`」（原 `LIMIT ... OFFSET` 已增量维护）。
 
+### 10.152 性能项（2）：TopK 省略源主键的投影
+
+- **形状**：`SELECT g, v FROM src ORDER BY v LIMIT k`（选择列表不含源主键，而 top-k 的行身份就是它）。
+- **做法**：物化列 = 投影列 + **投影省略的源主键**（`top_k_materialized_columns`；`output_columns` 为空
+  （全部源列）时不变）。`top_k_mv_schema_for` 增加 `source_primary_keys` 参数，executor 的期望 schema 与
+  运行时刷新/重建的 `computed`、insert、delete 投影都用同一列表，缺列自动列在主键之后。
+  分析器不再要求选择列表包含源主键（`try_analyze_top_k` 原本就没要求，两条路径现在一致）。
+- **语义**：MV 多出一列（主键原名列）——像 row view 一样，用户读到它；文档（README 支持表行）已注明。
+- **测试**：`tests/slt/top_k_pk_omitted.slt` + `sqllogic_top_k_pk_omitted` 注册（查询 `SELECT g, v, k`，
+  覆盖 bootstrap、顶行更替与删除顶行）；既有 15 处 `top_k_mv_schema_for` 调用点补主键参数。
+- 下一步（A2b）：**计算列**选择列表（表达式在 `computed` CTE 里求值，MV 物化计算值）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

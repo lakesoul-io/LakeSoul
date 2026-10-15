@@ -996,12 +996,40 @@ pub fn window_aggregate_mv_schema_for(
 }
 
 /// The schema of a [`TopKView`] materialized view: the projected source
-/// columns plus the row kind and the epoch (the same shape as [`RowView`]).
+/// columns, the source primary keys the projection omits (a top-k row is
+/// identified by them), the row kind and the epoch.
 pub fn top_k_mv_schema_for(
     source_schema: &Schema,
+    source_primary_keys: &[String],
     output_columns: &[String],
 ) -> Result<SchemaRef> {
-    row_mv_schema_for(source_schema, output_columns)
+    row_mv_schema_for(
+        source_schema,
+        &top_k_materialized_columns(source_schema, source_primary_keys, output_columns),
+    )
+}
+
+/// The source columns a [`TopKView`] materializes: the projected columns plus
+/// the source primary keys the projection omits.
+fn top_k_materialized_columns(
+    source_schema: &Schema,
+    source_primary_keys: &[String],
+    output_columns: &[String],
+) -> Vec<String> {
+    if output_columns.is_empty() {
+        return source_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+    }
+    let mut columns = output_columns.to_vec();
+    for key in source_primary_keys {
+        if !columns.iter().any(|column| column == key) {
+            columns.push(key.clone());
+        }
+    }
+    columns
 }
 
 /// Validate that a window view can be maintained.
@@ -1557,18 +1585,14 @@ fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
     )
 }
 
-/// The source columns a [`TopKView`] materializes.
+/// The source columns a [`TopKView`] materializes (see
+/// [`top_k_materialized_columns`]).
 fn top_k_output_columns(view: &TopKView) -> Vec<String> {
-    if view.output_columns.is_empty() {
-        view.source
-            .schema
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .collect()
-    } else {
-        view.output_columns.clone()
-    }
+    top_k_materialized_columns(
+        &view.source.schema,
+        &view.source.primary_keys,
+        &view.output_columns,
+    )
 }
 
 /// Validate that a top-k view can be maintained.

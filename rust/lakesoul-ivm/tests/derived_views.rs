@@ -2228,9 +2228,12 @@ async fn a_top_k_subquery_is_materialized_as_a_step() {
     let dir = tempdir().unwrap();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let source = create_source(&runtime, &dir, &format!("ivm_topk_src_{suffix}")).await;
-    let step_schema =
-        top_k_mv_schema_for(&source_schema(), &["k", "g", "v"].map(String::from))
-            .unwrap();
+    let step_schema = top_k_mv_schema_for(
+        &source_schema(),
+        &["k".to_string()],
+        &["k", "g", "v"].map(String::from),
+    )
+    .unwrap();
     let mv = runtime
         .create_table(
             IvmTableOptions::new(
@@ -2454,6 +2457,7 @@ async fn a_sum_count_step_makes_top_k_over_aggregate_maintainable() {
                 table_path(&dir, "mv"),
                 lakesoul_ivm::top_k_mv_schema_for(
                     &inner,
+                    &["g".to_string()],
                     &["g".to_string(), "sum_v".to_string()],
                 )
                 .unwrap(),

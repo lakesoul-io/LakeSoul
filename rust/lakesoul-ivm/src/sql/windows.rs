@@ -168,16 +168,8 @@ pub(super) fn analyze_order_by_limit(
             .map(|field| field.name().clone())
             .collect(),
     };
-    // The identity of a top-k row is its source primary key, so the MV (and
-    // the select list) must carry it.
-    for key in &source.primary_keys {
-        if !output_columns.contains(key) {
-            return Err(unsupported(format!(
-                "the select list of an ORDER BY ... LIMIT view must include \
-                 the source primary key {key}"
-            )));
-        }
-    }
+    // A top-k row is identified by its source primary key: a select list
+    // that omits one is materialized with it appended.
     // The MV stores source columns; computed select-list columns (a
     // projection referring to an expression alias) are not materialized.
     for column in &output_columns {
@@ -758,8 +750,6 @@ mod tests {
             "select k, v from src limit 3",
             // Ordering alone is not materialized.
             "select k, v from src order by v desc",
-            // The primary key identifies the top-k rows.
-            "select v from src order by v desc limit 3",
             // Computed select-list columns are not materialized.
             "select k, v + 1 as w from src order by v desc limit 3",
             // A top-k over an aggregate is a view chain, not one statement.
@@ -1439,6 +1429,35 @@ mod tests {
         assert!(group_keys.is_empty());
         assert_eq!(limit, 3);
         assert_eq!(offset, 0);
+
+        // A select list that omits the source primary key is materialized
+        // with it appended (the view identifies a top-k row by it).
+        let analyzed = analyze_optimized("select v from src order by v desc limit 3")
+            .await
+            .unwrap();
+        let ViewSpec::TopK { output_columns, .. } = analyzed.spec else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(output_columns, vec!["v".to_string()]);
+        let schema = crate::runtime::top_k_mv_schema_for(
+            &crate::sql::test_helpers::schema(),
+            &["k".to_string()],
+            &output_columns,
+        )
+        .unwrap();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "v",
+                "k",
+                crate::runtime::IVM_ROW_KINDS_COLUMN,
+                crate::runtime::IVM_EPOCH_COLUMN
+            ]
+        );
     }
 
     #[tokio::test]

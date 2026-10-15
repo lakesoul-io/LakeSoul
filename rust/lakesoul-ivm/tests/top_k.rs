@@ -106,7 +106,8 @@ async fn fixture_with_offset(
             IvmTableOptions::new(
                 format!("ivm_topk_mv_{suffix}"),
                 table_path(&dir, "mv"),
-                top_k_mv_schema_for(&source.schema, &output_columns).unwrap(),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &output_columns)
+                    .unwrap(),
             )
             .with_primary_keys(vec!["k".to_string()]),
         )
@@ -476,7 +477,7 @@ async fn top_k_validation() {
             IvmTableOptions::new(
                 format!("ivm_topk_valid_mv_{suffix}"),
                 table_path(&dir, "mv"),
-                top_k_mv_schema_for(&source.schema, &[]).unwrap(),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &[]).unwrap(),
             )
             .with_primary_keys(vec!["k".to_string()]),
         )
@@ -547,7 +548,7 @@ async fn top_k_validation() {
             IvmTableOptions::new(
                 format!("ivm_topk_append_mv_{suffix}"),
                 table_path(&dir, "append_mv"),
-                top_k_mv_schema_for(&append_only.schema, &[]).unwrap(),
+                top_k_mv_schema_for(&append_only.schema, &[], &[]).unwrap(),
             )
             .with_primary_keys(vec!["k".to_string()]),
         )
@@ -590,7 +591,14 @@ async fn top_k_validation() {
     );
 
     // An unknown filter/projection column is rejected by the schema helper.
-    assert!(top_k_mv_schema_for(&source_schema(), &["missing".to_string()]).is_err());
+    assert!(
+        top_k_mv_schema_for(
+            &source_schema(),
+            &["k".to_string()],
+            &["missing".to_string()]
+        )
+        .is_err()
+    );
     let _ = RowView::new(format!("unused_{suffix}"), source, mv);
 }
 
