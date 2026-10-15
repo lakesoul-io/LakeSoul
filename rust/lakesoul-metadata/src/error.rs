@@ -66,6 +66,8 @@ pub enum LakeSoulMetaDataError {
     Internal(String),
     #[error("Not found error: {0}")]
     NotFound(String),
+    #[error("Metadata commit conflict: {0}")]
+    CommitConflict(String),
     #[error("Other error: {0}")]
     Other(#[from] GenericError),
 }

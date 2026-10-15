@@ -25,6 +25,7 @@ pub enum QueryType {
 }
 
 /// The pooled client for the postgres database.
+#[derive(Clone)]
 pub struct PooledClient {
     /// The pool of [`PgConnectionManager`] for the postgres database.
     pool: Pool<PgConnectionManager>,

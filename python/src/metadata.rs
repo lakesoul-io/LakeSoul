@@ -147,7 +147,8 @@ fn metadata_error_to_py(error: LakeSoulMetaDataError, missing: MissingObject) ->
         | LakeSoulMetaDataError::ProstEncodeError(_) => InvalidMetadataError::new_err(message),
         LakeSoulMetaDataError::Internal(_)
         | LakeSoulMetaDataError::Other(_)
-        | LakeSoulMetaDataError::InsertConflict { .. } => MetadataError::new_err(message),
+        | LakeSoulMetaDataError::InsertConflict { .. }
+        | LakeSoulMetaDataError::CommitConflict(_) => MetadataError::new_err(message),
     }
 }
 

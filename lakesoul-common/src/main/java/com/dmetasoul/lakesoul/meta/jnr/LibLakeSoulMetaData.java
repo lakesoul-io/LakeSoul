@@ -60,6 +60,18 @@ public interface LibLakeSoulMetaData {
             @LongLong long addr,
             int length);
 
+    /**
+     * Runs the authoritative metadata commit state machine. Outcome codes: 1 = committed, 2 =
+     * already committed, 3 = superseded, -1 = error (message delivered through the callback).
+     */
+    void commit_data(
+            IntegerCallback integerCallback,
+            Pointer runtime,
+            Pointer client,
+            Integer commitOp,
+            @LongLong long addr,
+            int length);
+
     void clean_meta_for_test(IntegerCallback integerCallback, Pointer runtime, Pointer client);
 
     Pointer create_split_desc_array(

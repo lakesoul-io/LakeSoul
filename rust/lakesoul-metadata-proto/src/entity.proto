@@ -202,6 +202,18 @@ message SnapshotTagInfo {
   int64 expire_at = 5;
 }
 
+// Atomic partition publication request. Real partition rows and the data commit
+// IDs made visible by those rows are separate so neither can be mistaken for
+// control data.
+message PartitionCommitEntry {
+  PartitionInfo partition_info = 1;
+  repeated Uuid commit_id = 2;
+}
+
+message PartitionInfoCommit {
+  repeated PartitionCommitEntry partitions = 1;
+}
+
 message JniWrapper {
   repeated Namespace namespace = 1;
   repeated TableInfo table_info = 2;
@@ -213,4 +225,5 @@ message JniWrapper {
   repeated SnapshotInfo snapshot_info = 8;
   repeated SnapshotCommitInfo snapshot_commit_info = 9;
   repeated SnapshotTagInfo snapshot_tag_info = 10;
+  PartitionInfoCommit partition_info_commit = 11;
 }

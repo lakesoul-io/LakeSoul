@@ -62,6 +62,17 @@ impl Debug for MetaDataClient {
 
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
+/// Observable result of a metadata commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitOutcome {
+    /// At least one new partition version was published.
+    Committed,
+    /// The requested data commits were already published.
+    AlreadyCommitted,
+    /// A concurrent update or compaction made this publication obsolete.
+    Superseded,
+}
+
 /// The changelog of one partition over the version window
 /// `(from_version_exclusive, to_version_inclusive]`.
 ///
@@ -300,6 +311,18 @@ impl MetaDataClient {
         secondary_config: Option<String>,
     ) -> Result<Self> {
         Self::from_config_and_max_retry(config, secondary_config, 3).await
+    }
+
+    /// Wrap one pooled PostgreSQL connection as a metadata client.
+    ///
+    /// The FFI boundary needs the coordinator around a client pointer that was
+    /// created as a pooled PostgreSQL client by `create_tokio_postgres_client`.
+    pub fn from_pooled(pooled: PooledClient) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(pooled)),
+            max_retry: MAX_COMMIT_ATTEMPTS,
+            secret: String::new(),
+        }
     }
 
     #[instrument]
@@ -615,7 +638,9 @@ impl MetaDataClient {
         .await
     }
 
-    async fn insert_data_commit_info(
+    /// Insert one data commit row without publishing it, so a later
+    /// `commit_data` marks it committed during publication.
+    pub async fn insert_data_commit_info(
         &self,
         data_commit_info: &DataCommitInfo,
     ) -> Result<i32> {
@@ -631,16 +656,31 @@ impl MetaDataClient {
 
     async fn transaction_insert_partition_info(
         &self,
-        partition_info_list: Vec<PartitionInfo>,
+        partitions: Vec<entity::PartitionCommitEntry>,
     ) -> Result<i32> {
-        self.execute_insert(
-            DaoType::TransactionInsertPartitionInfo as i32,
-            JniWrapper {
-                partition_info: partition_info_list,
-                ..Default::default()
-            },
-        )
-        .await
+        let expected_count = partitions.len();
+        if expected_count == 0 {
+            return Ok(0);
+        }
+        let inserted_count = self
+            .execute_insert(
+                DaoType::TransactionInsertPartitionInfo as i32,
+                JniWrapper {
+                    partition_info_commit: Some(entity::PartitionInfoCommit {
+                        partitions,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        if inserted_count as usize != expected_count {
+            // A concurrent publication raced this one; the coordinator rebuilds
+            // from the latest partition heads and retries.
+            return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                "expected to publish {expected_count} partitions, published {inserted_count}"
+            )));
+        }
+        Ok(inserted_count)
     }
 
     async fn transaction_insert_data_commit_info(
@@ -680,17 +720,24 @@ impl MetaDataClient {
         &self,
         meta_info: MetaInfo,
         commit_op: CommitOp,
-    ) -> Result<()> {
+    ) -> Result<CommitOutcome> {
         let table_info = meta_info.table_info.ok_or(LakeSoulMetaDataError::Internal(
             "table info missing".to_string(),
         ))?;
 
-        // if !table_info.table_name.is_empty() {
-        //     self.update_table_short_name(&table_info.table_path, &table_info.table_id,
-        //         &table_info.table_name, &table_info.table_namespace).await?;
-        // }
-
-        // self.update_table_properties(&table_info.table_id, &table_info.properties).await?;
+        // Table metadata mutations are part of the commit contract and are
+        // applied identically to the JVM coordinator (`DBManager.commitData`).
+        if !table_info.table_name.is_empty() {
+            self.update_table_short_name(
+                &table_info.table_path,
+                &table_info.table_id,
+                &table_info.table_name,
+                &table_info.table_namespace,
+            )
+            .await?;
+        }
+        self.update_table_properties(&table_info.table_id, &table_info.properties)
+            .await?;
 
         let domain = self
             .get_table_domain(table_info.table_id.as_str())
@@ -730,6 +777,33 @@ impl MetaDataClient {
                 }
                 Err(error) => return Err(error),
             };
+            // Idempotent replay: an append or merge must never publish a
+            // snapshot twice, and a late replay of any operation (the head has
+            // moved past the version the caller read) is already visible. An
+            // update, compaction, or delete that reads the current version
+            // explicitly re-asserts a rewrite and is planned normally.
+            let replay_eligible =
+                matches!(commit_op, CommitOp::AppendCommit | CommitOp::MergeCommit)
+                    || meta_info.list_partition.iter().all(|partition_info| {
+                        let head_version = cur_map
+                            .get(&partition_info.partition_desc)
+                            .map(|cur| i64::from(cur.version))
+                            .unwrap_or(-1);
+                        match read_partition_map.get(&partition_info.partition_desc) {
+                            Some(read) => i64::from(read.version) < head_version,
+                            // No read info: a late retry that must never mint a new
+                            // version.
+                            None => true,
+                        }
+                    });
+            if self
+                .all_data_commits_already_committed(&meta_info.list_partition)
+                .await?
+                && replay_eligible
+            {
+                return Ok(CommitOutcome::AlreadyCommitted);
+            }
+
             let new_partition_list = match self
                 .plan_partition_commit(
                     &table_info,
@@ -753,17 +827,49 @@ impl MetaDataClient {
             };
 
             if new_partition_list.is_empty() {
-                return Ok(());
+                return Ok(match commit_op {
+                    CommitOp::CompactionCommit => CommitOutcome::Superseded,
+                    _ => CommitOutcome::AlreadyCommitted,
+                });
             }
 
+            // A skipped partition keeps its head, so the data commits it
+            // carried must not be marked published. Ids are scoped per
+            // partition: Spark streaming and Flink reuse one commit id across
+            // every partition of a batch, so a flat id list both mismatches
+            // the (table, partition, commit) key and would stamp rows of
+            // partitions this commit skipped.
+            let mut part_map = HashMap::<String, &PartitionInfo>::new();
+            for partition_info in &meta_info.list_partition {
+                part_map.insert(partition_info.partition_desc.clone(), partition_info);
+            }
+            let mut partitions = Vec::with_capacity(new_partition_list.len());
+            for published in &new_partition_list {
+                let raw = part_map
+                    .get(published.partition_desc.as_str())
+                    .copied()
+                    .expect("published partition was submitted");
+                partitions.push(entity::PartitionCommitEntry {
+                    partition_info: Some(published.clone()),
+                    commit_id: raw.snapshot.clone(),
+                });
+            }
             let expected = new_partition_list.len();
-            let mut partition_info_list = new_partition_list;
-            partition_info_list.push(PartitionInfo::default());
-            let inserted = match self
-                .transaction_insert_partition_info(partition_info_list)
-                .await
+            let publication_version = new_partition_list
+                .iter()
+                .map(|partition_info| partition_info.version)
+                .max()
+                .unwrap_or(0);
+            let inserted = match self.transaction_insert_partition_info(partitions).await
             {
                 Ok(inserted) => inserted,
+                Err(LakeSoulMetaDataError::CommitConflict(_))
+                    if commit_op != CommitOp::DeleteCommit
+                        && attempt < MAX_COMMIT_ATTEMPTS =>
+                {
+                    commit_backoff(attempt).await;
+                    continue;
+                }
                 Err(error)
                     if is_retryable_conflict(&error) && attempt < MAX_COMMIT_ATTEMPTS =>
                 {
@@ -773,7 +879,11 @@ impl MetaDataClient {
                 Err(error) => return Err(error),
             };
             if inserted as usize == expected {
-                return Ok(());
+                info!(
+                    "Commit Done for {:?}, partition_version={:?}",
+                    commit_op, publication_version
+                );
+                return Ok(CommitOutcome::Committed);
             }
             debug!(
                 "commit of {:?} conflicted on attempt {} (expected {} partition rows, inserted {})",
@@ -784,7 +894,7 @@ impl MetaDataClient {
             }
         }
 
-        Err(LakeSoulMetaDataError::Internal(format!(
+        Err(LakeSoulMetaDataError::CommitConflict(format!(
             "commit of {commit_op:?} failed after {MAX_COMMIT_ATTEMPTS} attempts because of concurrent writers on table {}",
             table_info.table_id
         )))
@@ -837,34 +947,11 @@ impl MetaDataClient {
                             ..Default::default()
                         },
                     };
-                    let cur_op = cur_partition_info.commit_op();
-                    let compatible = if commit_op == CommitOp::AppendCommit {
-                        matches!(
-                            cur_op,
-                            CommitOp::AppendCommit
-                                | CommitOp::MergeCommit
-                                | CommitOp::CompactionCommit
-                                | CommitOp::UpdateCommit
-                        )
-                    } else {
-                        matches!(
-                            cur_op,
-                            CommitOp::MergeCommit
-                                | CommitOp::CompactionCommit
-                                | CommitOp::UpdateCommit
-                        ) || (cur_op == CommitOp::AppendCommit
-                            && table_info
-                                .partitions
-                                .split_once(';')
-                                .is_some_and(|(_, keys)| !keys.is_empty()))
-                    };
-                    if !compatible {
-                        return Err(LakeSoulMetaDataError::Internal(format!(
-                            "commit of {commit_op:?} conflicts with {:?} on table {} partition {}",
-                            cur_op, table_info.table_id, partition_desc
-                        )));
-                    }
 
+                    // Append and merge extend the current head snapshot
+                    // unconditionally, exactly like the JDBC coordinator: the
+                    // writer layer (Spark/Flink) owns table-type restrictions
+                    // such as rejecting a second append on a hash table.
                     cur_partition_info
                         .snapshot
                         .extend_from_slice(&partition_info.snapshot);
@@ -914,10 +1001,7 @@ impl MetaDataClient {
                             middle_ops.contains(&CommitOp::CompactionCommit);
 
                         if commit_op == CommitOp::UpdateCommit {
-                            if read_version > 0
-                                && (has_update
-                                    || (middle_ops.len() > 1 && has_compaction))
-                            {
+                            if has_update || (middle_ops.len() > 1 && has_compaction) {
                                 return Err(LakeSoulMetaDataError::Internal(format!(
                                     "update commit conflicts with concurrent writes on table {} partition {} (read version {read_version}, current version {cur_version}, middle commits {middle_ops:?})",
                                     table_info.table_id, partition_desc
@@ -1058,10 +1142,36 @@ impl MetaDataClient {
             .collect())
     }
 
+    /// Whether every data commit carried by `partitions` is already published.
+    ///
+    /// Publishing again would either mint a duplicate partition version or be a
+    /// no-op, so the coordinator reports `AlreadyCommitted` instead.
+    async fn all_data_commits_already_committed(
+        &self,
+        partitions: &[PartitionInfo],
+    ) -> Result<bool> {
+        let mut saw_commit = false;
+        for partition in partitions {
+            if partition.snapshot.is_empty() {
+                continue;
+            }
+            saw_commit = true;
+            let commits = self
+                .get_data_commit_info_of_single_partition(partition)
+                .await?;
+            if commits.len() != partition.snapshot.len()
+                || commits.iter().any(|commit| !commit.committed)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(saw_commit)
+    }
+
     pub async fn commit_data_commit_info(
         &self,
         data_commit_info: DataCommitInfo,
-    ) -> Result<()> {
+    ) -> Result<CommitOutcome> {
         let table_id = &data_commit_info.table_id;
         let partition_desc = &data_commit_info.partition_desc;
         let commit_op = data_commit_info.commit_op;
@@ -1078,7 +1188,7 @@ impl MetaDataClient {
             .await?
         {
             Some(data_commit_info) if data_commit_info.committed => {
-                return Ok(());
+                return Ok(CommitOutcome::AlreadyCommitted);
             }
             None => {
                 self.insert_data_commit_info(&data_commit_info).await?;
@@ -1138,7 +1248,7 @@ impl MetaDataClient {
         let transaction = connection.transaction().await?;
         let domain: String = transaction
             .query_opt(
-                "select domain from table_name_id where table_id = $1::TEXT",
+                "select domain from table_info where table_id = $1::TEXT",
                 &[&table_info.table_id],
             )
             .await?
