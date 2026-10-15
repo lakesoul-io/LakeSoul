@@ -22,6 +22,20 @@ use crate::catalog::snapshot::{
 use crate::error::df_external_err;
 use crate::session::ObjectStoreConfig;
 
+/// Arrow field metadata applied to the table's declared vector columns, so a
+/// frontend can report them as its own vector type (the PostgreSQL wire
+/// server tags them with `pg.vector`).
+///
+/// Carried on the session's [`datafusion::execution::config::SessionConfig`]
+/// extensions (like [`ObjectStoreConfig`](crate::session::ObjectStoreConfig)),
+/// so every provider built for that session sees it; an empty list leaves
+/// every schema untouched.
+#[derive(Debug, Default, Clone)]
+pub struct LakeSoulVectorFieldMetadata {
+    /// `(key, value)` pairs merged into each vector column's field metadata.
+    pub fields: Vec<(String, String)>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LakeSoulProviderOptions {
     pub parquet_force_view_types: bool,
@@ -35,6 +49,9 @@ pub struct LakeSoulProviderOptions {
     /// scan — and post-commit hooks build stores from the table's io config,
     /// which must not lose the credentials.
     pub object_store_options: SecretMap,
+    /// Field metadata to apply to the declared vector columns (see
+    /// [`LakeSoulVectorFieldMetadata`]).
+    pub vector_field_metadata: Vec<(String, String)>,
 }
 
 impl LakeSoulProviderOptions {
@@ -45,10 +62,16 @@ impl LakeSoulProviderOptions {
             .get_extension::<ObjectStoreConfig>()
             .map(|config| config.object_store_options().clone())
             .unwrap_or_default();
+        let vector_field_metadata = session
+            .config()
+            .get_extension::<LakeSoulVectorFieldMetadata>()
+            .map(|config| config.fields.clone())
+            .unwrap_or_default();
         Self {
             parquet_force_view_types: parquet.schema_force_view_types,
             pushdown_filters: parquet.pushdown_filters,
             object_store_options,
+            vector_field_metadata,
         }
     }
 }

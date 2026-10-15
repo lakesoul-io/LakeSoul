@@ -2420,3 +2420,75 @@ async fn pgvector_parameter_and_edge_cases() {
 
     cleanup_vector_table(&meta, table).await;
 }
+
+/// The stored vector columns are reported as the pgvector `vector` type, so a
+/// driver registered for it decodes results as vectors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pgvector_results_report_the_vector_type() {
+    let table = "pgvector_types";
+    let meta = setup_vector_table(table, 5).await;
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    let pg_vector_oid = datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_TYPE_OID;
+    let results = run_query(
+        &router,
+        &mut client,
+        &format!("SELECT id, vec FROM {table} WHERE id = 3"),
+    )
+    .await;
+    let (schema, rows) = &results[0];
+    assert_eq!(schema.len(), 2, "{schema:?}");
+    assert_eq!(
+        schema[0].datatype().oid(),
+        datafusion_postgres::pgwire::api::Type::INT8.oid(),
+        "other columns keep their type: {schema:?}"
+    );
+    assert_eq!(
+        schema[1].datatype().oid(),
+        pg_vector_oid,
+        "the vector column is reported as the pgvector type: {schema:?}"
+    );
+    // The value is encoded in the pgvector text form; a registered driver
+    // parses it back into the stored vector.
+    let text = rows[0][1].as_deref().expect("vector value");
+    let values: Vec<f32> = text
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|value| value.parse().expect("number"))
+        .collect();
+    assert_eq!(values, generated_vector(3).to_vec(), "{text}");
+
+    // `SELECT *` keeps the same report.
+    let results = run_query(
+        &router,
+        &mut client,
+        &format!("SELECT * FROM {table} WHERE id = 3"),
+    )
+    .await;
+    let (schema, _) = &results[0];
+    let vec_index = schema
+        .iter()
+        .position(|field| field.name() == "vec")
+        .expect("the vec column is in the result");
+    assert_eq!(
+        schema[vec_index].datatype().oid(),
+        pg_vector_oid,
+        "{schema:?}"
+    );
+
+    // The index-backed search still works with the marker in place.
+    let probe = vector_text(&generated_vector(1));
+    let results = run_query(
+        &router,
+        &mut client,
+        &format!("SELECT id FROM {table} ORDER BY vec <-> '{probe}' LIMIT 1"),
+    )
+    .await;
+    assert_eq!(as_f64(&first_column(&results)[0]) as i64, 1);
+
+    cleanup_vector_table(&meta, table).await;
+}
