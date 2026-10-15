@@ -17,7 +17,9 @@ use datafusion_postgres::datafusion_pg_catalog::{
     PgCatalogOptions, setup_pg_catalog_with_options,
 };
 use lakesoul_common::misc::TimeZone;
-use lakesoul_datafusion::catalog::{CatalogSnapshot, LakeSoulProviderOptions};
+use lakesoul_datafusion::catalog::{
+    CatalogSnapshot, LakeSoulProviderOptions, LakeSoulVectorFieldMetadata,
+};
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::headers::{
     SessionActor, StatementIdGuard, set_identity_headers,
@@ -220,6 +222,31 @@ impl PgSessionFactory {
         })?;
 
         let state = context.state();
+
+        // Report the table's vector columns as the pgvector `vector` type on
+        // the wire.  The provider tags the declared vector columns with this
+        // marker, the result schemas inherit it, and the encoder picks the
+        // vector format from the reported type — so drivers (psycopg with
+        // `register_vector`) decode results as vectors.  It goes on the config
+        // before any provider options are derived from it, so the catalog and
+        // every later provider agree.
+        let config = state
+            .config()
+            .clone()
+            .with_default_catalog_and_schema(
+                identity.database.clone(),
+                PUBLIC_SCHEMA.to_string(),
+            )
+            .with_create_default_catalog_and_schema(false)
+            .with_extension(Arc::new(LakeSoulVectorFieldMetadata {
+                fields: vec![(
+                    datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_KEY.to_string(),
+                    "vector".to_string(),
+                )],
+            }));
+        let state = SessionStateBuilder::new_from_existing(state)
+            .with_config(config)
+            .build();
         let catalog = pg_lakesoul_catalog(
             Arc::clone(&self.meta_client),
             LakeSoulProviderOptions::from_session(&state),
@@ -231,18 +258,8 @@ impl PgSessionFactory {
             visible_databases,
             catalog,
         ));
-
-        let config = state
-            .config()
-            .clone()
-            .with_default_catalog_and_schema(
-                identity.database.clone(),
-                PUBLIC_SCHEMA.to_string(),
-            )
-            .with_create_default_catalog_and_schema(false);
         let context = Arc::new(SessionContext::new_with_state(
             SessionStateBuilder::new_from_existing(state)
-                .with_config(config)
                 .with_catalog_list(catalog_list)
                 .build(),
         ));
