@@ -16,7 +16,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from lakesoul import BlobRef, LakeSoulCatalog
-from lakesoul.metadata.generated.entity_pb2 import AppendCommit
 
 
 def test_arrow_write_basic_append_reads_back_with_arrow(tmp_path: Path) -> None:
@@ -148,9 +147,46 @@ def test_arrow_write_mixed_case_create_uses_datafusion_case_folding(
 
         assert table.name == table_name.lower()
         assert table.schema == write_schema
-        assert table.hash_bucket_num == 4
         assert _rows(actual) == _rows(data)
-        assert _data_commit_ops(catalog, table) == [AppendCommit]
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+@pytest.mark.parametrize("format", ["parquet", "vortex", "vortex-compact"])
+def test_arrow_write_uses_stored_not_source_nested_constraints(
+    tmp_path: Path, format: str
+) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("nested_source_flags")
+    stored = pa.schema(
+        [
+            pa.field("id", pa.int32(), nullable=False),
+            pa.field("s", pa.struct([pa.field("x", pa.int32())])),
+        ]
+    )
+    source_struct = pa.struct([pa.field("x", pa.int32(), nullable=False)])
+    data = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int32()),
+            "s": pa.StructArray.from_arrays(
+                [pa.array([None, 7], pa.int32())],
+                fields=list(source_struct),
+                mask=pa.array([True, False]),
+            ),
+        }
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=stored,
+        primary_keys=("id",),
+    )
+    try:
+        table.write_arrow(data, format=format)
+        assert _rows(table.scan().to_arrow_table()) == [
+            {"id": 1, "s": None},
+            {"id": 2, "s": {"x": 7}},
+        ]
     finally:
         catalog.drop_table(table_name, if_exists=True)
 
@@ -201,7 +237,165 @@ def test_arrow_write_pk_upsert_reads_latest_rows_with_arrow(tmp_path: Path) -> N
             {"id": 3, "name": "carol", "value": 30},
             {"id": 4, "name": "dave", "value": 40},
         ]
-        assert set(_data_commit_ops(catalog, table)) == {AppendCommit}
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+@pytest.mark.parametrize("format", ["parquet", "vortex", "vortex-compact"])
+def test_arrow_sparse_upsert_preserves_absence_and_checks_stored_constraints(
+    tmp_path: Path, format: str
+) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("arrow_sparse")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("part", pa.string()),
+            pa.field("required", pa.int64(), nullable=False),
+            pa.field("label", pa.string()),
+            pa.field("value", pa.int64()),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=schema,
+        primary_keys=("id",),
+        partition_by=("part",),
+        hash_bucket_num=2,
+    )
+    try:
+        # Source fields are nullable; actual supplied values satisfy NOT NULL.
+        table.write_arrow(
+            pa.table(
+                {
+                    "id": [1, 2],
+                    "part": ["north", "north"],
+                    "required": [1, 2],
+                    "label": ["keep", "other"],
+                    "value": [10, 20],
+                }
+            ),
+            format=format,
+        )
+        partial = pa.table(
+            {
+                "id": [1, 3],
+                "part": ["north", "north"],
+                "required": [11, 3],
+                "value": [100, 30],
+            }
+        )
+        result = table.write_arrow(partial.to_reader(), format=format)
+        assert all("label" not in file.existing_columns for file in result.files)
+        if format == "parquet":
+            assert all(
+                "label" not in pq.read_schema(file.path).names for file in result.files
+            )
+        assert _rows(table.scan().to_arrow_table()) == [
+            {"id": 1, "part": "north", "required": 11, "label": "keep", "value": 100},
+            {"id": 2, "part": "north", "required": 2, "label": "other", "value": 20},
+            {"id": 3, "part": "north", "required": 3, "label": None, "value": 30},
+        ]
+
+        explicit_null = pa.record_batch(
+            {
+                "id": pa.array([1], type=pa.int64()),
+                "part": ["north"],
+                "required": pa.array([12], type=pa.int64()),
+                "label": pa.array([None], type=pa.string()),
+            }
+        )
+        table.write_arrow(explicit_null, format=format)
+        expected = [
+            {"id": 1, "part": "north", "required": 12, "label": None, "value": 100},
+            {"id": 2, "part": "north", "required": 2, "label": "other", "value": 20},
+            {"id": 3, "part": "north", "required": 3, "label": None, "value": 30},
+        ]
+        assert _rows(table.scan().to_arrow_table()) == expected
+        commits = _data_commit_ops(catalog, table)
+
+        invalid = [
+            pa.table({"part": ["north"], "required": [9]}),
+            pa.table({"id": [1], "required": [9]}),
+            pa.table({"id": [1], "part": ["north"]}),
+            pa.table(
+                {
+                    "id": [1],
+                    "part": ["north"],
+                    "required": pa.array([None], type=pa.int64()),
+                }
+            ),
+            # A required-field Arrow schema is not proof of non-null values.
+            pa.Table.from_arrays(
+                [
+                    pa.array([1], type=pa.int64()),
+                    pa.array(["north"]),
+                    pa.array([None], type=pa.int64()),
+                ],
+                schema=pa.schema(
+                    [schema.field(name) for name in ("id", "part", "required")]
+                ),
+            ),
+        ]
+        for data in invalid:
+            with pytest.raises(ValueError, match="missing required|non-nullable"):
+                table.write_arrow(data, format=format)
+            assert _data_commit_ops(catalog, table) == commits
+        assert _rows(table.scan().to_arrow_table()) == expected
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
+@pytest.mark.parametrize("format", ["parquet", "vortex", "vortex-compact"])
+def test_arrow_write_checks_stored_nested_struct_constraints(
+    tmp_path: Path, format: str
+) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("arrow_nested_required")
+    stored_payload = pa.struct([pa.field("count", pa.int64(), nullable=False)])
+    input_payload = pa.struct([pa.field("count", pa.int64())])
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("payload", stored_payload),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=schema,
+        primary_keys=("id",),
+    )
+    try:
+        valid = pa.table(
+            {"id": [1], "payload": pa.array([{"count": 7}], type=input_payload)}
+        )
+        table.write_arrow(valid, format=format)
+        expected = [{"id": 1, "payload": {"count": 7}}]
+        assert table.scan().to_arrow_table().to_pylist() == expected
+        commits = _data_commit_ops(catalog, table)
+
+        invalid = [
+            pa.table({"id": [1]}),
+            pa.table({"id": [1], "payload": pa.array([None], type=input_payload)}),
+            pa.table(
+                {"id": [1], "payload": pa.array([{"count": None}], type=input_payload)}
+            ),
+        ]
+        for data in invalid:
+            with pytest.raises(ValueError, match="missing required|non-nullable"):
+                table.write_arrow(data, format=format)
+            assert _data_commit_ops(catalog, table) == commits
+
+        # Failure after an earlier accepted batch still must not publish files.
+        reader = pa.RecordBatchReader.from_batches(
+            valid.schema, [valid.to_batches()[0], invalid[-1].to_batches()[0]]
+        )
+        with pytest.raises(ValueError, match="non-nullable"):
+            table.write_arrow(reader, format=format)
+        assert _data_commit_ops(catalog, table) == commits
+        assert table.scan().to_arrow_table().to_pylist() == expected
     finally:
         catalog.drop_table(table_name, if_exists=True)
 

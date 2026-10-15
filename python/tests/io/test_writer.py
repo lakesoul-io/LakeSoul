@@ -156,6 +156,21 @@ def test_writer_rejects_schema_mismatch(tmp_path: Path) -> None:
     writer.abort()
 
 
+@pytest.mark.parametrize("format", ["parquet", "vortex", "vortex-compact"])
+def test_writer_rejects_actual_nulls_in_required_schema(
+    tmp_path: Path, format: str
+) -> None:
+    schema = pa.schema([pa.field("id", pa.int64(), nullable=False)])
+    data = pa.record_batch([pa.array([None], type=pa.int64())], schema=schema)
+    writer = Writer(IOConfig(path=tmp_path / "invalid", schema=schema, format=format))
+
+    with pytest.raises(ValueError, match="non-nullable.*id"), writer:
+        writer.write(data)
+
+    assert writer.closed
+    assert writer.result is None
+
+
 def test_writer_parquet_output_reports_physical_format(tmp_path: Path) -> None:
     batch = _batch()
     writer = Writer(

@@ -9,6 +9,7 @@
 use lakesoul_common::misc::SecretMap;
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
 
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
@@ -16,8 +17,9 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::common::Statistics;
+use datafusion::catalog::TableProvider;
 use datafusion::common::not_impl_err;
+use datafusion::common::{DFSchema, Statistics};
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::physical_plan::FileSource;
@@ -43,6 +45,7 @@ use datafusion::{
 use datafusion_common::TableReference;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use futures::StreamExt;
+use lakesoul_common::ser::arrow_java::schema_from_table_info_metadata;
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::file_format::{
@@ -52,10 +55,11 @@ use lakesoul_io::helpers::{
     columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values,
 };
 use lakesoul_io::session::LakeSoulIOSession;
-use lakesoul_io::writer::async_writer::AsyncBatchWriter;
+use lakesoul_io::writer::async_writer::{AsyncBatchWriter, WriteInvariants};
 use lakesoul_io::writer::create_writer;
 use lakesoul_metadata::MetaDataClientRef;
-use lakesoul_metadata_proto::entity::TableInfo;
+use lakesoul_metadata::transfusion::DataFileInfo;
+use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use object_store::{ObjectMeta, ObjectStore};
 use rand::distr::SampleString;
 use rootcause::compat::boxed_error::IntoBoxedError;
@@ -64,11 +68,88 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
 
+use super::insert_only::{InsertOnly, remove_files};
 use crate::Result;
 use crate::catalog::{commit_data, parse_table_info_partitions};
+use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
 type PartitionedFile = HashMap<String, (Vec<String>, u64)>;
+
+fn write_checks(
+    table_schema: &Schema,
+    input_schema: &Schema,
+    range_partitions: &[String],
+    primary_keys: &[String],
+) -> DFResult<WriteInvariants> {
+    for name in range_partitions.iter().chain(primary_keys) {
+        input_schema.index_of(name).map_err(|_| {
+            DataFusionError::Plan(format!("Missing partition/key column '{name}'"))
+        })?;
+    }
+    for field in input_schema.fields() {
+        let stored = table_schema.field_with_name(field.name())?;
+        if !DFSchema::datatype_is_logically_equal(stored.data_type(), field.data_type())
+            || !write_type_parameters_match(stored.data_type(), field.data_type())
+        {
+            return Err(DataFusionError::Plan(format!(
+                "Column '{}' has type {}, expected {}",
+                field.name(),
+                field.data_type(),
+                stored.data_type()
+            )));
+        }
+    }
+    if primary_keys.is_empty()
+        && table_schema.fields().len() != input_schema.fields().len()
+    {
+        return Err(DataFusionError::Plan(
+            "Inserting query must have the same schema with the table.".to_string(),
+        ));
+    }
+    WriteInvariants::try_new(table_schema, input_schema)
+}
+
+// Logical equality permits different vector sizes and decimal precision/scale.
+// The sink does not cast contributions, so those parameters must also match.
+fn write_type_parameters_match(stored: &DataType, input: &DataType) -> bool {
+    use DataType::*;
+    match (stored, input) {
+        (Dictionary(_, value), _) => write_type_parameters_match(value, input),
+        (_, Dictionary(_, value)) => write_type_parameters_match(stored, value),
+        (RunEndEncoded(_, value), _) => {
+            write_type_parameters_match(value.data_type(), input)
+        }
+        (_, RunEndEncoded(_, value)) => {
+            write_type_parameters_match(stored, value.data_type())
+        }
+        (Decimal32(..) | Decimal64(..) | Decimal128(..) | Decimal256(..), _) => {
+            stored == input
+        }
+        (FixedSizeList(left, left_size), FixedSizeList(right, right_size)) => {
+            left_size == right_size
+                && write_type_parameters_match(left.data_type(), right.data_type())
+        }
+        (List(left), List(right))
+        | (LargeList(left), LargeList(right))
+        | (ListView(left), ListView(right))
+        | (LargeListView(left), LargeListView(right))
+        | (Map(left, _), Map(right, _)) => {
+            write_type_parameters_match(left.data_type(), right.data_type())
+        }
+        (Struct(left), Struct(right)) => left.iter().zip(right).all(|(left, right)| {
+            write_type_parameters_match(left.data_type(), right.data_type())
+        }),
+        (Union(left, _), Union(right, _)) => {
+            left.iter()
+                .zip(right.iter())
+                .all(|((_, left), (_, right))| {
+                    write_type_parameters_match(left.data_type(), right.data_type())
+                })
+        }
+        _ => true,
+    }
+}
 
 const WRITE_FILES_TOTAL: &str = "lakesoul_write_files_total";
 const WRITE_BYTES_TOTAL: &str = "lakesoul_write_bytes_total";
@@ -365,7 +446,7 @@ impl FileFormat for LakeSoulMetaDataFormat {
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
-        _state: &dyn Session,
+        state: &dyn Session,
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
@@ -375,22 +456,66 @@ impl FileFormat for LakeSoulMetaDataFormat {
             ));
         }
 
-        Ok(Arc::new(
-            LakeSoulHashSinkExec::new(
-                input,
-                order_requirements,
+        let mut sink = LakeSoulHashSinkExec::new(
+            input,
+            order_requirements,
+            self.table_info(),
+            self.client(),
+            self.conf.object_store_options().clone(),
+        )
+        .await
+        .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        if conf.insert_op == InsertOp::Append && !sink.primary_keys.is_empty() {
+            // Both version capture and file listing must use the primary:
+            // different replica snapshots could miss a committed duplicate.
+            let client = Arc::new(self.client.primary_only().await);
+            let provider = LakeSoulTableProvider::try_new_without_session(
+                crate::catalog::LakeSoulProviderOptions::from_session(state),
+                client.clone(),
+                self.conf.clone(),
                 self.table_info(),
-                self.client(),
-                self.conf.object_store_options().clone(),
             )
             .await
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
-        ) as _)
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            // Capture versions before the fresh scan is planned. A concurrent
+            // commit can invalidate this snapshot, never silently rebase it.
+            let snapshot = client
+                .get_all_partition_info(&self.table_info.table_id)
+                .await
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            let projection = sink
+                .range_partitions
+                .iter()
+                .chain(&sink.primary_keys)
+                .map(|name| provider.schema().index_of(name))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let key_schema = Arc::new(provider.schema().project(&projection)?);
+            let existing_keys =
+                provider.scan(state, Some(&projection), &[], None).await?;
+            sink.insert_only = Some(InsertOnly {
+                existing_keys,
+                snapshot,
+                key_schema,
+            });
+        }
+        Ok(Arc::new(sink))
     }
 
     fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
         self.table_format().file_source(table_schema)
     }
+}
+
+enum CommitGuard {
+    InsertOnly {
+        table_info: Arc<TableInfo>,
+        snapshot: Vec<PartitionInfo>,
+        keep_files: Arc<AtomicBool>,
+    },
+    Streamed {
+        context: Arc<TaskContext>,
+        attempted_files: Arc<Mutex<Vec<String>>>,
+    },
 }
 
 /// Execution plan for writing record batches to a LakeSoul table
@@ -415,6 +540,12 @@ pub struct LakeSoulHashSinkExec {
 
     /// The primary keys of the table (used for the vector index build).
     primary_keys: Vec<String>,
+
+    /// Stored-schema NOT NULL constraints resolved against the sparse input.
+    not_null_checks: Arc<WriteInvariants>,
+
+    /// Present only for ordinary SQL INSERT into primary-key tables.
+    insert_only: Option<InsertOnly>,
 
     /// Object store configuration options forwarded to the vector index
     /// builder after the write commits.
@@ -441,6 +572,17 @@ impl LakeSoulHashSinkExec {
     ) -> Result<Self> {
         let (range_partitions, primary_keys) =
             parse_table_info_partitions(&table_info.partitions)?;
+        let table_schema = schema_from_table_info_metadata(
+            &table_info.table_schema,
+            &table_info.table_schema_arrow_ipc,
+            &table_info.table_schema_arrow_ipc_json_hash,
+        )?;
+        let not_null_checks = Arc::new(write_checks(
+            &table_schema,
+            input.schema().as_ref(),
+            &range_partitions,
+            &primary_keys,
+        )?);
         let range_partitions = Arc::new(range_partitions);
         Ok(Self {
             input,
@@ -450,6 +592,8 @@ impl LakeSoulHashSinkExec {
             metadata_client,
             range_partitions,
             primary_keys,
+            not_null_checks,
+            insert_only: None,
             object_store_options,
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(make_sink_schema()),
@@ -496,11 +640,17 @@ impl LakeSoulHashSinkExec {
         context: Arc<TaskContext>,
         table_info: Arc<TableInfo>,
         range_partitions: Arc<Vec<String>>,
+        not_null_checks: Arc<WriteInvariants>,
         write_id: String,
         partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
+        validated: Option<SendableRecordBatchStream>,
+        attempted_files: Option<Arc<Mutex<Vec<String>>>>,
     ) -> Result<u64> {
         debug!("{}", input.name());
-        let mut data = input.execute(partition, context.clone())?;
+        let mut data = match validated {
+            Some(stream) => stream,
+            None => input.execute(partition, context.clone())?,
+        };
         // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
             .schema()
@@ -521,54 +671,66 @@ impl LakeSoulHashSinkExec {
         // chosen by the table's physical format (parquet / vortex).
         let mut partitioned_writer =
             HashMap::<String, Box<dyn AsyncBatchWriter + Send>>::new();
-        while let Some(batch) = data.next().await.transpose()? {
-            debug!("write record_batch with {} rows", batch.num_rows());
-            let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
-            let partition_desc = columnar_values_to_partition_desc(&columnar_values);
-            debug!("{partition_desc}");
-            let batch_excluding_range =
-                batch.project(&schema_projection_excluding_range)?;
-            let file_absolute_path = format!(
-                "{}{}part-{}_{:0>4}.{}",
-                table_info.table_path,
-                columnar_values_to_sub_path(&columnar_values),
-                write_id,
-                partition,
-                physical_format.extension()
-            );
+        let read_result: Result<()> = async {
+            while let Some(batch) = data.next().await.transpose()? {
+                not_null_checks.validate(&batch)?;
+                debug!("write record_batch with {} rows", batch.num_rows());
+                let columnar_values =
+                    get_columnar_values(&batch, range_partitions.clone())?;
+                let partition_desc = columnar_values_to_partition_desc(&columnar_values);
+                debug!("{partition_desc}");
+                let batch_excluding_range =
+                    batch.project(&schema_projection_excluding_range)?;
+                let file_absolute_path = format!(
+                    "{}{}part-{}_{:0>4}.{}",
+                    table_info.table_path,
+                    columnar_values_to_sub_path(&columnar_values),
+                    write_id,
+                    partition,
+                    physical_format.extension()
+                );
 
-            if !partitioned_writer.contains_key(&partition_desc) {
-                debug!("create writer for partition {partition_desc}");
-                let io_config = create_io_config_builder_from_table_info(
-                    table_info.clone(),
-                    SecretMap::new(),
-                    SecretMap::new(),
-                )?
-                // The sink already assigns one file per input partition, so
-                // disable the writer's own dynamic partitioning.
-                .set_dynamic_partition(false)
-                .with_files(vec![file_absolute_path])
-                .with_schema(batch_excluding_range.schema())
-                .build();
-                let new_session =
-                    Arc::new(LakeSoulIOSession::from_plain_config_and_context(
-                        io_config,
-                        context.clone(),
-                    ));
-                let writer = create_writer(new_session).await?;
-                partitioned_writer.insert(partition_desc.clone(), writer);
-            }
+                if !partitioned_writer.contains_key(&partition_desc) {
+                    debug!("create writer for partition {partition_desc}");
+                    if let Some(files) = &attempted_files {
+                        files.lock().await.push(file_absolute_path.clone());
+                    }
+                    let io_config = create_io_config_builder_from_table_info(
+                        table_info.clone(),
+                        SecretMap::new(),
+                        SecretMap::new(),
+                    )?
+                    // The sink already assigns one file per input partition, so
+                    // disable the writer's own dynamic partitioning.
+                    .set_dynamic_partition(false)
+                    .with_files(vec![file_absolute_path])
+                    .with_schema(batch_excluding_range.schema())
+                    .build();
+                    let new_session =
+                        Arc::new(LakeSoulIOSession::from_plain_config_and_context(
+                            io_config,
+                            context.clone(),
+                        ));
+                    let writer = create_writer(new_session).await?;
+                    partitioned_writer.insert(partition_desc.clone(), writer);
+                }
 
-            if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {
-                row_count += batch_excluding_range.num_rows();
-                async_writer
-                    .write_record_batch(batch_excluding_range)
-                    .await?;
+                if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {
+                    row_count += batch_excluding_range.num_rows();
+                    async_writer
+                        .write_record_batch(batch_excluding_range)
+                        .await?;
+                }
             }
+            Ok(())
         }
+        .await;
+        let mut writers = partitioned_writer.into_iter();
+        let result: Result<()> = async {
+            read_result?;
 
         // TODO: apply rolling strategy
-        for (partition_desc, writer) in partitioned_writer.into_iter() {
+        for (partition_desc, writer) in writers.by_ref() {
             let outputs = writer.flush_and_close().await?;
             {
                 let mut partitioned_file_path_and_row_count_locked =
@@ -587,10 +749,121 @@ impl LakeSoulHashSinkExec {
                 // release guard
             }
         }
+            Ok(())
+        }.await;
+        if let Err(mut error) = result {
+            // Await aborts before the caller removes files; dropping a sender
+            // alone can race a background writer's end-of-input publication.
+            for (_, writer) in writers {
+                if let Err(abort) = writer.abort_and_close().await {
+                    error = rootcause::report!(DataFusionError::Execution(format!(
+                        "{error}; writer abort failed: {abort}"
+                    )))
+                    .into();
+                }
+            }
+            return Err(error);
+        }
 
         metrics::counter!(WRITE_ROWS_TOTAL, "format" => physical_format.extension())
             .increment(row_count as u64);
         Ok(row_count as u64)
+    }
+
+    fn execute_insert_only(
+        &self,
+        context: Arc<TaskContext>,
+        insert: InsertOnly,
+        span: tracing::Span,
+        dispatch: tracing::Dispatch,
+    ) -> SendableRecordBatchStream {
+        let input = self.input.clone();
+        let table_info = self.table_info();
+        let client = self.metadata_client();
+        let range_partitions = self.range_partitions.clone();
+        let primary_keys = self.primary_keys.clone();
+        let invariants = self.not_null_checks.clone();
+        let object_store_options = self.object_store_options.clone();
+        let schema = self.sink_schema.clone();
+        let writer_dispatch = dispatch.clone();
+        let future = async move {
+            let attempted_files = Arc::new(Mutex::new(Vec::new()));
+            let keep_files = Arc::new(AtomicBool::new(false));
+            let result: Result<u64> = async {
+                let streams = insert
+                    .validate(input.clone(), context.clone(), &invariants)
+                    .await?;
+                let files = Arc::new(Mutex::new(HashMap::new()));
+                let write_id =
+                    rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16);
+                let table_name = TableReference::Partial {
+                    schema: table_info.table_namespace.clone().into(),
+                    table: table_info.table_name.clone().into(),
+                }
+                .to_string();
+                let writes = streams
+                    .into_iter()
+                    .enumerate()
+                    .map(|(partition, stream)| {
+                        tokio::spawn(
+                            Self::pull_and_sink(
+                                input.clone(),
+                                partition,
+                                context.clone(),
+                                table_info.clone(),
+                                range_partitions.clone(),
+                                invariants.clone(),
+                                write_id.clone(),
+                                files.clone(),
+                                Some(stream),
+                                Some(attempted_files.clone()),
+                            )
+                            .with_subscriber(writer_dispatch.clone()),
+                        )
+                    })
+                    .collect();
+                Self::wait_for_commit(
+                    writes,
+                    client,
+                    table_name,
+                    primary_keys,
+                    object_store_options,
+                    files,
+                    Some(CommitGuard::InsertOnly {
+                        table_info,
+                        snapshot: insert.snapshot,
+                        keep_files: keep_files.clone(),
+                    }),
+                )
+                .await
+            }
+            .await;
+            // Once publication succeeded (or COMMIT's outcome is indeterminate),
+            // deleting these files could corrupt a committed table.
+            if !keep_files.load(Ordering::Acquire)
+                && let Err(original) = &result
+            {
+                let files = attempted_files.lock().await;
+                if let Err(cleanup) = remove_files(&context, &files).await {
+                    return Err(rootcause::report!(DataFusionError::Execution(format!(
+                        "{original}; {cleanup}"
+                    )))
+                    .into());
+                }
+            }
+            result
+        };
+        let join = tokio::spawn(future.instrument(span).with_subscriber(dispatch));
+        let stream = futures::stream::once(async move {
+            match join.await {
+                Ok(Ok(count)) => Ok(make_sink_batch(count, String::new())),
+                Ok(Err(error)) => {
+                    Err(DataFusionError::External(error.into_boxed_error()))
+                }
+                Err(error) => Err(DataFusionError::Execution(error.to_string())),
+            }
+        });
+        Box::pin(RecordBatchStreamAdapter::new(schema, stream))
     }
 
     async fn wait_for_commit(
@@ -600,6 +873,7 @@ impl LakeSoulHashSinkExec {
         primary_keys: Vec<String>,
         object_store_options: SecretMap,
         partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
+        commit_guard: Option<CommitGuard>,
     ) -> Result<u64> {
         let count = futures::future::join_all(join_handles)
             .await
@@ -608,7 +882,22 @@ impl LakeSoulHashSinkExec {
                 Ok(Ok(count)) => Ok(counter + count),
                 Ok(Err(e)) => Err(DataFusionError::Execution(format!("{}", e))),
                 Err(e) => Err(DataFusionError::Execution(format!("{}", e))),
-            })?;
+            });
+        if let Err(error) = &count
+            && let Some(CommitGuard::Streamed {
+                context,
+                attempted_files,
+            }) = &commit_guard
+        {
+            let files = attempted_files.lock().await;
+            if let Err(cleanup) = remove_files(context, &files).await {
+                return Err(rootcause::report!(DataFusionError::Execution(format!(
+                    "{error}; {cleanup}"
+                )))
+                .into());
+            }
+        }
+        let count = count?;
         let partitioned_file_path_and_row_count =
             partitioned_file_path_and_row_count.lock().await;
 
@@ -620,14 +909,47 @@ impl LakeSoulHashSinkExec {
             .record_partitions(partitioned_file_path_and_row_count.len() as u64);
 
         let commit_started = std::time::Instant::now();
-        for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
-            commit_data(client.clone(), &table_name, partition_desc.clone(), files)
-                .await?;
-            debug!(
-                "table: {} insert success at {:?}",
-                &table_name,
-                std::time::SystemTime::now()
-            )
+        if let Some(CommitGuard::InsertOnly {
+            table_info,
+            snapshot,
+            keep_files,
+        }) = commit_guard
+        {
+            let mut data_files = Vec::new();
+            for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter()
+            {
+                for path in files {
+                    data_files.push(DataFileInfo {
+                        partition_desc: partition_desc.clone(),
+                        path: path.clone(),
+                        file_op: "add".into(),
+                        ..Default::default()
+                    });
+                }
+            }
+            match client
+                .commit_insert_only(&table_info, &snapshot, data_files)
+                .await
+            {
+                Ok(_) => keep_files.store(true, Ordering::Release),
+                Err(error) => {
+                    if matches!(error, lakesoul_metadata::LakeSoulMetaDataError::InsertCommitOutcomeUnknown(_)) {
+                        keep_files.store(true, Ordering::Release);
+                    }
+                    return Err(error.into());
+                }
+            }
+        } else {
+            for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter()
+            {
+                commit_data(client.clone(), &table_name, partition_desc.clone(), files)
+                    .await?;
+                debug!(
+                    "table: {} insert success at {:?}",
+                    &table_name,
+                    std::time::SystemTime::now()
+                )
+            }
         }
         debug!(
             elapsed_ms = commit_started.elapsed().as_secs_f64() * 1000.0,
@@ -868,9 +1190,13 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
-        // DataSink is responsible for dynamically partitioning its
-        // own input at execution time, and so requires a single input partition.
-        vec![Distribution::SinglePartition; self.children().len()]
+        // The planner assigns PK rows to physical hash buckets. Coalescing
+        // those partitions would mislabel every output file as bucket zero.
+        if self.primary_keys.is_empty() {
+            vec![Distribution::SinglePartition; self.children().len()]
+        } else {
+            vec![Distribution::UnspecifiedDistribution; self.children().len()]
+        }
     }
 
     fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
@@ -881,26 +1207,30 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         //
         // More rationale:
         // https://github.com/apache/arrow-datafusion/pull/6354#discussion_r1195284178
-        match &self.sort_order {
-            Some(requirements) => {
-                vec![Some(OrderingRequirements::Soft(vec![requirements.clone()]))] // TODO check this
-            }
-            None => vec![],
-        }
+        let mut requirements = vec![None; self.children().len()];
+        requirements[0] = self
+            .sort_order
+            .as_ref()
+            .map(|order| OrderingRequirements::Soft(vec![order.clone()]));
+        requirements
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
-        vec![false]
+        vec![false; self.children().len()]
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
         // DataSink is responsible for dynamically partitioning its
         // own input at execution time.
-        vec![false]
+        vec![false; self.children().len()]
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.input]
+        let mut children = vec![&self.input];
+        if let Some(insert) = &self.insert_only {
+            children.push(&insert.existing_keys);
+        }
+        children
     }
 
     fn apply_expressions(
@@ -926,6 +1256,15 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             range_partitions: self.range_partitions.clone(),
             metadata_client: self.metadata_client.clone(),
             primary_keys: self.primary_keys.clone(),
+            not_null_checks: self.not_null_checks.clone(),
+            insert_only: self.insert_only.as_ref().map(|insert| InsertOnly {
+                existing_keys: children
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| insert.existing_keys.clone()),
+                snapshot: insert.snapshot.clone(),
+                key_schema: insert.key_schema.clone(),
+            }),
             object_store_options: self.object_store_options.clone(),
             properties: self.properties.clone(),
         }))
@@ -963,6 +1302,12 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let num_input_partitions = self.input.output_partitioning().partition_count();
         span.record("input_partition_count", num_input_partitions as u64);
         debug!(num_input_partitions, "starting table sink");
+        if let Some(insert) = &self.insert_only {
+            let stream =
+                self.execute_insert_only(context, insert.clone(), span.clone(), dispatch);
+            drop(entered);
+            return Ok(instrument_record_batch_stream(stream, span, "hash_sink"));
+        }
         // launch one async task per *input* partition
         let mut join_handles = vec![];
 
@@ -970,6 +1315,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
         let partitioned_file_path_and_row_count =
             Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
+        let attempted_files = Arc::new(Mutex::new(Vec::new()));
         for i in 0..num_input_partitions {
             // `#[instrument]` creates its span on the first poll. Carry both
             // the parent span and its dispatcher into the spawned task so the
@@ -981,8 +1327,11 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                     context.clone(),
                     self.table_info(),
                     self.range_partitions.clone(),
+                    self.not_null_checks.clone(),
                     write_id.clone(),
                     partitioned_file_path_and_row_count.clone(),
+                    None,
+                    Some(attempted_files.clone()),
                 )
                 .instrument(span.clone())
                 .with_subscriber(dispatch.clone()),
@@ -1017,6 +1366,10 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             self.primary_keys.clone(),
             self.object_store_options.clone(),
             partitioned_file_path_and_row_count,
+            Some(CommitGuard::Streamed {
+                context,
+                attempted_files,
+            }),
         );
         let join_handle = tokio::spawn(
             async move {
@@ -1096,6 +1449,46 @@ mod tests {
             properties: properties.to_string(),
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn nested_not_null_checks_reject_null_ancestors_and_missing_structs() {
+        use arrow::array::{Int32Array, StructArray};
+        use arrow::buffer::NullBuffer;
+
+        let stored_children: arrow::datatypes::Fields =
+            vec![Field::new("v", DataType::Int32, false)].into();
+        let source_children: arrow::datatypes::Fields =
+            vec![Field::new("v", DataType::Int32, true)].into();
+        let table = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("s", DataType::Struct(stored_children), true),
+        ]);
+        let input = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("s", DataType::Struct(source_children.clone()), true),
+        ]));
+        let checks = write_checks(&table, &input, &[], &["id".into()]).unwrap();
+        for (value, parent_valid, accepted) in [
+            (Some(10), true, true),
+            (None, true, false),
+            (Some(10), false, false),
+        ] {
+            let nested = StructArray::new(
+                source_children.clone(),
+                vec![Arc::new(Int32Array::from(vec![value]))],
+                Some(NullBuffer::from(vec![parent_valid])),
+            );
+            let batch = RecordBatch::try_new(
+                input.clone(),
+                vec![Arc::new(Int32Array::from(vec![1])), Arc::new(nested)],
+            )
+            .unwrap();
+            let result = checks.validate(&batch);
+            assert_eq!(result.is_ok(), accepted);
+        }
+        let key_only = Schema::new(vec![Field::new("id", DataType::Int32, true)]);
+        assert!(write_checks(&table, &key_only, &[], &["id".into()]).is_err());
     }
 
     /// Unusable stored format metadata must fail the construction instead of
@@ -1217,6 +1610,10 @@ mod span_tests {
                     Arc::new(TableInfo {
                         partitions: ";".to_string(),
                         properties: "{}".to_string(),
+                        table_schema:
+                            lakesoul_common::ser::arrow_java::schema_to_metadata_str(
+                                &Schema::empty(),
+                            ),
                         ..Default::default()
                     }),
                     client,
@@ -1308,6 +1705,7 @@ mod commit_metrics_tests {
                     Vec::new(),
                     SecretMap::new(),
                     Arc::new(Mutex::new(PartitionedFile::new())),
+                    None,
                 )
                 .await
             })
@@ -1396,6 +1794,7 @@ mod commit_metrics_tests {
                     vec!["pk".to_string()],
                     SecretMap::new(),
                     Arc::new(Mutex::new(partitions)),
+                    None,
                 )
                 .await
             })

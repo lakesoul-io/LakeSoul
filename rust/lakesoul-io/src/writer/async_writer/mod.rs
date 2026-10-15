@@ -23,6 +23,9 @@ pub use partitioning_writer::PartitioningAsyncWriter;
 mod sendable_writer;
 pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
+mod write_invariants;
+pub use write_invariants::WriteInvariants;
+
 use std::{
     collections::HashMap,
     fmt::{Debug, Formatter},

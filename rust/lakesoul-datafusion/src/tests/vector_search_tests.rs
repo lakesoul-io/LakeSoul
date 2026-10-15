@@ -1160,7 +1160,7 @@ async fn sql_create_table_stores_file_format_option() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_full_chain_insert_auto_builds_index() {
     // Full SQL chain: CREATE EXTERNAL TABLE (declaring the vector index
-    // through OPTIONS) -> INSERT INTO -> the auto index build must seal a
+    // through OPTIONS) -> INSERT OR REPLACE -> the auto index build must seal a
     // LATEST manifest, EXPLAIN must pick LakeSoulVectorSearchExec, and the
     // search must return rows.  `FLOAT[]` maps to List<Float32>, so this
     // exercises the native Float32 index path.
@@ -1189,7 +1189,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
     let insert_sql = format!(
-        "INSERT INTO \"lakesoul\".default.{table_name}
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name}
          SELECT CAST(g.value AS BIGINT),
                 ARRAY[sin(g.value), cos(g.value), g.value*0.1, 0.5, -0.5, 1.0, -1.0, 0.0]
          FROM generate_series(0, 99) AS g(value)"
@@ -1243,7 +1243,7 @@ async fn sql_full_chain_insert_auto_builds_index() {
 
     // An incremental SQL insert is auto-indexed too (delta build).
     let insert2_sql = format!(
-        "INSERT INTO \"lakesoul\".default.{table_name}
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name}
          SELECT CAST(100 + g.value AS BIGINT),
                 ARRAY[sin(g.value), cos(g.value), g.value*0.2, -0.5, 0.5, 0.0, 1.0, -1.0]
          FROM generate_series(0, 99) AS g(value)"
@@ -1321,7 +1321,7 @@ async fn sql_insert_float64_vectors_converted_to_f32_before_indexing() {
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
     let insert_sql = format!(
-        "INSERT INTO \"lakesoul\".default.{table_name}
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name}
          SELECT CAST(g.value AS BIGINT),
                 ARRAY[sin(g.value), cos(g.value), g.value*0.1, 0.5, -0.5, 1.0, -1.0, 0.0]
          FROM generate_series(0, 99) AS g(value)"

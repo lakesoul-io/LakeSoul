@@ -31,7 +31,12 @@ def _write_result(*, path: str, rows: int, size: int = 10) -> WriteResult:
     )
 
 
-def _fake_table(schema: pa.Schema):
+def _fake_table(
+    schema: pa.Schema,
+    *,
+    primary_keys: tuple[str, ...] = (),
+    partition_by: tuple[str, ...] = (),
+):
     committed: list[WriteResult] = []
 
     class FakeCatalog:
@@ -52,8 +57,8 @@ def _fake_table(schema: pa.Schema):
             namespace="analytics",
             path="s3://bucket/target",
             schema=schema,
-            primary_keys=(),
-            partition_by=(),
+            primary_keys=primary_keys,
+            partition_by=partition_by,
             hash_bucket_num=1,
             format=format,
         ),
@@ -108,6 +113,71 @@ def test_normalize_table_rejects_incompatible_type() -> None:
 
     with pytest.raises(ValueError, match="incompatible column"):
         _normalize_table(actual, expected)
+
+
+def test_normalize_table_preserves_sparse_pk_columns_and_explicit_null() -> None:
+    expected = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("part", pa.string()),
+            pa.field("omitted", pa.string()),
+            pa.field("value", pa.string()),
+        ]
+    )
+    actual = pa.table(
+        {
+            "value": pa.array([None], type=pa.large_string()),
+            "part": pa.array(["north"], type=pa.large_string()),
+            "id": [1],
+        }
+    )
+    normalized = _normalize_table(
+        actual, expected, primary_keys=("id",), partition_by=("part",)
+    )
+    assert normalized.schema == pa.schema(
+        [expected.field(name) for name in ("id", "part", "value")]
+    )
+    assert normalized.to_pydict() == {"id": [1], "part": ["north"], "value": [None]}
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"id": [1], "required": [7]},
+        {"id": [1], "part": ["north"]},
+        {"id": [None], "part": ["north"], "required": [7]},
+        {"id": [1], "part": ["north"], "required": [None]},
+    ],
+)
+def test_sink_checks_stored_constraints_before_opening_writer(
+    monkeypatch, values
+) -> None:
+    import lakesoul.daft.sink as sink_module
+
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("part", pa.string()),
+            pa.field("required", pa.int64(), nullable=False),
+            pa.field("optional", pa.string()),
+        ]
+    )
+    table, committed = _fake_table(schema, primary_keys=("id",), partition_by=("part",))
+    arrays = {
+        name: pa.array(
+            value, type=pa.int64() if name in {"id", "required"} else pa.string()
+        )
+        for name, value in values.items()
+    }
+
+    def unexpected_writer(config):
+        raise AssertionError("invalid input must not create a writer")
+
+    monkeypatch.setattr(sink_module, "Writer", unexpected_writer)
+    sink = LakeSoulDataSink(table)
+    with pytest.raises(ValueError, match="missing required|non-nullable"):
+        list(sink.write(iter([MicroPartition.from_pydict(arrays)])))
+    assert committed == []
 
 
 def test_sink_uses_one_writer_per_micropartition(

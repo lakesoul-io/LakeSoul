@@ -595,7 +595,7 @@ fn test_insert_from_multi_partition_source_keeps_all_rows() {
 
         // TPC-H SF 0.1 has 1000 suppliers, generated across 4 partitions.
         sc.sql(&format!(
-            "INSERT INTO lakesoul.{namespace}.{table_name} \
+            "INSERT OR REPLACE INTO lakesoul.{namespace}.{table_name} \
              SELECT * FROM tpch_supplier(0.1, 4)"
         ))
         .await

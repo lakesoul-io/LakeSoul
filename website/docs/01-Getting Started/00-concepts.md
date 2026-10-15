@@ -48,6 +48,57 @@ The primary key table can only support Upsert mode for updating. Updates can be 
 
 The primary key table can support concurrent write updates and partial column updates (Partial Update). During concurrent updates, the application layer needs to ensure that the writing order does not conflict. Generally speaking, if there are multiple streams updating different columns of the primary key table at the same time, you can use concurrent updates to write, so that data conflicts will not occur and the degree of concurrency will be improved.
 
+DataFusion's `LakeSoulTable.execute_upsert` / `upsert_dataframe` APIs and Python's
+`write_arrow`, `write_ray`, and `write_daft` methods use sparse delta-file upserts.
+Like ordinary Spark delta upsert, they require every primary-key and
+range-partition column and every stored `NOT NULL` field on each write. Missing
+required fields and actual NULL values in required fields are rejected even for
+existing keys. Nullable source-schema declarations do not by themselves violate
+NOT NULL: the actual values are checked. Required Struct descendants also reject
+NULL or missing ancestors.
+
+For nullable value columns, absence and NULL are different contributions:
+omitting a column preserves an older value; supplying NULL replaces it under the
+default last-value merge operator. A new key with no contribution for a nullable
+column reads NULL. These writers do not read existing keys or implement Spark's
+materialized, coalescing upsert.
+
+DataFusion SQL distinguishes ordinary INSERT from explicit Upsert:
+
+- `INSERT INTO` accepts new primary keys in both empty and populated tables.
+  It rejects keys already present in the same range partition and duplicate keys
+  within the statement; it never implicitly updates an existing key.
+  For non-primary-key tables, INSERT appends rows, including duplicates.
+- `INSERT OR REPLACE INTO` is the explicit SQL Upsert operation.
+
+Both SQL operations construct full rows: omitted nullable columns become NULL,
+not absent contributions, and all stored NOT NULL, primary-key, and
+range-partition constraints apply. Use the DataFrame/Python APIs above when an
+omitted nullable column should preserve its previous value.
+
+Primary-key INSERT scans the table's visible keys and buffers the incoming
+statement within DataFusion's memory budget before writing files. The input
+buffer does not spill; this costs a key scan and memory proportional to the
+incoming rows and keys. Sparse DataFrame/Python Upserts do not perform this scan.
+Version capture and key-file listing use the metadata primary, not read replicas.
+INSERT publishes all affected range partitions in one conditional PostgreSQL
+transaction. A concurrent commit in an affected partition rejects the statement
+instead of rebasing it; retry the whole statement. Rejected keys or required-field
+violations write no files or commits. A rejected conditional publication removes
+its files; an indeterminate COMMIT outcome retains them and requires inspecting
+metadata before retrying. This is not a read/GC lease and does not serialize
+against destructive metadata deletion or partition-version reuse.
+
+This INSERT support deliberately differs from Spark: Spark rejects ordinary
+INSERT into an existing primary-key table even immediately after DDL, before any
+data commit. Existing SQL/Python storage commit tags are unchanged. The native
+metadata client accepts PK Merge commits over older Append-tagged PK history;
+Java's existing Merge-versus-Append concurrent-commit restrictions remain, so
+mixed Spark/Flink/native writers can still encounter JVM commit conflicts.
+
+DataFrame upserts require input types logically equivalent to the stored types;
+perform any needed value casts before calling the upsert API.
+
 The primary key table can also support [CDC format](../03-Usage%20Docs/04-cdc-ingestion-table.mdx). For tables synchronized from the database, CDC format needs to be enabled. At the same time, the CDC format will automatically support ChangeLog semantics during Flink stream reading, thus enabling streaming incremental calculations in Flink.
 
 Primary key tables (including CDC format tables) batch read is also supported in Apache Doris, Presto and Python.

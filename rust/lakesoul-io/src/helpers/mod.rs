@@ -910,7 +910,7 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
         .sum())
 }
 
-/// Gets the file exist columns of underlying file format.
+/// Gets the top-level column names physically present in the underlying file.
 pub trait FileExistCols {
     fn get_file_exists_cols(&self) -> Vec<String>;
 }
@@ -919,9 +919,10 @@ impl FileExistCols for ParquetMetaData {
     fn get_file_exists_cols(&self) -> Vec<String> {
         self.file_metadata()
             .schema_descr()
-            .columns()
+            .root_schema()
+            .get_fields()
             .iter()
-            .map(|col| col.name().to_string())
+            .map(|field| field.name().to_string())
             .collect::<Vec<_>>()
     }
 }

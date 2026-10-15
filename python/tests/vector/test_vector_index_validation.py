@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from uuid import uuid4
 
 import numpy as np
 import pyarrow as pa
@@ -252,6 +253,141 @@ def test_create_table_valid_config_creates_and_auto_builds(tmp_path) -> None:
         except Exception:
             pass
         shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.mark.parametrize("write_api", ["arrow", "daft"])
+@pytest.mark.parametrize("format", ["parquet", "vortex", "vortex-compact"])
+def test_sparse_write_preserves_omitted_vector_and_text_indexes(
+    tmp_path, write_api: str, format: str
+) -> None:
+    """Omitted indexed values survive; included columns still auto-build."""
+    import daft
+
+    from lakesoul.daft import text_search, vector_search
+
+    cat = _catalog()
+    name = f"sparse_indexes_{uuid4().hex}"
+    path = tmp_path / name
+    vectors = _random_vectors_table(16)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint64(), nullable=False),
+            pa.field("vec", vectors.schema.field("vec").type),
+            pa.field("body", pa.string()),
+            pa.field("value", pa.int64()),
+        ]
+    )
+    initial = pa.Table.from_arrays(
+        [
+            vectors.column("id"),
+            vectors.column("vec"),
+            pa.array(["apple pie"] + ["banana bread"] * 15),
+            pa.array(range(16), type=pa.int64()),
+        ],
+        schema=schema,
+    )
+    table = cat.create_table(
+        name,
+        path=path.as_uri(),
+        schema=schema,
+        primary_keys=["id"],
+        hash_bucket_num=1,
+        vector_index=[{"column": "vec", "dim": DIM, "nlist": 2, "total_bits": 7}],
+        text_index=[{"column": "body"}],
+    )
+
+    def write(data: pa.Table):
+        if write_api == "arrow":
+            return table.write_arrow(data, format=format)
+        return table.write_daft(daft.from_arrow(data), format=format)
+
+    def index_files(kind: str) -> dict[str, bytes]:
+        return {
+            str(file.relative_to(path)): file.read_bytes()
+            for file in (path / f"_{kind}_index").rglob("*")
+            if file.is_file()
+        }
+
+    try:
+        result = write(initial)
+        assert result.files
+        assert all(
+            set(file.existing_columns) == set(schema.names) for file in result.files
+        )
+        vector_files = index_files("vector")
+        text_files = index_files("text")
+        assert vector_files and text_files
+
+        result = write(
+            pa.table(
+                {
+                    "id": pa.array([0, 1], type=pa.uint64()),
+                    "value": pa.array([100, 101], type=pa.int64()),
+                }
+            )
+        )
+        assert result.row_count == 2
+        assert all(
+            set(file.existing_columns) == {"id", "value"} for file in result.files
+        )
+        assert index_files("vector") == vector_files
+        assert index_files("text") == text_files
+        expected = initial.to_pylist()
+        expected[0]["value"] = 100
+        expected[1]["value"] = 101
+        assert table.scan().to_arrow_table().sort_by("id").to_pylist() == expected
+
+        nearest = (
+            vector_search(
+                table,
+                expected[0]["vec"],
+                top_k=1,
+                nprobe=2,
+                extra_columns=["value"],
+            )
+            .collect()
+            .to_arrow()
+        )
+        assert nearest.column("id").to_pylist() == [0]
+        assert nearest.column("vec").to_pylist() == [expected[0]["vec"]]
+        assert nearest.column("value").to_pylist() == [100]
+        matches = (
+            text_search(table, "apple", extra_columns=["value"]).collect().to_arrow()
+        )
+        assert matches.column("id").to_pylist() == [0]
+        assert matches.column("body").to_pylist() == ["apple pie"]
+        assert matches.column("value").to_pylist() == [100]
+
+        # A text-only contribution must still append its new text index delta.
+        write(
+            pa.table({"id": pa.array([0], type=pa.uint64()), "body": ["cherry tart"]})
+        )
+        assert index_files("vector") == vector_files
+        assert index_files("text") != text_files
+        matches = text_search(table, "cherry").collect().to_arrow()
+        assert matches.column("id").to_pylist() == [0]
+        assert text_search(table, "apple").collect().to_arrow().num_rows == 0
+        text_files = index_files("text")
+
+        # A vector-only contribution must likewise update its own index.
+        replacement = [-2.0] * DIM
+        write(
+            pa.table(
+                {
+                    "id": pa.array([1], type=pa.uint64()),
+                    "vec": pa.array([replacement], type=schema.field("vec").type),
+                }
+            )
+        )
+        assert index_files("vector") != vector_files
+        assert index_files("text") == text_files
+        nearest = (
+            vector_search(table, replacement, top_k=1, nprobe=2).collect().to_arrow()
+        )
+        assert nearest.column("id").to_pylist() == [1]
+        assert nearest.column("vec").to_pylist() == [replacement]
+    finally:
+        cat.drop_table(name, NAMESPACE, if_exists=True)
 
 
 if __name__ == "__main__":

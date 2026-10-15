@@ -13,12 +13,13 @@ from ray.data import Dataset
 from ray.data.block import BlockAccessor
 from ray.data.datasource import Datasink
 
+from lakesoul._write import normalize_write_data, validate_write_schema
 from lakesoul.io import IOConfig, Writer, merge_blob_option
 from lakesoul.io import WriteResult as LakeSoulWriteResult
 from lakesoul.vacuum import maybe_vacuum_after_commit
 
 if TYPE_CHECKING:
-    from lakesoul.catalog import LakeSoulTable
+    from lakesoul.catalog import LakeSoulTable, TableWriteConfig
 
 
 class LakeSoulDatasink(Datasink):
@@ -83,9 +84,10 @@ class LakeSoulDatasink(Datasink):
                 table = BlockAccessor.for_block(block).to_arrow()
                 if table.num_rows == 0:
                     continue
+                table = self._normalize_table(table)
                 if writer is None:
-                    writer = Writer(self._writer_config())
-                writer.write(self._normalize_table(table))
+                    writer = Writer(self._writer_config(table.schema))
+                writer.write(table)
             if writer is None:
                 return LakeSoulWriteResult(
                     files=(),
@@ -124,14 +126,19 @@ class LakeSoulDatasink(Datasink):
                 {item[0] for item in files},
             )
 
-    def _writer_config(self) -> IOConfig:
+    def _writer_config(self, schema: pa.Schema | None = None) -> IOConfig:
+        schema = self._table.schema if schema is None else schema
         return IOConfig(
             path=self._table.path,
-            schema=self._table.schema,
+            schema=schema,
             format=self._table.format,
             primary_keys=self._table.primary_keys,
             partition_by=self._table.partition_by,
-            vector_columns=self._table.vector_columns,
+            vector_columns=tuple(
+                column
+                for column in self._table.vector_columns
+                if column in schema.names
+            ),
             hash_bucket_num=self._table.hash_bucket_num,
             batch_size=self._batch_size,
             thread_num=self._thread_num,
@@ -142,12 +149,14 @@ class LakeSoulDatasink(Datasink):
         )
 
     def _normalize_table(self, table: pa.Table) -> pa.Table:
-        if not table.schema.equals(self._table.schema, check_metadata=False):
-            raise ValueError(
-                "Ray Dataset schema does not match LakeSoul table schema:\n"
-                f"expected: {self._table.schema}\nactual: {table.schema}"
-            )
-        return pa.Table.from_arrays(table.columns, schema=self._table.schema)
+        schema = validate_write_schema(
+            table.schema,
+            self._table.schema,
+            primary_keys=self._table.primary_keys,
+            partition_by=self._table.partition_by,
+            source="Ray Dataset",
+        )
+        return normalize_write_data(table, schema, constraints=self._table.schema)
 
 
 def write_lakesoul(
@@ -178,7 +187,7 @@ def write_lakesoul(
         object_store_options=object_store_options,
         options=options,
     )
-    _validate_dataset_schema(dataset, datasink._table.schema)
+    _validate_dataset_schema(dataset, datasink._table)
 
     remote_args = dict(ray_remote_args or {})
     remote_args.setdefault("max_retries", 0)
@@ -189,16 +198,18 @@ def write_lakesoul(
     )
 
 
-def _validate_dataset_schema(dataset: Dataset, expected: pa.Schema) -> None:
+def _validate_dataset_schema(dataset: Dataset, expected: TableWriteConfig) -> None:
     schema = dataset.schema()
     arrow_schema = getattr(schema, "base_schema", schema)
     if not isinstance(arrow_schema, pa.Schema):
         raise ValueError("Ray Dataset does not have an Arrow schema")
-    if not arrow_schema.equals(expected, check_metadata=False):
-        raise ValueError(
-            "Ray Dataset schema does not match LakeSoul table schema:\n"
-            f"expected: {expected}\nactual: {arrow_schema}"
-        )
+    validate_write_schema(
+        arrow_schema,
+        expected.schema,
+        primary_keys=expected.primary_keys,
+        partition_by=expected.partition_by,
+        source="Ray Dataset",
+    )
 
 
 Dataset.write_lakesoul = write_lakesoul  # type: ignore[attr-defined]

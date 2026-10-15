@@ -14,6 +14,7 @@ from typing import Literal, Any
 import pyarrow as pa
 
 from lakesoul._lib._writer import _NativeFileInfo, _NativeWriter
+from lakesoul._write import validate_non_nullable
 from lakesoul.redaction import redacted_dataclass_repr
 
 __all__ = ["FileInfo", "IOConfig", "WriteResult", "Writer", "merge_blob_option"]
@@ -261,6 +262,7 @@ class Writer:
 
     def _write_batch(self, batch: pa.RecordBatch) -> int:
         self._validate_schema(batch.schema)
+        validate_non_nullable(batch, self._schema, check_null_ancestors=False)
         return self._native.write(batch)
 
     def _validate_schema(self, schema: pa.Schema) -> None:

@@ -213,6 +213,78 @@ def test_daft_write_pk_upsert_reads_latest_rows_with_arrow(tmp_path: Path) -> No
         catalog.drop_table(table_name, if_exists=True)
 
 
+@pytest.mark.parametrize("format", ["parquet", "vortex", "vortex-compact"])
+def test_daft_sparse_upsert_preserves_omitted_values_and_explicit_null(
+    tmp_path: Path, format: str
+) -> None:
+    catalog = LakeSoulCatalog.from_env()
+    table_name = _table_name("daft_sparse")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("required", pa.int64(), nullable=False),
+            pa.field("label", pa.string()),
+            pa.field("value", pa.int64()),
+        ]
+    )
+    table = catalog.create_table(
+        table_name,
+        path=(tmp_path / table_name).as_uri(),
+        schema=schema,
+        primary_keys=("id",),
+        hash_bucket_num=2,
+    )
+    try:
+        table.write_daft(
+            daft.from_arrow(
+                pa.table(
+                    {
+                        "id": [1, 2],
+                        "required": [1, 2],
+                        "label": ["keep", "other"],
+                        "value": [10, 20],
+                    }
+                )
+            ),
+            format=format,
+        )
+        result = table.write_daft(
+            daft.from_arrow(
+                pa.table({"id": [1, 3], "required": [11, 3], "value": [100, 30]})
+            ),
+            format=format,
+        )
+        assert all("label" not in file.existing_columns for file in result.files)
+        arrow, daft_result = _read_with_arrow_and_daft(table.scan())
+        expected = [
+            {"id": 1, "required": 11, "label": "keep", "value": 100},
+            {"id": 2, "required": 2, "label": "other", "value": 20},
+            {"id": 3, "required": 3, "label": None, "value": 30},
+        ]
+        assert _rows(arrow) == expected
+        assert _rows(daft_result) == expected
+
+        table.write_daft(
+            daft.from_arrow(
+                pa.table(
+                    {
+                        "id": [1],
+                        "required": [12],
+                        "label": pa.array([None], type=pa.string()),
+                    }
+                )
+            ),
+            format=format,
+        )
+        expected[0] = {"id": 1, "required": 12, "label": None, "value": 100}
+        arrow, daft_result = _read_with_arrow_and_daft(table.scan())
+        assert _rows(arrow) == expected
+        assert _rows(daft_result) == expected
+        assert set(_data_commit_ops(catalog, table)) == {AppendCommit}
+    finally:
+        catalog.drop_table(table_name, if_exists=True)
+
+
 def _table_name(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 

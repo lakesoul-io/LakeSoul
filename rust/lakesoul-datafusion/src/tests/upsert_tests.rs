@@ -18,7 +18,7 @@ mod upsert_with_metadata_tests {
     use crate::Result;
     use crate::catalog::create_io_config_builder;
     use crate::lakesoul_table::LakeSoulTable;
-    use crate::tests::{assert_batches_eq, create_table};
+    use crate::tests::{assert_batches_eq, create_table, create_table_with_file_format};
 
     enum StrOrI32 {
         V1(&'static str),
@@ -1930,6 +1930,235 @@ mod upsert_with_metadata_tests {
             ],
         )
         .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partial_upsert_enforces_stored_not_null_without_materializing() -> Result<()>
+    {
+        use crate::{cli::CoreArgs, create_lakesoul_session_ctx};
+        use lakesoul_io::file_format::PhysicalFormat;
+
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+            let table_name =
+                format!("write_constraints_{}", uuid::Uuid::new_v4().simple());
+            let table_schema = Arc::new(Schema::new(vec![
+                Field::new("part", DataType::Int32, true),
+                Field::new("id", DataType::Int32, false),
+                Field::new("required", DataType::Int32, false),
+                Field::new("v", DataType::Int32, true),
+                Field::new("w", DataType::Int32, true),
+            ]));
+            create_table_with_file_format(
+                client.clone(),
+                &table_name,
+                LakeSoulIOConfigBuilder::new()
+                    .with_schema(table_schema)
+                    .with_primary_keys(vec!["id".into()])
+                    .with_range_partitions(vec!["part".into()])
+                    .build(),
+                format,
+            )
+            .await?;
+            let table = LakeSoulTable::for_name(&table_name).await?;
+            let ctx = create_lakesoul_session_ctx(client.clone(), &CoreArgs::default())?;
+            // Nullable source fields with valid values satisfy stored constraints.
+            table
+                .execute_upsert(create_batch_i32(
+                    vec!["part", "id", "required", "v", "w"],
+                    vec![&[1], &[1], &[100], &[10], &[20]],
+                ))
+                .await?;
+            // Source order differs from metadata order; omitted v must stay absent.
+            table
+                .execute_upsert(create_batch_i32(
+                    vec!["required", "id", "part", "w"],
+                    vec![&[200], &[1], &[1], &[21]],
+                ))
+                .await?;
+            let rows = ctx
+                .sql(&format!("SELECT * FROM {table_name}"))
+                .await?
+                .collect()
+                .await?;
+            assert_batches_eq(
+                &table_name,
+                &[
+                    "+------+----+----------+----+----+",
+                    "| part | id | required | v  | w  |",
+                    "+------+----+----------+----+----+",
+                    "| 1    | 1  | 200      | 10 | 21 |",
+                    "+------+----+----------+----+----+",
+                ],
+                &rows,
+            );
+
+            // Explicit NULL clears v, unlike materialized/coalescing upsert.
+            let updates = create_batch_optional_i32(
+                vec!["part", "id", "required", "v"],
+                vec![
+                    &[Some(1), Some(1)],
+                    &[Some(1), Some(2)],
+                    &[Some(300), Some(400)],
+                    &[None, Some(40)],
+                ],
+            );
+            table.upsert_dataframe(ctx.read_batch(updates)?).await?;
+
+            for id in [1, 3] {
+                let missing =
+                    create_batch_i32(vec!["part", "id", "v"], vec![&[1], &[id], &[999]]);
+                assert!(table.execute_upsert(missing).await.is_err());
+                let null_required = create_batch_optional_i32(
+                    vec!["part", "id", "required"],
+                    vec![&[Some(1)], &[Some(id)], &[None]],
+                );
+                assert!(table.execute_upsert(null_required).await.is_err());
+            }
+            for names in [vec!["id", "required"], vec!["part", "required"]] {
+                assert!(
+                    table
+                        .execute_upsert(create_batch_i32(names, vec![&[1], &[999]],))
+                        .await
+                        .is_err()
+                );
+            }
+            let null_key = create_batch_optional_i32(
+                vec!["part", "id", "required"],
+                vec![&[Some(1)], &[None], &[Some(999)]],
+            );
+            assert!(table.execute_upsert(null_key).await.is_err());
+            let wrong_type = create_batch_str_or_i32(
+                vec!["part", "id", "required"],
+                vec![
+                    &[StrOrI32::V2(1)],
+                    &[StrOrI32::V2(3)],
+                    &[StrOrI32::V1("not an integer")],
+                ],
+            );
+            assert!(
+                table
+                    .upsert_dataframe(ctx.read_batch(wrong_type)?)
+                    .await
+                    .is_err()
+            );
+
+            let rows = ctx
+                .sql(&format!("SELECT * FROM {table_name} ORDER BY id"))
+                .await?
+                .collect()
+                .await?;
+            assert_batches_eq(
+                &table_name,
+                &[
+                    "+------+----+----------+----+----+",
+                    "| part | id | required | v  | w  |",
+                    "+------+----+----------+----+----+",
+                    "| 1    | 1  | 300      |    | 21 |",
+                    "| 1    | 2  | 400      | 40 |    |",
+                    "+------+----+----------+----+----+",
+                ],
+                &rows,
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_upsert_rejects_nested_vector_and_decimal_parameter_changes()
+    -> Result<()> {
+        use crate::{cli::CoreArgs, create_lakesoul_session_ctx};
+        use arrow::array::{Array, Decimal128Array, FixedSizeListArray, StructArray};
+        use arrow::datatypes::Float32Type;
+        use lakesoul_io::file_format::PhysicalFormat;
+
+        let batch = |id: i32, size: i32, precision: u8, scale: i8, amount: i128| {
+            let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                [Some(vec![Some(1.0); size as usize])],
+                size,
+            );
+            let amounts = Decimal128Array::from(vec![amount])
+                .with_precision_and_scale(precision, scale)
+                .unwrap();
+            let payload = StructArray::from(vec![
+                (
+                    Arc::new(Field::new("vec", vectors.data_type().clone(), true)),
+                    Arc::new(vectors) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("amount", amounts.data_type().clone(), true)),
+                    Arc::new(amounts) as ArrayRef,
+                ),
+            ]);
+            RecordBatch::try_from_iter(vec![
+                ("id", Arc::new(Int32Array::from(vec![id])) as ArrayRef),
+                ("payload", Arc::new(payload) as ArrayRef),
+            ])
+            .unwrap()
+        };
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+            let name = format!("write_types_{}", uuid::Uuid::new_v4().simple());
+            let seed = batch(1, 8, 10, 2, 123);
+            create_table_with_file_format(
+                client.clone(),
+                &name,
+                LakeSoulIOConfigBuilder::new()
+                    .with_schema(seed.schema())
+                    .with_primary_keys(vec!["id".into()])
+                    .build(),
+                format,
+            )
+            .await?;
+            let table = LakeSoulTable::for_name(&name).await?;
+            table.execute_upsert(seed).await?;
+            let ctx = create_lakesoul_session_ctx(client.clone(), &CoreArgs::default())?;
+            for invalid in [
+                batch(2, 4, 10, 2, 123),
+                batch(2, 8, 38, 2, 999_999_999_999),
+                batch(2, 8, 10, 3, 123),
+            ] {
+                assert!(
+                    table
+                        .upsert_dataframe(ctx.read_batch(invalid)?)
+                        .await
+                        .is_err()
+                );
+            }
+            let rows = ctx
+                .sql(&format!(
+                    "SELECT id, payload['vec'] AS vec, payload['amount'] AS amount \
+                     FROM {name}"
+                ))
+                .await?
+                .collect()
+                .await?;
+            assert_eq!(rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+            let row = rows.iter().find(|batch| batch.num_rows() != 0).unwrap();
+            assert_eq!(
+                row.column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .value(0),
+                1
+            );
+            let vectors = row
+                .column(1)
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap();
+            assert_eq!(vectors.value_length(), 8);
+            let amounts = row
+                .column(2)
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .unwrap();
+            assert_eq!(amounts.precision(), 10);
+            assert_eq!(amounts.scale(), 2);
+            assert_eq!(amounts.value(0), 123);
+        }
+        Ok(())
     }
 
     #[test_log::test(tokio::test)]

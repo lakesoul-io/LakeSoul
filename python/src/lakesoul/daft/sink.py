@@ -10,11 +10,11 @@ from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 import pyarrow as pa
-import pyarrow.compute as pc
 from daft.io.sink import DataSink, WriteResult as DaftWriteResult
 from daft.recordbatch import MicroPartition
 from daft.schema import Schema
 
+from lakesoul._write import normalize_write_data, validate_write_schema
 from lakesoul.catalog import TableWriteConfig
 from lakesoul.io import IOConfig, Writer, merge_blob_option
 from lakesoul.io import WriteResult as LakeSoulWriteResult
@@ -97,13 +97,16 @@ class LakeSoulDataSink(DataSink[LakeSoulWriteResult]):
         # micropartition; it does not accumulate across micropartitions.
         for micropartition in micropartitions:
             arrow_table = _normalize_table(
-                micropartition.to_arrow(), self._table.schema
+                micropartition.to_arrow(),
+                self._table.schema,
+                primary_keys=self._table.primary_keys,
+                partition_by=self._table.partition_by,
             )
             if arrow_table.num_rows == 0:
                 yield _to_daft_write_result(_empty_write_result())
                 continue
 
-            writer = Writer(self._writer_config())
+            writer = Writer(self._writer_config(arrow_table.schema))
             try:
                 writer.write(arrow_table)
                 result = writer.finish()
@@ -162,14 +165,19 @@ class LakeSoulDataSink(DataSink[LakeSoulWriteResult]):
             }
         )
 
-    def _writer_config(self) -> IOConfig:
+    def _writer_config(self, schema: pa.Schema | None = None) -> IOConfig:
+        schema = self._table.schema if schema is None else schema
         return IOConfig(
             path=self._table.path,
-            schema=self._table.schema,
+            schema=schema,
             format=self._table.format,
             primary_keys=self._table.primary_keys,
             partition_by=self._table.partition_by,
-            vector_columns=self._table.vector_columns,
+            vector_columns=tuple(
+                column
+                for column in self._table.vector_columns
+                if column in schema.names
+            ),
             hash_bucket_num=self._table.hash_bucket_num,
             batch_size=self._batch_size,
             thread_num=self._thread_num,
@@ -180,40 +188,22 @@ class LakeSoulDataSink(DataSink[LakeSoulWriteResult]):
         )
 
 
-def _normalize_table(table: pa.Table, expected: pa.Schema) -> pa.Table:
-    if table.schema.names != expected.names:
-        raise ValueError(
-            "Daft DataFrame schema does not match LakeSoul table schema:\n"
-            f"expected: {expected}\nactual: {table.schema}\n"
-            "cast the DataFrame columns to the table schema before writing"
-        )
-
-    arrays = []
-    for actual_field, expected_field in zip(table.schema, expected):
-        column = table.column(actual_field.name)
-        if not expected_field.nullable and column.null_count:
-            raise ValueError(
-                "Daft DataFrame contains null values for a non-nullable "
-                f"LakeSoul column: {expected_field.name!r}"
-            )
-
-        if actual_field.type == expected_field.type:
-            arrays.append(column)
-            continue
-
-        if _is_compatible_daft_type(actual_field.type, expected_field.type):
-            arrays.append(pc.cast(column, expected_field.type, safe=True))
-            continue
-
-        raise ValueError(
-            "Daft DataFrame schema does not match LakeSoul table schema:\n"
-            f"expected: {expected}\nactual: {table.schema}\n"
-            f"incompatible column {actual_field.name!r}: "
-            f"{actual_field.type} cannot be written as {expected_field.type}\n"
-            "cast the DataFrame columns to the table schema before writing"
-        )
-
-    return pa.Table.from_arrays(arrays, schema=expected)
+def _normalize_table(
+    table: pa.Table,
+    expected: pa.Schema,
+    *,
+    primary_keys: tuple[str, ...] = (),
+    partition_by: tuple[str, ...] = (),
+) -> pa.Table:
+    schema = validate_write_schema(
+        table.schema,
+        expected,
+        primary_keys=primary_keys,
+        partition_by=partition_by,
+        source="Daft DataFrame",
+        compatible_type=_is_compatible_daft_type,
+    )
+    return normalize_write_data(table, schema, constraints=expected)
 
 
 def _is_compatible_daft_type(
@@ -223,6 +213,12 @@ def _is_compatible_daft_type(
     """Allow only Arrow representation changes introduced by Daft."""
     if actual == expected:
         return True
+
+    if pa.types.is_struct(actual) and pa.types.is_struct(expected):
+        return actual.names == expected.names and all(
+            _is_compatible_daft_type(source.type, target.type)
+            for source, target in zip(actual, expected)
+        )
 
     actual_is_string = pa.types.is_string(actual) or pa.types.is_large_string(actual)
     expected_is_string = pa.types.is_string(expected) or pa.types.is_large_string(

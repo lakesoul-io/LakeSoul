@@ -382,7 +382,13 @@ class DataFusionEngine(Engine):
         ]
         for batch in case.batches:
             statements.append(
-                _insert_sql(ref.table_name, case.schema, batch, "datafusion")
+                _insert_sql(
+                    ref.table_name,
+                    case.schema,
+                    batch,
+                    "datafusion",
+                    upsert=bool(case.primary_keys),
+                )
             )
         sql_file.write_text("\n".join(statements) + "\n", encoding="utf-8")
         _run_command(
@@ -697,7 +703,12 @@ def _flink_create_table_sql(case: CaseSpec, ref: TableRef) -> str:
 
 
 def _insert_sql(
-    table_name: str, schema: pa.Schema, table: pa.Table, engine: str
+    table_name: str,
+    schema: pa.Schema,
+    table: pa.Table,
+    engine: str,
+    *,
+    upsert: bool = False,
 ) -> str:
     columns = ",".join(_quote_ident(name, engine) for name in schema.names)
     values = []
@@ -710,8 +721,11 @@ def _insert_sql(
             )
             + ")"
         )
+    insert = "INSERT OR REPLACE" if upsert else "INSERT"
     return (
-        f"INSERT INTO {table_name} ({columns}) VALUES\n  " + ",\n  ".join(values) + ";"
+        f"{insert} INTO {table_name} ({columns}) VALUES\n  "
+        + ",\n  ".join(values)
+        + ";"
     )
 
 

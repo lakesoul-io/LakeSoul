@@ -54,10 +54,9 @@ def build_index_daft(
 ) -> None:
     """Build/update configured indexes for a freshly committed Daft write.
 
-    This is a best-effort post-write step only when ``table`` is a real
-    :class:`LakeSoulTable`.  In unit-test / distributed edge cases where a
-    placeholder is passed (or the write produced no files) it is skipped
-    gracefully, because the data write has already succeeded.
+    Sparse contributions update only the indexes for columns physically
+    present in each file; omitted columns keep their previous index entries.
+    Placeholder tables and writes that produced no files are skipped.
 
     Args:
         table: The :class:`lakesoul.catalog.LakeSoulTable` that was written to.
@@ -105,15 +104,25 @@ def build_index_daft(
         "kind": [],
         "config_json": [],
     }
+    touched_columns: list[tuple[str, str, list[str]]] = []
     for kind in kinds:
-        configs = table_index_configs(table, kind)
-        if not configs:
-            continue
-        kind_rows, _ = shard_build_rows(
-            kind, configs, file_infos, store_config_json, pk_columns
-        )
-        for key in rows:
-            rows[key].extend(kind_rows[key])
+        for config in table_index_configs(table, kind):
+            column = config["column"]
+            column_files = [
+                file_info
+                for file_info in file_infos
+                if column in file_info.existing_columns
+            ]
+            if not column_files:
+                continue
+            kind_rows, _ = shard_build_rows(
+                kind, [config], column_files, store_config_json, pk_columns
+            )
+            for key in rows:
+                rows[key].extend(kind_rows[key])
+            touched_columns.append(
+                (kind, column, [file_info.partition for file_info in column_files])
+            )
 
     n_shards = len(rows["file_paths"])
     if n_shards == 0:
@@ -153,9 +162,8 @@ def build_index_daft(
 
     # Compaction runs in the driver process after the distributed delta
     # builds: only drifted shards rebuild, so the extra work is bounded.
-    partitions = [file_info.partition for file_info in file_infos]
-    for kind in kinds:
-        compact_index(kind, table=table, partitions=partitions)
+    for kind, column, partitions in touched_columns:
+        compact_index(kind, table=table, partitions=partitions, column=column)
 
 
 class _BuildIndexShard:

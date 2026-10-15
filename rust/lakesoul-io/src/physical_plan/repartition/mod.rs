@@ -467,13 +467,9 @@ impl RepartitionByRangeAndHashExec {
                 input.output_partitioning().partition_count(),
             );
         }
-        // Require that sequence to be a prefix of the input ordering: `SortExec`
-        // keeps the input's pre-existing ordering after the sort prefix, so the
-        // ordering it exposes can be longer than `range + hash`. An absent or
-        // unrelated ordering must still be rejected.  The required sequence is
-        // deduplicated: the writer sorts by `range + primary keys`, and a
-        // primary key that contains the range columns collapses to a single
-        // occurrence in the resulting ordering.
+        // Require range + hash ordering, accounting for equivalent expressions
+        // and constant keys. A SELECT of literals is ordered even though
+        // DataFusion normalizes its output ordering to None.
         let mut required_order: Vec<Arc<dyn PhysicalExpr>> =
             range_partitioning_expr.clone();
         for hash_expr in &hash_exprs {
@@ -484,28 +480,15 @@ impl RepartitionByRangeAndHashExec {
                 required_order.push(hash_expr.clone());
             }
         }
-        let input_ordering = match input.output_ordering() {
-            Some(ordering) => ordering,
-            None => bail!(
-                "Input is not ordered by the range partitions and primary keys required by RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
-                range_partitioning_expr,
-                hash_partitioning,
-            ),
-        };
-        let input_order: Vec<Arc<dyn PhysicalExpr>> = input_ordering
-            .iter()
-            .map(|sort_expr| sort_expr.expr.clone())
-            .collect();
-        if input_order.len() < required_order.len()
-            || !physical_exprs_equal(
-                &input_order[..required_order.len()],
-                &required_order,
-            )
+        let requirements = required_order.into_iter().map(|expr| {
+            datafusion::physical_expr::PhysicalSortRequirement::new(expr, None)
+        });
+        if !input
+            .equivalence_properties()
+            .ordering_satisfy_requirement(requirements)?
         {
             bail!(
-                "Input ordering {:?} is not compatible with \
-                RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
-                input_ordering,
+                "Input is not ordered by the range partitions and primary keys required by RepartitionByRangeAndHashExec (range_partitioning_expr={:?}, hash_partitioning={})",
                 range_partitioning_expr,
                 hash_partitioning,
             );

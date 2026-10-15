@@ -2394,7 +2394,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         .map_err(|e| format!("register table: {e}"))?;
     let t = Instant::now();
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name} \
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name} \
          SELECT id, vec FROM src.public.bench_src"
     ))
     .await
@@ -2426,7 +2426,7 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
                 .map_err(|e| format!("register table: {e}"))?;
             let t = Instant::now();
             ctx.sql(&format!(
-                "INSERT INTO \"lakesoul\".default.{table_name} \
+                "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name} \
                  SELECT id, vec FROM src.public.{name}"
             ))
             .await
