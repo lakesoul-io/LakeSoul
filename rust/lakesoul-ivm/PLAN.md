@@ -3635,9 +3635,9 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   executor 在 `set_derived_identity_column` 前调用。列表主键的端到端拒绝用例已加。
 - **单元测试**：`runtime/joins.rs::identity_encoding_tests` 直接求值编码表达式——NULL 结构体 → `n`、
   字段不同 → 编码不同，且 `("a","bc")` 与 `("ab","c")` 这类文本拼接会碰撞的取值**不碰撞**（长度前缀的作用）。
-- **已知残留（下一步）**：结构体主键的**完整端到端**（结构体主键源 → 外连接步骤 → 消费方）目前撞上左连接
-  写路径的两个独立 planner 边角：`?table?.g` 限定/非限定歧义；连接键与主键同列时投影重名（需 AS 别名）。
-  编码与拒绝已就绪，这两处属写路径的独立修复。
+- **已知残留（已修复）**：结构体主键的**完整端到端**（结构体主键源 → 外连接步骤 → 消费方）当时撞上左连接
+  写路径的 planner 边角：`?table?.g` 限定/非限定歧义与随后暴露的 `?table?.s` 重复限定符。两者都由
+  §10.144 的「身份编码放到连接之下」解决；编码与拒绝逻辑本身未变。
 
 ### 10.142 lookup join：连接键与主键同列（PLAN §10.141 残留之一）
 
@@ -3666,8 +3666,35 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   与其完全同形、覆盖更少，本 PR 移除。规则本身由分析器单测
   `sql/joins.rs::a_lookup_key_that_is_also_the_primary_key_stays_a_lookup` 固定（该形状必须分析为
   `ViewSpec::LookupJoin`）。
-- **仍待解决**：结构体主键进入 **pair** 步骤（右侧不被键唯一化）的 planner 报错（`?table?.s`
-  重复限定符，见 §10.141）——与布局无关，属写路径投影问题。
+- **已解决**：结构体主键进入 **pair** 步骤（右侧不被键唯一化）的 planner 报错（`?table?.s`
+  重复限定符）——根因与修法见 §10.144（把每侧身份编码放到连接之下）。
+
+### 10.144 结构体主键外连接步骤的写路径（§10.141 残留收尾）
+
+- **根因**：派生外连接步骤的行身份原先在**连接之上**的投影里编码——`pair_identity_expr` 直接对
+  `col("__left_pk_*")` 调 `get_field(...)`。`get_field` 的 placement 是 `MoveTowardsLeafNodes`，会触发
+  DataFusion 的 `extract_leaf_expressions` + `push_down_leaf_projections`：身份里的字段访问被提取成
+  `__datafusion_extracted_N` 朝叶子下推，重建每个输入的提取投影时把**叶子列连同限定符**重新列出。
+  写路径的每一帧都是匿名 MemTable（`read_table` 固定用占位表名 `?table?`，见
+  `datafusion::logical_expr::UNNAMED_TABLE`），而结构体主键用例里两侧表同 schema：join 重建时
+  `(限定符, 列名)` 相撞——先报 `?table?.g` 与非限定 `g` 的歧义，键都改名后报
+  `Schema contains duplicate qualified field name "?table?".s`。
+- **修复（方案 A：把编码放在连接之下）**：`keyed_join_projection` 在为派生步骤构建**各侧**投影时追加
+  `__left_identity` / `__right_identity`（`identity_side_expr` = 对该侧主键逐个 `encoded_identity_part`），
+  join 之上的输出用 `pair_identity_from_sides()` 合成——`concat([guard(left), guard(right)])`，被补齐的
+  一侧编码为 `n`。编码串与旧实现逐字节一致（长度前缀、`s`/`v` 标记、NULL 语义不变），已写出的 MV 仍可读。
+- **来源区分**：`keyed_join_output_columns(parts, IdentitySource)`——物化行直接取存储的 `__ivm_pair_id`
+  （左/full join 的删除分支），需要计算的路径从两侧合成（左右 join 的插入分支与 full join 的插入分支；
+  full join 的插入由 `with_column` 改为 `select(keyed_join_output_columns(..))`，顺带丢掉两个内部列）。
+- **用例**：`nested_types.rs::a_struct_primary_key_materializes_a_pair_step_identity`——两侧主键均为
+  struct `s`、`ON c.g = b.g`（右侧不被键唯一化 → pair 派生步骤）的 count MV，覆盖 bootstrap 与右表新增
+  （同一组计数 1→2），全程 `allow_fallback=false`。
+- **顺带发现（与本修复无关，另行跟进）**：聚合刷新末段 `order by <组键>, "rowKinds"` 只保证**组键**层面
+  的顺序，不保证同一 **MV 主键**内 delete 在 insert 之前。组键含 NULL、且 MV 主键比组键更粗时（group by
+  `k, m`、MV 主键 `k`，组从 `(2, NULL)` 迁移到 `(2, {q:2})`），DataFusion 默认 NULLS LAST 把 delete 排到
+  insert 之后，merge-on-read 保留 delete，整行消失（原始读可见只有 delete 行）。对照复现：普通 count MV
+  （无 join、无步骤、无结构体主键）同样丢行。跟进做法：末段排序改为按 **MV 主键** 再 `rowKinds`
+  （join 写路径已经是按 MV 主键排序）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

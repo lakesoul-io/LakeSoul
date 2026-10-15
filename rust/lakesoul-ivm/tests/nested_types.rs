@@ -1925,3 +1925,160 @@ async fn a_list_primary_key_rejects_the_derived_identity() {
             .is_none()
     );
 }
+
+/// The `(k, payload, count)` rows of a count-only MV, ordered by `k`.
+async fn read_group_counts(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> Vec<(i64, String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, m, count_v from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let payloads = batch.column(1);
+        let counts = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row),
+                arrow::util::display::array_value_to_string(payloads, row).unwrap(),
+                counts.value(row),
+            ));
+        }
+    }
+    rows
+}
+
+/// A source pair whose **primary key is a struct** through a derived pair left
+/// join (the join key `g` does not determine the right side, so the step is a
+/// pair join and materializes a row identity): each side's identity is encoded
+/// below the join, so the leaf-expression pushdown never sees a struct field
+/// access above it.
+#[test_log::test(tokio::test)]
+async fn a_struct_primary_key_materializes_a_pair_step_identity() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ppk_l_{suffix}"),
+                table_path(&dir, "left"),
+                pk_schema(),
+            )
+            .with_primary_keys(vec!["s".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ppk_r_{suffix}"),
+                table_path(&dir, "right"),
+                pk_schema(),
+            )
+            .with_primary_keys(vec!["s".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ppk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::sum_count_groups_mv_schema_for(
+                    &struct_pk_step_schema(),
+                    &["k".to_string(), "m".to_string()],
+                    &[],
+                    None,
+                    None,
+                    false,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        pk_batch(&[
+            (1, "a", (10, Some("x")), vec![1], None, "insert"),
+            (2, "b", (20, None), vec![2], None, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            pk_batch(&[(
+                1,
+                "a",
+                (70, Some("y")),
+                vec![7],
+                Some(vec![("p", Some(1))]),
+                "insert",
+            )]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_ppk_mv_{suffix} SELECT x.k, x.m, COUNT(*) AS count_v FROM (SELECT b.k, c.m FROM ivm_ppk_l_{suffix} b LEFT JOIN ivm_ppk_r_{suffix} c ON c.g = b.g) x GROUP BY x.k, x.m"
+    );
+    let outcome = executor.execute(&statement).await;
+    match outcome {
+        Ok(execution) => assert_eq!(execution.action.label(), "bootstrap"),
+        Err(error) => panic!("the struct primary key was rejected: {error}"),
+    }
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_group_counts(runtime, &mv).await,
+        vec![(1, "{p: 1}".to_string(), 1), (2, String::new(), 1)]
+    );
+
+    // A second right row whose struct key is new and whose join key matches
+    // the left row behind `k = 1` adds another pair to that group.
+    right
+        .append_batch(
+            runtime.client(),
+            pk_batch(&[(
+                4,
+                "a",
+                (80, None),
+                vec![8],
+                Some(vec![("p", Some(1))]),
+                "insert",
+            )]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_group_counts(runtime, &mv).await,
+        vec![(1, "{p: 1}".to_string(), 2), (2, String::new(), 1)]
+    );
+}
