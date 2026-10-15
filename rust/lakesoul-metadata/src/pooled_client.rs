@@ -76,6 +76,14 @@ impl PooledClient {
         })
     }
 
+    pub(crate) fn primary_only(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            secondary_pool: None,
+            statement_cache: self.statement_cache.clone(),
+        }
+    }
+
     /// Refreshes pool occupancy gauges before checking out a connection.
     fn record_pool_metrics(&self) {
         crate::metrics::record_pool_metrics("primary", &self.pool.state());

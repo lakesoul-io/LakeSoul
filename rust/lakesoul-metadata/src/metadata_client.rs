@@ -24,11 +24,11 @@ use lakesoul_metadata_proto::entity::{
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
-use crate::pooled_client::PooledClient;
+use crate::pooled_client::{PooledClient, QueryType};
 use crate::transfusion::{DataFileInfo, parse_table_info_partitions};
 use crate::{
-    DaoType, PARAM_DELIM, PARTITION_DESC_DELIM, clean_meta_for_test, create_connection,
-    execute_insert, execute_query, execute_update,
+    DaoType, DataFileOp, PARAM_DELIM, PARTITION_DESC_DELIM, clean_meta_for_test,
+    create_connection, execute_insert, execute_query, execute_update,
 };
 
 /// The metadata client for the postgres database.
@@ -327,6 +327,15 @@ impl MetaDataClient {
                 )
             ),
         })
+    }
+
+    /// Share the existing primary pool, bypassing read replicas for write checks.
+    pub async fn primary_only(&self) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(self.client.lock().await.primary_only())),
+            max_retry: self.max_retry,
+            secret: self.secret.clone(),
+        }
     }
 
     /// The shared connection pool backing this client.
@@ -843,7 +852,11 @@ impl MetaDataClient {
                             CommitOp::MergeCommit
                                 | CommitOp::CompactionCommit
                                 | CommitOp::UpdateCommit
-                        )
+                        ) || (cur_op == CommitOp::AppendCommit
+                            && table_info
+                                .partitions
+                                .split_once(';')
+                                .is_some_and(|(_, keys)| !keys.is_empty()))
                     };
                     if !compatible {
                         return Err(LakeSoulMetaDataError::Internal(format!(
@@ -1092,6 +1105,176 @@ impl MetaDataClient {
             })?,
         )
         .await
+    }
+
+    /// Publish files whose keys were validated against `expected_partitions`.
+    ///
+    /// Capture those partition versions before planning the existing-key scan.
+    /// Missing partitions have expected version -1. Every affected partition
+    /// must still have exactly its expected version; this method never rebases
+    /// or retries a conflicting commit. All partition rows and their committed
+    /// data-commit rows are published in one PostgreSQL transaction.
+    ///
+    /// The next-version unique key also arbitrates with ordinary writers that
+    /// do not use this API. This assumes partition versions are not removed and
+    /// reused while validation is in flight: it does not acquire a GC/read lease
+    /// or serialize against destructive metadata deletion.
+    pub async fn commit_insert_only(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let guard = self.client.lock().await;
+        let mut connection = guard.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+        let domain: String = transaction
+            .query_opt(
+                "select domain from table_name_id where table_id = $1::TEXT",
+                &[&table_info.table_id],
+            )
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {} has no domain row",
+                    table_info.table_id
+                ))
+            })?
+            .get(0);
+        let mut data_commits = data_commit_info_list_from_files(
+            table_info,
+            files,
+            CommitOp::AppendCommit,
+            timestamp,
+            &domain,
+        );
+        // A consistent order avoids opposite-order partition conflicts between
+        // multi-partition insert-only statements.
+        data_commits.sort_unstable_by(|left, right| {
+            left.partition_desc.cmp(&right.partition_desc)
+        });
+        let expected_versions = expected_partitions
+            .iter()
+            .map(|partition| (partition.partition_desc.as_str(), partition.version))
+            .collect::<HashMap<_, _>>();
+        let select_partition = transaction
+            .prepare(
+                "select version, snapshot from partition_info \
+                 where table_id = $1::TEXT and partition_desc = $2::TEXT \
+                 order by version desc limit 1",
+            )
+            .await?;
+        let insert_partition = transaction
+            .prepare(
+                "insert into partition_info \
+                 (table_id, partition_desc, version, commit_op, snapshot, expression, domain) \
+                 values ($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
+            )
+            .await?;
+        let insert_data_commit = transaction
+            .prepare(
+                "insert into data_commit_info \
+                 (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain) \
+                 values ($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, TRUE, $7::TEXT)",
+            )
+            .await?;
+        let commit_op = CommitOp::AppendCommit.as_str_name();
+        let mut commit_ids = Vec::with_capacity(data_commits.len());
+        for data_commit in data_commits {
+            let partition_desc = &data_commit.partition_desc;
+            let expected_version = expected_versions
+                .get(partition_desc.as_str())
+                .copied()
+                .unwrap_or(-1);
+            let current = transaction
+                .query_opt(&select_partition, &[&table_info.table_id, partition_desc])
+                .await?;
+            let current_version = current
+                .as_ref()
+                .map(|row| row.get::<_, i32>(0))
+                .unwrap_or(-1);
+            if current_version != expected_version {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::InsertConflict {
+                    table_id: table_info.table_id.clone(),
+                    partition_desc: partition_desc.clone(),
+                    expected_version,
+                    actual_version: current_version,
+                });
+            }
+            let next_version = expected_version.checked_add(1).ok_or_else(|| {
+                LakeSoulMetaDataError::Internal(format!(
+                    "partition version overflow on table {} partition {}",
+                    table_info.table_id, partition_desc
+                ))
+            })?;
+            let mut snapshot = current
+                .map(|row| row.get::<_, Vec<uuid::Uuid>>(1))
+                .unwrap_or_default();
+            let commit_id = data_commit.commit_id.ok_or_else(|| {
+                LakeSoulMetaDataError::Internal("commit_id missing".to_string())
+            })?;
+            let commit_id = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
+            snapshot.push(commit_id);
+            // Do not use ON CONFLICT or retry: another writer may have inserted
+            // expected_version + 1 after the read above. Its unique-key conflict
+            // must abort every partition and data commit in this transaction.
+            transaction
+                .execute(
+                    &insert_partition,
+                    &[
+                        &table_info.table_id,
+                        partition_desc,
+                        &next_version,
+                        &commit_op,
+                        &snapshot,
+                        &"",
+                        &domain,
+                    ],
+                )
+                .await?;
+            let file_ops = data_commit
+                .file_ops
+                .iter()
+                .map(DataFileOp::from_proto_data_file_op)
+                .collect::<Result<Vec<_>>>()?;
+            transaction
+                .execute(
+                    &insert_data_commit,
+                    &[
+                        &table_info.table_id,
+                        partition_desc,
+                        &commit_id,
+                        &file_ops,
+                        &commit_op,
+                        &timestamp,
+                        &domain,
+                    ],
+                )
+                .await?;
+            commit_ids.push(commit_id.to_string());
+        }
+        transaction.commit().await.map_err(|error| {
+            // Constraint/transaction-rollback errors prove the commit aborted.
+            // Other server errors can arrive after local durability (for example
+            // termination while awaiting synchronous replication).
+            if error.code().is_some_and(|code| {
+                matches!(&code.code()[..2], "23" | "40") && code.code() != "40003"
+            }) {
+                LakeSoulMetaDataError::PostgresError(error)
+            } else {
+                LakeSoulMetaDataError::InsertCommitOutcomeUnknown(error)
+            }
+        })?;
+        Ok(commit_ids)
     }
 
     /// Commit data files for one table and publish all affected partitions together.

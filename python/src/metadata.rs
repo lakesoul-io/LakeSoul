@@ -134,7 +134,9 @@ fn metadata_error_to_py(error: LakeSoulMetaDataError, missing: MissingObject) ->
                 _ => MetadataError::new_err(message),
             }
         }
-        LakeSoulMetaDataError::PostgresPoolError(_) | LakeSoulMetaDataError::IoError(_) => {
+        LakeSoulMetaDataError::PostgresPoolError(_)
+        | LakeSoulMetaDataError::IoError(_)
+        | LakeSoulMetaDataError::InsertCommitOutcomeUnknown(_) => {
             MetadataUnavailableError::new_err(message)
         }
         LakeSoulMetaDataError::SerdeJsonError(_)
@@ -143,9 +145,9 @@ fn metadata_error_to_py(error: LakeSoulMetaDataError, missing: MissingObject) ->
         | LakeSoulMetaDataError::UuidError(_)
         | LakeSoulMetaDataError::ProstDecodeError(_)
         | LakeSoulMetaDataError::ProstEncodeError(_) => InvalidMetadataError::new_err(message),
-        LakeSoulMetaDataError::Internal(_) | LakeSoulMetaDataError::Other(_) => {
-            MetadataError::new_err(message)
-        }
+        LakeSoulMetaDataError::Internal(_)
+        | LakeSoulMetaDataError::Other(_)
+        | LakeSoulMetaDataError::InsertConflict { .. } => MetadataError::new_err(message),
     }
 }
 

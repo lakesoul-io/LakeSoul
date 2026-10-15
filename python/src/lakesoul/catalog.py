@@ -17,6 +17,7 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from lakesoul._lib._utils import _schema_from_metadata_str
+from lakesoul._write import normalize_write_data, validate_write_schema
 from lakesoul.exceptions import AlreadyExistsError
 from lakesoul.io import IOConfig, Writer, WriteResult, merge_blob_option
 from lakesoul.metadata import (
@@ -907,13 +908,30 @@ class LakeSoulTable:
         if auto_build:
             self._require_index_writable()
         write_config = self.write_config(format=format)
+        if not isinstance(data, (pa.RecordBatch, pa.Table, pa.RecordBatchReader)):
+            raise TypeError(
+                "data must be a pyarrow.RecordBatch, Table, or RecordBatchReader"
+            )
+        contribution_schema = validate_write_schema(
+            data.schema,
+            write_config.schema,
+            primary_keys=write_config.primary_keys,
+            partition_by=write_config.partition_by,
+        )
+        data = normalize_write_data(
+            data, contribution_schema, constraints=write_config.schema
+        )
         writer_config = IOConfig(
             path=write_config.path,
-            schema=write_config.schema,
+            schema=contribution_schema,
             format=write_config.format,
             primary_keys=write_config.primary_keys,
             partition_by=write_config.partition_by,
-            vector_columns=write_config.vector_columns,
+            vector_columns=tuple(
+                column
+                for column in write_config.vector_columns
+                if column in contribution_schema.names
+            ),
             hash_bucket_num=write_config.hash_bucket_num,
             batch_size=batch_size,
             thread_num=thread_num,
@@ -939,10 +957,9 @@ class LakeSoulTable:
     def _auto_build_after_write(self, result: WriteResult) -> None:
         """Build/update configured indexes for a freshly written ``result``.
 
-        Iterates every index kind declared by a ``*_index_columns`` table
-        property and builds/updates its shard indexes using only the newly
-        written files (the native builder performs an incremental delta
-        update).  Raises on any shard failure.
+        Only files that physically contain an indexed column contribute to
+        that column's incremental delta update. Sparse writes that omit it
+        leave the existing index untouched. Raises on any shard failure.
         """
         file_infos = list(result.files)
         if not file_infos:
@@ -950,9 +967,17 @@ class LakeSoulTable:
         for kind in _index.configured_index_kinds(self.properties):
             if _index.find_index_kind_spec(kind) is None:
                 continue
-            if not _index.table_index_configs(self, kind):
-                continue
-            _index.incremental_build_index(kind, table=self, file_infos=file_infos)
+            for config in _index.table_index_configs(self, kind):
+                column = config["column"]
+                column_files = [
+                    file_info
+                    for file_info in file_infos
+                    if column in file_info.existing_columns
+                ]
+                if column_files:
+                    _index.incremental_build_index(
+                        kind, table=self, file_infos=column_files, column=column
+                    )
 
     def write_ray(
         self,

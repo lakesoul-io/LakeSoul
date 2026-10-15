@@ -31,13 +31,14 @@ use crate::{
     session::LakeSoulIOSession,
 };
 
-use super::{AsyncBatchWriter, FlushOutput};
+use super::{AsyncBatchWriter, FlushOutput, WriteInvariants};
 
 pub struct FileSinkWriter {
     physical_format: PhysicalFormat,
     sink: Arc<dyn FileSink>,
     schema: SchemaRef,
     sink_schema: SchemaRef,
+    write_invariants: WriteInvariants,
     io_session: Arc<LakeSoulIOSession>,
     sender: Option<Sender<Result<RecordBatch, DataFusionError>>>,
     task: Option<SpawnedTask<Result<u64>>>,
@@ -128,6 +129,7 @@ impl FileSinkWriter {
     ) -> Result<Self> {
         let schema = uniform_schema(io_session.io_config().target_schema.0.clone());
         let sink_schema = Arc::clone(sink.schema());
+        let write_invariants = WriteInvariants::try_new(&sink_schema, &sink_schema)?;
         let receiver_stream_builder = RecordBatchReceiverStream::builder(
             Arc::clone(&sink_schema),
             io_session.io_config().receiver_capacity,
@@ -175,6 +177,7 @@ impl FileSinkWriter {
             sink,
             schema,
             sink_schema,
+            write_invariants,
             io_session,
             sender: Some(sender),
             task: Some(task),
@@ -497,6 +500,7 @@ impl AsyncBatchWriter for FileSinkWriter {
         }
 
         let batch = uniform_record_batch(self.project_to_sink_schema(batch)?)?;
+        self.write_invariants.validate_physical(&batch)?;
         let batch = self.encode_blob_columns(batch)?;
         self.buffered_size += get_batch_memory_size(&batch)? as u64;
         let sender = self

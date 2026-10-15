@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+mod insert_only;
 mod metadata_format;
 mod text_search_exec;
 mod vector_search_exec;

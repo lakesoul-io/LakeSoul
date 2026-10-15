@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use arrow::array::*;
 use arrow::datatypes::{Int32Type, i256};
@@ -12,17 +12,24 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_cast::pretty::print_batches;
+use datafusion::datasource::memory::MemTable;
 use datafusion::logical_expr::Expr;
-use datafusion::prelude::col;
+use datafusion::physical_plan::collect;
+use datafusion::prelude::{SessionContext, col};
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::session::create_session_context;
-use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use lakesoul_metadata::{
+    MetaDataClient, MetaDataClientRef, PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY,
+    PooledClient, QueryType, pg_config_from_env,
+};
 use rootcause::report;
 
 use crate::lakesoul_table::LakeSoulTable;
 use crate::tests::{assert_batches_eq, create_table, create_table_with_file_format};
-use crate::{Result, catalog::create_io_config_builder};
+use crate::{
+    Result, catalog::create_io_config_builder, cli::CoreArgs, create_lakesoul_session_ctx,
+};
 
 async fn init_table(
     client: MetaDataClientRef,
@@ -696,5 +703,783 @@ async fn test_all_cases() -> Result<()> {
     // todo:
     // test_insert_info_schema_enforcement().await?;
     // test_insert_info_struct_types_and_schema_enforcement().await?;
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SqlInsertSnapshot {
+    physical_files: Vec<(PathBuf, u64)>,
+    data_commits: Vec<String>,
+    partition_versions: Vec<String>,
+    merged_rows: Vec<Vec<Option<i32>>>,
+}
+
+struct SqlInsertFixture {
+    name: String,
+    table_id: String,
+    root: PathBuf,
+    ctx: Arc<SessionContext>,
+    metadata: PooledClient,
+    range_partitioned: bool,
+}
+
+impl SqlInsertFixture {
+    async fn new(
+        format: PhysicalFormat,
+        primary_key: bool,
+        range_partitioned: bool,
+        via_ddl: bool,
+    ) -> Result<Self> {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let name = format!("sql_insert_{}", uuid::Uuid::new_v4().simple());
+        let ctx = create_lakesoul_session_ctx(client.clone(), &CoreArgs::default())?;
+        if via_ddl {
+            let root = std::env::temp_dir().join(&name);
+            let range_field = if range_partitioned {
+                ", part INT NOT NULL"
+            } else {
+                ""
+            };
+            let primary_key_clause = if primary_key {
+                ", PRIMARY KEY (id)"
+            } else {
+                ""
+            };
+            let range_clause = if range_partitioned {
+                "PARTITIONED BY (part)"
+            } else {
+                ""
+            };
+            ctx.sql(&format!(
+                "CREATE EXTERNAL TABLE {name} (
+                    id INT NOT NULL, required INT NOT NULL, optional INT
+                    {range_field}{primary_key_clause}
+                 ) STORED AS LAKESOUL
+                 {range_clause}
+                 OPTIONS ('hashBucketNum' '4', 'file_format' '{}')
+                 LOCATION 'file://{}'",
+                format.name(),
+                root.display(),
+            ))
+            .await?
+            .collect()
+            .await?;
+        } else {
+            let mut fields = vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("required", DataType::Int32, false),
+                Field::new("optional", DataType::Int32, true),
+            ];
+            if range_partitioned {
+                fields.push(Field::new("part", DataType::Int32, false));
+            }
+            create_table_with_file_format(
+                client.clone(),
+                &name,
+                LakeSoulIOConfigBuilder::new()
+                    .with_schema(Arc::new(Schema::new(fields)))
+                    .with_primary_keys(if primary_key {
+                        vec!["id".into()]
+                    } else {
+                        vec![]
+                    })
+                    .with_range_partitions(if range_partitioned {
+                        vec!["part".into()]
+                    } else {
+                        vec![]
+                    })
+                    .build(),
+                format,
+            )
+            .await?;
+        }
+        let table = client
+            .get_table_info_by_table_name(&name, "default")
+            .await?
+            .expect("newly created INSERT test table");
+        let root = url::Url::parse(&table.table_path)?
+            .to_file_path()
+            .expect("INSERT test table uses an isolated local directory");
+        let metadata = PooledClient::try_new(
+            pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?,
+            None,
+        )
+        .await?;
+        Ok(Self {
+            name,
+            table_id: table.table_id,
+            root,
+            ctx,
+            metadata,
+            range_partitioned,
+        })
+    }
+
+    async fn execute(&self, query: &str) -> Result<()> {
+        self.ctx.sql(query).await?.collect().await?;
+        Ok(())
+    }
+
+    async fn rows(&self) -> Result<Vec<Vec<Option<i32>>>> {
+        let order = if self.range_partitioned {
+            "id, required, optional, part"
+        } else {
+            "id, required, optional"
+        };
+        let batches = self
+            .ctx
+            .sql(&format!("SELECT * FROM {} ORDER BY {order}", self.name))
+            .await?
+            .collect()
+            .await?;
+        let mut rows = Vec::new();
+        for batch in batches {
+            let columns = batch
+                .columns()
+                .iter()
+                .map(|array| {
+                    array
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .expect("INSERT fixture columns are INT")
+                })
+                .collect::<Vec<_>>();
+            for row in 0..batch.num_rows() {
+                rows.push(
+                    columns
+                        .iter()
+                        .map(|column| (!column.is_null(row)).then(|| column.value(row)))
+                        .collect(),
+                );
+            }
+        }
+        Ok(rows)
+    }
+
+    async fn assert_rows(&self, expected: &[&[Option<i32>]]) -> Result<()> {
+        let expected = expected.iter().map(|row| row.to_vec()).collect::<Vec<_>>();
+        assert_eq!(self.rows().await?, expected, "table {}", self.name);
+        Ok(())
+    }
+
+    async fn snapshot(&self) -> Result<SqlInsertSnapshot> {
+        let mut physical_files = Vec::new();
+        let mut directories = vec![self.root.clone()];
+        while let Some(directory) = directories.pop() {
+            if !directory.exists() {
+                continue;
+            }
+            for entry in std::fs::read_dir(directory)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                if metadata.is_dir() {
+                    directories.push(entry.path());
+                } else {
+                    physical_files.push((
+                        entry.path().strip_prefix(&self.root)?.to_path_buf(),
+                        metadata.len(),
+                    ));
+                }
+            }
+        }
+        physical_files.sort();
+
+        // Snapshot-based file APIs cannot expose orphan/uncommitted commit rows.
+        // Read every row for this unique table, including historical versions.
+        let data_commits = self
+            .metadata
+            .query(
+                "SELECT row_to_json(d)::text FROM data_commit_info AS d
+                 WHERE table_id = $1 ORDER BY partition_desc, commit_id",
+                QueryType::RW,
+                &[&self.table_id],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect();
+        let partition_versions = self
+            .metadata
+            .query(
+                "SELECT row_to_json(p)::text FROM partition_info AS p
+                 WHERE table_id = $1 ORDER BY partition_desc, version",
+                QueryType::RW,
+                &[&self.table_id],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect();
+        Ok(SqlInsertSnapshot {
+            physical_files,
+            data_commits,
+            partition_versions,
+            merged_rows: self.rows().await?,
+        })
+    }
+
+    async fn assert_rejected(&self, query: &str) -> Result<()> {
+        let before = self.snapshot().await?;
+        assert!(
+            self.execute(query).await.is_err(),
+            "accepted invalid statement: {query}"
+        );
+        assert_eq!(
+            self.snapshot().await?,
+            before,
+            "rejected statement changed files, metadata, or rows: {query}"
+        );
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_insert_checks_stored_not_null_for_append_and_primary_key_tables()
+-> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        for primary_key in [false, true] {
+            let table = SqlInsertFixture::new(format, primary_key, false, false).await?;
+            let name = &table.name;
+            table
+                .execute(&format!("INSERT INTO {name} VALUES (1,100,10)"))
+                .await?;
+            table
+                .execute(&format!(
+                    "INSERT INTO {name}
+                     SELECT id+1, NULLIF(required,-1), optional+1 FROM {name}"
+                ))
+                .await?;
+            table
+                .execute(&format!("INSERT INTO {name}(id,required) VALUES (3,300)"))
+                .await?;
+            table
+                .execute(&format!("INSERT INTO {name} VALUES (4,400,NULL)"))
+                .await?;
+
+            // Computed NULLs reach the sink through a nullable source field,
+            // rather than relying only on literal/VALUES validation.
+            for insert in ["INSERT", "INSERT OR REPLACE"] {
+                for query in [
+                    format!(
+                        "{insert} INTO {name}
+                         SELECT id+10, NULLIF(required,required), optional FROM {name}"
+                    ),
+                    format!("{insert} INTO {name}(id,optional) VALUES (5,50)"),
+                    format!("{insert} INTO {name} VALUES (5,NULL,50)"),
+                    format!("{insert} INTO {name}(required,optional) VALUES (500,50)"),
+                    format!("{insert} INTO {name} VALUES (NULL,500,50)"),
+                ] {
+                    table.assert_rejected(&query).await?;
+                }
+            }
+            table
+                .assert_rows(&[
+                    &[Some(1), Some(100), Some(10)],
+                    &[Some(2), Some(100), Some(11)],
+                    &[Some(3), Some(300), None],
+                    &[Some(4), Some(400), None],
+                ])
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_primary_key_insert_accepts_new_keys_and_rejects_duplicates() -> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        for via_ddl in [false, true] {
+            let table = SqlInsertFixture::new(format, true, false, via_ddl).await?;
+            let name = &table.name;
+            let empty = table.snapshot().await?;
+            assert!(empty.physical_files.is_empty());
+            assert!(empty.data_commits.is_empty());
+            assert!(empty.partition_versions.is_empty());
+            assert!(empty.merged_rows.is_empty());
+            table
+                .assert_rejected(&format!(
+                    "INSERT INTO {name} VALUES (1,100,10),(1,101,11)"
+                ))
+                .await?;
+            table
+                .execute(&format!("INSERT INTO {name} VALUES (1,100,10)"))
+                .await?;
+            table
+                .execute(&format!("INSERT INTO {name} VALUES (2,200,20)"))
+                .await?;
+            table
+                .execute(&format!("INSERT INTO {name} VALUES (4,400,40),(3,300,30)"))
+                .await?;
+            for query in [
+                format!("INSERT INTO {name} VALUES (1,999,99)"),
+                format!("INSERT INTO {name} VALUES (5,500,50),(2,999,99)"),
+                format!("INSERT INTO {name} VALUES (6,600,60),(6,601,61)"),
+            ] {
+                table.assert_rejected(&query).await?;
+            }
+
+            // SQL replacement is full-row: an omitted nullable value becomes
+            // NULL instead of preserving the previous value as a sparse Upsert.
+            table
+                .execute(&format!(
+                    "INSERT OR REPLACE INTO {name}(id,required) VALUES (1,900)"
+                ))
+                .await?;
+            table
+                .assert_rows(&[
+                    &[Some(1), Some(900), None],
+                    &[Some(2), Some(200), Some(20)],
+                    &[Some(3), Some(300), Some(30)],
+                    &[Some(4), Some(400), Some(40)],
+                ])
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_append_insert_keeps_duplicate_rows() -> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, false, false, false).await?;
+        let name = &table.name;
+        table
+            .execute(&format!("INSERT INTO {name} VALUES (1,100,10),(1,100,10)"))
+            .await?;
+        table
+            .execute(&format!("INSERT INTO {name} VALUES (1,100,10)"))
+            .await?;
+        table
+            .assert_rows(&[
+                &[Some(1), Some(100), Some(10)],
+                &[Some(1), Some(100), Some(10)],
+                &[Some(1), Some(100), Some(10)],
+            ])
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_range_primary_key_insert_is_partition_scoped_and_atomic() -> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, true, true, false).await?;
+        let name = &table.name;
+        table
+            .execute(&format!("INSERT INTO {name} VALUES (1,100,10,10)"))
+            .await?;
+        table
+            .execute(&format!("INSERT INTO {name} VALUES (1,200,20,20)"))
+            .await?;
+        table
+            .execute(&format!("INSERT INTO {name} VALUES (2,110,11,10)"))
+            .await?;
+        for query in [
+            format!("INSERT INTO {name} VALUES (7,700,70,30),(1,999,99,10)"),
+            format!(
+                "INSERT INTO {name} VALUES
+                 (8,800,80,30),(9,900,90,40),(8,801,81,30)"
+            ),
+            format!("INSERT INTO {name} VALUES (7,700,70,30),(8,NULL,80,40)"),
+        ] {
+            table.assert_rejected(&query).await?;
+        }
+        for insert in ["INSERT", "INSERT OR REPLACE"] {
+            for query in [
+                format!("{insert} INTO {name}(id,required,optional) VALUES (7,700,70)"),
+                format!("{insert} INTO {name} VALUES (7,700,70,NULL)"),
+                format!(
+                    "{insert} INTO {name}(required,optional,part) VALUES (700,70,30)"
+                ),
+                format!("{insert} INTO {name} VALUES (NULL,700,70,30)"),
+            ] {
+                table.assert_rejected(&query).await?;
+            }
+        }
+        table
+            .assert_rows(&[
+                &[Some(1), Some(100), Some(10), Some(10)],
+                &[Some(1), Some(200), Some(20), Some(20)],
+                &[Some(2), Some(110), Some(11), Some(10)],
+            ])
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_primary_key_insert_rejects_stale_physical_plan_without_side_effects()
+-> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        for populated in [false, true] {
+            let table = SqlInsertFixture::new(format, true, false, false).await?;
+            let name = &table.name;
+            if populated {
+                table
+                    .execute(&format!("INSERT OR REPLACE INTO {name} VALUES (0,50,5)"))
+                    .await?;
+            }
+            let held_insert = table
+                .ctx
+                .sql(&format!("INSERT INTO {name} VALUES (1,100,10)"))
+                .await?
+                .create_physical_plan()
+                .await?;
+            let competing_upsert = table
+                .ctx
+                .sql(&format!("INSERT OR REPLACE INTO {name} VALUES (2,200,20)"))
+                .await?
+                .create_physical_plan()
+                .await?;
+            collect(competing_upsert, table.ctx.task_ctx()).await?;
+            let before = table.snapshot().await?;
+            // Different incoming keys ensure this exercises a stale snapshot,
+            // not an ordinary existing-key collision.
+            assert!(
+                collect(held_insert, table.ctx.task_ctx()).await.is_err(),
+                "stale INSERT plan committed over a competing Upsert"
+            );
+            assert_eq!(table.snapshot().await?, before);
+            if populated {
+                table
+                    .assert_rows(&[
+                        &[Some(0), Some(50), Some(5)],
+                        &[Some(2), Some(200), Some(20)],
+                    ])
+                    .await?;
+            } else {
+                table
+                    .assert_rows(&[&[Some(2), Some(200), Some(20)]])
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_primary_key_insert_rejects_cross_batch_duplicates_and_late_null()
+-> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, true, false, false).await?;
+        table
+            .execute("SET datafusion.execution.batch_size = 1")
+            .await?;
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("required", DataType::Int32, true),
+            Field::new("optional", DataType::Int32, true),
+        ]));
+        table.ctx.register_catalog(
+            "input",
+            SessionContext::new().catalog("datafusion").unwrap(),
+        );
+        for (suffix, rows) in [
+            ("duplicates", [(1, Some(100)), (1, Some(200))]),
+            ("late_null", [(2, Some(200)), (3, None)]),
+        ] {
+            let batches = rows
+                .into_iter()
+                .map(|(id, required)| {
+                    RecordBatch::try_new(
+                        source_schema.clone(),
+                        vec![
+                            Arc::new(Int32Array::from(vec![id])) as ArrayRef,
+                            Arc::new(Int32Array::from(vec![required])) as ArrayRef,
+                            Arc::new(Int32Array::from(vec![Some(10)])) as ArrayRef,
+                        ],
+                    )
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let source = format!("{}_source_{suffix}", table.name);
+            table.ctx.register_table(
+                datafusion_common::TableReference::full(
+                    "input",
+                    "public",
+                    source.clone(),
+                ),
+                Arc::new(MemTable::try_new(source_schema.clone(), vec![batches])?),
+            )?;
+            table
+                .assert_rejected(&format!(
+                    "INSERT INTO {} SELECT id, required, optional FROM input.public.{source}",
+                    table.name
+                ))
+                .await?;
+        }
+        table.assert_rows(&[]).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_insert_compares_composite_string_keys_across_storage_views() -> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let ctx = create_lakesoul_session_ctx(client.clone(), &CoreArgs::default())?;
+        let name = format!("sql_insert_strings_{}", uuid::Uuid::new_v4().simple());
+        let root = std::env::temp_dir().join(&name);
+        ctx.sql(&format!(
+            "CREATE EXTERNAL TABLE {name} (
+                id VARCHAR NOT NULL, sub INT NOT NULL, value INT,
+                PRIMARY KEY (id, sub)
+             ) STORED AS LAKESOUL
+             OPTIONS ('hashBucketNum' '4', 'file_format' '{}')
+             LOCATION 'file://{}'",
+            format.name(),
+            root.display(),
+        ))
+        .await?
+        .collect()
+        .await?;
+        for sql in [
+            format!("INSERT INTO {name} VALUES ('x',1,10),('x',2,20)"),
+            format!("INSERT INTO {name} SELECT 'y', 1, 30"),
+        ] {
+            ctx.sql(&sql).await?.collect().await?;
+        }
+        for sql in [
+            format!("INSERT INTO {name} VALUES ('x',1,99)"),
+            format!("INSERT INTO {name} VALUES ('z',1,40),('z',1,41)"),
+        ] {
+            assert!(ctx.sql(&sql).await?.collect().await.is_err());
+        }
+        let rows = ctx
+            .sql(&format!("SELECT * FROM {name} ORDER BY id, sub"))
+            .await?
+            .collect()
+            .await?;
+        assert_batches_eq(
+            &name,
+            &[
+                "+----+-----+-------+",
+                "| id | sub | value |",
+                "+----+-----+-------+",
+                "| x  | 1   | 10    |",
+                "| x  | 2   | 20    |",
+                "| y  | 1   | 30    |",
+                "+----+-----+-------+",
+            ],
+            &rows,
+        );
+        client.drop_table(&name, "default").await?;
+        std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_primary_key_insert_empty_query_does_not_publish_files() -> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, true, false, false).await?;
+        for populated in [false, true] {
+            if populated {
+                table
+                    .execute(&format!("INSERT INTO {} VALUES (1,100,10)", table.name))
+                    .await?;
+            }
+            let before = table.snapshot().await?;
+            table
+                .execute(&format!(
+                    "INSERT INTO {} SELECT id, required, optional FROM {} WHERE false",
+                    table.name, table.name,
+                ))
+                .await?;
+            assert_eq!(table.snapshot().await?, before);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_primary_key_writes_allow_subsequent_native_sparse_delta() -> Result<()> {
+    use lakesoul_metadata::transfusion::DataFileInfo;
+    use parquet::arrow::ArrowWriter;
+
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, true, false, true).await?;
+        let client = MetaDataClient::from_env().await?;
+        table
+            .execute(&format!("INSERT INTO {} VALUES (1,100,10)", table.name))
+            .await?;
+        for index in 0..3 {
+            if index == 2 {
+                table
+                    .execute(&format!(
+                        "INSERT OR REPLACE INTO {} VALUES (1,200,20)",
+                        table.name
+                    ))
+                    .await?;
+            }
+            let sparse_schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("required", DataType::Int32, false),
+            ]));
+            let batch = RecordBatch::try_new(
+                sparse_schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![1])),
+                    Arc::new(Int32Array::from(vec![300])),
+                ],
+            )?;
+            let mut hash = vec![0];
+            lakesoul_io::utils::hash::create_hashes(&batch.columns()[..1], &mut hash)?;
+            let path = table.root.join(format!(
+                "part-native-sparse-{index}_{:04}.parquet",
+                hash[0] % 4
+            ));
+            let mut writer =
+                ArrowWriter::try_new(std::fs::File::create(&path)?, sparse_schema, None)?;
+            writer.write(&batch)?;
+            writer.close()?;
+            let partition = client
+                .get_all_partition_info(&table.table_id)
+                .await?
+                .pop()
+                .unwrap()
+                .partition_desc;
+            let files = vec![DataFileInfo {
+                partition_desc: partition,
+                path: url::Url::from_file_path(&path).unwrap().to_string(),
+                file_op: "add".into(),
+                file_exist_cols: "id,required".into(),
+                size: std::fs::metadata(&path)?.len() as i64,
+                ..Default::default()
+            }];
+            if index == 1 {
+                // Older Python/SQL writers tagged PK deltas as AppendCommit.
+                client
+                    .commit_data_files_with_commit_op(
+                        &table.name,
+                        "default",
+                        files,
+                        lakesoul_metadata_proto::entity::CommitOp::AppendCommit,
+                    )
+                    .await?;
+            } else {
+                client
+                    .commit_data_files(&table.name, "default", files)
+                    .await?;
+            }
+            assert_eq!(
+                table.rows().await?,
+                vec![vec![
+                    Some(1),
+                    Some(300),
+                    Some(if index == 2 { 20 } else { 10 }),
+                ]]
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_primary_key_insert_preserves_native_hash_bucket_routing() -> Result<()> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let table = SqlInsertFixture::new(PhysicalFormat::Parquet, true, false, true).await?;
+    for (operation, base) in [("INSERT INTO", 100), ("INSERT OR REPLACE INTO", 200)] {
+        let values = (0..32)
+            .map(|id| format!("({id},{},{})", base + id, 1000 + id))
+            .collect::<Vec<_>>()
+            .join(",");
+        table
+            .execute(&format!("{operation} {} VALUES {values}", table.name))
+            .await?;
+    }
+    assert_eq!(
+        table.rows().await?,
+        (0..32)
+            .map(|id| { vec![Some(id), Some(200 + id), Some(1000 + id)] })
+            .collect::<Vec<_>>()
+    );
+    // Bucket ids are a persisted routing contract: native/Spark readers merge
+    // and prune each bucket separately, unlike DataFusion's range-wide scan.
+    for (relative, _) in table.snapshot().await?.physical_files {
+        let bucket: u32 = relative
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .rsplit_once('_')
+            .unwrap()
+            .1
+            .parse()?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(
+            table.root.join(relative),
+        )?)?
+        .build()?;
+        for batch in reader {
+            let batch = batch?;
+            let mut hashes = vec![0; batch.num_rows()];
+            lakesoul_io::utils::hash::create_hashes(
+                &[batch.column_by_name("id").unwrap().clone()],
+                &mut hashes,
+            )?;
+            assert!(hashes.into_iter().all(|hash| hash % 4 == bucket));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_replace_rejects_cross_bucket_null_without_leaving_files() -> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, true, false, true).await?;
+        let values = (0..32)
+            .map(|id| format!("({id},{},{})", 100 + id, 1000 + id))
+            .collect::<Vec<_>>()
+            .join(",");
+        table.assert_rejected(&format!(
+            "INSERT OR REPLACE INTO {} \
+             SELECT id, CASE WHEN id=31 THEN CAST(NULL AS INT) ELSE required END, optional \
+             FROM (VALUES {values}) AS src(id,required,optional)", table.name
+        )).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_append_rejects_late_null_across_input_partitions_without_leaving_files()
+-> Result<()> {
+    for format in [PhysicalFormat::Parquet, PhysicalFormat::VortexCompact] {
+        let table = SqlInsertFixture::new(format, false, false, false).await?;
+        table.ctx.register_catalog(
+            "input",
+            SessionContext::new().catalog("datafusion").unwrap(),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("required", DataType::Int32, true),
+            Field::new("optional", DataType::Int32, true),
+        ]));
+        let batch = |id, required| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![id])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![required])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![Some(10)])) as ArrayRef,
+                ],
+            )
+        };
+        table.ctx.register_table(
+            datafusion_common::TableReference::full("input", "public", "late_null"),
+            Arc::new(MemTable::try_new(
+                schema.clone(),
+                vec![
+                    vec![batch(1, Some(100))?, batch(2, Some(200))?],
+                    vec![batch(3, Some(300))?, batch(4, None)?],
+                ],
+            )?),
+        )?;
+        table
+            .assert_rejected(&format!(
+                "INSERT INTO {} SELECT * FROM input.public.late_null",
+                table.name
+            ))
+            .await?;
+    }
     Ok(())
 }

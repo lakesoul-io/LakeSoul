@@ -321,6 +321,63 @@ def test_write_arrow_commits_written_files(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"dt": ["today"], "required": [7]}, "missing required.*id"),
+        ({"id": [1], "required": [7]}, "missing required.*dt"),
+        ({"id": [1], "dt": ["today"]}, "missing required.*required"),
+        ({"id": [None], "dt": ["today"], "required": [7]}, "non-nullable.*id"),
+        ({"id": [1], "dt": ["today"], "required": [None]}, "non-nullable.*required"),
+        ({"id": ["1"], "dt": ["today"], "required": [7]}, "incompatible column.*id"),
+        (
+            {"id": [1], "dt": ["today"], "required": [7], "unknown": [0]},
+            "unknown columns",
+        ),
+    ],
+)
+def test_write_arrow_rejects_invalid_contributions_before_writing(
+    monkeypatch, values, message: str
+) -> None:
+    client = DummyNativeClient("host=localhost dbname=db")
+    table = LakeSoulTable(LakeSoulCatalog(_client=client), _table_info())
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("dt", pa.string()),
+            pa.field("required", pa.int64(), nullable=False),
+            pa.field("optional", pa.string()),
+        ]
+    )
+    monkeypatch.setattr(LakeSoulTable, "schema", property(lambda self: schema))
+    arrays = {
+        name: pa.array(
+            value,
+            type=pa.int64() if name in {"id", "required"} and value == [None] else None,
+        )
+        for name, value in values.items()
+    }
+
+    def unexpected_writer(config):
+        raise AssertionError("invalid input must not create a writer")
+
+    monkeypatch.setattr(catalog_module, "Writer", unexpected_writer)
+    with pytest.raises(ValueError, match=message):
+        table.write_arrow(pa.table(arrays))
+    assert client.commits == []
+
+
+def test_append_only_write_still_requires_complete_rows(monkeypatch) -> None:
+    client = DummyNativeClient("host=localhost dbname=db")
+    table = LakeSoulTable(LakeSoulCatalog(_client=client), _table_info(partitions=";"))
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("value", pa.string())])
+    monkeypatch.setattr(LakeSoulTable, "schema", property(lambda self: schema))
+
+    with pytest.raises(ValueError, match="missing required columns.*value"):
+        table.write_arrow(pa.table({"id": [1]}))
+    assert client.commits == []
+
+
 def test_scan_resolves_catalog_context_to_scan_config() -> None:
     client = DummyNativeClient("host=localhost dbname=db")
     catalog = LakeSoulCatalog(

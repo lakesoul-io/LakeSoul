@@ -112,6 +112,28 @@ print(result.row_count)
 print(result.files)
 ```
 
+### Partial upserts and NOT NULL
+
+For primary-key tables, all three table write methods use sparse delta-file
+upserts, matching Spark's ordinary delta-upsert path:
+
+- Supply every primary-key and range-partition column, and every stored
+  `NOT NULL` field, on every write—even when updating an existing key.
+- A nullable source field is accepted when its actual values satisfy the stored
+  `NOT NULL` constraint. NULL values in required fields are rejected before
+  metadata publication. Required Struct descendants are checked too; a NULL or
+  missing parent cannot satisfy a required child.
+- Omit a nullable value column to preserve its previous contribution. Supply a
+  typed Arrow NULL to clear it under the default last-value merge operator.
+  A new key with no contribution for a nullable column reads NULL.
+- Append-only tables require all table columns; they do not support sparse
+  contributions.
+
+No existing-key lookup or materialized/coalescing upsert is performed. For
+example, omitting a required value is rejected even if an older row supplies it.
+An Arrow batch has one contribution schema for all its rows; split writes when
+different rows need different sets of absent columns.
+
 Equivalent integration entry points are also available:
 
 | API | Equivalent table method |
@@ -139,12 +161,23 @@ result = writer.result
 The writer accepts `pyarrow.RecordBatch`, `pyarrow.Table`, and
 `pyarrow.RecordBatchReader`. `Writer.finish()` returns `WriteResult`;
 `Writer.abort()` discards pending work and closes the writer.
+Its input schema must match `IOConfig.schema`, and actual values must satisfy
+that configured schema's NOT NULL fields. This low-level API does not load
+stored table constraints; prefer the table write methods for metadata-aware
+validation.
+
+Nested file-schema nullability follows Arrow's parent-null masking: a NULL Struct
+may hide a required child. The table methods separately enforce the stored
+Spark-style constraints described above.
 
 ## Secondary indexes
 
 Declare vector columns with `vector_index=` and text columns with `text_index=`
 when creating a table; `write_arrow` and `write_daft` then build, update and
 compact the indexes automatically.
+
+For sparse writes, automatic maintenance processes only indexed columns present
+in each file contribution; omitted columns leave their older index entries intact.
 
 | API | Purpose |
 | --- | --- |

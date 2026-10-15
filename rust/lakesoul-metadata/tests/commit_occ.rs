@@ -425,3 +425,129 @@ async fn stale_update_conflicts_with_compaction_carrying_appends() -> Result<()>
     client.drop_table(&name, NAMESPACE).await?;
     Ok(())
 }
+
+async fn insert_only_metadata_state(table_id: &str) -> Result<Vec<String>> {
+    use lakesoul_metadata::{
+        PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, PooledClient, QueryType,
+        pg_config_from_env,
+    };
+    let pool = PooledClient::try_new(
+        pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?,
+        None,
+    )
+    .await?;
+    Ok(pool
+        .query(
+            "SELECT 'data:' || row_to_json(d)::text AS state FROM data_commit_info d WHERE table_id = $1
+             UNION ALL
+             SELECT 'partition:' || row_to_json(p)::text AS state FROM partition_info p WHERE table_id = $1
+             ORDER BY state",
+            QueryType::RW,
+            &[&table_id],
+        )
+        .await?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+#[tokio::test]
+async fn insert_only_commits_are_atomic_and_do_not_rebase_stale_reads() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("insert_only");
+    let table_id = create_test_table(&client, &name).await?;
+    let table = client.get_table_info_by_table_id(&table_id).await?.unwrap();
+    let initial_ids = client
+        .commit_insert_only(&table, &[], vec![file("p1", "initial")])
+        .await?;
+    let initial = client.get_all_partition_info(&table_id).await?;
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].version, 0);
+    let commit = client
+        .get_single_data_commit_info(&table_id, "p1", &initial_ids[0])
+        .await?;
+    assert!(commit.unwrap().committed);
+
+    // A legacy writer publishes after the INSERT's key scan snapshot.
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "concurrent")])
+        .await?;
+    let before = insert_only_metadata_state(&table_id).await?;
+    let error = client
+        .commit_insert_only(
+            &table,
+            &initial,
+            // a_new sorts first, so its tentative rows must roll back too.
+            vec![file("a_new", "must_roll_back"), file("p1", "stale")],
+        )
+        .await
+        .expect_err("stale INSERT must not rebase across another writer");
+    assert!(matches!(
+        error,
+        lakesoul_metadata::LakeSoulMetaDataError::InsertConflict { .. }
+    ));
+    assert_eq!(insert_only_metadata_state(&table_id).await?, before);
+    let current = client.get_all_partition_info(&table_id).await?;
+    client
+        .commit_insert_only(
+            &table,
+            &current,
+            vec![file("a_new", "valid_a"), file("p1", "valid_p1")],
+        )
+        .await?;
+    let latest = client.get_all_partition_info(&table_id).await?;
+    assert_eq!(latest.len(), 2);
+    assert_eq!(
+        latest
+            .iter()
+            .find(|p| p.partition_desc == "p1")
+            .unwrap()
+            .snapshot
+            .len(),
+        3
+    );
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn competing_insert_only_initial_commits_have_one_winner() -> Result<()> {
+    let first = Arc::new(MetaDataClient::from_env().await?);
+    let second = Arc::new(MetaDataClient::from_env().await?);
+    let name = unique_name("insert_race");
+    let table_id = create_test_table(&first, &name).await?;
+    let table = first.get_table_info_by_table_id(&table_id).await?.unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let mut tasks = Vec::new();
+    for (index, client) in [first.clone(), second].into_iter().enumerate() {
+        let barrier = barrier.clone();
+        let table = table.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            client
+                .commit_insert_only(
+                    &table,
+                    &[],
+                    vec![file("p1", &format!("candidate_{index}"))],
+                )
+                .await
+        }));
+    }
+    let mut successes = 0;
+    for task in tasks {
+        if task.await.unwrap().is_ok() {
+            successes += 1;
+        }
+    }
+    assert_eq!(successes, 1, "concurrent INSERTs must not silently merge");
+    let latest = latest_partition_info(&first, &table_id, "p1").await?;
+    assert_eq!(latest.version, 0);
+    assert_eq!(latest.snapshot.len(), 1);
+    let state = insert_only_metadata_state(&table_id).await?;
+    assert_eq!(
+        state.iter().filter(|row| row.starts_with("data:")).count(),
+        1
+    );
+    first.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}

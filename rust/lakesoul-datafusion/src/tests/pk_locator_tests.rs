@@ -97,7 +97,7 @@ async fn sql_pk_filters_use_the_row_locator() {
 
     // File 1: ids 0..LARGE_ROWS-1, value = id.
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name}
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name}
          SELECT CAST(g.value AS BIGINT) AS id, CAST(g.value AS BIGINT) AS value
          FROM generate_series(0, {}) AS g(value)",
         LARGE_ROWS - 1
@@ -114,7 +114,7 @@ async fn sql_pk_filters_use_the_row_locator() {
         .collect::<Vec<_>>()
         .join(", ");
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name} VALUES {updates}"
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name} VALUES {updates}"
     ))
     .await
     .unwrap()
@@ -128,7 +128,7 @@ async fn sql_pk_filters_use_the_row_locator() {
         .collect::<Vec<_>>()
         .join(", ");
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name} VALUES {additions}"
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name} VALUES {additions}"
     ))
     .await
     .unwrap()
@@ -234,7 +234,7 @@ async fn sql_string_pk_filters_use_the_row_locator() {
 
     // File 1: keys k000000..k059999.
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name}
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name}
          SELECT concat('k', lpad(CAST(g.value AS VARCHAR), 6, '0')) AS k,
                 CAST(g.value AS BIGINT) AS v
          FROM generate_series(0, {}) AS g(value)",
@@ -248,7 +248,7 @@ async fn sql_string_pk_filters_use_the_row_locator() {
 
     // File 2: update k000005.
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name} VALUES ('k000005', 100005)"
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name} VALUES ('k000005', 100005)"
     ))
     .await
     .unwrap()
@@ -330,7 +330,7 @@ async fn sql_composite_pk_prefix_uses_the_row_locator() {
     // File 1: 100 groups x 600 versions, payload = group * 600 + version.
     let groups = LARGE_ROWS / 600;
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name}
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name}
          SELECT concat('g', lpad(CAST(CAST(g.value / 600 AS BIGINT) AS VARCHAR), 3, '0')) AS g,
                 CAST(g.value % 600 AS BIGINT) AS v,
                 CAST(g.value AS BIGINT) AS payload
@@ -346,7 +346,7 @@ async fn sql_composite_pk_prefix_uses_the_row_locator() {
 
     // File 2: update (g001, v2).
     ctx.sql(&format!(
-        "INSERT INTO \"lakesoul\".default.{table_name} VALUES ('g001', 2, 999)"
+        "INSERT OR REPLACE INTO \"lakesoul\".default.{table_name} VALUES ('g001', 2, 999)"
     ))
     .await
     .unwrap()

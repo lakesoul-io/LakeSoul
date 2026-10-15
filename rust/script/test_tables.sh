@@ -94,10 +94,10 @@ CREATE EXTERNAL TABLE test_tables.pk_single (
 STORED AS LAKESOUL
 OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/pk_single';
-INSERT INTO test_tables.pk_single
+INSERT OR REPLACE INTO test_tables.pk_single
 SELECT g.value AS id, CAST(g.value AS VARCHAR) AS name, g.value * 1.0 AS value
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
-INSERT INTO test_tables.pk_single
+INSERT OR REPLACE INTO test_tables.pk_single
 SELECT g.value AS id, 'updated' AS name, 999.0 AS value
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
@@ -114,10 +114,10 @@ CREATE EXTERNAL TABLE test_tables.pk_composite (
 STORED AS LAKESOUL
 OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/pk_composite';
-INSERT INTO test_tables.pk_composite
+INSERT OR REPLACE INTO test_tables.pk_composite
 SELECT CAST(g.value % 1000 AS INT) AS k1, g.value / 1000 AS k2, g.value * 1.0 AS v
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
-INSERT INTO test_tables.pk_composite
+INSERT OR REPLACE INTO test_tables.pk_composite
 SELECT CAST(g.value % 1000 AS INT) AS k1, g.value / 1000 AS k2, 999.0 AS v
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
@@ -174,10 +174,10 @@ STORED AS LAKESOUL
 PARTITIONED BY (part)
 OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/pk_partitioned';
-INSERT INTO test_tables.pk_partitioned
+INSERT OR REPLACE INTO test_tables.pk_partitioned
 SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, g.value * 2.0 AS v
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
-INSERT INTO test_tables.pk_partitioned
+INSERT OR REPLACE INTO test_tables.pk_partitioned
 SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, 999.0 AS v
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
@@ -195,10 +195,10 @@ STORED AS LAKESOUL
 PARTITIONED BY (part)
 OPTIONS ('file_format' 'parquet', 'hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/pk_partitioned_parquet';
-INSERT INTO test_tables.pk_partitioned_parquet
+INSERT OR REPLACE INTO test_tables.pk_partitioned_parquet
 SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, g.value * 2.0 AS v
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
-INSERT INTO test_tables.pk_partitioned_parquet
+INSERT OR REPLACE INTO test_tables.pk_partitioned_parquet
 SELECT g.value AS id, CAST(g.value % $PARTITIONS AS INT) AS part, 999.0 AS v
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
@@ -219,10 +219,10 @@ OPTIONS (
     'hashBucketNum' '$BUCKETS'
 )
 LOCATION '$LOC/cdc_table';
-INSERT INTO test_tables.cdc_table
+INSERT OR REPLACE INTO test_tables.cdc_table
 SELECT g.value AS id, CAST(g.value AS VARCHAR) AS name, 'insert' AS op
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
-INSERT INTO test_tables.cdc_table
+INSERT OR REPLACE INTO test_tables.cdc_table
 SELECT g.value AS id, 'deleted' AS name, 'delete' AS op
 FROM generate_series(0, $((ROWS / 2 - 1))) AS g(value);
 
@@ -240,7 +240,7 @@ OPTIONS (
     'vector_index_columns' '[{"column":"vec","dim":8,"nlist":16,"total_bits":7,"metric":"L2"}]'
 )
 LOCATION '$LOC/vector_table';
-INSERT INTO test_tables.vector_table
+INSERT OR REPLACE INTO test_tables.vector_table
 SELECT CAST(g.value AS BIGINT) AS id,
        ARRAY[sin(g.value), cos(g.value), g.value * 0.001, 0.5, -0.5, 1.0, -1.0, 0.0] AS vec
 FROM generate_series(0, $((VEC_ROWS - 1))) AS g(value);
@@ -257,7 +257,7 @@ CREATE EXTERNAL TABLE test_tables.vortex_table (
 STORED AS LAKESOUL
 OPTIONS ('file_format' 'vortex', 'hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/vortex_table';
-INSERT INTO test_tables.vortex_table
+INSERT OR REPLACE INTO test_tables.vortex_table
 SELECT CAST(g.value AS BIGINT) AS id, CAST(g.value AS VARCHAR) AS name, g.value * 0.5 AS v
 FROM generate_series(0, $((ROWS - 1))) AS g(value);
 
@@ -302,7 +302,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_nation (
     PRIMARY KEY (n_nationkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_nation';
-INSERT INTO test_tables.tpch_nation SELECT * FROM tpch_nation($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_nation SELECT * FROM tpch_nation($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_region;
 CREATE EXTERNAL TABLE test_tables.tpch_region (
@@ -310,7 +310,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_region (
     PRIMARY KEY (r_regionkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_region';
-INSERT INTO test_tables.tpch_region SELECT * FROM tpch_region($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_region SELECT * FROM tpch_region($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_customer;
 CREATE EXTERNAL TABLE test_tables.tpch_customer (
@@ -320,7 +320,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_customer (
     PRIMARY KEY (c_custkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_customer';
-INSERT INTO test_tables.tpch_customer SELECT * FROM tpch_customer($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_customer SELECT * FROM tpch_customer($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_supplier;
 CREATE EXTERNAL TABLE test_tables.tpch_supplier (
@@ -330,7 +330,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_supplier (
     PRIMARY KEY (s_suppkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_supplier';
-INSERT INTO test_tables.tpch_supplier SELECT * FROM tpch_supplier($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_supplier SELECT * FROM tpch_supplier($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_part;
 CREATE EXTERNAL TABLE test_tables.tpch_part (
@@ -340,7 +340,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_part (
     PRIMARY KEY (p_partkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_part';
-INSERT INTO test_tables.tpch_part SELECT * FROM tpch_part($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_part SELECT * FROM tpch_part($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_partsupp;
 CREATE EXTERNAL TABLE test_tables.tpch_partsupp (
@@ -349,7 +349,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_partsupp (
     PRIMARY KEY (ps_partkey, ps_suppkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_partsupp';
-INSERT INTO test_tables.tpch_partsupp SELECT * FROM tpch_partsupp($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_partsupp SELECT * FROM tpch_partsupp($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_orders;
 CREATE EXTERNAL TABLE test_tables.tpch_orders (
@@ -359,7 +359,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_orders (
     PRIMARY KEY (o_orderkey)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_orders';
-INSERT INTO test_tables.tpch_orders SELECT * FROM tpch_orders($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_orders SELECT * FROM tpch_orders($SF_FMT, $TPCH_PARTS);
 
 DROP TABLE IF EXISTS test_tables.tpch_lineitem;
 CREATE EXTERNAL TABLE test_tables.tpch_lineitem (
@@ -372,7 +372,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_lineitem (
     PRIMARY KEY (l_orderkey, l_linenumber)
 ) STORED AS LAKESOUL OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_lineitem';
-INSERT INTO test_tables.tpch_lineitem SELECT * FROM tpch_lineitem($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_lineitem SELECT * FROM tpch_lineitem($SF_FMT, $TPCH_PARTS);
 
 --
 -- TPC-H with an extra range partition (3 distinct return flags).
@@ -389,7 +389,7 @@ CREATE EXTERNAL TABLE test_tables.tpch_lineitem_part (
 ) STORED AS LAKESOUL PARTITIONED BY (l_returnflag)
 OPTIONS ('hashBucketNum' '$BUCKETS')
 LOCATION '$LOC/tpch_lineitem_part';
-INSERT INTO test_tables.tpch_lineitem_part SELECT * FROM tpch_lineitem($SF_FMT, $TPCH_PARTS);
+INSERT OR REPLACE INTO test_tables.tpch_lineitem_part SELECT * FROM tpch_lineitem($SF_FMT, $TPCH_PARTS);
 SQL
 fi
 

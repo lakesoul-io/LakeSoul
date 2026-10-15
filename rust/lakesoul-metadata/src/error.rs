@@ -32,6 +32,19 @@ pub enum LakeSoulMetaDataError {
     PostgresError(#[from] tokio_postgres::Error),
     #[error("postgres pool error: {0}")]
     PostgresPoolError(#[from] RunError<tokio_postgres::Error>),
+    #[error(
+        "INSERT snapshot conflict on table {table_id} partition {partition_desc}: expected version {expected_version}, found {actual_version}; retry the statement"
+    )]
+    InsertConflict {
+        table_id: String,
+        partition_desc: String,
+        expected_version: i32,
+        actual_version: i32,
+    },
+    #[error(
+        "INSERT commit outcome is unknown; retain its files and inspect metadata before retrying: {0}"
+    )]
+    InsertCommitOutcomeUnknown(#[source] tokio_postgres::Error),
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
     #[error("serde_json error: {0}")]
