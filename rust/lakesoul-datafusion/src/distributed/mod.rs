@@ -37,20 +37,25 @@ pub use resolver::{
 /// # Generations
 ///
 /// The version identifies a *protocol generation*, not just this crate's
-/// release: bump it whenever the physical-plan encoding changes. Introducing
-/// the explicit [`codec::CODEC_VERSION`] field was such a change — the
-/// previous generation advertised `lakesoul-distributed/1` with an unversioned
-/// `MergeParquetExecProto`, and protobuf decoders ignore unknown fields rather
-/// than rejecting them, so a plan written by the versioned encoder would have
-/// been silently accepted by a `/1` worker. Advertising `/2` filters those
-/// workers out at discovery and closes the other direction at decode time.
+/// release: bump it whenever the physical-plan encoding changes.
 ///
-/// Adding the vortex scan codec to [`codec::user_codecs`] was the next one:
-/// extension payloads name the *position* of the codec that wrote them, so a
-/// coordinator that can stamp position 2 needs workers that resolve it.
-/// Advertising `/3` keeps such a coordinator from handing a vortex stage to a
-/// `/2` worker, which could only fail at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
+/// `/1` advertised an unversioned `MergeParquetExecProto`: protobuf decoders
+/// ignore unknown fields rather than rejecting them, so a plan written by this
+/// build would have been silently accepted by a `/1` worker.
+///
+/// `/2` is the current generation and the first one versioned on the wire: it
+/// carries the explicit [`codec::CODEC_VERSION`] field *and* registers the
+/// vortex scan codec at position 2 of [`codec::user_codecs`]. Both changes are
+/// one generation rather than two because neither format has ever been
+/// released — a `/2` worker from this tree resolves every codec position a
+/// coordinator from it can stamp. Split them the moment one of the two ships on
+/// its own: extension payloads name the *position* of the codec that wrote
+/// them, so a coordinator that can stamp position 2 needs workers that resolve
+/// it.
+///
+/// Advertising `/2` filters `/1` workers out at discovery and closes the other
+/// direction at decode time.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

@@ -752,6 +752,6 @@ VectorTopKOptimizerRule
               Arrow → PG wire
 ```
 
-推荐下一步直接做 **PR 1：`<->`/`<#>` 精确查询闭环**。它能先确定 parser、类型、UDF、prepared parameter 和 PG wire 的边界，再接 ANN；反过来先接索引，会把语法问题和 snapshot 正确性问题混在一起。
+推荐下一步直接做 **PR 1。它能先确定 parser、类型、UDF、prepared parameter 和 PG wire 的边界，再接 ANN；反过来先接索引，会把语法问题和 snapshot 正确性问题混在一起。
 
 参考：[pgvector 官方语法与操作符](https://github.com/pgvector/pgvector#querying)。

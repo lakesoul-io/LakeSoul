@@ -23,8 +23,59 @@
 //! (primary key × range partition) the distributed planner distributes at all
 //! (`test_distribution_matrix_by_table_shape`).
 //!
+//! Beyond matching a single-node session, the correctness tests prove remote
+//! execution and exact semantics, not just results:
+//!
+//! - a CDC table with range partitions whose merge runs on the workers and
+//!   whose non-key filters must not resurrect stale versions or drop deleted
+//!   keys, projecting value columns (plus one exact full-projection query)
+//!   (`test_remote_cdc_merge_with_non_key_filter`);
+//! - several hash buckets behind a composite primary key, with the same key
+//!   updated across three files, run with more and with fewer workers than
+//!   merge work units (`test_multi_bucket_composite_pk_merge_on_workers`);
+//! - ordered Top-K / `LIMIT` / `OFFSET` over several merge work units,
+//!   compared in output order (the shared `assert_batches_eq` sorts rows,
+//!   which cannot catch a wrong global order)
+//!   (`test_remote_topk_limit_offset_keeps_output_order`);
+//! - a query keeping the file set it captured at planning time across commits
+//!   landing while its workers run, with deterministic barriers
+//!   (`test_a_query_keeps_the_file_set_it_captured`);
+//! - the failure tests below also assert that a failed query drains its tasks
+//!   from the workers and that the system recovers once the fault is removed.
+//!
+//! # Failure paths
+//!
+//! Covered: a worker that cannot build a session for a task fails the query
+//! within a bounded time, instead of hanging or of the coordinator answering
+//! without it — also with `fallback_to_local = true`, where a failed execution
+//! must surface as an error rather than a silent local rerun. The test pins
+//! the injection from the worker side - it asserts the worker that cannot
+//! serve was really handed a task - so a query that failed for some other
+//! reason cannot pass for the injected failure. Failed queries drain their
+//! tasks from the healthy workers within bounded time, and a fault injected
+//! through the object store recovers once it is removed
+//! (`test_a_failing_read_cleans_up_tasks_and_recovers`). The transfer-level
+//! break itself is the library's own `tests/error_propagation.rs` and a read
+//! that breaks after progress is
+//! `test_a_read_failing_after_progress_fails_distributed_query`. The
+//! large-table cancellation test additionally cancels queries with
+//! aggregating, joining and sorting head stages by dropping the stream right
+//! after the workers' task counters show a dispatch, before it is ever
+//! polled.
+//!
 //! Not covered by this suite, deliberately:
 //!
+//! - *a worker lost partway through a query*: a worker that only starts
+//!   rejecting after the first task it serves cannot be injected
+//!   deterministically, because whether it is asked for a second task at all is
+//!   the library's assignment. Measured over five runs of a 32-file shuffling
+//!   query with four workers, one asked it exactly once, and the assignment
+//!   races the query's own failure, so widening the table moves the flake
+//!   instead of removing it;
+//! - *metadata becoming unavailable during a running query*: the object store
+//!   has a seam (`RuntimeEnv::register_object_store`, which
+//!   `test_a_read_failing_after_progress_fails_distributed_query` uses) while
+//!   the metadata client has none, so nothing can interrupt it mid-query;
 //! - *compacted + uncompacted files in one partition*: this build has no
 //!   Rust-side compaction entry point (the compaction service lives in the
 //!   Spark integration), so the mix cannot be produced here;
@@ -42,11 +93,13 @@ use std::time::Duration;
 
 use arrow::array::{ArrayRef, Int32Array, Int64Array};
 use arrow::record_batch::RecordBatch;
+use datafusion::arrow::array::StringArray;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::error::DataFusionError;
+use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::grpc::{GetTaskProgressRequest, ObservabilityServiceClient};
 use datafusion_distributed::{
@@ -62,10 +115,13 @@ use tokio::task::JoinSet;
 use tokio_stream::wrappers::TcpListenerStream;
 use vortex_datafusion::VortexSource;
 
-use crate::distributed::{DistributedOptions, LakeSoulWorkerOptions, WorkerDiscovery};
+use crate::distributed::{
+    DistributedOptions, LakeSoulWorkerOptions, StaticWorkerResolver, WorkerDiscovery,
+};
 use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use crate::tests::{
-    assert_batches_eq, cdc_batch, create_cdc_table, create_table_with_file_format,
+    assert_batches_eq, assert_batches_eq_ordered, cdc_batch, create_cdc_table,
+    create_cdc_table_with_range_partitions, create_table_with_file_format,
 };
 use crate::{Result, cli::CoreArgs};
 
@@ -133,12 +189,22 @@ fn distributed_factory(
     worker_urls: Vec<String>,
     fallback_to_local: bool,
 ) -> Result<LakeSoulSessionFactory> {
+    distributed_factory_with(client, worker_urls, WORKER_COUNT, fallback_to_local)
+}
+
+/// Like [`distributed_factory`], with an explicit stage task count.
+fn distributed_factory_with(
+    client: MetaDataClientRef,
+    worker_urls: Vec<String>,
+    target_partitions: usize,
+    fallback_to_local: bool,
+) -> Result<LakeSoulSessionFactory> {
     Ok(
         LakeSoulSessionFactory::new(client, &CoreArgs::default())?.with_distributed(
             DistributedOptions {
                 discovery: WorkerDiscovery::Static(worker_urls),
                 fallback_to_local,
-                target_partitions: WORKER_COUNT,
+                target_partitions,
                 bytes_per_partition: Some(1),
             },
         ),
@@ -460,8 +526,9 @@ async fn test_merge_work_units_pinned_to_one_task_inner() -> Result<()> {
 
     // The same result-equality assertions as `test_merge_on_read_matches_single_node`:
     // distributed results must equal the single-node session for both plan
-    // shapes, and `assert_matches_single_node` additionally asserts that every
-    // `EXPLAIN` stage containing a `MergeParquetExec` runs in one task.
+    // shapes. `assert_matches_single_node` only compares results; the pinning
+    // of merge work units to one task is checked by the explicit `EXPLAIN
+    // ANALYZE` loop below.
     let queries: Vec<(String, Vec<&str>)> = vec![
         // Single work unit without a scan union.
         (
@@ -737,6 +804,447 @@ async fn assert_matches_single_node(
         assert_batches_eq(&format!("{sql} (distributed)"), expected, &dist_result);
         assert_batches_eq(&format!("{sql} (single-node)"), expected, &local_result);
     }
+    Ok(())
+}
+
+/// Like [`assert_matches_single_node`], but compares the results in their
+/// original output order instead of sorting the rows first: an `ORDER BY`
+/// that is a total order must produce exactly the expected sequence, which a
+/// sorted comparison cannot observe.
+async fn assert_matches_single_node_ordered(
+    distributed: &LakeSoulSessionFactory,
+    single_node: &LakeSoulSessionFactory,
+    queries: &[(String, Vec<&str>)],
+) -> Result<()> {
+    let dist_ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    let local_ctx = single_node.create_session(&LakeSoulSessionOptions::default())?;
+    for (sql, expected) in queries {
+        let dist_result = dist_ctx.sql(sql).await?.collect().await?;
+        let local_result = local_ctx.sql(sql).await?.collect().await?;
+        assert_batches_eq_ordered(
+            &format!("{sql} (distributed)"),
+            expected,
+            &dist_result,
+        );
+        assert_batches_eq_ordered(
+            &format!("{sql} (single-node)"),
+            expected,
+            &local_result,
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Distributed-execution proof helpers
+// ---------------------------------------------------------------------------
+
+/// How long a query may take from `sql()` through planning to the end of
+/// execution before a fault or cancellation test gives up.
+const EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Runs `sql` end to end — `ctx.sql` (planning), scheduling and `collect`
+/// (execution) — under one timeout, so a query that hangs anywhere surfaces
+/// as the timeout instead of the test hanging because only `collect` was
+/// wrapped.
+async fn collect_within_timeout(
+    ctx: &SessionContext,
+    sql: &str,
+    limit: Duration,
+) -> Result<Vec<RecordBatch>> {
+    let ctx = ctx.clone();
+    let sql = sql.to_string();
+    let fut = async move { ctx.sql(&sql).await?.collect().await };
+    let batches = tokio::time::timeout(limit, fut).await.map_err(|_| {
+        DataFusionError::Execution(format!("query did not finish within {limit:?}"))
+    })??;
+    Ok(batches)
+}
+
+/// Runs `sql` end to end under [`EXECUTION_TIMEOUT`] and asserts that it
+/// fails: the timeout itself is a hang and panics (a failure test must pin
+/// that the query *fails* in bounded time, not merely that something
+/// eventually errored), and a success means the injected failure was masked.
+///
+/// Whether the error is the injected one is proven by the caller's counters
+/// (the worker recorded being asked), not by error text.
+async fn expect_query_failure_within(ctx: &SessionContext, sql: &str) -> Result<()> {
+    let ctx = ctx.clone();
+    let fut = {
+        let sql = sql.to_string();
+        async move { ctx.sql(&sql).await?.collect().await }
+    };
+    match tokio::time::timeout(EXECUTION_TIMEOUT, fut).await {
+        Err(_) => {
+            panic!("query hung instead of failing within {EXECUTION_TIMEOUT:?}: {sql}")
+        }
+        Ok(Ok(batches)) => {
+            panic!("the query must fail, not succeed with: {batches:?}")
+        }
+        Ok(Err(_)) => Ok(()),
+    }
+}
+
+/// A worker session builder that counts every task handed to its worker and
+/// then builds a normal one, so a test can prove a query really reached a
+/// worker instead of running on the coordinator.
+///
+/// Reduced parity, deliberate: it registers only the LakeSoul distributed
+/// codec, not the production worker's full setup (every user codec, the
+/// vector-search UDF, identity headers). That is exactly what the
+/// parquet-only tests using it need; a test that needs production parity
+/// builds its worker through `crate::distributed::lakesoul_worker` instead.
+struct CountingSessionBuilder {
+    received: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl datafusion_distributed::WorkerSessionBuilder for CountingSessionBuilder {
+    async fn build_session_state(
+        &self,
+        ctx: datafusion_distributed::WorkerQueryContext,
+    ) -> datafusion::common::Result<datafusion::execution::SessionState> {
+        self.received.fetch_add(1, Ordering::SeqCst);
+        let mut builder = ctx.builder;
+        builder = builder.with_distributed_user_codec(crate::distributed::LakeSoulCodec);
+        Ok(builder.build())
+    }
+}
+
+/// Like `spawn_workers`, but every worker counts the tasks it is handed, so a
+/// test can prove the workers actually received them.
+async fn spawn_workers_with_task_recording(
+    workers: usize,
+) -> (Vec<String>, Vec<Arc<AtomicUsize>>, JoinSet<()>) {
+    let mut urls = Vec::new();
+    let mut receipts = Vec::new();
+    let mut join_set = JoinSet::new();
+    for _ in 0..workers {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        urls.push(format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().unwrap().port()
+        ));
+        let received = Arc::new(AtomicUsize::new(0));
+        let worker = Worker::from_session_builder(CountingSessionBuilder {
+            received: Arc::clone(&received),
+        })
+        .with_runtime_env(
+            crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap(),
+        )
+        .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+        join_set.spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(worker.into_worker_server())
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await;
+        });
+        receipts.push(received);
+    }
+    (urls, receipts, join_set)
+}
+
+/// Total tasks the recording workers have been handed so far.
+fn recorded_tasks(receipts: &[Arc<AtomicUsize>]) -> usize {
+    receipts.iter().map(|c| c.load(Ordering::SeqCst)).sum()
+}
+
+/// A store that pauses each worker's *first* file read at a gate: the read
+/// resumes when the watched channel turns `true`, so a test can commit a new
+/// version while the workers hold dispatched, blocked tasks.
+#[derive(Debug)]
+struct GatedStore {
+    inner: Arc<dyn object_store::ObjectStore>,
+    gate: tokio::sync::watch::Receiver<bool>,
+    /// Whether this worker instance already reached the gate.
+    reached: std::sync::atomic::AtomicBool,
+    /// Reads that have parked at the gate, incremented when a first read
+    /// arrives (the waiting happens after this counter is bumped, so a test
+    /// that waits for `arrived > 0` knows the read is blocked mid-flight,
+    /// not merely dispatched).
+    arrived: Arc<AtomicUsize>,
+}
+
+impl std::fmt::Display for GatedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "gated-store")
+    }
+}
+
+#[async_trait::async_trait]
+impl object_store::ObjectStore for GatedStore {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        options: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.inner.put_opts(location, payload, options).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, options).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        // Only the first read per worker instance waits at the gate. The
+        // receiver is cloned because `borrow_and_update`/`changed` need
+        // `&mut`; a fresh clone returns the current value from
+        // `borrow_and_update`, so an already-open gate never blocks.
+        if !self.reached.swap(true, Ordering::SeqCst) {
+            self.arrived.fetch_add(1, Ordering::SeqCst);
+            let mut gate = self.gate.clone();
+            while !*gate.borrow_and_update() {
+                gate.changed()
+                    .await
+                    .map_err(|_| object_store::Error::Generic {
+                        store: "gated-store",
+                        source: "the gate was dropped before it opened".into(),
+                    })?;
+            }
+        }
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+/// Like `spawn_workers_with_task_recording`, but each worker's object store
+/// pauses its first file read at `gate` (opened when the channel sends
+/// `true`), so a test can commit a version while the workers hold dispatched,
+/// blocked tasks.
+/// Like [`spawn_workers_with_handles`], but each worker's object store is a
+/// [`GatedStore`] sharing `gate`, and instead of session-builder receipts the
+/// function returns each worker's gate-arrival counter: a test can wait until
+/// every worker's first read is parked at the (still closed) gate and know
+/// the workers are blocked mid-read, not merely handed a task.
+async fn spawn_gated_workers(
+    workers: usize,
+    gate: tokio::sync::watch::Receiver<bool>,
+) -> (Vec<String>, Vec<Arc<AtomicUsize>>, Vec<Worker>, JoinSet<()>) {
+    let mut urls = Vec::new();
+    let mut arrived = Vec::new();
+    let mut handles = Vec::new();
+    let mut join_set = JoinSet::new();
+    for _ in 0..workers {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        urls.push(format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().unwrap().port()
+        ));
+        let arrived_at_gate = Arc::new(AtomicUsize::new(0));
+        let runtime =
+            crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap();
+        runtime.register_object_store(
+            &url::Url::parse("file://").unwrap(),
+            Arc::new(GatedStore {
+                inner: Arc::new(object_store::local::LocalFileSystem::new()),
+                gate: gate.clone(),
+                reached: std::sync::atomic::AtomicBool::new(false),
+                arrived: Arc::clone(&arrived_at_gate),
+            }),
+        );
+        let options = LakeSoulWorkerOptions {
+            core_args: CoreArgs::default(),
+        };
+        let worker = crate::distributed::lakesoul_worker(&options)
+            .unwrap()
+            .with_runtime_env(runtime)
+            .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+        handles.push(worker.clone());
+        let observability = worker.with_observability_service(Arc::new(
+            StaticWorkerResolver::new(Vec::new()).unwrap(),
+        ));
+        join_set.spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(worker.into_worker_server())
+                .add_service(observability)
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await;
+        });
+        arrived.push(arrived_at_gate);
+    }
+    (urls, arrived, handles, join_set)
+}
+
+/// Runs one SQL query on the distributed session and asserts in one place
+/// that it really executed on the workers:
+///
+/// 1. the physical plan has distributed stages (`DistributedExec`), not the
+///    coordinator-only plan a distributed session produces for shapes it
+///    does not distribute;
+/// 2. while the query ran, at least one recording worker was handed a task;
+/// 3. the result equals `expected` — in output order when `ordered`, as a
+///    row multiset otherwise (the shared `assert_batches_eq` sorts rows
+///    first, which cannot catch an `ORDER BY` error).
+async fn assert_query_runs_on_workers(
+    distributed: &LakeSoulSessionFactory,
+    receipts: &[Arc<AtomicUsize>],
+    sql: &str,
+    expected: &[&str],
+    ordered: bool,
+) -> Result<()> {
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    assert!(
+        plan.is::<DistributedExec>(),
+        "the plan must have distributed stages:\n{explain}"
+    );
+    let before = recorded_tasks(receipts);
+    let batches = collect_within_timeout(&ctx, sql, EXECUTION_TIMEOUT).await?;
+    assert!(
+        recorded_tasks(receipts) > before,
+        "no recording worker was handed a task while the query ran; \
+         it executed on the coordinator:\n{explain}"
+    );
+    if ordered {
+        assert_batches_eq_ordered(sql, expected, &batches);
+    } else {
+        assert_batches_eq(sql, expected, &batches);
+    }
+    Ok(())
+}
+
+/// Polls until every counter is at least one — every worker's first read is
+/// parked at its gate — or panics at the deadline.
+///
+/// Waiting on the gate's own arrival counter (not a session-builder or
+/// dispatch count) is what makes a test's "the workers hold blocked tasks"
+/// claim real: a dispatched task that never started reading would not block.
+async fn wait_until_all_reached(counters: &[Arc<AtomicUsize>], label: &str) {
+    for _ in 0..600 {
+        if counters.iter().all(|c| c.load(Ordering::SeqCst) > 0) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let reached: Vec<usize> = counters.iter().map(|c| c.load(Ordering::SeqCst)).collect();
+    panic!("not every {label} parked a read at the gate within 30 s: {reached:?}");
+}
+
+/// Polls until the worker runs no task, within 5 s: a query's worker tasks
+/// must be stopped promptly after it ends or fails, not left for their TTL.
+async fn wait_until_no_tasks(handle: &Worker, label: &str) {
+    for _ in 0..100 {
+        if handle.tasks_running().await == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "the tasks of {label} must be stopped promptly, {} still running",
+        handle.tasks_running().await
+    );
+}
+
+async fn initialized_tasks(
+    observer: &mut ObservabilityServiceClient<tonic::transport::Channel>,
+) -> Result<usize> {
+    Ok(observer
+        .get_task_progress(GetTaskProgressRequest {})
+        .await?
+        .into_inner()
+        .tasks
+        .len())
+}
+
+/// Waits for initialized plans, not empty cache entries, to drain. The
+/// deadline includes the observation RPCs, and RPC errors fail the test.
+async fn wait_until_no_initialized_tasks(
+    observer: &mut ObservabilityServiceClient<tonic::transport::Channel>,
+    label: &str,
+) -> Result<()> {
+    let mut remaining = 0;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            remaining = initialized_tasks(observer).await?;
+            if remaining == 0 {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        DataFusionError::Execution(format!(
+            "{label} must release its initialized plans within 5 s; \
+             {remaining} task(s) still hold a plan"
+        ))
+    })?
+}
+
+/// Runs a `count(*)` on `ctx` under the execution timeout and asserts it
+/// returns `expected`: workers stay usable after a query ends, is cancelled
+/// or fails.
+async fn assert_count(
+    ctx: &SessionContext,
+    table: &str,
+    expected: i64,
+    why: &str,
+) -> Result<()> {
+    let batches = collect_within_timeout(
+        ctx,
+        &format!("SELECT count(*) AS c FROM {table}"),
+        EXECUTION_TIMEOUT,
+    )
+    .await?;
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("count(*) yields int64")
+            .value(0),
+        expected,
+        "{why}"
+    );
     Ok(())
 }
 
@@ -1618,11 +2126,9 @@ async fn test_vortex_table_runs_when_no_stage_is_sent_inner() -> Result<()> {
     Ok(())
 }
 
-/// Like `spawn_workers`, but each worker's `Worker` handle is returned too, so
-/// a test can observe task lifecycle through `Worker::tasks_running` (which
-/// needs the `integration` feature, enabled for this crate's dev deps). The
-/// observability endpoint is served alongside each worker, so a test can also
-/// tell initialized tasks (plan set) apart from empty cache entries.
+/// Like `spawn_workers`, but returns each `Worker` handle and exposes its
+/// observability service, so tests can distinguish initialized tasks from
+/// empty cache entries (`tasks_running` needs the dev-only `integration` feature).
 async fn spawn_workers_with_handles(
     workers: usize,
 ) -> (Vec<String>, Vec<Worker>, JoinSet<()>) {
@@ -1695,7 +2201,7 @@ fn test_dropping_a_running_distributed_stream_stops_the_workers() {
 }
 
 /// A distributed stream dropped mid-execution must stop the worker tasks
-/// promptly.
+/// promptly — for a streaming head stage and for a blocked one.
 ///
 /// This is the mechanism the PG adapter's statement cancellation relies on:
 /// `CancellableRows` reports `57014` and drops the wrapped DataFusion stream,
@@ -1703,26 +2209,34 @@ fn test_dropping_a_running_distributed_stream_stops_the_workers() {
 /// channels (see `postgres_lakesoul::cancel`). Verified here end to end over
 /// real gRPC workers:
 ///
-/// - The query is a bare scan, so the coordinator's head stage streams
-///   batches continuously and the dropped stream is observed by the stage
-///   pump at its next batch. (An aggregating or sorted head stage emits
-///   nothing until the scan is over, and would only observe the drop then.)
+/// - First a bare scan, so the coordinator's head stage streams batches
+///   continuously and the dropped stream is observed by the stage pump at its
+///   next batch. (An aggregating or sorted head stage emits nothing until the
+///   scan is over, and would only observe the drop then.)
+/// - Then head stages that aggregate, join and sort. Not polling the stream
+///   proves nothing by itself: the head stage is pumped in the background, so
+///   a single-batch result can land in its output buffer and the query can
+///   finish normally while the tasks drain on their own. Instead, each query
+///   runs on fresh gated workers whose first file read is parked at a gate
+///   that never opens — the arrival counters show the reads are blocked
+///   mid-flight — so the input provably cannot finish and only the drop's
+///   cancellation can drain the tasks, checked while the gate is still
+///   closed. (A planner that blocks its head stage until the input ends is
+///   covered by the same mechanism a fortiori.)
 /// - Each dispatched stage task holds one worker task entry, invalidated when
 ///   the worker sees the coordinator channel's EOS that the drop triggers. A
 ///   leaked cancellation cannot normalize them otherwise: a worker task left
 ///   running is backpressured — the cancelled query never reads another
 ///   batch — so it never completes on its own and the entry survives its
 ///   ten-minute TTL.
-/// - Therefore, after the drop, no worker may still hold an initialized task
+/// - Therefore, after each drop, no worker may still hold an initialized task
 ///   within seconds, and the workers must stay usable.
 ///
-/// The drain is observed through the observability endpoint rather than
-/// `Worker::tasks_running()`: the latter counts cache entries, and after the
-/// EOS cleanup a late cancel-propagation `ExecuteTask` can recreate an empty
-/// entry that lingers until its ten-minute TTI (upstream
-/// datafusion-distributed#771). An entry without a plan holds no computation,
-/// so `GetTaskProgress` — which only reports entries whose plan was set —
-/// reaching zero is exactly the no-leaked-task contract this test pins.
+/// `GetTaskProgress` only reports initialized entries holding a plan.
+/// `Worker::tasks_running()` instead counts every cache entry: after EOS
+/// cleanup, a late `ExecuteTask` can recreate an empty entry that waits for a
+/// plan and lingers until the ten-minute TTI. Such an entry has no execution
+/// plan, so it must not be mistaken for a leaked initialized task.
 async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() -> Result<()>
 {
     let client = Arc::new(MetaDataClient::from_env().await?);
@@ -1737,7 +2251,7 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
     for url in &worker_urls {
         observers.push(ObservabilityServiceClient::connect(url.clone()).await?);
     }
-    let factory = distributed_factory(client, worker_urls, false)?;
+    let factory = distributed_factory(client.clone(), worker_urls, false)?;
     let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
     let mut stream = ctx
@@ -1745,14 +2259,13 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
         .await?
         .execute_stream()
         .await?;
-    // The first batch can only arrive after the plan was dispatched, so the
-    // workers hold un-finalized task entries right now.
+    // The first batch proves execution started; the same observation used
+    // after cancellation must see initialized plans before the drop.
     drop(stream.next().await.unwrap()?);
-    let dispatched: usize =
-        futures::future::join_all(handles.iter().map(Worker::tasks_running))
-            .await
-            .into_iter()
-            .sum();
+    let mut dispatched = 0;
+    for observer in &mut observers {
+        dispatched += initialized_tasks(observer).await?;
+    }
     assert!(
         dispatched > 0,
         "the scan stage must be dispatched while the first batch arrives, got {dispatched}"
@@ -1762,58 +2275,125 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
     // is still running.
     drop(stream);
 
-    for (worker_i, observer) in observers.iter_mut().enumerate() {
-        let mut drained = false;
-        let mut initialized = 0;
-        for _ in 0..100 {
-            initialized = observer
-                .get_task_progress(GetTaskProgressRequest {})
-                .await?
-                .into_inner()
-                .tasks
-                .len();
-            if initialized == 0 {
-                drained = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(
-            drained,
-            "worker {worker_i}: the dropped stream must stop the worker tasks; \
-             {initialized} task(s) still hold a plan"
-        );
+    for (index, observer) in observers.iter_mut().enumerate() {
+        wait_until_no_initialized_tasks(observer, &format!("scan worker {index}"))
+            .await?;
     }
 
     // The workers are still usable afterwards: a fresh distributed query
     // over the same table returns the full count.
-    let count = ctx
-        .sql(&format!("SELECT count(*) AS c FROM {t}"))
-        .await?
-        .collect()
-        .await?;
-    assert_eq!(count.len(), 1);
-    assert_eq!(
-        count[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .expect("count(*) yields int64")
-            .value(0),
+    assert_count(
+        &ctx,
+        &t,
         expected_rows as i64,
-        "a query after the cancelled one must see every row"
+        "a query after the cancelled one must see every row",
+    )
+    .await?;
+
+    // The same cancellation for head stages that do more than stream a scan:
+    // a `GROUP BY`, a join feeding a count, and a sorted Top-K with an
+    // `OFFSET`. Not polling the stream proves nothing by itself: the head
+    // stage is pumped in the background, so a single-batch result can land in
+    // its output buffer and the query can finish normally on its own — the
+    // tasks then drain without any cancellation. Instead, each query runs on
+    // fresh gated workers whose first file read is parked at a gate that
+    // never opens: the input provably cannot finish, so only the drop's
+    // cancellation can release the initialized plans — checked while the
+    // gate is still closed.
+    let small = format!(
+        "distributed_cancel_small_{}",
+        TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst)
     );
+    create_distributed_table(
+        client.clone(),
+        &small,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(t1_schema())
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+    )
+    .await?;
+    crate::lakesoul_table::LakeSoulTable::for_name(&small)
+        .await?
+        .execute_upsert(batch(t1_schema(), vec![0, 1, 2], vec![0, 1, 2]))
+        .await?;
+
+    for sql in [
+        format!("SELECT part, count(*) AS c FROM {t} GROUP BY part"),
+        format!("SELECT count(*) AS c FROM {t} a JOIN {small} b ON a.part = b.part"),
+        format!("SELECT part, b FROM {t} ORDER BY b DESC LIMIT 5 OFFSET 2"),
+    ] {
+        let (_gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let (worker_urls, arrived, _handles, mut workers) =
+            spawn_gated_workers(WORKER_COUNT, gate_rx).await;
+        let mut observers = Vec::with_capacity(worker_urls.len());
+        for url in &worker_urls {
+            observers.push(ObservabilityServiceClient::connect(url.clone()).await?);
+        }
+        let factory = distributed_factory(client.clone(), worker_urls, false)?;
+        let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
+        let stream = ctx.sql(&sql).await?.execute_stream().await?;
+        // Three scan tasks over three workers are assigned to consecutive
+        // worker URLs modulo the worker count, so each worker holds one task;
+        // each parks its first read at the still closed gate. Otherwise the
+        // helper panics at the deadline.
+        wait_until_all_reached(&arrived, "head-stage cancellation worker").await;
+        for (index, observer) in observers.iter_mut().enumerate() {
+            assert!(
+                initialized_tasks(observer).await? > 0,
+                "head-stage worker {index} must hold a plan while its read is gated"
+            );
+        }
+        // The mechanism under test: drop the stream while every worker's task
+        // is parked mid-read, the gate still closed — no task can finish
+        // naturally, so reaching zero proves the drop cancelled them.
+        drop(stream);
+        for (index, observer) in observers.iter_mut().enumerate() {
+            wait_until_no_initialized_tasks(
+                observer,
+                &format!("head-stage worker {index}"),
+            )
+            .await?;
+        }
+        // Recovery on the very workers whose tasks were just cancelled: the
+        // gate stays closed, but each worker's first read already passed it,
+        // so a fresh query must return the full count.
+        assert_count(
+            &ctx,
+            &t,
+            expected_rows as i64,
+            "a query after the cancelled one must see every row",
+        )
+        .await?;
+        workers.abort_all();
+    }
+
+    // The workers are still usable afterwards: a fresh distributed query
+    // over the same table returns the full count.
+    assert_count(
+        &ctx,
+        &t,
+        expected_rows as i64,
+        "a query after the cancelled ones must see every row",
+    )
+    .await?;
 
     workers.abort_all();
     Ok(())
 }
 /// A worker store that serves one read and then fails subsequent reads.
+///
+/// `fail_enabled` is the fault's kill switch: cleared, the store goes back to
+/// serving reads normally, so a test can verify that the system recovers once
+/// the fault is removed instead of pinning every worker's session to a
+/// permanently broken store.
 #[derive(Debug)]
 struct FailAfterFirstRead {
     inner: Arc<dyn object_store::ObjectStore>,
     first_served: tokio::sync::Mutex<bool>,
     served: Arc<AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
+    fail_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Display for FailAfterFirstRead {
@@ -1847,7 +2427,7 @@ impl object_store::ObjectStore for FailAfterFirstRead {
         options: object_store::GetOptions,
     ) -> object_store::Result<object_store::GetResult> {
         let mut first_served = self.first_served.lock().await;
-        if *first_served {
+        if *first_served && self.fail_enabled.load(Ordering::SeqCst) {
             self.failed.store(true, Ordering::SeqCst);
             return Err(object_store::Error::Generic {
                 store: "fail-after-first-read",
@@ -1905,6 +2485,7 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
         let (table, _) = seed_large_table(Arc::clone(&client), 4, 32).await?;
         let served = Arc::new(AtomicUsize::new(0));
         let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fail_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let mut fault_workers = JoinSet::new();
         let mut urls = Vec::new();
         for _ in 0..WORKER_COUNT {
@@ -1918,6 +2499,7 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
                     first_served: tokio::sync::Mutex::new(false),
                     served: Arc::clone(&served),
                     failed: Arc::clone(&failed),
+                    fail_enabled: Arc::clone(&fail_enabled),
                 }),
             );
             let worker = crate::distributed::lakesoul_worker(
@@ -1937,14 +2519,8 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
         }
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(60),
-            ctx.sql(&format!("select count(*) from {table}"))
-                .await?
-                .collect(),
-        )
-        .await
-        .expect("injected store failure must not hang");
+        expect_query_failure_within(&ctx, &format!("select count(*) from {table}"))
+            .await?;
         assert!(
             served.load(Ordering::SeqCst) > 0,
             "a read must succeed first"
@@ -1953,7 +2529,6 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
             failed.load(Ordering::SeqCst),
             "the injected failure must occur"
         );
-        assert!(outcome.is_err(), "partial results must not be returned");
         fault_workers.abort_all();
         Ok(())
     });
@@ -2070,6 +2645,981 @@ fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
             after_cancel.iter().all(Option::is_none),
             "cancelled statement ID leaked into subsequent worker tasks: {after_cancel:?}"
         );
+        workers.abort_all();
+        Ok(())
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Failure paths
+// ---------------------------------------------------------------------------
+
+/// Seeds a table of `files` files with `rows` rows each, one range partition
+/// per file.
+///
+/// Each `execute_upsert` writes one file, so this is the fixture a fault test
+/// needs: with far more files than workers, the scan stage is split into far
+/// more tasks than there are workers, every registered worker is given some,
+/// and one of them failing is what the query must report.
+async fn seed_wide_table(
+    client: MetaDataClientRef,
+    files: usize,
+    rows: usize,
+) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_wide_{suffix}");
+    create_distributed_table(
+        client,
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(t1_schema())
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    for file in 0..files {
+        // One partition per file: a scan has as many merge work units as it has
+        // files, more than the tests that rely on that have workers.
+        let parts: Vec<i32> = (0..rows).map(|_| (file % files.max(1)) as i32).collect();
+        let values: Vec<i32> = (0..rows).map(|row| (file * rows + row) as i32).collect();
+        table
+            .execute_upsert(batch(t1_schema(), parts, values))
+            .await?;
+    }
+    Ok(name)
+}
+
+/// A worker that cannot build a session for the tasks it is given.
+///
+/// The counter it keeps is the same self-proof as the dying worker's: the test
+/// asserts it was asked for a task, so a query that failed for some other
+/// reason cannot pass for the injected failure.
+struct FailingSessionBuilder {
+    asked: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl datafusion_distributed::WorkerSessionBuilder for FailingSessionBuilder {
+    async fn build_session_state(
+        &self,
+        _ctx: datafusion_distributed::WorkerQueryContext,
+    ) -> datafusion::common::Result<datafusion::execution::SessionState> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        Err(datafusion::common::DataFusionError::Execution(
+            "this worker cannot serve tasks".to_string(),
+        ))
+    }
+}
+
+/// Replaces one worker of the set with a worker that fails every task.
+///
+/// The `Worker` handles of all workers are returned too, so a test can check
+/// that the query's tasks are drained from the workers after the failure.
+async fn spawn_workers_with_one_failing()
+-> (Vec<String>, Vec<Worker>, JoinSet<()>, Arc<AtomicUsize>) {
+    let (mut urls, mut handles, mut workers) = spawn_workers_with_handles(2).await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    urls.push(format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().unwrap().port()
+    ));
+    let asked = Arc::new(AtomicUsize::new(0));
+    let worker = Worker::from_session_builder(FailingSessionBuilder {
+        asked: Arc::clone(&asked),
+    })
+    // The runtime and version a real worker advertises, or discovery keeps it
+    // out of the set and the query never reaches it.
+    .with_runtime_env(
+        crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap(),
+    )
+    .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+    handles.push(worker.clone());
+    workers.spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(worker.into_worker_server())
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await;
+    });
+    (urls, handles, workers, asked)
+}
+
+/// A worker that cannot serve a task fails the query, and the query does not
+/// hang: the plan's design point is that a worker failure fails the query, with
+/// no retry on the machines that are left.
+///
+/// The table is deliberately much wider than the worker set: the scan stage is
+/// then split into far more tasks than there are workers, so the one that
+/// cannot serve is certain to be given some, instead of hoping that assignment
+/// happens to pick it.
+#[test]
+fn test_a_worker_that_cannot_serve_fails_the_query() {
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let wide = seed_wide_table(Arc::clone(&client), 32, 32).await?;
+        let (urls, handles, mut workers, asked) = spawn_workers_with_one_failing().await;
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
+
+        expect_query_failure_within(&ctx, &format!("select count(*) from {wide}"))
+            .await?;
+        assert!(
+            asked.load(Ordering::SeqCst) > 0,
+            "the worker that cannot serve has to be given a task for this test to \
+             be about its failure, asked {}",
+            asked.load(Ordering::SeqCst)
+        );
+        // The healthy workers must drain the query's tasks. The worker that
+        // fails at session build never started its task, so nothing on the
+        // worker observes the query's end to invalidate its task entry —
+        // the same leaked-entry mechanism the cancellation test
+        // (`test_dropping_a_running_distributed_stream_stops_the_workers`)
+        // documents: such an entry is what the TTL is for, and it holds no
+        // running execution.
+        for handle in handles[..handles.len() - 1].iter() {
+            wait_until_no_tasks(handle, "healthy worker").await;
+        }
+
+        workers.abort_all();
+        Ok(())
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Remote merge-on-read correctness
+// ---------------------------------------------------------------------------
+
+/// `(part, id, score, op)` — the CDC shape of `create_cdc_table` plus a range
+/// partition, so queries over the whole table distribute as a union of merge
+/// work units.
+fn partitioned_cdc_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("id", DataType::Int32, false),
+        Field::new("score", DataType::Int32, false),
+        Field::new("op", DataType::Utf8, true),
+    ]))
+}
+
+fn partitioned_cdc_batch(
+    schema: &SchemaRef,
+    parts: &[i32],
+    ids: &[i32],
+    scores: &[i32],
+    ops: &[&str],
+) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::clone(schema),
+        vec![
+            Arc::new(Int32Array::from(parts.to_vec())) as ArrayRef,
+            Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
+            Arc::new(Int32Array::from(scores.to_vec())) as ArrayRef,
+            Arc::new(StringArray::from(ops.to_vec())) as ArrayRef,
+        ],
+    )
+    .unwrap()
+}
+
+/// Remote merge-on-read of a CDC table whose rows live in several range
+/// partitions, driven by non-key filters and value-focused projections.
+///
+/// `create_cdc_table` has no range partition, so every query over it has a
+/// single merge work unit and stays on the coordinator
+/// (`test_distribution_matrix_by_table_shape`); this fixture has three, so
+/// the CDC merge runs as a distributed union on the workers. The non-key
+/// filter `score >= 10` is deliberately not a primary-key or range-partition
+/// predicate, so the table provider classifies it `Unsupported`: DataFusion
+/// evaluates it in a filter above the scan and never hands it to the merge.
+/// This query would resurrect stale versions if the classification ever
+/// changed and value predicates were pushed below the merge — applied per
+/// file, such a predicate keeps a stale insert whose old value satisfies it
+/// and drops the file whose newer value does not.
+///
+/// Per key of the fixture:
+/// - key 1: inserted with a satisfying value, updated to a non-satisfying
+///   one — the update must win and its old value must not survive the filter;
+/// - key 2: deleted with a tombstone whose value differs from the row it
+///   deletes — the delete must win;
+/// - key 3: deleted, then reinserted with a new value — the reinsert wins;
+/// - key 4: never touched, keeps the filtered result non-empty.
+///
+/// Most queries project `score` or aggregates only; the full-projection query
+/// pins the exact surviving rows. The merge's hidden required columns
+/// (primary key, CDC change column) must neither leak into the results nor
+/// vanish in the distributed plan: dropping them would fail the worker-side
+/// merge and surface as wrong results.
+#[test]
+fn test_remote_cdc_merge_with_non_key_filter() {
+    run_distributed_test(test_remote_cdc_merge_with_non_key_filter_inner());
+}
+
+/// One upsert call of the partitioned CDC fixture: partition values, keys,
+/// scores, change ops.
+type CdcWrite<'a> = (&'a [i32], &'a [i32], &'a [i32], &'a [&'a str]);
+
+async fn test_remote_cdc_merge_with_non_key_filter_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let table = format!("distributed_cdc_part_{suffix}");
+    create_cdc_table_with_range_partitions(
+        client.clone(),
+        &table,
+        PhysicalFormat::Parquet,
+        &["part"],
+    )
+    .await?;
+    let lakehouse = crate::lakesoul_table::LakeSoulTable::for_name(&table).await?;
+    let schema = partitioned_cdc_schema();
+    let writes: [CdcWrite; 5] = [
+        (
+            &[0, 1, 2, 0],
+            &[1, 2, 3, 4],
+            &[10, 20, 30, 40],
+            &["insert", "insert", "insert", "insert"],
+        ),
+        (&[0], &[1], &[5], &["insert"]),
+        (&[1], &[2], &[99], &["delete"]),
+        (&[2], &[3], &[30], &["delete"]),
+        (&[2], &[3], &[31], &["insert"]),
+    ];
+    for (parts, ids, scores, ops) in writes {
+        lakehouse
+            .execute_upsert(partitioned_cdc_batch(&schema, parts, ids, scores, ops))
+            .await?;
+    }
+
+    let (worker_urls, receipts, mut workers) =
+        spawn_workers_with_task_recording(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+
+    #[rustfmt::skip]
+    let queries: [(String, Vec<&str>, bool); 4] = [
+        // Full projection in a total order: the update of key 1 wins (no
+        // resurrection of score 10 through the stale insert's file), key 2
+        // is gone, key 3 carries the reinserted value.
+        (
+            format!("SELECT part, id, score FROM {table} ORDER BY part, id"),
+            vec![
+                "+------+----+-------+",
+                "| part | id | score |",
+                "+------+----+-------+",
+                "| 0    | 1  | 5     |",
+                "| 0    | 4  | 40    |",
+                "| 2    | 3  | 31    |",
+                "+------+----+-------+",
+            ],
+            true,
+        ),
+        (
+            // A stale or resurrected version (10, 20, 30) would appear here.
+            format!("SELECT score FROM {table} WHERE score >= 10 ORDER BY score"),
+            vec![
+                "+-------+",
+                "| score |",
+                "+-------+",
+                "| 31    |",
+                "| 40    |",
+                "+-------+",
+            ],
+            true,
+        ),
+        (
+            format!("SELECT count(*) AS c, sum(score) AS s FROM {table}"),
+            vec![
+                "+---+----+",
+                "| c | s  |",
+                "+---+----+",
+                "| 3 | 76 |",
+                "+---+----+",
+            ],
+            false,
+        ),
+        (
+            format!("SELECT count(*) AS c FROM {table} WHERE score >= 10"),
+            vec!["+---+", "| c |", "+---+", "| 2 |", "+---+"],
+            false,
+        ),
+    ];
+    for (sql, expected, ordered) in &queries {
+        assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered)
+            .await?;
+    }
+
+    // Three populated partitions: three merge work units behind a union, and
+    // none of them may be split across tasks.
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    assert_merge_units_pinned(&ctx, &queries[0].0, 3).await?;
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// `part, k1, k2, v` — composite primary key `(k1, k2)`, range partitioned by
+/// `part`, four hash buckets.
+fn bucket_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("k1", DataType::Int32, false),
+        Field::new("k2", DataType::Int32, false),
+        Field::new("v", DataType::Int32, false),
+    ]))
+}
+
+fn bucket_batch(rows: &[(i32, i32, i32, i32)]) -> RecordBatch {
+    let mut parts = Vec::new();
+    let mut k1s = Vec::new();
+    let mut k2s = Vec::new();
+    let mut values = Vec::new();
+    for &(part, k1, k2, v) in rows {
+        parts.push(part);
+        k1s.push(k1);
+        k2s.push(k2);
+        values.push(v);
+    }
+    RecordBatch::try_new(
+        bucket_schema(),
+        vec![
+            Arc::new(Int32Array::from(parts)) as ArrayRef,
+            Arc::new(Int32Array::from(k1s)) as ArrayRef,
+            Arc::new(Int32Array::from(k2s)) as ArrayRef,
+            Arc::new(Int32Array::from(values)) as ArrayRef,
+        ],
+    )
+    .unwrap()
+}
+
+/// Creates the four-bucket composite-key table and writes each partition's
+/// first key three times, once per file, so the latest file decides.
+async fn seed_bucketed_table(client: MetaDataClientRef) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_bucketed_{suffix}");
+    create_distributed_table(
+        client.clone(),
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(bucket_schema())
+            .with_primary_keys(vec!["k1".to_string(), "k2".to_string()])
+            .with_range_partitions(vec!["part".to_string()])
+            .with_hash_bucket_num("4")
+            .build(),
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    table
+        .execute_upsert(bucket_batch(&[
+            (0, 1, 0, 10),
+            (1, 2, 0, 11),
+            (2, 3, 0, 12),
+            (0, 1, 1, 1),
+            (1, 2, 1, 2),
+            (2, 3, 1, 3),
+        ]))
+        .await?;
+    table
+        .execute_upsert(bucket_batch(&[(0, 1, 0, 20), (1, 2, 0, 21), (2, 3, 0, 22)]))
+        .await?;
+    table
+        .execute_upsert(bucket_batch(&[(0, 1, 0, 30), (1, 2, 0, 31), (2, 3, 0, 32)]))
+        .await?;
+    Ok(name)
+}
+
+/// Several hash buckets behind a composite primary key, merged on the workers.
+///
+/// The plain primary-key fixtures rely on the default single bucket, so their
+/// files carry one bucket each and a merge work unit is one bucket's files;
+/// `hash_bucket_num = 4` gives every range partition's merge work unit files
+/// from several buckets, and the same composite key `(k1, k2)` is updated
+/// across three files. The worker-side merge must read every bucket's files
+/// for the key and emit only the latest version, with no duplicate rows.
+///
+/// The merge work units run with more workers than units (5 workers, 3 units)
+/// and with fewer (2 workers, 3 units): the unit count, not the worker count,
+/// is what must stay pinned to one task each.
+#[test]
+fn test_multi_bucket_composite_pk_merge_on_workers() {
+    run_distributed_test(test_multi_bucket_composite_pk_merge_on_workers_inner());
+}
+
+async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let name = seed_bucketed_table(client.clone()).await?;
+    let single_node = single_node_factory(client.clone())?;
+
+    let queries: Vec<(String, Vec<&str>, bool)> = vec![
+        // A stale version (10+p, 20+p) or a duplicated key would corrupt this
+        // exact sequence.
+        (
+            format!("SELECT part, k1, k2, v FROM {name} ORDER BY part, k1, k2"),
+            vec![
+                "+------+----+----+----+",
+                "| part | k1 | k2 | v  |",
+                "+------+----+----+----+",
+                "| 0    | 1  | 0  | 30 |",
+                "| 0    | 1  | 1  | 1  |",
+                "| 1    | 2  | 0  | 31 |",
+                "| 1    | 2  | 1  | 2  |",
+                "| 2    | 3  | 0  | 32 |",
+                "| 2    | 3  | 1  | 3  |",
+                "+------+----+----+----+",
+            ],
+            true,
+        ),
+        (
+            format!(
+                "SELECT count(*) AS c, count(DISTINCT k1) AS d, sum(v) AS s FROM {name}"
+            ),
+            vec![
+                "+---+---+----+",
+                "| c | d | s  |",
+                "+---+---+----+",
+                "| 6 | 3 | 99 |",
+                "+---+---+----+",
+            ],
+            false,
+        ),
+        // A non-key filter whose stale versions (10+p, 20+p) also satisfy it.
+        (
+            format!("SELECT v FROM {name} WHERE v > 2 ORDER BY v"),
+            vec![
+                "+----+", "| v  |", "+----+", "| 3  |", "| 30 |", "| 31 |", "| 32 |",
+                "+----+",
+            ],
+            true,
+        ),
+    ];
+
+    // More workers than merge work units: five workers, three units.
+    {
+        let (worker_urls, receipts, mut workers) =
+            spawn_workers_with_task_recording(5).await;
+        let distributed =
+            distributed_factory_with(client.clone(), worker_urls, 5, false)?;
+        for (sql, expected, ordered) in &queries {
+            assert_query_runs_on_workers(
+                &distributed,
+                &receipts,
+                sql,
+                expected,
+                *ordered,
+            )
+            .await?;
+        }
+        let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+        assert_merge_units_pinned(&ctx, &queries[0].0, 3).await?;
+        workers.abort_all();
+    }
+
+    // Fewer workers than merge work units: two workers, three units.
+    {
+        let (worker_urls, mut workers) = spawn_workers(2).await;
+        let distributed =
+            distributed_factory_with(client.clone(), worker_urls, 2, false)?;
+        for (sql, expected, ordered) in &queries {
+            let pair = (sql.clone(), expected.clone());
+            if *ordered {
+                assert_matches_single_node_ordered(&distributed, &single_node, &[pair])
+                    .await?;
+            } else {
+                assert_matches_single_node(&distributed, &single_node, &[pair]).await?;
+            }
+        }
+        let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+        assert_merge_units_pinned(&ctx, &queries[0].0, 3).await?;
+        workers.abort_all();
+    }
+
+    Ok(())
+}
+
+/// Upserts `(part, id, v)` rows into a table with `shape_schema()`.
+async fn upsert_shape_rows(table: &str, rows: Vec<(i32, i32, i32)>) -> Result<()> {
+    let mut parts = Vec::new();
+    let mut ids = Vec::new();
+    let mut values = Vec::new();
+    for (part, id, v) in rows {
+        parts.push(part);
+        ids.push(id);
+        values.push(v);
+    }
+    crate::lakesoul_table::LakeSoulTable::for_name(table)
+        .await?
+        .execute_upsert(
+            RecordBatch::try_new(
+                shape_schema(),
+                vec![
+                    Arc::new(Int32Array::from(parts)) as ArrayRef,
+                    Arc::new(Int32Array::from(ids)) as ArrayRef,
+                    Arc::new(Int32Array::from(values)) as ArrayRef,
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+}
+
+/// `(part, id, v)`: the top values concentrate in partition 2, `v` repeats
+/// across partitions with `id` as the final tie-breaker, and the superseded
+/// versions (50 for key 1, 500 for key 21) are values that must not appear —
+/// 50 stays live only for the never-updated key 11.
+async fn seed_topk_table(client: MetaDataClientRef) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_topk_{suffix}");
+    create_distributed_table(
+        client.clone(),
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(shape_schema())
+            .with_primary_keys(vec!["id".to_string()])
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+    )
+    .await?;
+    upsert_shape_rows(&name, vec![(0, 1, 50), (1, 11, 50), (2, 21, 500)]).await?;
+    upsert_shape_rows(
+        &name,
+        vec![
+            (0, 1, 5),
+            (0, 2, 5),
+            (0, 3, 7),
+            (1, 12, 8),
+            (1, 13, 9),
+            (2, 21, 900),
+            (2, 22, 900),
+            (2, 23, 901),
+        ],
+    )
+    .await?;
+    Ok(name)
+}
+
+/// Ordered Top-K, `LIMIT` and `OFFSET` over a plan whose scan is a union of
+/// three merge work units, compared in output order.
+///
+/// The shared `assert_batches_eq` sorts result rows before comparing, so the
+/// module's other `ORDER BY` queries cannot catch a wrong global order. This
+/// fixture makes the order observable: the top values concentrate in one
+/// partition, `v` repeats across partitions so the `ORDER BY` needs the
+/// primary key as the final tie-breaker (the ties are cut mid-sequence by
+/// `LIMIT`/`OFFSET`), and the stale value 500 must not appear at all.
+///
+/// The order of the merge work units' output is not pinned — the union
+/// concatenates them in whatever order its tasks finish — which is exactly
+/// what the global sort at the coordinator must normalize.
+#[test]
+fn test_remote_topk_limit_offset_keeps_output_order() {
+    run_distributed_test(test_remote_topk_limit_offset_keeps_output_order_inner());
+}
+
+async fn test_remote_topk_limit_offset_keeps_output_order_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let name = seed_topk_table(client.clone()).await?;
+
+    let (worker_urls, receipts, mut workers) =
+        spawn_workers_with_task_recording(WORKER_COUNT).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+
+    #[rustfmt::skip]
+    let queries: [(String, Vec<&str>, bool); 3] = [
+        (
+            format!("SELECT id, v FROM {name} ORDER BY v DESC, id ASC LIMIT 5"),
+            vec![
+                "+----+-----+",
+                "| id | v   |",
+                "+----+-----+",
+                "| 23 | 901 |",
+                "| 21 | 900 |",
+                "| 22 | 900 |",
+                "| 11 | 50  |",
+                "| 13 | 9   |",
+                "+----+-----+",
+            ],
+            true,
+        ),
+        (
+            format!(
+                "SELECT id, v FROM {name} ORDER BY v DESC, id ASC LIMIT 5 OFFSET 2"
+            ),
+            vec![
+                "+----+-----+",
+                "| id | v   |",
+                "+----+-----+",
+                "| 22 | 900 |",
+                "| 11 | 50  |",
+                "| 13 | 9   |",
+                "| 12 | 8   |",
+                "| 3  | 7   |",
+                "+----+-----+",
+            ],
+            true,
+        ),
+        (
+            format!("SELECT id, v FROM {name} ORDER BY v ASC, id ASC LIMIT 4"),
+            vec![
+                "+----+---+",
+                "| id | v |",
+                "+----+---+",
+                "| 1  | 5 |",
+                "| 2  | 5 |",
+                "| 3  | 7 |",
+                "| 12 | 8 |",
+                "+----+---+",
+            ],
+            true,
+        ),
+    ];
+    for (sql, expected, ordered) in &queries {
+        assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered)
+            .await?;
+    }
+
+    // Three merge work units feed the sort; none may be split across tasks.
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    for (sql, _, _) in &queries {
+        assert_merge_units_pinned(&ctx, sql, 3).await?;
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Upserts one version of a `(part, id, v)` primary-key table with
+/// `partitions` range partitions, one key per partition: the whole table is
+/// one version. Many partitions keep a streaming merge query running for a
+/// while after its first batch, so a commit can be ordered against it
+/// deterministically.
+async fn seed_snapshot_table(
+    client: MetaDataClientRef,
+    partitions: usize,
+) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_snapshot_{suffix}");
+    create_distributed_table(
+        client.clone(),
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(shape_schema())
+            .with_primary_keys(vec!["id".to_string()])
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+    )
+    .await?;
+    upsert_shape_rows(&name, snapshot_rows(100, partitions)).await?;
+    Ok(name)
+}
+
+/// The expected rows of one snapshot version: `(p, p, version + p)`.
+fn snapshot_rows(version: i32, partitions: usize) -> Vec<(i32, i32, i32)> {
+    (0..partitions)
+        .map(|p| (p as i32, p as i32, version + p as i32))
+        .collect()
+}
+
+/// Rows of `(part, id, v)` batches as triplets, in stream order.
+fn shape_rows(batches: &[RecordBatch]) -> Vec<(i32, i32, i32)> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(move |row| {
+                let column = |index: usize| {
+                    batch
+                        .column(index)
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .expect("shape columns are int32")
+                        .value(row)
+                };
+                (column(0), column(1), column(2))
+            })
+        })
+        .collect()
+}
+
+/// A distributed query keeps the file set it captured at planning time,
+/// whatever commits land while it runs.
+///
+/// The overlaps are deterministic — no sleeps, no loop-timing luck:
+///
+/// - barrier 1: the physical plan is created, *then* a new version commits,
+///   *then* the captured plan executes — it must merge the captured files
+///   only, never the committed one;
+/// - barrier 2: the plan executes on gated workers, whose first file read
+///   blocks until the test says so — the gate's arrival counters show every
+///   worker's read is parked mid-flight, not merely dispatched — then another
+///   version commits, and only then is the gate opened and the same stream
+///   read to the end — still exactly the previously committed version.
+///
+/// `execute_upsert` commits one version of the whole table, so each barrier's
+/// expectation is exactly that version's file set: its rows, no duplicate
+/// keys, no stale values, no lost rows. Consistency is per committed version;
+/// a single cross-partition upsert is one version, not an atomic write
+/// observed partway through.
+#[test]
+fn test_a_query_keeps_the_file_set_it_captured() {
+    run_distributed_test(test_a_query_keeps_the_file_set_it_captured_inner());
+}
+
+async fn test_a_query_keeps_the_file_set_it_captured_inner() -> Result<()> {
+    // 64 merge work units over 3 workers: every worker holds several tasks,
+    // and a running query has work left after any first batch.
+    const PARTITIONS: usize = 64;
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let name = seed_snapshot_table(client.clone(), PARTITIONS).await?;
+    let sql = format!("SELECT part, id, v FROM {name}");
+
+    // Barrier 1: capture version 100+p, commit 200+p, execute the captured
+    // plan — on recording workers, so the run is pinned to the workers.
+    {
+        let (worker_urls, receipts, mut workers) =
+            spawn_workers_with_task_recording(WORKER_COUNT).await;
+        let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+        let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+
+        let plan = ctx.sql(&sql).await?.create_physical_plan().await?;
+        let explain = display_plan_ascii(plan.as_ref(), false);
+        assert!(
+            plan.is::<DistributedExec>(),
+            "the plan must have distributed stages:\n{explain}"
+        );
+        upsert_shape_rows(&name, snapshot_rows(200, PARTITIONS)).await?;
+        let rows = shape_rows(&collect(plan, ctx.task_ctx().clone()).await?);
+        assert_eq!(
+            sorted_rows(rows),
+            snapshot_rows(100, PARTITIONS),
+            "the query must keep the file set it captured at planning time"
+        );
+        assert!(
+            recorded_tasks(&receipts) > 0,
+            "this test is about the workers' snapshot, not a coordinator-only run"
+        );
+        workers.abort_all();
+    }
+
+    // Barrier 2: capture the 200+p file set, execute on gated workers — wait
+    // until every worker's first read is actually parked at the gate (the
+    // gate's arrival counter, not a session-builder receipt, which only
+    // proves the plan was handed over) — then commit 300+p, open the gate,
+    // and read the same stream to the end.
+    let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+    let (worker_urls, arrived, _handles, mut workers) =
+        spawn_gated_workers(WORKER_COUNT, gate_rx).await;
+    let distributed = distributed_factory(client.clone(), worker_urls, false)?;
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+
+    let plan = ctx.sql(&sql).await?.create_physical_plan().await?;
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    assert!(
+        plan.is::<DistributedExec>(),
+        "the plan must have distributed stages:\n{explain}"
+    );
+    let mut stream = execute_stream(plan, ctx.task_ctx().clone())?;
+    wait_until_all_reached(&arrived, "snapshot worker").await;
+    // The commit lands while the query is running and blocked, mid-merge.
+    upsert_shape_rows(&name, snapshot_rows(300, PARTITIONS)).await?;
+    gate_tx.send(true).map_err(|_| {
+        DataFusionError::Execution("the gate receiver was dropped".to_string())
+    })?;
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        batches.push(batch?);
+    }
+    let rows = shape_rows(&batches);
+    assert_eq!(
+        sorted_rows(rows),
+        snapshot_rows(200, PARTITIONS),
+        "a commit landing mid-execution must not enter a running query, and \
+         the running query must neither lose nor duplicate rows"
+    );
+
+    // A query planned after the commits sees the latest version.
+    let rows = shape_rows(&ctx.sql(&sql).await?.collect().await?);
+    assert_eq!(
+        sorted_rows(rows),
+        snapshot_rows(300, PARTITIONS),
+        "a query planned after the commits must see every committed version"
+    );
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Rows of `(part, id, v)` batches, in key order.
+fn sorted_rows(mut rows: Vec<(i32, i32, i32)>) -> Vec<(i32, i32, i32)> {
+    rows.sort_unstable();
+    rows
+}
+
+/// Plans `sql` on `ctx` and asserts it has exactly `merge_units` merge work
+/// units, none of which is split across distributed tasks
+/// (`assert_merge_work_units_pinned` on the `EXPLAIN ANALYZE` output), and
+/// that the planner distributed the plan at all: a coordinator-only plan
+/// would otherwise pass the pinning check vacuously.
+///
+/// The `EXPLAIN ANALYZE` text must show the merge operators; if a formatting
+/// change ever drops them, the check must fail loudly instead of passing
+/// silently.
+async fn assert_merge_units_pinned(
+    ctx: &SessionContext,
+    sql: &str,
+    merge_units: usize,
+) -> Result<()> {
+    let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    assert!(
+        plan.is::<DistributedExec>(),
+        "the plan must have distributed stages:\n{explain}"
+    );
+    assert_eq!(
+        count_merge_work_units(&plan),
+        merge_units,
+        "unexpected merge work units for {sql}:\n{explain}"
+    );
+    let batches =
+        collect_within_timeout(ctx, &format!("EXPLAIN ANALYZE {sql}"), EXECUTION_TIMEOUT)
+            .await?;
+    let explain_analyze =
+        datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string();
+    assert!(
+        explain_analyze.contains("MergeParquetExec"),
+        "the analyzed plan must show the merge operators for the pinning check \
+         to be about them:\n{explain_analyze}"
+    );
+    assert_merge_work_units_pinned(&explain_analyze, sql);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Failure cleanup and recovery
+// ---------------------------------------------------------------------------
+
+/// A read that starts failing mid-query fails the distributed query, drains
+/// the tasks from the workers that are still healthy, and — once the fault is
+/// removed — leaves the workers and the coordinator usable.
+///
+/// Runs with `fallback_to_local = false`, so the failed execution cannot hide
+/// behind a local rerun: it surfaces as the query's error.
+#[test]
+fn test_a_failing_read_cleans_up_tasks_and_recovers() {
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let table = seed_wide_table(Arc::clone(&client), 16, 8).await?;
+        let served = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fail_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut fault_workers = JoinSet::new();
+        let mut urls = Vec::new();
+        let mut handles = Vec::new();
+        for _ in 0..WORKER_COUNT {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            urls.push(format!("http://{}", listener.local_addr()?));
+            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            runtime.register_object_store(
+                &url::Url::parse("file://")?,
+                Arc::new(FailAfterFirstRead {
+                    inner: Arc::new(object_store::local::LocalFileSystem::new()),
+                    first_served: tokio::sync::Mutex::new(false),
+                    served: Arc::clone(&served),
+                    failed: Arc::clone(&failed),
+                    fail_enabled: Arc::clone(&fail_enabled),
+                }),
+            );
+            let worker = crate::distributed::lakesoul_worker(
+                &crate::distributed::LakeSoulWorkerOptions {
+                    core_args: CoreArgs::default(),
+                },
+            )?
+            .with_runtime_env(runtime);
+            handles.push(worker.clone());
+            fault_workers.spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(worker.into_worker_server())
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
+                    .await;
+            });
+        }
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
+
+        expect_query_failure_within(&ctx, &format!("select count(*) from {table}"))
+            .await?;
+        assert!(
+            served.load(Ordering::SeqCst) > 0,
+            "a read must succeed first"
+        );
+        assert!(
+            failed.load(Ordering::SeqCst),
+            "the injected failure must occur"
+        );
+
+        // The failure must drain the query's tasks from the healthy workers,
+        // not leave them running until their TTL.
+        for (index, handle) in handles.iter().enumerate() {
+            wait_until_no_tasks(handle, &format!("recovery worker {index}")).await;
+        }
+
+        // Once the fault is removed, the workers serve a full query again.
+        fail_enabled.store(false, Ordering::SeqCst);
+        let count = collect_within_timeout(
+            &ctx,
+            &format!("select count(*) from {table}"),
+            EXECUTION_TIMEOUT,
+        )
+        .await
+        .expect("the query must succeed once the fault is removed");
+        assert_eq!(
+            count[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("count(*) yields int64")
+                .value(0),
+            16 * 8,
+            "the recovered query must see every row"
+        );
+
+        fault_workers.abort_all();
+        Ok(())
+    });
+}
+
+/// A worker that cannot build a session for its tasks fails the query even
+/// with `fallback_to_local = true`.
+///
+/// `fallback_to_local` decides what happens when the distributed *planner*
+/// fails (see the gate's unit tests). A task that fails during execution on a
+/// worker must surface as the query's error, never as a silent local rerun on
+/// the coordinator: a rerun would turn a partial failure into a success and
+/// report a result computed from scratch, hiding the broken worker.
+#[test]
+fn test_a_session_builder_failure_is_not_rerun_locally() {
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let wide = seed_wide_table(Arc::clone(&client), 32, 32).await?;
+        let (urls, handles, mut workers, asked) = spawn_workers_with_one_failing().await;
+        let factory = distributed_factory(Arc::clone(&client), urls, true)?;
+        let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
+
+        expect_query_failure_within(&ctx, &format!("select count(*) from {wide}"))
+            .await?;
+        assert!(
+            asked.load(Ordering::SeqCst) > 0,
+            "the worker that cannot serve has to be given a task for this test to \
+             be about its failure, asked {}",
+            asked.load(Ordering::SeqCst)
+        );
+        // Same reasoning as the failing-worker test: only the workers that
+        // served a task must drain; the session-build failure's entry has no
+        // running execution behind it and relies on the TTL.
+        for handle in handles[..handles.len() - 1].iter() {
+            wait_until_no_tasks(handle, "healthy worker").await;
+        }
+
         workers.abort_all();
         Ok(())
     });
