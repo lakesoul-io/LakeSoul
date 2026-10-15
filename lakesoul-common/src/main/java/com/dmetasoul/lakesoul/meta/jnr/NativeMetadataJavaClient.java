@@ -8,7 +8,9 @@ import static com.dmetasoul.lakesoul.meta.jnr.NativeUtils.*;
 import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
+import com.dmetasoul.lakesoul.meta.entity.CommitOp;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.entity.MetaInfo;
 import com.dmetasoul.lakesoul.meta.security.Claims;
 import com.google.protobuf.InvalidProtocolBufferException;
 
@@ -528,6 +530,71 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     public static Integer insert(NativeUtils.CodedDaoType insertType, JniWrapper jniWrapper) {
         return getInstance().executeInsert(insertType.getCode(), jniWrapper);
+    }
+
+    /**
+     * Delegates the whole commit coordination to the native metadata client. Returns the native
+     * outcome code: 1 = committed, 2 = already committed, 3 = superseded. Conflicts and failures
+     * are reported through the callback as -1 with an error message and surface as {@link
+     * java.sql.SQLException}.
+     */
+    public Integer executeCommitData(CommitOp commitOp, MetaInfo metaInfo) {
+        try {
+            getWriteLock();
+            int retryCounter = NATIVE_METADATA_MAX_RETRY_ATTEMPTS;
+            while (retryCounter >= 0) {
+                long startTime = System.currentTimeMillis();
+                try {
+                    final CompletableFuture<Integer> future = new CompletableFuture<>();
+
+                    byte[] bytes = metaInfo.toByteArray();
+                    Pointer buffer =
+                            Runtime.getRuntime(libLakeSoulMetaData)
+                                    .getMemoryManager()
+                                    .allocateDirect(bytes.length, true);
+                    buffer.put(0, bytes, 0, bytes.length);
+
+                    getLibLakeSoulMetaData()
+                            .commit_data(
+                                    new ReferencedIntegerCallback(
+                                            (result, msg) -> {
+                                                if (msg == null || msg.isEmpty()) {
+                                                    future.complete(result);
+                                                } else {
+                                                    future.completeExceptionally(
+                                                            new SQLException(msg));
+                                                }
+                                            },
+                                            getIntegerCallbackObjectReferenceManager()),
+                                    tokioRuntime,
+                                    tokioPostgresClient,
+                                    commitOp.getNumber(),
+                                    buffer.address(),
+                                    bytes.length);
+                    return future.get(timeout, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                    LOG.error(
+                            "Failed to execute native commit_data, commit op {}, retry {}",
+                            commitOp,
+                            retryCounter,
+                            e);
+                    if (retryCounter == 0) {
+                        throw new RuntimeException(e);
+                    } else {
+                        enlargeTimeout();
+                        retryCounter--;
+                    }
+                } finally {
+                    LOG.info(
+                            "Execute native commit_data, commit op {}, cost {} ms",
+                            commitOp,
+                            System.currentTimeMillis() - startTime);
+                }
+            }
+        } finally {
+            unlockWriteLock();
+        }
+        return -1;
     }
 
     public static JniWrapper query(NativeUtils.CodedDaoType queryType, List<String> params) {

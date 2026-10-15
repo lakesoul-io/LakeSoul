@@ -214,8 +214,22 @@ class SnapshotTagInfo(_message.Message):
     expire_at: int
     def __init__(self, table_id: _Optional[str] = ..., tag: _Optional[str] = ..., snapshot_id: _Optional[int] = ..., created_at: _Optional[int] = ..., expire_at: _Optional[int] = ...) -> None: ...
 
+class PartitionCommitEntry(_message.Message):
+    __slots__ = ("partition_info", "commit_id")
+    PARTITION_INFO_FIELD_NUMBER: _ClassVar[int]
+    COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
+    partition_info: PartitionInfo
+    commit_id: _containers.RepeatedCompositeFieldContainer[Uuid]
+    def __init__(self, partition_info: _Optional[_Union[PartitionInfo, _Mapping]] = ..., commit_id: _Optional[_Iterable[_Union[Uuid, _Mapping]]] = ...) -> None: ...
+
+class PartitionInfoCommit(_message.Message):
+    __slots__ = ("partitions",)
+    PARTITIONS_FIELD_NUMBER: _ClassVar[int]
+    partitions: _containers.RepeatedCompositeFieldContainer[PartitionCommitEntry]
+    def __init__(self, partitions: _Optional[_Iterable[_Union[PartitionCommitEntry, _Mapping]]] = ...) -> None: ...
+
 class JniWrapper(_message.Message):
-    __slots__ = ("namespace", "table_info", "table_path_id", "table_name_id", "partition_info", "data_commit_info", "discard_compressed_file_info", "snapshot_info", "snapshot_commit_info", "snapshot_tag_info")
+    __slots__ = ("namespace", "table_info", "table_path_id", "table_name_id", "partition_info", "data_commit_info", "discard_compressed_file_info", "snapshot_info", "snapshot_commit_info", "snapshot_tag_info", "partition_info_commit")
     NAMESPACE_FIELD_NUMBER: _ClassVar[int]
     TABLE_INFO_FIELD_NUMBER: _ClassVar[int]
     TABLE_PATH_ID_FIELD_NUMBER: _ClassVar[int]
@@ -226,6 +240,7 @@ class JniWrapper(_message.Message):
     SNAPSHOT_INFO_FIELD_NUMBER: _ClassVar[int]
     SNAPSHOT_COMMIT_INFO_FIELD_NUMBER: _ClassVar[int]
     SNAPSHOT_TAG_INFO_FIELD_NUMBER: _ClassVar[int]
+    PARTITION_INFO_COMMIT_FIELD_NUMBER: _ClassVar[int]
     namespace: _containers.RepeatedCompositeFieldContainer[Namespace]
     table_info: _containers.RepeatedCompositeFieldContainer[TableInfo]
     table_path_id: _containers.RepeatedCompositeFieldContainer[TablePathId]
@@ -236,4 +251,5 @@ class JniWrapper(_message.Message):
     snapshot_info: _containers.RepeatedCompositeFieldContainer[SnapshotInfo]
     snapshot_commit_info: _containers.RepeatedCompositeFieldContainer[SnapshotCommitInfo]
     snapshot_tag_info: _containers.RepeatedCompositeFieldContainer[SnapshotTagInfo]
-    def __init__(self, namespace: _Optional[_Iterable[_Union[Namespace, _Mapping]]] = ..., table_info: _Optional[_Iterable[_Union[TableInfo, _Mapping]]] = ..., table_path_id: _Optional[_Iterable[_Union[TablePathId, _Mapping]]] = ..., table_name_id: _Optional[_Iterable[_Union[TableNameId, _Mapping]]] = ..., partition_info: _Optional[_Iterable[_Union[PartitionInfo, _Mapping]]] = ..., data_commit_info: _Optional[_Iterable[_Union[DataCommitInfo, _Mapping]]] = ..., discard_compressed_file_info: _Optional[_Iterable[_Union[DiscardCompressedFileInfo, _Mapping]]] = ..., snapshot_info: _Optional[_Iterable[_Union[SnapshotInfo, _Mapping]]] = ..., snapshot_commit_info: _Optional[_Iterable[_Union[SnapshotCommitInfo, _Mapping]]] = ..., snapshot_tag_info: _Optional[_Iterable[_Union[SnapshotTagInfo, _Mapping]]] = ...) -> None: ...
+    partition_info_commit: PartitionInfoCommit
+    def __init__(self, namespace: _Optional[_Iterable[_Union[Namespace, _Mapping]]] = ..., table_info: _Optional[_Iterable[_Union[TableInfo, _Mapping]]] = ..., table_path_id: _Optional[_Iterable[_Union[TablePathId, _Mapping]]] = ..., table_name_id: _Optional[_Iterable[_Union[TableNameId, _Mapping]]] = ..., partition_info: _Optional[_Iterable[_Union[PartitionInfo, _Mapping]]] = ..., data_commit_info: _Optional[_Iterable[_Union[DataCommitInfo, _Mapping]]] = ..., discard_compressed_file_info: _Optional[_Iterable[_Union[DiscardCompressedFileInfo, _Mapping]]] = ..., snapshot_info: _Optional[_Iterable[_Union[SnapshotInfo, _Mapping]]] = ..., snapshot_commit_info: _Optional[_Iterable[_Union[SnapshotCommitInfo, _Mapping]]] = ..., snapshot_tag_info: _Optional[_Iterable[_Union[SnapshotTagInfo, _Mapping]]] = ..., partition_info_commit: _Optional[_Union[PartitionInfoCommit, _Mapping]] = ...) -> None: ...

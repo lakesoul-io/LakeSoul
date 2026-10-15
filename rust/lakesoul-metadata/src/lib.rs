@@ -25,8 +25,8 @@ pub use crate::pooled_client::{PooledClient, QueryType};
 pub use error::{LakeSoulMetaDataError, Result};
 use lakesoul_metadata_proto::entity;
 pub use metadata_client::{
-    IncrementalWindow, MetaDataClient, MetaDataClientRef, PartitionChangelog,
-    pg_config_from_env,
+    CommitOutcome, IncrementalWindow, MetaDataClient, MetaDataClientRef,
+    PartitionChangelog, pg_config_from_env,
 };
 
 pub mod transfusion;
@@ -625,10 +625,11 @@ async fn get_prepared_statement<'a>(
                           coalesce(expire_at, 0) as expire_at
             )
             select table_id, tag, snapshot_id, created_at, expire_at from removed",
-        // Select Table Domain by id
+        // Select Table Domain by id. `table_info` is the one row every table
+        // has; path-only tables have no `table_name_id` row.
         DaoType::SelectTableDomainById =>
             "select table_name, table_id, table_namespace, domain
-             from table_name_id where table_id = $1::TEXT",
+             from table_info where table_id = $1::TEXT",
 
         // Insert
         DaoType::InsertNamespace =>
@@ -1703,8 +1704,17 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::TransactionInsertPartitionInfo => {
-            let mut partition_info_list = wrapper.partition_info.clone();
-            let snapshot_container = partition_info_list.pop().unwrap();
+            let publication = wrapper.partition_info_commit.ok_or_else(|| {
+                LakeSoulMetaDataError::Internal(
+                    "partition publication request missing".to_string(),
+                )
+            })?;
+            if publication.partitions.is_empty() {
+                return Err(LakeSoulMetaDataError::Internal(
+                    "partition publication must contain at least one real partition"
+                        .to_string(),
+                ));
+            }
             let result = {
                 let transaction = client.transaction().await?;
                 let transaction_insert_statement = match transaction
@@ -1727,14 +1737,25 @@ pub async fn execute_insert(
                 };
 
                 let update_statement = match transaction
-                    .prepare("update data_commit_info set committed = 'true' where commit_id = $1::UUID")
+                    .prepare(
+                        "update data_commit_info set committed = 'true' \
+                         where table_id = $1::TEXT and partition_desc = $2::TEXT \
+                         and commit_id = $3::UUID",
+                    )
                     .await
                 {
                     Ok(statement) => statement,
                     Err(e) => return Err(LakeSoulMetaDataError::from(e)),
                 };
 
-                for partition_info in &partition_info_list {
+                for entry in &publication.partitions {
+                    let partition_info =
+                        entry.partition_info.as_ref().ok_or_else(|| {
+                            LakeSoulMetaDataError::Internal(
+                                "partition publication entry missing its partition"
+                                    .to_string(),
+                            )
+                        })?;
                     let snapshot = partition_info
                         .snapshot
                         .iter()
@@ -1756,28 +1777,68 @@ pub async fn execute_insert(
                         )
                         .await;
 
-                    if let Some(e) = result.err() {
-                        error!(error = %e, "partition metadata transaction insert failed");
-                        return match transaction.rollback().await {
-                            Ok(()) => Ok(0i32),
-                            Err(e) => Err(LakeSoulMetaDataError::from(e)),
-                        };
+                    if let Err(error) = result {
+                        let is_conflict = error.as_db_error().is_some_and(|db_error| {
+                            db_error.code()
+                                == &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                                || db_error.code()
+                                    == &tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE
+                        });
+                        error!(error = %error, "partition metadata transaction insert failed");
+                        transaction.rollback().await?;
+                        if is_conflict {
+                            // A concurrent publication raced this one; report
+                            // zero rows so the coordinator rebuilds and retries.
+                            return Ok(0i32);
+                        }
+                        return Err(LakeSoulMetaDataError::from(error));
                     };
-                }
-                for _uuid in &snapshot_container.snapshot {
-                    let uid = uuid::Uuid::from_u64_pair(_uuid.high, _uuid.low);
-                    let result = transaction.execute(&update_statement, &[&uid]).await;
-                    if let Some(e) = result.err() {
-                        error!(error = %e, "metadata commit update failed");
-                        return match transaction.rollback().await {
-                            Ok(()) => Ok(0i32),
-                            Err(e) => Err(LakeSoulMetaDataError::from(e)),
-                        };
+                    for _uuid in &entry.commit_id {
+                        let uid = uuid::Uuid::from_u64_pair(_uuid.high, _uuid.low);
+                        match transaction
+                            .execute(
+                                &update_statement,
+                                &[
+                                    &partition_info.table_id,
+                                    &partition_info.partition_desc,
+                                    &uid,
+                                ],
+                            )
+                            .await
+                        {
+                            Ok(1) => {}
+                            Ok(count) => {
+                                transaction.rollback().await?;
+                                return Err(LakeSoulMetaDataError::Internal(format!(
+                                    "expected to publish data commit {uid} on partition {}, updated {count} rows",
+                                    partition_info.partition_desc
+                                )));
+                            }
+                            Err(error) => {
+                                error!(error = %error, "metadata commit update failed");
+                                transaction.rollback().await?;
+                                return Err(LakeSoulMetaDataError::from(error));
+                            }
+                        }
                     }
                 }
                 match transaction.commit().await {
-                    Ok(()) => Ok(partition_info_list.len() as u64),
-                    Err(e) => Err(e),
+                    Ok(()) => Ok(publication.partitions.len() as u64),
+                    Err(error) => {
+                        let is_conflict = error.as_db_error().is_some_and(|db_error| {
+                            db_error.code()
+                                == &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                                || db_error.code()
+                                    == &tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE
+                        });
+                        if is_conflict {
+                            // A concurrent publication raced this one; report
+                            // zero rows so the coordinator rebuilds and retries.
+                            Ok(0u64)
+                        } else {
+                            Err(error)
+                        }
+                    }
                 }
             };
             match result {

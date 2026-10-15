@@ -8,7 +8,9 @@ import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.CommitOp;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.entity.PartitionCommitEntry;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfoCommit;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 
@@ -45,25 +47,36 @@ public class PartitionInfoDao {
     }
 
     public boolean transactionInsert(
-            List<PartitionInfo> partitionInfoList, List<String> snapshotList) {
+            List<PartitionInfo> partitionInfoList, List<PartitionInfo> rawPartitionInfoList) {
         try {
             transactionInsertTimer.start();
             if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
                 if (partitionInfoList.isEmpty()) return true;
-                PartitionInfo snapshotContainer =
-                        PartitionInfo.newBuilder()
-                                .addAllSnapshot(
-                                        snapshotList.stream()
-                                                .map(s -> DBUtil.toProtoUuid(UUID.fromString(s)))
-                                                .collect(Collectors.toList()))
-                                .build();
+                Map<String, PartitionInfo> rawMap = new HashMap<>();
+                for (PartitionInfo raw : rawPartitionInfoList) {
+                    rawMap.put(raw.getPartitionDesc(), raw);
+                }
+                List<PartitionCommitEntry> entries = new ArrayList<>();
+                for (PartitionInfo published : partitionInfoList) {
+                    PartitionInfo raw = rawMap.get(published.getPartitionDesc());
+                    PartitionCommitEntry.Builder entry =
+                            PartitionCommitEntry.newBuilder().setPartitionInfo(published);
+                    if (raw != null) {
+                        // One commit id can be shared by every partition of a
+                        // Spark streaming batch or Flink checkpoint, so ids
+                        // are scoped per partition instead of a flat list.
+                        entry.addAllCommitId(raw.getSnapshotList());
+                    }
+                    entries.add(entry.build());
+                }
+                PartitionInfoCommit publication =
+                        PartitionInfoCommit.newBuilder().addAllPartitions(entries).build();
 
                 Integer count =
                         NativeMetadataJavaClient.insert(
                                 NativeUtils.CodedDaoType.TransactionInsertPartitionInfo,
                                 JniWrapper.newBuilder()
-                                        .addAllPartitionInfo(partitionInfoList)
-                                        .addPartitionInfo(snapshotContainer)
+                                        .setPartitionInfoCommit(publication)
                                         .build());
                 return count > 0;
             }
@@ -81,13 +94,25 @@ public class PartitionInfoDao {
                 for (PartitionInfo partitionInfo : partitionInfoList) {
                     insertSinglePartitionInfo(conn, pstmt, partitionInfo);
                 }
+                Map<String, PartitionInfo> rawMap = new HashMap<>();
+                for (PartitionInfo raw : rawPartitionInfoList) {
+                    rawMap.put(raw.getPartitionDesc(), raw);
+                }
                 pstmt =
                         conn.prepareStatement(
-                                "update data_commit_info set committed = 'true' where commit_id ="
-                                        + " ?");
-                for (String uuid : snapshotList) {
-                    pstmt.setString(1, uuid);
-                    pstmt.execute();
+                                "update data_commit_info set committed = 'true' where table_id ="
+                                        + " ? and partition_desc = ? and commit_id = ?");
+                for (PartitionInfo published : partitionInfoList) {
+                    PartitionInfo raw = rawMap.get(published.getPartitionDesc());
+                    if (raw == null) {
+                        continue;
+                    }
+                    for (com.dmetasoul.lakesoul.meta.entity.Uuid commitId : raw.getSnapshotList()) {
+                        pstmt.setString(1, published.getTableId());
+                        pstmt.setString(2, published.getPartitionDesc());
+                        pstmt.setString(3, DBUtil.toJavaUUID(commitId).toString());
+                        pstmt.execute();
+                    }
                 }
                 conn.commit();
             } catch (SQLException e) {

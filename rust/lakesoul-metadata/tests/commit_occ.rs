@@ -10,10 +10,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::error::Result;
 use lakesoul_metadata::transfusion::DataFileInfo;
-use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
+use lakesoul_metadata::{CommitOutcome, MetaDataClient};
+use lakesoul_metadata_proto::entity::{
+    CommitOp, DataCommitInfo, MetaInfo, PartitionInfo, TableInfo,
+};
 use tokio::sync::Barrier;
 
 const NAMESPACE: &str = "default";
@@ -94,7 +96,7 @@ async fn commit_with_read(
     commit_op: CommitOp,
     snapshot: Vec<lakesoul_metadata_proto::entity::Uuid>,
     read: Option<&PartitionInfo>,
-) -> Result<()> {
+) -> Result<CommitOutcome> {
     let table_info = client
         .get_table_info_by_table_id(table_id)
         .await?
@@ -103,6 +105,40 @@ async fn commit_with_read(
                 "table {table_id} not found"
             ))
         })?;
+    // Real flows insert pending data commits before publication; publication
+    // marks them committed in the same transaction. A replay arrives with
+    // commit ids whose rows already exist, so staging skips them.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    for commit_id in &snapshot {
+        let commit_id_str =
+            uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
+        if client
+            .get_single_data_commit_info(
+                &table_id,
+                &partition_desc.to_string(),
+                &commit_id_str,
+            )
+            .await?
+            .is_none()
+        {
+            client
+                .insert_data_commit_info(&DataCommitInfo {
+                    table_id: table_id.to_string(),
+                    partition_desc: partition_desc.to_string(),
+                    pinned: false,
+                    commit_id: Some(*commit_id),
+                    file_ops: Vec::new(),
+                    commit_op: commit_op.into(),
+                    timestamp,
+                    committed: false,
+                    domain: "public".to_string(),
+                })
+                .await?;
+        }
+    }
     client
         .commit_data(
             MetaInfo {
@@ -549,5 +585,351 @@ async fn competing_insert_only_initial_commits_have_one_winner() -> Result<()> {
         1
     );
     first.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn replayed_commit_is_idempotent() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("replay");
+    let table_id = create_test_table(&client, &name).await?;
+
+    let (_, commit_uuid) = new_uuid();
+    let commit_id_str =
+        uuid::Uuid::from_u64_pair(commit_uuid.high, commit_uuid.low).to_string();
+    assert_eq!(
+        commit_with_read(
+            &client,
+            &table_id,
+            "p1",
+            CommitOp::AppendCommit,
+            vec![commit_uuid],
+            None,
+        )
+        .await?,
+        CommitOutcome::Committed
+    );
+    let head = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(
+        client
+            .get_single_data_commit_info(&table_id, "p1", &commit_id_str)
+            .await?
+            .expect("staged commit row")
+            .committed,
+        true
+    );
+    // Replaying the same append must not mint a second version: every staged
+    // data commit is already published.
+    assert_eq!(
+        commit_with_read(
+            &client,
+            &table_id,
+            "p1",
+            CommitOp::AppendCommit,
+            vec![commit_uuid],
+            None,
+        )
+        .await?,
+        CommitOutcome::AlreadyCommitted
+    );
+    let after_replay = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(after_replay.version, head.version);
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn multi_partition_publication_marks_every_commit() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("multi_pub");
+    let table_id = create_test_table(&client, &name).await?;
+
+    let mut commits = Vec::new();
+    for partition_desc in ["p1", "p2"] {
+        let (_, commit_uuid) = new_uuid();
+        client
+            .insert_data_commit_info(&DataCommitInfo {
+                table_id: table_id.to_string(),
+                partition_desc: partition_desc.to_string(),
+                pinned: false,
+                commit_id: Some(commit_uuid),
+                file_ops: Vec::new(),
+                commit_op: CommitOp::AppendCommit.into(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+                committed: false,
+                domain: "public".to_string(),
+            })
+            .await?;
+        let commit_id_str =
+            uuid::Uuid::from_u64_pair(commit_uuid.high, commit_uuid.low).to_string();
+        commits.push((partition_desc, commit_id_str, commit_uuid));
+    }
+
+    let table_info = client
+        .get_table_info_by_table_id(&table_id)
+        .await?
+        .ok_or_else(|| {
+            lakesoul_metadata::LakeSoulMetaDataError::NotFound(format!(
+                "table {table_id} not found"
+            ))
+        })?;
+    // Both partitions are published in one call, one transaction.
+    assert_eq!(
+        client
+            .commit_data(
+                MetaInfo {
+                    table_info: Some(table_info),
+                    list_partition: commits
+                        .iter()
+                        .map(|(partition_desc, _, commit_uuid)| PartitionInfo {
+                            table_id: table_id.clone(),
+                            partition_desc: partition_desc.to_string(),
+                            snapshot: vec![*commit_uuid],
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+                CommitOp::AppendCommit,
+            )
+            .await?,
+        CommitOutcome::Committed
+    );
+
+    for (partition_desc, commit_id, commit_uuid) in &commits {
+        let head = latest_partition_info(&client, &table_id, partition_desc).await?;
+        assert_eq!(head.version, 0);
+        assert!(snapshot_ids(&head).contains(&(commit_uuid.high, commit_uuid.low)));
+        assert_eq!(
+            client
+                .get_single_data_commit_info(
+                    &table_id,
+                    partition_desc,
+                    &commit_id.to_string()
+                )
+                .await?
+                .expect("staged commit row")
+                .committed,
+            true
+        );
+    }
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn multi_partition_append_shares_one_commit_id() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("shared_id");
+    let table_id = create_test_table(&client, &name).await?;
+
+    // Flink and Spark streaming stage every partition entry of a batch with
+    // the same commit id; the publication must scope marks per partition.
+    let ((high, low), commit_id) = new_uuid();
+    for partition_desc in ["p1", "p2"] {
+        client
+            .insert_data_commit_info(&DataCommitInfo {
+                table_id: table_id.clone(),
+                partition_desc: partition_desc.to_string(),
+                pinned: false,
+                commit_id: Some(commit_id),
+                file_ops: Vec::new(),
+                commit_op: CommitOp::AppendCommit.into(),
+                timestamp: 1_000,
+                committed: false,
+                domain: "public".to_string(),
+            })
+            .await?;
+    }
+
+    let table_info = client
+        .get_table_info_by_table_id(&table_id)
+        .await?
+        .expect("table exists");
+    let outcome = client
+        .commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![
+                    PartitionInfo {
+                        table_id: table_id.clone(),
+                        partition_desc: "p1".to_string(),
+                        snapshot: vec![commit_id],
+                        ..Default::default()
+                    },
+                    PartitionInfo {
+                        table_id: table_id.clone(),
+                        partition_desc: "p2".to_string(),
+                        snapshot: vec![commit_id],
+                        ..Default::default()
+                    },
+                ],
+                read_partition_info: Vec::new(),
+            },
+            CommitOp::AppendCommit,
+        )
+        .await?;
+    assert_eq!(outcome, CommitOutcome::Committed);
+
+    for partition_desc in ["p1", "p2"] {
+        let latest = latest_partition_info(&client, &table_id, partition_desc).await?;
+        assert_eq!(latest.version, 0);
+        assert!(snapshot_ids(&latest).contains(&(high, low)));
+        let commit = client
+            .get_single_data_commit_info(
+                &table_id,
+                partition_desc,
+                &uuid::Uuid::from_u64_pair(high, low).to_string(),
+            )
+            .await?
+            .expect("shared-id data commit must be published");
+        assert!(commit.committed);
+    }
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_update_reading_version_zero_conflicts() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("v0_conflict");
+    let table_id = create_test_table(&client, &name).await?;
+
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "f1")])
+        .await?;
+    let v0 = latest_partition_info(&client, &table_id, "p1").await?;
+
+    let (_, first_update) = new_uuid();
+    commit_with_read(
+        &client,
+        &table_id,
+        "p1",
+        CommitOp::UpdateCommit,
+        vec![first_update],
+        Some(&v0),
+    )
+    .await?;
+    let v1 = latest_partition_info(&client, &table_id, "p1").await?;
+
+    // A second update that still read v0 must be rejected like any other
+    // update-versus-update race, not merged into a double rewrite.
+    let (_, second_update) = new_uuid();
+    let error = commit_with_read(
+        &client,
+        &table_id,
+        "p1",
+        CommitOp::UpdateCommit,
+        vec![second_update],
+        Some(&v0),
+    )
+    .await
+    .expect_err("update race at version zero must conflict");
+    assert!(
+        error
+            .to_string()
+            .contains("conflicts with concurrent writes"),
+        "unexpected error: {error}"
+    );
+
+    let latest = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(latest.version, v1.version);
+    assert!(!snapshot_ids(&latest).contains(&(second_update.high, second_update.low)));
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_reassert_on_current_head_mints() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("reassert");
+    let table_id = create_test_table(&client, &name).await?;
+
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "f1")])
+        .await?;
+    let v0 = latest_partition_info(&client, &table_id, "p1").await?;
+
+    // A rewrite re-asserting the ids the current head already holds reads the
+    // current version on purpose and must mint a new version, not be treated
+    // as a replay.
+    let table_info = client
+        .get_table_info_by_table_id(&table_id)
+        .await?
+        .expect("table exists");
+    let outcome = client
+        .commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![PartitionInfo {
+                    table_id: table_id.clone(),
+                    partition_desc: "p1".to_string(),
+                    commit_op: CommitOp::UpdateCommit.into(),
+                    snapshot: v0.snapshot.clone(),
+                    ..Default::default()
+                }],
+                read_partition_info: vec![PartitionInfo {
+                    table_id: table_id.clone(),
+                    partition_desc: "p1".to_string(),
+                    version: v0.version,
+                    ..Default::default()
+                }],
+            },
+            CommitOp::UpdateCommit,
+        )
+        .await?;
+    assert_eq!(outcome, CommitOutcome::Committed);
+
+    let latest = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(latest.version, v0.version + 1);
+    assert_eq!(latest.commit_op(), CommitOp::UpdateCommit);
+    assert_eq!(snapshot_ids(&latest), snapshot_ids(&v0));
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn table_without_name_row_commits() -> Result<()> {
+    // Tables created by path (`DBManager.createTable` with a blank name) have
+    // no `table_name_id` row; the commit domain comes from `table_info`.
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("path_only");
+    let table_id = create_test_table(&client, &name).await?;
+    client.delete_table_name_id_by_table_id(&table_id).await?;
+    let table = client.get_table_info_by_table_id(&table_id).await?.unwrap();
+
+    let (_, commit_uuid) = new_uuid();
+    assert_eq!(
+        commit_with_read(
+            &client,
+            &table_id,
+            "p1",
+            CommitOp::AppendCommit,
+            vec![commit_uuid],
+            None,
+        )
+        .await?,
+        CommitOutcome::Committed
+    );
+    let head = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(head.domain, table.domain);
+
+    client
+        .commit_insert_only(&table, &[head.clone()], vec![file("p1", "insert")])
+        .await?;
+    let latest = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(latest.version, head.version + 1);
+    assert_eq!(latest.snapshot.len(), 2);
+    assert_eq!(latest.domain, table.domain);
+
+    client.delete_table_by_table_info_cascade(&table).await?;
     Ok(())
 }

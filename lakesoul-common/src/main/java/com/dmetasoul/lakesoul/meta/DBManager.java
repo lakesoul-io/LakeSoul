@@ -18,6 +18,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.SQLException;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -426,7 +427,7 @@ public class DBManager {
                                 })
                         .collect(Collectors.toList());
         if (!partitionInfoDao.transactionInsert(
-                deletingPartitionInfoList, Collections.emptyList())) {
+                deletingPartitionInfoList, deletingPartitionInfoList)) {
             throw new RuntimeException("Transactional insert partition info failed");
         }
     }
@@ -515,6 +516,67 @@ public class DBManager {
     }
 
     public boolean commitData(MetaInfo metaInfo, boolean changeSchema, CommitOp commitOp) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            // The native metadata client owns the authoritative commit state
+            // machine: partition preconditions, snapshot transitions, retries,
+            // and table metadata mutations. Java is only an adapter here.
+            try {
+                int outcome =
+                        NativeMetadataJavaClient.getInstance()
+                                .executeCommitData(commitOp, metaInfo);
+                return outcome > 0;
+            } catch (RuntimeException e) {
+                if (isNativeCommitConflict(e)) {
+                    return false;
+                }
+                throw e;
+            }
+        }
+        return commitDataWithJdbcCoordinator(metaInfo, commitOp);
+    }
+
+    private static boolean isNativeCommitConflict(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof SQLException
+                    && current.getMessage() != null
+                    && current.getMessage().contains("Metadata commit conflict")) {
+                return true;
+            }
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * Mirrors the native coordinator's replay gate: true when every data commit carried by the
+     * request exists and is already published.
+     */
+    private boolean allDataCommitsAlreadyCommitted(List<PartitionInfo> listPartitionInfo) {
+        boolean sawCommit = false;
+        for (PartitionInfo partitionInfo : listPartitionInfo) {
+            if (partitionInfo.getSnapshotList().isEmpty()) {
+                continue;
+            }
+            sawCommit = true;
+            List<DataCommitInfo> commits =
+                    dataCommitInfoDao.selectByTableIdPartitionDescCommitList(
+                            partitionInfo.getTableId(),
+                            partitionInfo.getPartitionDesc(),
+                            partitionInfo.getSnapshotList());
+            if (commits == null || commits.size() != partitionInfo.getSnapshotList().size()) {
+                return false;
+            }
+            for (DataCommitInfo commit : commits) {
+                if (!commit.getCommitted()) {
+                    return false;
+                }
+            }
+        }
+        return sawCommit;
+    }
+
+    private boolean commitDataWithJdbcCoordinator(MetaInfo metaInfo, CommitOp commitOp) {
         List<PartitionInfo> listPartitionInfo = metaInfo.getListPartitionList();
         TableInfo tableInfo = metaInfo.getTableInfo();
         List<PartitionInfo> readPartitionInfo = metaInfo.getReadPartitionInfoList();
@@ -534,19 +596,38 @@ public class DBManager {
         Map<String, PartitionInfo> newMap = new HashMap<>();
         Map<String, PartitionInfo> readPartitionMap = new HashMap<>();
         List<String> partitionDescList = new ArrayList<>();
-        List<String> snapshotList = new ArrayList<>();
 
         for (PartitionInfo partitionInfo : listPartitionInfo) {
             String partitionDesc = partitionInfo.getPartitionDesc();
             rawMap.put(partitionDesc, partitionInfo);
             partitionDescList.add(partitionDesc);
-            snapshotList.addAll(
-                    partitionInfo.getSnapshotList().stream()
-                            .map(uuid -> DBUtil.toJavaUUID(uuid).toString())
-                            .collect(Collectors.toList()));
         }
 
+        if (!(commitOp.equals(CommitOp.AppendCommit) || commitOp.equals(CommitOp.MergeCommit))) {
+            for (PartitionInfo p : readPartitionInfo) {
+                readPartitionMap.put(p.getPartitionDesc(), p);
+            }
+        }
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
+
+        // Idempotent replay: an append or merge must never publish a snapshot
+        // twice, and a late replay of any operation (the head has moved past
+        // the version the caller read) is already visible. An update,
+        // compaction, or delete that reads the current version explicitly
+        // re-asserts a rewrite (e.g., a baseline refresh) and is planned
+        // normally. Mirrors the native coordinator's gate.
+        if (allDataCommitsAlreadyCommitted(listPartitionInfo)
+                && (commitOp.equals(CommitOp.AppendCommit)
+                        || commitOp.equals(CommitOp.MergeCommit)
+                        || listPartitionInfo.stream()
+                                .allMatch(
+                                        partitionInfo ->
+                                                partitionMoved(
+                                                        readPartitionMap,
+                                                        curMap,
+                                                        partitionInfo)))) {
+            return true;
+        }
 
         if (commitOp.equals(CommitOp.AppendCommit) || commitOp.equals(CommitOp.MergeCommit)) {
             for (PartitionInfo partitionInfo : listPartitionInfo) {
@@ -566,9 +647,6 @@ public class DBManager {
             }
         } else if (commitOp.equals(CommitOp.CompactionCommit)
                 || commitOp.equals(CommitOp.UpdateCommit)) {
-            for (PartitionInfo p : readPartitionInfo) {
-                readPartitionMap.put(p.getPartitionDesc(), p);
-            }
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
                 PartitionInfo.Builder curPartitionInfo =
@@ -592,11 +670,9 @@ public class DBManager {
                             partitionInfoDao.getCommitOpsBetweenVersions(
                                     tableId, partitionDesc, readPartitionVersion + 1, curVersion);
                     if (commitOp.equals(CommitOp.UpdateCommit)) {
-                        if (readPartitionVersion > 0
-                                && (middleCommitOps.contains(CommitOp.UpdateCommit)
-                                        || (middleCommitOps.size() > 1
-                                                && middleCommitOps.contains(
-                                                        CommitOp.CompactionCommit)))) {
+                        if (middleCommitOps.contains(CommitOp.UpdateCommit)
+                                || (middleCommitOps.size() > 1
+                                        && middleCommitOps.contains(CommitOp.CompactionCommit))) {
                             throw new IllegalStateException(
                                     "current operation conflicts with other data writing tasks,"
                                             + " table path: "
@@ -631,11 +707,9 @@ public class DBManager {
                     } else {
                         if (middleCommitOps.contains(CommitOp.UpdateCommit)
                                 || middleCommitOps.contains(CommitOp.CompactionCommit)) {
+                            // The partition keeps its head, so the data commits
+                            // it carries must not be marked published.
                             partitionDescList.remove(partitionDesc);
-                            snapshotList.removeAll(
-                                    partitionInfo.getSnapshotList().stream()
-                                            .map(uuid -> DBUtil.toJavaUUID(uuid).toString())
-                                            .collect(Collectors.toList()));
                             continue;
                         }
                         curPartitionInfo =
@@ -652,10 +726,6 @@ public class DBManager {
                 newPartitionList.add(curPartitionInfo.build());
             }
         } else if (commitOp.equals(CommitOp.DeleteCommit)) {
-            for (PartitionInfo p : readPartitionInfo) {
-                readPartitionMap.put(p.getPartitionDesc(), p);
-            }
-
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
                 PartitionInfo.Builder curPartitionInfo =
@@ -664,6 +734,9 @@ public class DBManager {
 
                 PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
                 if (readPartition == null) {
+                    // The partition keeps its head, so the data commits it
+                    // carries must not be marked published.
+                    partitionDescList.remove(partitionDesc);
                     continue;
                 }
 
@@ -683,42 +756,63 @@ public class DBManager {
                     "this operation is Illegal of the table:" + tableInfo.getTablePath());
         }
 
-        boolean notConflict = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        boolean notConflict =
+                partitionInfoDao.transactionInsert(
+                        newPartitionList, submittedPartitions(partitionDescList, rawMap));
         if (!notConflict) {
             switch (commitOp) {
                 case AppendCommit:
-                    notConflict =
-                            appendConflict(
-                                    tableId, partitionDescList, rawMap, newMap, snapshotList, 0);
+                    notConflict = appendConflict(tableId, partitionDescList, rawMap, newMap, 0);
                     break;
                 case CompactionCommit:
                     notConflict =
                             compactionConflict(
-                                    tableId,
-                                    partitionDescList,
-                                    rawMap,
-                                    readPartitionMap,
-                                    snapshotList,
-                                    0);
+                                    tableId, partitionDescList, rawMap, readPartitionMap, 0);
                     break;
                 case UpdateCommit:
                     notConflict =
-                            updateConflict(
-                                    tableId,
-                                    partitionDescList,
-                                    rawMap,
-                                    readPartitionMap,
-                                    snapshotList,
-                                    0);
+                            updateConflict(tableId, partitionDescList, rawMap, readPartitionMap, 0);
                     break;
                 case MergeCommit:
-                    notConflict =
-                            mergeConflict(
-                                    tableId, partitionDescList, rawMap, newMap, snapshotList, 0);
+                    notConflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, 0);
             }
         }
 
         return notConflict;
+    }
+
+    /**
+     * Mark ids are scoped per partition: Spark streaming and Flink reuse one commit id across every
+     * partition of a batch, so each published partition carries only the commits it actually makes
+     * visible.
+     */
+    private static List<PartitionInfo> submittedPartitions(
+            List<String> partitionDescList, Map<String, PartitionInfo> rawMap) {
+        List<PartitionInfo> submitted = new ArrayList<>();
+        for (String partitionDesc : partitionDescList) {
+            PartitionInfo raw = rawMap.get(partitionDesc);
+            if (raw != null) {
+                submitted.add(raw);
+            }
+        }
+        return submitted;
+    }
+
+    /**
+     * A partition has moved when its head is newer than the version the request read; a request
+     * without read info is treated as moved so a late retry can never mint a new version.
+     */
+    private static boolean partitionMoved(
+            Map<String, PartitionInfo> readPartitionMap,
+            Map<String, PartitionInfo> curMap,
+            PartitionInfo partitionInfo) {
+        PartitionInfo curPartitionInfo = curMap.get(partitionInfo.getPartitionDesc());
+        int headVersion = curPartitionInfo == null ? -1 : curPartitionInfo.getVersion();
+        PartitionInfo readPartition = readPartitionMap.get(partitionInfo.getPartitionDesc());
+        if (readPartition == null) {
+            return true;
+        }
+        return readPartition.getVersion() < headVersion;
     }
 
     public boolean appendConflict(
@@ -726,7 +820,6 @@ public class DBManager {
             List<String> partitionDescList,
             Map<String, PartitionInfo> rawMap,
             Map<String, PartitionInfo> newMap,
-            List<String> snapshotList,
             int retryTimes) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
@@ -764,10 +857,11 @@ public class DBManager {
             }
         }
 
-        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        boolean success =
+                partitionInfoDao.transactionInsert(
+                        newPartitionList, submittedPartitions(partitionDescList, rawMap));
         if (!success && retryTimes < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            return appendConflict(
-                    tableId, partitionDescList, rawMap, newMap, snapshotList, retryTimes + 1);
+            return appendConflict(tableId, partitionDescList, rawMap, newMap, retryTimes + 1);
         }
         return success;
     }
@@ -777,7 +871,6 @@ public class DBManager {
             List<String> partitionDescList,
             Map<String, PartitionInfo> rawMap,
             Map<String, PartitionInfo> readPartitionMap,
-            List<String> snapshotList,
             int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
@@ -804,8 +897,9 @@ public class DBManager {
                                 tableId, partitionDesc, readPartitionVersion + 1, curVersion);
                 if (middleCommitOps.contains(CommitOp.UpdateCommit)
                         || middleCommitOps.contains(CommitOp.CompactionCommit)) {
+                    // The partition keeps its head, so the data commits it
+                    // carries must not be marked published.
                     partitionDescList.remove(i);
-                    snapshotList.removeAll(rawPartitionInfo.getSnapshotList());
                     i = i - 1;
                     continue;
                 }
@@ -821,15 +915,12 @@ public class DBManager {
             newPartitionList.add(curPartitionInfo.build());
         }
 
-        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        boolean success =
+                partitionInfoDao.transactionInsert(
+                        newPartitionList, submittedPartitions(partitionDescList, rawMap));
         if (!success && retryTime < DBConfig.MAX_COMMIT_ATTEMPTS) {
             return compactionConflict(
-                    tableId,
-                    partitionDescList,
-                    rawMap,
-                    readPartitionMap,
-                    snapshotList,
-                    retryTime + 1);
+                    tableId, partitionDescList, rawMap, readPartitionMap, retryTime + 1);
         }
 
         return success;
@@ -840,7 +931,6 @@ public class DBManager {
             List<String> partitionDescList,
             Map<String, PartitionInfo> rawMap,
             Map<String, PartitionInfo> readPartitionMap,
-            List<String> snapshotList,
             int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
@@ -901,15 +991,12 @@ public class DBManager {
             newPartitionList.add(curPartitionInfo.build());
         }
 
-        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        boolean success =
+                partitionInfoDao.transactionInsert(
+                        newPartitionList, submittedPartitions(partitionDescList, rawMap));
         if (!success && retryTime < DBConfig.MAX_COMMIT_ATTEMPTS) {
             return updateConflict(
-                    tableId,
-                    partitionDescList,
-                    rawMap,
-                    readPartitionMap,
-                    snapshotList,
-                    retryTime + 1);
+                    tableId, partitionDescList, rawMap, readPartitionMap, retryTime + 1);
         }
         return success;
     }
@@ -919,7 +1006,6 @@ public class DBManager {
             List<String> partitionDescList,
             Map<String, PartitionInfo> rawMap,
             Map<String, PartitionInfo> newMap,
-            List<String> snapshotList,
             int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
@@ -958,10 +1044,11 @@ public class DBManager {
             }
         }
 
-        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        boolean success =
+                partitionInfoDao.transactionInsert(
+                        newPartitionList, submittedPartitions(partitionDescList, rawMap));
         if (!success && retryTime < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            return mergeConflict(
-                    tableId, partitionDescList, rawMap, newMap, snapshotList, retryTime + 1);
+            return mergeConflict(tableId, partitionDescList, rawMap, newMap, retryTime + 1);
         }
 
         return success;

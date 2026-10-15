@@ -22,7 +22,7 @@ use lakesoul_common::ffi::{
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{
-    Builder, Claims, JwtServer, MetaDataClient, PooledClient, Runtime,
+    Builder, Claims, CommitOutcome, JwtServer, PooledClient, Runtime,
 };
 use lakesoul_metadata_proto::entity;
 use prost::Message;
@@ -139,6 +139,59 @@ pub extern "C" fn execute_insert(
         match result {
             Ok(count) => call_result_callback(callback, count, null()),
             Err(e) => call_result_callback(callback, -1, into_c_string(e.to_string())),
+        }
+    }));
+    if let Err(payload) = result {
+        let msg = log_panic_and_extract_message(payload);
+        call_result_callback(callback, -1, into_c_string(msg));
+    }
+}
+
+/// Runs the authoritative metadata commit state machine.
+///
+/// Outcomes are encoded as 1 = committed, 2 = already committed, and
+/// 3 = superseded. Conflicts and failures are returned through the error
+/// callback and never use a successful outcome code.
+#[unsafe(no_mangle)]
+pub extern "C" fn commit_data(
+    callback: extern "C" fn(i32, *const c_char),
+    runtime: NonNull<CResult<TokioRuntime>>,
+    client: NonNull<CResult<TokioPostgresClient>>,
+    commit_op: i32,
+    addr: c_ptrdiff_t,
+    len: i32,
+) {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let runtime = unsafe {
+            NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref()
+        };
+        let client = unsafe {
+            NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref()
+        };
+        let raw_parts =
+            unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
+        let result: Result<CommitOutcome, LakeSoulMetaDataError> =
+            runtime.block_on(async {
+                let client =
+                    lakesoul_metadata::MetaDataClient::from_pooled(client.clone());
+                let meta_info =
+                    entity::MetaInfo::decode(prost::bytes::Bytes::from(raw_parts))?;
+                let commit_op = entity::CommitOp::try_from(commit_op).map_err(|_| {
+                    LakeSoulMetaDataError::Internal(format!(
+                        "unknown commit operation {commit_op}"
+                    ))
+                })?;
+                client.commit_data(meta_info, commit_op).await
+            });
+        match result {
+            Ok(CommitOutcome::Committed) => call_result_callback(callback, 1, null()),
+            Ok(CommitOutcome::AlreadyCommitted) => {
+                call_result_callback(callback, 2, null())
+            }
+            Ok(CommitOutcome::Superseded) => call_result_callback(callback, 3, null()),
+            Err(error) => {
+                call_result_callback(callback, -1, into_c_string(error.to_string()))
+            }
         }
     }));
     if let Err(payload) = result {
@@ -425,28 +478,6 @@ pub extern "C" fn free_tokio_postgres_client(
 ) {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         from_nonnull(client).free::<PooledClient>();
-    }));
-    if let Err(payload) = result {
-        let _msg = log_panic_and_extract_message(payload);
-    }
-}
-
-/// Create the lakesoul metadata client.
-#[unsafe(no_mangle)]
-pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<CResult<MetaDataClient>> {
-    catch_unwind_cresult(|| {
-        let client = MetaDataClient::from_env();
-        CResult::<MetaDataClient>::new(client)
-    })
-}
-
-/// Free the lakesoul metadata client.
-#[unsafe(no_mangle)]
-pub extern "C" fn free_lakesoul_metadata_client(
-    client: NonNull<CResult<MetaDataClient>>,
-) {
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        from_nonnull(client).free::<MetaDataClient>();
     }));
     if let Err(payload) = result {
         let _msg = log_panic_and_extract_message(payload);
