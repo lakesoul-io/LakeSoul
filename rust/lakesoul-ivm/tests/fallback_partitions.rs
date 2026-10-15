@@ -362,3 +362,138 @@ async fn an_unpartitioned_source_change_recomputes_every_partition() {
         );
     }
 }
+/// Dropping a source partition retracts its rows from a partition local
+/// fallback view without rebuilding it.
+#[test_log::test(tokio::test)]
+async fn a_dropped_source_partition_is_retracted_without_a_rebuild() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fd_src_{suffix}"),
+                table_path(&dir, "src"),
+                fact_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let select =
+        format!("SELECT day, SUM(price) AS s FROM ivm_fd_src_{suffix} GROUP BY day");
+    let mv_schema = fallback_mv_schema(&runtime, &select, &[&source]).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fd_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                mv_schema,
+            )
+            .with_primary_keys(vec!["day".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!("INSERT INTO ivm_fd_mv_{suffix} {select}");
+    source
+        .append_batch(
+            executor.runtime().client(),
+            fact_batch(&[(1, "d1", 1000, "insert"), (2, "d2", 2000, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "fallback");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_day_sums(runtime, &mv).await,
+        vec![
+            ("d1".to_string(), "10.00".to_string()),
+            ("d2".to_string(), "20.00".to_string()),
+        ]
+    );
+
+    let before = read_versions(runtime, &mv).await;
+    drop_partition(runtime, &source, "d2").await;
+    let execution = executor.execute(&statement).await.unwrap();
+    // The partition's rows are retracted deterministically: a rebuild would
+    // have rewritten every partition.
+    assert_eq!(execution.action.label(), "fallback");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_day_sums(runtime, &mv).await,
+        vec![("d1".to_string(), "10.00".to_string())]
+    );
+    let after = read_versions(runtime, &mv).await;
+    for (desc, version) in &after {
+        if desc.contains("d1") {
+            assert_eq!(
+                *version, before[desc],
+                "partition {desc} must not be rewritten"
+            );
+        }
+    }
+    let info = runtime
+        .metadata()
+        .list_views()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|view| view.view_id == mv.table_id)
+        .expect("the fallback view is registered");
+    assert_eq!(info.status, "active");
+}
+
+/// Drop one source partition (a delete commit); `needle` selects it by name.
+async fn drop_partition(runtime: &IvmRuntime, source: &IvmTable, needle: &str) {
+    let partitions = runtime
+        .client()
+        .get_all_partition_info(&source.table_id)
+        .await
+        .unwrap();
+    let dropped = partitions
+        .iter()
+        .find(|partition| partition.partition_desc.contains(needle))
+        .expect("the dropped partition exists");
+    let files = runtime
+        .client()
+        .get_data_files_of_single_partition(dropped)
+        .await
+        .unwrap();
+    assert!(!files.is_empty(), "the dropped partition has files");
+    let table_info = runtime
+        .client()
+        .get_table_info_by_table_id(&source.table_id)
+        .await
+        .unwrap()
+        .expect("the source table is registered");
+    runtime
+        .client()
+        .commit_data(
+            lakesoul_metadata_proto::entity::MetaInfo {
+                table_info: Some(table_info),
+                list_partition: vec![lakesoul_metadata_proto::entity::PartitionInfo {
+                    table_id: source.table_id.clone(),
+                    partition_desc: dropped.partition_desc.clone(),
+                    commit_op: lakesoul_metadata_proto::entity::CommitOp::DeleteCommit
+                        .into(),
+                    ..Default::default()
+                }],
+                read_partition_info: vec![
+                    lakesoul_metadata_proto::entity::PartitionInfo {
+                        table_id: source.table_id.clone(),
+                        partition_desc: dropped.partition_desc.clone(),
+                        ..Default::default()
+                    },
+                ],
+            },
+            lakesoul_metadata_proto::entity::CommitOp::DeleteCommit,
+        )
+        .await
+        .unwrap();
+}

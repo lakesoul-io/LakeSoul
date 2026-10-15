@@ -3776,6 +3776,18 @@ impl IvmRuntime {
         else {
             return Ok(None);
         };
+        // A partition local fallback view carries the partition column from
+        // its one partitioned source, so the dropped partition's rows are
+        // exactly the MV rows of that partition.
+        if matches!(spec, ViewSpec::Fallback { .. }) {
+            let view = match self.spec_view(spec).await? {
+                SpecView::Fallback(view) => view,
+                _ => return Ok(None),
+            };
+            return self
+                .cleanup_dropped_fallback_partitions(&view, &dropped)
+                .await;
+        }
         let Ok(SpecView::SumCount(view)) = self.spec_view(spec).await else {
             return Ok(None);
         };

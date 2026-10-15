@@ -722,6 +722,113 @@ impl IvmRuntime {
         Ok(Some(commit_ids))
     }
 
+    /// Remove the rows a dropped source partition contributed to a partition
+    /// local fallback view: the view's partition values are the source's own,
+    /// so the rows of that partition are retracted and the cursors advance
+    /// past the deletion (a partition recreated later starts above it, and its
+    /// refresh then recomputes just that partition).
+    pub(crate) async fn cleanup_dropped_fallback_partitions(
+        &self,
+        view: &FallbackView,
+        dropped: &PartitionDropped,
+    ) -> Result<Option<i64>> {
+        let Some(scope) = view.partition_scope.as_ref() else {
+            return Ok(None);
+        };
+        if view.mv.primary_keys.is_empty()
+            || dropped.source_table_id != scope.source_table_id
+        {
+            return Ok(None);
+        }
+        let Some(source) = view
+            .tables
+            .iter()
+            .find(|table| table.table_id == scope.source_table_id)
+        else {
+            return Ok(None);
+        };
+        if !scope
+            .columns
+            .iter()
+            .all(|column| view.mv.schema.field_with_name(column).is_ok())
+        {
+            return Ok(None);
+        }
+        let mut restriction = scope
+            .columns
+            .iter()
+            .map(|column| (column.clone(), Vec::new()))
+            .collect::<PartitionRestriction>();
+        let mut identity = Vec::new();
+        let mut cursors = Vec::new();
+        for (partition, to_version, to_timestamp) in &dropped.partitions {
+            let Some(values) =
+                parse_partition_values(partition, &source.range_partition_columns)
+            else {
+                return Ok(None);
+            };
+            for (column, allowed) in restriction.iter_mut() {
+                let Some(index) = source
+                    .range_partition_columns
+                    .iter()
+                    .position(|candidate| candidate == column)
+                else {
+                    return Ok(None);
+                };
+                let Some(value) = values.get(index) else {
+                    return Ok(None);
+                };
+                if !allowed.contains(value) {
+                    allowed.push(value.clone());
+                }
+            }
+            identity.push((source.table_id.clone(), partition.clone(), 0, 0));
+            cursors.push(Cursor {
+                source_table_id: source.table_id.clone(),
+                partition_desc: partition.clone(),
+                last_version: *to_version,
+                last_timestamp: *to_timestamp,
+            });
+        }
+        if restriction.iter().any(|(_, allowed)| allowed.is_empty()) {
+            return Ok(None);
+        }
+        self.register_fallback_view(view).await?;
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => return Ok(Some(epoch)),
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let current = view
+            .mv
+            .read_current_filtered_partitions(&self.client, Vec::new(), &restriction)
+            .await?;
+        let mut commit_ids = Vec::new();
+        if !current.is_empty() {
+            let context = SessionContext::new();
+            register_table(&context, "mv", current, &view.mv.schema)?;
+            for batch in context
+                .sql(&fallback_partition_delete_sql(view, epoch))
+                .await?
+                .collect()
+                .await?
+            {
+                if batch.num_rows() > 0 {
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+        }
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, cursors).await?;
+        Ok(Some(epoch))
+    }
+
     /// Rebuild a fallback view from the current source state.
     pub async fn rebuild_fallback(&self, view: &FallbackView) -> Result<i64> {
         self.register_fallback_view(view).await?;
@@ -861,7 +968,7 @@ impl IvmRuntime {
 }
 
 /// The delete rows retracting the active rows of the recomputed partitions.
-fn fallback_partition_delete_sql(view: &FallbackView, epoch: i64) -> String {
+pub(crate) fn fallback_partition_delete_sql(view: &FallbackView, epoch: i64) -> String {
     let columns = view
         .mv
         .schema

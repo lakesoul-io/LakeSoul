@@ -767,10 +767,25 @@ impl IvmSqlExecutor {
             // so even when the definition is unchanged.  A no-op refresh (no
             // source change) reports no epoch.
             if same_definition && !insert.overwrite && !dirty {
-                (
-                    IvmExecutionAction::Fallback,
-                    self.runtime.refresh_spec(&spec).await?,
-                )
+                match self.runtime.refresh_spec(&spec).await {
+                    Ok(epoch) => (IvmExecutionAction::Fallback, epoch),
+                    // A dropped source partition whose value the view carries
+                    // is retracted deterministically; everything else rebuilds.
+                    Err(error) if IvmRuntime::rebuild_required(&error) => {
+                        match self
+                            .runtime
+                            .cleanup_dropped_partitions(&spec, &error)
+                            .await?
+                        {
+                            Some(epoch) => (IvmExecutionAction::Fallback, Some(epoch)),
+                            None => {
+                                let epoch = self.runtime.rebuild_spec(&spec).await?;
+                                (IvmExecutionAction::Fallback, Some(epoch))
+                            }
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
             } else {
                 let epoch = self.runtime.rebuild_spec(&spec).await?;
                 self.runtime
