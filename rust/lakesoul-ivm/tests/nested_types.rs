@@ -2082,3 +2082,142 @@ async fn a_struct_primary_key_materializes_a_pair_step_identity() {
         vec![(1, "{p: 1}".to_string(), 2), (2, String::new(), 1)]
     );
 }
+
+/// A source pair whose **left primary key is a struct** through a derived
+/// lookup step: the right side is keyed by the join key, so the step is a 1:1
+/// lookup that materializes the join key once and carries the left struct key
+/// by name.  The consumer reads the subplan's output columns (`k`, `m`); the
+/// engine bridges them to the step's compact payload columns internally, and
+/// maintains the groups as the right payload changes and disappears.
+#[test_log::test(tokio::test)]
+async fn a_struct_primary_key_materializes_a_lookup_step() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pkl_l_{suffix}"),
+                table_path(&dir, "left"),
+                pk_schema(),
+            )
+            .with_primary_keys(vec!["s".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    // The right side is keyed by the join key, which makes the step a lookup.
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pkl_r_{suffix}"),
+                table_path(&dir, "right"),
+                pk_schema(),
+            )
+            .with_primary_keys(vec!["g".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pkl_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::sum_count_groups_mv_schema_for(
+                    &pk_schema(),
+                    &["k".to_string(), "m".to_string()],
+                    &[],
+                    None,
+                    None,
+                    false,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        pk_batch(&[
+            (1, "a", (10, Some("x")), vec![1], None, "insert"),
+            (2, "b", (20, None), vec![2], None, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            pk_batch(&[(
+                1,
+                "a",
+                (70, Some("y")),
+                vec![7],
+                Some(vec![("p", Some(1))]),
+                "insert",
+            )]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_pkl_mv_{suffix} SELECT x.k, x.m, COUNT(*) AS count_v FROM (SELECT b.k, c.m FROM ivm_pkl_l_{suffix} b LEFT JOIN ivm_pkl_r_{suffix} c ON c.g = b.g) x GROUP BY x.k, x.m"
+    );
+    let outcome = executor.execute(&statement).await;
+    match outcome {
+        Ok(execution) => assert_eq!(execution.action.label(), "bootstrap"),
+        Err(error) => panic!("the struct primary key was rejected: {error}"),
+    }
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_group_counts(runtime, &mv).await,
+        vec![(1, "{p: 1}".to_string(), 1), (2, String::new(), 1)]
+    );
+
+    // The right payload changes, then disappears: the group follows it.
+    right
+        .append_batch(
+            runtime.client(),
+            pk_batch(&[(
+                1,
+                "a",
+                (70, Some("y")),
+                vec![7],
+                Some(vec![("t", Some(3))]),
+                "insert",
+            )]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_group_counts(runtime, &mv).await,
+        vec![(1, "{t: 3}".to_string(), 1), (2, String::new(), 1)]
+    );
+
+    right
+        .append_batch(
+            runtime.client(),
+            pk_batch(&[(
+                1,
+                "a",
+                (70, Some("y")),
+                vec![7],
+                Some(vec![("t", Some(3))]),
+                "delete",
+            )]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_group_counts(runtime, &mv).await,
+        vec![(1, String::new(), 1), (2, String::new(), 1)]
+    );
+}
