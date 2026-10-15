@@ -20,6 +20,9 @@
 
 use super::*;
 use crate::metadata::StateRole;
+use crate::sql::{plan_label, resolve_table};
+use datafusion::common::TableReference;
+use datafusion::logical_expr::Distinct;
 
 /// A [`ViewSpec::Fallback`] view with its tables opened.
 #[derive(Debug, Clone)]
@@ -33,6 +36,9 @@ pub struct FallbackView {
     /// Why the incremental analyzer rejected the shape (metadata only; it is
     /// not part of the definition identity).
     pub reason: String,
+    /// The partition scope a refresh may recompute on its own (metadata only;
+    /// it is not part of the definition identity).
+    pub partition_scope: Option<PartitionScope>,
     /// The materialized view table.
     pub mv: IvmTable,
     /// The registered refresh interval.
@@ -51,7 +57,384 @@ impl FallbackView {
                 .map(|table| table.table_id.clone())
                 .collect(),
             reason: self.reason.clone(),
+            partition_scope: self.partition_scope.clone(),
             mv_table_id: self.mv.table_id.clone(),
+        }
+    }
+}
+
+/// The partition scope of a fallback view: the range-partitioned source whose
+/// changed partitions a refresh recomputes on their own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionScope {
+    /// The partitioned source table id.
+    pub source_table_id: String,
+    /// The partition columns (the materialized view's own).
+    pub columns: Vec<String>,
+}
+
+/// The partition-scope analysis of a fallback statement: the scope when the
+/// statement is partition local, and a short note for the view's reason.
+#[derive(Debug, Clone)]
+pub(crate) struct PartitionScopeAnalysis {
+    pub(crate) scope: Option<PartitionScope>,
+    pub(crate) note: String,
+}
+
+/// Whether a refresh of `plan` can recompute single partitions.
+///
+/// The statement is *partition local* when the rows an output partition `p`
+/// holds depend only on the rows of partition `p` of the one range-partitioned
+/// source: every other source is unpartitioned (read whole, and a change in
+/// one forces a full recompute), the source is read exactly once, the
+/// partition columns reach the output as the source's own values, and every
+/// operator over the source is partition local (no global `LIMIT`, an
+/// aggregate groups by the partition columns, a window partitions by them,
+/// and an outer join or semi/anti join keeps the source on its preserved
+/// side).
+pub(crate) fn fallback_partition_scope(
+    plan: &LogicalPlan,
+    tables: &HashMap<String, IvmTable>,
+    mv: &IvmTable,
+) -> PartitionScopeAnalysis {
+    let denied = |cause: String| PartitionScopeAnalysis {
+        scope: None,
+        note: format!("partition pruning: not applied ({cause})"),
+    };
+    let partitions = &mv.range_partition_columns;
+    if partitions.is_empty() {
+        return denied("the materialized view is not range partitioned".to_string());
+    }
+    let mut partitioned = tables
+        .values()
+        .filter(|table| !table.range_partition_columns.is_empty());
+    let Some(source) = partitioned.next() else {
+        return denied("no source is range partitioned".to_string());
+    };
+    if let Some(other) = partitioned.next() {
+        return denied(format!(
+            "several sources are range partitioned ({}, {})",
+            source.table_name, other.table_name
+        ));
+    }
+    if source.range_partition_columns.len() != partitions.len()
+        || !partitions
+            .iter()
+            .all(|column| source.range_partition_columns.contains(column))
+    {
+        return denied(format!(
+            "the source is partitioned by [{}] and the view by [{}]",
+            source.range_partition_columns.join(", "),
+            partitions.join(", ")
+        ));
+    }
+    for table in tables.values() {
+        if table.table_id == source.table_id {
+            continue;
+        }
+        if let Some(column) = partitions
+            .iter()
+            .find(|column| table.schema.field_with_name(column).is_ok())
+        {
+            return denied(format!(
+                "the unpartitioned source {} also has a column {column}",
+                table.table_name
+            ));
+        }
+    }
+    let context = PartitionContext {
+        tables,
+        source_table_id: &source.table_id,
+        partitions,
+    };
+    let mut scans = 0usize;
+    let walked = plan.apply_with_subqueries(|node| {
+        if let LogicalPlan::TableScan(scan) = node
+            && context.owns(&scan.table_name)
+        {
+            scans += 1;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    if walked.is_err() {
+        return denied("the plan cannot be walked".to_string());
+    }
+    if scans != 1 {
+        return denied(format!("the partitioned source is read {scans} times"));
+    }
+    if let Err(cause) =
+        partition_preserved(plan, &context).and_then(|()| partition_local(plan, &context))
+    {
+        return denied(cause);
+    }
+    PartitionScopeAnalysis {
+        scope: Some(PartitionScope {
+            source_table_id: source.table_id.clone(),
+            columns: partitions.clone(),
+        }),
+        note: format!(
+            "partition pruning: eligible (only the changed [{}] partitions need a recompute)",
+            partitions.join(", ")
+        ),
+    }
+}
+
+/// The partitioned source and partition columns an analysis runs against.
+struct PartitionContext<'a> {
+    tables: &'a HashMap<String, IvmTable>,
+    source_table_id: &'a str,
+    partitions: &'a [String],
+}
+
+impl PartitionContext<'_> {
+    /// Whether a table reference is the partitioned source.
+    fn owns(&self, name: &TableReference) -> bool {
+        resolve_table(self.tables, name)
+            .is_ok_and(|table| table.table_id == self.source_table_id)
+    }
+
+    /// Whether `plan` reads the partitioned source (subqueries included).
+    fn reads_source(&self, plan: &LogicalPlan) -> bool {
+        let mut found = false;
+        let _ = plan.apply_with_subqueries(|node| {
+            if let LogicalPlan::TableScan(scan) = node
+                && self.owns(&scan.table_name)
+            {
+                found = true;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        found
+    }
+}
+
+/// The output's partition columns must be the source's own values: every
+/// column must trace back through plain columns to the source's scan.
+fn partition_preserved(
+    plan: &LogicalPlan,
+    context: &PartitionContext<'_>,
+) -> Result<(), String> {
+    for column in context.partitions {
+        if plan.schema().field_with_name(None, column).is_ok()
+            && !carries_partition_column(plan, column, context)
+        {
+            return Err(format!(
+                "the output column {column} is not the source's partition column"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `plan`'s `column` field is the partitioned source's own column.
+fn carries_partition_column(
+    plan: &LogicalPlan,
+    column: &str,
+    context: &PartitionContext<'_>,
+) -> bool {
+    match plan {
+        LogicalPlan::TableScan(scan) => {
+            context.owns(&scan.table_name)
+                && plan.schema().field_with_name(None, column).is_ok()
+        }
+        LogicalPlan::Projection(projection) => projection
+            .expr
+            .iter()
+            .zip(plan.schema().iter())
+            .find(|(_, (_, field))| field.name() == column)
+            .and_then(|(expr, _)| plain_column(expr))
+            .is_some_and(|name| {
+                carries_partition_column(&projection.input, &name, context)
+            }),
+        LogicalPlan::Aggregate(aggregate) => {
+            aggregate
+                .group_expr
+                .iter()
+                .any(|expr| matches!(expr, Expr::Column(c) if c.name == column))
+                && carries_partition_column(&aggregate.input, column, context)
+        }
+        LogicalPlan::Window(window) => {
+            carries_partition_column(&window.input, column, context)
+        }
+        LogicalPlan::Filter(filter) => {
+            carries_partition_column(&filter.input, column, context)
+        }
+        LogicalPlan::Sort(sort) => carries_partition_column(&sort.input, column, context),
+        LogicalPlan::Limit(limit) => {
+            carries_partition_column(&limit.input, column, context)
+        }
+        LogicalPlan::SubqueryAlias(alias) => {
+            carries_partition_column(&alias.input, column, context)
+        }
+        LogicalPlan::Repartition(repartition) => {
+            carries_partition_column(&repartition.input, column, context)
+        }
+        LogicalPlan::Distinct(Distinct::All(input)) => {
+            carries_partition_column(input, column, context)
+        }
+        LogicalPlan::Distinct(Distinct::On(on)) => {
+            carries_partition_column(&on.input, column, context)
+        }
+        LogicalPlan::Join(join) => {
+            let left = carries_partition_column(&join.left, column, context);
+            let right = carries_partition_column(&join.right, column, context);
+            left ^ right
+        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .all(|input| carries_partition_column(input, column, context)),
+        _ => false,
+    }
+}
+
+/// The plain column an expression selects, unaliased.
+fn plain_column(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Column(column) => Some(column.name.clone()),
+        Expr::Alias(alias) => plain_column(&alias.expr),
+        _ => None,
+    }
+}
+
+/// Every operator of the source-reading part must be partition local.
+fn partition_local(
+    plan: &LogicalPlan,
+    context: &PartitionContext<'_>,
+) -> Result<(), String> {
+    let reads_source = context.reads_source(plan);
+    match plan {
+        LogicalPlan::TableScan(_)
+        | LogicalPlan::EmptyRelation(_)
+        | LogicalPlan::Values(_)
+        | LogicalPlan::Subquery(_) => Ok(()),
+        LogicalPlan::Projection(_)
+        | LogicalPlan::Filter(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::SubqueryAlias(_)
+        | LogicalPlan::Repartition(_) => plan
+            .inputs()
+            .into_iter()
+            .try_for_each(|input| partition_local(input, context)),
+        LogicalPlan::Distinct(Distinct::All(input)) => partition_local(input, context),
+        LogicalPlan::Distinct(Distinct::On(on)) => {
+            if reads_source {
+                for column in context.partitions {
+                    if !on
+                        .on_expr
+                        .iter()
+                        .any(|expr| matches!(expr, Expr::Column(c) if c.name == *column))
+                    {
+                        return Err(format!(
+                            "a DISTINCT ON that does not include [{}]",
+                            context.partitions.join(", ")
+                        ));
+                    }
+                }
+            }
+            partition_local(&on.input, context)
+        }
+        LogicalPlan::Limit(limit) => {
+            if reads_source && limit.fetch.is_some() {
+                return Err("a global LIMIT".to_string());
+            }
+            partition_local(&limit.input, context)
+        }
+        LogicalPlan::Aggregate(aggregate) => {
+            if reads_source {
+                if aggregate
+                    .group_expr
+                    .iter()
+                    .any(|expr| matches!(expr, Expr::GroupingSet(_)))
+                {
+                    return Err("an aggregate with grouping sets".to_string());
+                }
+                for column in context.partitions {
+                    if !aggregate
+                        .group_expr
+                        .iter()
+                        .any(|expr| matches!(expr, Expr::Column(c) if c.name == *column))
+                    {
+                        return Err(format!(
+                            "an aggregate that does not group by [{}]",
+                            context.partitions.join(", ")
+                        ));
+                    }
+                }
+            }
+            partition_local(&aggregate.input, context)
+        }
+        LogicalPlan::Window(window) => {
+            if reads_source {
+                for expr in &window.window_expr {
+                    let Expr::WindowFunction(function) = expr else {
+                        return Err(
+                            "a window column that is not a window function".to_string()
+                        );
+                    };
+                    for column in context.partitions {
+                        if !function.params.partition_by.iter().any(
+                            |expr| matches!(expr, Expr::Column(c) if c.name == *column),
+                        ) {
+                            return Err(format!(
+                                "a window that does not partition by [{}]",
+                                context.partitions.join(", ")
+                            ));
+                        }
+                    }
+                }
+            }
+            partition_local(&window.input, context)
+        }
+        LogicalPlan::Join(join) => {
+            let preserved_left = match join.join_type {
+                JoinType::Full => return Err("a full join".to_string()),
+                JoinType::Inner => None,
+                JoinType::Left
+                | JoinType::LeftSemi
+                | JoinType::LeftAnti
+                | JoinType::LeftMark => Some(true),
+                JoinType::Right
+                | JoinType::RightSemi
+                | JoinType::RightAnti
+                | JoinType::RightMark => Some(false),
+            };
+            if let Some(preserved_left) = preserved_left
+                && reads_source
+                && context.reads_source(&join.left) != preserved_left
+            {
+                return Err(
+                    "an outer join whose preserved side does not read the partitioned source"
+                        .to_string(),
+                );
+            }
+            for input in plan.inputs() {
+                partition_local(input, context)?;
+            }
+            Ok(())
+        }
+        LogicalPlan::Union(union) => {
+            if reads_source {
+                for input in &union.inputs {
+                    if !context.reads_source(input) {
+                        return Err(
+                            "a UNION branch that does not read the partitioned source"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            for input in &union.inputs {
+                partition_local(input, context)?;
+            }
+            Ok(())
+        }
+        other => {
+            if reads_source {
+                Err(format!("the statement uses {}", plan_label(other)))
+            } else {
+                Ok(())
+            }
         }
     }
 }
@@ -278,4 +661,217 @@ async fn rows_with_epoch(
         .collect()
         .await
         .map_err(|error| report!("fallback epoch columns: {error}"))
+}
+
+#[cfg(test)]
+mod partition_scope_tests {
+    use super::*;
+    use datafusion::datasource::memory::MemTable;
+    use lakesoul_io::file_format::PhysicalFormat;
+
+    fn fact_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("day", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]))
+    }
+
+    fn dim_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("w", DataType::Int64, false),
+        ]))
+    }
+
+    fn shadow_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("day", DataType::Utf8, false),
+        ]))
+    }
+
+    fn table(name: &str, schema: SchemaRef, partitions: &[&str]) -> IvmTable {
+        IvmTable {
+            table_id: format!("table_{name}"),
+            table_name: name.to_string(),
+            namespace: "default".to_string(),
+            table_path: format!("file:///tmp/{name}"),
+            schema,
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: partitions.iter().map(|c| c.to_string()).collect(),
+            bucket_columns: Vec::new(),
+            hash_bucket_num: "1".to_string(),
+            cdc_column: None,
+            file_format: PhysicalFormat::Parquet,
+            allow_fallback: true,
+        }
+    }
+
+    fn mv(partitions: &[&str]) -> IvmTable {
+        table("mv", fact_schema(), partitions)
+    }
+
+    /// The scope of `sql` over `fact` (partitioned by `day`), `dim` and
+    /// `shadow` (both unpartitioned).
+    async fn scope(
+        sql: &str,
+        mv_partitions: &[&str],
+        sources: Vec<IvmTable>,
+    ) -> PartitionScopeAnalysis {
+        let context = SessionContext::new();
+        for source in &sources {
+            let table = MemTable::try_new(source.schema.clone(), vec![vec![]]).unwrap();
+            context
+                .register_table(source.table_name.as_str(), Arc::new(table))
+                .unwrap();
+        }
+        let plan = context.sql(sql).await.unwrap().logical_plan().clone();
+        let tables = sources
+            .into_iter()
+            .map(|table| (table.table_name.clone(), table))
+            .collect::<HashMap<_, _>>();
+        fallback_partition_scope(&plan, &tables, &mv(mv_partitions))
+    }
+
+    async fn scope_default(sql: &str) -> PartitionScopeAnalysis {
+        let sources = vec![
+            table("fact", fact_schema(), &["day"]),
+            table("dim", dim_schema(), &[]),
+        ];
+        scope(sql, &["day"], sources).await
+    }
+
+    #[tokio::test]
+    async fn partition_local_statements_are_scoped() {
+        for sql in [
+            "select fact.k, fact.v, fact.day from fact order by k",
+            "select fact.k, fact.v, fact.day from fact where day = 'd1'",
+            "select fact.k, fact.v, fact.day from fact join dim on dim.k = fact.k",
+            "select dim.w, fact.day, fact.v from dim join fact on dim.k = fact.k",
+            "select day, count(*) as c from fact group by day",
+            "select k, day, count(*) over (partition by day) as c from fact",
+            "select distinct k, v, day from fact",
+            "select fact.k, fact.v, fact.day from fact where exists (select 1 from dim where dim.k = fact.k)",
+            "select fact.k, fact.v, fact.day from fact where k in (select k from dim)",
+        ] {
+            let analysis = scope_default(sql).await;
+            assert!(
+                analysis.scope.is_some(),
+                "expected a scope for `{sql}`: {}",
+                analysis.note
+            );
+            assert!(
+                analysis
+                    .note
+                    .contains("eligible (only the changed [day] partitions")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn global_and_shadowing_statements_are_not_scoped() {
+        for (sql, cause) in [
+            (
+                "select fact.k, fact.v, fact.day from fact limit 3",
+                "a global LIMIT",
+            ),
+            (
+                "select count(*) as c from fact",
+                "an aggregate that does not group by [day]",
+            ),
+            (
+                "select dim.w, fact.day from dim left join fact on dim.k = fact.k",
+                "preserved side",
+            ),
+            (
+                "select f1.k, f1.v, f1.day from fact f1 join fact f2 on f1.k = f2.k",
+                "read 2 times",
+            ),
+            (
+                "select k, v, upper(day) as day from fact",
+                "is not the source's partition column",
+            ),
+            (
+                "select day, rank() over (partition by k) as r from fact",
+                "a window that does not partition by [day]",
+            ),
+        ] {
+            let analysis = scope_default(sql).await;
+            assert!(
+                analysis.scope.is_none(),
+                "expected no scope for `{sql}`: {}",
+                analysis.note
+            );
+            assert!(
+                analysis.note.contains(cause),
+                "`{sql}` reported `{}`, expected `{cause}`",
+                analysis.note
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shadowing_column_or_a_second_partitioned_source_denies() {
+        let sources = vec![
+            table("fact", fact_schema(), &["day"]),
+            table("shadow", shadow_schema(), &[]),
+        ];
+        let analysis = scope(
+            "select fact.k, fact.v, fact.day from fact join shadow on shadow.k = fact.k",
+            &["day"],
+            sources,
+        )
+        .await;
+        assert!(analysis.scope.is_none());
+        assert!(analysis.note.contains("also has a column day"));
+
+        let sources = vec![
+            table("fact", fact_schema(), &["day"]),
+            table("fact2", fact_schema(), &["day"]),
+        ];
+        let analysis = scope(
+            "select fact.k, fact.v, fact.day from fact",
+            &["day"],
+            sources,
+        )
+        .await;
+        assert!(analysis.scope.is_none());
+        assert!(
+            analysis
+                .note
+                .contains("several sources are range partitioned")
+        );
+
+        let sources = vec![
+            table("fact", fact_schema(), &["day"]),
+            table("dim", dim_schema(), &[]),
+        ];
+        let analysis =
+            scope("select fact.k, fact.v, fact.day from fact", &[], sources).await;
+        assert!(analysis.scope.is_none());
+        assert!(analysis.note.contains("not range partitioned"));
+    }
+
+    #[tokio::test]
+    async fn a_union_branch_without_the_source_denies() {
+        let sources = vec![
+            table("fact", fact_schema(), &["day"]),
+            table("dim", dim_schema(), &[]),
+        ];
+        let analysis = scope(
+            "select fact.k, fact.v, fact.day from fact union all select dim.k, 0 as v, 'd0' as day from dim",
+            &["day"],
+            sources,
+        )
+        .await;
+        assert!(analysis.scope.is_none(), "{}", analysis.note);
+        // The union's second branch produces `day` itself, so the lineage
+        // check denies before the branch check.
+        assert!(
+            analysis.note.contains("not the source's partition column"),
+            "{}",
+            analysis.note
+        );
+    }
 }

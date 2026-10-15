@@ -669,8 +669,13 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
         }
         // The rejection reason depends on the analyzer's message, not on the
         // view's meaning.
-        ViewSpec::Fallback { reason, .. } => {
+        ViewSpec::Fallback {
+            reason,
+            partition_scope,
+            ..
+        } => {
             reason.clear();
+            *partition_scope = None;
         }
         _ => {}
     }
@@ -688,7 +693,7 @@ pub(crate) fn peel(plan: &LogicalPlan) -> &LogicalPlan {
         _ => plan,
     }
 }
-fn resolve_table<'a>(
+pub(crate) fn resolve_table<'a>(
     tables: &'a HashMap<String, IvmTable>,
     name: &TableReference,
 ) -> Result<&'a IvmTable> {
@@ -832,6 +837,7 @@ mod tests {
             statement: "select 1".to_string(),
             tables: vec!["table_src".to_string()],
             reason: "unsupported incremental view shape: one".to_string(),
+            partition_scope: None,
             mv_table_id: "table_mv".to_string(),
         };
         let mut second = first.clone();

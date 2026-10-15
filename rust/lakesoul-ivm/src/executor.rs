@@ -646,11 +646,16 @@ impl IvmSqlExecutor {
                     .filter(|table| !derived.contains(&table.table_id))
                     .map(|table| table.table_id.clone())
                     .collect();
+                // Whether a refresh can recompute single partitions is a
+                // property of the statement; record the decision (and why not)
+                // with the shape rejection.
+                let scope = crate::runtime::fallback_partition_scope(&plan, &tables, &mv);
                 let probe = ViewSpec::Fallback {
                     view_id: view_id.clone(),
                     statement: select_sql.clone(),
                     tables: source_ids,
-                    reason: rejection_reason(&error),
+                    reason: format!("{}; {}", rejection_reason(&error), scope.note),
+                    partition_scope: scope.scope,
                     mv_table_id: mv.table_id.clone(),
                 };
                 let expected = fallback_mv_schema(&plan)?;
