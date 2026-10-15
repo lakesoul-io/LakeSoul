@@ -502,7 +502,14 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
   the metrics; `list_views` marks the view and carries the rejection reason).
   A fallback refresh first collects the change windows of every source: when
   none changed it is a no-op, otherwise the statement runs against the current
-  state, the MV is truncated and the result is written in one epoch.  The
+  state and the result is written in one epoch.  When the view's one
+  range-partitioned source is the only one that changed and the statement is
+  **partition local** (the executor records that decision with the view), only
+  the changed partitions are recomputed: their rows are retracted and
+  rewritten, and every other partition keeps its rows and versions.  Any other
+  case — a change in an unpartitioned source, a global operator such as
+  `LIMIT`, a view without a primary key — recomputes the whole view, which
+  truncates the MV before writing.  The
   result is computed before the MV is touched, so a failing statement leaves
   the previous state in place.  A fallback MV may be **append-only**; when it
   declares primary keys the result must be unique on them (a repeated key
@@ -574,9 +581,11 @@ source state.
 
 The following shapes are **not maintained incrementally**.  By default a
 statement of such a shape still defines the view: the executor recomputes it
-in full on every refresh (Tier-2, see
-[Refresh semantics](#refresh-semantics)) and the analyzer's rejection becomes
-the fallback reason.  Create the target with `with_allow_fallback(false)`
+on every refresh (Tier-2, see
+[Refresh semantics](#refresh-semantics)) — in full, or only the changed
+partitions when the statement is partition local — and the analyzer's
+rejection becomes the fallback reason (which records the partition-pruning
+decision too).  Create the target with `with_allow_fallback(false)`
 (the `lakesoul.ivm.allow_fallback = false` table property) to have the shapes
 rejected outright; the notes below describe the incremental analyzer's
 boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):

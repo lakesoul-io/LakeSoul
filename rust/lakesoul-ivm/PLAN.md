@@ -3760,6 +3760,18 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 下一步（第 3 步）：源分区被 drop 时对 fallback 视图做确定性清理（扩展 `cleanup_dropped_partitions`），
   以及 README 的 Tier-2 说明更新。
 
+### 10.148 Tier-2 按变化分区重算（3）：丢弃分区的确定性清理与文档
+
+- **丢弃分区**：`cleanup_dropped_partitions` 增加 fallback 分支——当视图的 `partition_scope` 指向被删分区的源、
+  MV 主键非空且分区列在 MV schema 里时，把被删分区的 `partition_desc` 解析成限制集，读 MV 在这些分区内的
+  当前行并生成 `'delete'` 行写回（复用 §10.147 的 `fallback_partition_delete_sql`），epoch 记账与游标推进
+  与 sum-count 路径一致（游标**推进到删除版本**，分区日后重建时从其上开始，只重算该分区）。
+  其余情形仍返回 `None` → 走重建（行为不变）。
+- **文档**：README 的「Two-tier refresh contract」段落改写为「分区局部时只重算变化分区；未分区源变更 / 全局算子 /
+  无主键时整表重算」，Limitations 段落同步（reason 含分区裁剪判定）。
+- **测试**：`tests/fallback_partitions.rs` 增加一例——三分区 `GROUP BY day` 的 fallback，删除源 `d2` 分区后
+  一次刷新（动作仍为 `incremental`，不是重建）即撤下 MV 中 d2 的行，视图保持 `active`。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
