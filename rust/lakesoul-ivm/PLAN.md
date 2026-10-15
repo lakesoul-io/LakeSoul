@@ -3649,8 +3649,9 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `lookup_join_output_columns`（写路径输出列）。
 - 测试：`sql_executor.rs` 新增一例——两侧主键均为 `k`、`ON b.k = a.k` 的 lookup join：bootstrap、
   右侧载荷更新、右侧删除（右值为 NULL）；全程 `allow_fallback=false` 保证走增量路径。
-- 残留：结构体主键的 lookup 形状已越过投影重名，但其端到端用例还需镜像**派生 lookup 步骤**的 MV 布局
-  （紧凑载荷列名），与 §10.141 记录的 pair/identity 侧边角一并留待后续。
+- 残留（已解决，见 §10.149）：结构体主键的 lookup 形状已越过投影重名；其端到端用例当初以为需要镜像
+  **派生 lookup 步骤**的 MV 布局（紧凑载荷列名），实际不需要——消费方读的是**子计划输出列名**，引擎在内部
+  把它们桥接到步骤的紧凑载荷列。
 
 ### 10.143 连接键与主键同列的布局（规则提取与订正）
 
@@ -3771,6 +3772,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   无主键时整表重算」，Limitations 段落同步（reason 含分区裁剪判定）。
 - **测试**：`tests/fallback_partitions.rs` 增加一例——三分区 `GROUP BY day` 的 fallback，删除源 `d2` 分区后
   一次刷新（动作仍为 `incremental`，不是重建）即撤下 MV 中 d2 的行，视图保持 `active`。
+
+### 10.149 lookup 步骤的端到端用例（§10.142 收尾）
+
+- **形状**：左表 **主键为 struct `s`**、右表 **主键为连接键 `g`**（右侧被连接键唯一化 → 1:1 lookup）：
+  `SELECT x.k, x.m, COUNT(*) FROM (SELECT b.k, c.m FROM b LEFT JOIN c ON c.g = b.g) x GROUP BY x.k, x.m`。
+  派生 lookup 步骤的 MV 布局是**紧凑**形态 `[g, left_value, right_value, s, rowKinds, __ivm_epoch]`
+  （`lookup_join_view_schema_for`；连接键只物化一次、左主键按原名携带、右主键=连接键不重复列）。
+- **当初的误解（订正）**：消费方的 MV **不需要**镜像步骤的紧凑载荷列名——分析器按**子计划输出名**（`k`、`m`）
+  构建消费 MV 的 schema（`sum_count_groups_mv_schema_for(&子计划schema, ["k","m"], …)`），刷新时由引擎把计划里的
+  列引用改名到步骤的载荷列。因此用例只需按子计划输出建表，`step_schema` 无需出现。
+- **用例**：`nested_types.rs::a_struct_primary_key_materializes_a_lookup_step`——覆盖 bootstrap、
+  右侧载荷更新（同 `g` 的 upsert）、右侧删除（`m` 变 NULL），全程 `allow_fallback=false`；
+  中间的组迁移同时复查了 §10.145 的 delete-before-insert 排序约定。
+- 至此 §10.141/§10.142 的嵌套主键收尾全部闭合（pair 步骤见 §10.144，lookup 见本条）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
