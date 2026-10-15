@@ -301,6 +301,16 @@ fn right_pk_alias(key: &str) -> String {
     format!("__right_pk_{key}")
 }
 
+/// The hidden column a pair projection carries from its left frame: the left
+/// primary keys' encoded row identity, computed **below** the join.  A struct
+/// field access above a join would be pushed to the leaves by DataFusion's
+/// leaf-expression rules, which re-expose both frames' columns under the
+/// shared `?table?` placeholder and collide.
+const LEFT_IDENTITY_COLUMN: &str = "__left_identity";
+
+/// The right frame's encoded row identity (see [`LEFT_IDENTITY_COLUMN`]).
+const RIGHT_IDENTITY_COLUMN: &str = "__right_identity";
+
 /// The primary keys of a keyed [`JoinView`] output, in schema order.
 pub fn keyed_join_output_primary_keys(
     left_primary_keys: &[String],
@@ -2479,6 +2489,12 @@ fn keyed_join_projection(
     for key in parts.left_primary_keys {
         left_columns.push(col(key.as_str()).alias(left_pk_alias(key)));
     }
+    if parts.identity_column {
+        left_columns.push(
+            identity_side_expr(&parts.left_table.primary_keys, &parts.left_table.schema)?
+                .alias(LEFT_IDENTITY_COLUMN),
+        );
+    }
     let left = left.select(left_columns)?;
 
     let mut right_columns = join_side_key_columns(
@@ -2505,6 +2521,15 @@ fn keyed_join_projection(
     }
     for key in parts.right_primary_keys {
         right_columns.push(col(key.as_str()).alias(right_pk_alias(key)));
+    }
+    if parts.identity_column {
+        right_columns.push(
+            identity_side_expr(
+                &parts.right_table.primary_keys,
+                &parts.right_table.schema,
+            )?
+            .alias(RIGHT_IDENTITY_COLUMN),
+        );
     }
     let right = right.select(right_columns)?;
 
@@ -2578,12 +2603,26 @@ fn keyed_join_projection(
     for key in parts.right_primary_keys {
         output.push(col(right_pk_alias(key)));
     }
+    if parts.identity_column {
+        output.push(col(LEFT_IDENTITY_COLUMN));
+        output.push(col(RIGHT_IDENTITY_COLUMN));
+    }
     Ok(joined.select(output)?)
+}
+
+/// Where the pair identity of [`keyed_join_output_columns`] comes from.
+#[derive(Clone, Copy)]
+enum IdentitySource {
+    /// The frame already stores the column (a materialized view row).
+    Stored,
+    /// Compose it from the per-side encodings the pair projection carries.
+    EncodedSides,
 }
 
 /// The output columns of a keyed join in schema order.
 fn keyed_join_output_columns(
     parts: &PairJoin<'_>,
+    identity: IdentitySource,
 ) -> Result<Vec<datafusion::logical_expr::Expr>> {
     let mut output = parts
         .join_keys
@@ -2605,29 +2644,44 @@ fn keyed_join_output_columns(
         output.push(col(right_pk_alias(key).as_str()));
     }
     if parts.identity_column {
-        output.push(pair_identity_expr(parts.left_table, parts.right_table)?);
+        output.push(match identity {
+            IdentitySource::Stored => col(IVM_PAIR_IDENTITY_COLUMN),
+            IdentitySource::EncodedSides => pair_identity_from_sides()?,
+        });
     }
     Ok(output)
 }
 
-/// The non-null row identity of a derived outer-join step: both sides'
-/// primary keys, length prefixed (`v<octets>:<text>`) so concatenating them
-/// cannot collide; an unmatched row (NULL key) encodes as `n`.  A left join
-/// needs the right side and a full join both, so encoding both keeps one
-/// collision-free identity for every outer join.
-fn pair_identity_expr(left: &IvmTable, right: &IvmTable) -> Result<Expr> {
+/// Encode one side's primary keys into a single text column, evaluated on
+/// that side's own frame (below the join), so no struct field access ever
+/// flows into the join.
+fn identity_side_expr(primary_keys: &[String], schema: &Schema) -> Result<Expr> {
     let mut parts = Vec::new();
-    for key in &left.primary_keys {
+    for key in primary_keys {
         parts.push(encoded_identity_part(
-            col(left_pk_alias(key).as_str()),
-            &field_type(&left.schema, key)?,
+            col(key.as_str()),
+            &field_type(schema, key)?,
         )?);
     }
-    for key in &right.primary_keys {
-        parts.push(encoded_identity_part(
-            col(right_pk_alias(key).as_str()),
-            &field_type(&right.schema, key)?,
-        )?);
+    Ok(concat(parts))
+}
+
+/// The non-null row identity of a derived outer-join step: both sides'
+/// primary keys, length prefixed (`v<octets>:<text>`) so concatenating them
+/// cannot collide; an unmatched row (a NULL-padded side) encodes as `n`.
+///
+/// The per-side texts are computed by the pair projection below the join
+/// (see [`keyed_join_projection`], [`LEFT_IDENTITY_COLUMN`]); composing them
+/// here keeps one collision-free identity for every outer join.
+fn pair_identity_from_sides() -> Result<Expr> {
+    let mut parts = Vec::new();
+    for name in [LEFT_IDENTITY_COLUMN, RIGHT_IDENTITY_COLUMN] {
+        let value = col(name);
+        parts.push(
+            when(value.clone().is_null(), lit("n"))
+                .otherwise(value)
+                .map_err(|error| report!("the row identity: {error}"))?,
+        );
     }
     Ok(concat(parts).alias(IVM_PAIR_IDENTITY_COLUMN))
 }
@@ -3009,7 +3063,10 @@ impl IvmRuntime {
                     None,
                 )?)?
                 .distinct()?
-                .select(keyed_join_output_columns(&view.parts())?)?
+                .select(keyed_join_output_columns(
+                    &view.parts(),
+                    IdentitySource::Stored,
+                )?)?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
@@ -3579,7 +3636,10 @@ impl IvmRuntime {
             JoinType::Left,
             false,
         )?
-        .select(keyed_join_output_columns(&view.parts())?)?
+        .select(keyed_join_output_columns(
+            &view.parts(),
+            IdentitySource::EncodedSides,
+        )?)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let deletes = mv
@@ -3590,7 +3650,10 @@ impl IvmRuntime {
                 &key_names,
                 None,
             )?
-            .select(keyed_join_output_columns(&view.parts())?)?
+            .select(keyed_join_output_columns(
+                &view.parts(),
+                IdentitySource::Stored,
+            )?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
@@ -3703,7 +3766,10 @@ impl IvmRuntime {
             JoinType::Left,
             false,
         )?
-        .select(keyed_join_output_columns(&view.parts())?)?
+        .select(keyed_join_output_columns(
+            &view.parts(),
+            IdentitySource::EncodedSides,
+        )?)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
         .collect()
@@ -3984,13 +4050,11 @@ impl IvmRuntime {
             JoinType::Right,
             true,
         )?;
-        let mut inserts = left_pairs.union(right_pairs)?.distinct()?;
-        if view.identity_column {
-            inserts = inserts.with_column(
-                IVM_PAIR_IDENTITY_COLUMN,
-                pair_identity_expr(&view.left, &view.right)?,
-            )?;
-        }
+        // The pair projection carries each side's encoded identity; compose
+        // them here and drop the per-side columns on the way out.
+        let inserts = left_pairs.union(right_pairs)?.distinct()?.select(
+            keyed_join_output_columns(&view.parts(), IdentitySource::EncodedSides)?,
+        )?;
         let inserts = inserts
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
@@ -4003,7 +4067,10 @@ impl IvmRuntime {
                 &left_key_names,
                 None,
             )?
-            .select(keyed_join_output_columns(&view.parts())?)?
+            .select(keyed_join_output_columns(
+                &view.parts(),
+                IdentitySource::Stored,
+            )?)?
             .union(
                 mv.join(
                     affected_right,
@@ -4012,7 +4079,10 @@ impl IvmRuntime {
                     &right_key_names,
                     None,
                 )?
-                .select(keyed_join_output_columns(&view.parts())?)?,
+                .select(keyed_join_output_columns(
+                    &view.parts(),
+                    IdentitySource::Stored,
+                )?)?,
             )?
             .distinct()?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
@@ -4127,13 +4197,11 @@ impl IvmRuntime {
             JoinType::Right,
             true,
         )?;
-        let mut inserts = left_pairs.union(right_pairs)?.distinct()?;
-        if view.identity_column {
-            inserts = inserts.with_column(
-                IVM_PAIR_IDENTITY_COLUMN,
-                pair_identity_expr(&view.left, &view.right)?,
-            )?;
-        }
+        // The pair projection carries each side's encoded identity; compose
+        // them here and drop the per-side columns on the way out.
+        let inserts = left_pairs.union(right_pairs)?.distinct()?.select(
+            keyed_join_output_columns(&view.parts(), IdentitySource::EncodedSides)?,
+        )?;
         for batch in inserts
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
@@ -4366,12 +4434,15 @@ impl IvmRuntime {
             || report!("cross join view {} refreshed without changes", view.view_id);
         let inserts = inserts
             .ok_or_else(no_change)?
-            .select(keyed_join_output_columns(&parts)?)?
+            .select(keyed_join_output_columns(
+                &parts,
+                IdentitySource::EncodedSides,
+            )?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let deletes = deletes
             .ok_or_else(no_change)?
-            .select(keyed_join_output_columns(&parts)?)?
+            .select(keyed_join_output_columns(&parts, IdentitySource::Stored)?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
@@ -4475,7 +4546,10 @@ impl IvmRuntime {
             JoinType::Inner,
             false,
         )?
-        .select(keyed_join_output_columns(&parts)?)?
+        .select(keyed_join_output_columns(
+            &parts,
+            IdentitySource::EncodedSides,
+        )?)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         for batch in inserts.collect().await? {
