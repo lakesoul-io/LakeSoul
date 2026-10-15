@@ -73,6 +73,14 @@ pub struct PartitionScope {
     pub columns: Vec<String>,
 }
 
+/// A range-partition restriction: `(column, allowed values)` per partition
+/// column.
+type PartitionRestriction = Vec<(String, Vec<String>)>;
+
+/// The partitions a pruned refresh recomputes: the restriction and how many
+/// partitions it covers.
+type PartitionPruning = (PartitionRestriction, u64);
+
 /// The partition-scope analysis of a fallback statement: the scope when the
 /// statement is partition local, and a short note for the view's reason.
 #[derive(Debug, Clone)]
@@ -477,7 +485,26 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let commit_ids = self.recompute_fallback(view, epoch).await?;
+        let commit_ids = match self.fallback_partition_restriction(view, &windows) {
+            Some((restriction, partitions)) => {
+                match self
+                    .recompute_fallback_partitions(view, &restriction, epoch)
+                    .await?
+                {
+                    Some(commit_ids) => {
+                        crate::observability::record_fallback_partitions(partitions);
+                        commit_ids
+                    }
+                    // The recomputed rows left the restriction: recompute the
+                    // whole view instead of writing a partial partition.
+                    None => {
+                        crate::observability::record_fallback_guard();
+                        self.recompute_fallback(view, epoch).await?
+                    }
+                }
+            }
+            None => self.recompute_fallback(view, epoch).await?,
+        };
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -488,6 +515,211 @@ impl IvmRuntime {
             .set_view_status(&view.view_id, "active")
             .await?;
         Ok(Some(epoch))
+    }
+
+    /// The changed partitions a refresh recomputes on its own, when the view's
+    /// statement is partition local and only the partitioned source changed.
+    ///
+    /// `None` means the full recompute: no scope, an unpartitioned source
+    /// changed (it can affect every partition), a partition descriptor the
+    /// restriction cannot read, or a view without a primary key (the merge key
+    /// is what retracts the recomputed rows).
+    fn fallback_partition_restriction(
+        &self,
+        view: &FallbackView,
+        windows: &[SourceWindow],
+    ) -> Option<PartitionPruning> {
+        let scope = view.partition_scope.as_ref()?;
+        if view.mv.primary_keys.is_empty() || windows.len() != view.tables.len() {
+            return None;
+        }
+        let source = view
+            .tables
+            .iter()
+            .find(|table| table.table_id == scope.source_table_id)?;
+        let mut restriction = scope
+            .columns
+            .iter()
+            .map(|column| (column.clone(), Vec::new()))
+            .collect::<Vec<_>>();
+        let mut partitions = Vec::new();
+        for (table, window) in view.tables.iter().zip(windows) {
+            if table.table_id != scope.source_table_id {
+                // An unpartitioned source can contribute to every partition.
+                if !window.added_files.is_empty() {
+                    return None;
+                }
+                continue;
+            }
+            for files in &window.added_files {
+                let values = parse_partition_values(
+                    &files.partition_desc,
+                    &source.range_partition_columns,
+                )?;
+                if !partitions.contains(&files.partition_desc) {
+                    partitions.push(files.partition_desc.clone());
+                }
+                for (column, allowed) in restriction.iter_mut() {
+                    let index = source
+                        .range_partition_columns
+                        .iter()
+                        .position(|candidate| candidate == column)?;
+                    let value = values.get(index)?.clone();
+                    if !allowed.contains(&value) {
+                        allowed.push(value);
+                    }
+                }
+            }
+        }
+        if restriction.iter().any(|(_, allowed)| allowed.is_empty()) {
+            return None;
+        }
+        Some((restriction, partitions.len() as u64))
+    }
+
+    /// Recompute only the restricted partitions: retract their active rows and
+    /// rewrite them from the restricted sources.  Returns `None` when the
+    /// statement produced rows outside the restriction, so the caller
+    /// recomputes the whole view instead.
+    async fn recompute_fallback_partitions(
+        &self,
+        view: &FallbackView,
+        restriction: &PartitionRestriction,
+        epoch: i64,
+    ) -> Result<Option<Vec<String>>> {
+        let context = SessionContext::new();
+        for table in &view.tables {
+            let restricted = table
+                .range_partition_columns
+                .iter()
+                .any(|column| restriction.iter().any(|(name, _)| name == column));
+            let batches = if restricted {
+                table
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        restriction,
+                    )
+                    .await?
+            } else {
+                table.read_current(&self.client).await?
+            };
+            register_table(
+                &context,
+                table.table_name.as_str(),
+                batches.clone(),
+                &table.schema,
+            )?;
+            // The qualified name only resolves when the namespace schema is
+            // registered (the executor's session may not have it).
+            let qualified = format!("{}.{}", table.namespace, table.table_name);
+            let _ = register_table(&context, qualified.as_str(), batches, &table.schema);
+        }
+        let statement = context
+            .sql(&view.statement)
+            .await
+            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
+        let batches = statement
+            .collect()
+            .await
+            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
+        self.ensure_fallback_keys(view, &batches).await?;
+
+        // Guard: the recomputed rows must stay inside the restriction.  An
+        // analysis that let another partition through would otherwise retract
+        // rows it never rewrites.
+        let predicate = restriction_predicate(restriction);
+        if let Some(first) = batches.first()
+            && !predicate.is_empty()
+        {
+            let guard = SessionContext::new();
+            register_table(&guard, "__ivm_guard", batches.clone(), &first.schema())?;
+            let frame = guard
+                .sql(&format!(
+                    "select count(*) as c from __ivm_guard where not ({predicate})"
+                ))
+                .await
+                .map_err(|error| report!("fallback guard: {error}"))?;
+            for batch in frame
+                .collect()
+                .await
+                .map_err(|error| report!("fallback guard: {error}"))?
+            {
+                let count = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .map(|array| array.value(0))
+                    .unwrap_or(0);
+                if count > 0 {
+                    return Ok(None);
+                }
+            }
+        }
+
+        // The delete rows retract every active row of the recomputed
+        // partitions; the insert rows are the recomputed statement output.
+        let current = view
+            .mv
+            .read_current_filtered_partitions(&self.client, Vec::new(), restriction)
+            .await?;
+        let deletes = if current.is_empty() {
+            Vec::new()
+        } else {
+            let context = SessionContext::new();
+            register_table(&context, "mv", current, &view.mv.schema)?;
+            context
+                .sql(&fallback_partition_delete_sql(view, epoch))
+                .await
+                .map_err(|error| report!("fallback partition deletes: {error}"))?
+                .collect()
+                .await
+                .map_err(|error| report!("fallback partition deletes: {error}"))?
+        };
+        let inserts = rows_with_epoch(&SessionContext::new(), batches, epoch).await?;
+
+        // Deletes must precede the inserts of the same row (the batch is
+        // ordered by the MV's primary keys), so the merge keeps the rewrite.
+        let compose = SessionContext::new();
+        let order = quoted_list(&refresh_order_columns(&view.mv, &view.mv.primary_keys));
+        let mut written = 0u64;
+        let mut commit_ids = Vec::new();
+        let (has_deletes, has_inserts) = (!deletes.is_empty(), !inserts.is_empty());
+        if has_deletes {
+            let schema = deletes[0].schema();
+            register_table(&compose, "del", deletes, &schema)?;
+        }
+        if has_inserts {
+            let schema = inserts[0].schema();
+            register_table(&compose, "ins", inserts, &schema)?;
+        }
+        let kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
+        let sql = match (has_deletes, has_inserts) {
+            (true, true) => format!(
+                "select * from del union all select * from ins \
+                 order by {order}, {kinds}"
+            ),
+            (true, false) => format!("select * from del order by {order}, {kinds}"),
+            (false, true) => format!("select * from ins order by {order}, {kinds}"),
+            (false, false) => String::new(),
+        };
+        if !sql.is_empty() {
+            for batch in compose
+                .sql(&sql)
+                .await
+                .map_err(|error| report!("fallback partition write: {error}"))?
+                .collect()
+                .await
+                .map_err(|error| report!("fallback partition write: {error}"))?
+            {
+                if batch.num_rows() > 0 {
+                    written += batch.num_rows() as u64;
+                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
+                }
+            }
+        }
+        crate::observability::record_fallback(written);
+        Ok(Some(commit_ids))
     }
 
     /// Rebuild a fallback view from the current source state.
@@ -626,6 +858,42 @@ impl IvmRuntime {
         }
         Ok(())
     }
+}
+
+/// The delete rows retracting the active rows of the recomputed partitions.
+fn fallback_partition_delete_sql(view: &FallbackView, epoch: i64) -> String {
+    let columns = view
+        .mv
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+        .map(|name| quote_ident(&name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "select {columns}, 'delete' as {kinds}, {epoch} as {epoch_column} \
+         from mv where {kinds} = 'insert' and {epoch_column} <> {epoch}",
+        kinds = quote_ident(IVM_ROW_KINDS_COLUMN),
+        epoch_column = quote_ident(IVM_EPOCH_COLUMN),
+    )
+}
+
+/// The predicate a row of the recomputed partitions satisfies.
+fn restriction_predicate(restriction: &PartitionRestriction) -> String {
+    restriction
+        .iter()
+        .map(|(column, allowed)| {
+            let values = allowed
+                .iter()
+                .map(|value| format!("'{}'", value.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} in ({values})", quote_ident(column))
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 /// The cursors every source window advanced to.
@@ -851,6 +1119,19 @@ mod partition_scope_tests {
             scope("select fact.k, fact.v, fact.day from fact", &[], sources).await;
         assert!(analysis.scope.is_none());
         assert!(analysis.note.contains("not range partitioned"));
+    }
+
+    #[test]
+    fn the_restriction_predicate_quotes_partition_values() {
+        let restriction: PartitionRestriction = vec![
+            ("day".to_string(), vec!["d1".to_string()]),
+            ("region".to_string(), vec!["o'brien".to_string()]),
+        ];
+        let predicate = restriction_predicate(&restriction);
+        assert_eq!(
+            predicate,
+            "\"day\" in ('d1') and \"region\" in ('o''brien')"
+        );
     }
 
     #[tokio::test]

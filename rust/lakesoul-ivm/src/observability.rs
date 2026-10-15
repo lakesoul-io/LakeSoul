@@ -20,6 +20,8 @@ const REBUILDS_TOTAL: &str = "lakesoul_ivm_rebuilds_total";
 const REBUILD_DURATION: &str = "lakesoul_ivm_rebuild_duration_seconds";
 const EPOCHS_TOTAL: &str = "lakesoul_ivm_epochs_total";
 const FALLBACKS_TOTAL: &str = "lakesoul_ivm_fallbacks_total";
+const FALLBACK_PARTITIONS: &str = "lakesoul_ivm_fallback_partitions_total";
+const FALLBACK_GUARD: &str = "lakesoul_ivm_fallback_guard_total";
 const FALLBACK_ROWS: &str = "lakesoul_ivm_fallback_rows";
 
 static DESCRIBE_METRICS: Once = Once::new();
@@ -43,6 +45,14 @@ fn describe_metrics() {
             REFRESH_DURATION,
             metrics::Unit::Seconds,
             "View refresh duration by view kind"
+        );
+        metrics::describe_counter!(
+            FALLBACK_PARTITIONS,
+            "Total number of partitions a pruned Tier-2 fallback refresh recomputed"
+        );
+        metrics::describe_counter!(
+            FALLBACK_GUARD,
+            "Total number of pruned Tier-2 fallback refreshes that recomputed the whole view"
         );
         metrics::describe_counter!(
             REBUILDS_TOTAL,
@@ -102,6 +112,19 @@ pub(crate) fn record_fallback(rows: u64) {
     describe_metrics();
     metrics::counter!(FALLBACKS_TOTAL).increment(1);
     metrics::counter!(FALLBACK_ROWS).increment(rows);
+}
+
+/// The partitions a pruned fallback refresh recomputed.
+pub(crate) fn record_fallback_partitions(partitions: u64) {
+    describe_metrics();
+    metrics::counter!(FALLBACK_PARTITIONS).increment(partitions);
+}
+
+/// A pruned fallback refresh whose rows left the restriction: the refresh
+/// recomputed the whole view instead (an analysis bug, not a data bug).
+pub(crate) fn record_fallback_guard() {
+    describe_metrics();
+    metrics::counter!(FALLBACK_GUARD).increment(1);
 }
 
 /// One view rebuild from the full source state.
