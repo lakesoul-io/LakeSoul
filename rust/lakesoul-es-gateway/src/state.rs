@@ -25,7 +25,9 @@ pub struct IndexRuntime {
     pub namespace: String,
     pub table: String,
     pub path: String,
-    pub dim: Option<usize>,
+    /// Declared vector columns `(name, dim)` in schema order; empty for a
+    /// keyword-only index.
+    pub vectors: Vec<(String, usize)>,
     pub schema: SchemaRef,
 }
 
@@ -47,6 +49,30 @@ impl IndexRuntime {
         self.config
             .with_positions
             .unwrap_or(defaults.with_positions)
+    }
+
+    /// True when the index declares at least one vector column.
+    pub fn has_vectors(&self) -> bool {
+        !self.vectors.is_empty()
+    }
+
+    /// The dimension of one declared vector column.
+    pub fn vector_dim(&self, column: &str) -> Option<usize> {
+        self.vectors
+            .iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, dim)| *dim)
+    }
+
+    /// The primary vector column (the `dim`/`embedding_column` shorthand, or
+    /// the first declared column).
+    pub fn primary_vector(&self) -> Option<&(String, usize)> {
+        self.vectors.first()
+    }
+
+    /// True when `column` is a declared vector column.
+    pub fn is_vector_column(&self, column: &str) -> bool {
+        self.vector_dim(column).is_some()
     }
 
     pub fn nprobe(&self, defaults: &IndexDefaults) -> usize {
@@ -82,10 +108,12 @@ impl GatewayState {
         for index in &config.indexes {
             let table = index.table_name().to_string();
             let path = table_path(&config, index, &table);
-            let schema = schema::document_schema(
-                &index.content_column,
-                index.dim.map(|dim| (index.embedding_column.as_str(), dim)),
-            );
+            let vectors: Vec<(String, usize)> = index
+                .vector_columns()
+                .into_iter()
+                .map(|(column, dim)| (column.to_string(), dim))
+                .collect();
+            let schema = schema::document_schema(&index.content_column, &vectors);
             indexes.insert(
                 index.name.clone(),
                 IndexRuntime {
@@ -93,7 +121,7 @@ impl GatewayState {
                     namespace: config.lakesoul.namespace.clone(),
                     table,
                     path,
-                    dim: index.dim,
+                    vectors,
                     schema,
                 },
             );

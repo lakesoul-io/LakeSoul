@@ -51,6 +51,11 @@ pub struct EsDocument {
     pub is_enabled: Option<bool>,
     #[serde(default)]
     pub is_recommended: Option<bool>,
+    /// Any other top-level document field; the declared additional vector
+    /// columns are read from here (and unknown fields are ignored like
+    /// Elasticsearch does).
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// `POST /{index}/_doc` (v8).
@@ -253,23 +258,24 @@ fn document_batch(
         Arc::new(StringArray::from(tag_ids)),
     ];
 
-    if let Some(dim) = runtime.dim {
+    for (column, dim) in &runtime.vectors {
         let mut values: Vec<f32> = Vec::with_capacity(count * dim);
         let mut validity: Vec<bool> = Vec::with_capacity(count);
         for (_, document) in documents {
-            match &document.embedding {
+            match document_vector(document, column, &runtime.config.embedding_column)? {
                 Some(embedding) => {
-                    if embedding.len() != dim {
+                    if embedding.len() != *dim {
                         return Err(EsError::bad_request(format!(
-                            "embedding dimension {} does not match the index dimension {dim}",
+                            "vector '{column}' dimension {} does not match the \
+                             index dimension {dim}",
                             embedding.len()
                         )));
                     }
-                    values.extend(normalize(embedding));
+                    values.extend(normalize(&embedding));
                     validity.push(true);
                 }
                 None => {
-                    values.extend(std::iter::repeat_n(0.0, dim));
+                    values.extend(std::iter::repeat_n(0.0, *dim));
                     validity.push(false);
                 }
             }
@@ -277,11 +283,13 @@ fn document_batch(
         let item_field = Arc::new(Field::new("item", DataType::Float32, true));
         let list = FixedSizeListArray::try_new(
             item_field,
-            dim as i32,
+            *dim as i32,
             Arc::new(Float32Array::from(values)),
             Some(NullBuffer::from(validity)),
         )
-        .map_err(|error| EsError::bad_request(format!("invalid embedding: {error}")))?;
+        .map_err(|error| {
+            EsError::bad_request(format!("invalid vector '{column}': {error}"))
+        })?;
         columns.push(Arc::new(list));
     }
 
@@ -291,6 +299,34 @@ fn document_batch(
 
     RecordBatch::try_new(Arc::clone(&runtime.schema), columns)
         .map_err(|error| EsError::bad_request(format!("document batch: {error}")))
+}
+
+/// Read one declared vector column out of a document.
+///
+/// The legacy `embedding` field feeds the primary column; any other declared
+/// column travels as a top-level field with the column name.  A field named
+/// like the column wins over the legacy field.
+fn document_vector(
+    document: &EsDocument,
+    column: &str,
+    primary: &str,
+) -> Result<Option<Vec<f64>>, EsError> {
+    if let Some(value) = document.extra.get(column) {
+        if value.is_null() {
+            return Ok(None);
+        }
+        return serde_json::from_value::<Vec<f64>>(value.clone())
+            .map(Some)
+            .map_err(|error| {
+                EsError::bad_request(format!(
+                    "vector '{column}' must be an array of numbers: {error}"
+                ))
+            });
+    }
+    if column == primary {
+        return Ok(document.embedding.clone());
+    }
+    Ok(None)
 }
 
 /// L2-normalize an embedding so the IP index computes cosine similarity.

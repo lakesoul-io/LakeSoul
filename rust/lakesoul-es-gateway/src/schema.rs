@@ -22,10 +22,7 @@ pub const CDC_DELETE: &str = "delete";
 /// `content_column` is indexed for full-text search; when a dimension is
 /// configured the embedding column is a `FixedSizeList<Float32>` indexed
 /// with the IP metric (vectors are L2-normalized on write, so IP is cosine).
-pub fn document_schema(
-    content_column: &str,
-    embedding: Option<(&str, usize)>,
-) -> SchemaRef {
+pub fn document_schema(content_column: &str, vectors: &[(String, usize)]) -> SchemaRef {
     let mut fields = vec![
         Field::new(PK_COLUMN, DataType::UInt64, false),
         Field::new(content_column, DataType::Utf8, true),
@@ -36,12 +33,12 @@ pub fn document_schema(
         Field::new("knowledge_base_id", DataType::Utf8, true),
         Field::new("tag_id", DataType::Utf8, true),
     ];
-    if let Some((name, dim)) = embedding {
+    for (name, dim) in vectors {
         fields.push(Field::new(
             name,
             DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
-                dim as i32,
+                *dim as i32,
             ),
             true,
         ));
