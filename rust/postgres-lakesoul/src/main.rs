@@ -28,6 +28,7 @@ mod cancel;
 mod catalog;
 mod limits;
 mod pg_compat;
+mod pg_vector;
 mod read_only;
 mod server;
 mod session;

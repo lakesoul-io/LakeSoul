@@ -20,13 +20,15 @@ use datafusion::prelude::SessionContext;
 use datafusion_postgres::DfSessionService;
 use datafusion_postgres::pgwire;
 use datafusion_postgres::pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
-use datafusion_postgres::pgwire::api::results::{Response, SendableRowStream};
+use datafusion_postgres::pgwire::api::results::{FieldInfo, Response, SendableRowStream};
 use datafusion_postgres::pgwire::api::store::PortalStore;
 use datafusion_postgres::pgwire::api::{ClientInfo, ClientPortalStore};
+use datafusion_postgres::pgwire::messages::data::DataRow;
 use datafusion_postgres::testing::MockClient;
-use futures::Sink;
+use futures::{Sink, StreamExt};
 use lakesoul_metadata::MetaDataClient;
 use pgwire::api::auth::noop::NoopStartupHandler;
+use pgwire::api::stmt::QueryParser;
 use pgwire::api::{
     METADATA_DATABASE, METADATA_USER, PgWireConnectionState, SessionExtensions,
 };
@@ -1977,4 +1979,444 @@ fn query_rows(responses: &mut [Response]) -> &mut SendableRowStream {
         Response::Query(query) => &mut query.data_rows,
         other => panic!("expected a query response, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// pgvector
+// ---------------------------------------------------------------------------
+
+/// The `FLOAT[]` value [`setup_vector_table`] writes for `value`; the SQL
+/// insert computes the same expression.
+fn generated_vector(value: i64) -> [f32; 8] {
+    [
+        (value as f64).sin() as f32,
+        (value as f64).cos() as f32,
+        // Same arithmetic as the insert: f64, then narrowed to the stored
+        // Float32 (an f32 product would round differently).
+        (value as f64 * 0.1) as f32,
+        0.5,
+        -0.5,
+        1.0,
+        -1.0,
+        // Strictly increasing in `value`: the sin/cos and `value * 0.1`
+        // terms are symmetric around a query on the corpus, so without this
+        // the nearest rows would tie to within f32 noise.
+        (value as f64 * 0.01) as f32,
+    ]
+}
+
+/// The pgvector text form of a vector (`[1,2,3]`).
+fn vector_text(values: &[f32]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn vector_norm(values: &[f32]) -> f64 {
+    values
+        .iter()
+        .map(|value| (*value as f64) * (*value as f64))
+        .sum::<f64>()
+        .sqrt()
+}
+
+fn l2_distance(left: &[f32], right: &[f32]) -> f64 {
+    left.iter()
+        .zip(right)
+        .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// The exact `<->`-nearest rows of the generated corpus.
+///
+/// Asserts that the corpus separates the requested prefix, so the expected
+/// order is unambiguous (the generated vectors are symmetric around the
+/// query, so a perturbed query is used).
+fn exact_top_k(query: &[f32], k: usize, rows: i64) -> Vec<i64> {
+    let mut scored: Vec<(f64, i64)> = (0..rows)
+        .map(|id| (l2_distance(&generated_vector(id), query), id))
+        .collect();
+    scored.sort_by(|left, right| left.0.partial_cmp(&right.0).unwrap());
+    // Every consecutive pair of the prefix (and the row after it) must be
+    // separated, or the expected order is not well defined.
+    for window in scored.windows(2).take(k) {
+        let gap = window[1].0 - window[0].0;
+        assert!(
+            gap > 1e-5,
+            "the corpus must separate every top-{k} row: {gap} in {scored:?}"
+        );
+    }
+    scored.into_iter().take(k).map(|(_, id)| id).collect()
+}
+
+/// A query vector that is not one of the generated rows and is not the
+/// mirror point of the corpus: `generated_vector(7)` sits exactly between the
+/// `value * 0.1` and `value * 0.01` terms of mirror rows (`i` and `14 - i`),
+/// so those components are moved off the midpoint.
+fn perturbed_query() -> [f32; 8] {
+    let mut query = generated_vector(7);
+    query[2] += 0.03;
+    query[3] += 0.13;
+    query[5] -= 0.07;
+    query[7] -= 0.015;
+    query
+}
+
+/// Create a LakeSoul table with one indexed `FLOAT[]` column and `rows`
+/// generated rows; the insert auto-builds the vector index.
+async fn setup_vector_table(table: &str, rows: i64) -> Arc<MetaDataClient> {
+    let client = Arc::new(
+        MetaDataClient::from_env()
+            .await
+            .expect("PostgreSQL required"),
+    );
+    let _ = client.drop_table(table, "default").await;
+    let location = std::env::current_dir().unwrap().join("default").join(table);
+    let _ = std::fs::remove_dir_all(&location);
+    let ctx = lakesoul_datafusion::create_lakesoul_session_ctx(
+        Arc::clone(&client),
+        &lakesoul_datafusion::cli::CoreArgs::from_env(),
+    )
+    .expect("lakesoul session");
+    let config = r#"[{"column":"vec","dim":8,"nlist":4,"total_bits":7,"metric":"L2"}]"#;
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL LOCATION '{}'
+         OPTIONS ('vector_index_columns' '{config}', 'hashBucketNum' '4')",
+        location.display()
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+    let insert_sql = format!(
+        "INSERT INTO \"lakesoul\".default.{table}
+         SELECT CAST(g.value AS BIGINT),
+                ARRAY[sin(g.value), cos(g.value), g.value * 0.1, 0.5, -0.5, 1.0, -1.0, g.value * 0.01]
+         FROM generate_series(0, {}) AS g(value)",
+        rows - 1
+    );
+    ctx.sql(&insert_sql).await.unwrap().collect().await.unwrap();
+    client
+}
+
+/// Drop a test table and its data directory.
+async fn cleanup_vector_table(client: &MetaDataClient, table: &str) {
+    let _ = client.drop_table(table, "default").await;
+    let _ = std::fs::remove_dir_all(
+        std::env::current_dir().unwrap().join("default").join(table),
+    );
+}
+
+type QueryResult = (Arc<Vec<FieldInfo>>, Vec<Vec<Option<String>>>);
+
+/// Decode a text-format `DataRow`: one `i32` length per cell, `-1` for NULL.
+fn decode_text_row(row: &DataRow) -> Vec<Option<String>> {
+    let mut cells = Vec::new();
+    let mut offset = 0usize;
+    while offset + 4 <= row.data.len() {
+        let length = i32::from_be_bytes(row.data[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        if length < 0 {
+            cells.push(None);
+            continue;
+        }
+        let length = length as usize;
+        cells.push(Some(
+            String::from_utf8_lossy(&row.data[offset..offset + length]).to_string(),
+        ));
+        offset += length;
+    }
+    cells
+}
+
+/// Run one statement through the router and collect the text rows of every
+/// query response, with each response's row description.
+async fn run_query(
+    router: &LakeSoulQueryRouter,
+    client: &mut MockClient,
+    sql: &str,
+) -> Vec<QueryResult> {
+    let responses =
+        <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(router, client, sql)
+            .await
+            .unwrap_or_else(|error| panic!("query failed: {error}\nsql: {sql}"));
+    let mut results = Vec::new();
+    for response in responses {
+        if let Response::Query(mut query) = response {
+            let mut rows = Vec::new();
+            while let Some(row) = query.data_rows.next().await {
+                rows.push(decode_text_row(&row.expect("row")));
+            }
+            results.push((query.row_schema, rows));
+        }
+    }
+    results
+}
+
+/// The first column of every row, in order.
+fn first_column(results: &[QueryResult]) -> Vec<Option<String>> {
+    results
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().map(|row| row[0].clone()))
+        .collect()
+}
+
+/// The concatenated text of an `EXPLAIN` (every column: the plan type and
+/// the plan itself).
+fn explain_text(results: &[QueryResult]) -> String {
+    results
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .flat_map(|row| row.iter().flatten().cloned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn as_f64(cell: &Option<String>) -> f64 {
+    cell.as_deref().expect("value").parse().expect("number")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pgvector_distance_operators_use_the_vector_index() {
+    let table = "pgvector_ops";
+    let meta = setup_vector_table(table, 50).await;
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    let query = generated_vector(7);
+    let literal = vector_text(&query);
+
+    // `<->` is the Euclidean distance: the distance of the row it points at
+    // is zero, and the indexed top-k matches the exact top-k.
+    let sql = format!("SELECT vec <-> '{literal}' FROM {table} WHERE id = 7");
+    let rows = run_query(&router, &mut client, &sql).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1.len(), 1, "{rows:?}");
+    assert!(as_f64(&rows[0].1[0][0]).abs() < 1e-5, "{rows:?}");
+
+    // The generated corpus is symmetric around row 7, so the top-k assertion
+    // uses a perturbed query with well-separated distances.
+    let probe = perturbed_query();
+    let probe_text = vector_text(&probe);
+    let sql = format!("SELECT id FROM {table} ORDER BY vec <-> '{probe_text}' LIMIT 3");
+    let ids: Vec<i64> = first_column(&run_query(&router, &mut client, &sql).await)
+        .iter()
+        .map(|cell| as_f64(cell) as i64)
+        .collect();
+    assert_eq!(ids, exact_top_k(&probe, 3, 50));
+
+    // `<#>` is the *negative* inner product; `<=>` is the cosine distance.
+    let unit = [1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let unit_text = vector_text(&unit);
+    let stored = generated_vector(7);
+    let rows = run_query(
+        &router,
+        &mut client,
+        &format!("SELECT vec <#> '{unit_text}' FROM {table} WHERE id = 7"),
+    )
+    .await;
+    let expected = -(stored[0] as f64);
+    assert!(
+        (as_f64(&rows[0].1[0][0]) - expected).abs() < 1e-5,
+        "{rows:?}"
+    );
+
+    let rows = run_query(
+        &router,
+        &mut client,
+        &format!("SELECT vec <=> '{unit_text}' FROM {table} WHERE id = 7"),
+    )
+    .await;
+    let expected = 1.0 - stored[0] as f64 / vector_norm(&stored);
+    assert!(
+        (as_f64(&rows[0].1[0][0]) - expected).abs() < 1e-5,
+        "{rows:?}"
+    );
+
+    // The rewrite keeps the vector-index pushdown ...
+    let sql = format!("SELECT id FROM {table} ORDER BY vec <-> '{literal}' LIMIT 3");
+    let explain = explain_text(
+        &run_query(&router, &mut client, &format!("EXPLAIN VERBOSE {sql}")).await,
+    );
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+
+    // ... and the session option switches it to index-only ordering.
+    run_query(
+        &router,
+        &mut client,
+        "SET lakesoul_vector_search.rerank = 'index'",
+    )
+    .await;
+    let explain = explain_text(
+        &run_query(&router, &mut client, &format!("EXPLAIN VERBOSE {sql}")).await,
+    );
+    assert!(explain.contains("order_by=true"), "{explain}");
+    assert!(!explain.contains("SortExec"), "{explain}");
+
+    cleanup_vector_table(&meta, table).await;
+}
+
+/// Run one prepared statement with one pgvector parameter (declared the way
+/// a driver does: the vector OID in `Parse`, the text form in `Bind`) and
+/// return the rows it produced.
+async fn run_prepared_vector_query(
+    router: &LakeSoulQueryRouter,
+    client: &mut MockClient,
+    sql: &str,
+    parameter: &[f32],
+) -> Vec<Vec<Option<String>>> {
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        router,
+        client,
+        Parse::new(
+            None,
+            sql.to_string(),
+            vec![datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_TYPE_OID],
+        ),
+    )
+    .await
+    .expect("on_parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        router,
+        client,
+        Bind::new(
+            None,
+            None,
+            vec![0],
+            vec![Some(bytes::Bytes::from(
+                vector_text(parameter).into_bytes(),
+            ))],
+            vec![],
+        ),
+    )
+    .await
+    .expect("on_bind");
+    let before = client
+        .sent_messages()
+        .iter()
+        .filter(|message| matches!(message, PgWireBackendMessage::DataRow(_)))
+        .count();
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        router,
+        client,
+        Execute::new(None, 0),
+    )
+    .await
+    .expect("on_execute");
+    client
+        .sent_messages()
+        .iter()
+        .filter_map(|message| match message {
+            PgWireBackendMessage::DataRow(row) => Some(decode_text_row(row)),
+            _ => None,
+        })
+        .skip(before)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pgvector_prepared_parameter_binds_a_vector() {
+    let table = "pgvector_prepared";
+    let meta = setup_vector_table(table, 20).await;
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    let query = generated_vector(9);
+    let sql = format!("SELECT id FROM {table} ORDER BY vec <-> $1::vector(8) LIMIT 1");
+
+    // The parameter is reported as the pgvector type, so a driver knows to
+    // bind it with its vector adapter.
+    let parser = <LakeSoulQueryRouter as ExtendedQueryHandler>::query_parser(&router);
+    let statement = parser
+        .parse_sql(&client, &sql, &[])
+        .await
+        .expect("parse")
+        .expect("statement");
+    let types = parser.get_parameter_types(&statement).expect("types");
+    assert_eq!(types.len(), 1, "{types:?}");
+    assert_eq!(
+        types[0].oid(),
+        datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_TYPE_OID,
+        "{types:?}"
+    );
+
+    let rows = run_prepared_vector_query(&router, &mut client, &sql, &query).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(as_f64(&rows[0][0]) as i64, 9);
+
+    // The shape a driver sends when it relies on the server for the
+    // dimension: a bare `$1`, whose type and dimension come from the column
+    // on the other side of the operator.
+    let uncast = format!("SELECT id FROM {table} ORDER BY vec <-> $1 LIMIT 1");
+    let statement = parser
+        .parse_sql(&client, &uncast, &[])
+        .await
+        .expect("parse")
+        .expect("statement");
+    let types = parser.get_parameter_types(&statement).expect("types");
+    assert_eq!(
+        types[0].oid(),
+        datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_TYPE_OID,
+        "{types:?}"
+    );
+    let rows = run_prepared_vector_query(&router, &mut client, &uncast, &query).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(as_f64(&rows[0][0]) as i64, 9);
+
+    cleanup_vector_table(&meta, table).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pgvector_parameter_and_edge_cases() {
+    let table = "pgvector_edges";
+    let meta = setup_vector_table(table, 20).await;
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    // A `vector(n)` literal that disagrees with its own text is rejected
+    // instead of comparing only the shared prefix.
+    let outcome = <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(
+        &router,
+        &mut client,
+        &format!("SELECT vec <-> '[1,2]'::vector(8) FROM {table} WHERE id = 7"),
+    )
+    .await;
+    let message = format!("{outcome:?}");
+    assert!(
+        message.contains("does not match the declared dimension"),
+        "{message}"
+    );
+
+    // `NULL <-> vector` is NULL, not a type error.
+    let rows = run_query(
+        &router,
+        &mut client,
+        &format!("SELECT NULL <-> '[1,2,3,4,5,6,7,8]' FROM {table} WHERE id = 7"),
+    )
+    .await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1[0][0], None, "{rows:?}");
+
+    // A malformed literal keeps the upstream error.
+    let outcome = <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(
+        &router,
+        &mut client,
+        &format!("SELECT vec <-> 'oops' FROM {table} WHERE id = 7"),
+    )
+    .await;
+    assert!(outcome.is_err(), "{outcome:?}");
+
+    cleanup_vector_table(&meta, table).await;
 }
