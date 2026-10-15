@@ -497,3 +497,128 @@ async fn drop_partition(runtime: &IvmRuntime, source: &IvmTable, needle: &str) {
         .await
         .unwrap();
 }
+
+/// Two range-partitioned sources joined on their partition column: changing
+/// one partition of each recomputes exactly those partitions.
+#[test_log::test(tokio::test)]
+async fn two_partitioned_sources_prune_to_the_union_of_changed_partitions() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_two_a_{suffix}"),
+                table_path(&dir, "a"),
+                fact_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let other = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_two_b_{suffix}"),
+                table_path(&dir, "b"),
+                fact_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let select = format!(
+        "SELECT a.day, SUM(a.price + b.price) AS s FROM ivm_two_a_{suffix} a \
+         JOIN ivm_two_b_{suffix} b ON b.k = a.k AND b.day = a.day GROUP BY a.day"
+    );
+    let mv_schema = fallback_mv_schema(&runtime, &select, &[&fact, &other]).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_two_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                mv_schema,
+            )
+            .with_primary_keys(vec!["day".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!("INSERT INTO ivm_two_mv_{suffix} {select}");
+    let rows = [
+        (1, "d1", 1000, "insert"),
+        (2, "d2", 2000, "insert"),
+        (3, "d3", 3000, "insert"),
+    ];
+    fact.append_batch(executor.runtime().client(), fact_batch(&rows))
+        .await
+        .unwrap();
+    other
+        .append_batch(executor.runtime().client(), fact_batch(&rows))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "fallback");
+    let runtime = executor.runtime();
+    let reason = runtime
+        .metadata()
+        .list_views()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|view| view.view_id == mv.table_id)
+        .and_then(|view| view.fallback_reason)
+        .unwrap_or_default();
+    assert!(reason.contains("partition pruning: eligible"), "{reason}");
+    assert_eq!(
+        read_day_sums(runtime, &mv).await,
+        vec![
+            ("d1".to_string(), "20.00".to_string()),
+            ("d2".to_string(), "40.00".to_string()),
+            ("d3".to_string(), "60.00".to_string()),
+        ]
+    );
+    let before = read_versions(runtime, &mv).await;
+    assert_eq!(before.len(), 3);
+
+    // One partition changes in each source: the union is recomputed and the
+    // third partition stays untouched.
+    fact.append_batch(runtime.client(), fact_batch(&[(1, "d1", 1500, "insert")]))
+        .await
+        .unwrap();
+    other
+        .append_batch(runtime.client(), fact_batch(&[(2, "d2", 2500, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "fallback");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_day_sums(runtime, &mv).await,
+        vec![
+            ("d1".to_string(), "25.00".to_string()),
+            ("d2".to_string(), "45.00".to_string()),
+            ("d3".to_string(), "60.00".to_string()),
+        ]
+    );
+    let after = read_versions(runtime, &mv).await;
+    for (desc, version) in &after {
+        if desc.contains("d3") {
+            assert_eq!(
+                *version, before[desc],
+                "partition {desc} must stay untouched"
+            );
+        } else {
+            assert!(
+                *version > before[desc],
+                "partition {desc} must be rewritten"
+            );
+        }
+    }
+}

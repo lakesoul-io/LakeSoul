@@ -641,11 +641,14 @@ impl IvmSqlExecutor {
                 if !derived.is_empty() {
                     self.drop_stale_derived(&mv, 0).await?;
                 }
-                let source_ids = tables
+                // The definition hash must not depend on the map's iteration
+                // order: the source set is a set.
+                let mut source_ids = tables
                     .values()
                     .filter(|table| !derived.contains(&table.table_id))
                     .map(|table| table.table_id.clone())
-                    .collect();
+                    .collect::<Vec<_>>();
+                source_ids.sort();
                 // Whether a refresh can recompute single partitions is a
                 // property of the statement; record the decision (and why not)
                 // with the shape rejection.

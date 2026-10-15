@@ -3787,6 +3787,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   中间的组迁移同时复查了 §10.145 的 delete-before-insert 排序约定。
 - 至此 §10.141/§10.142 的嵌套主键收尾全部闭合（pair 步骤见 §10.144，lookup 见本条）。
 
+### 10.150 Tier-2 按变化分区重算（4）：多分区源与丢弃分区重算
+
+- **多分区源**：`PartitionScope` 由单一 `source_table_id` 改为 `source_table_ids`——允许多个 range 分区源，
+  前提是它们与 MV 的分区列同名同集合；未分区源仍不得含同名列（否则输出分区值可能来自别处）。
+- **判定补充**：当 join 两侧**都**读分区源时，必须对**每个**分区列存在等值条件（查 `join.on` 与 join 的
+  `filter`——规划器在优化前把等值条件放在 filter 里，两处都要看），否则两侧同受变化集限制会丢掉跨分区匹配；
+  保留侧规则改为「保留侧必须读**某个**分区源」（v1 的 `left_reads != preserved_left` 在两侧都读分区源时不再
+  成立）；血缘检查放宽为「join 任一侧携带分区列即可」（等值保证两侧相等）。
+- **限制集**：`fallback_partition_restriction` 对每个分区源取变化分区的**并集**（任一 descriptor 解析失败即
+  回落全量）；未分区源有变化仍回落全量。
+- **丢弃分区改为重算**：多源下删掉源 A 的分区 p 不代表输出分区 p 为空（B 仍有 p 的行），于是
+  `cleanup_dropped_fallback_partitions` 从「只删除」改为按该限制集**重算**受影响分区（读剩余源、写
+  delete+insert、游标照旧推进到删除版本）。单源语义不变。
+- **顺带修复（本用例暴露的真实缺陷）**：fallback 探针的 `tables` 直接来自 `HashMap` 迭代 → **定义哈希随迭代
+  顺序变化** → 多源视图第二次执行会随机判为「定义已变」而走整表重建（单源恰好看不出来）。现在 `source_ids`
+  排序后再入 spec；e2e 连跑 5 次稳定。
+- **测试**：单测新增「两分区源按分区列等值连接 → 可裁剪」「缺等值 → 拒绝（`a join between partitioned sources
+  that does not equate [day]`）」「RIGHT JOIN 的保留侧为分区源 → 可裁剪」；e2e 新增
+  `tests/fallback_partitions.rs::two_partitioned_sources_prune_to_the_union_of_changed_partitions`——两个
+  分区源各改**不同**分区，断言结果正确且**第三个分区版本不变**。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

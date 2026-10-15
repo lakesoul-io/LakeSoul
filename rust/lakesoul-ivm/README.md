@@ -502,11 +502,13 @@ that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
   the metrics; `list_views` marks the view and carries the rejection reason).
   A fallback refresh first collects the change windows of every source: when
   none changed it is a no-op, otherwise the statement runs against the current
-  state and the result is written in one epoch.  When the view's one
-  range-partitioned source is the only one that changed and the statement is
-  **partition local** (the executor records that decision with the view), only
-  the changed partitions are recomputed: their rows are retracted and
-  rewritten, and every other partition keeps its rows and versions.  Any other
+  state and the result is written in one epoch.  When only range-partitioned
+  sources changed and the statement is **partition local** (the executor
+  records that decision with the view; several partitioned sources are fine
+  when they are partitioned by the same columns and every join between them
+  equates those columns), only the changed partitions are recomputed: their
+  rows are retracted and rewritten, and every other partition keeps its rows
+  and versions.  Any other
   case — a change in an unpartitioned source, a global operator such as
   `LIMIT`, a view without a primary key — recomputes the whole view, which
   truncates the MV before writing.  The

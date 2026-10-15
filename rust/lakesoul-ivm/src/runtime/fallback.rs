@@ -23,6 +23,8 @@ use crate::metadata::StateRole;
 use crate::sql::{plan_label, resolve_table};
 use datafusion::common::TableReference;
 use datafusion::logical_expr::Distinct;
+use datafusion::logical_expr::Join;
+use datafusion::logical_expr::Operator;
 
 /// A [`ViewSpec::Fallback`] view with its tables opened.
 #[derive(Debug, Clone)]
@@ -67,8 +69,9 @@ impl FallbackView {
 /// changed partitions a refresh recomputes on their own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionScope {
-    /// The partitioned source table id.
-    pub source_table_id: String,
+    /// The range-partitioned source table ids (all partitioned by the same
+    /// columns).
+    pub source_table_ids: Vec<String>,
     /// The partition columns (the materialized view's own).
     pub columns: Vec<String>,
 }
@@ -113,31 +116,29 @@ pub(crate) fn fallback_partition_scope(
     if partitions.is_empty() {
         return denied("the materialized view is not range partitioned".to_string());
     }
-    let mut partitioned = tables
+    let sources = tables
         .values()
-        .filter(|table| !table.range_partition_columns.is_empty());
-    let Some(source) = partitioned.next() else {
+        .filter(|table| !table.range_partition_columns.is_empty())
+        .collect::<Vec<_>>();
+    if sources.is_empty() {
         return denied("no source is range partitioned".to_string());
-    };
-    if let Some(other) = partitioned.next() {
-        return denied(format!(
-            "several sources are range partitioned ({}, {})",
-            source.table_name, other.table_name
-        ));
     }
-    if source.range_partition_columns.len() != partitions.len()
-        || !partitions
-            .iter()
-            .all(|column| source.range_partition_columns.contains(column))
-    {
-        return denied(format!(
-            "the source is partitioned by [{}] and the view by [{}]",
-            source.range_partition_columns.join(", "),
-            partitions.join(", ")
-        ));
+    for source in &sources {
+        if source.range_partition_columns.len() != partitions.len()
+            || !partitions
+                .iter()
+                .all(|column| source.range_partition_columns.contains(column))
+        {
+            return denied(format!(
+                "the source {} is partitioned by [{}] and the view by [{}]",
+                source.table_name,
+                source.range_partition_columns.join(", "),
+                partitions.join(", ")
+            ));
+        }
     }
     for table in tables.values() {
-        if table.table_id == source.table_id {
+        if !table.range_partition_columns.is_empty() {
             continue;
         }
         if let Some(column) = partitions
@@ -150,25 +151,31 @@ pub(crate) fn fallback_partition_scope(
             ));
         }
     }
+    let source_ids = sources
+        .iter()
+        .map(|table| table.table_id.clone())
+        .collect::<Vec<_>>();
     let context = PartitionContext {
         tables,
-        source_table_id: &source.table_id,
+        source_table_ids: &source_ids,
         partitions,
     };
-    let mut scans = 0usize;
+    let mut scans: HashMap<String, usize> = HashMap::new();
     let walked = plan.apply_with_subqueries(|node| {
         if let LogicalPlan::TableScan(scan) = node
-            && context.owns(&scan.table_name)
+            && let Some(table_id) = context.partitioned_id(&scan.table_name)
         {
-            scans += 1;
+            *scans.entry(table_id.to_string()).or_insert(0) += 1;
         }
         Ok(TreeNodeRecursion::Continue)
     });
     if walked.is_err() {
         return denied("the plan cannot be walked".to_string());
     }
-    if scans != 1 {
-        return denied(format!("the partitioned source is read {scans} times"));
+    if let Some((table_id, count)) = scans.iter().find(|(_, count)| **count != 1) {
+        return denied(format!(
+            "the partitioned source {table_id} is read {count} times"
+        ));
     }
     if let Err(cause) =
         partition_preserved(plan, &context).and_then(|()| partition_local(plan, &context))
@@ -177,7 +184,7 @@ pub(crate) fn fallback_partition_scope(
     }
     PartitionScopeAnalysis {
         scope: Some(PartitionScope {
-            source_table_id: source.table_id.clone(),
+            source_table_ids: source_ids,
             columns: partitions.clone(),
         }),
         note: format!(
@@ -187,22 +194,30 @@ pub(crate) fn fallback_partition_scope(
     }
 }
 
-/// The partitioned source and partition columns an analysis runs against.
+/// The partitioned sources and partition columns an analysis runs against.
 struct PartitionContext<'a> {
     tables: &'a HashMap<String, IvmTable>,
-    source_table_id: &'a str,
+    source_table_ids: &'a [String],
     partitions: &'a [String],
 }
 
-impl PartitionContext<'_> {
-    /// Whether a table reference is the partitioned source.
+impl<'a> PartitionContext<'a> {
+    /// The partitioned source a table reference names, when it is one.
+    fn partitioned_id(&self, name: &TableReference) -> Option<&'a str> {
+        let table = resolve_table(self.tables, name).ok()?;
+        self.source_table_ids
+            .iter()
+            .find(|table_id| *table_id == &table.table_id)
+            .map(String::as_str)
+    }
+
+    /// Whether a table reference is one of the partitioned sources.
     fn owns(&self, name: &TableReference) -> bool {
-        resolve_table(self.tables, name)
-            .is_ok_and(|table| table.table_id == self.source_table_id)
+        self.partitioned_id(name).is_some()
     }
 
     /// Whether `plan` reads the partitioned source (subqueries included).
-    fn reads_source(&self, plan: &LogicalPlan) -> bool {
+    fn reads_partitioned(&self, plan: &LogicalPlan) -> bool {
         let mut found = false;
         let _ = plan.apply_with_subqueries(|node| {
             if let LogicalPlan::TableScan(scan) = node
@@ -284,9 +299,10 @@ fn carries_partition_column(
             carries_partition_column(&on.input, column, context)
         }
         LogicalPlan::Join(join) => {
-            let left = carries_partition_column(&join.left, column, context);
-            let right = carries_partition_column(&join.right, column, context);
-            left ^ right
+            // Both sides may carry the column: the join has to equate them
+            // (see `partition_local`), so either side's value is the partition.
+            carries_partition_column(&join.left, column, context)
+                || carries_partition_column(&join.right, column, context)
         }
         LogicalPlan::Union(union) => union
             .inputs
@@ -294,6 +310,34 @@ fn carries_partition_column(
             .all(|input| carries_partition_column(input, column, context)),
         _ => false,
     }
+}
+
+/// Whether `join` equates `column` between its two sides: an equality pair in
+/// `on`, or an `=` between the two sides in the join's filter (the planner may
+/// keep the conditions there until the optimizer splits them).
+fn join_equates(join: &Join, column: &str) -> bool {
+    let pair = |left: &Expr, right: &Expr| {
+        plain_column(left).as_deref() == Some(column)
+            && plain_column(right).as_deref() == Some(column)
+    };
+    if join.on.iter().any(|(left, right)| pair(left, right)) {
+        return true;
+    }
+    let Some(filter) = &join.filter else {
+        return false;
+    };
+    let mut found = false;
+    let _ = filter.apply(|expr| {
+        if let Expr::BinaryExpr(binary) = expr
+            && binary.op == Operator::Eq
+            && pair(&binary.left, &binary.right)
+        {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
 }
 
 /// The plain column an expression selects, unaliased.
@@ -310,7 +354,7 @@ fn partition_local(
     plan: &LogicalPlan,
     context: &PartitionContext<'_>,
 ) -> Result<(), String> {
-    let reads_source = context.reads_source(plan);
+    let reads_partitioned = context.reads_partitioned(plan);
     match plan {
         LogicalPlan::TableScan(_)
         | LogicalPlan::EmptyRelation(_)
@@ -326,7 +370,7 @@ fn partition_local(
             .try_for_each(|input| partition_local(input, context)),
         LogicalPlan::Distinct(Distinct::All(input)) => partition_local(input, context),
         LogicalPlan::Distinct(Distinct::On(on)) => {
-            if reads_source {
+            if reads_partitioned {
                 for column in context.partitions {
                     if !on
                         .on_expr
@@ -343,13 +387,13 @@ fn partition_local(
             partition_local(&on.input, context)
         }
         LogicalPlan::Limit(limit) => {
-            if reads_source && limit.fetch.is_some() {
+            if reads_partitioned && limit.fetch.is_some() {
                 return Err("a global LIMIT".to_string());
             }
             partition_local(&limit.input, context)
         }
         LogicalPlan::Aggregate(aggregate) => {
-            if reads_source {
+            if reads_partitioned {
                 if aggregate
                     .group_expr
                     .iter()
@@ -373,7 +417,7 @@ fn partition_local(
             partition_local(&aggregate.input, context)
         }
         LogicalPlan::Window(window) => {
-            if reads_source {
+            if reads_partitioned {
                 for expr in &window.window_expr {
                     let Expr::WindowFunction(function) = expr else {
                         return Err(
@@ -407,14 +451,36 @@ fn partition_local(
                 | JoinType::RightAnti
                 | JoinType::RightMark => Some(false),
             };
-            if let Some(preserved_left) = preserved_left
-                && reads_source
-                && context.reads_source(&join.left) != preserved_left
-            {
-                return Err(
-                    "an outer join whose preserved side does not read the partitioned source"
-                        .to_string(),
-                );
+            let left_reads = context.reads_partitioned(&join.left);
+            let right_reads = context.reads_partitioned(&join.right);
+            if let Some(preserved_left) = preserved_left {
+                // The preserved side must carry a partitioned source: its rows
+                // produce output rows, and an unpartitioned preserved side can
+                // pair with any partition.
+                let preserves_partitioned = if preserved_left {
+                    left_reads
+                } else {
+                    right_reads
+                };
+                if reads_partitioned && !preserves_partitioned {
+                    return Err(
+                        "an outer join whose preserved side does not read a partitioned source"
+                            .to_string(),
+                    );
+                }
+            }
+            // Two partitioned sides are both restricted to the recomputed
+            // partitions, so the join must equate their partition columns:
+            // otherwise matches into another partition would be dropped.
+            if left_reads && right_reads {
+                for column in context.partitions {
+                    if !join_equates(join, column) {
+                        return Err(format!(
+                            "a join between partitioned sources that does not equate [{}]",
+                            context.partitions.join(", ")
+                        ));
+                    }
+                }
             }
             for input in plan.inputs() {
                 partition_local(input, context)?;
@@ -422,11 +488,11 @@ fn partition_local(
             Ok(())
         }
         LogicalPlan::Union(union) => {
-            if reads_source {
+            if reads_partitioned {
                 for input in &union.inputs {
-                    if !context.reads_source(input) {
+                    if !context.reads_partitioned(input) {
                         return Err(
-                            "a UNION branch that does not read the partitioned source"
+                            "a UNION branch that does not read a partitioned source"
                                 .to_string(),
                         );
                     }
@@ -438,7 +504,7 @@ fn partition_local(
             Ok(())
         }
         other => {
-            if reads_source {
+            if reads_partitioned {
                 Err(format!("the statement uses {}", plan_label(other)))
             } else {
                 Ok(())
@@ -533,18 +599,14 @@ impl IvmRuntime {
         if view.mv.primary_keys.is_empty() || windows.len() != view.tables.len() {
             return None;
         }
-        let source = view
-            .tables
-            .iter()
-            .find(|table| table.table_id == scope.source_table_id)?;
         let mut restriction = scope
             .columns
             .iter()
             .map(|column| (column.clone(), Vec::new()))
-            .collect::<Vec<_>>();
+            .collect::<PartitionRestriction>();
         let mut partitions = Vec::new();
         for (table, window) in view.tables.iter().zip(windows) {
-            if table.table_id != scope.source_table_id {
+            if !scope.source_table_ids.contains(&table.table_id) {
                 // An unpartitioned source can contribute to every partition.
                 if !window.added_files.is_empty() {
                     return None;
@@ -554,13 +616,13 @@ impl IvmRuntime {
             for files in &window.added_files {
                 let values = parse_partition_values(
                     &files.partition_desc,
-                    &source.range_partition_columns,
+                    &table.range_partition_columns,
                 )?;
                 if !partitions.contains(&files.partition_desc) {
                     partitions.push(files.partition_desc.clone());
                 }
                 for (column, allowed) in restriction.iter_mut() {
-                    let index = source
+                    let index = table
                         .range_partition_columns
                         .iter()
                         .position(|candidate| candidate == column)?;
@@ -723,10 +785,11 @@ impl IvmRuntime {
     }
 
     /// Remove the rows a dropped source partition contributed to a partition
-    /// local fallback view: the view's partition values are the source's own,
-    /// so the rows of that partition are retracted and the cursors advance
-    /// past the deletion (a partition recreated later starts above it, and its
-    /// refresh then recomputes just that partition).
+    /// local fallback view: the view's partition values are the sources' own,
+    /// so the rows of those partitions are recomputed from the remaining
+    /// sources (the dropped partition may not be their only contributor) and
+    /// the cursors advance past the deletion - a partition recreated later
+    /// starts above it, and its refresh then recomputes just that partition.
     pub(crate) async fn cleanup_dropped_fallback_partitions(
         &self,
         view: &FallbackView,
@@ -736,14 +799,14 @@ impl IvmRuntime {
             return Ok(None);
         };
         if view.mv.primary_keys.is_empty()
-            || dropped.source_table_id != scope.source_table_id
+            || !scope.source_table_ids.contains(&dropped.source_table_id)
         {
             return Ok(None);
         }
         let Some(source) = view
             .tables
             .iter()
-            .find(|table| table.table_id == scope.source_table_id)
+            .find(|table| table.table_id == dropped.source_table_id)
         else {
             return Ok(None);
         };
@@ -802,25 +865,15 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let current = view
-            .mv
-            .read_current_filtered_partitions(&self.client, Vec::new(), &restriction)
-            .await?;
-        let mut commit_ids = Vec::new();
-        if !current.is_empty() {
-            let context = SessionContext::new();
-            register_table(&context, "mv", current, &view.mv.schema)?;
-            for batch in context
-                .sql(&fallback_partition_delete_sql(view, epoch))
-                .await?
-                .collect()
-                .await?
-            {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-                }
-            }
-        }
+        // Another partitioned source may still hold these partitions, so they
+        // are recomputed from the remaining sources rather than only retracted.
+        let Some(commit_ids) = self
+            .recompute_fallback_partitions(view, &restriction, epoch)
+            .await?
+        else {
+            return Ok(None);
+        };
+        crate::observability::record_fallback_partitions(dropped.partitions.len() as u64);
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -1203,7 +1256,7 @@ mod partition_scope_tests {
 
         let sources = vec![
             table("fact", fact_schema(), &["day"]),
-            table("fact2", fact_schema(), &["day"]),
+            table("other", fact_schema(), &["x"]),
         ];
         let analysis = scope(
             "select fact.k, fact.v, fact.day from fact",
@@ -1212,11 +1265,7 @@ mod partition_scope_tests {
         )
         .await;
         assert!(analysis.scope.is_none());
-        assert!(
-            analysis
-                .note
-                .contains("several sources are range partitioned")
-        );
+        assert!(analysis.note.contains("is partitioned by [x]"));
 
         let sources = vec![
             table("fact", fact_schema(), &["day"]),
@@ -1226,6 +1275,49 @@ mod partition_scope_tests {
             scope("select fact.k, fact.v, fact.day from fact", &[], sources).await;
         assert!(analysis.scope.is_none());
         assert!(analysis.note.contains("not range partitioned"));
+    }
+
+    #[tokio::test]
+    async fn partitioned_sources_joined_on_the_partition_column_are_scoped() {
+        let sources = || {
+            vec![
+                table("fact", fact_schema(), &["day"]),
+                table("other", fact_schema(), &["day"]),
+            ]
+        };
+        // The join must equate the partition columns: both sides are
+        // restricted to the recomputed partitions.
+        let analysis = scope(
+            "select fact.k, other.v, fact.day from fact \
+             join other on other.k = fact.k and other.day = fact.day",
+            &["day"],
+            sources(),
+        )
+        .await;
+        assert!(analysis.scope.is_some(), "{}", analysis.note);
+
+        let analysis = scope(
+            "select fact.k, other.v, fact.day from fact join other on other.k = fact.k",
+            &["day"],
+            sources(),
+        )
+        .await;
+        assert!(analysis.scope.is_none(), "{}", analysis.note);
+        assert!(
+            analysis.note.contains(
+                "a join between partitioned sources that does not equate [day]"
+            )
+        );
+
+        // An outer join still keeps a partitioned source on its preserved side.
+        let analysis = scope(
+            "select fact.k, other.v, fact.day from other \
+             right join fact on other.k = fact.k and other.day = fact.day",
+            &["day"],
+            sources(),
+        )
+        .await;
+        assert!(analysis.scope.is_some(), "{}", analysis.note);
     }
 
     #[test]
