@@ -156,11 +156,8 @@ async fn a_rejected_shape_falls_back_to_a_full_recompute() {
     let fact = create_source(&runtime, &dir, &format!("ivm_fb1_f_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
-    // `LIMIT ... OFFSET` is not maintained incrementally.
-    let select = format!(
-        "SELECT k, g, v FROM {} ORDER BY k LIMIT 2 OFFSET 1",
-        fact.table_name
-    );
+    // `LIMIT` without `ORDER BY` is not maintained incrementally.
+    let select = format!("SELECT k, g, v FROM {} LIMIT 3", fact.table_name);
     let mv = runtime
         .create_table(
             IvmTableOptions::new(
@@ -200,14 +197,20 @@ async fn a_rejected_shape_falls_back_to_a_full_recompute() {
     assert!(
         info.fallback_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("OFFSET"))
+            .is_some_and(|reason| reason.contains("ORDER BY"))
     );
+    // The script keeps the source at or below the limit, so the recomputed
+    // result is the whole source.
     assert_eq!(
         read_rows(runtime, &mv).await,
-        vec![(2, "b".to_string(), 20), (3, "c".to_string(), 30)]
+        vec![
+            (1, "a".to_string(), 10),
+            (2, "b".to_string(), 20),
+            (3, "c".to_string(), 30)
+        ]
     );
 
-    // Deleting a row shifts the window.
+    // Deleting a row recomputes the whole view again.
     fact.append_batch(runtime.client(), source_batch(&[(2, "b", 20, "delete")]))
         .await
         .unwrap();
@@ -215,17 +218,21 @@ async fn a_rejected_shape_falls_back_to_a_full_recompute() {
     assert_eq!(execution.action.label(), "fallback");
     assert_eq!(
         read_rows(runtime, &mv).await,
-        vec![(3, "c".to_string(), 30)]
+        vec![(1, "a".to_string(), 10), (3, "c".to_string(), 30)]
     );
 
-    // A new low key shifts it back.
+    // A new low key joins it.
     fact.append_batch(runtime.client(), source_batch(&[(0, "z", 1, "insert")]))
         .await
         .unwrap();
     executor.execute(&statement).await.unwrap();
     assert_eq!(
         read_rows(runtime, &mv).await,
-        vec![(1, "a".to_string(), 10), (3, "c".to_string(), 30)]
+        vec![
+            (0, "z".to_string(), 1),
+            (1, "a".to_string(), 10),
+            (3, "c".to_string(), 30)
+        ]
     );
 
     // No source change: the refresh is a no-op and reports no epoch.
@@ -234,7 +241,11 @@ async fn a_rejected_shape_falls_back_to_a_full_recompute() {
     assert_eq!(execution.epoch, None);
     assert_eq!(
         read_rows(runtime, &mv).await,
-        vec![(1, "a".to_string(), 10), (3, "c".to_string(), 30)]
+        vec![
+            (0, "z".to_string(), 1),
+            (1, "a".to_string(), 10),
+            (3, "c".to_string(), 30)
+        ]
     );
 }
 
@@ -247,10 +258,9 @@ async fn an_append_only_fallback_mv_keeps_repeated_rows() {
     let fact = create_source(&runtime, &dir, &format!("ivm_fb2_f_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
-    let select = format!(
-        "SELECT g, v FROM {} ORDER BY k LIMIT 3 OFFSET 1",
-        fact.table_name
-    );
+    // `LIMIT` without `ORDER BY` stays Tier-2; the script keeps at most three
+    // rows, so the recompute is exact.
+    let select = format!("SELECT g, v FROM {} LIMIT 3", fact.table_name);
     // No primary keys: the full rewrite may repeat rows.
     let mv = runtime
         .create_table(IvmTableOptions::new(
@@ -291,8 +301,8 @@ async fn an_append_only_fallback_mv_keeps_repeated_rows() {
         .downcast_ref::<Int64Array>()
         .unwrap()
         .value(0);
-    // Both `a` rows survive the rewrite.
-    assert_eq!(count, 2);
+    // Every row survives the rewrite, the repeated `g` included.
+    assert_eq!(count, 3);
 }
 
 #[test_log::test(tokio::test)]
@@ -304,10 +314,7 @@ async fn a_keyed_fallback_result_must_be_unique() {
     let fact = create_source(&runtime, &dir, &format!("ivm_fb3_f_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
-    let select = format!(
-        "SELECT g, v FROM {} ORDER BY k LIMIT 3 OFFSET 1",
-        fact.table_name
-    );
+    let select = format!("SELECT g, v FROM {} LIMIT 3", fact.table_name);
     let mv = runtime
         .create_table(
             IvmTableOptions::new(
@@ -347,10 +354,7 @@ async fn the_fallback_switch_restores_the_explicit_rejection() {
     let fact = create_source(&runtime, &dir, &format!("ivm_fb4_f_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
-    let select = format!(
-        "SELECT k, g, v FROM {} ORDER BY k LIMIT 2 OFFSET 1",
-        fact.table_name
-    );
+    let select = format!("SELECT k, g, v FROM {} LIMIT 3", fact.table_name);
     let mv = runtime
         .create_table(
             IvmTableOptions::new(
@@ -421,10 +425,7 @@ async fn an_incremental_view_cannot_read_a_fallback_view() {
     let fact = create_source(&runtime, &dir, &format!("ivm_fb6_f_{suffix}")).await;
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
-    let select = format!(
-        "SELECT k, g, v FROM {} ORDER BY k LIMIT 2 OFFSET 1",
-        fact.table_name
-    );
+    let select = format!("SELECT k, g, v FROM {} LIMIT 3", fact.table_name);
     let fallback_mv = runtime
         .create_table(
             IvmTableOptions::new(

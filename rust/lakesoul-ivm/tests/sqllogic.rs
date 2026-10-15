@@ -1003,8 +1003,8 @@ fn sqllogic_window_desc() {
 
 #[test]
 fn sqllogic_fallback() {
-    // `LIMIT ... OFFSET` is not maintained incrementally: the view is Tier-2
-    // and every statement reports the `fallback` action.  The MV is the
+    // `LIMIT` without `ORDER BY` is not maintained incrementally: the view is
+    // Tier-2 and every statement reports the `fallback` action.  The MV is the
     // statement's output plus the row kind and epoch columns.
     let schema = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("k", DataType::Int64, false),
@@ -1570,6 +1570,16 @@ fn sqllogic_top_k_limit() {
     run_script_for_mv(
         "topklimit",
         include_str!("slt/top_k_limit.slt"),
+        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_top_k_offset() {
+    run_script_for_mv(
+        "topkoffset",
+        include_str!("slt/top_k_offset.slt"),
         top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
         group_keys(&["k"]),
     );

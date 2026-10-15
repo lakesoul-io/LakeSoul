@@ -77,6 +77,14 @@ struct Fixture {
 }
 
 async fn fixture(output_columns: Vec<String>, limit: i64) -> Fixture {
+    fixture_with_offset(output_columns, limit, 0).await
+}
+
+async fn fixture_with_offset(
+    output_columns: Vec<String>,
+    limit: i64,
+    offset: i64,
+) -> Fixture {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -112,7 +120,8 @@ async fn fixture(output_columns: Vec<String>, limit: i64) -> Fixture {
         vec!["ord".to_string()],
         limit,
     )
-    .with_output_columns(output_columns);
+    .with_output_columns(output_columns)
+    .with_offset(offset);
     Fixture {
         runtime,
         dir,
@@ -190,8 +199,9 @@ async fn full_top_k_rows(fixture: &Fixture) -> HashSet<(i64, String, i64, i64)> 
                select k, g, ord, amount, \
                       row_number() over (partition by g order by ord, k) as rn \
                from src where \"{CHANGE_COLUMN}\" <> 'delete' \
-             ) where rn <= {}",
-            fixture.view.limit
+             ) where rn > {} and rn <= {}",
+            fixture.view.offset,
+            fixture.view.offset + fixture.view.limit
         ))
         .await
         .unwrap();
@@ -582,4 +592,69 @@ async fn top_k_validation() {
     // An unknown filter/projection column is rejected by the schema helper.
     assert!(top_k_mv_schema_for(&source_schema(), &["missing".to_string()]).is_err());
     let _ = RowView::new(format!("unused_{suffix}"), source, mv);
+}
+
+/// A top-k window keeps `offset < rank <= offset + limit` per group and
+/// shifts as rows enter and leave the ordering.
+#[test_log::test(tokio::test)]
+async fn top_k_with_offset_shifts_the_window() {
+    let fixture = fixture_with_offset(
+        vec![
+            "k".to_string(),
+            "g".to_string(),
+            "ord".to_string(),
+            "amount".to_string(),
+        ],
+        2,
+        1,
+    )
+    .await;
+    let runtime = &fixture.runtime;
+    let _keep_dir = &fixture.dir;
+
+    fixture
+        .source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 1, 10, "insert"),
+                (2, "a", 2, 20, "insert"),
+                (3, "a", 3, 30, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(2, "a".to_string(), 2, 20), (3, "a".to_string(), 3, 30),])
+    );
+
+    // A row better than the window's first row pushes the previous first row
+    // into the window and the last one out.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 0, 40, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 1, 10), (2, "a".to_string(), 2, 20),])
+    );
+
+    // Removing it shifts the window back.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 0, 40, "delete")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(2, "a".to_string(), 2, 20), (3, "a".to_string(), 3, 30),])
+    );
 }

@@ -494,6 +494,8 @@ pub struct TopKView {
     pub output_columns: Vec<String>,
     /// How many rows to keep per group.
     pub limit: i64,
+    /// How many rows to skip before keeping them (a `LIMIT ... OFFSET`).
+    pub offset: i64,
     /// An optional filter applied before ranking.
     pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
@@ -519,6 +521,7 @@ impl TopKView {
             order_by: Vec::new(),
             output_columns: Vec::new(),
             limit,
+            offset: 0,
             filter: None,
             refresh_interval_ms: 0,
         }
@@ -538,6 +541,12 @@ impl TopKView {
         self
     }
 
+    /// Skip `offset` rows before keeping `limit` of them.
+    pub fn with_offset(mut self, offset: i64) -> Self {
+        self.offset = offset;
+        self
+    }
+
     /// Only rows matching `filter` are ranked.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
@@ -554,6 +563,7 @@ impl TopKView {
             order_by: self.order_by.clone(),
             output_columns: self.output_columns.clone(),
             limit: self.limit,
+            offset: self.offset,
             filter: self.filter.clone(),
         }
     }
@@ -1495,7 +1505,7 @@ fn top_k_refresh_sql(view: &TopKView, epoch: i64) -> String {
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
          inserts as (select {output}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from computed c \
-                     where c.{rank} <= {limit} \
+                     where c.{rank} > {offset} and c.{rank} <= {bound} \
                        and exists (select 1 from affected a where {group_match_computed}) \
                        and not exists (select 1 from already a where {pk_match_computed})), \
          deletes as (select {output}, 'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
@@ -1505,7 +1515,8 @@ fn top_k_refresh_sql(view: &TopKView, epoch: i64) -> String {
          order by {pks}, \"rowKinds\"",
         affected = top_k_affected_cte(view),
         computed = top_k_computed_cte(view, "src"),
-        limit = view.limit,
+        offset = view.offset,
+        bound = view.offset + view.limit,
     )
 }
 
@@ -1516,9 +1527,10 @@ fn top_k_rebuild_sql(view: &TopKView, epoch: i64) -> String {
     format!(
         "with {computed} \
          select {output}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
-         from computed where {rank} <= {limit}",
+         from computed where {rank} > {offset} and {rank} <= {bound}",
         computed = top_k_computed_cte(view, "src"),
-        limit = view.limit,
+        offset = view.offset,
+        bound = view.offset + view.limit,
     )
 }
 
@@ -1568,6 +1580,12 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
     if view.limit <= 0 {
         return Err(report!(
             "top-k view {} needs a positive limit",
+            view.view_id
+        ));
+    }
+    if view.offset < 0 {
+        return Err(report!(
+            "top-k view {} needs a non-negative offset",
             view.view_id
         ));
     }
