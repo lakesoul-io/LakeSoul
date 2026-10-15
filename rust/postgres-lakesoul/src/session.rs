@@ -256,6 +256,17 @@ impl PgSessionFactory {
         // After the upstream setup: the registry is keyed by name, so the shims
         // replace the narrower upstream signatures.
         crate::pg_compat::register_pg_catalog_shims(&context);
+        // pgvector syntax (`<->`, `<#>`, `<=>` and `'[...]'` literals).  The
+        // install rebuilds the state from the existing one, so the LakeSoul
+        // catalog, optimizer rules and config extensions stay in place; it
+        // must run after `setup_pg_catalog_with_options`, whose own planners
+        // it appends to.  The parameter planner goes first: planners are
+        // consulted in order and it only claims the operators whose
+        // parameters it annotates.
+        crate::pg_vector::install(&context)
+            .map_err(|error| report!("pgvector parameter planner: {error}"))?;
+        datafusion_postgres::pgvector::install(&context)
+            .map_err(|error| report!("pgvector install: {error}"))?;
         let session = Arc::new(PgSession::new(
             identity,
             context,
