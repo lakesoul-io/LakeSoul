@@ -1,0 +1,49 @@
+# A top-k whose select list omits the source primary key: a top-k row is
+# identified by it, so the view materializes it — the MV carries `k` as well.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert; k=4,g=b,v=1,op=insert; k=5,g=a,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v FROM __SRC__ ORDER BY v DESC LIMIT 2
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITI rowsort
+SELECT g, v, k FROM __MV__
+----
+a 10 1
+b 7 3
+
+# A new best row displaces the second one.
+statement ok
+/*ivm-append __SRC__: k=6,g=b,v=12,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v FROM __SRC__ ORDER BY v DESC LIMIT 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, v, k FROM __MV__
+----
+a 10 1
+b 12 6
+
+# Deleting the best row promotes the next one.
+statement ok
+/*ivm-append __SRC__: k=6,g=b,v=12,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, v FROM __SRC__ ORDER BY v DESC LIMIT 2
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITI rowsort
+SELECT g, v, k FROM __MV__
+----
+a 10 1
+b 7 3

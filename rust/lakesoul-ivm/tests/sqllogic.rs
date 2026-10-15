@@ -1026,7 +1026,12 @@ fn sqllogic_top_k_desc() {
     run_script_for_mv(
         "topkdesc",
         include_str!("slt/top_k_desc.slt"),
-        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
+        top_k_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["k"]),
+            &group_keys(&["k", "g", "v"]),
+        )
+        .unwrap(),
         group_keys(&["g", "k"]),
     );
 }
@@ -1560,7 +1565,12 @@ fn sqllogic_top_k_where() {
     run_script_for_mv(
         "topkwhere",
         include_str!("slt/top_k_where.slt"),
-        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "g", "v"])).unwrap(),
+        top_k_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["k"]),
+            &group_keys(&["k", "g", "v"]),
+        )
+        .unwrap(),
         group_keys(&["g", "k"]),
     );
 }
@@ -1570,7 +1580,27 @@ fn sqllogic_top_k_limit() {
     run_script_for_mv(
         "topklimit",
         include_str!("slt/top_k_limit.slt"),
-        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
+        top_k_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["k"]),
+            &group_keys(&["k", "v"]),
+        )
+        .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_top_k_pk_omitted() {
+    run_script_for_mv(
+        "topkpkomit",
+        include_str!("slt/top_k_pk_omitted.slt"),
+        top_k_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["k"]),
+            &group_keys(&["g", "v"]),
+        )
+        .unwrap(),
         group_keys(&["k"]),
     );
 }
@@ -1580,7 +1610,12 @@ fn sqllogic_top_k_offset() {
     run_script_for_mv(
         "topkoffset",
         include_str!("slt/top_k_offset.slt"),
-        top_k_mv_schema_for(&source_schema(), &group_keys(&["k", "v"])).unwrap(),
+        top_k_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["k"]),
+            &group_keys(&["k", "v"]),
+        )
+        .unwrap(),
         group_keys(&["k"]),
     );
 }

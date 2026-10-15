@@ -1846,10 +1846,10 @@ fn expected_mv_schema(
             source_table_id,
             output_columns,
             ..
-        } => top_k_mv_schema_for(
-            &find_table(tables, source_table_id)?.schema,
-            output_columns,
-        )?,
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            top_k_mv_schema_for(&source.schema, &source.primary_keys, output_columns)?
+        }
         ViewSpec::SemiAnti {
             left_table_id,
             output_columns,

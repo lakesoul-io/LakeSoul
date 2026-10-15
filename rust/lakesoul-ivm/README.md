@@ -73,7 +73,7 @@ used as row identities must be non-nullable.
 | STRING_AGG | `SELECT k, STRING_AGG(v, ',' ORDER BY o) FROM src GROUP BY k` | keys, `string_agg_<v>` or `string_agg_value`, kinds, epoch |
 | ARRAY_AGG | `SELECT k, ARRAY_AGG(v ORDER BY o) FROM src GROUP BY k` | keys, `array_agg_<v>` or `array_agg_value`, kinds, epoch |
 | Window | `SELECT k, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) FROM src` | partition keys, source primary keys, one column per function, kinds, epoch |
-| TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k`, or a global `SELECT ... FROM src ORDER BY o LIMIT k` / `LIMIT k OFFSET m` (the window is `m < rank <= m + k`; the ordering may be a scalar expression; boundary ties are broken by the source primary keys) | projected columns, kinds, epoch |
+| TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k`, or a global `SELECT ... FROM src ORDER BY o LIMIT k` / `LIMIT k OFFSET m` (the window is `m < rank <= m + k`; the ordering may be a scalar expression; boundary ties are broken by the source primary keys) | projected columns, the source primary keys a projection omits (the view identifies a row by them), kinds, epoch |
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only) | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
 | Multi-way join | inner `JOIN`s over three to sixteen sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
@@ -624,9 +624,8 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * a top-k outside the maintained subset: `LIMIT` without `ORDER BY` (the
   kept rows are arbitrary), a top-k over a window result (an inner join or
-  sum/count/avg aggregate source is materialized automatically), computed
-  select-list columns above the limit, and a select list that omits the
-  source primary keys (the top-k rows are identified by them);
+  sum/count/avg aggregate source is materialized automatically), and computed
+  select-list columns above the limit;
 * a decimal `SUM`/`AVG` whose precision leaves no headroom for the
   accumulator: DataFusion saturates the result type at 38 digits
   (`SUM(DECIMAL(p, s))` is `DECIMAL(min(38, p + 10), s)`) and wraps the

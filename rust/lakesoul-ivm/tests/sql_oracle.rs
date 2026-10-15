@@ -1048,6 +1048,7 @@ async fn oracle_top_k_desc_matches_full_recompute() {
         1,
         top_k_mv_schema_for(
             &source_schema(),
+            &["k".to_string()],
             &["k".to_string(), "g".to_string(), "v".to_string()],
         )
         .unwrap(),
@@ -1070,6 +1071,7 @@ async fn oracle_top_k_where_matches_full_recompute() {
         1,
         top_k_mv_schema_for(
             &source_schema(),
+            &["k".to_string()],
             &["k".to_string(), "g".to_string(), "v".to_string()],
         )
         .unwrap(),
@@ -1104,7 +1106,12 @@ async fn oracle_order_by_limit_matches_full_recompute() {
         schema.clone(),
         true,
         &seed,
-        top_k_mv_schema_for(&schema, &["k".to_string(), "v".to_string()]).unwrap(),
+        top_k_mv_schema_for(
+            &schema,
+            &["k".to_string()],
+            &["k".to_string(), "v".to_string()],
+        )
+        .unwrap(),
         vec!["k".to_string()],
         "SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 3",
         "SELECT k, v FROM (SELECT k, v, \
