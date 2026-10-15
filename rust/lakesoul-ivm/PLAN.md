@@ -3625,6 +3625,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 精确的残留边界（README 同步更正）：外连接/链**步骤**的行身份由两侧**主键** cast 成字符串生成，
   因此**嵌套主键**的源进入此类步骤仍不可用（连接键不受影响）。
 
+### 10.141 行身份的嵌套主键编码（ROADMAP §D 收尾）
+
+- **结构体主键字段级编码**：`encoded_identity_part(value, data_type)` 按类型递归——struct 逐字段编码
+  （每段自带长度前缀或 `n` 空标记，拼接仍无碰撞；字段访问用 DataFusion 的 `get_field`）；标量保持
+  `v<octets>:<text>`；`pair_identity_expr` 改为从两侧表取主键类型（`PairJoin` 携带两侧表）。
+- **干净拒绝**：`identity_type_supported` 递归判定——list/map/dictionary/union/null 主键不可编码；
+  `IvmRuntime::validate_identity_keys` 在**派生步骤创建前**校验（带 `UnsupportedShape` → 明确报错 + Tier-2 回退），
+  executor 在 `set_derived_identity_column` 前调用。列表主键的端到端拒绝用例已加。
+- **单元测试**：`runtime/joins.rs::identity_encoding_tests` 直接求值编码表达式——NULL 结构体 → `n`、
+  字段不同 → 编码不同，且 `("a","bc")` 与 `("ab","c")` 这类文本拼接会碰撞的取值**不碰撞**（长度前缀的作用）。
+- **已知残留（下一步）**：结构体主键的**完整端到端**（结构体主键源 → 外连接步骤 → 消费方）目前撞上左连接
+  写路径的两个独立 planner 边角：`?table?.g` 限定/非限定歧义；连接键与主键同列时投影重名（需 AS 别名）。
+  编码与拒绝已就绪，这两处属写路径的独立修复。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

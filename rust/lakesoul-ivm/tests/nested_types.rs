@@ -1707,3 +1707,221 @@ async fn a_join_on_a_list_key_matches_by_value() {
     }
     assert_eq!(rows, vec!["{p: 1}".to_string(), "{q: 2}".to_string()]);
 }
+
+/// The sources of the identity tests: the struct `s` and the list `l` are
+/// **non-nullable** so either can be a primary key (a row identity key must
+/// be non-null).
+fn pk_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("s", point_type(), false),
+        Field::new("l", list_type(), false),
+        Field::new("m", map_type(), true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+/// One `pk_schema()` row: `(k, g, s, l, m, op)`.
+type PkRow<'a> = (
+    i64,
+    &'a str,
+    (i64, Option<&'a str>),
+    Vec<i64>,
+    Option<Vec<(&'a str, Option<i64>)>>,
+    &'a str,
+);
+
+fn pk_batch(rows: &[PkRow<'_>]) -> RecordBatch {
+    let points = StructArray::new(
+        Fields::from(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, true),
+        ]),
+        vec![
+            Arc::new(Int64Array::from_iter_values(
+                rows.iter().map(|row| (row.2).0),
+            )) as ArrayRef,
+            Arc::new(StringArray::from_iter(rows.iter().map(|row| (row.2).1))),
+        ],
+        None,
+    );
+    let mut offsets = vec![0i32];
+    let mut values = Vec::new();
+    for row in rows {
+        values.extend(row.3.iter());
+        offsets.push(values.len() as i32);
+    }
+    let lists = ListArray::new(
+        Arc::new(Field::new("item", DataType::Int64, true)),
+        OffsetBuffer::new(ScalarBuffer::from(offsets)),
+        Arc::new(Int64Array::from_iter_values(values)),
+        None,
+    );
+    let mut offsets = vec![0i32];
+    let mut keys = Vec::new();
+    let mut map_values = Vec::new();
+    for row in rows {
+        for (key, value) in row.4.as_deref().unwrap_or_default() {
+            keys.push(*key);
+            map_values.push(*value);
+        }
+        offsets.push(keys.len() as i32);
+    }
+    let entries = StructArray::new(
+        Fields::from(vec![
+            Field::new("key", DataType::Utf8, false),
+            Field::new("value", DataType::Int64, true),
+        ]),
+        vec![
+            Arc::new(StringArray::from_iter_values(keys)) as ArrayRef,
+            Arc::new(Int64Array::from_iter(map_values)) as ArrayRef,
+        ],
+        None,
+    );
+    let maps = MapArray::new(
+        Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, true),
+            ])),
+            false,
+        )),
+        OffsetBuffer::new(ScalarBuffer::from(offsets)),
+        entries,
+        Some(NullBuffer::from_iter(
+            rows.iter().map(|row| row.4.is_some()),
+        )),
+        false,
+    );
+    RecordBatch::try_new(
+        pk_schema(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(points),
+            Arc::new(lists),
+            Arc::new(maps),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.5))),
+        ],
+    )
+    .unwrap()
+}
+
+/// The derived left-join step's schema over struct-primary-key sources: one
+/// payload per side, widened to the subquery's names, with the non-null row
+/// identity appended by the rewrite.
+fn struct_pk_step_schema() -> SchemaRef {
+    lakesoul_ivm::wide_left_join_view_schema_with_identity(
+        &source_schema(),
+        &source_schema(),
+        &["s".to_string()],
+        &["s".to_string()],
+        &["g".to_string()],
+        &[
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Left,
+                column: "k".to_string(),
+                name: "k".to_string(),
+            },
+            lakesoul_ivm::JoinOutputColumn {
+                side: lakesoul_ivm::JoinSide::Right,
+                column: "m".to_string(),
+                name: "m".to_string(),
+            },
+        ],
+    )
+    .unwrap()
+}
+
+/// A derived outer-join step over a source whose **primary key is a list**
+/// cannot encode its row identity: the step is rejected with a clear reason
+/// before it is created.
+#[test_log::test(tokio::test)]
+async fn a_list_primary_key_rejects_the_derived_identity() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lpk_l_{suffix}"),
+                table_path(&dir, "left"),
+                pk_schema(),
+            )
+            .with_primary_keys(vec!["l".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lpk_r_{suffix}"),
+                table_path(&dir, "right"),
+                pk_schema(),
+            )
+            .with_primary_keys(vec!["l".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lpk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::sum_count_groups_mv_schema_for(
+                    &struct_pk_step_schema(),
+                    &["k".to_string(), "m".to_string()],
+                    &[],
+                    None,
+                    None,
+                    false,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        pk_batch(&[(1, "a", (10, None), vec![1], None, "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            pk_batch(&[(1, "a", (70, None), vec![2], None, "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_lpk_mv_{suffix} SELECT x.k, x.m, COUNT(*) AS count_v \
+         FROM (SELECT b.k, c.m FROM ivm_lpk_l_{suffix} b \
+               LEFT JOIN ivm_lpk_r_{suffix} c ON c.g = b.g) x \
+               GROUP BY x.k, x.m"
+    );
+    let error = executor.execute(&statement).await.unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("cannot encode") && message.contains("primary key"),
+        "unexpected error: {message}"
+    );
+    // The rejection happens before the step or the target is registered.
+    assert!(
+        executor
+            .runtime()
+            .metadata()
+            .get_view_spec(&mv.table_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

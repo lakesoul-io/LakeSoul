@@ -3823,6 +3823,28 @@ impl IvmRuntime {
         Ok(Some(epoch))
     }
 
+    /// Validate that a derived outer-join spec can encode its row identity:
+    /// both sides' primary keys must be encodable (a struct recurses, a list
+    /// or map key is rejected before the step is created).
+    pub(crate) async fn validate_identity_keys(&self, spec: &ViewSpec) -> Result<()> {
+        let (left_table_id, right_table_id) = match spec {
+            ViewSpec::LeftJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            }
+            | ViewSpec::FullJoin {
+                left_table_id,
+                right_table_id,
+                ..
+            } => (left_table_id.clone(), right_table_id.clone()),
+            _ => return Ok(()),
+        };
+        let left = self.open_table_by_id(&left_table_id).await?;
+        let right = self.open_table_by_id(&right_table_id).await?;
+        self::joins::validate_identity_keys(&left, &right)
+    }
+
     /// Read the changelog window of every partition of a source.
     async fn collect_source_window(
         &self,
