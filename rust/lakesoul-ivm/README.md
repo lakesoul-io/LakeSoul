@@ -371,7 +371,9 @@ for `UNION` (or the data columns plus `__ivm_source` for `UNION ALL`).
 responsibility that it identifies a logical row** (like Flink's
 `PRIMARY KEY ... NOT ENFORCED`): the refresh writes delete markers whose merge
 relies on that key, and a key that is not unique makes the view resolve rows
-last-writer-wins.  The executor only enforces that a statement targets an MV
+last-writer-wins.  A refresh batch orders its deletes before the inserts of
+the same key (it is sorted by the MV's primary keys), so a key that is
+coarser than the group keys still resolves to the replacement row.  The executor only enforces that a statement targets an MV
 **with** a key (a global aggregate, whose single row is rewritten wholesale,
 needs none).  A typical trap: the two branches of a
 `UNION ALL` can produce the same key values, so project a branch column

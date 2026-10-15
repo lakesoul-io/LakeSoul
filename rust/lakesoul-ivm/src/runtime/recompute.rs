@@ -2242,7 +2242,8 @@ fn recompute_refresh_sql(
                      from group_now p \
                      where not exists (select 1 from already a where {already_match}){having}) \
          select * from deletes union all select * from inserts \
-         order by {keys}, \"rowKinds\"",
+         order by {order}, \"rowKinds\"",
+        order = quoted_list(&refresh_order_columns(parts.mv, parts.group_keys)),
     )
 }
 

@@ -780,3 +780,129 @@ async fn read_lookup_pairs(
     }
     rows
 }
+
+/// The `(k, g, sum_v, count_v)` rows of a count MV, ordered by `k`.
+async fn read_group_rows(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> Vec<(i64, String, i64, i64)> {
+    let context = SessionContext::new();
+    let batches = mv.read_current(runtime.client()).await.unwrap();
+    let table: Arc<dyn datafusion::catalog::TableProvider> =
+        Arc::new(MemTable::try_new(mv.schema.clone(), vec![batches]).unwrap());
+    context.register_table("mv", table).unwrap();
+    let batches = context
+        .sql(&format!(
+            "select k, g, sum_v, count_v from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' order by k"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let groups = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let counts = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row),
+                groups.value(row).to_string(),
+                sums.value(row),
+                counts.value(row),
+            ));
+        }
+    }
+    rows
+}
+
+/// A group that migrates under a **coarser materialized-view key** keeps its
+/// row: the refresh batch orders deletes before inserts by the MV's primary
+/// keys, not by the group keys (whose payloads order the two rows the other
+/// way around).
+#[test_log::test(tokio::test)]
+async fn a_group_migration_under_a_coarser_mv_key_keeps_its_row() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_gm_src_{suffix}"),
+                table_path(&dir, "src"),
+                schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_gm_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(
+                    &source.schema,
+                    &["k".to_string(), "g".to_string()],
+                    Some("v"),
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_gm_mv_{suffix} \
+         SELECT k, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+         FROM ivm_gm_src_{suffix} GROUP BY k, g"
+    );
+    source
+        .append_batch(
+            executor.runtime().client(),
+            batch(&[(1, "a", 10, "insert"), (2, "q", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_group_rows(runtime, &mv).await,
+        vec![(1, "a".to_string(), 10, 1), (2, "q".to_string(), 20, 1)]
+    );
+
+    // The same source row moves from `q` to `p`: the group (2, q) is deleted
+    // and (2, p) inserted, both under the view key `k = 2`.
+    source
+        .append_batch(runtime.client(), batch(&[(2, "p", 20, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_group_rows(runtime, &mv).await,
+        vec![(1, "a".to_string(), 10, 1), (2, "p".to_string(), 20, 1)]
+    );
+}
