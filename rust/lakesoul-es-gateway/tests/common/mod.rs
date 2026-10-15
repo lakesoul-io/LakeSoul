@@ -10,7 +10,9 @@ use arrow_array::cast::AsArray;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
-use lakesoul_es_gateway::config::{GatewayConfig, IndexConfig, LakesoulConfig};
+use lakesoul_es_gateway::config::{
+    GatewayConfig, IndexConfig, LakesoulConfig, VectorColumnConfig,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -45,8 +47,35 @@ pub fn test_config(
             nprobe: None,
             content_column: "content".to_string(),
             embedding_column: "embedding".to_string(),
+            vectors: Vec::new(),
         }],
     }
+}
+
+/// Like [`test_config`] but with several declared vector columns: the first
+/// entry uses the `dim`/`embedding_column` shorthand, the rest travel as
+/// `vectors` entries.
+pub fn test_config_multi(
+    index_name: &str,
+    table: &str,
+    vectors: &[(&str, usize)],
+    hash_bucket_num: usize,
+) -> GatewayConfig {
+    let mut config = test_config(
+        index_name,
+        table,
+        vectors.first().map(|(_, dim)| *dim),
+        hash_bucket_num,
+    );
+    config.indexes[0].vectors = vectors
+        .iter()
+        .skip(1)
+        .map(|(column, dim)| VectorColumnConfig {
+            column: column.to_string(),
+            dim: *dim,
+        })
+        .collect();
+    config
 }
 
 /// Perform a request against the router and decode the JSON body.
