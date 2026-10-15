@@ -266,9 +266,7 @@ Supported within the shapes above:
   maintained as the semi shape: the match is unique, so the view is exactly
   the left rows that have one (changes on either side add and remove them);
   a left primary key that is also the join key is materialized once, as that
-  key column (the lookup helper already reflects this; a compact pair join
-  whose key is also a primary key builds its MV from the engine's expected
-  columns, see PLAN 10.143);
+  key column;
 * **`DISTINCT ON`**: one row per grouping key, the first row of the ordering
   (the source primary keys are appended as a deterministic tie-break; a
   key-only `SELECT DISTINCT ON (key) key` is rejected with a hint to write
