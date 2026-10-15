@@ -1560,6 +1560,11 @@ pub fn lookup_join_view_schema_for(
         true,
     )));
     for key in left_primary_keys {
+        // A primary key that is already one of the join keys is materialized
+        // once, as that key column.
+        if join_keys.contains(key) {
+            continue;
+        }
         let field = left_schema.field_with_name(key)?;
         fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
     }
@@ -1604,6 +1609,11 @@ fn lookup_join_projection(
         left_columns.push(col(view.left_value.as_str()).alias("left_value"));
     }
     for key in &view.left.primary_keys {
+        // The key column already carries a primary key that is one of the
+        // join keys; projecting it twice is invalid.
+        if view.join_keys.contains(key) {
+            continue;
+        }
         left_columns.push(col(key.as_str()));
     }
     let left = left.select(left_columns)?;
@@ -1661,7 +1671,11 @@ fn lookup_join_projection(
                 .alias(column.name.as_str()),
         );
     }
+    // A primary key that is also a join key is materialized once, as the key.
     for key in &view.left.primary_keys {
+        if view.join_keys.contains(key) {
+            continue;
+        }
         output.push(col(key.as_str()));
     }
     Ok(joined.select(output)?)
@@ -1684,7 +1698,14 @@ fn lookup_join_output_columns(view: &LookupJoinView) -> Vec<Expr> {
                 .map(|column| col(column.name.as_str())),
         );
     }
-    output.extend(view.left.primary_keys.iter().map(|key| col(key.as_str())));
+    // A primary key that is also a join key is materialized once, as the key.
+    output.extend(
+        view.left
+            .primary_keys
+            .iter()
+            .filter(|key| !view.join_keys.contains(key))
+            .map(|key| col(key.as_str())),
+    );
     output
 }
 

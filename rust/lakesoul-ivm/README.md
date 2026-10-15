@@ -265,6 +265,8 @@ Supported within the shapes above:
 * a **single-sided inner join** whose right side is keyed by the join keys is
   maintained as the semi shape: the match is unique, so the view is exactly
   the left rows that have one (changes on either side add and remove them);
+  a left primary key that is also the join key is materialized once, as that
+  key column;
 * **`DISTINCT ON`**: one row per grouping key, the first row of the ordering
   (the source primary keys are appended as a deterministic tie-break; a
   key-only `SELECT DISTINCT ON (key) key` is rejected with a hint to write

@@ -3639,6 +3639,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   写路径的两个独立 planner 边角：`?table?.g` 限定/非限定歧义；连接键与主键同列时投影重名（需 AS 别名）。
   编码与拒绝已就绪，这两处属写路径的独立修复。
 
+### 10.142 lookup join：连接键与主键同列（PLAN §10.141 残留之一）
+
+- 形状：`a LEFT JOIN b ON b.k = a.k`，且 **a 的主键也是 k**（键列与左主键同名同列）。此前 lookup 的四处
+  构造都会把该列投影两次（先作为 join key、再作为左主键），DataFusion 直接拒绝
+  （“Projections require unique expression names … ?table?.k at position 0 and 3”）。
+- 修复：键列已经承载该主键值，四处统一**跳过与 join key 同名的左主键**——
+  `lookup_join_view_schema_for`（公开 schema 助手）、`lookup_join_projection` 的紧凑路径与其 wide 分支、
+  `lookup_join_output_columns`（写路径输出列）。
+- 测试：`sql_executor.rs` 新增一例——两侧主键均为 `k`、`ON b.k = a.k` 的 lookup join：bootstrap、
+  右侧载荷更新、右侧删除（右值为 NULL）；全程 `allow_fallback=false` 保证走增量路径。
+- 残留：结构体主键的 lookup 形状已越过投影重名，但其端到端用例还需镜像**派生 lookup 步骤**的 MV 布局
+  （紧凑载荷列名），与 §10.141 记录的 pair/identity 侧边角一并留待后续。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
