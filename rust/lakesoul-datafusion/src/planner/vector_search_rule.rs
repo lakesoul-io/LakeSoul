@@ -27,11 +27,12 @@ use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{Cast, Expr, LogicalPlan, Sort, SortExpr, TableScan};
+use datafusion::logical_expr::{Cast, Expr, LogicalPlan, Operator, Sort, TableScan};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 use crate::udf::vector_search_marker::{
-    LakeSoulVectorSearchConfig, RerankMode, VECTOR_SEARCH_MARKER, marker_expr,
+    LakeSoulVectorSearchConfig, RerankMode, VectorColumnQuery, is_marker_expr,
+    marker_expr, multi_marker_expr,
 };
 
 /// Logical optimizer rule for the vector-search pushdown (see module docs).
@@ -41,20 +42,27 @@ pub struct VectorSearchPushdownRule;
 /// Detected vector-search specification extracted from a matching plan.
 #[derive(Debug, Clone)]
 pub(crate) struct VectorSearchSpec {
-    pub vec_column: String,
-    pub query: Vec<f32>,
-    pub top_k: usize,
-    /// `"L2"` or `"IP"`.
+    /// Weighted distance terms in the order they appear in the sort key; a
+    /// plain single-column search has exactly one term.
+    pub columns: Vec<VectorSearchTerm>,
+    /// `"L2"` or `"IP"` (shared by every term).
     pub metric: String,
+    pub top_k: usize,
     /// Order by the index distance instead of the exact re-rank: the rule
     /// removes the distance `Sort` and the scan returns index-ordered rows.
     pub order_by: bool,
     /// Per-bucket candidate multiplier for the scan.
     pub overfetch: usize,
+    /// The matched sort key; used to drop exactly that `Sort` node.
+    pub sort_key: Expr,
 }
 
-fn is_marker(expr: &Expr) -> bool {
-    matches!(expr, Expr::ScalarFunction(call) if call.func.name() == VECTOR_SEARCH_MARKER)
+/// One weighted column of a detected vector search.
+#[derive(Debug, Clone)]
+pub(crate) struct VectorSearchTerm {
+    pub column: String,
+    pub query: Vec<f32>,
+    pub weight: f32,
 }
 
 impl OptimizerRule for VectorSearchPushdownRule {
@@ -111,7 +119,16 @@ fn detect(
         return None;
     }
     let sort_expr = &sort.expr[0];
-    let metric = distance_metric(&sort_expr.expr)?;
+    // The sort key is either a single distance call (one column) or a
+    // weighted sum of distance calls (several columns fused into one
+    // ranking).
+    let sort_key = sort_expr.expr.clone();
+    let mut raw_terms = Vec::new();
+    collect_terms(&sort_key, 1.0, &mut raw_terms)?;
+    if raw_terms.is_empty() {
+        return None;
+    }
+    let metric = terms_metric(&raw_terms)?;
     let expected_asc = metric == "L2";
     if sort_expr.asc != expected_asc {
         return None;
@@ -129,16 +146,28 @@ fn detect(
                 current = Arc::clone(&filter.input);
             }
             LogicalPlan::TableScan(ts) => {
-                if ts.filters.iter().any(is_marker) {
+                if ts.filters.iter().any(is_marker_expr) {
                     return None;
                 }
-                let (vec_column, query) = extract_distance_args(sort_expr, ts)?;
-                // Index-only ordering is safe while the distance is used
+                // Every term must be a distance call on a vector column of
+                // this scan; the terms carry their weights into the marker.
+                let mut columns = Vec::with_capacity(raw_terms.len());
+                for (expr, weight) in &raw_terms {
+                    let (column, query) = extract_distance_args(expr, ts)?;
+                    columns.push(VectorSearchTerm {
+                        column,
+                        query,
+                        weight: *weight,
+                    });
+                }
+                // Index-only ordering is safe while the distances are used
                 // only as the sort key: the scan then returns rows ordered
-                // by the index distance and the vector column drops out of
-                // the projection.  (L2 only for now — the IP estimator is
-                // not directly comparable with `inner_product`.)
-                let order_by = index_only && metric == "L2" && distance_calls(plan) == 1;
+                // by the (fused) index distance and the vector columns drop
+                // out of the projection.  (L2 only for now — the IP
+                // estimator is not directly comparable with
+                // `inner_product`.)
+                let order_by =
+                    index_only && metric == "L2" && distance_calls(plan) == columns.len();
                 // Index-only ordering needs each bucket's top-k only (a
                 // globally top-k row is within its own bucket's top-k), so the
                 // per-bucket candidate count shrinks by the over-fetch factor.
@@ -148,12 +177,12 @@ fn detect(
                 let overfetch = if order_by && !saw_filter { 2 } else { 10 };
                 return Some((
                     VectorSearchSpec {
-                        vec_column,
-                        query,
-                        top_k,
+                        columns,
                         metric: metric.to_string(),
+                        top_k,
                         order_by,
                         overfetch,
+                        sort_key,
                     },
                     current,
                 ));
@@ -192,13 +221,81 @@ fn as_scalar_function(expr: &Expr) -> Option<&ScalarFunction> {
     }
 }
 
+/// Collect the terms of a weighted distance sum (`w1*d1 + w2*d2 - ...`).
+/// Every term is stored with its signed weight; the caller validates that
+/// each term is a distance call.
+fn collect_terms(expr: &Expr, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option<()> {
+    match unwrap_cast(expr) {
+        Expr::BinaryExpr(binary) => match binary.op {
+            Operator::Plus => {
+                collect_terms(&binary.left, sign, terms)?;
+                collect_terms(&binary.right, sign, terms)
+            }
+            Operator::Minus => {
+                collect_terms(&binary.left, sign, terms)?;
+                collect_terms(&binary.right, -sign, terms)
+            }
+            Operator::Multiply => {
+                if let Some(weight) = numeric_literal(&binary.left) {
+                    terms.push((unwrap_cast(&binary.right).clone(), sign * weight));
+                    Some(())
+                } else if let Some(weight) = numeric_literal(&binary.right) {
+                    terms.push((unwrap_cast(&binary.left).clone(), sign * weight));
+                    Some(())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        other => {
+            terms.push((other.clone(), sign));
+            Some(())
+        }
+    }
+}
+
+/// The metric shared by every term, or None when a term is not a distance
+/// call or the terms disagree.
+fn terms_metric(terms: &[(Expr, f32)]) -> Option<&'static str> {
+    let mut metric: Option<&'static str> = None;
+    for (expr, _) in terms {
+        let current = distance_metric(expr)?;
+        match metric {
+            None => metric = Some(current),
+            Some(previous) if previous == current => {}
+            Some(_) => return None,
+        }
+    }
+    metric
+}
+
+/// A numeric literal coefficient of a distance term.
+fn numeric_literal(expr: &Expr) -> Option<f32> {
+    match unwrap_cast(expr) {
+        Expr::Literal(value, _) => match value {
+            ScalarValue::Float64(Some(v)) => Some(*v as f32),
+            ScalarValue::Float32(Some(v)) => Some(*v),
+            ScalarValue::Int64(Some(v)) => Some(*v as f32),
+            ScalarValue::Int32(Some(v)) => Some(*v as f32),
+            ScalarValue::UInt64(Some(v)) => Some(*v as f32),
+            ScalarValue::UInt32(Some(v)) => Some(*v as f32),
+            // SQL decimal literals (e.g. `0.7 * array_distance(...)`) are
+            // planned as exact decimals in some DataFusion versions.
+            ScalarValue::Decimal128(Some(value), _, scale) => {
+                let divisor = 10f64.powi(*scale as i32);
+                Some(*value as f64 as f32 / divisor as f32)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Extract (vector column name, query vector) from the distance call args,
 /// validating the column type against the scan schema.
-fn extract_distance_args(
-    sort_expr: &SortExpr,
-    ts: &TableScan,
-) -> Option<(String, Vec<f32>)> {
-    let call = as_scalar_function(unwrap_cast(&sort_expr.expr))?;
+fn extract_distance_args(expr: &Expr, ts: &TableScan) -> Option<(String, Vec<f32>)> {
+    let call = as_scalar_function(unwrap_cast(expr))?;
     if call.args.len() != 2 {
         return None;
     }
@@ -379,22 +476,13 @@ fn rewrite_chain(
     changed.then_some(rewritten.data)
 }
 
-/// True when `sort` is the single distance sort this rule matched.
+/// True when `sort` is the distance sort this rule matched.
 fn sort_matches_spec(sort: &Sort, spec: &VectorSearchSpec) -> bool {
     if sort.expr.len() != 1 {
         return false;
     }
     let sort_expr = &sort.expr[0];
-    if sort_expr.asc != (spec.metric == "L2") {
-        return false;
-    }
-    let Some(call) = as_scalar_function(unwrap_cast(&sort_expr.expr)) else {
-        return false;
-    };
-    let Some(Expr::Column(column)) = call.args.first().map(unwrap_cast) else {
-        return false;
-    };
-    column.name == spec.vec_column
+    sort_expr.asc == (spec.metric == "L2") && sort_expr.expr == spec.sort_key
 }
 
 /// Number of `array_distance`/`inner_product` calls on the matched path,
@@ -408,22 +496,39 @@ fn distance_calls(plan: &LogicalPlan) -> usize {
         let exprs: &[Expr] = match node {
             LogicalPlan::Projection(projection) => &projection.expr,
             LogicalPlan::Sort(sort) => {
-                count += sort
-                    .expr
-                    .iter()
-                    .filter(|sort_expr| distance_metric(&sort_expr.expr).is_some())
-                    .count();
+                for sort_expr in &sort.expr {
+                    count += count_distance_calls(&sort_expr.expr);
+                }
                 return Ok(TreeNodeRecursion::Continue);
             }
             _ => return Ok(TreeNodeRecursion::Continue),
         };
-        count += exprs
-            .iter()
-            .filter(|expr| distance_metric(expr).is_some())
-            .count();
+        count += exprs.iter().map(count_distance_calls).sum::<usize>();
         Ok(TreeNodeRecursion::Continue)
     })
     .ok();
+    count
+}
+
+/// Count the `array_distance`/`inner_product` calls inside one expression
+/// (a weighted sum in the sort key contains one call per term).
+fn count_distance_calls(expr: &Expr) -> usize {
+    use datafusion::common::tree_node::TreeNodeRecursion;
+
+    let mut count = 0usize;
+    let _ = expr.apply(&mut |node: &Expr| {
+        // Count the call nodes themselves: `distance_metric` unwraps
+        // aliases/casts, so using it here would count a wrapped call twice.
+        if let Expr::ScalarFunction(call) = node
+            && matches!(
+                call.func.name(),
+                "array_distance" | "inner_product" | "dot_product"
+            )
+        {
+            count += 1;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
     count
 }
 
@@ -433,14 +538,37 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
         unreachable!("target must be a TableScan")
     };
     let mut filters = ts.filters.clone();
-    filters.push(marker_expr(
-        &spec.vec_column,
-        &spec.query,
-        spec.top_k,
-        &spec.metric,
-        spec.order_by,
-        spec.overfetch,
-    ));
+    let marker = if let [term] = spec.columns.as_slice() {
+        marker_expr(
+            &term.column,
+            &term.query,
+            spec.top_k,
+            &spec.metric,
+            spec.order_by,
+            spec.overfetch,
+        )
+    } else {
+        // Several columns travel as one JSON payload; the reader intersects
+        // the candidate sets and fuses the distances for index-only
+        // ordering.
+        let columns = spec
+            .columns
+            .iter()
+            .map(|term| VectorColumnQuery {
+                column: term.column.clone(),
+                query_csv: term
+                    .query
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                metric: spec.metric.clone(),
+                weight: term.weight,
+            })
+            .collect::<Vec<_>>();
+        multi_marker_expr(&columns, spec.top_k, spec.order_by, spec.overfetch)
+    };
+    filters.push(marker);
     LogicalPlan::TableScan(TableScan {
         table_name: ts.table_name.clone(),
         source: Arc::clone(&ts.source),

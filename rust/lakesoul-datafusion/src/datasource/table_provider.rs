@@ -799,8 +799,17 @@ impl LakeSoulTableProvider {
         skip_all,
         fields(
             table_id = %self.table_id(),
-            column = %request.vec_column.as_str(),
-            metric = %request.metric.as_str(),
+            columns = %request
+                .columns
+                .iter()
+                .map(|column| column.column.as_str())
+                .collect::<Vec<_>>()
+                .join("+"),
+            metric = %request
+                .columns
+                .first()
+                .map(|column| column.metric.as_str())
+                .unwrap_or("L2"),
             top_k = request.top_k,
             partition_filter_count = partition_filters.len(),
             outcome = tracing::field::Empty,
@@ -829,34 +838,44 @@ impl LakeSoulTableProvider {
             record_fallback("missing_primary_key");
             return Ok(None);
         }
-        if !matches!(request.metric.as_str(), "L2" | "IP") {
-            record_fallback("unsupported_metric");
-            return Ok(None);
-        }
-        // The table must declare the searched column in its
-        // `vector_index_columns` property (and with a compatible metric).
-        let Some(declared) = self
-            .vector_index_configs
-            .iter()
-            .find(|c| c.column == request.vec_column)
-        else {
-            record_fallback("index_not_declared");
-            return Ok(None);
-        };
-        if declared.params.metric.to_uppercase().as_str() != request.metric {
-            record_fallback("metric_mismatch");
-            return Ok(None);
-        }
-        let vec_field = match self.file_schema.field_with_name(&request.vec_column) {
-            Ok(field) => field,
-            Err(_) => {
-                record_fallback("column_not_found");
+        // Every searched column must be declared in the table's
+        // `vector_index_columns` property (with a compatible metric), exist
+        // in the file schema and be of a vector type.
+        for column in &request.columns {
+            let metric = column.metric.to_uppercase();
+            if !matches!(metric.as_str(), "L2" | "IP") {
+                record_fallback("unsupported_metric");
                 return Ok(None);
             }
-        };
-        if !is_vector_type(vec_field.data_type()) {
-            record_fallback("invalid_column_type");
-            return Ok(None);
+            if request.order_by && metric != "L2" {
+                // Index-only ordering fuses the index distances; the fusion
+                // is only defined for L2.
+                record_fallback("unsupported_metric");
+                return Ok(None);
+            }
+            let Some(declared) = self
+                .vector_index_configs
+                .iter()
+                .find(|c| c.column == column.column)
+            else {
+                record_fallback("index_not_declared");
+                return Ok(None);
+            };
+            if declared.params.metric.to_uppercase() != metric {
+                record_fallback("metric_mismatch");
+                return Ok(None);
+            }
+            let vec_field = match self.file_schema.field_with_name(&column.column) {
+                Ok(field) => field,
+                Err(_) => {
+                    record_fallback("column_not_found");
+                    return Ok(None);
+                }
+            };
+            if !is_vector_type(vec_field.data_type()) {
+                record_fallback("invalid_column_type");
+                return Ok(None);
+            }
         }
         let (partitioned_file_lists, _) = self
             .list_files_for_scan(session_state, partition_filters, limit)

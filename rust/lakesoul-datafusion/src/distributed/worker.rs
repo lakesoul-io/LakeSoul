@@ -69,6 +69,7 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
         // reference LakeSoul UDFs, which datafusion-proto resolves through the
         // session's function registry at decode time.
         state.register_udf(crate::udf::vector_search_marker::marker_udf())?;
+        state.register_udf(crate::udf::vector_search_marker::multi_marker_udf())?;
 
         Ok(state)
     }

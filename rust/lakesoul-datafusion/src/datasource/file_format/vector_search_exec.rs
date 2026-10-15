@@ -42,7 +42,8 @@ use lakesoul_io::config::{
     LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
     OPTION_KEY_VECTOR_SEARCH_METRIC, OPTION_KEY_VECTOR_SEARCH_NPROBE,
     OPTION_KEY_VECTOR_SEARCH_ORDER_BY, OPTION_KEY_VECTOR_SEARCH_PARALLELISM,
-    OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_REQUESTS,
+    OPTION_KEY_VECTOR_SEARCH_TOP_K,
 };
 use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
@@ -146,15 +147,24 @@ impl LakeSoulVectorSearchExec {
         })?;
 
         let table_prefix = derive_prefix(&first);
-        let index_prefixes = lakesoul_io::index::prefix::derive_index_prefixes(
-            &file_uris,
-            &table_prefix,
-            IndexKind::Vector,
-            &self.vector_search.vec_column,
-        );
+        // Every searched column contributes its shard prefixes; a prefix is
+        // resolved (and leased) once even when it appears twice.
+        let mut index_prefixes = Vec::new();
+        for column in &self.vector_search.columns {
+            index_prefixes.extend(lakesoul_io::index::prefix::derive_index_prefixes(
+                &file_uris,
+                &table_prefix,
+                IndexKind::Vector,
+                &column.column,
+            ));
+        }
+        let mut seen_prefixes = std::collections::HashSet::new();
         let mut resolved_shards = Vec::with_capacity(index_prefixes.len());
         let mut leases = Vec::with_capacity(index_prefixes.len());
         for (index_prefix, _bucket) in index_prefixes {
+            if !seen_prefixes.insert(index_prefix.clone()) {
+                continue;
+            }
             let view =
                 self.catalog
                     .resolve_cached(&index_prefix)
@@ -279,43 +289,62 @@ impl LakeSoulVectorSearchExec {
             );
         }
 
+        // Exact mode fetches extra candidates per bucket so the global sort
+        // above has margin against the approximate within-shard ranking;
+        // index-only mode needs each bucket's top-k only (with a small margin
+        // when a filter above the scan can drop candidates) because the
+        // ordering comes from the index itself.  Either way the physical
+        // `Limit` trims back to top_k.
+        let candidates_per_bucket = self.vector_search.candidates_per_bucket();
+        let primary_metric = self
+            .vector_search
+            .columns
+            .first()
+            .map(|column| column.metric.clone())
+            .unwrap_or_else(|| "L2".to_string());
         builder = builder
             .with_resolved_index_shards(resolved_shards)
             .with_index_leases(leases)
             .with_option(
-                OPTION_KEY_VECTOR_SEARCH_COLUMN,
-                self.vector_search.vec_column.clone(),
-            )
-            .with_option(
-                OPTION_KEY_VECTOR_SEARCH_QUERY,
-                self.vector_search.query_csv.clone(),
-            )
-            // Exact mode fetches extra candidates per bucket so the global
-            // sort above has margin against the approximate within-shard
-            // ranking; index-only mode needs each bucket's top-k only (with a
-            // small margin when a filter above the scan can drop candidates)
-            // because the ordering comes from the index itself.  Either way
-            // the physical `Limit` trims back to top_k.
-            .with_option(
                 OPTION_KEY_VECTOR_SEARCH_TOP_K,
-                if self.vector_search.order_by {
-                    self.vector_search
-                        .top_k
-                        .saturating_mul(self.vector_search.overfetch.max(1))
-                } else {
-                    self.vector_search.top_k.saturating_mul(10).max(100)
-                }
-                .to_string(),
+                candidates_per_bucket.to_string(),
             )
             .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, nprobe.to_string())
             .with_option(
                 OPTION_KEY_VECTOR_SEARCH_PARALLELISM,
                 parallelism.max(1).to_string(),
             )
-            .with_option(
-                OPTION_KEY_VECTOR_SEARCH_METRIC,
-                self.vector_search.metric.clone(),
+            .with_option(OPTION_KEY_VECTOR_SEARCH_METRIC, primary_metric);
+        if self.vector_search.is_single() {
+            // Keep the single-column shorthand: it is the documented reader
+            // option pair and the fastest path through the option parser.
+            let column = &self.vector_search.columns[0];
+            builder = builder
+                .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, column.column.clone())
+                .with_option(OPTION_KEY_VECTOR_SEARCH_QUERY, column.query_csv.clone());
+        } else {
+            // Several columns: the reader intersects the per-column candidate
+            // sets and fuses the distances (index-only ordering) or narrows
+            // the scan and lets the exact Sort above re-rank the candidates.
+            let requests: Vec<serde_json::Value> = self
+                .vector_search
+                .columns
+                .iter()
+                .map(|column| {
+                    serde_json::json!({
+                        "column": column.column,
+                        "query": column.query_csv,
+                        "top_k": candidates_per_bucket,
+                        "weight": column.weight,
+                        "metric": column.metric,
+                    })
+                })
+                .collect();
+            builder = builder.with_option(
+                OPTION_KEY_VECTOR_SEARCH_REQUESTS,
+                serde_json::Value::Array(requests).to_string(),
             );
+        }
         if self.vector_search.order_by {
             // Index-only ordering: the reader appends the index distance per
             // candidate row and the vector column drops out of the scan.
@@ -402,11 +431,24 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             .get::<LakeSoulVectorSearchConfig>()
             .map(|options| (options.nprobe, options.parallelism))
             .unwrap_or((64, 1));
+        let searched_columns = self
+            .vector_search
+            .columns
+            .iter()
+            .map(|column| column.column.as_str())
+            .collect::<Vec<_>>()
+            .join("+");
+        let primary_metric = self
+            .vector_search
+            .columns
+            .first()
+            .map(|column| column.metric.as_str())
+            .unwrap_or("L2");
         let span = info_span!(
             "vector_search_execute",
             partition,
-            column = %self.vector_search.vec_column,
-            metric = %self.vector_search.metric,
+            column = %searched_columns,
+            metric = %primary_metric,
             top_k = self.vector_search.top_k,
             nprobe,
             bucket_group_count = self.file_groups.len(),
@@ -513,7 +555,7 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             })
         })?;
         let batches = if self.vector_search.order_by {
-            order_by_index_distance(batches, &schema, &self.vector_search.metric)?
+            order_by_index_distance(batches, &schema, primary_metric)?
         } else {
             batches
         };
@@ -587,12 +629,23 @@ fn order_by_index_distance(
 
 impl DisplayAs for LakeSoulVectorSearchExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        let columns = self
+            .vector_search
+            .columns
+            .iter()
+            .map(|column| column.column.as_str())
+            .collect::<Vec<_>>()
+            .join("+");
         write!(
             f,
             "LakeSoulVectorSearchExec(vec={}, top_k={}, metric={}, order_by={})",
-            self.vector_search.vec_column,
+            columns,
             self.vector_search.top_k,
-            self.vector_search.metric,
+            self.vector_search
+                .columns
+                .first()
+                .map(|column| column.metric.as_str())
+                .unwrap_or("L2"),
             self.vector_search.order_by
         )
     }
