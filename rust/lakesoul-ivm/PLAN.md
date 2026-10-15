@@ -3689,12 +3689,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **用例**：`nested_types.rs::a_struct_primary_key_materializes_a_pair_step_identity`——两侧主键均为
   struct `s`、`ON c.g = b.g`（右侧不被键唯一化 → pair 派生步骤）的 count MV，覆盖 bootstrap 与右表新增
   （同一组计数 1→2），全程 `allow_fallback=false`。
-- **顺带发现（与本修复无关，另行跟进）**：聚合刷新末段 `order by <组键>, "rowKinds"` 只保证**组键**层面
-  的顺序，不保证同一 **MV 主键**内 delete 在 insert 之前。组键含 NULL、且 MV 主键比组键更粗时（group by
-  `k, m`、MV 主键 `k`，组从 `(2, NULL)` 迁移到 `(2, {q:2})`），DataFusion 默认 NULLS LAST 把 delete 排到
-  insert 之后，merge-on-read 保留 delete，整行消失（原始读可见只有 delete 行）。对照复现：普通 count MV
-  （无 join、无步骤、无结构体主键）同样丢行。跟进做法：末段排序改为按 **MV 主键** 再 `rowKinds`
-  （join 写路径已经是按 MV 主键排序）。
+- **顺带发现（已在 §10.145 修复）**：聚合刷新末段 `order by <组键>, "rowKinds"` 只保证**组键**层面的
+  顺序，不保证同一 **MV 主键**内 delete 在 insert 之前；组键含 NULL、且 MV 主键比组键更粗时（group by
+  `k, m`、MV 主键 `k`，组从 `(2, NULL)` 迁移到 `(2, {q:2})`），delete 会排到 insert 之后，merge-on-read
+  保留 delete，整行消失。普通 count MV（无 join、无步骤）即可复现。
+
+### 10.145 刷新批次按 MV 主键排序（§10.144 顺带发现的修复）
+
+- **根因**：SUM/COUNT 与 recompute 刷新的末段排序是 `order by <组键>, "rowKinds"`。当 MV 主键比组键**更粗**
+  （例如 `GROUP BY k, g`、MV 主键 `k`）时，同一次刷新里同一 MV 主键可能同时出现 delete（旧组）与 insert
+  （新组）；按组键排序时两行的先后由**组键值**决定，与 rowKinds 无关——组键从 `g='q'` 迁移到 `g='p'`
+  （或从 NULL 迁移到有值，NULLS LAST）都会把 delete 排到 insert 之后，merge-on-read 保留 delete，整行消失。
+- **修复**：`refresh_order_columns(mv, keys)`（runtime.rs，子模块共享）——取 MV 主键中**批次实际携带**的列
+  （否则回退到组键），末段排序改为 `order by <这些列>, "rowKinds"`；SUM/COUNT 刷新的两个分支（HAVING 与非
+  HAVING）与 `recompute_refresh_sql` 都改用它。join 写路径与窗口路径本来就是按 MV 主键排序，无需改动；
+  min/max、distinct agg、grouping sets 的组键即其 MV 主键，排序等价。
+- **用例**：`sql_executor.rs::a_group_migration_under_a_coarser_mv_key_keeps_its_row`——`GROUP BY k, g`、
+  MV 主键 `k`、`g` 非空：bootstrap 后把同一源行从 `q` 改为 `p`，断言视图仍持有 `(2, p)`。
+  已验证**无修复时该用例失败**（视图中 k=2 整行消失）。
+- 该缺陷是本轮 §10.144 调查「结构体主键外连接步骤」时顺带复现的（当时用普通 count MV 即可复现），
+  与本轮 planner 修复无关。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

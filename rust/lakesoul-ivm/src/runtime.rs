@@ -2475,6 +2475,26 @@ fn dataframe(
     Ok(context.read_table(table)?)
 }
 
+/// The columns a refresh batch orders its deletes and inserts by: the MV's
+/// primary keys, so the delete a refresh writes always precedes the insert
+/// that replaces the same row — whatever the group keys look like and
+/// whether or not their payloads are NULL.  Falls back to the group keys for
+/// an MV declared without a primary key (or one outside the batch's columns);
+/// callers append `"rowKinds"` after these columns.
+fn refresh_order_columns(mv: &IvmTable, keys: &[String]) -> Vec<String> {
+    let order = mv
+        .primary_keys
+        .iter()
+        .filter(|key| keys.contains(key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if order.is_empty() {
+        keys.to_vec()
+    } else {
+        order
+    }
+}
+
 /// An Arrow schema with `columns` in the given order.
 fn project_schema(schema: &Schema, columns: &[String]) -> Result<SchemaRef> {
     let fields = columns

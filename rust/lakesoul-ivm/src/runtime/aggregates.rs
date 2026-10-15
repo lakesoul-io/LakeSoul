@@ -1515,7 +1515,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                          where count_v <> 0 and ({having}) \
                            and not exists (select 1 from already a where {already_match})) \
              select * from deletes union all select * from inserts \
-             order by {keys}, \"rowKinds\"",
+             order by {order}, \"rowKinds\"",
             affected = affected_groups_sql(
                 &view.source,
                 &view.group_keys,
@@ -1523,6 +1523,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                 view.filter.as_deref(),
             ),
             nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
+            order = quoted_list(&refresh_order_columns(&view.mv, &view.group_keys)),
         );
         return sql;
     }
@@ -1653,9 +1654,10 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                      where count_v <> 0 \
                        and not exists (select 1 from already a where {already_match})) \
          select * from deletes union all select * from inserts \
-         order by {keys}, \"rowKinds\"",
+         order by {order}, \"rowKinds\"",
         pks = quoted_list(&view.source.primary_keys),
         nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
+        order = quoted_list(&refresh_order_columns(&view.mv, &view.group_keys)),
     )
 }
 
