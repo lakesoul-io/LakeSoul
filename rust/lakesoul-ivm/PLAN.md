@@ -3733,6 +3733,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （`delete` 变化分区的活跃行 + 重算 `insert`，按 MV 主键 + `rowKinds` 排序），带运行时守卫（输出越界即回落全量）
   与指标；第 3 步：源分区 drop 时对 fallback 视图做确定性清理（扩展 `cleanup_dropped_partitions`）。
 
+### 10.147 Tier-2 按变化分区重算（2）：按分区刷新
+
+- **刷新决策**（`fallback.rs::fallback_partition_restriction`）：视图带 `partition_scope` 且
+  ① MV 有主键（merge 键才能撤回重算行）、② 除分区源外的源**没有**变更窗口时才分区化；变化分区取自分区源
+  窗口里各 `added_files` 的 `partition_desc`（用 `parse_partition_values` 解析；任一 descriptor 解析失败即
+  回落全量）。**未分区源有变更**（可影响所有分区）或变化分区集为空 → 全量。返回 `(restriction, 分区数)`。
+- **按分区刷新**（`recompute_fallback_partitions`）：
+  1. 受限源注册——分区源用 `read_current_filtered_partitions(.., &restriction)`（按 descriptor 过滤，不要求
+     分区列进主键；不可解析 descriptor 保守保留），其余源整表读；
+  2. 跑同一 statement，`ensure_fallback_keys` 仍然校验主键唯一性；
+  3. **守卫**：新行若落在 `restriction` 之外（说明资格判定有漏），**放弃本次分区写**、回落整表重算，并计数；
+  4. 删除侧：读 MV 在限制分区内的当前行，生成 `'delete'` 行（`fallback_partition_delete_sql`，
+     仅撤回 `rowKinds='insert'` 且非本 epoch 的行）；
+  5. 合成：`delete ∪ insert`，按 **MV 主键 + `rowKinds`** 排序（§10.145 的约定），`append_batch`
+     动态分区写回，未变化分区完全不 touch。
+- **指标**：`lakesoul_ivm_fallback_partitions_total`（本次重算的分区数，低基数）、
+  `lakesoul_ivm_fallback_guard_total`（守卫触发即整表重算的次数，属分析漏判信号）；写行数仍走
+  `fallback_rows`/`fallbacks_total`。
+- **测试**：`tests/fallback_partitions.rs`——
+  ①「分区局部 fallback 只重算变化分区」：`GROUP BY day` 的 `SUM(DECIMAL(38,2))`（无头寸 → Tier-2），三分区
+  bootstrap，随后只改 `d2`，断言结果正确且 `d1`/`d3` 的 `partition_info.version` **不变**、`d2` 前进；
+  同轮断言 `list_views` 的 `fallback_reason` 含 `partition pruning: eligible`。
+  ②「未分区源变更 → 整表重算」：`fact JOIN dim`（右侧不被连接键唯一化 → Tier-2）两分区 bootstrap，
+  只改 `dim`，断言所有分区 version 均前进。
+- 下一步（第 3 步）：源分区被 drop 时对 fallback 视图做确定性清理（扩展 `cleanup_dropped_partitions`），
+  以及 README 的 Tier-2 说明更新。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
