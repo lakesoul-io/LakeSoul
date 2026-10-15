@@ -915,7 +915,9 @@ impl IvmSqlExecutor {
             Box::pin(self.analyze_with_derived(subplan, tables, &request, target, steps))
                 .await?;
         // A derived outer-join step gets a non-null row identity, so a
-        // consumer can read its MV as a keyed source.
+        // consumer can read its MV as a keyed source; the keys must be
+        // encodable into that identity.
+        self.runtime.validate_identity_keys(&spec).await?;
         spec.set_derived_identity_column()?;
         // A compact join names its payloads left_value / right_value; the
         // derived view widens them to the subplan's column names so the

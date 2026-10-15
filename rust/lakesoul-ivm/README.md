@@ -588,10 +588,12 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   several matches would duplicate the left row, which the semi shape such a
   statement is maintained as cannot express (a right side keyed by the join
   key stays supported);
-* a nested **primary key** on a side of an outer-join or chain **step**: the
-  step's row identity is built by casting both sides' primary keys to a string
-  (join keys themselves may be nested - they compare and materialize by
-  value);
+* a **list or map primary key** on a side of an outer-join or chain **step**:
+  the step's row identity encodes both sides' primary keys as length-prefixed
+  text - a struct key is encoded field by field, a list or map key is rejected
+  with a clear reason (join keys themselves may be nested, they compare and
+  materialize by value; the write path for struct primary keys is still being
+  completed);
 * `INTERSECT`/`EXCEPT` and null-aware join predicates (`IS NOT DISTINCT FROM`)
   outside the maintained subset: a `DISTINCT` set-op variant whose left rows
   repeat a join tuple is rejected rather than silently returning duplicate

@@ -6,6 +6,7 @@
 //! and cross joins.
 
 use super::*;
+use datafusion::functions::core::expr_fn::get_field;
 use datafusion::functions::string::expr_fn::{concat, octet_length};
 use datafusion::logical_expr::Cast;
 
@@ -1210,6 +1211,8 @@ impl FullJoinView {
             output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            left_table: &self.left,
+            right_table: &self.right,
             pair_filter: None,
             identity_column: self.identity_column,
             null_safe: self.null_safe,
@@ -1373,6 +1376,8 @@ impl CrossJoinView {
             output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            left_table: &self.left,
+            right_table: &self.right,
             pair_filter: self.pair_filter.as_deref(),
             identity_column: false,
             null_safe: false,
@@ -2558,7 +2563,7 @@ fn keyed_join_projection(
 /// The output columns of a keyed join in schema order.
 fn keyed_join_output_columns(
     parts: &PairJoin<'_>,
-) -> Vec<datafusion::logical_expr::Expr> {
+) -> Result<Vec<datafusion::logical_expr::Expr>> {
     let mut output = parts
         .join_keys
         .iter()
@@ -2579,12 +2584,9 @@ fn keyed_join_output_columns(
         output.push(col(right_pk_alias(key).as_str()));
     }
     if parts.identity_column {
-        output.push(pair_identity_expr(
-            parts.left_primary_keys,
-            parts.right_primary_keys,
-        ));
+        output.push(pair_identity_expr(parts.left_table, parts.right_table)?);
     }
-    output
+    Ok(output)
 }
 
 /// The non-null row identity of a derived outer-join step: both sides'
@@ -2592,33 +2594,85 @@ fn keyed_join_output_columns(
 /// cannot collide; an unmatched row (NULL key) encodes as `n`.  A left join
 /// needs the right side and a full join both, so encoding both keeps one
 /// collision-free identity for every outer join.
-fn pair_identity_expr(
-    left_primary_keys: &[String],
-    right_primary_keys: &[String],
-) -> Expr {
+fn pair_identity_expr(left: &IvmTable, right: &IvmTable) -> Result<Expr> {
     let mut parts = Vec::new();
-    for key in left_primary_keys {
-        let value = col(left_pk_alias(key).as_str());
-        parts.push(encoded_identity_part(value));
+    for key in &left.primary_keys {
+        parts.push(encoded_identity_part(
+            col(left_pk_alias(key).as_str()),
+            &field_type(&left.schema, key)?,
+        )?);
     }
-    for key in right_primary_keys {
-        let value = col(right_pk_alias(key).as_str());
-        parts.push(encoded_identity_part(value));
+    for key in &right.primary_keys {
+        parts.push(encoded_identity_part(
+            col(right_pk_alias(key).as_str()),
+            &field_type(&right.schema, key)?,
+        )?);
     }
-    concat(parts).alias(IVM_PAIR_IDENTITY_COLUMN)
+    Ok(concat(parts).alias(IVM_PAIR_IDENTITY_COLUMN))
 }
 
 /// One length-prefixed component of a pair identity; NULL encodes as `n`.
-fn encoded_identity_part(value: Expr) -> Expr {
-    let text = Expr::Cast(Cast::new(Box::new(value.clone()), DataType::Utf8));
-    let length = Expr::Cast(Cast::new(
-        Box::new(octet_length(text.clone())),
-        DataType::Utf8,
-    ));
-    let encoded = concat(vec![lit("v"), length, lit(":"), text]);
+///
+/// A struct key recurses field by field: every part carries its own length or
+/// null marker, so the concatenation stays collision free even when the text
+/// forms could otherwise run together.
+fn encoded_identity_part(value: Expr, data_type: &DataType) -> Result<Expr> {
+    let encoded = match data_type {
+        DataType::Struct(fields) => {
+            let mut parts = vec![lit("s")];
+            for field in fields {
+                let field_value = get_field(value.clone(), field.name().as_str());
+                parts.push(encoded_identity_part(field_value, field.data_type())?);
+            }
+            concat(parts)
+        }
+        _ => {
+            let text = Expr::Cast(Cast::new(Box::new(value.clone()), DataType::Utf8));
+            let length = Expr::Cast(Cast::new(
+                Box::new(octet_length(text.clone())),
+                DataType::Utf8,
+            ));
+            concat(vec![lit("v"), length, lit(":"), text])
+        }
+    };
     when(value.is_null(), lit("n"))
         .otherwise(encoded)
-        .unwrap_or_else(|_| lit("n"))
+        .map_err(|error| report!("the row identity for a {data_type} key: {error}"))
+}
+
+/// Whether a key type can be encoded into a row identity: a struct recurses
+/// through its fields, a list or map primary key cannot.
+fn identity_type_supported(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Struct(fields) => fields
+            .iter()
+            .all(|field| identity_type_supported(field.data_type())),
+        DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::FixedSizeList(_, _)
+        | DataType::Map(_, _)
+        | DataType::Dictionary(_, _)
+        | DataType::Union(_, _)
+        | DataType::Null => false,
+        _ => true,
+    }
+}
+
+/// The identity keys of an outer-join spec hold only encodable types.
+pub(crate) fn validate_identity_keys(left: &IvmTable, right: &IvmTable) -> Result<()> {
+    for (table, side) in [(left, "left"), (right, "right")] {
+        for key in &table.primary_keys {
+            let data_type = field_type(&table.schema, key)?;
+            if !identity_type_supported(&data_type) {
+                return Err(report!(
+                    "the row identity of a derived outer join cannot encode \
+                     the {side} {data_type} primary key {key}"
+                )
+                .attach(crate::sql::UnsupportedShape));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The shape of a pair-keyed join used by the projection helpers.
@@ -2634,6 +2688,9 @@ struct PairJoin<'a> {
     output_columns: &'a [JoinOutputColumn],
     left_primary_keys: &'a [String],
     right_primary_keys: &'a [String],
+    /// The two sources, for the row identity's key types.
+    left_table: &'a IvmTable,
+    right_table: &'a IvmTable,
     /// An optional filter over `left_value` / `right_value` the joined pair
     /// must satisfy (a non-equality join condition).
     pair_filter: Option<&'a str>,
@@ -2654,6 +2711,8 @@ impl JoinView {
             output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            left_table: &self.left,
+            right_table: &self.right,
             pair_filter: self.pair_filter.as_deref(),
             identity_column: false,
             null_safe: self.null_safe,
@@ -2672,6 +2731,8 @@ impl LeftJoinView {
             output_columns: &self.output_columns,
             left_primary_keys: &self.left.primary_keys,
             right_primary_keys: &self.right.primary_keys,
+            left_table: &self.left,
+            right_table: &self.right,
             pair_filter: None,
             identity_column: self.identity_column,
             null_safe: self.null_safe,
@@ -2927,7 +2988,7 @@ impl IvmRuntime {
                     None,
                 )?)?
                 .distinct()?
-                .select(keyed_join_output_columns(&view.parts()))?
+                .select(keyed_join_output_columns(&view.parts())?)?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
@@ -3497,7 +3558,7 @@ impl IvmRuntime {
             JoinType::Left,
             false,
         )?
-        .select(keyed_join_output_columns(&view.parts()))?
+        .select(keyed_join_output_columns(&view.parts())?)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let deletes = mv
@@ -3508,7 +3569,7 @@ impl IvmRuntime {
                 &key_names,
                 None,
             )?
-            .select(keyed_join_output_columns(&view.parts()))?
+            .select(keyed_join_output_columns(&view.parts())?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
@@ -3621,7 +3682,7 @@ impl IvmRuntime {
             JoinType::Left,
             false,
         )?
-        .select(keyed_join_output_columns(&view.parts()))?
+        .select(keyed_join_output_columns(&view.parts())?)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
         .collect()
@@ -3906,7 +3967,7 @@ impl IvmRuntime {
         if view.identity_column {
             inserts = inserts.with_column(
                 IVM_PAIR_IDENTITY_COLUMN,
-                pair_identity_expr(&view.left.primary_keys, &view.right.primary_keys),
+                pair_identity_expr(&view.left, &view.right)?,
             )?;
         }
         let inserts = inserts
@@ -3921,7 +3982,7 @@ impl IvmRuntime {
                 &left_key_names,
                 None,
             )?
-            .select(keyed_join_output_columns(&view.parts()))?
+            .select(keyed_join_output_columns(&view.parts())?)?
             .union(
                 mv.join(
                     affected_right,
@@ -3930,7 +3991,7 @@ impl IvmRuntime {
                     &right_key_names,
                     None,
                 )?
-                .select(keyed_join_output_columns(&view.parts()))?,
+                .select(keyed_join_output_columns(&view.parts())?)?,
             )?
             .distinct()?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
@@ -4049,7 +4110,7 @@ impl IvmRuntime {
         if view.identity_column {
             inserts = inserts.with_column(
                 IVM_PAIR_IDENTITY_COLUMN,
-                pair_identity_expr(&view.left.primary_keys, &view.right.primary_keys),
+                pair_identity_expr(&view.left, &view.right)?,
             )?;
         }
         for batch in inserts
@@ -4284,12 +4345,12 @@ impl IvmRuntime {
             || report!("cross join view {} refreshed without changes", view.view_id);
         let inserts = inserts
             .ok_or_else(no_change)?
-            .select(keyed_join_output_columns(&parts))?
+            .select(keyed_join_output_columns(&parts)?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let deletes = deletes
             .ok_or_else(no_change)?
-            .select(keyed_join_output_columns(&parts))?
+            .select(keyed_join_output_columns(&parts)?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
@@ -4393,7 +4454,7 @@ impl IvmRuntime {
             JoinType::Inner,
             false,
         )?
-        .select(keyed_join_output_columns(&parts))?
+        .select(keyed_join_output_columns(&parts)?)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         for batch in inserts.collect().await? {
@@ -4552,5 +4613,93 @@ impl IvmRuntime {
             .set_view_status(&view.view_id, "active")
             .await?;
         Ok(epoch)
+    }
+}
+
+#[cfg(test)]
+mod identity_encoding_tests {
+    use super::*;
+    use arrow::array::{ArrayRef, Int64Array, StringArray, StructArray};
+    use arrow::buffer::NullBuffer;
+    use datafusion::datasource::memory::MemTable;
+    use datafusion::prelude::SessionContext;
+
+    fn struct_type() -> DataType {
+        DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Utf8, true),
+            Field::new("b", DataType::Utf8, true),
+        ]))
+    }
+
+    /// A struct key encodes field by field with length prefixes, so values
+    /// whose text forms could run together stay distinct, and NULL is `n`.
+    #[test_log::test(tokio::test)]
+    async fn struct_keys_encode_field_by_field() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", struct_type(), true),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let points = StructArray::new(
+            Fields::from(vec![
+                Field::new("a", DataType::Utf8, true),
+                Field::new("b", DataType::Utf8, true),
+            ]),
+            vec![
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    Some("ab"),
+                    Some("a"),
+                    None,
+                ])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some("bc"), Some("c"), None, None])),
+            ],
+            Some(NullBuffer::from(vec![true, true, true, false])),
+        );
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(points),
+                Arc::new(Int64Array::from_iter_values(0..4)),
+            ],
+        )
+        .unwrap();
+        let context = SessionContext::new();
+        context
+            .register_table(
+                "t",
+                Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap()),
+            )
+            .unwrap();
+        let encoded = encoded_identity_part(col("s"), &struct_type())
+            .unwrap()
+            .alias("identity");
+        let batches = context
+            .table("t")
+            .await
+            .unwrap()
+            .select(vec![col("id"), encoded])
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let identities = batch.column(1);
+            for row in 0..batch.num_rows() {
+                rows.push(
+                    arrow::util::display::array_value_to_string(identities, row).unwrap(),
+                );
+            }
+        }
+        assert_eq!(rows[3], "n", "a NULL struct encodes as n: {rows:?}");
+        assert_ne!(
+            rows[0], rows[1],
+            "(\"a\", \"bc\") and (\"ab\", \"c\") must not collide: {rows:?}"
+        );
+        assert_ne!(
+            rows[0], rows[2],
+            "a NULL field must change the identity: {rows:?}"
+        );
+        assert_ne!(rows[1], rows[2]);
     }
 }
