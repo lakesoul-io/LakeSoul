@@ -9,14 +9,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, MinMaxKind, StateRole, min_max_mv_schema_for,
-    sum_count_mv_schema_for,
+    IvmTableOptions, MinMaxKind, StateRole, lookup_join_view_schema_for,
+    min_max_mv_schema_for, sum_count_mv_schema_for,
 };
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
 use tempfile::tempdir;
@@ -635,4 +635,148 @@ async fn an_update_commit_on_the_source_rebuilds_the_view() {
     let execution = executor.execute(&statement).await.unwrap();
     assert_eq!(execution.action.label(), "incremental");
     assert_eq!(read_value(runtime, &mv, "sum_v").await.get("a"), Some(&22));
+}
+
+/// A lookup join whose left primary key is also the join key: the key column
+/// is materialized once (not as key and primary key), and the view follows
+/// both sides.
+#[test_log::test(tokio::test)]
+async fn a_lookup_join_materializes_a_key_that_is_also_the_primary_key() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lk_l_{suffix}"),
+                table_path(&dir, "left"),
+                schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lk_r_{suffix}"),
+                table_path(&dir, "right"),
+                schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lookup_join_view_schema_for(
+                    &schema(),
+                    &schema(),
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    "g",
+                    "v",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_allow_fallback(false),
+        )
+        .await
+        .unwrap();
+    left.append_batch(
+        runtime.client(),
+        batch(&[(1, "a", 0, "insert"), (2, "b", 0, "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), batch(&[(1, "r", 10, "insert")]))
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_lk_mv_{suffix} SELECT a.g, b.v \
+         FROM ivm_lk_l_{suffix} a LEFT JOIN ivm_lk_r_{suffix} b ON b.k = a.k"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    assert_eq!(
+        read_lookup_pairs(runtime, &mv).await,
+        vec![(1, "a".to_string(), Some(10)), (2, "b".to_string(), None),]
+    );
+
+    // The right payload updates and then disappears.
+    right
+        .append_batch(runtime.client(), batch(&[(1, "r", 20, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_lookup_pairs(runtime, &mv).await,
+        vec![(1, "a".to_string(), Some(20)), (2, "b".to_string(), None),]
+    );
+    right
+        .append_batch(runtime.client(), batch(&[(1, "r", 20, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_lookup_pairs(runtime, &mv).await,
+        vec![(1, "a".to_string(), None), (2, "b".to_string(), None),]
+    );
+}
+
+/// The `(k, left_value, right_value)` rows of a lookup MV ordered by `k`.
+async fn read_lookup_pairs(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> Vec<(i64, String, Option<i64>)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, left_value, right_value from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let lefts = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let rights = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row),
+                lefts.value(row).to_string(),
+                (!rights.is_null(row)).then(|| rights.value(row)),
+            ));
+        }
+    }
+    rows
 }
