@@ -3710,6 +3710,29 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 该缺陷是本轮 §10.144 调查「结构体主键外连接步骤」时顺带复现的（当时用普通 count MV 即可复现），
   与本轮 planner 修复无关。
 
+### 10.146 Tier-2 按变化分区重算（1）：资格判定与 reason 记录
+
+- **目标**：Tier-2 回退今天整表重算（`truncate` + 全量重写）。分区化后只重算「变化分区」。本步先落地
+  **资格判定**并把结论写进视图的 `reason`（用户可见），刷新行为暂不变。
+- **判定**（`runtime/fallback.rs::fallback_partition_scope`）：语句**分区局部**当且仅当
+  ① 恰有一个 range 分区源 T，其余源都未分区，且它们的 schema **不含**与分区列同名的列（否则输出的分区值
+  可能来自别的表）；② T 的分区列与 MV 的分区列同名同集合（MV 必须 range 分区）；③ T 在计划里**只被读一次**
+  （子查询计入）；④ 输出分区列可逐级回溯到 T 的扫描列（`partition_preserved`：Projection 只允许普通列透传，
+  Aggregate 的分组键必须是该普通列，Join 必须恰有一侧携带，Union 的所有分支都要携带——`upper(day) AS day`
+  这类改写直接拒绝）；⑤ 所有算子分区局部：Aggregate 每个 grouping set 含全部分区列、Window 的 `PARTITION BY`
+  含之、`DISTINCT ON` 的 `on_expr` 含之、无全局 `LIMIT`、Union 每个分支都读 T、外连接/半连接/反连接的
+  **保留侧**必须是含 T 的一侧（`Full` 直接拒绝）、未知算子只要读到 T 就拒绝。
+- **记录**：判定在 executor 的 fallback 探针处用**同一份已优化计划**完成（零额外分析成本），结论落到
+  `ViewSpec::Fallback::partition_scope`，并把一句话并进 `reason`：`partition pruning: eligible (only the
+  changed [day] partitions need a recompute)` 或 `partition pruning: not applied (<原因>)`。
+  `partition_scope` 与 `reason` 一样**不参与定义哈希**（`definition_hash` 清空两者），判定变化不触发重建。
+- **测试**：`fallback.rs::partition_scope_tests`——9 个允许形状（排序/过滤/内连接/反侧连接/分组/窗口/去重/
+  `EXISTS`/`IN`）、6 个拒绝形状（全局 `LIMIT`、未按分区列分组、保留侧不含 T、自连接读两次、`upper(day) AS day`、
+  窗口未按分区列），外加影子列、双分区源、MV 未分区、UNION 分支不含 T 四类前置拒绝。
+- **下一步（本设计第 2 步）**：刷新按 scope 只读受限源（`read_current_filtered_partitions`）、只删改变化分区
+  （`delete` 变化分区的活跃行 + 重算 `insert`，按 MV 主键 + `rowKinds` 排序），带运行时守卫（输出越界即回落全量）
+  与指标；第 3 步：源分区 drop 时对 fallback 视图做确定性清理（扩展 `cleanup_dropped_partitions`）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

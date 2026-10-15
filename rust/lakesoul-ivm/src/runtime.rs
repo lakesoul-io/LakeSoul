@@ -1104,6 +1104,10 @@ pub enum ViewSpec {
         /// Why the incremental analyzer rejected the shape, for the metadata.
         /// It is not part of the definition identity.
         reason: String,
+        /// The partition scope a refresh can recompute on its own, when the
+        /// statement is partition local.  Derived metadata: it is not part of
+        /// the definition identity.
+        partition_scope: Option<PartitionScope>,
         /// The materialized view table id.
         mv_table_id: String,
     },
@@ -3449,6 +3453,7 @@ impl IvmRuntime {
                 statement,
                 tables,
                 reason,
+                partition_scope,
                 mv_table_id,
             } => {
                 let mut opened = Vec::with_capacity(tables.len());
@@ -3460,6 +3465,7 @@ impl IvmRuntime {
                     statement: statement.clone(),
                     tables: opened,
                     reason: reason.clone(),
+                    partition_scope: partition_scope.clone(),
                     mv: self.open_table_by_id(mv_table_id).await?,
                     refresh_interval_ms,
                 })
