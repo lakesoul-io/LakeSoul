@@ -307,6 +307,20 @@ impl LakeSoulTableProvider {
             &table_info.table_schema_arrow_ipc,
             &table_info.table_schema_arrow_ipc_json_hash,
         )?);
+        let vector_index_configs =
+            crate::vector_index::parse_vector_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
+        // A frontend may ask for its own marker on the vector columns (the
+        // PostgreSQL wire server reports them as its `vector` type); the
+        // scan, file and execution schemas are all derived from this one, so
+        // tagging it here keeps the plan and the data consistent.
+        let logical_schema = mark_vector_columns(
+            logical_schema,
+            &vector_index_configs,
+            &provider_options.vector_field_metadata,
+        );
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
         let (file_schema, scan_schema) =
@@ -341,11 +355,6 @@ impl LakeSoulTableProvider {
 
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();
-        let vector_index_configs =
-            crate::vector_index::parse_vector_index_from_table_properties(
-                &table_info.properties,
-            )
-            .unwrap_or_default();
         let text_index_configs =
             crate::text_index::parse_text_index_from_table_properties(
                 &table_info.properties,
@@ -1934,6 +1943,48 @@ impl TableProvider for LakeSoulTableProvider {
 }
 
 /// True for list-of-numbers types accepted by the vector index.
+/// Merge the configured metadata into the fields of the table's declared
+/// vector columns; every other field is returned untouched.
+fn mark_vector_columns(
+    schema: SchemaRef,
+    vector_index_configs: &[crate::vector_index::VectorIndexTableConfig],
+    metadata: &[(String, String)],
+) -> SchemaRef {
+    if metadata.is_empty() {
+        return schema;
+    }
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let declared = vector_index_configs
+                .iter()
+                .any(|config| config.column == *field.name());
+            if !declared || !is_float_vector(field.data_type()) {
+                return field.as_ref().clone();
+            }
+            let mut merged = field.metadata().clone();
+            for (key, value) in metadata {
+                merged.insert(key.clone(), value.clone());
+            }
+            field.as_ref().clone().with_metadata(merged)
+        })
+        .collect();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+/// True for the list-of-Float32 types a vector column is stored as (`FLOAT[]`
+/// from SQL, a fixed-size list from the writer APIs).
+fn is_float_vector(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::List(field) | DataType::LargeList(field) => {
+            field.data_type() == &DataType::Float32
+        }
+        DataType::FixedSizeList(field, _) => field.data_type() == &DataType::Float32,
+        _ => false,
+    }
+}
+
 fn is_vector_type(data_type: &DataType) -> bool {
     match data_type {
         DataType::List(field) | DataType::LargeList(field) => matches!(

@@ -2247,3 +2247,104 @@ async fn sql_vector_search_multi_column_fusion() {
         "index fusion recall {recall}, got {index_ids:?} truth {truth:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vector_field_metadata_marks_only_declared_columns() {
+    use crate::catalog::LakeSoulVectorFieldMetadata;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_field_metadata";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // A session that asks for the PostgreSQL frontend's vector marker.
+    let session_config = crate::create_lakesoul_session_config()
+        .unwrap()
+        .with_extension(Arc::new(LakeSoulVectorFieldMetadata {
+            fields: vec![("pg.vector".to_string(), "vector".to_string())],
+        }));
+    let ctx = crate::create_lakesoul_session_ctx_with_config(
+        client.clone(),
+        &default_args(),
+        session_config,
+    )
+    .unwrap();
+
+    let cfg = r#"[{"column":"vec","dim":8,"nlist":4,"total_bits":7,"metric":"L2"}]"#;
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL,
+            other FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL LOCATION '{location}'
+         OPTIONS ('vector_index_columns' '{cfg}', 'hashBucketNum' '4')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+    // The insert also goes through the tagged schema: it must keep working.
+    let insert_sql = format!(
+        "INSERT INTO \"lakesoul\".default.{table_name}
+         SELECT CAST(g.value AS BIGINT),
+                ARRAY[sin(g.value), cos(g.value), g.value * 0.1, 0.5, -0.5, 1.0, -1.0, g.value * 0.01],
+                ARRAY[g.value, g.value]
+         FROM generate_series(0, 9) AS g(value)"
+    );
+    ctx.sql(&insert_sql).await.unwrap().collect().await.unwrap();
+
+    let dataframe = ctx
+        .sql(&format!(
+            "SELECT id, vec, other FROM \"lakesoul\".default.{table_name} ORDER BY id"
+        ))
+        .await
+        .unwrap();
+    let schema = dataframe.schema();
+    assert_eq!(
+        schema
+            .field_with_unqualified_name("vec")
+            .unwrap()
+            .metadata()
+            .get("pg.vector")
+            .map(String::as_str),
+        Some("vector"),
+        "the declared vector column carries the marker"
+    );
+    assert!(
+        schema
+            .field_with_unqualified_name("other")
+            .unwrap()
+            .metadata()
+            .get("pg.vector")
+            .is_none(),
+        "an array column that is not a vector index column stays untouched"
+    );
+    // The tagged schema still reads the data.
+    let batches = dataframe.collect().await.unwrap();
+    assert_eq!(
+        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        10
+    );
+
+    // A session without the extension sees the physical schema.
+    let plain = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let dataframe = plain
+        .sql(&format!(
+            "SELECT vec FROM \"lakesoul\".default.{table_name}"
+        ))
+        .await
+        .unwrap();
+    assert!(
+        dataframe
+            .schema()
+            .field_with_unqualified_name("vec")
+            .unwrap()
+            .metadata()
+            .get("pg.vector")
+            .is_none(),
+        "the marker is opt-in"
+    );
+}
