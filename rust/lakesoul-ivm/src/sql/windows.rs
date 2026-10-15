@@ -104,15 +104,30 @@ pub(super) fn analyze_order_by_limit(
     sort: &Sort,
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
+    offset: i64,
+    limit: Option<i64>,
 ) -> Result<ViewSpec> {
-    let Some(fetch) = sort.fetch else {
-        return Err(unsupported(
-            "ORDER BY without LIMIT is not materialized (add a LIMIT)",
-        ));
+    let fetch = match limit {
+        Some(limit) => limit,
+        None => {
+            let Some(fetch) = sort.fetch else {
+                return Err(unsupported(
+                    "ORDER BY without LIMIT is not materialized (add a LIMIT)",
+                ));
+            };
+            i64::try_from(fetch).map_err(|_| unsupported("the LIMIT is too large"))?
+        }
     };
     if fetch == 0 {
         return Err(unsupported("LIMIT 0 is not maintained"));
     }
+    if offset < 0 {
+        return Err(unsupported("a negative OFFSET is not maintained"));
+    }
+    // The rank window is `(offset, offset + limit]`.
+    offset
+        .checked_add(fetch)
+        .ok_or_else(|| unsupported("the LIMIT plus OFFSET is too large"))?;
     let (source, filter) = collect_filtered_source(&sort.input, tables, "a top-k")?;
     let mut order_keys = Vec::with_capacity(sort.expr.len());
     let mut order_by = Vec::with_capacity(sort.expr.len());
@@ -181,7 +196,8 @@ pub(super) fn analyze_order_by_limit(
         order_keys,
         order_by,
         output_columns,
-        limit: i64::try_from(fetch).map_err(|_| unsupported("the LIMIT is too large"))?,
+        limit: fetch,
+        offset,
         filter,
     })
 }
@@ -292,6 +308,7 @@ pub(super) fn try_analyze_top_k(
         order_by,
         output_columns,
         limit,
+        offset: 0,
         filter,
     }))
 }
@@ -737,8 +754,6 @@ mod tests {
 
         // The shapes outside the maintained subset.
         for sql in [
-            // OFFSET shifts the window.
-            "select k, v from src order by v desc limit 2 offset 1",
             // A limit without an ordering is arbitrary.
             "select k, v from src limit 3",
             // Ordering alone is not materialized.
@@ -1369,6 +1384,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_order_by_limit_with_offset() {
+        // OFFSET keeps a Limit (skip, fetch) above the Sort's fetch; both the
+        // optimized and the raw shape are accepted.
+        let analyzed =
+            analyze_optimized("select k, v from src order by v desc limit 3 offset 2")
+                .await
+                .unwrap();
+        let ViewSpec::TopK {
+            order_keys,
+            limit,
+            offset,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(order_keys, vec!["v".to_string()]);
+        assert_eq!(limit, 3);
+        assert_eq!(offset, 2);
+
+        // The select list may be pruned into the sort.
+        let analyzed = analyze("select * from src order by v limit 3 offset 2")
+            .await
+            .unwrap();
+        let ViewSpec::TopK { limit, offset, .. } = analyzed.spec else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(limit, 3);
+        assert_eq!(offset, 2);
+
+        let analyzed = analyze_optimized("select * from src order by v limit 3 offset 2")
+            .await
+            .unwrap();
+        let ViewSpec::TopK { limit, offset, .. } = analyzed.spec else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(limit, 3);
+        assert_eq!(offset, 2);
+
+        // A global ORDER BY ... LIMIT without OFFSET is a top-k too.
+        let analyzed = analyze("select k, v from src order by v limit 3")
+            .await
+            .unwrap();
+        let ViewSpec::TopK {
+            group_keys,
+            limit,
+            offset,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert!(group_keys.is_empty());
+        assert_eq!(limit, 3);
+        assert_eq!(offset, 0);
+    }
+
+    #[tokio::test]
     async fn analyzes_top_k() {
         let analyzed = analyze(
             "select k, v from (select k, g, v, row_number() over (partition by g order by v) as rn from src) t where rn <= 3",
@@ -1511,12 +1584,6 @@ mod tests {
             )
             .await
             .is_err()
-        );
-        // Global ORDER BY ... LIMIT is not maintained.
-        assert!(
-            analyze("select k, v from src order by v limit 3")
-                .await
-                .is_err()
         );
     }
 }

@@ -346,9 +346,9 @@ fn fallback_recomputes_are_counted() {
                 )
                 .await
                 .unwrap();
-            // `LIMIT ... OFFSET` is not maintained incrementally.
+            // `LIMIT` without `ORDER BY` is not maintained incrementally.
             let sql = format!(
-                "INSERT INTO {} SELECT k, g, v FROM {} ORDER BY k LIMIT 2 OFFSET 1",
+                "INSERT INTO {} SELECT k, g, v FROM {} LIMIT 3",
                 mv.table_name, source.table_name
             );
             let execution = executor.execute(&sql).await.unwrap();
@@ -362,7 +362,7 @@ fn fallback_recomputes_are_counted() {
     });
 
     assert_eq!(state.counter("lakesoul_ivm_fallbacks_total{}"), 1);
-    assert_eq!(state.counter("lakesoul_ivm_fallback_rows{}"), 2);
+    assert_eq!(state.counter("lakesoul_ivm_fallback_rows{}"), 3);
     assert_eq!(
         state.counter("lakesoul_ivm_statements_total{action=fallback}"),
         2

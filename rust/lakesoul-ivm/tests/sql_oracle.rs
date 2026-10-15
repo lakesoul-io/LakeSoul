@@ -3426,16 +3426,16 @@ async fn oracle_fallback_matches_full_recompute() {
         Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
         Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
     ]));
-    // `LIMIT ... OFFSET` is not maintained incrementally; the key stays
-    // unique, so the MV keeps a primary key and the result is checked for
-    // uniqueness on every recompute.
+    // `LIMIT` without `ORDER BY` is not maintained incrementally; the key
+    // stays unique, so the MV keeps a primary key and the result is checked
+    // for uniqueness on every recompute.
     run_oracle(
         "fallback",
         1,
         mv_schema,
         vec!["k".to_string()],
-        "SELECT k, g, v FROM __SRC__ ORDER BY k LIMIT 2 OFFSET 1",
-        "SELECT k, g, v FROM __SRC__ WHERE op <> 'delete' ORDER BY k LIMIT 2 OFFSET 1",
+        "SELECT k, g, v FROM __SRC__ LIMIT 3",
+        "SELECT k, g, v FROM __SRC__ WHERE op <> 'delete' LIMIT 3",
         "SELECT k, g, v FROM __MV__",
     )
     .await;

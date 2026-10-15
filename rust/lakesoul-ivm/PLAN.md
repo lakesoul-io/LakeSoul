@@ -3808,6 +3808,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `tests/fallback_partitions.rs::two_partitioned_sources_prune_to_the_union_of_changed_partitions`——两个
   分区源各改**不同**分区，断言结果正确且**第三个分区版本不变**。
 
+### 10.151 性能项（1）：TopK 的 OFFSET
+
+- **形状**：`ORDER BY o LIMIT k OFFSET m`（全局，及 `ROW_NUMBER` 变体的等价窗口）。优化后的计划为
+  `Projection → Limit{skip=m, fetch=k} → Sort{fetch=m+k}`（或未被下推的 `Limit → Sort`），分析器两种形态都接受
+  （`limit_bound` 从 `Limit` 的表达式取整数，`peel` 后要求 `Sort`）。
+- **语义**：物化 `m < rank <= m + k` 的切片（`TopKView.offset`，默认 0），rank 由 `order_by` + 源主键决定
+  （tie-break 确定 ✓）；受影响组仍整组重写（delete + insert，按源主键 + `rowKinds` 排序 §10.145），
+  偏移只是把插入条件从 `rank <= k` 变为 `rank > m and rank <= m+k`（刷新与重建同改）。
+- **订正**：两条既有断言把「未下推 fetch 的 Sort」与「全局 ORDER BY ... LIMIT」当成拒绝形状——
+  前者是计划形态差异（现在两种形态都接受），后者本就是 top-k（现按成功断言），已相应改正。
+- **测试**：分析器单测（优化/未优化两形态 + `select *` + 无 OFFSET 的全局 top-k）；
+  `tests/top_k.rs` 新增 `top_k_with_offset_shifts_the_window`（oracle 也按 `m < rn <= m+k` 计算，
+  含窗口平移的两轮）；`tests/slt/top_k_offset.slt` + `sqllogic_top_k_offset` 注册；`fallback.slt` 的 Tier-2
+  形状改为「`LIMIT` 无 `ORDER BY`」（原 `LIMIT ... OFFSET` 已增量维护）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

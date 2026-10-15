@@ -125,6 +125,35 @@ pub fn analyze_select(
                 // by the aggregate analyzers.
                 analyze_aggregate(aggregate, Some(projection), &[], tables, request)?
             }
+            LogicalPlan::Limit(limit) => {
+                // `ORDER BY ... LIMIT n OFFSET m` keeps a Limit (skip, fetch)
+                // above the Sort's fetch.
+                let offset = limit_bound(&limit.skip, "OFFSET")?.unwrap_or(0);
+                let Some(fetch) = limit_bound(&limit.fetch, "LIMIT")? else {
+                    return Err(unsupported(
+                        "LIMIT without ORDER BY is not maintained (order the rows \
+                         with ORDER BY ... LIMIT k)",
+                    ));
+                };
+                // The optimizer may or may not push the fetch into the Sort,
+                // so any Sort input is a top-k here.
+                match peel(&limit.input) {
+                    LogicalPlan::Sort(sort) => analyze_order_by_limit(
+                        Some(projection),
+                        sort,
+                        tables,
+                        request,
+                        offset,
+                        Some(fetch),
+                    )?,
+                    _ => {
+                        return Err(unsupported(
+                            "LIMIT without ORDER BY is not maintained (order \
+                             the rows with ORDER BY ... LIMIT k)",
+                        ));
+                    }
+                }
+            }
             LogicalPlan::Sort(sort) => {
                 // `DISTINCT ON (...) ... ORDER BY` keeps the final ordering in
                 // a Sort above the aggregate; the ordering is not
@@ -132,7 +161,14 @@ pub fn analyze_select(
                 // define the picked rows.  A `fetch` is a `LIMIT`: a global
                 // top-k.
                 if sort.fetch.is_some() {
-                    analyze_order_by_limit(Some(projection), sort, tables, request)?
+                    analyze_order_by_limit(
+                        Some(projection),
+                        sort,
+                        tables,
+                        request,
+                        0,
+                        None,
+                    )?
                 } else if let LogicalPlan::Aggregate(aggregate) = peel(&sort.input)
                     && aggregate.aggr_expr.iter().any(is_first_value_aggregate)
                 {
@@ -196,15 +232,34 @@ pub fn analyze_select(
             }
         }
         LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
-        LogicalPlan::Sort(sort) => analyze_order_by_limit(None, sort, tables, request)?,
+        LogicalPlan::Sort(sort) => {
+            analyze_order_by_limit(None, sort, tables, request, 0, None)?
+        }
         LogicalPlan::Window(window) => analyze_window(None, window, tables, request)?,
         LogicalPlan::Limit(limit) => {
-            return Err(unsupported(if limit.skip.is_some() {
-                "LIMIT with OFFSET is not maintained"
-            } else {
-                "LIMIT without ORDER BY is not maintained (order the rows \
-                 with ORDER BY ... LIMIT k)"
-            }));
+            let offset = limit_bound(&limit.skip, "OFFSET")?.unwrap_or(0);
+            let Some(fetch) = limit_bound(&limit.fetch, "LIMIT")? else {
+                return Err(unsupported(
+                    "LIMIT without ORDER BY is not maintained (order the rows \
+                     with ORDER BY ... LIMIT k)",
+                ));
+            };
+            match peel(&limit.input) {
+                LogicalPlan::Sort(sort) => analyze_order_by_limit(
+                    None,
+                    sort,
+                    tables,
+                    request,
+                    offset,
+                    Some(fetch),
+                )?,
+                _ => {
+                    return Err(unsupported(
+                        "LIMIT without ORDER BY is not maintained (order the rows \
+                         with ORDER BY ... LIMIT k)",
+                    ));
+                }
+            }
         }
         LogicalPlan::Aggregate(aggregate) => {
             analyze_aggregate(aggregate, None, &[], tables, request)?
@@ -741,6 +796,18 @@ fn single_column_arg(args: &[Expr]) -> Result<String> {
     }
 }
 /// An integer literal, for the top-k rank comparison.
+/// The integer a `Limit` bound holds (`LIMIT` / `OFFSET` are expressions in
+/// the plan).
+fn limit_bound(expr: &Option<Box<Expr>>, what: &str) -> Result<Option<i64>> {
+    match expr.as_deref().map(int_literal) {
+        None => Ok(None),
+        Some(Some(value)) => Ok(Some(value)),
+        Some(None) => Err(unsupported(format!(
+            "the {what} must be an integer literal"
+        ))),
+    }
+}
+
 fn int_literal(expr: &Expr) -> Option<i64> {
     match expr {
         Expr::Literal(ScalarValue::Int8(Some(value)), _) => Some(i64::from(*value)),

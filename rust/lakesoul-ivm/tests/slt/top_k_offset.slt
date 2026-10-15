@@ -1,0 +1,49 @@
+# A global TOP-K with OFFSET: `ORDER BY ... LIMIT k OFFSET m` materializes the
+# rows with `m < rank <= m + k` and shifts as rows enter and leave.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=3,op=insert; k=3,g=b,v=7,op=insert; k=4,g=b,v=1,op=insert; k=5,g=a,v=6,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 2 OFFSET 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+3 7
+5 6
+
+# A new row displaces the window's last row.
+statement ok
+/*ivm-append __SRC__: k=6,g=a,v=9,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 2 OFFSET 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+3 7
+6 9
+
+# Deleting the best row shifts the window back down.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT k, v FROM __SRC__ ORDER BY v DESC LIMIT 2 OFFSET 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IT rowsort
+SELECT k, v FROM __MV__
+----
+3 7
+5 6

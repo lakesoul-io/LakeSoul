@@ -1070,6 +1070,9 @@ pub enum ViewSpec {
         output_columns: Vec<String>,
         /// How many rows to keep per group.
         limit: i64,
+        /// How many rows to skip before keeping them (a `LIMIT ... OFFSET`).
+        #[serde(default)]
+        offset: i64,
         /// An optional filter applied before ranking.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -3435,6 +3438,7 @@ impl IvmRuntime {
                 order_by,
                 output_columns,
                 limit,
+                offset,
                 filter,
             } => SpecView::TopK(TopKView {
                 view_id: view_id.clone(),
@@ -3445,6 +3449,7 @@ impl IvmRuntime {
                 order_by: order_by.clone(),
                 output_columns: output_columns.clone(),
                 limit: *limit,
+                offset: *offset,
                 filter: filter.clone(),
                 refresh_interval_ms,
             }),
