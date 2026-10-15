@@ -3652,20 +3652,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 残留：结构体主键的 lookup 形状已越过投影重名，但其端到端用例还需镜像**派生 lookup 步骤**的 MV 布局
   （紧凑载荷列名），与 §10.141 记录的 pair/identity 侧边角一并留待后续。
 
-### 10.143 连接键与主键同列的布局（残留调查与回归用例）
+### 10.143 连接键与主键同列的布局（规则提取与订正）
 
-- **已知不一致**：`pk == join key` 的形状下，分析器把该列**只物化一次**（作为键列），而
-  `left_join_view_schema_for`（紧凑 pair 构型）仍会列出 `__left_pk_*`/`__right_pk_*` 别名 → 用该助手建 MV
-  的语句会报 schema 不匹配（此前 lookup 侧已在 #1131 修好，pair 侧未修）。
-- **尝试过的修法（均未通过既有套件，已回退）**：① 两侧键先别名 `__left_{key}`、输出再改回——修掉了
-  struct 主键 pair 步骤的首个 planner 报错（`?table?.g`/`g` 歧义），但暴露下一层（`?table?.s` 重复限定符），
-  且对既有形状无收益（标量形状在 main 上本就可用）；② 在紧凑构型里跳过与键同名的 pk——**派生步骤**形状的
-  分析器期望**保留**这些别名（7 例失败），说明该规则随形状（普通视图 vs 派生步骤）而变，需先提取分析器的
-  精确规则再统一。
-- **本轮落地**：`sql_executor.rs` 新增回归用例——`ON b.k = a.k` 且两侧主键均为 `k` 的 pair 左连接
-  （bootstrap + 右值/右删增量），MV 按分析器期望列手建（键、两侧载荷、簿记列）并在注释里指向本条。
-- 下一步：定位分析器对 `pk == join key` 的判定（普通视图跳过、派生步骤保留），把同一规则同步到
-  紧凑 pair 助手与写路径。
+- **订正**：上一轮记录的「普通 pair 视图与分析器不一致」系**误判**——插桩 `expected_mv_schema` 证实
+  `a LEFT JOIN b ON b.k = a.k`（右侧被连接键唯一化）走的是 **LookupJoin** 分支，其期望布局为
+  [键、left_value（沿用源字段可空性）、right_value、簿记列]，与 #1131 修好的 `lookup_join_view_schema_for`
+  **完全一致**；当时的失配是因为测试用了 **pair** 助手（`left_join_view_schema_for`），而该助手对应的是
+  右侧**不**被连接键唯一化的 pair 形状。
+- **规则**：连接键与某侧主键同列时——**lookup** 布局只物化一次（作为键列；lookup 是 1:1，左主键即键），
+  派生**步骤**（`identity_column = true`）保留两侧主键别名（消费方按别名读键）。
+- **回归覆盖**：端到端场景由 #1131 的 `sql_executor.rs::a_lookup_join_materializes_a_key_that_is_also_the_primary_key`
+  覆盖（同形且含 bootstrap/右值更新/右删）；#1134 新增的 `a_pair_left_join_with_the_key_as_the_primary_key`
+  与其完全同形、覆盖更少，本 PR 移除。规则本身由分析器单测
+  `sql/joins.rs::a_lookup_key_that_is_also_the_primary_key_stays_a_lookup` 固定（该形状必须分析为
+  `ViewSpec::LookupJoin`）。
+- **仍待解决**：结构体主键进入 **pair** 步骤（右侧不被键唯一化）的 planner 报错（`?table?.s`
+  重复限定符，见 §10.141）——与布局无关，属写路径投影问题。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

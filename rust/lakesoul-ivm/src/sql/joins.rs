@@ -3210,6 +3210,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_lookup_key_that_is_also_the_primary_key_stays_a_lookup() {
+        // The right side is keyed by the join key, so the shape is a lookup
+        // even when the join key is also the left primary key: the layout
+        // materializes it once, as the key (PLAN 10.143).
+        let analyzed =
+            analyze_optimized("select a.g, b.v from src a left join src b on b.k = a.k")
+                .await
+                .unwrap();
+        let ViewSpec::LookupJoin {
+            join_keys,
+            left_value,
+            right_value,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(join_keys, vec!["k".to_string()]);
+        assert_eq!(left_value, "g");
+        assert_eq!(right_value, "v");
+    }
+
+    #[tokio::test]
     async fn analyzes_lookup_left_join() {
         let analyzed = analyze_optimized(
             "select a.k, a.v, b.v from src a left join src b on a.k = b.k",
