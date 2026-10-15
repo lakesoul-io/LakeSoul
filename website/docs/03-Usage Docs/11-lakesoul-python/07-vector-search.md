@@ -257,6 +257,29 @@ print(result.column("id").to_pylist())  # nearest by the fused distance
 
 Fusion is defined for L2 columns only, and every queried column must carry the same metric. With the default `rerank="exact"` the weighted sum is computed exactly on the candidate rows inside Daft (the queried vector columns are read for that), while `rerank="index"` ranks by the fused distance computed inside the indexes.
 
+#### Multi-column fusion in SQL
+
+The optimizer recognises the same fusion in a weighted sum of `array_distance` calls in `ORDER BY` and pushes every column into one index scan — no SDK needed:
+
+```sql
+-- exact mode (default): the candidate intersection is re-ranked by the
+-- exact weighted distances.
+SELECT id FROM t
+ORDER BY 0.7 * array_distance(text_vec, ARRAY[...])
+       + 0.3 * array_distance(image_vec, ARRAY[...])
+LIMIT 10;
+
+-- index-only mode: order by the fused index distance; the stored vector
+-- columns are never read (no SortExec in the plan).
+SET lakesoul_vector_search.rerank = 'index';
+SELECT id FROM t
+ORDER BY 0.7 * array_distance(text_vec, ARRAY[...])
+       + 0.3 * array_distance(image_vec, ARRAY[...])
+LIMIT 10;
+```
+
+Every term must be an `array_distance` over a column declared in `vector_index_columns`, and all terms must share the metric; a sum that mixes inner product in, or adds a non-distance term, falls back to the regular full scan. `EXPLAIN VERBOSE` shows the fused plan as `LakeSoulVectorSearchExec(vec=text_vec+image_vec, ...)`.
+
 `scan.to_daft()` with `reader_options` remains available for callers that only need the per-bucket candidates, e.g. to run their own merge logic.
 
 ## How it works

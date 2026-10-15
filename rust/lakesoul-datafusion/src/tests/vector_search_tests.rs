@@ -74,6 +74,137 @@ fn brute_force_topk(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<u64> {
     scored.into_iter().take(k).map(|(_, id)| id).collect()
 }
 
+/// Weighted brute-force top-k over two vector columns (the index fuses
+/// `sqrt`-ed L2 distances, so the truth uses the same values).
+fn brute_force_topk_fused(
+    vec_a: &[Vec<f32>],
+    vec_b: &[Vec<f32>],
+    query_a: &[f32],
+    query_b: &[f32],
+    weight_a: f32,
+    weight_b: f32,
+    k: usize,
+) -> Vec<u64> {
+    let distance = |v: &Vec<f32>, q: &[f32]| -> f32 {
+        v.iter()
+            .zip(q)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt()
+    };
+    let mut scored: Vec<(f32, u64)> = (0..vec_a.len())
+        .map(|i| {
+            (
+                weight_a * distance(&vec_a[i], query_a)
+                    + weight_b * distance(&vec_b[i], query_b),
+                i as u64,
+            )
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    scored.into_iter().take(k).map(|(_, id)| id).collect()
+}
+
+/// `id`, `vec_a`, `vec_b` — the two indexed columns of the fusion tests.
+fn two_vector_schema() -> SchemaRef {
+    let list = || {
+        DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            DIM as i32,
+        )
+    };
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new("vec_a", list(), false),
+        Field::new("vec_b", list(), false),
+    ]))
+}
+
+fn make_two_vector_batch(
+    ids: &[u64],
+    vec_a: &[Vec<f32>],
+    vec_b: &[Vec<f32>],
+) -> RecordBatch {
+    let list = |vectors: &[Vec<f32>]| {
+        let mut builder = arrow::array::FixedSizeListBuilder::new(
+            arrow::array::Float32Builder::new(),
+            DIM as i32,
+        );
+        for vector in vectors {
+            for value in vector {
+                builder.values().append_value(*value);
+            }
+            builder.append(true);
+        }
+        builder.finish()
+    };
+    RecordBatch::try_new(
+        two_vector_schema(),
+        vec![
+            Arc::new(arrow::array::UInt64Array::from(ids.to_vec())),
+            Arc::new(list(vec_a)),
+            Arc::new(list(vec_b)),
+        ],
+    )
+    .unwrap()
+}
+
+fn two_vector_configs() -> Vec<crate::vector_index::VectorIndexTableConfig> {
+    let mut configs = vector_configs();
+    let mut second = configs[0].clone();
+    configs[0].column = "vec_a".to_string();
+    second.column = "vec_b".to_string();
+    configs.push(second);
+    configs
+}
+
+fn array_distance_on(column: &str, values: &[f32]) -> Expr {
+    udf_call(
+        datafusion::functions_nested::distance::array_distance_udf(),
+        vec![col(column), array_literal(values)],
+    )
+}
+
+fn inner_product_on(column: &str, values: &[f32]) -> Expr {
+    udf_call(
+        datafusion::functions_nested::inner_product::inner_product_udf(),
+        vec![col(column), array_literal(values)],
+    )
+}
+
+fn weighted(expr: Expr, weight: f64) -> Expr {
+    Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
+        Box::new(lit(weight)),
+        datafusion::logical_expr::Operator::Multiply,
+        Box::new(expr),
+    ))
+}
+
+/// A `Limit(Sort(<distance sum>))` plan over a two-vector scan.
+fn build_two_column_limit_sort_plan(
+    sort_expr: Expr,
+    limit: usize,
+) -> DFResult<LogicalPlan> {
+    let mem_table = Arc::new(MemTable::try_new(two_vector_schema(), vec![vec![]])?);
+    let source = provider_as_source(mem_table);
+    LogicalPlanBuilder::scan("t", source, None)?
+        .sort(vec![sort_expr.sort(true, false)])?
+        .limit(0, Some(limit))?
+        .build()
+}
+
+fn has_sort(plan: &LogicalPlan) -> bool {
+    let mut found = false;
+    plan.apply(&mut |node: &LogicalPlan| {
+        if matches!(node, LogicalPlan::Sort(_)) {
+            found = true;
+        }
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    })
+    .unwrap();
+    found
+}
+
 /// Build a `Limit(Sort(array_distance(vec, ARRAY[...])))` plan over a
 /// mem-table source with the vector schema.
 fn build_limit_sort_plan(sort_expr: Expr, limit: usize) -> DFResult<LogicalPlan> {
@@ -160,10 +291,10 @@ fn has_marker(plan: &LogicalPlan) -> bool {
     let mut found = false;
     plan.apply(&mut |node: &LogicalPlan| {
         if let LogicalPlan::TableScan(ts) = node
-            && ts.filters.iter().any(|f| {
-                matches!(f, Expr::ScalarFunction(call)
-                    if call.func.name() == crate::udf::vector_search_marker::VECTOR_SEARCH_MARKER)
-            })
+            && ts
+                .filters
+                .iter()
+                .any(crate::udf::vector_search_marker::is_marker_expr)
         {
             found = true;
         }
@@ -255,6 +386,103 @@ fn rule_ignores_inner_product_asc() {
         .rewrite(plan, &datafusion::optimizer::OptimizerContext::new())
         .unwrap();
     assert!(!result.transformed, "inner_product ASC must not match");
+}
+
+#[test]
+fn rule_rewrites_multi_column_weighted_sum() {
+    // `0.7*d(vec_a) + 0.3*d(vec_b)` fuses two indexed columns; the exact plan
+    // keeps its Sort for the re-rank over the candidate intersection.
+    let query_a = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    let query_b = [-0.4f32, 0.5, -0.1, 0.2, 0.3, -0.6, 0.8, 0.1];
+    let sort_expr = weighted(array_distance_on("vec_a", &query_a), 0.7)
+        + weighted(array_distance_on("vec_b", &query_b), 0.3);
+    let plan = build_two_column_limit_sort_plan(sort_expr, 10).unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &datafusion::optimizer::OptimizerContext::new())
+        .unwrap()
+        .data;
+    assert!(has_marker(&rewritten), "marker must be injected");
+    let request = marker_request(&rewritten).expect("marker must be parsed");
+    assert_eq!(request.columns.len(), 2);
+    assert_eq!(request.columns[0].column, "vec_a");
+    assert!((request.columns[0].weight - 0.7).abs() < 1e-6);
+    assert_eq!(request.columns[1].column, "vec_b");
+    assert!((request.columns[1].weight - 0.3).abs() < 1e-6);
+    assert!(!request.order_by, "exact mode keeps the re-rank sort");
+    assert!(has_sort(&rewritten), "exact mode keeps its Sort");
+
+    // Idempotent: a second pass must not rewrite the plan again.
+    let second = VectorSearchPushdownRule
+        .rewrite(rewritten, &datafusion::optimizer::OptimizerContext::new())
+        .unwrap();
+    assert!(!second.transformed);
+}
+
+#[test]
+fn rule_multi_column_index_only_drops_the_sort() {
+    let query_a = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    let query_b = [-0.4f32, 0.5, -0.1, 0.2, 0.3, -0.6, 0.8, 0.1];
+    let sort_expr = weighted(array_distance_on("vec_a", &query_a), 0.7)
+        + weighted(array_distance_on("vec_b", &query_b), 0.3);
+    let plan = build_two_column_limit_sort_plan(sort_expr, 10).unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(request.order_by, "index mode must order by the fused index");
+    assert_eq!(request.overfetch, 2);
+    assert!(
+        !has_sort(&rewritten),
+        "index-only ordering drops the distance sort"
+    );
+}
+
+#[test]
+fn rule_ignores_mixed_metric_fusion() {
+    // L2 + IP distances are not comparable, so the sum must fall back.
+    let query_a = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    let query_b = [-0.4f32, 0.5, -0.1, 0.2, 0.3, -0.6, 0.8, 0.1];
+    let sort_expr = array_distance_on("vec_a", &query_a)
+        + weighted(inner_product_on("vec_b", &query_b), 0.3);
+    let plan = build_two_column_limit_sort_plan(sort_expr, 10).unwrap();
+    let result = VectorSearchPushdownRule
+        .rewrite(plan, &datafusion::optimizer::OptimizerContext::new())
+        .unwrap();
+    assert!(
+        !result.transformed,
+        "mixed-metric fusion must fall back to the exact plan"
+    );
+}
+
+#[test]
+fn rule_ignores_non_distance_terms() {
+    // A literal added to a distance is not a fusion of indexed columns.
+    let query_a = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    let sort_expr = array_distance_on("vec_a", &query_a) + lit(0.5f64);
+    let plan = build_two_column_limit_sort_plan(sort_expr, 10).unwrap();
+    let result = VectorSearchPushdownRule
+        .rewrite(plan, &datafusion::optimizer::OptimizerContext::new())
+        .unwrap();
+    assert!(
+        !result.transformed,
+        "a non-distance term must fall back to the exact plan"
+    );
+}
+
+#[test]
+fn rule_single_weighted_term_uses_one_column() {
+    // `0.5 * array_distance(vec, q)` orders like `array_distance(vec, q)`.
+    let plan = build_limit_sort_plan(weighted(array_distance_expr(), 0.5), 10).unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert_eq!(request.columns.len(), 1);
+    assert_eq!(request.columns[0].column, "vec");
+    assert!(request.order_by);
+    assert!(!has_sort(&rewritten), "the single weighted sort is dropped");
 }
 
 #[test]
@@ -350,11 +578,16 @@ fn vector_configs() -> Vec<crate::vector_index::VectorIndexTableConfig> {
 /// `_vector_index/vec` tree contains at least one segment file (the
 /// control plane row is committed by the metadata catalog).
 fn assert_vector_index_built(table_name: &str) {
+    assert_column_index_built(table_name, "vec");
+}
+
+/// Like [`assert_vector_index_built`] for one named vector column.
+fn assert_column_index_built(table_name: &str, column: &str) {
     let root = std::env::current_dir()
         .unwrap()
         .join("default")
         .join(table_name);
-    let index_dir = root.join("_vector_index").join("vec");
+    let index_dir = root.join("_vector_index").join(column);
     assert!(index_dir.exists(), "no _vector_index dir at {index_dir:?}");
     let mut segment_count = 0usize;
     let mut stack = vec![index_dir.clone()];
@@ -441,6 +674,29 @@ async fn explain_plan(
         }
     }
     text
+}
+
+/// Collect the first column (the primary key) of every result batch.
+async fn collect_ids(
+    ctx: &Arc<datafusion::execution::context::SessionContext>,
+    sql: &str,
+) -> Vec<u64> {
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut ids = Vec::new();
+    for batch in &batches {
+        let column = batch.column(0);
+        if let Some(values) = column.as_any().downcast_ref::<arrow::array::UInt64Array>()
+        {
+            ids.extend(values.values().iter().copied());
+        } else if let Some(values) =
+            column.as_any().downcast_ref::<arrow::array::Int64Array>()
+        {
+            ids.extend(values.values().iter().map(|&value| value as u64));
+        } else {
+            panic!("unexpected id column type {}", column.data_type());
+        }
+    }
+    ids
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1869,4 +2125,125 @@ async fn sql_vector_search_index_only_ordering() {
         .unwrap();
     let explain = explain_plan(&set_ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
     assert!(explain.contains("order_by=true"), "{explain}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_multi_column_fusion() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_multi";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    // 1. Two indexed vector columns (`id + vec_a + vec_b`).
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(two_vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &two_vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    // 2. Write 200 rows; each column's index is auto-built after commit.
+    //    `vec_b` is an affine transform of `vec_a` (and `query_b` of
+    //    `query_a`), so both columns rank the same rows and the fused
+    //    recall assertions stay stable.
+    let n = 200u64;
+    let vec_a = seeded_vectors(n as usize, 7);
+    let transform = |value: f32| 0.5 * value + 0.05;
+    let vec_b: Vec<Vec<f32>> = vec_a
+        .iter()
+        .map(|vector| vector.iter().map(|value| transform(*value)).collect())
+        .collect();
+    let ids: Vec<u64> = (0..n).collect();
+    let batch = make_two_vector_batch(&ids, &vec_a, &vec_b);
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch)
+        .await
+        .unwrap();
+    assert_column_index_built(table_name, "vec_a");
+    assert_column_index_built(table_name, "vec_b");
+
+    let query_a = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let query_b: Vec<f32> = query_a.iter().map(|value| transform(*value)).collect();
+    let qa = query_a
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let qb = query_b
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by 0.7 * array_distance(vec_a, ARRAY[{qa}]) \
+                + 0.3 * array_distance(vec_b, ARRAY[{qb}]) limit 5"
+    );
+    let truth = brute_force_topk_fused(&vec_a, &vec_b, &query_a, &query_b, 0.7, 0.3, 5);
+
+    // 3. Exact mode: the scan narrows to the candidate intersection and the
+    //    Sort above re-ranks it by the exact weighted distances.
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+    assert!(
+        explain.contains("vec_a+vec_b"),
+        "both columns must reach the exec: {explain}"
+    );
+    assert!(
+        explain.contains("SortExec"),
+        "exact mode keeps the re-rank sort: {explain}"
+    );
+
+    let ids_result = collect_ids(&ctx, &sql).await;
+    assert_eq!(ids_result.len(), 5, "LIMIT 5 rows: {ids_result:?}");
+    let recall = ids_result.iter().filter(|id| truth.contains(id)).count() as f64 / 5.0;
+    assert!(
+        recall >= 0.5,
+        "exact fusion recall {recall}, got {ids_result:?} truth {truth:?}"
+    );
+
+    // 4. Index-only ordering: the fused index distance orders the rows and
+    //    no stored vector column is read; the Sort disappears from the plan.
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let mut options = LakeSoulVectorSearchConfig::default();
+    options.nprobe = 4;
+    options.rerank = "index".to_string();
+    session_config.options_mut().extensions.insert(options);
+    let index_ctx = crate::create_lakesoul_session_ctx_with_config(
+        client,
+        &default_args(),
+        session_config,
+    )
+    .unwrap();
+
+    let explain = explain_plan(&index_ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(
+        explain.contains("vec_a+vec_b"),
+        "both columns must reach the exec: {explain}"
+    );
+    assert!(explain.contains("order_by=true"), "{explain}");
+    assert!(
+        !explain.contains("SortExec"),
+        "index-only ordering must not sort on the vector columns: {explain}"
+    );
+
+    let index_ids = collect_ids(&index_ctx, &sql).await;
+    assert_eq!(index_ids.len(), 5, "LIMIT 5 rows: {index_ids:?}");
+    let recall = index_ids.iter().filter(|id| truth.contains(id)).count() as f64 / 5.0;
+    assert!(
+        recall >= 0.5,
+        "index fusion recall {recall}, got {index_ids:?} truth {truth:?}"
+    );
 }

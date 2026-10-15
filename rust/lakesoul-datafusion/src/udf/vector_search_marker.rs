@@ -24,18 +24,35 @@ use datafusion::logical_expr::{
 /// Function name of the internal vector-search marker.
 pub const VECTOR_SEARCH_MARKER: &str = "__lakesoul_vector_search";
 
-/// Parsed marker arguments: (vector column, query, per-bucket candidate
-/// count, distance metric).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VectorSearchRequest {
+/// Function name of the internal multi-column vector-search marker.
+pub const VECTOR_SEARCH_MULTI_MARKER: &str = "__lakesoul_vector_search_multi";
+
+/// One weighted vector column of a search request.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VectorColumnQuery {
     /// Name of the vector column to search.
-    pub vec_column: String,
+    pub column: String,
     /// Query vector serialized as a comma-separated list of `f32` values.
     pub query_csv: String,
+    /// Distance metric of this column: `"L2"` or `"IP"`.
+    pub metric: String,
+    /// Fusion weight used when several columns are combined.
+    #[serde(default = "default_weight")]
+    pub weight: f32,
+}
+
+fn default_weight() -> f32 {
+    1.0
+}
+
+/// Parsed marker arguments: the weighted columns, the per-bucket candidate
+/// count and the ordering flags.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorSearchRequest {
+    /// One entry per searched column; a single-column search has one entry.
+    pub columns: Vec<VectorColumnQuery>,
     /// Number of candidates requested per bucket (the SQL `LIMIT` value).
     pub top_k: usize,
-    /// Distance metric: `"L2"` or `"IP"`.
-    pub metric: String,
     /// Order the candidates by the index distance instead of the exact
     /// re-rank over the vector column (index-only ordering).
     pub order_by: bool,
@@ -43,6 +60,22 @@ pub struct VectorSearchRequest {
     /// plan shape (index-only ordering needs far fewer candidates than the
     /// exact re-rank).
     pub overfetch: usize,
+}
+
+impl VectorSearchRequest {
+    /// The number of candidates requested per bucket.
+    pub fn candidates_per_bucket(&self) -> usize {
+        if self.order_by {
+            self.top_k.saturating_mul(self.overfetch.max(1))
+        } else {
+            self.top_k.saturating_mul(10).max(100)
+        }
+    }
+
+    /// True when the request searches a single column.
+    pub fn is_single(&self) -> bool {
+        self.columns.len() == 1
+    }
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
@@ -86,9 +119,43 @@ pub fn marker_expr(
     ))
 }
 
-/// Return true if `expr` is the internal vector-search marker call.
+/// Build the multi-column marker expression appended to a
+/// `TableScan.filters` list.  The columns travel as a JSON payload.
+pub fn multi_marker_expr(
+    columns: &[VectorColumnQuery],
+    top_k: usize,
+    order_by: bool,
+    overfetch: usize,
+) -> Expr {
+    let payload = serde_json::to_string(columns).unwrap_or_else(|_| "[]".to_string());
+    Expr::ScalarFunction(ScalarFunction::new_udf(
+        multi_marker_udf(),
+        vec![
+            Expr::Literal(datafusion::common::ScalarValue::Utf8(Some(payload)), None),
+            Expr::Literal(
+                datafusion::common::ScalarValue::Int64(Some(top_k as i64)),
+                None,
+            ),
+            Expr::Literal(
+                datafusion::common::ScalarValue::Boolean(Some(order_by)),
+                None,
+            ),
+            Expr::Literal(
+                datafusion::common::ScalarValue::Int64(Some(overfetch as i64)),
+                None,
+            ),
+        ],
+    ))
+}
+
+/// Return true if `expr` is one of the internal vector-search markers.
 pub fn is_marker_expr(expr: &Expr) -> bool {
-    matches!(expr, Expr::ScalarFunction(call) if call.func.name() == VECTOR_SEARCH_MARKER)
+    matches!(
+        expr,
+        Expr::ScalarFunction(call)
+            if call.func.name() == VECTOR_SEARCH_MARKER
+                || call.func.name() == VECTOR_SEARCH_MULTI_MARKER
+    )
 }
 
 /// Parse a vector-search request from `filters`; returns None when no
@@ -101,6 +168,9 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
             let Expr::ScalarFunction(call) = marker else {
                 return None;
             };
+            if call.func.name() == VECTOR_SEARCH_MULTI_MARKER {
+                return parse_multi_marker(call);
+            }
             if call.args.len() != 6 {
                 return None;
             }
@@ -140,14 +210,54 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 _ => return None,
             };
             Some(VectorSearchRequest {
-                vec_column,
-                query_csv,
+                columns: vec![VectorColumnQuery {
+                    column: vec_column,
+                    query_csv,
+                    metric,
+                    weight: 1.0,
+                }],
                 top_k,
-                metric,
                 order_by,
                 overfetch,
             })
         })
+}
+
+/// Parse the JSON payload of the multi-column marker.
+fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
+    if call.args.len() != 4 {
+        return None;
+    }
+    let payload = match &call.args[0] {
+        Expr::Literal(datafusion::common::ScalarValue::Utf8(Some(s)), _) => s,
+        _ => return None,
+    };
+    let columns: Vec<VectorColumnQuery> = serde_json::from_str(payload).ok()?;
+    if columns.is_empty() {
+        return None;
+    }
+    let top_k = match &call.args[1] {
+        Expr::Literal(datafusion::common::ScalarValue::Int64(Some(k)), _) => {
+            (*k).max(1) as usize
+        }
+        _ => return None,
+    };
+    let order_by = match &call.args[2] {
+        Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(value)), _) => *value,
+        _ => return None,
+    };
+    let overfetch = match &call.args[3] {
+        Expr::Literal(datafusion::common::ScalarValue::Int64(Some(value)), _) => {
+            (*value).max(1) as usize
+        }
+        _ => return None,
+    };
+    Some(VectorSearchRequest {
+        columns,
+        top_k,
+        order_by,
+        overfetch,
+    })
 }
 
 /// The internal marker UDF.  Never evaluated as a physical function.
@@ -220,6 +330,78 @@ impl ScalarUDFImpl for VectorSearchMarkerUDF {
 /// Return the marker UDF (a new Arc is cheap; it is only used by name).
 pub fn marker_udf() -> Arc<ScalarUDF> {
     Arc::new(ScalarUDF::new_from_impl(VectorSearchMarkerUDF::default()))
+}
+
+/// The internal multi-column marker UDF.  Never evaluated as a physical
+/// function.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct VectorSearchMultiMarkerUDF {
+    signature: Signature,
+}
+
+impl Default for VectorSearchMultiMarkerUDF {
+    fn default() -> Self {
+        Self {
+            // Volatile so the optimizer's simplify_expressions pass never
+            // constant-folds the marker call into a literal `true`.
+            signature: Signature::user_defined(Volatility::Volatile),
+        }
+    }
+}
+
+impl ScalarUDFImpl for VectorSearchMultiMarkerUDF {
+    fn name(&self) -> &str {
+        VECTOR_SEARCH_MULTI_MARKER
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    /// `__lakesoul_vector_search_multi` accepts `(requests_json, top_k,
+    /// order_by, overfetch)`.
+    fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
+        if arg_types.len() != 4 {
+            return Err(DataFusionError::Execution(format!(
+                "__lakesoul_vector_search_multi expects 4 arguments, got {}",
+                arg_types.len()
+            )));
+        }
+        for (index, data_type) in arg_types.iter().enumerate() {
+            let accepted = match index {
+                0 => matches!(data_type, DataType::Utf8),
+                1 | 3 => matches!(data_type, DataType::Int64),
+                2 => matches!(data_type, DataType::Boolean),
+                _ => false,
+            };
+            if !accepted {
+                return Err(DataFusionError::Execution(format!(
+                    "__lakesoul_vector_search_multi unsupported argument {index}: {data_type}"
+                )));
+            }
+        }
+        Ok(arg_types.to_vec())
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Boolean)
+    }
+
+    fn invoke_with_args(
+        &self,
+        args: datafusion::logical_expr::ScalarFunctionArgs,
+    ) -> DFResult<ColumnarValue> {
+        Ok(ColumnarValue::Array(Arc::new(BooleanArray::from(vec![
+            true; args.number_rows
+        ]))))
+    }
+}
+
+/// Return the multi-column marker UDF.
+pub fn multi_marker_udf() -> Arc<ScalarUDF> {
+    Arc::new(ScalarUDF::new_from_impl(
+        VectorSearchMultiMarkerUDF::default(),
+    ))
 }
 
 /// How the vector search orders its candidates.

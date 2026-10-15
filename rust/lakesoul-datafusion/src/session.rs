@@ -295,6 +295,7 @@ impl LakeSoulSessionFactory {
         let provider_options = LakeSoulProviderOptions::from_session(&state);
         let ctx = Arc::new(SessionContext::new_with_state(state));
         ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
+        ctx.register_udf((*crate::udf::vector_search_marker::multi_marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_match_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_score_udf()).clone());
