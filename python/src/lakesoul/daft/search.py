@@ -18,7 +18,9 @@ returned rows are true matches.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+import math
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import daft
@@ -211,6 +213,173 @@ def vector_search(
     return dataframe.exclude(_DISTANCE_COLUMN)
 
 
+def multi_vector_search(
+    source: LakeSoulTable | LakeSoulScan,
+    queries: Mapping[str, Sequence[float]],
+    *,
+    top_k: int = 10,
+    nprobe: int = 64,
+    weights: Mapping[str, float] | None = None,
+    extra_columns: Sequence[str] = (),
+    rerank: str = "exact",
+    parallelism: int = 1,
+    with_distance: bool = False,
+) -> Any:
+    """Search several indexed vector columns and fuse the per-column distances.
+
+    Every queried column is searched independently; a row must be a candidate
+    in **every** column's index (the candidate sets are intersected) and the
+    rows are ranked by the weighted sum of the per-column distances.  With
+    ``rerank="index"`` the distances come from the indexes and the stored
+    vector columns are never read; the default ``rerank="exact"`` computes the
+    exact weighted sum on the candidate rows inside Daft.
+
+    Only L2 columns are supported (fusing inner-product scores is not
+    defined); every queried column must carry the same metric.
+
+    Args:
+        source: A :class:`lakesoul.catalog.LakeSoulTable` or a configured
+            :class:`lakesoul.catalog.LakeSoulScan`.
+        queries: Mapping from indexed vector column to its query vector.
+        top_k: Number of rows to return globally (across buckets), best
+            (smallest fused distance) first.
+        nprobe: Number of IVF clusters to probe per column and bucket.
+        weights: Optional per-column fusion weights (default 1.0 each).
+        extra_columns: Additional columns to return alongside the primary
+            key and the queried vector columns.
+        rerank: ``"exact"`` (default) or ``"index"`` (rank by the fused index
+            distance, skipping the vector columns).
+        parallelism: Number of clusters to probe concurrently per reader.
+        with_distance: Also return the fused distance in a
+            ``vector_distance`` column.
+
+    Returns:
+        A lazy ``daft.DataFrame`` ordered by the fused distance.
+    """
+    from lakesoul.catalog import LakeSoulScan, LakeSoulTable, VECTOR_DISTANCE_COLUMN
+
+    if not isinstance(source, (LakeSoulTable, LakeSoulScan)):
+        raise TypeError("source must be a LakeSoulTable or LakeSoulScan")
+    table = source if isinstance(source, LakeSoulTable) else source.table
+
+    if not isinstance(queries, Mapping) or isinstance(queries, (str, bytes)):
+        raise TypeError("queries must be a mapping from column to query vector")
+    if not queries:
+        raise ValueError("queries must select at least one vector column")
+    if top_k < 1:
+        raise ValueError("top_k must be >= 1")
+    if nprobe < 1:
+        raise ValueError("nprobe must be >= 1")
+    if rerank not in ("exact", "index"):
+        raise ValueError(f"rerank must be 'exact' or 'index', got {rerank!r}")
+    if parallelism < 1:
+        raise ValueError("parallelism must be >= 1")
+
+    configs = table._vector_configs()
+    if not configs:
+        raise ValueError(
+            "the table has no vector_index_columns property; "
+            "create the table with vector_index=[...] to enable vector search"
+        )
+    by_column = {config["column"]: config for config in configs}
+    default_weights = {column: 1.0 for column in queries}
+    if weights is None:
+        weights = default_weights
+    else:
+        unknown = set(weights) - set(queries)
+        if unknown:
+            raise ValueError(f"weights given for unqueried columns: {sorted(unknown)}")
+        weights = {column: float(weights.get(column, 1.0)) for column in queries}
+    if any(weight <= 0 for weight in weights.values()):
+        raise ValueError("fusion weights must be positive")
+
+    resolved: list[tuple[str, list[float], float]] = []
+    for column, query in queries.items():
+        config = by_column.get(column)
+        if config is None:
+            raise ValueError(
+                f"column {column!r} is not declared in vector_index_columns"
+            )
+        if str(config.get("metric", "L2")).upper() in ("IP", "INNERPRODUCT"):
+            raise ValueError(
+                f"column {column!r} uses inner product; multi-column fusion "
+                "supports L2 columns only"
+            )
+        if isinstance(query, str):
+            raise TypeError(f"query for {column!r} must be a sequence of floats")
+        query = [float(value) for value in query]
+        expected_dim = config.get("dim")
+        if expected_dim is not None and len(query) != expected_dim:
+            raise ValueError(
+                f"query dimension {len(query)} does not match the index "
+                f"dimension {expected_dim} for column {column!r}"
+            )
+        resolved.append((column, query, weights[column]))
+
+    primary_keys = table.primary_keys
+    if not primary_keys:
+        raise ValueError("a vector index requires a table with a primary key")
+    pk_column = primary_keys[0]
+
+    index_only = rerank == "index"
+    candidates_per_shard = max(top_k * 2, top_k + 8) if index_only else top_k
+    requested = [
+        {
+            "column": column,
+            "query": ",".join(f"{value:.6f}" for value in query),
+            "top_k": candidates_per_shard,
+            "weight": weight,
+            "metric": "L2",
+        }
+        for column, query, weight in resolved
+    ]
+    reader_options = {
+        "vector_search_requests": json.dumps(requested),
+        "vector_search_nprobe": str(nprobe),
+        "vector_search_metric": "L2",
+    }
+
+    if index_only:
+        reader_options["vector_search_order_by"] = "true"
+        reader_options["vector_search_parallelism"] = str(parallelism)
+        columns = _dedup_columns((pk_column, *extra_columns, VECTOR_DISTANCE_COLUMN))
+        if isinstance(source, LakeSoulScan):
+            scan = source._replace(
+                columns=tuple(columns), _reader_options=reader_options
+            )
+        else:
+            scan = source.scan(columns=tuple(columns)).options(
+                reader_options=reader_options
+            )
+        dataframe = scan.to_daft()
+        if with_distance:
+            dataframe = dataframe.with_column(
+                _DISTANCE_COLUMN, col(VECTOR_DISTANCE_COLUMN)
+            )
+        dataframe = dataframe.sort(VECTOR_DISTANCE_COLUMN).limit(top_k)
+        return dataframe.exclude(VECTOR_DISTANCE_COLUMN)
+
+    columns = _dedup_columns(
+        (pk_column, *(column for column, _, _ in resolved), *extra_columns)
+    )
+    if isinstance(source, LakeSoulScan):
+        scan = source._replace(columns=tuple(columns), _reader_options=reader_options)
+    else:
+        scan = source.scan(columns=tuple(columns)).options(
+            reader_options=reader_options
+        )
+    dataframe = scan.to_daft()
+    fused = None
+    for column, query, weight in resolved:
+        term = _exact_distance_udf(col(column), query, "L2") * weight
+        fused = term if fused is None else fused + term
+    dataframe = dataframe.with_column(_DISTANCE_COLUMN, fused)
+    dataframe = dataframe.sort(_DISTANCE_COLUMN).limit(top_k)
+    if with_distance:
+        return dataframe
+    return dataframe.exclude(_DISTANCE_COLUMN)
+
+
 def _dedup_columns(names: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(names))
 
@@ -329,7 +498,9 @@ def _exact_distance(vec: Any, query: Any, metric: Any) -> float:
         return float("inf")
     if metric == "IP":
         return float(-sum(a * b for a, b in zip(vec, query)))
-    return float(sum((a - b) * (a - b) for a, b in zip(vec, query)))
+    # Euclidean distance, matching `array_distance` and the index-only path
+    # (the squared distance would sort the same but report different values).
+    return float(math.sqrt(sum((a - b) * (a - b) for a, b in zip(vec, query))))
 
 
 _exact_distance_udf = daft.func(return_dtype=daft.DataType.float32())(_exact_distance)

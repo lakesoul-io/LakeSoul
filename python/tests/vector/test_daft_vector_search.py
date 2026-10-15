@@ -399,3 +399,138 @@ def test_daft_vector_search_index_rerank() -> None:
     finally:
         table.drop()
         shutil.rmtree(table_path, ignore_errors=True)
+
+
+def _two_column_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("id", pa.uint64(), False),
+            pa.field("vec_a", pa.list_(pa.field("item", pa.float32()), DIM), False),
+            pa.field("vec_b", pa.list_(pa.field("item", pa.float32()), DIM), False),
+        ]
+    )
+
+
+def _create_two_column_table(vectors: np.ndarray) -> tuple[object, object, str]:
+    cat = _catalog()
+    table_name = "vec_daft_multi"
+    table_path = f"/tmp/lakesoul_test/{table_name}"
+    try:
+        cat.drop_table(table_name, if_exists=True)
+    except Exception:
+        pass
+    shutil.rmtree(table_path, ignore_errors=True)
+
+    table = cat.create_table(
+        table_name,
+        path=f"file://{table_path}",
+        schema=_two_column_schema(),
+        primary_keys=["id"],
+        hash_bucket_num=4,
+        vector_index=[
+            {
+                "column": "vec_a",
+                "dim": DIM,
+                "nlist": 8,
+                "total_bits": 7,
+                "metric": "L2",
+            },
+            {
+                "column": "vec_b",
+                "dim": DIM,
+                "nlist": 8,
+                "total_bits": 7,
+                "metric": "L2",
+            },
+        ],
+    )
+    list_type = pa.list_(pa.field("item", pa.float32()), DIM)
+    batch = pa.RecordBatch.from_arrays(
+        [
+            pa.array(range(len(vectors)), type=pa.uint64()),
+            pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.flatten(), type=pa.float32()), DIM
+            ),
+            pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.flatten(), type=pa.float32()), DIM
+            ),
+        ],
+        schema=pa.schema(
+            [
+                pa.field("id", pa.uint64(), False),
+                pa.field("vec_a", list_type, False),
+                pa.field("vec_b", list_type, False),
+            ]
+        ),
+    )
+    table.write_arrow(batch)
+    return cat, table, table_path
+
+
+def test_daft_multi_vector_search_fusion() -> None:
+    """Two indexed columns: intersected candidates, weighted fused distance."""
+    from lakesoul.daft import multi_vector_search
+
+    train = read_fvecs(TRAIN_PATH, 300)
+    query = read_fvecs(TEST_PATH, 1)[0]
+    top_k = 5
+    weights = {"vec_a": 0.5, "vec_b": 0.25}
+    _, table, table_path = _create_two_column_table(train)
+    try:
+        # Exact fusion over the candidate intersection: 0.75 x the exact
+        # distance because both columns hold the same vectors and query.
+        result = (
+            multi_vector_search(
+                table,
+                {"vec_a": query.tolist(), "vec_b": query.tolist()},
+                top_k=top_k,
+                nprobe=8,
+                weights=weights,
+                with_distance=True,
+            )
+            .collect()
+            .to_arrow()
+        )
+        # The exact mode reads (and returns) the queried vector columns, like
+        # the single-column search; the fused distance is added.
+        assert set(result.column_names) == {
+            "id",
+            "vec_a",
+            "vec_b",
+            "vector_distance",
+        }, result.column_names
+        ids = result.column("id").to_pylist()
+        distances = result.column("vector_distance").to_pylist()
+        assert len(ids) == top_k
+        assert distances == sorted(distances)
+        for row_id, distance in zip(ids, distances):
+            exact = float(np.linalg.norm(train[row_id] - query))
+            assert abs(distance - 0.75 * exact) <= 0.05 * max(exact, 1.0), (
+                row_id,
+                distance,
+                exact,
+            )
+
+        # Index fusion: same ranking, no vector column read.
+        ranked = (
+            multi_vector_search(
+                table,
+                {"vec_a": query.tolist(), "vec_b": query.tolist()},
+                top_k=top_k,
+                nprobe=8,
+                weights=weights,
+                rerank="index",
+                parallelism=2,
+            )
+            .collect()
+            .to_arrow()
+        )
+        assert ranked.column_names == ["id"], ranked.column_names
+        index_ids = ranked.column("id").to_pylist()
+        assert len(index_ids) == top_k
+        truth = _brute_force_topk(train, query, top_k, "L2")
+        recall = len(set(index_ids) & set(truth)) / top_k
+        assert recall >= 0.5, f"multi-column index recall too low: {recall:.2f}"
+    finally:
+        table.drop()
+        shutil.rmtree(table_path, ignore_errors=True)
