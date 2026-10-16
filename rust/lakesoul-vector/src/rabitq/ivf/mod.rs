@@ -1019,6 +1019,11 @@ impl IvfRabitqIndex {
         if total_bits == 0 || total_bits > 16 {
             return Err(RabitqError::InvalidPersistence("total_bits out of range"));
         }
+        if !crate::rabitq::is_supported_total_bits(total_bits) {
+            return Err(RabitqError::InvalidPersistence(
+                "unsupported total_bits: only 1, 3 and 7 have an estimator kernel",
+            ));
+        }
         if total_bits.saturating_sub(1) != ex_bits {
             return Err(RabitqError::InvalidPersistence(
                 "total_bits does not match ex_bits",
@@ -1026,13 +1031,10 @@ impl IvfRabitqIndex {
         }
 
         let expected_vectors = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
-        eprintln!("DEBUG LOAD: expected_vectors={}", expected_vectors);
 
         let cluster_count = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
-        eprintln!("DEBUG LOAD: cluster_count={}", cluster_count);
 
         let rotator_data_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
-        eprintln!("DEBUG LOAD: rotator_data_len={}", rotator_data_len);
 
         let mut rotator_data = vec![0u8; rotator_data_len];
         reader.read_exact(&mut rotator_data)?;

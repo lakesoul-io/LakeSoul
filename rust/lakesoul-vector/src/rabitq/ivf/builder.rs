@@ -242,6 +242,12 @@ impl IvfRabitqBuilder {
                 reservoir_seen,
                 ..
             } => {
+                if !crate::rabitq::is_supported_total_bits(total_bits) {
+                    return Err(RabitqError::InvalidConfig(
+                        "total_bits must be 1, 3 or 7: only those RaBitQ widths \
+                         have an estimator kernel",
+                    ));
+                }
                 use crate::rabitq::kmeans::{KMeansConfig, run_kmeans_on_flat};
                 use rayon::prelude::*;
 

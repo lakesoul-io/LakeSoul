@@ -489,7 +489,7 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
 
         let service = Arc::new(DfSessionService::new_with_hooks(
             Arc::clone(&session.context),
-            statement_hooks(),
+            connection_statement_hooks(),
         ));
         let cancellation = Arc::new(QueryCancellation::new(
             Arc::clone(&self.server_limits),
@@ -514,6 +514,17 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
         });
         Ok(())
     }
+}
+
+/// Statement hooks for one connection.
+///
+/// The pgvector GUC hook goes first: it claims `ivfflat.probes` before the
+/// upstream `SetShowHook` offers the generic DataFusion config path.
+pub(crate) fn connection_statement_hooks() -> Vec<Arc<dyn datafusion_postgres::QueryHook>>
+{
+    let mut hooks = crate::pg_vector::statement_hooks();
+    hooks.extend(statement_hooks());
+    hooks
 }
 
 /// Connection-aware parser facade.

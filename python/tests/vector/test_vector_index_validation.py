@@ -156,6 +156,31 @@ def test_create_table_rejects_dim_mismatch(tmp_path) -> None:
         cat.drop_table(name, NAMESPACE, if_exists=True)
 
 
+def test_create_table_rejects_unsupported_total_bits(tmp_path) -> None:
+    """Only 1/3/7-bit RaBitQ widths have an estimator kernel."""
+    cat = _catalog()
+    name = "vec_val_bad_bits"
+    path = str(tmp_path / name)
+    try:
+        with pytest.raises(ValueError, match="total_bits must be 1, 3 or 7"):
+            cat.create_table(
+                name,
+                path=f"file://{path}",
+                schema=_table_schema(),
+                primary_keys=["id"],
+                hash_bucket_num=2,
+                vector_index=[
+                    {"column": "vec", "dim": DIM, "nlist": 2, "total_bits": 5}
+                ],
+            )
+    finally:
+        try:
+            cat.drop_table(name, NAMESPACE, if_exists=True)
+        except Exception:
+            pass
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def test_create_table_rejects_non_float32_vectors(tmp_path) -> None:
     cat = _catalog()
     name = "vec_val_f64"

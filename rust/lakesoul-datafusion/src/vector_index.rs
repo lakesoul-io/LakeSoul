@@ -194,6 +194,15 @@ pub fn validate_vector_index_configs(
     for config in configs {
         let column = &config.column;
         config.management.validate(IndexKind::Vector, column)?;
+        // Only 1/3/7-bit RaBitQ widths have an estimator kernel; anything
+        // else would panic deep inside a search, so reject it here (table
+        // creation and the Python SDK both run this validation).
+        if !lakesoul_vector::rabitq::is_supported_total_bits(config.params.total_bits) {
+            bail!(
+                "vector index column '{column}': total_bits must be 1, 3 or 7                  (got {})",
+                config.params.total_bits
+            );
+        }
         let Some(column_index) = schema.index_of(column).ok() else {
             bail!("vector index column '{column}' not found in table schema");
         };

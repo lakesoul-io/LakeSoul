@@ -2070,6 +2070,14 @@ def _validate_vector_index_configs(
                 f"vector index column '{column}': configured dim {cfg['dim']} "
                 f"does not match schema FixedSizeList size {list_size}"
             )
+        # Only 1/3/7-bit RaBitQ widths have an estimator kernel; the native
+        # builder rejects the rest too, but failing here keeps the error
+        # before any metadata is created.
+        if cfg.get("total_bits", 7) not in (1, 3, 7):
+            raise ValueError(
+                f"vector index column '{column}': total_bits must be 1, 3 or 7 "
+                f"(got {cfg.get('total_bits')})"
+            )
 
 
 __all__ = [

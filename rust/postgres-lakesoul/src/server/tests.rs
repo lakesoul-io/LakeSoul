@@ -100,7 +100,7 @@ async fn attach_session_with_limits(
     // `CLOSE`, `SET`, transactions) diverge from what tests exercise.
     let service = Arc::new(DfSessionService::new_with_hooks(
         Arc::clone(&session.context),
-        crate::read_only::statement_hooks(),
+        crate::server::connection_statement_hooks(),
     ));
     let server = crate::limits::ServerLimits::new(limits);
     let state = Arc::new(ConnectionSession {
@@ -2491,4 +2491,86 @@ async fn pgvector_results_report_the_vector_type() {
     assert_eq!(as_f64(&first_column(&results)[0]) as i64, 1);
 
     cleanup_vector_table(&meta, table).await;
+}
+
+/// The connection's configured vector-search probes.
+fn vector_search_nprobe(context: &SessionContext) -> Option<usize> {
+    context
+        .state()
+        .config()
+        .options()
+        .extensions
+        .get::<lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig>()
+        .map(|options| options.nprobe)
+}
+
+/// pgvector's `ivfflat.probes` GUC is served from the connection's
+/// vector-search `nprobe`: `SET` writes it, `SHOW` reads it back, and the SQL
+/// option the scan uses is the same one.
+#[tokio::test]
+async fn pgvector_probes_guc_maps_to_nprobe() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    let state = attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    // The session default.
+    let results = run_query(&router, &mut client, "SHOW ivfflat.probes").await;
+    assert_eq!(first_column(&results), vec![Some("64".to_string())]);
+
+    // `SET` applies to this connection's vector-search options ...
+    run_query(&router, &mut client, "SET ivfflat.probes = 7").await;
+    assert_eq!(vector_search_nprobe(&state.session.context), Some(7));
+    let results = run_query(&router, &mut client, "SHOW ivfflat.probes").await;
+    assert_eq!(
+        results[0].0[0].name(),
+        "ivfflat.probes",
+        "SHOW reports the GUC name: {results:?}"
+    );
+    assert_eq!(first_column(&results), vec![Some("7".to_string())]);
+
+    // ... which is the option the LakeSoul SQL surface sets too.
+    run_query(
+        &router,
+        &mut client,
+        "SET lakesoul_vector_search.nprobe = 9",
+    )
+    .await;
+    assert_eq!(vector_search_nprobe(&state.session.context), Some(9));
+
+    // Out-of-range values are rejected the way pgvector does.
+    let outcome = <LakeSoulQueryRouter as SimpleQueryHandler>::do_query(
+        &router,
+        &mut client,
+        "SET ivfflat.probes = 0",
+    )
+    .await;
+    let message = format!("{outcome:?}");
+    assert!(outcome.is_err(), "{message}");
+    assert!(message.contains("expects 1..32768"), "{message}");
+    assert_eq!(vector_search_nprobe(&state.session.context), Some(9));
+
+    // The extended protocol — what drivers use — goes through the same hook.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(None, "SET ivfflat.probes = 5".to_string(), vec![]),
+    )
+    .await
+    .expect("on_parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(None, None, vec![], vec![], vec![]),
+    )
+    .await
+    .expect("on_bind");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(None, 0),
+    )
+    .await
+    .expect("on_execute");
+    assert_eq!(vector_search_nprobe(&state.session.context), Some(5));
 }

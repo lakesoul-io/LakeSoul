@@ -25,6 +25,7 @@ use lakesoul_datafusion::distributed::headers::{
     SessionActor, StatementIdGuard, set_identity_headers,
 };
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
+use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
 use tracing::{info, instrument};
@@ -230,7 +231,7 @@ impl PgSessionFactory {
         // `register_vector`) decode results as vectors.  It goes on the config
         // before any provider options are derived from it, so the catalog and
         // every later provider agree.
-        let config = state
+        let mut config = state
             .config()
             .clone()
             .with_default_catalog_and_schema(
@@ -244,6 +245,13 @@ impl PgSessionFactory {
                     "vector".to_string(),
                 )],
             }));
+        // The vector-search options exist on every connection config: the
+        // scan reads them, `SET lakesoul_vector_search.*` writes them and
+        // `SET ivfflat.probes` maps onto `nprobe`.
+        config
+            .options_mut()
+            .extensions
+            .insert(LakeSoulVectorSearchConfig::default());
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();
