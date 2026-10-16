@@ -66,6 +66,7 @@ use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection};
 use parquet::arrow::async_reader::ParquetObjectReader;
+use parquet::file::metadata::PageIndexPolicy;
 use smallvec::SmallVec;
 use tracing::{debug, warn};
 use vortex::VortexSessionDefault;
@@ -1234,9 +1235,14 @@ async fn take_rows_parquet(
 ) -> crate::Result<Vec<RecordBatch>> {
     let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
         .with_file_size(size);
+    // The row selection only needs the offset index to skip pages; the column
+    // index (page statistics) would add bytes to every candidate read and is
+    // never consulted here.
     let builder = ParquetRecordBatchStreamBuilder::new_with_options(
         reader,
-        ArrowReaderOptions::new().with_page_index(true),
+        ArrowReaderOptions::new()
+            .with_offset_index_policy(PageIndexPolicy::Optional)
+            .with_column_index_policy(PageIndexPolicy::Skip),
     )
     .await
     .map_err(|error| open_error(location, error))?;
