@@ -407,6 +407,7 @@ pub(super) fn analyze_join(
                 right_alias,
                 join_keys,
                 right_keys,
+                &key_exprs,
                 left_filter,
                 right_filter,
                 null_safe,
@@ -429,6 +430,10 @@ pub(super) fn analyze_join(
                 left_alias,
                 right_keys,
                 join_keys,
+                &JoinKeyExprs {
+                    left: key_exprs.right.clone(),
+                    right: key_exprs.left.clone(),
+                },
                 right_filter,
                 left_filter,
                 null_safe,
@@ -441,6 +446,12 @@ pub(super) fn analyze_join(
             }
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
                 return Err(unsupported("FULL JOIN needs a primary key on both sources"));
+            }
+            if !key_exprs.is_empty() {
+                return Err(unsupported(
+                    "computed keys are only maintained for the inner join and \
+                     the lookup join",
+                ));
             }
             let right_keys = if same_names { Vec::new() } else { right_keys };
             // The join keys, under either name, never become payloads.
@@ -1309,6 +1320,7 @@ fn analyze_outer_join(
     right_alias: Option<&str>,
     join_keys: Vec<String>,
     right_keys: Vec<String>,
+    key_exprs: &JoinKeyExprs,
     left_filter: Option<String>,
     right_filter: Option<String>,
     null_safe: bool,
@@ -1352,15 +1364,38 @@ fn analyze_outer_join(
             &effective_right_keys,
         )?,
     };
-    let (left_value, right_value, output_columns, payload_names) =
-        compact_or_wide(payloads, &key_names, kind)?;
     let lookup = {
         let mut expected = right.primary_keys.clone();
         expected.sort();
-        let mut keys = effective_right_keys;
+        // A computed key is materialized under a hidden name; the right side
+        // is still keyed by the plain column its expression renders, so the
+        // key names read through the expressions.
+        let mut keys = effective_right_keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                match key_exprs
+                    .right
+                    .get(index)
+                    .filter(|expr| !expr.is_empty())
+                    .filter(|expr| right.schema.field_with_name(expr).is_ok())
+                {
+                    Some(expr) => expr.clone(),
+                    None => key.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
         keys.sort();
         !expected.is_empty() && expected == keys
     };
+    let mut payloads = payloads;
+    if lookup {
+        // The lookup layout materializes the left primary keys itself, so
+        // selecting one does not widen the payloads.
+        payloads.drop_carried_left(&left.primary_keys);
+    }
+    let (left_value, right_value, output_columns, payload_names) =
+        compact_or_wide(payloads, &key_names, kind)?;
     if lookup {
         // The right side is keyed by the join keys, so its keys are a
         // non-nullable primary key: a NULL left key never matches and the
@@ -1372,6 +1407,7 @@ fn analyze_outer_join(
             output_table_id: request.mv_table_id.clone(),
             join_keys,
             right_keys,
+            key_exprs: key_exprs.clone(),
             left_filter,
             right_filter,
             left_value,
@@ -1380,6 +1416,12 @@ fn analyze_outer_join(
             payload_names,
         })
     } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
+        if !key_exprs.is_empty() {
+            return Err(unsupported(
+                "computed keys are only maintained for the inner join and \
+                 the lookup join",
+            ));
+        }
         Ok(ViewSpec::LeftJoin {
             view_id: request.view_id.clone(),
             left_table_id: left.table_id.clone(),
@@ -1688,6 +1730,35 @@ struct JoinPayloads {
 }
 
 impl JoinPayloads {
+    /// Drop the left payloads the layout carries by itself (a lookup join
+    /// materializes the left primary keys), so a statement that selects them
+    /// stays compact. The drop keeps at least one left payload.
+    fn drop_carried_left(&mut self, carried: &[String]) {
+        if self.left_count < 2 {
+            return;
+        }
+        let dropped = self
+            .output_columns
+            .iter()
+            .filter(|column| {
+                column.side == JoinSide::Left && carried.contains(&column.column)
+            })
+            .count();
+        if dropped == 0 {
+            return;
+        }
+        self.output_columns.retain(|column| {
+            !(column.side == JoinSide::Left && carried.contains(&column.column))
+        });
+        self.left_count -= dropped;
+        let first = self
+            .output_columns
+            .iter()
+            .find(|column| column.side == JoinSide::Left);
+        self.left_value = first.map(|column| column.column.clone());
+        self.left_name = first.map(|column| column.name.clone());
+    }
+
     /// Record one payload column from `side`.
     fn push(&mut self, side: Side, column: String, name: String) {
         match side {
@@ -3233,6 +3304,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_a_lookup_join_with_a_computed_key() {
+        // A computed left key still looks the right side up: it is
+        // materialized as a hidden key while the right side is keyed by the
+        // plain column its expression renders.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, b.v from src a left join src b on b.k = a.v + 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin {
+            join_keys,
+            key_exprs,
+            left_value,
+            right_value,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(join_keys, vec![join_key_expression_name(0)]);
+        assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(key_exprs.right[0], "k");
+        assert_eq!(left_value, "g");
+        assert_eq!(right_value, "v");
+
+        // A right side keyed by several columns, one of them computed on the
+        // left, still looks up.
+        let mut dim = source_table("dim");
+        dim.primary_keys = vec!["k".to_string(), "v".to_string()];
+        let analyzed = analyze_multi(
+            "select a.k, a.g, b.g from src a left join dim b \
+             on a.k = b.k and b.v = a.v + 1",
+            vec![source_table("src"), dim],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin {
+            join_keys,
+            key_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(
+            join_keys,
+            vec!["k".to_string(), join_key_expression_name(0)]
+        );
+        assert!(key_exprs.left[0].is_empty() && key_exprs.right[0].is_empty());
+        assert!(key_exprs.left[1].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(key_exprs.right[1], "v");
+
+        // A computed key whose right side is not keyed by it is a pair join,
+        // which does not maintain computed keys.
+        let error = analyze_optimized(
+            "select a.k, a.g, b.v from src a left join src b on b.v = a.k + 1",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("computed keys"), "{error}");
+
+        // A wide lookup maintains the computed key too.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, a.v, b.g as bg, b.v as bv from src a \
+             left join src b on b.k = a.v + 1",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupJoin {
+            join_keys,
+            key_exprs,
+            output_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup join spec");
+        };
+        assert_eq!(join_keys, vec![join_key_expression_name(0)]);
+        assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(output_columns.len(), 4);
+    }
+
+    #[tokio::test]
     async fn analyzes_lookup_left_join() {
         let analyzed = analyze_optimized(
             "select a.k, a.v, b.v from src a left join src b on a.k = b.k",
@@ -3248,6 +3402,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                key_exprs: JoinKeyExprs::default(),
                 left_filter: None,
                 right_filter: None,
                 left_value: "v".to_string(),
@@ -3313,6 +3468,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: vec!["rk".to_string()],
+                key_exprs: JoinKeyExprs::default(),
                 left_filter: None,
                 right_filter: None,
                 left_value: "v".to_string(),
@@ -3380,6 +3536,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                key_exprs: JoinKeyExprs::default(),
                 left_filter: None,
                 right_filter: None,
                 left_value: "v".to_string(),

@@ -31,14 +31,14 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     BoolAggKind, ComputedAggArg, ComputedAggResult, DistinctAggKind, GroupingColumn,
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmExecutionAction,
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinOutputColumn, JoinSide,
-    LookupChainColumn, LookupChainStep, MinMaxKind, MultiJoinColumn, PhysicalFormat,
-    VarianceKind, WindowColumn, WindowFunction, WindowGroupSpec,
-    approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
+    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinKeyExprs,
+    JoinOutputColumn, JoinSide, LookupChainColumn, LookupChainStep, MinMaxKind,
+    MultiJoinColumn, PhysicalFormat, VarianceKind, WindowColumn, WindowFunction,
+    WindowGroupSpec, approx_distinct_mv_schema_for, approx_percentile_mv_schema_for,
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
-    full_join_view_schema_for, grouping_sets_mv_schema_for,
+    full_join_view_schema_for, grouping_sets_mv_schema_for, join_key_expression_name,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_aggregate_mv_schema_for, left_join_view_schema_for, lookup_chain_mv_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
@@ -1697,6 +1697,7 @@ fn sqllogic_left_lookup_join() {
             &group_keys(&["id"]),
             &group_keys(&["jk"]),
             &group_keys(&["jk"]),
+            &JoinKeyExprs::default(),
             "lv",
             "rv",
         )
@@ -1731,6 +1732,7 @@ fn sqllogic_lookup_join_filter() {
             &group_keys(&["id"]),
             &group_keys(&["jk"]),
             &group_keys(&["jk"]),
+            &JoinKeyExprs::default(),
             "lv",
             "rv",
         )
@@ -1765,8 +1767,107 @@ fn sqllogic_lookup_join_names() {
             &group_keys(&["id"]),
             &group_keys(&["rk"]),
             &group_keys(&["jk"]),
+            &JoinKeyExprs::default(),
             "lv",
             "rv",
+        )
+        .unwrap(),
+        group_keys(&["id"]),
+    );
+}
+
+#[test]
+fn sqllogic_lookup_join_expr_key() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("fk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let key_name = join_key_expression_name(0);
+    run_script_for_sources(
+        "lookupexpr",
+        include_str!("slt/lookup_join_expr_key.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rk"])),
+        ],
+        lookup_join_view_schema_for(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["rk"]),
+            &group_keys(&[key_name.as_str()]),
+            &JoinKeyExprs {
+                left: group_keys(&["fk + 1"]),
+                right: group_keys(&["rk"]),
+            },
+            "lv",
+            "rv",
+        )
+        .unwrap(),
+        group_keys(&["id"]),
+    );
+}
+
+#[test]
+fn sqllogic_wide_lookup_join_expr_key() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("fk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new("rn", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let key_name = join_key_expression_name(0);
+    run_script_for_sources(
+        "widelookupexpr",
+        include_str!("slt/wide_lookup_join_expr_key.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rk"])),
+        ],
+        wide_lookup_join_view_schema_for(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&[key_name.as_str()]),
+            &JoinKeyExprs {
+                left: group_keys(&["fk + 1"]),
+                right: group_keys(&["rk"]),
+            },
+            &[
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "fk".to_string(),
+                    name: "fk".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rv".to_string(),
+                    name: "rv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rn".to_string(),
+                    name: "rn".to_string(),
+                },
+            ],
         )
         .unwrap(),
         group_keys(&["id"]),
@@ -2135,6 +2236,7 @@ fn sqllogic_wide_lookup_join() {
             &dim,
             &group_keys(&["id"]),
             &group_keys(&["jk"]),
+            &JoinKeyExprs::default(),
             &[
                 JoinOutputColumn {
                     side: JoinSide::Left,
@@ -2350,6 +2452,7 @@ fn sqllogic_lookup_join_right_filter() {
             &group_keys(&["id"]),
             &group_keys(&["jk"]),
             &group_keys(&["jk"]),
+            &JoinKeyExprs::default(),
             "lv",
             "rv",
         )

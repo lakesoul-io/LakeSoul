@@ -3860,6 +3860,26 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `expected_mv_schema`/派生重命名一侧对齐（错误现场：`column rn is not part of the schema`）。仍走 Tier-2 兜底。
 - README 的限制清单据此改写为「聚合源（含 MIN/MAX 与 COUNT(DISTINCT)）自动物化；window 结果仍不物化」。
 
+### 10.155 性能项 H2a：表达式连接键进 lookup
+
+- **能力**：lookup `LEFT JOIN`（右侧按连接键做主键查找）现支持**左侧计算键**：`ON r.rk = l.fk + 1`。
+  分析器对表达式键仍按位置记录 `key_exprs`，lookup 判定改为「表达式感知」——右侧键名取该侧表达式**渲染成的
+  普通列**（用右侧源的 schema 校验 `field_with_name`，`v + 1` 这类表达式永远不会命中主键名），因此
+  `rk = fk + 1` 仍判定为 lookup（右源以 `rk` 为主键），而 `rk` 上是表达式的形状继续走 pair 左连接并**明确拒绝**。
+- **运行时**：`LookupJoinView` 增加 `key_exprs`（serde 默认空，向前兼容旧 spec 的 JSON）；紧凑投影用
+  `join_side_key_columns` 在两侧物化键（左键别名 = 连接键名、右键别名 = `__right_<key>`），因此计算键只物化
+  一次；schema 助手按表达式定型（`expression_type`）而非在源里找列名；校验器对计算键改为解析表达式、按
+  `lookup_right_key_names()` 判定「右侧以连接键为主键」；**右侧变化**的影响探测改为：右侧增量键按左键名投影，
+  左侧探测帧用 `with_column` 物化计算键，再按名字半连接（原先直接用 `join_keys` 当源列名，对隐藏键会报错）。
+- **顺带修正**：lookup 布局本来就物化**左侧主键**，因此 select 列表里出现左主键不再把载荷撑成 wide
+  （`JoinPayloads::drop_carried_left`：至少保留一个左载荷；此前 `select l.id, l.lv, r.rv` 会变成 wide 布局）。
+- **wide 同样支持**：`wide_lookup_join_view_schema_for` 增加 `key_exprs` 参数（键按表达式定型），分析器不再对
+  wide lookup 拒绝计算键——载荷宽化与计算键无关，投影/校验/影响探测共用同一条路径。
+- **测试**：`sql::joins::tests::analyzes_a_lookup_join_with_a_computed_key`（单/多键、非 lookup 的表达式键
+  拒绝、wide 形态）与 `sqllogic_lookup_join_expr_key`（compact）、`sqllogic_wide_lookup_join_expr_key`（wide）
+  两个 slt：bootstrap、右侧新增/删除/更新、事实侧计算键随 `fk` 变化移动匹配。
+- **仍缺**：outer / chain / multi 的表达式键（后续 H2 步骤）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

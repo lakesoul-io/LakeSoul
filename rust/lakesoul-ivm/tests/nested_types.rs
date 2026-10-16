@@ -16,8 +16,8 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, row_mv_schema_for,
-    sum_count_groups_mv_schema_for,
+    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinKeyExprs,
+    row_mv_schema_for, sum_count_groups_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -580,6 +580,7 @@ async fn a_join_carries_nested_payloads() {
                     &["k".to_string()],
                     &["g".to_string()],
                     &["g".to_string()],
+                    &JoinKeyExprs::default(),
                     "s",
                     "l",
                 )

@@ -477,6 +477,10 @@ pub enum ViewSpec {
         /// keys share their names with the left side.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         right_keys: Vec<String>,
+        /// The rendered key expressions, aligned with `join_keys`; an empty
+        /// entry means that key is a plain column of that side.
+        #[serde(default, skip_serializing_if = "JoinKeyExprs::is_empty")]
+        key_exprs: JoinKeyExprs,
         /// An optional filter the contributing left rows must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_filter: Option<String>,
@@ -2941,6 +2945,7 @@ impl IvmRuntime {
                 output_table_id,
                 join_keys,
                 right_keys,
+                key_exprs,
                 left_filter,
                 right_filter,
                 left_value,
@@ -2954,6 +2959,7 @@ impl IvmRuntime {
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
                 right_keys: right_keys.clone(),
+                key_exprs: key_exprs.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 left_value: left_value.clone(),
