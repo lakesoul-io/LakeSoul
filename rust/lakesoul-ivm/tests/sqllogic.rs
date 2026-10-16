@@ -38,9 +38,11 @@ use lakesoul_ivm::{
     array_agg_mv_schema_for, avg_mv_schema_for, bool_agg_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for,
     distinct_agg_groups_mv_schema_for, distinct_agg_mv_schema_for,
-    full_join_view_schema_for, grouping_sets_mv_schema_for, join_key_expression_name,
+    full_join_view_schema_for, full_join_view_schema_with_keys,
+    grouping_sets_mv_schema_for, join_key_expression_name,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    left_aggregate_mv_schema_for, left_join_view_schema_for, lookup_chain_mv_schema_for,
+    left_aggregate_mv_schema_for, left_join_view_schema_for,
+    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
     lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
@@ -1871,6 +1873,86 @@ fn sqllogic_wide_lookup_join_expr_key() {
         )
         .unwrap(),
         group_keys(&["id"]),
+    );
+}
+
+#[test]
+fn sqllogic_left_join_expr_key() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("fk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new("rn", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let key_name = join_key_expression_name(0);
+    run_script_for_sources(
+        "leftexpr",
+        include_str!("slt/left_join_expr_key.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rk"])),
+        ],
+        left_join_view_schema_with_keys(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["rk"]),
+            &group_keys(&[key_name.as_str()]),
+            &JoinKeyExprs {
+                left: group_keys(&["fk + 1"]),
+                right: group_keys(&["rv"]),
+            },
+            "lv",
+            "rn",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rk"])),
+    );
+}
+
+#[test]
+fn sqllogic_full_join_expr_key() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("fk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new("rn", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let key_name = join_key_expression_name(0);
+    run_script_for_sources(
+        "fullexpr",
+        include_str!("slt/full_join_expr_key.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rk"])),
+        ],
+        full_join_view_schema_with_keys(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["rk"]),
+            &group_keys(&[key_name.as_str()]),
+            &JoinKeyExprs {
+                left: group_keys(&["fk + 1"]),
+                right: group_keys(&["rv"]),
+            },
+            "lv",
+            "rn",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rk"])),
     );
 }
 

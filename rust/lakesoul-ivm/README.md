@@ -328,7 +328,10 @@ Supported within the shapes above:
   as the expression resolves to a plain column of the dimension, which
   stays keyed by it (`ON r.k = l.fk + 1`): the fact side is probed by the
   computed value, the dimension is read by its key column, and the hidden key
-  column holds the computed value (compact and wide lookups alike);
+  column holds the computed value (compact and wide lookups alike).  The
+  pair-keyed `LEFT` / `FULL` joins render each side the same way, and their
+  affected-row probe materializes the computed keys before it joins by key
+  name (the MV stays keyed by both row identities);
 * an **inner join** and a **lookup `LEFT JOIN`** may reference differently
   named right keys (`ON fact.dim_id = dim.id`);
 * a **lookup `LEFT JOIN`** may filter the fact side
@@ -599,8 +602,8 @@ decision too).  Create the target with `with_allow_fallback(false)`
 rejected outright; the notes below describe the incremental analyzer's
 boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 
-* computed equality keys outside the two-source inner join and the lookup
-  join (an outer, multi-way or chain join whose key is an expression); a
+* computed equality keys in a multi-way or chain join (the two-source inner
+  join, the lookup join and the pair-keyed outer joins maintain them); a
   non-equality condition may compare unmaterialized columns, they become
   hidden payload columns;
 * a multi-way chain with more than sixteen sources; a chain step whose
