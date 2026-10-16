@@ -129,13 +129,79 @@ pub(super) fn analyze_order_by_limit(
         .checked_add(fetch)
         .ok_or_else(|| unsupported("the LIMIT plus OFFSET is too large"))?;
     let (source, filter) = collect_filtered_source(&sort.input, tables, "a top-k")?;
+    // The select list may sit below the Sort when the statement does not add
+    // a projection of its own.
+    let select_projection = match projection {
+        Some(projection) => Some(projection),
+        None => match peel(&sort.input) {
+            LogicalPlan::Projection(projection) => Some(projection),
+            _ => None,
+        },
+    };
+    // The projected columns; a select item that is an expression (rather
+    // than a plain column) is materialized by its rendered form.
+    let (output_columns, output_exprs) = match select_projection {
+        Some(projection) => {
+            let columns = projection
+                .expr
+                .iter()
+                .zip(projection.schema.iter())
+                .map(|(_, (_, field))| field.name().clone())
+                .collect::<Vec<_>>();
+            let computed = projection
+                .expr
+                .iter()
+                .any(|expr| column_name(expr).is_none());
+            let exprs = if computed {
+                projection
+                    .expr
+                    .iter()
+                    .map(|expr| match column_name(expr) {
+                        Some(column) => Ok(column),
+                        None => render_filter(expr),
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            };
+            (columns, exprs)
+        }
+        // The select list was pruned into the input; its schema is the
+        // projected column set.
+        None => (
+            sort.input
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect(),
+            Vec::new(),
+        ),
+    };
     let mut order_keys = Vec::with_capacity(sort.expr.len());
     let mut order_by = Vec::with_capacity(sort.expr.len());
     for item in &sort.expr {
         match column_name(&item.expr) {
             Some(column) => {
-                order_by.push(render_order_key(&column, item.asc, item.nulls_first));
-                order_keys.push(column);
+                // An `ORDER BY` over a computed select alias orders by the
+                // expression the alias stands for.
+                let asked_for_alias = source.schema.field_with_name(&column).is_err()
+                    && !output_exprs.is_empty();
+                if asked_for_alias
+                    && let Some(index) =
+                        output_columns.iter().position(|output| output == &column)
+                {
+                    let rendered = output_exprs[index].clone();
+                    order_by.push(render_order_rendered(
+                        &rendered,
+                        item.asc,
+                        item.nulls_first,
+                    ));
+                    order_keys.push(rendered);
+                } else {
+                    order_by.push(render_order_key(&column, item.asc, item.nulls_first));
+                    order_keys.push(column);
+                }
             }
             None => {
                 order_by.push(render_order_expr(&item.expr, item.asc, item.nulls_first)?);
@@ -151,35 +217,6 @@ pub(super) fn analyze_order_by_limit(
     } else {
         order_by
     };
-    let output_columns = match projection {
-        Some(projection) => projection
-            .expr
-            .iter()
-            .map(column_name)
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| unsupported("computed columns above a LIMIT"))?,
-        // The select list was pruned into the input; its schema is the
-        // projected column set.
-        None => sort
-            .input
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .collect(),
-    };
-    // A top-k row is identified by its source primary key: a select list
-    // that omits one is materialized with it appended.
-    // The MV stores source columns; computed select-list columns (a
-    // projection referring to an expression alias) are not materialized.
-    for column in &output_columns {
-        if source.schema.field_with_name(column).is_err() {
-            return Err(unsupported(format!(
-                "the top-k select-list column {column} is not a source column; \
-                 computed columns above a LIMIT are not materialized"
-            )));
-        }
-    }
     Ok(ViewSpec::TopK {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -188,6 +225,7 @@ pub(super) fn analyze_order_by_limit(
         order_keys,
         order_by,
         output_columns,
+        output_exprs,
         limit: fetch,
         offset,
         filter,
@@ -299,6 +337,7 @@ pub(super) fn try_analyze_top_k(
         order_keys,
         order_by,
         output_columns,
+        output_exprs: Vec::new(),
         limit,
         offset: 0,
         filter,
@@ -426,6 +465,20 @@ pub(super) fn render_order_key(column: &str, asc: bool, nulls_first: bool) -> St
 /// Quote an identifier for a rendered ordering item.
 fn quote_order_identifier(column: &str) -> String {
     format!("\"{}\"", column.replace('"', "\"\""))
+}
+
+/// Render an `ORDER BY` item from an already rendered expression.
+pub(super) fn render_order_rendered(
+    rendered: &str,
+    asc: bool,
+    nulls_first: bool,
+) -> String {
+    match (asc, nulls_first) {
+        (true, false) => format!("({rendered})"),
+        (true, true) => format!("({rendered}) asc nulls first"),
+        (false, false) => format!("({rendered}) desc nulls last"),
+        (false, true) => format!("({rendered}) desc nulls first"),
+    }
 }
 
 /// Render one `ORDER BY` item whose expression is not a plain column.
@@ -750,13 +803,58 @@ mod tests {
             "select k, v from src limit 3",
             // Ordering alone is not materialized.
             "select k, v from src order by v desc",
-            // Computed select-list columns are not materialized.
-            "select k, v + 1 as w from src order by v desc limit 3",
             // A top-k over an aggregate is a view chain, not one statement.
             "select g, sum(v) as s from src group by g order by s desc limit 2",
         ] {
             assert!(analyze_optimized(sql).await.is_err(), "{sql}");
         }
+    }
+
+    #[tokio::test]
+    async fn analyzes_computed_select_list_columns() {
+        // A computed select item is materialized by its rendered expression,
+        // and ordering by its alias orders by that expression.
+        let analyzed =
+            analyze_optimized("select k, v * 2 as w from src order by w desc limit 3")
+                .await
+                .unwrap();
+        let ViewSpec::TopK {
+            output_columns,
+            output_exprs,
+            order_keys,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a top-k spec");
+        };
+        assert_eq!(output_columns, vec!["k".to_string(), "w".to_string()]);
+        assert_eq!(output_exprs.len(), 2);
+        assert!(output_exprs[1].contains('*'), "{output_exprs:?}");
+        assert_eq!(order_keys.len(), 1);
+        assert!(order_keys[0].contains('*'), "{order_keys:?}");
+
+        let schema = crate::runtime::top_k_expr_mv_schema_for(
+            &crate::sql::test_helpers::schema(),
+            &["k".to_string()],
+            &output_columns,
+            &output_exprs,
+        )
+        .unwrap();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "k",
+                "w",
+                crate::runtime::IVM_ROW_KINDS_COLUMN,
+                crate::runtime::IVM_EPOCH_COLUMN
+            ]
+        );
+        // The computed column is typed by its expression.
+        assert_eq!(schema.field(1).data_type(), &arrow_schema::DataType::Int64);
     }
 
     #[tokio::test]

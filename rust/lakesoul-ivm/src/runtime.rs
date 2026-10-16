@@ -1068,6 +1068,10 @@ pub enum ViewSpec {
         /// The projected source columns; empty means all of them.
         #[serde(default)]
         output_columns: Vec<String>,
+        /// The rendered projection expressions, parallel to `output_columns`
+        /// (empty means every column is projected unchanged).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output_exprs: Vec<String>,
         /// How many rows to keep per group.
         limit: i64,
         /// How many rows to skip before keeping them (a `LIMIT ... OFFSET`).
@@ -3437,6 +3441,7 @@ impl IvmRuntime {
                 order_keys,
                 order_by,
                 output_columns,
+                output_exprs,
                 limit,
                 offset,
                 filter,
@@ -3448,6 +3453,7 @@ impl IvmRuntime {
                 order_keys: order_keys.clone(),
                 order_by: order_by.clone(),
                 output_columns: output_columns.clone(),
+                output_exprs: output_exprs.clone(),
                 limit: *limit,
                 offset: *offset,
                 filter: filter.clone(),
