@@ -141,9 +141,7 @@ def import_lerobot(
         col("episode_index"),
         col("task_index"),
     ]
-    selections.extend(
-        col(feature.key).alias(feature.column) for feature in data_features
-    )
+    selections.extend(_feature_selections(dataframe, data_features))
     selections.extend(
         functions.encode_image(col(feature.key), image_format).alias(feature.column)
         for feature in video_features
@@ -341,6 +339,32 @@ def import_lerobot_gop(
     )
 
 
+def _feature_selections(dataframe: Any, features: Any) -> list[Any]:
+    """Wrap scalar storage for LeRobot shape=[1], leaving vectors unchanged."""
+    from daft import col, functions, lit
+
+    schema = dataframe.schema().to_pyarrow_schema()
+    selections = []
+    for feature in features:
+        expression = col(feature.key)
+        dtype = schema.field(feature.key).type
+        scalar = (
+            pa.types.is_boolean(dtype)
+            or pa.types.is_integer(dtype)
+            or pa.types.is_floating(dtype)
+            or pa.types.is_string(dtype)
+            or pa.types.is_large_string(dtype)
+            or pa.types.is_null(dtype)
+        )
+        if feature.shape == (1,) and scalar:
+            # Preserve a missing value as a null list, rather than [null].
+            expression = functions.when(expression.is_null(), lit(None)).otherwise(
+                functions.to_list(expression)
+            )
+        selections.append(expression.alias(feature.column))
+    return selections
+
+
 def _ticks_frame(lerobot: Any, root: Path, data_features: Any, episodes: Any) -> Any:
     from daft import col, functions, lit
 
@@ -362,9 +386,7 @@ def _ticks_frame(lerobot: Any, root: Path, data_features: Any, episodes: Any) ->
         col("episode_index"),
         col("task_index"),
     ]
-    selections.extend(
-        col(feature.key).alias(feature.column) for feature in data_features
-    )
+    selections.extend(_feature_selections(dataframe, data_features))
     return dataframe.select(*selections).sort([EPISODE_COLUMN, "frame_index"])
 
 

@@ -1,5 +1,9 @@
 # Embodied data examples
 
+For a real LeRobot dataset pipeline using Daft (Native or Ray), see the
+[ALOHA Frames example](aloha/README.md): import, QC, interval selection,
+episode splits, Prepared tables and training sample indices.
+
 Synthetic embodied episodes with `state` / `action` vectors and per-frame
 `image` bytes, laid out with one partition per episode (the M1 hard
 constraint) so episode selection prunes files at metadata level.
