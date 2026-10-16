@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scrapes the /metrics endpoint of every LakeSoul Pod in this namespace and
+# receives the span metrics / service graphs Tempo's metrics generator
+# remote-writes (see docker/observability/prometheus/prometheus.yml for the
+# host-network equivalent).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: lakesoul
+    kubernetes_sd_configs:
+      # Pod discovery needs only the namespaced Role in rbac.yaml.
+      - role: pod
+        namespaces:
+          own_namespace: true
+    relabel_configs:
+      # Coordinator and worker Pods share `app.kubernetes.io/name: lakesoul`;
+      # the observability Pods do not.
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: lakesoul
+        action: keep
+      # Pod discovery yields one target per declared container port; keep the
+      # ones named `metrics` (19090 coordinator, 19091 worker).
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: metrics
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      # `role` is the binary, as in the host-network stack: the container
+      # names are `postgres-lakesoul` and `lakesoul-worker`. Never set a
+      # `service` target label: the processes export their own `service`
+      # label, which the dashboard filters on.
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: role

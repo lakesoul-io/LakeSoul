@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# docker/observability/grafana/provisioning/datasources/datasources.yml with
+# in-cluster URLs. The uids are the same, so the shared LakeSoul dashboard
+# resolves its datasources unchanged.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://lakesoul-prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      # A sample carrying a `trace_id` exemplar jumps to the trace.
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://lakesoul-tempo:3200
+    jsonData:
+      # "Metrics" tab on a trace, backed by the metrics generator output.
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      # The cluster's promtail labels Pod logs with `container`, and the
+      # container names equal the `service.name` of the binaries
+      # (`postgres-lakesoul`, `lakesoul-worker`). LakeSoul log lines carry no
+      # trace id, so the link matches on the container and the span's time
+      # range instead.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: false
+        filterBySpanID: false
+        tags:
+          - key: service.name
+            value: container
+      lokiSearch:
+        datasourceUid: loki
+      search:
+        hide: false
+
+  # The cluster's existing Loki, fed by the `lakeinsight-promtail` DaemonSet
+  # (it already ships this namespace's Pod logs). Read-only use; point this at
+  # another Loki on clusters without it.
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://lakeinsight-loki.lakeinsight.svc:3100
+    jsonData:
+      maxLines: 1000

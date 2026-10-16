@@ -37,32 +37,29 @@ Deliberately **not** included (later phases):
 
 1. Images build from this repository; a single image carries both binaries
    (`/app/postgres-lakesoul`, `/app/lakesoul-worker`). The manifests use
-   `lakesoul-k8s:local` with `imagePullPolicy: IfNotPresent`. Two equivalent
-   builds:
-   - Docker (no Nix needed):
-     `docker build -f rust/postgres-lakesoul/deploy/Dockerfile -t lakesoul-k8s:local .`
-   - Nix (root `flake.nix`, crane + `dockerTools.streamLayeredImage`):
+   `lakesoul-k8s:local` with `imagePullPolicy: IfNotPresent`. Build it with
+   the root `flake.nix` (crane + `dockerTools.streamLayeredImage`):
 
-     ```sh
-     nix build .#image && ./result | docker load
-     docker tag "lakesoul-k8s:$(nix eval --raw .#image.imageTag)" lakesoul-k8s:local
-     ```
+   ```sh
+   nix build .#image && ./result | docker load
+   docker tag "lakesoul-k8s:$(nix eval --raw .#image.imageTag)" lakesoul-k8s:local
+   ```
 
-     `nix build .#lakesoul` builds only the two binaries. Rust is the
-     `rust-toolchain.toml` channel as resolved by the `rust-overlay` revision
-     in `flake.lock` (nixpkgs' rustc is too old for the workspace).
-     Dependencies are a separate derivation, rebuilt only when manifests,
-     `Cargo.lock`, `.cargo/config.toml` or the toolchain change; a source
-     change recompiles the workspace crates only. The image has no
-     distro base: it holds the binaries' Nix closure (glibc included),
-     CA certificates and `/etc/passwd`, runs as `nobody` (65534), and is
-     tagged with the 12-character git commit (`-dirty` for uncommitted
-     changes) that `--version` also reports. The flake sees only git-tracked
-     files.
+   `nix build .#lakesoul` builds only the two binaries. Rust is the
+   `rust-toolchain.toml` channel as resolved by the `rust-overlay` revision
+   in `flake.lock` (nixpkgs' rustc is too old for the workspace).
+   Dependencies are a separate derivation, rebuilt only when manifests,
+   `Cargo.lock`, `.cargo/config.toml` or the toolchain change; a source
+   change recompiles the workspace crates only. The image has no distro
+   base: it holds the binaries' Nix closure (glibc included), CA
+   certificates and `/etc/passwd`, runs as `nobody` (65534), and is
+   tagged with the 12-character git commit (`-dirty` for uncommitted
+   changes) that `--version` also reports. The flake sees only git-tracked
+   files.
 
-   Both builds apply `.cargo/config.toml` (`-Ctarget-feature=+avx2`), so
+   The build applies `.cargo/config.toml` (`-Ctarget-feature=+avx2`), so
    every node that runs the image needs AVX2 (`grep -m1 -o avx2 /proc/cpuinfo`).
-2. `kubectl apply -k rust/postgres-lakesoul/deploy/k8s/base` creates the
+2. `kubectl apply -k rust/postgres-lakesoul/k8s/base` creates the
    `lakesoul` namespace, the coordinator (1 replica) and worker (2
    replicas) Deployments, the two Services, the ConfigMap, and the
    coordinator's namespaced Role/RoleBinding for EndpointSlice reads.
@@ -80,6 +77,58 @@ Deliberately **not** included (later phases):
    Secrets are referenced through `secretKeyRef`, not inline in CLI args, so
    plain `kubectl describe` does not print credentials.
 
+## Observability (optional overlay)
+
+`observability/` is the base plus Grafana 12.2.5, Prometheus v3.2.1 and Tempo
+2.7.2, the versions and configuration of `docker/observability`. Apply it
+instead of `base/`; the base alone keeps running without it.
+
+| Component | What it does |
+|---|---|
+| `lakesoul-tempo` | OTLP ingest (4317 gRPC, 4318 HTTP), 24 h of traces on the `lakesoul-tempo-data` PVC (10Gi), span metrics / service graphs remote-written to Prometheus |
+| `lakesoul-prometheus` | Scrapes every Pod in the namespace labelled `app.kubernetes.io/name: lakesoul` on its `metrics` port (labels `pod`, `role` = container name); receives Tempo's remote writes; 15 d / 8 GB on the `lakesoul-prometheus-data` PVC (10Gi) |
+| `lakesoul-grafana` | Datasources Prometheus, Tempo and the cluster's existing Loki (`lakeinsight-loki.lakeinsight`, fed by `lakeinsight-promtail`), plus the *LakeSoul Overview* dashboard shared with `docker/observability` |
+| coordinator and worker patch | `OTEL_EXPORTER_OTLP_ENDPOINT=http://lakesoul-tempo:4317`, `service.instance.id` = Pod name; both Deployments roll on apply |
+
+1. Mirror the three upstream images into the SWR repository the
+   `images:` entries in `observability/kustomization.yaml` point at (the
+   ServiceAccounts reuse the `lakesoul-registry` pull Secret):
+
+   ```sh
+   for image in grafana/grafana:12.2.5 prom/prometheus:v3.2.1 grafana/tempo:2.7.2; do
+     docker pull "$image"
+     docker tag "$image" "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image#*/}"
+     docker push "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image#*/}"
+   done
+   ```
+
+2. Create the Grafana admin password (user `admin`; no anonymous access,
+   since every Pod in the cluster can reach the Service):
+
+   ```sh
+   kubectl -n lakesoul create secret generic lakesoul-grafana \
+     --from-literal=admin-password="$(openssl rand -base64 24)"
+   ```
+
+3. `kubectl apply -k rust/postgres-lakesoul/k8s/observability`. Like the base,
+   this resets the worker Deployment to its manifest's 2 replicas.
+4. `kubectl -n lakesoul port-forward svc/lakesoul-grafana 3000:3000`, then
+   http://localhost:3000. The password:
+   `kubectl -n lakesoul get secret lakesoul-grafana -o jsonpath='{.data.admin-password}' | base64 -d`.
+
+Grafana keeps no state across restarts (`emptyDir`): datasources and the
+dashboard are re-provisioned, dashboards made in the UI are lost. The
+Traces Drilldown app downloads from grafana.com in the background on every
+start; without egress Grafana logs the failure and runs without it.
+
+In Loki the LakeSoul streams carry promtail's labels, so
+`{container="lakesoul-worker"}` selects the workers and
+`{namespace="lakesoul", pod="<pod>"}` one replica. The trace view's *Logs*
+link maps `service.name` to `container` for the same reason. *Save & test*
+on the Loki datasource reports a parse error: the cluster's Loki 2.6.1 cannot
+parse the `vector(1)+vector(1)` health query Grafana 12 sends. Log queries,
+the dashboard panel and the trace-to-logs link are unaffected.
+
 ## Network requirements
 
 | Flow | Purpose |
@@ -90,6 +139,10 @@ Deliberately **not** included (later phases):
 | coordinator, workers -> S3/RustFS | warehouse reads/writes |
 | coordinator -> metadata PostgreSQL (5432) | catalog/DDL/commits |
 | DNS | `lakesoul-worker.lakesoul.svc` etc. |
+| coordinator, workers -> `lakesoul-tempo` (4317) | OTLP trace export (observability overlay) |
+| `lakesoul-prometheus` -> coordinator (19090), workers (19091) | metrics scrape, direct to Pod IP; Pod discovery via the API server (443) |
+| `lakesoul-tempo` -> `lakesoul-prometheus` (9090) | span metrics remote write |
+| `lakesoul-grafana` -> Prometheus (9090), Tempo (3200), `lakeinsight-loki.lakeinsight` (3100) | dashboards and Explore |
 
 No LoadBalancer or Ingress is configured: the PG wire endpoint lacks
 authentication-visible deployment hardening in this phase (only the
@@ -101,7 +154,9 @@ namespaced traffic rules verified against your CNI's capabilities
 (NetworkPolicies are enforced by the CNI, not the API server). One that is
 safe to start with: an egress policy on the coordinator worker allowing
 443/TCP to the API server CIDR and DNS, plus same-namespace ingress/egress
-only where needed.
+only where needed. With the observability overlay, Tempo's OTLP ingest and
+Prometheus' remote-write receiver are unauthenticated write paths; without a
+NetworkPolicy any Pod in the cluster can reach them.
 
 ## Configuration reference (env; priority: CLI > env > default)
 

@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Plain Prometheus (no Operator CRDs): scrapes the LakeSoul Pods of this
+# namespace and receives Tempo's span metrics over remote write.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lakesoul-prometheus-data
+  namespace: lakesoul
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # Default StorageClass; 10Gi is also the smallest EVS disk on CCE.
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-prometheus
+  namespace: lakesoul
+spec:
+  replicas: 1
+  # ReadWriteOnce volume: the old Pod must release it before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/part-of: lakesoul
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: lakesoul
+    spec:
+      serviceAccountName: lakesoul-prometheus
+      securityContext:
+        # The image runs as nobody (65534); the group makes the volume writable.
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.2.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # Whichever limit is hit first; the size stays below the volume.
+            - --storage.tsdb.retention.time=15d
+            - --storage.tsdb.retention.size=8GB
+            # Tempo's metrics generator remote-writes span metrics here.
+            - --web.enable-remote-write-receiver
+            # Exemplars let Grafana jump from a metric sample to its trace.
+            - --enable-feature=exemplar-storage
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: lakesoul-prometheus-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: lakesoul-prometheus-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lakesoul-prometheus
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: lakesoul
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: lakesoul
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http

@@ -9,7 +9,7 @@ metadata:
 spec:
   # Two workers is the phase-one minimum distribution; scale to 3 to run the
   # acceptance scenario "worker count grows, snapshot follows" in
-  # rust/postgres-lakesoul/deploy/k8s/README.md.
+  # rust/postgres-lakesoul/k8s/README.md.
   replicas: 2
   selector:
     matchLabels:

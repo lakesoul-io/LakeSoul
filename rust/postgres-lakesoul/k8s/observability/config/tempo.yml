@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# docker/observability/tempo/tempo.yml for a Pod: same storage layout, retention
+# and processors, but the listeners serve the Pod network and the metrics
+# generator remote-writes to the in-namespace Prometheus Service.
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+# Stream TraceQL results (used by Grafana's trace view).
+stream_over_http_enabled: true
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        # Explicit all-interfaces binds: the coordinator and the workers reach
+        # these through the `lakesoul-tempo` Service. OTLP ingest is
+        # unauthenticated, see the README's network section.
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      stack: lakesoul
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      # Prometheus runs with --web.enable-remote-write-receiver.
+      - url: http://lakesoul-prometheus:9090/api/v1/write
+        # Attach the trace id as an exemplar, so Grafana can jump from a span
+        # metric sample to the trace that produced it.
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+overrides:
+  defaults:
+    metrics_generator:
+      # span-metrics: traces_spanmetrics_* by service/span
+      # service-graphs: traces_service_graph_* between services
+      # local-blocks: TraceQL metrics queries over recent data
+      processors: [service-graphs, span-metrics, local-blocks]

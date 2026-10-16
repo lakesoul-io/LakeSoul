@@ -179,9 +179,8 @@
     #
     # Container image: postgres-lakesoul (coordinator) + lakesoul-worker
     #
-    # Same layout as rust/postgres-lakesoul/deploy/Dockerfile (`/app/<bin>`,
-    # TMPDIR=/var/scratch, non-root), but the binaries keep their Nix glibc
-    # closure, so they run unchanged in the image.
+    # `/app/<bin>`, TMPDIR=/var/scratch, non-root; the binaries keep their Nix
+    # glibc closure, so they run unchanged in the image.
 
     # Channel from rust-toolchain.toml, minimal profile: the build needs
     # neither rustfmt/clippy nor rust-analyzer.
@@ -192,9 +191,9 @@
       };
     craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainFor;
 
-    # Build inputs only, like the Dockerfile's COPY set and .dockerignore
-    # (deploy files don't invalidate the build); `.cargo` carries the
-    # repository rustflags (`+avx2`), so image binaries match local builds.
+    # Build inputs only: the k8s manifests don't invalidate the build.
+    # `.cargo` carries the repository rustflags (`+avx2`), so image binaries
+    # match local builds.
     rustSrc = pkgs.lib.fileset.toSource {
       root = ./.;
       fileset =
@@ -206,7 +205,7 @@
           ./rust
           ./python
         ])
-        ./rust/postgres-lakesoul/deploy;
+        ./rust/postgres-lakesoul/k8s;
     };
 
     # 12 characters, like lakesoul-build-info's own `git rev-parse` fallback.

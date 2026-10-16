@@ -2,14 +2,5 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Cargo writes the shared target dir at the workspace root, so the runtime
-# copy step reads /workspace/target only. Local caches (both nested and
-# root-level) must not enter the build context: they bloat the image via
-# `COPY rust/ python/` and could shadow a clean build's products.
 /target/
-/rust/target/
-/python/target/
 /.idea/
-# Deployment manifests live inside the coordinator crate but are not build
-# inputs: editing them must not invalidate the `COPY rust/` layer.
-/rust/postgres-lakesoul/deploy/
