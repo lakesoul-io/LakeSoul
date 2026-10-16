@@ -41,13 +41,13 @@ use lakesoul_ivm::{
     full_join_view_schema_for, full_join_view_schema_with_keys,
     grouping_sets_mv_schema_for, join_key_expression_name,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    left_aggregate_mv_schema_for, left_join_view_schema_for,
-    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
-    lookup_join_view_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
-    min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
-    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    left_aggregate_mv_schema_for, left_aggregate_mv_schema_with_outputs,
+    left_join_view_schema_for, left_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
     top_k_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
@@ -3045,6 +3045,60 @@ fn sqllogic_left_aggregate() {
             &DataType::Float64,
         )
         .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_left_aggregate_left_column() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "leftaggexpr",
+        include_str!("slt/left_aggregate_left_column.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k", "v"])),
+        ],
+        left_aggregate_mv_schema_with_outputs(
+            &schema,
+            &group_keys(&["k"]),
+            "__ivm_agg",
+            &DataType::Int64,
+            &[("w".to_string(), DataType::Int64)],
+        )
+        .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_left_aggregate_count() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "leftaggcount",
+        include_str!("slt/left_aggregate_count.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k", "v"])),
+        ],
+        left_aggregate_mv_schema_for(&schema, &group_keys(&["k"]), "c", &DataType::Int64)
+            .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_left_aggregate_count_star() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "leftaggcountstar",
+        include_str!("slt/left_aggregate_count_star.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k", "v"])),
+        ],
+        left_aggregate_mv_schema_for(&schema, &group_keys(&["k"]), "c", &DataType::Int64)
+            .unwrap(),
         group_keys(&["k"]),
     );
 }

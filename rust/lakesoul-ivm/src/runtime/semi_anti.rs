@@ -1327,6 +1327,8 @@ pub struct LeftAggregateView {
     pub right_aggregate: String,
     /// The MV column the aggregate value is materialized into.
     pub aggregate_column: String,
+    /// Whether the aggregate is a COUNT (see the spec field of the same name).
+    pub count_zero: bool,
     /// The left columns materialized; the left primary keys are always
     /// contained.
     pub output_columns: Vec<String>,
@@ -1365,6 +1367,7 @@ impl LeftAggregateView {
             right_keys,
             right_aggregate: right_aggregate.into(),
             aggregate_column: aggregate_column.into(),
+            count_zero: false,
             output_columns,
             left_filter: None,
             right_filter: None,
@@ -1404,6 +1407,7 @@ impl LeftAggregateView {
             right_keys: self.right_keys.clone(),
             right_aggregate: self.right_aggregate.clone(),
             aggregate_column: self.aggregate_column.clone(),
+            count_zero: self.count_zero,
             output_columns: self.output_columns.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
@@ -1419,6 +1423,39 @@ impl LeftAggregateView {
                 })
                 .collect::<Result<Vec<_>>>()?,
         })
+    }
+}
+
+/// The join of the affected left rows with one aggregate row per key: a
+/// COUNT subquery counts zero for a left row whose key has no right rows,
+/// while every other aggregate leaves the unmatched value NULL.
+fn left_aggregate_joined(
+    view: &LeftAggregateView,
+    joined: DataFrame,
+) -> Result<DataFrame> {
+    if !view.count_zero {
+        return Ok(joined);
+    }
+    let aggregate_type = field_type(&view.mv.schema, &view.aggregate_column)?;
+    Ok(joined.with_column(
+        IVM_RIGHT_AGG_COLUMN,
+        datafusion::functions::core::expr_fn::coalesce(vec![
+            col(IVM_RIGHT_AGG_COLUMN),
+            zero_literal(&aggregate_type),
+        ]),
+    )?)
+}
+
+/// A typed zero, the default a COUNT subquery materializes for a key with no
+/// right rows.
+fn zero_literal(data_type: &DataType) -> Expr {
+    match data_type {
+        DataType::UInt64 => lit(0u64),
+        DataType::UInt32 => lit(0u32),
+        DataType::Int32 => lit(0i32),
+        DataType::Int16 => lit(0i16),
+        DataType::Int8 => lit(0i8),
+        _ => lit(0i64),
     }
 }
 
@@ -1650,6 +1687,19 @@ fn left_aggregate_left_columns(view: &LeftAggregateView) -> Result<Vec<String>> 
             }
         }
     }
+    // A computed output may read the row's own columns as well as the raw
+    // aggregate value (its type is the MV's aggregate column).
+    if !view.output_exprs.is_empty() {
+        let aggregate_type = field_type(&view.mv.schema, &view.aggregate_column)?;
+        let schema = match_schema(&view.left.schema, &aggregate_type)?;
+        for (call, _, _) in &view.output_exprs {
+            for column in filter_columns(&context, &schema, call)? {
+                if column != IVM_RIGHT_AGG_COLUMN && !columns.contains(&column) {
+                    columns.push(column);
+                }
+            }
+        }
+    }
     if let Some(change) = change_column(&view.left)
         && !columns.iter().any(|column| column == change)
     {
@@ -1668,6 +1718,13 @@ fn left_aggregate_right_columns(
     for column in left_aggregate_right_keys(view) {
         if !columns.contains(column) {
             columns.push(column.clone());
+        }
+    }
+    // A keyed right source contributes its primary keys: the refresh reads
+    // the changed rows' identities from the projected delta.
+    for key in &view.right.primary_keys {
+        if !columns.contains(key) {
+            columns.push(key.clone());
         }
     }
     for column in filter_columns(context, &view.right.schema, &view.right_aggregate)? {
@@ -1958,6 +2015,7 @@ impl IvmRuntime {
                     .collect::<Vec<_>>(),
                 None,
             )?;
+        let joined = left_aggregate_joined(view, joined)?;
         let (insert_exprs, output_exprs) =
             left_aggregate_row_exprs(&context, view, &joined)?;
         let mv_epoch_keys = mv
@@ -2093,6 +2151,7 @@ impl IvmRuntime {
                 .collect::<Vec<_>>(),
             None,
         )?;
+        let joined = left_aggregate_joined(view, joined)?;
         let (insert_exprs, _) = left_aggregate_row_exprs(&context, view, &joined)?;
         let rows = joined
             .select(insert_exprs)?

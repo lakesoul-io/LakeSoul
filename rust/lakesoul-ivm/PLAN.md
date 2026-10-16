@@ -3910,6 +3910,24 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   与 `sqllogic_single_sided_join` + `tests/slt/single_sided_join.slt`（bootstrap 一对多、维度新增/删除、
   事实键移动；MV 布局为 wide pair：`fk, id, lv, right_value, __left_pk_id, __right_pk_rk`）。
 
+### 10.158 H3（第一批）：select-list scalar 子查询的计算列与 COUNT 族
+
+- **计算输出可读左列**：`SELECT s.v + (SELECT SUM(u.v) FROM dim u WHERE u.k = s.k) AS m`。
+  分析器不再拒绝「同时引用左列与子查询值」的计算输出（仍要求子查询值恰好引用一次）；运行时
+  `left_aggregate_left_columns` 增补计算输出引用的左列（经 `match_schema` 把原始聚合列也纳入解析），
+  未出现在 select 列表里的左列（如上面的 `s.v`）因此会被物化进刷新帧。
+- **COUNT 族**：`COUNT(*)` / `COUNT(w)` 现在是增量视图。DataFusion 把标量 COUNT 计划成
+  `CASE WHEN <子查询>.__always_true IS NULL THEN 0 ELSE <子查询>.count(...) END`：分析器识别并折叠该形状
+  （新增 `scalar_count_value`），置 `count_zero`（spec/视图字段，serde 默认 false），并在收集子查询输出列时跳过
+  DataFusion 的 `__` 前缀辅助列；运行时在左连接后把原始聚合列 `coalesce(值, 0)`（`left_aggregate_joined`，
+  刷新与重建两条路径共用），因此「键无匹配」计 0 而不是 NULL。
+- **顺带修复**：`left_aggregate_right_columns` 现在总是带上右侧主键——`COUNT(*)` 不引用右侧任何列，
+  原先的投影会漏掉主键，增量刷新读取变更行身份时报 `FieldNotFound`。
+- **仍缺（记录）**：`COUNT(DISTINCT ...)` 仍明确拒绝（DataFusion 计划成两级聚合，相关键会多出 distinct 列）。
+- **测试**：`analyzes_left_aggregate_outputs` 增加左列引用用例；新增
+  `sqllogic_left_aggregate_left_column`、`sqllogic_left_aggregate_count`、`sqllogic_left_aggregate_count_star`
+  三个 slt（计算列随左列/右侧变化；count 的 bootstrap、掉到 0、重新计入）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -83,7 +83,7 @@ used as row identities must be non-nullable.
 | UNION ALL | `SELECT ... UNION ALL SELECT ...` | the projected columns, `__ivm_source`, kinds, epoch |
 | UNION | `SELECT ... UNION SELECT ...` | the projected columns (the CDC column is excluded), `count_v`, kinds, epoch |
 | Semi / anti join | `WHERE [NOT] EXISTS (SELECT ...)` / `x IN (SELECT ...)` / `x op ANY (SELECT ...)` / `x op ALL (SELECT ...)`, optional side filters; a correlated scalar subquery compares against one aggregate row per correlated key (a `COUNT` family aggregate keeps its empty-set semantics: a key without rows counts 0) | the projected left columns, kinds, epoch |
-| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery), or a computed expression over it (`... * 2 + 1 AS m`) | the projected left columns, the aggregate column, the computed columns, kinds, epoch |
+| Left aggregate | `SELECT ..., (SELECT AGG(w) FROM dim u WHERE u.k = s.k) AS m FROM src s` (a select-list correlated scalar subquery), a computed expression over it (`... * 2 + 1 AS m`) or one that also reads the row's own columns (`s.v + (SELECT SUM(w) ...) AS m`), and the `COUNT` family (`COUNT(*)` / `COUNT(w)`) which counts zero for a key without rows | the projected left columns, the aggregate column, the computed columns, kinds, epoch |
 | INTERSECT / EXCEPT | the distinct and `ALL` variants; a repeated left of an `ALL` variant competes the per-tuple match counts (`min(count_l, count_r)` copies for `INTERSECT ALL`, the surplus for `EXCEPT ALL`); a NULL-capable join column matches `NULL` with `NULL` | the projected left columns (plus the left key), kinds, epoch |
 
 Supported within the shapes above:
@@ -606,6 +606,9 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   join, the lookup join and the pair-keyed outer joins maintain them); a
   non-equality condition may compare unmaterialized columns, they become
   hidden payload columns;
+* `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
+  DataFusion plans it as two aggregate levels, so the maintained subquery
+  would correlate on the distinct key too;
 * a multi-way chain with more than sixteen sources; a chain step whose
   payload columns collide by name (a step the statement does not project
   names its payloads after the source columns: alias them in a subquery);

@@ -932,6 +932,32 @@ pub(super) fn try_analyze_guarded_count(
     }))
 }
 
+/// The aggregate column of DataFusion's scalar-COUNT plan, if `expr` is the
+/// `CASE WHEN <subquery>.__always_true IS NULL THEN 0 ELSE <aggregate> END`
+/// the decorrelation builds: the else branch is the aggregate's output.
+fn scalar_count_value(expr: &Expr) -> Option<&Column> {
+    let Expr::Case(case) = expr else {
+        return None;
+    };
+    if case.expr.is_some() || case.when_then_expr.len() != 1 {
+        return None;
+    }
+    let (when, then) = &case.when_then_expr[0];
+    let Expr::IsNull(marker) = &**when else {
+        return None;
+    };
+    let Expr::Column(marker) = &**marker else {
+        return None;
+    };
+    if marker.name != "__always_true" || !matches!(&**then, Expr::Literal(..)) {
+        return None;
+    }
+    match case.else_expr.as_deref()? {
+        Expr::Column(column) => Some(column),
+        _ => None,
+    }
+}
+
 /// A select-list correlated scalar subquery: `SELECT k, (SELECT AGG(w) FROM
 /// dim u WHERE u.k = s.k) AS m FROM src s` is maintained as a left join
 /// against one aggregate row per correlated key.
@@ -952,6 +978,8 @@ fn analyze_left_aggregate(
         return Err(unsupported("a scalar subquery with several aggregates"));
     }
     if subtree_has_distinct_aggregate(&join.right) {
+        // DataFusion plans `count(DISTINCT ..)` as two aggregate levels, so
+        // the maintained subquery would correlate on the distinct key too.
         return Err(unsupported(
             "a correlated scalar subquery with a DISTINCT aggregate",
         ));
@@ -968,9 +996,14 @@ fn analyze_left_aggregate(
     if right_keys.is_empty() {
         return Err(unsupported("an uncorrelated scalar subquery"));
     }
-    // The subquery returns one column: the projection field that is not a key.
+    // The subquery returns one column: the projection field that is not a
+    // key.  DataFusion's decorrelation adds helper columns (`__always_true`)
+    // the maintained subquery does not materialize.
     let mut aggregate_columns = Vec::new();
     for field in subquery_projection.schema.fields() {
+        if field.name().starts_with("__") {
+            continue;
+        }
         if !right_keys.contains(field.name()) {
             aggregate_columns.push(field.name().clone());
         }
@@ -1016,8 +1049,15 @@ fn analyze_left_aggregate(
     let mut output_columns = Vec::new();
     let mut aggregate_column: Option<String> = None;
     let mut output_exprs = Vec::new();
-    let on_right = |relation: Option<&TableReference>| {
-        relation.is_some() && relation == right_qualifier.as_ref()
+    let mut count_zero = false;
+    // The decorrelation names the scalar output per shape, so a reference is
+    // the subquery value when it carries the right qualifier or exactly the
+    // subquery's output name.
+    let aggregate_name = aggregate_columns[0].clone();
+    let on_right = |column: &Column| {
+        column.relation.is_some()
+            && (column.relation.as_ref() == right_qualifier.as_ref()
+                || column.name == aggregate_name)
     };
     for (index, expr) in projection.expr.iter().enumerate() {
         let mut inner = expr;
@@ -1028,8 +1068,30 @@ fn analyze_left_aggregate(
             }
             inner = &nested.expr;
         }
-        if let Expr::Column(column) = inner {
-            if on_right(column.relation.as_ref()) {
+        // DataFusion plans a scalar COUNT as
+        // `CASE WHEN <subquery>.__always_true IS NULL THEN 0 ELSE
+        // <subquery>.count(...) END`: the maintained value is the aggregate
+        // and a key without right rows counts zero (the `count_zero` flag).
+        let mut inner = inner.clone();
+        if let Some(value) = scalar_count_value(&inner) {
+            count_zero = true;
+            inner = Expr::Column(value.clone());
+        } else {
+            inner = inner
+                .transform_down(|node| {
+                    if let Some(value) = scalar_count_value(&node) {
+                        count_zero = true;
+                        return Ok(Transformed::yes(Expr::Column(value.clone())));
+                    }
+                    Ok(Transformed::no(node))
+                })
+                .map_err(|error| {
+                    unsupported(format!("a scalar subquery output {error}"))
+                })?
+                .data;
+        }
+        if let Expr::Column(column) = &inner {
+            if on_right(column) {
                 if aggregate_column.is_some() {
                     return Err(unsupported("the scalar subquery value appears twice"));
                 }
@@ -1057,30 +1119,27 @@ fn analyze_left_aggregate(
             ));
         }
         let mut references = 0usize;
-        let mut left_reference = false;
         inner
             .apply(|node| {
-                if let Expr::Column(column) = node {
-                    if on_right(column.relation.as_ref()) {
-                        references += 1;
-                    } else {
-                        left_reference = true;
-                    }
+                if let Expr::Column(column) = node
+                    && on_right(column)
+                {
+                    references += 1;
                 }
                 Ok(TreeNodeRecursion::Continue)
             })
             .map_err(|error| unsupported(format!("a scalar subquery output {error}")))?;
-        if references != 1 || left_reference {
+        if references != 1 {
             return Err(unsupported(
-                "a computed scalar subquery output must compute over the \
-                 subquery value (computed left columns are not maintained)",
+                "a computed scalar subquery output must read the subquery \
+                 value once (it may also read the row's own columns)",
             ));
         }
         let rewritten = inner
             .clone()
             .transform_down(|node| {
                 if let Expr::Column(column) = &node
-                    && on_right(column.relation.as_ref())
+                    && on_right(column)
                 {
                     return Ok(Transformed::yes(Expr::Column(Column::from_name(
                         IVM_RIGHT_AGG_COLUMN,
@@ -1109,6 +1168,14 @@ fn analyze_left_aggregate(
         }
     }
     let call = render_expression(&aggregate.aggr_expr[0])?;
+    // A COUNT counts zero for a key without rows; every other aggregate is
+    // NULL there.
+    let count_zero = count_zero
+        || matches!(
+            &aggregate.aggr_expr[0],
+            Expr::AggregateFunction(function)
+                if function.func.name().eq_ignore_ascii_case("count")
+        );
     Ok(ViewSpec::LeftAggregate {
         view_id: request.view_id.clone(),
         left_table_id: left.table_id.clone(),
@@ -1118,6 +1185,7 @@ fn analyze_left_aggregate(
         right_keys,
         right_aggregate: call,
         aggregate_column,
+        count_zero,
         output_columns,
         left_filter: left_input.filter.clone(),
         right_filter: right_input.filter.clone(),
@@ -2097,6 +2165,33 @@ mod tests {
                 result: "int64".to_string(),
             }]
         );
+
+        // A computed output may also read the row's own columns; a left
+        // column it reads is materialized by the runtime.
+        let analyzed = analyze_multi(
+            "select s.k, s.v + (select max(d.v) from dim d where d.k = s.k) \
+             as m from src s",
+            vec![source_table("src"), source_table("dim")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            output_columns,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert_eq!(output_columns, vec!["k".to_string()]);
+        assert_eq!(output_exprs.len(), 1);
+        assert!(
+            output_exprs[0].call.contains("__ivm_right_agg")
+                && output_exprs[0].call.contains('v'),
+            "{:?}",
+            output_exprs[0].call
+        );
+        assert_eq!(output_exprs[0].column, "m");
 
         // The plain value keeps the user's alias.
         let analyzed = analyze_multi(
@@ -3935,15 +4030,25 @@ mod tests {
         };
         assert_eq!(right_aggregate.as_deref(), Some("count(distinct v)"));
 
-        // The select-list COUNT family stays a two-view shape.
-        assert!(
-            analyze_multi(
-                "select s.k, (select count(u.v) from src u where u.k = s.k) from src s",
-                vec![source_table("src")],
-            )
-            .await
-            .is_err()
-        );
+        // The select-list COUNT family is maintained by the left-aggregate
+        // view: the value counts zero for a key without rows.
+        let analyzed = analyze_multi(
+            "select s.k, (select count(u.v) from src u where u.k = s.k) as c \
+             from src s",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            count_zero,
+            aggregate_column,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate spec");
+        };
+        assert!(count_zero);
+        assert_eq!(aggregate_column, "c");
     }
 
     #[tokio::test]
