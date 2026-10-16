@@ -57,7 +57,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "native-glibc217-v2"
-          save-if: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
