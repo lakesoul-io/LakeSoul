@@ -14,8 +14,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, LookupJoinView,
-    lookup_join_view_schema_for,
+    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinKeyExprs,
+    LookupJoinView, lookup_join_view_schema_for,
 };
 use tempfile::tempdir;
 
@@ -262,6 +262,7 @@ async fn setup() -> Fixture {
                     &["id".to_string()],
                     &["jk".to_string()],
                     &["jk".to_string()],
+                    &JoinKeyExprs::default(),
                     "lv",
                     "rv",
                 )

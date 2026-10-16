@@ -1,0 +1,89 @@
+# A lookup LEFT JOIN whose left key is computed: the fact's `fk + 1`
+# references the dimension's `rk` primary key.
+
+statement ok
+/*ivm-append __SRC__: id=1,fk=4,lv=L1,op=insert; id=2,fk=9,lv=L2,op=insert; id=3,fk=100,lv=L3,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rk=5,rv=50,op=insert; rk=10,rv=100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIT rowsort
+SELECT id, __ivm_key_0, left_value, right_value FROM __MV__
+----
+1 5 L1 50
+2 10 L2 100
+3 101 L3 NULL
+
+# A new dimension row fills the previously NULL match.
+statement ok
+/*ivm-append __SRC2__: rk=101,rv=1010,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIT rowsort
+SELECT id, __ivm_key_0, left_value, right_value FROM __MV__
+----
+1 5 L1 50
+2 10 L2 100
+3 101 L3 1010
+
+# A fact that moves its computed key follows the other dimension row.
+statement ok
+/*ivm-append __SRC__: id=1,fk=9,lv=L1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIT rowsort
+SELECT id, __ivm_key_0, left_value, right_value FROM __MV__
+----
+1 10 L1 100
+2 10 L2 100
+3 101 L3 1010
+
+# A dimension delete resets the referencing facts to NULL.
+statement ok
+/*ivm-append __SRC2__: rk=10,rv=100,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIT rowsort
+SELECT id, __ivm_key_0, left_value, right_value FROM __MV__
+----
+1 10 L1 NULL
+2 10 L2 NULL
+3 101 L3 1010
+
+# A dimension update flows into the referencing fact row.
+statement ok
+/*ivm-append __SRC2__: rk=101,rv=2020,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv, r.rv FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIT rowsort
+SELECT id, __ivm_key_0, left_value, right_value FROM __MV__
+----
+1 10 L1 NULL
+2 10 L2 NULL
+3 101 L3 2020

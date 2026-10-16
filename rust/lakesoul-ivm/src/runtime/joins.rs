@@ -732,6 +732,7 @@ pub fn wide_lookup_join_view_schema_for(
     right_schema: &Schema,
     left_primary_keys: &[String],
     join_keys: &[String],
+    key_exprs: &JoinKeyExprs,
     output_columns: &[JoinOutputColumn],
 ) -> Result<SchemaRef> {
     if left_primary_keys.is_empty() {
@@ -740,13 +741,17 @@ pub fn wide_lookup_join_view_schema_for(
         ));
     }
     let mut fields = Vec::new();
-    for key in join_keys {
-        let field = left_schema.field_with_name(key)?;
-        fields.push(Arc::new(Field::new(
-            key,
-            field.data_type().clone(),
-            field.is_nullable(),
-        )));
+    for (index, key) in join_keys.iter().enumerate() {
+        let computed = key_exprs.left.get(index).filter(|expr| !expr.is_empty());
+        let (data_type, nullable) = match computed {
+            // A computed key is typed by its expression.
+            Some(expr) => expression_type(left_schema, expr)?,
+            None => {
+                let field = left_schema.field_with_name(key)?;
+                (field.data_type().clone(), field.is_nullable())
+            }
+        };
+        fields.push(Arc::new(Field::new(key, data_type, nullable)));
     }
     fields.extend(wide_output_fields_with(
         left_schema,
@@ -1416,6 +1421,9 @@ pub struct LookupJoinView {
     /// The right equi-join keys, parallel to [`Self::join_keys`]; empty means
     /// the keys share their names with the left side.
     pub right_keys: Vec<String>,
+    /// The rendered key expressions, aligned with [`Self::join_keys`]; an
+    /// empty entry means that key is a plain column of that side.
+    pub key_exprs: JoinKeyExprs,
     /// An optional filter the contributing left rows must satisfy.
     pub left_filter: Option<String>,
     /// An optional filter the referenced right rows must satisfy; a left row
@@ -1470,6 +1478,7 @@ impl LookupJoinView {
             output,
             join_keys,
             right_keys: Vec::new(),
+            key_exprs: JoinKeyExprs::default(),
             left_filter: None,
             right_filter: None,
             left_value: left_value.into(),
@@ -1477,6 +1486,28 @@ impl LookupJoinView {
             output_columns: Vec::new(),
             refresh_interval_ms: 0,
         }
+    }
+
+    /// The right-side key names the lookup is by: a computed key is
+    /// materialized under a hidden name, so a right key that renders to a
+    /// plain column of the right source reads through that column.
+    pub fn lookup_right_key_names(&self) -> Vec<String> {
+        self.right_join_keys()
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                match self
+                    .key_exprs
+                    .right
+                    .get(index)
+                    .filter(|expr| !expr.is_empty())
+                    .filter(|expr| self.right.schema.field_with_name(expr).is_ok())
+                {
+                    Some(expr) => expr.clone(),
+                    None => key.clone(),
+                }
+            })
+            .collect()
     }
 
     /// The right-side join keys: [`Self::right_keys`] or, when empty, the
@@ -1522,6 +1553,7 @@ impl LookupJoinView {
             output_table_id: self.output.table_id.clone(),
             join_keys: self.join_keys.clone(),
             right_keys: self.right_keys.clone(),
+            key_exprs: self.key_exprs.clone(),
             left_filter: self.left_filter.clone(),
             right_filter: self.right_filter.clone(),
             left_value: self.left_value.clone(),
@@ -1541,6 +1573,7 @@ pub fn lookup_join_view_schema_for(
     left_primary_keys: &[String],
     right_primary_keys: &[String],
     join_keys: &[String],
+    key_exprs: &JoinKeyExprs,
     left_value: &str,
     right_value: &str,
 ) -> Result<SchemaRef> {
@@ -1550,13 +1583,17 @@ pub fn lookup_join_view_schema_for(
         ));
     }
     let mut fields = Vec::new();
-    for key in join_keys {
-        let field = left_schema.field_with_name(key)?;
-        fields.push(Arc::new(Field::new(
-            key,
-            field.data_type().clone(),
-            field.is_nullable(),
-        )));
+    for (index, key) in join_keys.iter().enumerate() {
+        let computed = key_exprs.left.get(index).filter(|expr| !expr.is_empty());
+        let (data_type, nullable) = match computed {
+            // A computed key is typed by its expression.
+            Some(expr) => expression_type(left_schema, expr)?,
+            None => {
+                let field = left_schema.field_with_name(key)?;
+                (field.data_type().clone(), field.is_nullable())
+            }
+        };
+        fields.push(Arc::new(Field::new(key, data_type, nullable)));
     }
     let left_field = left_schema.field_with_name(left_value)?;
     fields.push(Arc::new(Field::new(
@@ -1599,11 +1636,15 @@ fn lookup_join_projection(
     view: &LookupJoinView,
 ) -> Result<DataFrame> {
     let wide = !view.output_columns.is_empty();
-    let mut left_columns = view
-        .join_keys
-        .iter()
-        .map(|key| col(key.as_str()))
-        .collect::<Vec<_>>();
+    let context = SessionContext::new();
+    let mut left_columns = join_side_key_columns(
+        &context,
+        left.schema(),
+        &view.join_keys,
+        &view.key_exprs.left,
+        &[],
+        JoinSide::Left,
+    )?;
     if wide {
         for column in view
             .output_columns
@@ -1628,14 +1669,14 @@ fn lookup_join_projection(
     }
     let left = left.select(left_columns)?;
 
-    let mut right_columns = view
-        .right_join_keys()
-        .iter()
-        .zip(&view.join_keys)
-        .map(|(right_key, left_key)| {
-            col(right_key.as_str()).alias(format!("__right_{left_key}"))
-        })
-        .collect::<Vec<_>>();
+    let mut right_columns = join_side_key_columns(
+        &context,
+        right.schema(),
+        &view.join_keys,
+        &view.key_exprs.right,
+        view.right_join_keys(),
+        JoinSide::Right,
+    )?;
     if wide {
         for column in view
             .output_columns
@@ -1929,7 +1970,7 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
     }
     let mut expected = view.right.primary_keys.clone();
     expected.sort();
-    let mut keys = view.right_join_keys().to_vec();
+    let mut keys = view.lookup_right_key_names();
     keys.sort();
     if expected != keys {
         return Err(report!(
@@ -1937,21 +1978,47 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    for key in &view.join_keys {
-        view.left.schema.field_with_name(key).map_err(|_| {
-            report!(
-                "lookup join view {}: join key {key} is not in the left source",
-                view.view_id
-            )
-        })?;
+    for (index, key) in view.join_keys.iter().enumerate() {
+        // A computed key is materialized by the view, so it needs no source
+        // column; a plain key must be one.
+        let computed = view
+            .key_exprs
+            .left
+            .get(index)
+            .filter(|expr| !expr.is_empty());
+        match computed {
+            Some(expr) => {
+                expression_type(&view.left.schema, expr)?;
+            }
+            None => {
+                view.left.schema.field_with_name(key).map_err(|_| {
+                    report!(
+                        "lookup join view {}: join key {key} is not in the left source",
+                        view.view_id
+                    )
+                })?;
+            }
+        }
     }
-    for key in view.right_join_keys() {
-        view.right.schema.field_with_name(key).map_err(|_| {
-            report!(
-                "lookup join view {}: join key {key} is not in the right source",
-                view.view_id
-            )
-        })?;
+    for (index, key) in view.right_join_keys().iter().enumerate() {
+        let computed = view
+            .key_exprs
+            .right
+            .get(index)
+            .filter(|expr| !expr.is_empty());
+        match computed {
+            Some(expr) => {
+                expression_type(&view.right.schema, expr)?;
+            }
+            None => {
+                view.right.schema.field_with_name(key).map_err(|_| {
+                    report!(
+                        "lookup join view {}: join key {key} is not in the right source",
+                        view.view_id
+                    )
+                })?;
+            }
+        }
     }
     for key in &view.left.primary_keys {
         let field = view.left.schema.field_with_name(key).map_err(|_| {
@@ -3302,27 +3369,54 @@ impl IvmRuntime {
                     .await?,
                 &view.right.schema,
             )?;
+            // The changed right key values, under the left key names: a
+            // computed left key is materialized below, so the probe joins by
+            // name.
+            let delta_schema = delta_right.schema().clone();
             let changed_keys = delta_right
                 .select(
-                    view.right_join_keys()
+                    view.join_keys
                         .iter()
-                        .map(|key| col(key.as_str()))
-                        .collect::<Vec<_>>(),
+                        .enumerate()
+                        .map(|(index, key)| {
+                            let expr = match view
+                                .key_exprs
+                                .right
+                                .get(index)
+                                .filter(|expr| !expr.is_empty())
+                            {
+                                Some(rendered) => context
+                                    .state()
+                                    .create_logical_expr(rendered, &delta_schema)?,
+                                None => col(view.right_join_keys()[index].as_str()),
+                            };
+                            Ok(expr.alias(key.as_str()))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
                 )?
                 .distinct()?;
-            let right_key_names = view
-                .right_join_keys()
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
+            let mut probe = left_now.clone();
+            for (index, key) in view.join_keys.iter().enumerate() {
+                let computed = view
+                    .key_exprs
+                    .left
+                    .get(index)
+                    .filter(|expr| !expr.is_empty());
+                if let Some(rendered) = computed {
+                    // The computed key is materialized under its join name.
+                    let expr = context
+                        .state()
+                        .create_logical_expr(rendered, probe.schema())?;
+                    probe = probe.with_column(key, expr)?;
+                }
+            }
             affected = affected.union(
-                left_now
-                    .clone()
+                probe
                     .join(
                         changed_keys,
                         JoinType::LeftSemi,
                         &join_key_names,
-                        &right_key_names,
+                        &join_key_names,
                         None,
                     )?
                     .select(key_exprs.clone())?,

@@ -1,0 +1,55 @@
+# A wide lookup LEFT JOIN whose left key is computed: several columns per
+# side become MV columns, and an unmatched fact row keeps NULLs on the right.
+
+statement ok
+/*ivm-append __SRC__: id=1,fk=4,lv=L1,op=insert; id=2,fk=9,lv=L2,op=insert; id=3,fk=100,lv=L3,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rk=5,rv=50,rn=500,op=insert; rk=10,rv=100,rn=1000,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.fk, l.lv, r.rv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIITII rowsort
+SELECT id, __ivm_key_0, fk, lv, rv, rn FROM __MV__
+----
+1 5 4 L1 50 500
+2 10 9 L2 100 1000
+3 101 100 L3 NULL NULL
+
+# A dimension delete resets the referencing facts to NULL.
+statement ok
+/*ivm-append __SRC2__: rk=10,rv=100,rn=1000,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.fk, l.lv, r.rv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIITII rowsort
+SELECT id, __ivm_key_0, fk, lv, rv, rn FROM __MV__
+----
+1 5 4 L1 50 500
+2 10 9 L2 NULL NULL
+3 101 100 L3 NULL NULL
+
+# A new dimension row fills the previously NULL match.
+statement ok
+/*ivm-append __SRC2__: rk=101,rv=1010,rn=10100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.fk, l.lv, r.rv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rk = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIITII rowsort
+SELECT id, __ivm_key_0, fk, lv, rv, rn FROM __MV__
+----
+1 5 4 L1 50 500
+2 10 9 L2 NULL NULL
+3 101 100 L3 1010 10100

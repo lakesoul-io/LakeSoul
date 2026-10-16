@@ -1615,6 +1615,7 @@ fn expected_mv_schema(
             left_table_id,
             right_table_id,
             join_keys,
+            key_exprs,
             left_value,
             right_value,
             output_columns,
@@ -1629,6 +1630,7 @@ fn expected_mv_schema(
                     &left.primary_keys,
                     &right.primary_keys,
                     join_keys,
+                    key_exprs,
                     left_value,
                     right_value,
                 )?
@@ -1638,6 +1640,7 @@ fn expected_mv_schema(
                     &right.schema,
                     &left.primary_keys,
                     join_keys,
+                    key_exprs,
                     output_columns,
                 )?
             }

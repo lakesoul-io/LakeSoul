@@ -15,7 +15,7 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, MinMaxKind, StateRole, lookup_join_view_schema_for,
+    IvmTableOptions, JoinKeyExprs, MinMaxKind, StateRole, lookup_join_view_schema_for,
     min_max_mv_schema_for, sum_count_mv_schema_for,
 };
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
@@ -681,6 +681,7 @@ async fn a_lookup_join_materializes_a_key_that_is_also_the_primary_key() {
                     &["k".to_string()],
                     &["k".to_string()],
                     &["k".to_string()],
+                    &JoinKeyExprs::default(),
                     "g",
                     "v",
                 )

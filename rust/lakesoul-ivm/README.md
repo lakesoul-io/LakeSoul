@@ -312,7 +312,9 @@ Supported within the shapes above:
   column the select list does not carry is materialized as a hidden payload
   column named `__ivm_cond_<side>_<column>`; the compact single-payload
   `left_value` / `right_value` shape stays for one payload per side, and the
-  outer / lookup wide outputs pad the unmatched side with NULLs;
+  outer / lookup wide outputs pad the unmatched side with NULLs (a lookup
+  join materializes the left primary keys itself, so selecting one does not
+  widen the payloads);
 * **non-equality join conditions** (`ON l.k = r.k AND
   l.amount < r.limit`, or a cross join's `WHERE l.lo <= r.hi`): the condition
   is evaluated on each joined pair, so a change adds or retracts the
@@ -321,7 +323,12 @@ Supported within the shapes above:
 * **computed join keys** (`ON l.x + 1 = r.y`, an equality whose sides are not
   both plain columns): the two-source inner join renders each side, evaluates
   it on that source before the join, and stores the value under a hidden key
-  column (`__ivm_key_<n>`), so the MV stays keyed by its pair identities;
+  column (`__ivm_key_<n>`), so the MV stays keyed by its pair identities.  A
+  **lookup `LEFT JOIN`** maintains a computed key on the fact side as long
+  as the expression resolves to a plain column of the dimension, which
+  stays keyed by it (`ON r.k = l.fk + 1`): the fact side is probed by the
+  computed value, the dimension is read by its key column, and the hidden key
+  column holds the computed value (compact and wide lookups alike);
 * an **inner join** and a **lookup `LEFT JOIN`** may reference differently
   named right keys (`ON fact.dim_id = dim.id`);
 * a **lookup `LEFT JOIN`** may filter the fact side
@@ -592,10 +599,10 @@ decision too).  Create the target with `with_allow_fallback(false)`
 rejected outright; the notes below describe the incremental analyzer's
 boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 
-* computed equality keys outside the two-source inner join (a lookup, outer,
-  multi-way or chain join whose key is an expression); a non-equality
-  condition may compare unmaterialized columns, they become hidden payload
-  columns;
+* computed equality keys outside the two-source inner join and the lookup
+  join (an outer, multi-way or chain join whose key is an expression); a
+  non-equality condition may compare unmaterialized columns, they become
+  hidden payload columns;
 * a multi-way chain with more than sixteen sources; a chain step whose
   payload columns collide by name (a step the statement does not project
   names its payloads after the source columns: alias them in a subquery);
