@@ -47,12 +47,12 @@ use lakesoul_ivm::{
     row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
     string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
     sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_lookup_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    top_k_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -1584,6 +1584,22 @@ fn sqllogic_top_k_limit() {
             &source_schema(),
             &group_keys(&["k"]),
             &group_keys(&["k", "v"]),
+        )
+        .unwrap(),
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_top_k_computed() {
+    run_script_for_mv(
+        "topkcomputed",
+        include_str!("slt/top_k_computed.slt"),
+        top_k_expr_mv_schema_for(
+            &source_schema(),
+            &group_keys(&["k"]),
+            &group_keys(&["k", "w"]),
+            &group_keys(&["k", "v * 2"]),
         )
         .unwrap(),
         group_keys(&["k"]),

@@ -6,6 +6,7 @@
 //! top-k.
 
 use super::*;
+use datafusion::sql::unparser::Unparser;
 
 /// The window function a [`WindowView`] maintains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -492,6 +493,10 @@ pub struct TopKView {
     /// The projected source columns; empty means all of them. Must contain the
     /// group keys and the source primary keys.
     pub output_columns: Vec<String>,
+    /// The rendered projection expressions, parallel to
+    /// [`Self::output_columns`]; empty means every column is projected
+    /// unchanged.
+    pub output_exprs: Vec<String>,
     /// How many rows to keep per group.
     pub limit: i64,
     /// How many rows to skip before keeping them (a `LIMIT ... OFFSET`).
@@ -520,6 +525,7 @@ impl TopKView {
             order_keys,
             order_by: Vec::new(),
             output_columns: Vec::new(),
+            output_exprs: Vec::new(),
             limit,
             offset: 0,
             filter: None,
@@ -538,6 +544,13 @@ impl TopKView {
     /// source primary keys).
     pub fn with_output_columns(mut self, output_columns: Vec<String>) -> Self {
         self.output_columns = output_columns;
+        self
+    }
+
+    /// The rendered projection expressions, parallel to the output columns
+    /// (`v * 2` for a `v * 2 AS v2` projection).
+    pub fn with_output_exprs(mut self, output_exprs: Vec<String>) -> Self {
+        self.output_exprs = output_exprs;
         self
     }
 
@@ -562,6 +575,7 @@ impl TopKView {
             order_keys: self.order_keys.clone(),
             order_by: self.order_by.clone(),
             output_columns: self.output_columns.clone(),
+            output_exprs: self.output_exprs.clone(),
             limit: self.limit,
             offset: self.offset,
             filter: self.filter.clone(),
@@ -1003,10 +1017,36 @@ pub fn top_k_mv_schema_for(
     source_primary_keys: &[String],
     output_columns: &[String],
 ) -> Result<SchemaRef> {
-    row_mv_schema_for(
-        source_schema,
-        &top_k_materialized_columns(source_schema, source_primary_keys, output_columns),
-    )
+    top_k_expr_mv_schema_for(source_schema, source_primary_keys, output_columns, &[])
+}
+
+/// The schema of a [`TopKView`] materialized view with one rendered
+/// projection expression per output column; the expression types are derived
+/// by planning each expression against the source schema.
+pub fn top_k_expr_mv_schema_for(
+    source_schema: &Schema,
+    source_primary_keys: &[String],
+    output_columns: &[String],
+    output_exprs: &[String],
+) -> Result<SchemaRef> {
+    let columns =
+        top_k_materialized_columns(source_schema, source_primary_keys, output_columns);
+    if output_exprs.is_empty() {
+        return row_mv_schema_for(source_schema, &columns);
+    }
+    if output_exprs.len() != output_columns.len() {
+        return Err(report!(
+            "the top-k projection needs one expression per output column"
+        ));
+    }
+    // The appended identity columns project themselves.
+    let mut exprs = output_exprs.to_vec();
+    for column in &columns {
+        if !output_columns.contains(column) {
+            exprs.push(column.clone());
+        }
+    }
+    row_expr_mv_schema_for(source_schema, &columns, &exprs)
 }
 
 /// The source columns a [`TopKView`] materializes: the projected columns plus
@@ -1482,6 +1522,43 @@ fn top_k_affected_cte(view: &TopKView) -> String {
     )
 }
 
+/// The aliased projection of a top-k view over its source: the output
+/// columns with their rendered expressions, plus the identity columns a
+/// projection omits.
+fn top_k_projection(view: &TopKView, context: &SessionContext) -> Result<Vec<Expr>> {
+    let columns = top_k_output_columns(view);
+    if view.output_exprs.is_empty() {
+        return Ok(columns.iter().map(|column| col(column.as_str())).collect());
+    }
+    let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    columns
+        .iter()
+        .map(|column| {
+            let expression = match view
+                .output_columns
+                .iter()
+                .position(|output| output == column)
+                .and_then(|index| view.output_exprs.get(index))
+            {
+                Some(expression) => expression.clone(),
+                // An identity column a projection omits projects itself.
+                None => column.clone(),
+            };
+            let expression = context
+                .state()
+                .create_logical_expr(&expression, &df_schema)
+                .map_err(|error| {
+                    report!(
+                        "top-k view {}: invalid projection expression {expression:?}: {error}",
+                        view.view_id
+                    )
+                })?;
+            Ok(expression.alias(column))
+        })
+        .collect()
+}
+
 /// The `computed` CTE of a top-k view: the projected rows with their row
 /// number inside the group (ties broken by the source primary keys).
 fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
@@ -1493,7 +1570,25 @@ fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     let mut order = order_items(&view.order_by, &view.order_keys);
     order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
     let orders = order.join(", ");
-    let output = quoted_list(&top_k_output_columns(view));
+    let context = SessionContext::new();
+    let names = top_k_output_columns(view);
+    let unparser = Unparser::default();
+    // The unparser drops aliases, so every item carries its own `AS name`.
+    let output = top_k_projection(view, &context)
+        .and_then(|exprs| {
+            exprs
+                .iter()
+                .zip(&names)
+                .map(|(expr, name)| {
+                    let rendered = unparser.expr_to_sql(expr).map_err(|error| {
+                        report!("top-k view {}: {error}", view.view_id)
+                    })?;
+                    Ok(format!("{rendered} AS {}", quote_ident(name)))
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .map(|items| items.join(", "))
+        .unwrap_or_else(|_| quoted_list(&names));
     let filter = format!(
         "{}{}",
         source_delete_filter(source_alias, change_column(&view.source)),
@@ -1616,6 +1711,30 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
     if view.order_keys.is_empty() {
         return Err(report!("top-k view {} needs order keys", view.view_id));
     }
+    if !view.output_exprs.is_empty() {
+        if view.output_columns.is_empty()
+            || view.output_exprs.len() != view.output_columns.len()
+        {
+            return Err(report!(
+                "top-k view {}: the projection needs one expression per output column",
+                view.view_id
+            ));
+        }
+        let context = SessionContext::new();
+        let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
+            .map_err(|error| report!("invalid source schema: {error}"))?;
+        for expression in &view.output_exprs {
+            context
+                .state()
+                .create_logical_expr(expression, &df_schema)
+                .map_err(|error| {
+                    report!(
+                        "top-k view {}: invalid projection expression {expression:?}: {error}",
+                        view.view_id
+                    )
+                })?;
+        }
+    }
     if view.source.primary_keys.is_empty() {
         return Err(report!(
             "top-k view {} needs a source with a primary key",
@@ -1665,7 +1784,14 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
         ));
     }
     let output = top_k_output_columns(view);
-    project_schema(&view.source.schema, &output)?;
+    // The identity columns project themselves; a computed output is typed by
+    // its expression and validated above.
+    let projected = output
+        .iter()
+        .filter(|column| view.source.schema.field_with_name(column).is_ok())
+        .cloned()
+        .collect::<Vec<_>>();
+    project_schema(&view.source.schema, &projected)?;
     for column in view
         .source
         .primary_keys

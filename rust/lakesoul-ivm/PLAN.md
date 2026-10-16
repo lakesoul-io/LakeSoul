@@ -3835,6 +3835,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   覆盖 bootstrap、顶行更替与删除顶行）；既有 15 处 `top_k_mv_schema_for` 调用点补主键参数。
 - 下一步（A2b）：**计算列**选择列表（表达式在 `computed` CTE 里求值，MV 物化计算值）。
 
+### 10.153 性能项（3）：TopK 的计算列选择列表
+
+- **形状**：`SELECT k, v * 2 AS w FROM src ORDER BY w DESC LIMIT k`（选择项是表达式，且 `ORDER BY` 直接引用别名）。
+- **做法**：`TopKView.output_exprs`（与 `output_columns` 平行，渲染后的 SQL 表达式）——分析器把每个选择项渲染成表达式
+  （普通列渲染为列名，保持整表一致），`top_k_expr_mv_schema_for` 用表达式定类型（`row_expr_mv_schema_for`），
+  `computed` CTE 用 **SQL unparser** 渲染 `(表达式) AS 列名`（注意 unparser 会丢弃 `Expr::Alias`，别名由 CTE 手工拼上），
+  insert/delete 仍按列名从 `computed`/`active` 取；`ORDER BY 别名` 时把排序键换成该表达式（`render_order_rendered`）。
+- **选择列表在 Sort 之下**：语句不带自己的投影时（`Projection` 在 `Sort` 下方），分析器从 `peel(&sort.input)` 取投影，
+  否则从 schema 取列（原行为）。
+- **校验**：`validate_top_k_view` 只对源列做 `project_schema`（计算列由表达式解析校验），主键/分组键必须出现在物化列里。
+- **测试**：分析器单测（表达式 + 别名排序 + 布局 `k, w, rowKinds, epoch` + 计算列类型 Int64）；
+  `tests/slt/top_k_computed.slt` + `sqllogic_top_k_computed`（`SELECT k, v * 2 AS w ... ORDER BY w DESC LIMIT 2`，
+  覆盖 bootstrap 与顶行更替）；README 支持表与限制清单同步。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

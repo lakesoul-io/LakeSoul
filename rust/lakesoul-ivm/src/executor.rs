@@ -51,13 +51,14 @@ use crate::runtime::{
     min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
     multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
     nullable_join_key_schema, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
-    value_count_groups_state_schema_for, variance_groups_mv_schema_for,
-    wide_full_join_view_schema_with_identity, wide_join_view_schema_with_keys,
-    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
-    wide_left_join_view_schema_with_identity, wide_lookup_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_columns_mv_schema_for,
+    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for,
+    top_k_expr_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, value_count_groups_state_schema_for,
+    variance_groups_mv_schema_for, wide_full_join_view_schema_with_identity,
+    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
+    wide_keyed_join_view_schema_with_keys, wide_left_join_view_schema_with_identity,
+    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_columns_mv_schema_for,
 };
 use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
@@ -1845,10 +1846,16 @@ fn expected_mv_schema(
         ViewSpec::TopK {
             source_table_id,
             output_columns,
+            output_exprs,
             ..
         } => {
             let source = find_table(tables, source_table_id)?;
-            top_k_mv_schema_for(&source.schema, &source.primary_keys, output_columns)?
+            top_k_expr_mv_schema_for(
+                &source.schema,
+                &source.primary_keys,
+                output_columns,
+                output_exprs,
+            )?
         }
         ViewSpec::SemiAnti {
             left_table_id,
