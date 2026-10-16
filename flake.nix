@@ -191,9 +191,9 @@
       };
     craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainFor;
 
-    # Build inputs only: the k8s manifests don't invalidate the build.
-    # `.cargo` carries the repository rustflags (`+avx2`), so image binaries
-    # match local builds.
+    # Build inputs only: the k8s manifests and the benchmark harness don't
+    # invalidate the build. `.cargo` carries the repository rustflags
+    # (`+avx2`), so image binaries match local builds.
     rustSrc = pkgs.lib.fileset.toSource {
       root = ./.;
       fileset =
@@ -205,7 +205,10 @@
           ./rust
           ./python
         ])
-        ./rust/postgres-lakesoul/k8s;
+        (pkgs.lib.fileset.unions [
+          ./rust/postgres-lakesoul/k8s
+          ./rust/postgres-lakesoul/benchmark
+        ]);
     };
 
     # 12 characters, like lakesoul-build-info's own `git rev-parse` fallback.
@@ -303,6 +306,56 @@
         ];
       };
     };
+
+    # Benchmark runner image (`rust/postgres-lakesoul/benchmark`): the console
+    # loads TPC-H data (the PG endpoint is read-only), python3 runs the
+    # stdlib-only driver, busybox runs the resource sampler sidecar.
+    lakesoulConsole = craneLib.buildPackage (lakesoulCraneArgs
+      // {
+        pname = "lakesoul-console";
+        cargoExtraArgs = "--locked -p lakesoul-console --bin lakesoul-console";
+        cargoArtifacts = lakesoulDeps;
+        LAKESOUL_GIT_COMMIT = gitCommit;
+      });
+
+    benchHarness = pkgs.lib.fileset.toSource {
+      root = ./rust/postgres-lakesoul/benchmark;
+      fileset = pkgs.lib.fileset.unions [
+        ./rust/postgres-lakesoul/benchmark/driver
+        ./rust/postgres-lakesoul/benchmark/workloads
+        ./rust/postgres-lakesoul/benchmark/datagen
+        ./rust/postgres-lakesoul/benchmark/k8s/components/sampler/sampler.sh
+      ];
+    };
+
+    benchImage = pkgs.dockerTools.streamLayeredImage {
+      name = "lakesoul-bench";
+      tag = "dev";
+      contents = [
+        lakesoulConsole
+        pkgs.python312
+        pkgs.busybox
+        # `tc` for the blocked netem fault definitions (k8s/blocked).
+        pkgs.iproute2
+        pkgs.cacert
+        pkgs.dockerTools.fakeNss
+      ];
+      extraCommands = ''
+        mkdir -p bench tmp var/scratch
+        chmod 1777 tmp var/scratch
+        cp -r ${benchHarness}/. bench/
+      '';
+      config = {
+        User = "65534:65534";
+        WorkingDir = "/bench";
+        Env = [
+          "PYTHONPATH=/bench/driver"
+          "PYTHONDONTWRITEBYTECODE=1"
+          "TMPDIR=/var/scratch"
+          "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+        ];
+      };
+    };
   in {
     devShells.${system} = {
       formatter = pkgs.mkShell {
@@ -355,6 +408,8 @@
       lakesoul = lakesoulBins;
       # `nix build .#image && ./result | docker load`
       image = lakesoulImage;
+      # `nix build .#bench-image && ./result | docker load`
+      bench-image = benchImage;
     };
   };
 }

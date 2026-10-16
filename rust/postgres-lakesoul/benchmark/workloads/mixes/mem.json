@@ -1,0 +1,5 @@
+[
+ {"name": "q18", "sql_file": "../tpch/queries/q18.sql", "weight": 1},
+ {"name": "q21", "sql_file": "../tpch/queries/q21.sql", "weight": 1},
+ {"name": "q09", "sql_file": "../tpch/queries/q09.sql", "weight": 1}
+]

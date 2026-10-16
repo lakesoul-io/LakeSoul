@@ -1,0 +1,4 @@
+[
+ {"name": "select1", "sql": "SELECT 1", "weight": 1},
+ {"name": "point", "sql": "SELECT o_orderstatus, o_totalprice FROM orders WHERE o_orderkey = 4242", "weight": 1}
+]

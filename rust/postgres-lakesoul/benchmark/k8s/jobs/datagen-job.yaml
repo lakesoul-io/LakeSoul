@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# TPC-H data generation Job (rendered by scripts/bench.py). Runs
+# datagen/tpch.sh with the console against the metadata DB and warehouse of
+# the deployment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: lakesoul-bench
+    lsbench/run: "${RUN_ID}"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lakesoul-bench
+        lsbench/run: "${RUN_ID}"
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: lakesoul-registry
+      containers:
+        - name: datagen
+          image: ${BENCH_IMAGE}
+          imagePullPolicy: Always
+          command: ["/bin/sh", "/bench/datagen/tpch.sh"]
+          args: ["--worker-threads", "${DATAGEN_THREADS}"]
+          envFrom:
+            - configMapRef:
+                name: lakesoul-config
+          env:
+            - name: SF
+              value: "${SF}"
+            - name: LOCATION
+              value: "${LOCATION}"
+            # Empty = tpch.sh defaults.
+            - name: PARTS
+              value: "${PARTS}"
+            - name: TABLES
+              value: "${TABLES}"
+            - name: CHUNKS
+              value: "${CHUNKS}"
+            - name: LAYOUT
+              value: "${LAYOUT}"
+            - name: TMPDIR
+              value: /var/scratch
+            - name: LAKESOUL_PG_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: pg-url
+            - name: LAKESOUL_PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: pg-username
+            - name: LAKESOUL_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: pg-password
+            - name: LAKESOUL_WAREHOUSE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: warehouse
+            - name: AWS_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-endpoint
+            - name: AWS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-bucket
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-secret-access-key
+          resources:
+            requests:
+              cpu: "${DATAGEN_CPU_REQ}"
+              memory: "${DATAGEN_MEM_REQ}"
+            limits:
+              cpu: "${DATAGEN_CPU_LIM}"
+              memory: "${DATAGEN_MEM_LIM}"
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 20Gi

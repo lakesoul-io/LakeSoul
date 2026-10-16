@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      # Applied once at Pod start; delete the Pod to remove.
+      initContainers:
+        - name: netem
+          image: lakesoul-bench:dev
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Delay and rate-limit traffic to the object store only (HTTPS, port 443);
+              # PG metadata (5432) and worker Flight (50051) stay untouched.
+              tc qdisc add dev eth0 root handle 1: prio bands 4
+              tc qdisc add dev eth0 parent 1:4 handle 40: netem delay "$NETEM_DELAY" "$NETEM_JITTER" rate "$NETEM_RATE"
+              tc filter add dev eth0 parent 1: protocol ip u32 match ip dport 443 0xffff flowid 1:4
+              tc -s qdisc show dev eth0
+          env:
+            - name: NETEM_DELAY
+              value: "50ms"
+            - name: NETEM_JITTER
+              value: "10ms"
+            - name: NETEM_RATE
+              value: "100mbit"
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add: ["NET_ADMIN"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      # Applied once at Pod start; delete the Pod to remove.
+      initContainers:
+        - name: netem
+          image: lakesoul-bench:dev
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Delay and rate-limit traffic to the object store only (HTTPS, port 443);
+              # PG metadata (5432) and worker Flight (50051) stay untouched.
+              tc qdisc add dev eth0 root handle 1: prio bands 4
+              tc qdisc add dev eth0 parent 1:4 handle 40: netem delay "$NETEM_DELAY" "$NETEM_JITTER" rate "$NETEM_RATE"
+              tc filter add dev eth0 parent 1: protocol ip u32 match ip dport 443 0xffff flowid 1:4
+              tc -s qdisc show dev eth0
+          env:
+            - name: NETEM_DELAY
+              value: "50ms"
+            - name: NETEM_JITTER
+              value: "10ms"
+            - name: NETEM_RATE
+              value: "100mbit"
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add: ["NET_ADMIN"]
