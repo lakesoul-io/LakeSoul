@@ -1251,17 +1251,22 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unsupported_join_and_union_shapes() {
-        // Outer joins are not maintained incrementally.
+        // A join whose select list takes no payload from either side cannot
+        // be materialized.
         assert!(
             analyze_optimized("select a.k from src a left join src b on a.k = b.k")
                 .await
                 .is_err()
         );
-        // The runtime keys a join on same-named columns.
+        // A null-safe join needs plain columns as its keys: a computed key
+        // would be compared null-safely too.
         assert!(
-            analyze_optimized("select a.k, a.v, b.v from src a join src b on a.k = b.v")
-                .await
-                .is_err()
+            analyze_optimized(
+                "select a.k, a.v, b.v from src a join src b \
+                 on a.v + 1 is not distinct from b.v"
+            )
+            .await
+            .is_err()
         );
         // Inner joins take no extra conditions over columns the pair does
         // not carry (payload comparisons are maintained, see

@@ -609,10 +609,11 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * a multi-way chain with more than sixteen sources; a chain step whose
   payload columns collide by name (a step the statement does not project
   names its payloads after the source columns: alias them in a subquery);
-* a single-sided inner join whose right side is not keyed by the join key:
-  several matches would duplicate the left row, which the semi shape such a
-  statement is maintained as cannot express (a right side keyed by the join
-  key stays supported);
+* a single-sided inner join over a right side without a primary key (the
+  pair shape its duplicates need cannot key it): a right side keyed by the
+  join key stays the semi (membership) shape, and a right side keyed by
+  something else becomes a pair join whose right payload is the right row
+  identity;
 * a **list or map primary key** on a side of an outer-join or chain **step**:
   the step's row identity encodes both sides' primary keys as length-prefixed
   text - a struct key is encoded field by field **before the join**, so the

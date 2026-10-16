@@ -300,12 +300,13 @@ async fn an_unpartitioned_source_change_recomputes_every_partition() {
         .unwrap();
     let dim = runtime
         .create_table(
+            // A keyless right side keeps the shape on Tier-2: the pair
+            // shape the non-unique right would take needs its keys.
             IvmTableOptions::new(
                 format!("ivm_fp_dim_{suffix}"),
                 table_path(&dir, "dim"),
                 dim_schema(),
             )
-            .with_primary_keys(vec!["x".to_string()])
             .with_cdc_column(CHANGE_COLUMN),
         )
         .await

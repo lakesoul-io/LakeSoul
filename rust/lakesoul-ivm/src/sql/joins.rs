@@ -280,6 +280,38 @@ pub(super) fn analyze_join(
                 )?,
             };
             let right_keys = if same_names { Vec::new() } else { right_keys };
+            // A single-sided inner join whose right side is keyed by something
+            // other than the join keys is a pair join: several matches
+            // duplicate the left row, which the semi shape a membership test
+            // compiles to cannot express.  The right row identity becomes the
+            // right payload, so its pairs stay apart.
+            let effective_right_keys = if right_keys.is_empty() {
+                &join_keys
+            } else {
+                &right_keys
+            };
+            let right_is_keyed = right.primary_keys.len() == effective_right_keys.len()
+                && right
+                    .primary_keys
+                    .iter()
+                    .all(|key| effective_right_keys.contains(key));
+            let mut payloads = payloads;
+            let synthetic = if payloads.left_count > 0
+                && payloads.right_count == 0
+                && !right_is_keyed
+            {
+                right
+                    .primary_keys
+                    .iter()
+                    .find(|key| !effective_right_keys.contains(key))
+                    .or_else(|| right.primary_keys.first())
+                    .cloned()
+            } else {
+                None
+            };
+            if let Some(column) = synthetic {
+                payloads.push(Side::Right, column, "right_value".to_string());
+            }
             // One payload per side keeps the compact `left_value` /
             // `right_value` shape; anything else materializes the selected
             // columns under their select names.  A non-equality condition over
@@ -316,15 +348,7 @@ pub(super) fn analyze_join(
                         // unique, so the view is exactly the left rows that
                         // have one - the semi shape, which the semi/anti view
                         // already maintains.
-                        let right_join_keys: &[String] =
-                            if same_names { &join_keys } else { &right_keys };
-                        let right_is_keyed = payloads.left_count > 0
-                            && right.primary_keys.len() == right_join_keys.len()
-                            && right
-                                .primary_keys
-                                .iter()
-                                .all(|key| right_join_keys.contains(key));
-                        if right_is_keyed {
+                        if payloads.left_count > 0 && right_is_keyed {
                             let output_columns = semi_anti_output_columns(
                                 join,
                                 projection,
@@ -3375,6 +3399,42 @@ mod tests {
         assert_eq!(join_keys, vec![join_key_expression_name(0)]);
         assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
         assert_eq!(output_columns.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn analyzes_a_single_sided_join_with_a_non_unique_right() {
+        // The right side is keyed, but not by the join key: several matches
+        // duplicate the left row, so the shape is a pair join that
+        // materializes the right row identity as the right payload.
+        let mut dim = source_table("dim");
+        dim.primary_keys = vec!["v".to_string()];
+        let analyzed = analyze_multi(
+            "select a.k, a.v from src a join dim b on a.k = b.k",
+            vec![source_table("src"), dim],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Join {
+            left_value,
+            right_value,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a pair join spec");
+        };
+        assert_eq!(left_value, "v");
+        assert_eq!(right_value, "v");
+
+        // The right side keyed by the join key stays the membership shape.
+        let analyzed = analyze_optimized(
+            "select a.k, a.g, a.v, b.k from src a join src b on a.k = b.k",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            analyzed.spec,
+            ViewSpec::SemiAnti { anti: false, .. }
+        ));
     }
 
     #[tokio::test]

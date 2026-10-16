@@ -1,0 +1,70 @@
+# A single-sided inner join whose right side is keyed by a non-unique column:
+# every match makes one row, so a fact matching two dimension rows appears
+# twice.
+
+statement ok
+/*ivm-append __SRC__: id=1,fk=10,lv=L1,op=insert; id=2,fk=20,lv=L2,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rk=7,rv=10,op=insert; rk=8,rv=10,op=insert; rk=9,rv=99,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv FROM __SRC__ l JOIN __SRC2__ r ON l.fk = r.rv
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IITII rowsort
+SELECT fk, id, lv, right_value, "__left_pk_id" FROM __MV__
+----
+10 1 L1 7 1
+10 1 L1 8 1
+
+# A new dimension row adds a pair for the fact it matches.
+statement ok
+/*ivm-append __SRC2__: rk=10,rv=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv FROM __SRC__ l JOIN __SRC2__ r ON l.fk = r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IITII rowsort
+SELECT fk, id, lv, right_value, "__left_pk_id" FROM __MV__
+----
+10 1 L1 7 1
+10 1 L1 8 1
+20 2 L2 10 2
+
+# A dimension delete retracts its pair only.
+statement ok
+/*ivm-append __SRC2__: rk=7,rv=10,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv FROM __SRC__ l JOIN __SRC2__ r ON l.fk = r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IITII rowsort
+SELECT fk, id, lv, right_value, "__left_pk_id" FROM __MV__
+----
+10 1 L1 8 1
+20 2 L2 10 2
+
+# A fact whose join key moves keeps the pairs of its new match.
+statement ok
+/*ivm-append __SRC__: id=1,fk=20,lv=L1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.id, l.lv FROM __SRC__ l JOIN __SRC2__ r ON l.fk = r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IITII rowsort
+SELECT fk, id, lv, right_value, "__left_pk_id" FROM __MV__
+----
+20 1 L1 10 1
+20 2 L2 10 2

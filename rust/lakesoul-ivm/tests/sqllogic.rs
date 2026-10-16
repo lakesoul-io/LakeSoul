@@ -52,9 +52,10 @@ use lakesoul_ivm::{
     top_k_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
     union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
     variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -1873,6 +1874,56 @@ fn sqllogic_wide_lookup_join_expr_key() {
         )
         .unwrap(),
         group_keys(&["id"]),
+    );
+}
+
+#[test]
+fn sqllogic_single_sided_join() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("fk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Utf8, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rk", DataType::Int64, false),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "singlesided",
+        include_str!("slt/single_sided_join.slt"),
+        vec![
+            SltSource::keyed("__SRC__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", dim.clone(), group_keys(&["rk"])),
+        ],
+        wide_keyed_join_view_schema_with_keys(
+            &fact,
+            &dim,
+            &group_keys(&["id"]),
+            &group_keys(&["rk"]),
+            &group_keys(&["fk"]),
+            &JoinKeyExprs::default(),
+            &[
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "id".to_string(),
+                    name: "id".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Left,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                JoinOutputColumn {
+                    side: JoinSide::Right,
+                    column: "rk".to_string(),
+                    name: "right_value".to_string(),
+                },
+            ],
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rk"])),
     );
 }
 
