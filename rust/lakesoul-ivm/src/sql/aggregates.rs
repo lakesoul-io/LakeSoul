@@ -1307,9 +1307,11 @@ pub(super) fn analyze_aggregate(
     // Mixed aggregate kinds (e.g. `SUM(v), MIN(v)`) are recomputed with the
     // general multi-aggregate view; a SUM/COUNT/AVG-only mix keeps the
     // incremental sum/count view.
-    let selected = selected_aggregates(aggregate, projection);
-    let first_value = selected.iter().any(|expr| is_first_value_aggregate(expr));
-    if first_value || (selected.len() > 1 && !single_family_shapes(&selected)) {
+    // A HAVING aggregate the select list does not carry still needs its own
+    // column, so the layout decision covers it too.
+    let needed = aggregates_needed(aggregate, projection, having_exprs);
+    let first_value = needed.iter().any(|expr| is_first_value_aggregate(expr));
+    if first_value || (needed.len() > 1 && !single_family_shapes(&needed)) {
         return analyze_multi_agg(
             aggregate,
             group_keys,
@@ -2282,6 +2284,49 @@ fn selected_aggregates<'a>(
         })
         .map(|(_, expr)| expr)
         .collect()
+}
+
+/// The aggregates the statement needs: the ones the select list carries plus
+/// the ones `HAVING` reads.  A HAVING-only aggregate still needs its own
+/// column, so it takes part in the layout decision.
+fn aggregates_needed<'a>(
+    aggregate: &'a Aggregate,
+    projection: Option<&Projection>,
+    having_exprs: &[Expr],
+) -> Vec<&'a Expr> {
+    let mut needed = selected_aggregates(aggregate, projection);
+    if having_exprs.is_empty() {
+        return needed;
+    }
+    // HAVING references the aggregate output columns by name.
+    let mut referenced = Vec::new();
+    for expr in having_exprs {
+        let _ = expr.apply(|node| {
+            if let Expr::Column(column) = node {
+                referenced.push(column.name.clone());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+    }
+    let offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
+    for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
+        let used = aggregate
+            .schema
+            .fields()
+            .get(offset + index)
+            .is_some_and(|field| referenced.contains(field.name()));
+        let listed = needed
+            .iter()
+            .any(|existing| format!("{existing}") == format!("{expr}"));
+        if used && !listed {
+            needed.push(expr);
+        }
+    }
+    needed
 }
 
 /// Whether every aggregate fits the incremental `SUM`/`COUNT`/`AVG` view
@@ -3915,11 +3960,13 @@ mod tests {
             panic!("expected a min/max spec");
         };
         assert_eq!(normalized(having.as_deref()).as_deref(), Some("value > 10"));
-        assert!(
+        // A HAVING over another aggregate form takes the multi-aggregate
+        // view, which materializes every form as its own column.
+        let analyzed =
             analyze("select g, min(v * 2) from src group by g having min(v) > 10")
                 .await
-                .is_err()
-        );
+                .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::MultiAgg { .. }));
     }
 
     #[tokio::test]
@@ -4175,11 +4222,19 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unmaterialized_having() {
-        // MAX is not maintained by a SUM/COUNT view.
+        // MAX is not maintained by a SUM/COUNT view; the statement falls back
+        // to the multi-aggregate view, which materializes it too.
+        let analyzed = analyze("select g, sum(v) from src group by g having max(v) > 5")
+            .await
+            .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
         assert!(
-            analyze("select g, sum(v) from src group by g having max(v) > 5")
-                .await
-                .is_err()
+            aggregates
+                .iter()
+                .any(|aggregate| aggregate.column == "max_v"),
+            "{aggregates:?}"
         );
         // COUNT(column) over another column would need a second non-NULL
         // count; over the summed column it is maintained.
@@ -4193,18 +4248,28 @@ mod tests {
                 .await
                 .is_ok()
         );
-        // A second value column would need a second SUM state.
+        // A second value column would need a second SUM state: the statement
+        // falls back to the multi-aggregate view, which materializes both.
+        let analyzed = analyze("select g, sum(v) from src group by g having sum(k) > 1")
+            .await
+            .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
         assert!(
-            analyze("select g, sum(v) from src group by g having sum(k) > 1")
-                .await
-                .is_err()
+            aggregates
+                .iter()
+                .any(|aggregate| aggregate.column == "sum_k"),
+            "{aggregates:?}"
         );
-        // A different aggregate kind for a MIN view.
-        assert!(
+        // A different aggregate kind for a MIN view takes the same fallback.
+        assert!(matches!(
             analyze("select g, min(v) from src group by g having sum(v) > 5")
                 .await
-                .is_err()
-        );
+                .unwrap()
+                .spec,
+            ViewSpec::MultiAgg { .. }
+        ));
     }
 
     #[tokio::test]

@@ -3976,6 +3976,19 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **至此 H2 全部落地**：单源表达式键已支持 inner / lookup / pair 外连接 / 多路扁平化 inner / 左深链；
   跨源表达式与跨源表达式的步骤右键仍明确拒绝。
 
+### 10.162 H3 收尾：HAVING 里的表达式参数聚合
+
+- **能力**：`SELECT g, SUM(v) ... GROUP BY g HAVING SUM(v * 2) > 10` 现在可用：布局决策改为按
+  「语句需要的聚合集合」判断——新增 `aggregates_needed`（select 列表的聚合 ∪ HAVING 引用到的聚合，
+  后者按聚合输出列名匹配），不再只看 select 列表。集合不满足「SUM/COUNT/AVG 每函数至多一个」时改走
+  多聚合视图：`parse_multi_aggregates` 已按「函数 + 参数标签」命名每一列（`sum(v)` → `sum_v`、
+  `sum(v * 2)` → `sum_value`），`render_multi_agg_having` 已能把 HAVING 引用映射到这些列。
+- **保持不变**：`HAVING SUM(v)`（同形）仍走增量 sum/count 视图；select 列表里的表达式聚合仍走多聚合视图。
+- **测试**：`analyzes_a_having_expression_aggregate`（两种布局的选择 + 列名）与
+  `sqllogic_having_expression_aggregate` + `tests/slt/having_expression_aggregate.slt`
+  （bootstrap、组越过/落回 HAVING 边界）。
+- **剩余记录项**：链步 payload 自动改名、多路链 16 源上限、Tier-2 分区 diff 写入（已决定不做）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

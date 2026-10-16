@@ -2135,6 +2135,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_a_having_expression_aggregate() {
+        // HAVING reads an aggregate form the select list does not carry: the
+        // layout falls back to the multi-aggregate view, which materializes
+        // every aggregate form as its own column.
+        let analyzed = analyze_optimized(
+            "select g, sum(v) from src group by g having sum(v * 2) > 10",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg {
+            aggregates, having, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sum_v", "sum_value"]
+        );
+        let having = having.expect("a HAVING predicate");
+        assert!(having.contains("sum_value"), "{having}");
+
+        // The same aggregate form keeps the incremental sum/count view.
+        let analyzed =
+            analyze_optimized("select g, sum(v) from src group by g having sum(v) > 10")
+                .await
+                .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::SumCount { .. }));
+
+        // A select-list expression aggregate keeps its canonical column: the
+        // multi-aggregate view names every aggregate form after its call.
+        let analyzed =
+            analyze_optimized("select g, sum(v), sum(v * 2) as s2 from src group by g")
+                .await
+                .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi-aggregate spec");
+        };
+        assert_eq!(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.column.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sum_v", "sum_value"]
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_left_aggregate_outputs() {
         // A computed select-list expression over the scalar subquery value:
         // the raw value stays materialized (named internally when the select
