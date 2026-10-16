@@ -447,12 +447,6 @@ pub(super) fn analyze_join(
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
                 return Err(unsupported("FULL JOIN needs a primary key on both sources"));
             }
-            if !key_exprs.is_empty() {
-                return Err(unsupported(
-                    "computed keys are only maintained for the inner join and \
-                     the lookup join",
-                ));
-            }
             let right_keys = if same_names { Vec::new() } else { right_keys };
             // The join keys, under either name, never become payloads.
             let mut key_names = join_keys.clone();
@@ -496,6 +490,7 @@ pub(super) fn analyze_join(
                 output_table_id: request.mv_table_id.clone(),
                 join_keys,
                 right_keys,
+                key_exprs: key_exprs.clone(),
                 left_value,
                 right_value,
                 output_columns,
@@ -1416,12 +1411,6 @@ fn analyze_outer_join(
             payload_names,
         })
     } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
-        if !key_exprs.is_empty() {
-            return Err(unsupported(
-                "computed keys are only maintained for the inner join and \
-                 the lookup join",
-            ));
-        }
         Ok(ViewSpec::LeftJoin {
             view_id: request.view_id.clone(),
             left_table_id: left.table_id.clone(),
@@ -1429,6 +1418,7 @@ fn analyze_outer_join(
             output_table_id: request.mv_table_id.clone(),
             join_keys,
             right_keys,
+            key_exprs: key_exprs.clone(),
             left_value,
             right_value,
             output_columns,
@@ -3356,14 +3346,15 @@ mod tests {
         assert!(key_exprs.left[1].contains("v + 1"), "{:?}", key_exprs.left);
         assert_eq!(key_exprs.right[1], "v");
 
-        // A computed key whose right side is not keyed by it is a pair join,
-        // which does not maintain computed keys.
-        let error = analyze_optimized(
+        // A computed key whose right side is not keyed by it is a pair left
+        // join; it maintains computed keys too (see
+        // `analyzes_a_left_join_with_a_computed_key`).
+        let analyzed = analyze_optimized(
             "select a.k, a.g, b.v from src a left join src b on b.v = a.k + 1",
         )
         .await
-        .unwrap_err();
-        assert!(error.to_string().contains("computed keys"), "{error}");
+        .unwrap();
+        assert!(matches!(analyzed.spec, ViewSpec::LeftJoin { .. }));
 
         // A wide lookup maintains the computed key too.
         let analyzed = analyze_optimized(
@@ -3384,6 +3375,77 @@ mod tests {
         assert_eq!(join_keys, vec![join_key_expression_name(0)]);
         assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
         assert_eq!(output_columns.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn analyzes_a_left_join_with_a_computed_key() {
+        // The right side is not keyed by the join keys, so the shape is a
+        // pair left join; the computed key is materialized on its side.
+        let mut dim = source_table("dim");
+        dim.primary_keys = vec!["v".to_string()];
+        let analyzed = analyze_multi(
+            "select a.g, b.g from src a left join dim b on a.v + 1 = b.k",
+            vec![source_table("src"), dim],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin {
+            join_keys,
+            key_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left join spec");
+        };
+        assert_eq!(join_keys, vec![join_key_expression_name(0)]);
+        assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(key_exprs.right[0], "k");
+
+        // The wide pair left join keeps the computed key too.
+        let analyzed = analyze_multi(
+            "select a.k, a.g, b.g as bg, b.v as bv from src a \
+             left join dim b on a.v + 1 = b.k",
+            vec![source_table("src"), {
+                let mut dim = source_table("dim");
+                dim.primary_keys = vec!["v".to_string()];
+                dim
+            }],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftJoin {
+            key_exprs,
+            output_columns,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left join spec");
+        };
+        assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(output_columns.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn analyzes_a_full_join_with_a_computed_key() {
+        let mut dim = source_table("dim");
+        dim.primary_keys = vec!["v".to_string()];
+        let analyzed = analyze_multi(
+            "select a.g, b.g from src a full join dim b on a.v + 1 = b.k",
+            vec![source_table("src"), dim],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::FullJoin {
+            join_keys,
+            key_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a full join spec");
+        };
+        assert_eq!(join_keys, vec![join_key_expression_name(0)]);
+        assert!(key_exprs.left[0].contains("v + 1"), "{:?}", key_exprs.left);
+        assert_eq!(key_exprs.right[0], "k");
     }
 
     #[tokio::test]
@@ -3434,6 +3496,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                key_exprs: JoinKeyExprs::default(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
@@ -3588,6 +3651,7 @@ mod tests {
                 output_table_id: "table_mv".to_string(),
                 join_keys: vec!["k".to_string()],
                 right_keys: Vec::new(),
+                key_exprs: JoinKeyExprs::default(),
                 left_value: "v".to_string(),
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),

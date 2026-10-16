@@ -1,0 +1,76 @@
+# A pair left join with a computed key: the fact's `fk + 1` matches the
+# dimension's `rv`, which is not its primary key, so every match is kept.
+
+statement ok
+/*ivm-append __SRC__: id=1,fk=4,lv=L1,op=insert; id=2,fk=9,lv=L2,op=insert; id=3,fk=100,lv=L3,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rk=7,rv=5,rn=R50,op=insert; rk=8,rv=10,rn=R100,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rv = l.fk + 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TTIII rowsort
+SELECT left_value, right_value, __ivm_key_0, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+L1 R50 5 1 7
+L2 R100 10 2 8
+L3 NULL 101 3 NULL
+
+# A dimension row that moves its join column takes the fact with it, and the
+# fact may match several dimension rows.
+statement ok
+/*ivm-append __SRC2__: rk=7,rv=10,rn=R50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rv = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTIII rowsort
+SELECT left_value, right_value, __ivm_key_0, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+L1 NULL 5 1 NULL
+L2 R100 10 2 8
+L2 R50 10 2 7
+L3 NULL 101 3 NULL
+
+# A fact whose computed key moves follows the other dimension rows.
+statement ok
+/*ivm-append __SRC__: id=1,fk=9,lv=L1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rv = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTIII rowsort
+SELECT left_value, right_value, __ivm_key_0, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+L1 R100 10 1 8
+L1 R50 10 1 7
+L2 R100 10 2 8
+L2 R50 10 2 7
+L3 NULL 101 3 NULL
+
+# A dimension delete retracts its pairs only.
+statement ok
+/*ivm-append __SRC2__: rk=8,rv=10,rn=R100,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l LEFT JOIN __SRC2__ r ON r.rv = l.fk + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTIII rowsort
+SELECT left_value, right_value, __ivm_key_0, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+L1 R50 10 1 7
+L2 R50 10 2 7
+L3 NULL 101 3 NULL

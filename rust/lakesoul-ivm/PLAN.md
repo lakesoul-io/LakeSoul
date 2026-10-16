@@ -3880,6 +3880,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   两个 slt：bootstrap、右侧新增/删除/更新、事实侧计算键随 `fk` 变化移动匹配。
 - **仍缺**：outer / chain / multi 的表达式键（后续 H2 步骤）。
 
+### 10.156 性能项 H2b：表达式连接键进 pair 左连接 / 全连接
+
+- **能力**：pair-keyed `LEFT JOIN` / `FULL JOIN`（右侧不按连接键索引的形状）支持表达式连接键：
+  分析器把渲染后的两侧表达式放进 `LeftJoinView`/`FullJoinView` 的 `key_exprs`（serde 默认空），
+  `ViewSpec` 变体、`PairJoin` 桥接与投影（`keyed_join_projection` 早已用 `join_side_key_columns`）随之生效。
+- **schema**：新增 `left_join_view_schema_with_keys` / `full_join_view_schema_with_keys` /
+  `wide_outer_join_view_schema_with_keys` / `wide_{left,full}_join_view_schema_with_identity_and_keys`
+  （计算键按表达式定型）；旧的无参变体保留为 `NO_KEY_EXPRS` 的薄包装，既有测试与文档不受影响。
+- **校验**：`validate_left_join_view` 的连接键循环对计算键改为解析表达式并比较两侧类型（全连接经现有 bridge 复用）。
+- **刷新**：两侧「受影响行」探测改为按名连接——新增 `with_computed_keys`（在探测帧上物化计算键）与
+  `key_columns`（把增量键投影到自己的键名下）；lookup 与左连接的探测改用同一助手，删掉重复实现。
+- **测试**：`analyzes_a_left_join_with_a_computed_key`、`analyzes_a_full_join_with_a_computed_key` 与
+  `sqllogic_left_join_expr_key` / `sqllogic_full_join_expr_key`（bootstrap、两侧增量、键移动、删除；
+  全连接含单侧 NULL 行）；同时订正 H2a 用例里「pair 左连接拒绝表达式键」的过期负例。
+- **仍缺**：多路 / 链式 join 的表达式键（H2c）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

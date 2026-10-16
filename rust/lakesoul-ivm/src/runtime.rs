@@ -287,6 +287,10 @@ pub enum ViewSpec {
         /// ones; empty means the keys share their names.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         right_keys: Vec<String>,
+        /// The rendered key expressions, aligned with `join_keys`; an empty
+        /// entry means that key is a plain column of that side.
+        #[serde(default, skip_serializing_if = "JoinKeyExprs::is_empty")]
+        key_exprs: JoinKeyExprs,
         /// The payload column of the left source.
         left_value: String,
         /// The payload column of the right source; NULL without a match.
@@ -430,6 +434,10 @@ pub enum ViewSpec {
         /// ones; empty means the keys share their names.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         right_keys: Vec<String>,
+        /// The rendered key expressions, aligned with `join_keys`; an empty
+        /// entry means that key is a plain column of that side.
+        #[serde(default, skip_serializing_if = "JoinKeyExprs::is_empty")]
+        key_exprs: JoinKeyExprs,
         /// The wide output columns; empty means the compact
         /// `left_value` / `right_value` shape.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2883,6 +2891,7 @@ impl IvmRuntime {
                 output_table_id,
                 join_keys,
                 right_keys,
+                key_exprs,
                 left_value,
                 right_value,
                 output_columns,
@@ -2899,6 +2908,7 @@ impl IvmRuntime {
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
                 right_keys: right_keys.clone(),
+                key_exprs: key_exprs.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),
@@ -2914,6 +2924,7 @@ impl IvmRuntime {
                 output_table_id,
                 join_keys,
                 right_keys,
+                key_exprs,
                 identity_column,
                 left_value,
                 right_value,
@@ -2930,6 +2941,7 @@ impl IvmRuntime {
                 output: self.open_table_by_id(output_table_id).await?,
                 join_keys: join_keys.clone(),
                 right_keys: right_keys.clone(),
+                key_exprs: key_exprs.clone(),
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),

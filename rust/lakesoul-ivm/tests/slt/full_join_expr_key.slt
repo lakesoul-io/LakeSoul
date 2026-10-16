@@ -1,0 +1,59 @@
+# A full join with a computed key: the fact's `fk + 1` matches the
+# dimension's `rv`, and unmatched rows of either side stay with NULLs.
+
+statement ok
+/*ivm-append __SRC__: id=1,fk=4,lv=L1,op=insert; id=2,fk=9,lv=L2,op=insert; id=3,fk=100,lv=L3,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: rk=7,rv=5,rn=R50,op=insert; rk=8,rv=10,rn=R100,op=insert; rk=9,rv=77,rn=R77,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l FULL JOIN __SRC2__ r ON l.fk + 1 = r.rv
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TTIII rowsort
+SELECT __ivm_key_0, left_value, right_value, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+10 L2 R100 2 8
+101 L3 NULL 3 NULL
+5 L1 R50 1 7
+77 NULL R77 NULL 9
+
+# A fact whose computed key moves takes the previously unmatched dimension
+# row and leaves its old one unmatched.
+statement ok
+/*ivm-append __SRC__: id=1,fk=76,lv=L1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l FULL JOIN __SRC2__ r ON l.fk + 1 = r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTIII rowsort
+SELECT __ivm_key_0, left_value, right_value, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+10 L2 R100 2 8
+101 L3 NULL 3 NULL
+5 NULL R50 NULL 7
+77 L1 R77 1 9
+
+# A dimension delete keeps the fact row with a NULL match.
+statement ok
+/*ivm-append __SRC2__: rk=9,rv=77,rn=R77,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT l.lv, r.rn FROM __SRC__ l FULL JOIN __SRC2__ r ON l.fk + 1 = r.rv
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TTIII rowsort
+SELECT __ivm_key_0, left_value, right_value, "__left_pk_id", "__right_pk_rk" FROM __MV__
+----
+10 L2 R100 2 8
+101 L3 NULL 3 NULL
+5 NULL R50 NULL 7
+77 L1 NULL 1 NULL
