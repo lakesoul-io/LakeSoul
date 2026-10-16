@@ -3989,6 +3989,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （bootstrap、组越过/落回 HAVING 边界）。
 - **剩余记录项**：链步 payload 自动改名、多路链 16 源上限、Tier-2 分区 diff 写入（已决定不做）。
 
+### 10.163 小项打包：多路源上限与链列名唯一化
+
+- **多路 join 的源上限拆成两条常量**（`runtime/multi_join.rs`）：
+  `MAX_KEYED_MULTI_JOIN_SOURCES = 32`（keyed 链的刷新按变化源逐个拼增量，代价线性）与
+  `MAX_APPEND_ONLY_MULTI_JOIN_SOURCES = 8`（append-only 链走容斥，2^k，上限保持低位）；
+  `multi_join_source_limit(keyed)` 共享给运行时校验与分析器。此前分析器写死 16、运行时写死 8，
+  于是 9–16 源的语句**分析通过却在执行时被拒**；现在两者一致，且消息区分 keyed / append-only。
+  顺带记录：SQL 路径的多路 join 本就要求全 keyed（append-only 会在更早处按「源表需要主键」拒绝），
+  append-only 上限只对内部构造的 spec 生效。
+- **链列名唯一化**（`analyze_lookup_chain`）：链的布局列名不再允许重复——投影选中两个同名源列时，
+  后出现的那个按 `{name}_{source}`（仍冲突则加 `_{n}`）确定性改名，首个保持原名；
+  预置集合含 1:N 步骤的身份列 `__step<source>_id` 与 kinds/epoch 列名，避免与生成列撞名。
+  同时给 `derived_output_mapping` 增加 `LookupChain` 分支：派生链按**位置**把子计划字段映射到布局列，
+  被改名的列因此仍能被外层引用。
+- **测试**：`analyzes_the_multi_join_source_cap`（程序化生成 32/33 源与 append-only 的拒绝）、
+  `sqllogic_multi_join_wide`（**10 源**星型 join 的 bootstrap / 单源更新 / 删除，覆盖被抬高的上限）、
+  `analyzes_chain_payload_collisions` 与 `sqllogic_lookup_chain_collision`（同名 `v` → 布局 `v_1`，
+  bootstrap 与两次增量）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

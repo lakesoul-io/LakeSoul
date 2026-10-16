@@ -3118,6 +3118,71 @@ fn sqllogic_lookup_chain() {
 }
 
 #[test]
+fn sqllogic_lookup_chain_collision() {
+    let schema = source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: group_keys(&["k"]),
+            right_keys: group_keys(&["k"]),
+            key_sources: Vec::new(),
+            unique: true,
+            key_exprs: JoinKeyExprs::default(),
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: group_keys(&["k"]),
+            right_keys: group_keys(&["k"]),
+            key_sources: Vec::new(),
+            unique: true,
+            key_exprs: JoinKeyExprs::default(),
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        // The second `v` is materialized under a disambiguated name.
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "v_1".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+    ];
+    let mv_schema = lookup_chain_mv_schema_for(
+        &[schema.clone(), schema.clone(), schema.clone()],
+        &steps,
+        &columns,
+    )
+    .unwrap();
+    run_script_for_sources(
+        "lookupchaincollision",
+        include_str!("slt/lookup_chain_collision.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM2__", schema.clone(), group_keys(&["k"])),
+        ],
+        mv_schema,
+        group_keys(&["k"]),
+    );
+}
+
+#[test]
 fn sqllogic_lookup_chain_expr_key() {
     let schema = source_schema();
     let steps = vec![
@@ -3193,6 +3258,110 @@ fn sqllogic_lookup_chain_expr_key() {
         // The computed key is not the step's primary key, so the step is a
         // 1:N lookup whose row identity joins the MV's primary key.
         vec!["k".to_string(), lookup_chain_step_id_column(2)],
+    );
+}
+
+#[test]
+fn sqllogic_multi_join_wide() {
+    // The runtime used to cap a multi-way join at eight sources; a ten-source
+    // star is generated here to cover the raised cap end to end.
+    const SOURCES: usize = 10;
+    let schema = source_schema();
+    let sources = (1..=SOURCES)
+        .map(|index| {
+            SltSource::keyed(
+                Box::leak(format!("__SRC{index}__").into_boxed_str()),
+                schema.clone(),
+                group_keys(&["k"]),
+            )
+        })
+        .collect::<Vec<_>>();
+    let payloads = (1..=SOURCES)
+        .map(|index| format!("__SRC{index}__.v AS v{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let joins = (2..=SOURCES)
+        .map(|index| format!("JOIN __SRC{index}__ ON __SRC{index}__.k = __SRC1__.k"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let insert = format!(
+        "statement ok\nINSERT INTO __MV__ SELECT __SRC1__.k, {payloads} \
+         FROM __SRC1__ {joins}\n\n"
+    );
+    let projections = (1..=SOURCES)
+        .map(|index| format!("v{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let identities = (0..SOURCES)
+        .map(|index| format!("\"__pk{index}_k\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let types = "I".repeat(SOURCES + 2);
+    // One MV row: `k`, the payloads and the per-source identities.
+    let row = |values: &[i64]| {
+        std::iter::once(1i64)
+            .chain(values.iter().copied())
+            .chain(std::iter::repeat_n(1i64, SOURCES))
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let base = (1..=SOURCES)
+        .map(|index| (index * 10) as i64)
+        .collect::<Vec<_>>();
+    let updated = base
+        .iter()
+        .enumerate()
+        .map(|(index, value)| if index == 4 { 55 } else { *value })
+        .collect::<Vec<_>>();
+    let mut script = String::new();
+    for index in 1..=SOURCES {
+        script.push_str(&format!(
+            "statement ok\n/*ivm-append __SRC{index}__: k=1,g=a,v={},op=insert*/\n\n",
+            index * 10
+        ));
+    }
+    script.push_str(&format!(
+        "{insert}statement ok\n/*ivm-expect-action bootstrap*/\n\n\
+         query {types} rowsort\nSELECT k, {projections}, {identities} FROM __MV__\n\
+         ----\n{}\n\n",
+        row(&base)
+    ));
+    // An update of one source's payload flows into the tuple.
+    script.push_str(&format!(
+        "statement ok\n/*ivm-append __SRC5__: k=1,g=a,v=55,op=insert*/\n\n\
+         {insert}statement ok\n/*ivm-expect-action incremental*/\n\n\
+         query {types} rowsort\nSELECT k, {projections}, {identities} FROM __MV__\n\
+         ----\n{}\n\n",
+        row(&updated)
+    ));
+    // Deleting one source's row drops the tuple.
+    script.push_str(&format!(
+        "statement ok\n/*ivm-append __SRC3__: k=1,g=a,v=30,op=delete*/\n\n\
+         {insert}statement ok\n/*ivm-expect-action incremental*/\n\n\
+         query {types} rowsort\nSELECT k, {projections}, {identities} FROM __MV__\n\
+         ----\n"
+    ));
+    let mut columns = vec![MultiJoinColumn {
+        source: 0,
+        column: "k".to_string(),
+        name: "k".to_string(),
+    }];
+    for index in 1..=SOURCES {
+        columns.push(MultiJoinColumn {
+            source: index - 1,
+            column: "v".to_string(),
+            name: format!("v{index}"),
+        });
+    }
+    let schemas = (0..SOURCES).map(|_| schema.clone()).collect::<Vec<_>>();
+    let primary_keys = (0..SOURCES).map(|_| group_keys(&["k"])).collect::<Vec<_>>();
+    run_script_for_sources(
+        "multijoinwide",
+        &script,
+        sources,
+        multi_join_mv_schema_for(&schemas, &primary_keys, &columns).unwrap(),
+        multi_join_primary_keys(&primary_keys),
     );
 }
 

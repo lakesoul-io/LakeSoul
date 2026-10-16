@@ -2949,6 +2949,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_chain_payload_collisions() {
+        // Two same-named source columns take part in the chain layout: the
+        // later one is disambiguated deterministically.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v, c.v as cv from src a \
+             left join src b on b.k = a.k \
+             left join src c on c.k = b.k",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain { output_columns, .. } = analyzed.spec else {
+            panic!("expected a lookup chain spec");
+        };
+        let names = output_columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["k", "v", "v_1", "cv"]);
+        let columns = output_columns
+            .iter()
+            .map(|column| column.column.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(columns, vec!["k", "v", "v", "v"]);
+    }
+
+    #[tokio::test]
+    async fn analyzes_the_multi_join_source_cap() {
+        use crate::runtime::{
+            MAX_APPEND_ONLY_MULTI_JOIN_SOURCES, MAX_KEYED_MULTI_JOIN_SOURCES,
+        };
+        fn star(sources: usize) -> String {
+            let mut sql = "select src1.k from src1".to_string();
+            for index in 2..=sources {
+                sql.push_str(&format!(" join src{index} on src{index}.k = src1.k"));
+            }
+            sql
+        }
+        fn tables(sources: usize, keyed: bool) -> Vec<IvmTable> {
+            (1..=sources)
+                .map(|index| {
+                    let mut table = source_table(&format!("src{index}"));
+                    if !keyed {
+                        table.primary_keys.clear();
+                    }
+                    table
+                })
+                .collect()
+        }
+        // A keyed chain accepts the cap and rejects one source more.
+        let analyzed = analyze_multi(
+            &star(MAX_KEYED_MULTI_JOIN_SOURCES),
+            tables(MAX_KEYED_MULTI_JOIN_SOURCES, true),
+        )
+        .await;
+        assert!(analyzed.is_ok(), "{analyzed:?}");
+        let error = analyze_multi(
+            &star(MAX_KEYED_MULTI_JOIN_SOURCES + 1),
+            tables(MAX_KEYED_MULTI_JOIN_SOURCES + 1, true),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "at most {MAX_KEYED_MULTI_JOIN_SOURCES} keyed sources"
+            )),
+            "{error}"
+        );
+        // An append-only chain is rejected earlier (its refresh is an
+        // inclusion-exclusion over the changed sources, so the SQL path only
+        // maintains keyed chains; the runtime cap covers hand-built specs).
+        let error = analyze_multi(
+            &star(MAX_APPEND_ONLY_MULTI_JOIN_SOURCES + 1),
+            tables(MAX_APPEND_ONLY_MULTI_JOIN_SOURCES + 1, false),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("has no primary key"), "{error}");
+        // The append-only cap stays below the keyed one.
+        const { assert!(MAX_APPEND_ONLY_MULTI_JOIN_SOURCES < MAX_KEYED_MULTI_JOIN_SOURCES) };
+    }
+
+    #[tokio::test]
     async fn analyzes_a_lookup_chain_with_computed_keys() {
         // A step key may be a scalar expression over one earlier source (the
         // left side) or over the step source itself (the right side); a

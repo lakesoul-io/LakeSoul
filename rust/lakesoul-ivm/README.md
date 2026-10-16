@@ -76,7 +76,7 @@ used as row identities must be non-nullable.
 | TOP-K | `SELECT ... FROM (SELECT ..., ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn FROM src) t WHERE rn <= k`, or a global `SELECT ... FROM src ORDER BY o LIMIT k` / `LIMIT k OFFSET m` (the window is `m < rank <= m + k`; the ordering may be a scalar expression, and so may a select item — `v * 2 AS w` is materialized and `ORDER BY w` orders by it; boundary ties are broken by the source primary keys) | projected columns, the source primary keys a projection omits (the view identifies a row by them), kinds, epoch |
 | Inner join | `JOIN` on equality keys (the two sides may name them differently; several payload columns per side become wide output columns), both sides keyed, optional side filters and payload conditions; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only) | join keys (the left names), `left_value`/`right_value` or one column per selected payload (the alias, or the source name), `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | Lookup join | `LEFT JOIN` where the right side is keyed by the join keys (they may differ in name, optional filters on either input; several payload columns per side become wide output columns) | join keys, `left_value`/`right_value` or one column per selected payload, left primary keys, kinds, epoch |
-| Multi-way join | inner `JOIN`s over three to sixteen sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
+| Multi-way join | inner `JOIN`s over three to thirty-two sources (all keyed), optional side filters and cross-source conditions; a source without a join key is cross joined, so `FROM a, b, c` and mixed keyless steps work | one column per selected payload (the alias, or the source name), `__pk<i>_<key>` per source row identity, kinds, epoch |
 | Lookup chain | a left-deep `[LEFT] JOIN` chain over a keyed base where every step joins a source keyed by its join keys (`a LEFT JOIN b ON b.k = a.k LEFT JOIN c ON c.v = b.v` — a step key may reference any earlier source), optional step filters | one column per selected payload (aliases name the step payloads), kinds, epoch |
 | CROSS JOIN | `CROSS JOIN` / `FROM a, b`, both sides keyed, optional side filters and cross-side predicates; several payload columns per side become wide output columns | `left_value`/`right_value` or one column per selected payload, `__left_pk_*`, `__right_pk_*`, kinds, epoch |
 | LEFT / FULL / RIGHT JOIN | outer equi-joins, both sides keyed, the keys may be named differently, optional filters on either input; several payload columns per side become wide output columns; `IS NOT DISTINCT FROM` keys match NULL with NULL (plain columns only; a lookup right side keyed by the join keys stays strict) | as the inner join (or one column per selected payload), with nullable unmatched identities |
@@ -303,7 +303,7 @@ Supported within the shapes above:
   output needs an alias; the DISTINCT split, a subquery or window function
   output and a computed column over a plain `SELECT DISTINCT` or a
   `GROUPING SETS` statement are rejected;
-* **multi-way inner joins** (three to sixteen sources): the join tree flattens
+* **multi-way inner joins** (three to thirty-two sources): the join tree flattens
   into one chained inner join (a join key may be a scalar expression over
   exactly one of the flattened sources, materialized under a hidden column
   before the join); a source without a key pair is cross joined
@@ -617,9 +617,6 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;
-* a multi-way chain with more than sixteen sources; a chain step whose
-  payload columns collide by name (a step the statement does not project
-  names its payloads after the source columns: alias them in a subquery);
 * a single-sided inner join over a right side without a primary key (the
   pair shape its duplicates need cannot key it): a right side keyed by the
   join key stays the semi (membership) shape, and a right side keyed by

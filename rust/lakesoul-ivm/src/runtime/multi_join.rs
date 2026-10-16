@@ -2,9 +2,28 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The multi-way join view: three to eight sources flattened into one chain.
+//! The multi-way join view: three or more sources flattened into one chain.
 
 use super::*;
+
+/// The most sources a **keyed** multi-way join maintains.  A keyed refresh
+/// costs one delta join per changed source, so its cost is linear in the
+/// chain length.
+pub const MAX_KEYED_MULTI_JOIN_SOURCES: usize = 32;
+
+/// The most sources an **append-only** multi-way join maintains.  Its refresh
+/// is an inclusion-exclusion over the changed sources (one term per non-empty
+/// subset), so the cap stays low.
+pub const MAX_APPEND_ONLY_MULTI_JOIN_SOURCES: usize = 8;
+
+/// The source cap of a multi-way join, keyed or append-only.
+pub fn multi_join_source_limit(keyed: bool) -> usize {
+    if keyed {
+        MAX_KEYED_MULTI_JOIN_SOURCES
+    } else {
+        MAX_APPEND_ONLY_MULTI_JOIN_SOURCES
+    }
+}
 
 /// One input of a multi-way inner join.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,10 +429,12 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    if source_count > 8 {
+    let limit = multi_join_source_limit(view.keyed());
+    if source_count > limit {
         return Err(report!(
-            "multi join view {} supports at most eight sources",
-            view.view_id
+            "multi join view {} supports at most {limit} {} sources",
+            view.view_id,
+            if view.keyed() { "keyed" } else { "append-only" }
         ));
     }
     if view.filters.len() != source_count {
