@@ -3278,6 +3278,7 @@ async fn oracle_lookup_chain_matches_full_recompute() {
             right_keys: vec!["k".to_string()],
             key_sources: Vec::new(),
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
         LookupChainStep {
             source: 2,
@@ -3286,6 +3287,7 @@ async fn oracle_lookup_chain_matches_full_recompute() {
             right_keys: vec!["k".to_string()],
             key_sources: Vec::new(),
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
     ];
     let columns = vec![
@@ -3355,6 +3357,7 @@ async fn oracle_lookup_chain_1n_matches_full_recompute() {
             right_keys: vec!["g".to_string()],
             key_sources: Vec::new(),
             unique: false,
+            key_exprs: JoinKeyExprs::default(),
         },
         LookupChainStep {
             source: 2,
@@ -3363,6 +3366,7 @@ async fn oracle_lookup_chain_1n_matches_full_recompute() {
             right_keys: vec!["k".to_string()],
             key_sources: vec![1],
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
     ];
     let columns = vec![

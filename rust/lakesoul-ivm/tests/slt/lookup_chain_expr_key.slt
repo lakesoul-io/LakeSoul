@@ -1,0 +1,58 @@
+# A lookup chain whose last step key is computed on the step source: the
+# base's `b.v` is matched against `c.v + 1` (a 1:N step, since the computed
+# key is not the step's primary key).
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert*/
+
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=100,op=insert*/
+
+statement ok
+/*ivm-append __DIM2__: k=9,g=d,v=99,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv, c.k AS ck FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON b.v = c.v + 1
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query ITIIII rowsort
+SELECT k, g, v, bv, cv, ck FROM __MV__
+----
+1 a 10 100 99 9
+2 a 30 NULL NULL NULL
+
+# A second step row matching the computed key adds a pair (the 1:N identity
+# keeps them apart).
+statement ok
+/*ivm-append __DIM2__: k=8,g=d,v=99,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv, c.k AS ck FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON b.v = c.v + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIIII rowsort
+SELECT k, g, v, bv, cv, ck FROM __MV__
+----
+1 a 10 100 99 8
+1 a 10 100 99 9
+2 a 30 NULL NULL NULL
+
+# A step row whose computed key moves away retracts its pair.
+statement ok
+/*ivm-append __DIM2__: k=9,g=d,v=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.g, a.v, b.v AS bv, c.v AS cv, c.k AS ck FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON b.v = c.v + 1
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query ITIIII rowsort
+SELECT k, g, v, bv, cv, ck FROM __MV__
+----
+1 a 10 100 99 8
+2 a 30 NULL NULL NULL

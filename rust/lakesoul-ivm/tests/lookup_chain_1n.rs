@@ -12,8 +12,9 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, LookupChainColumn,
-    LookupChainStep, lookup_chain_mv_schema_for, lookup_chain_step_id_column,
+    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinKeyExprs,
+    LookupChainColumn, LookupChainStep, lookup_chain_mv_schema_for,
+    lookup_chain_step_id_column,
 };
 use tempfile::tempdir;
 
@@ -132,6 +133,7 @@ async fn one_to_many_step_matches_a_full_recompute() {
             right_keys: vec!["g".to_string()],
             key_sources: Vec::new(),
             unique: false,
+            key_exprs: JoinKeyExprs::default(),
         },
         LookupChainStep {
             source: 2,
@@ -140,6 +142,7 @@ async fn one_to_many_step_matches_a_full_recompute() {
             right_keys: vec!["k".to_string()],
             key_sources: vec![1],
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
     ];
     let columns = vec![
@@ -307,6 +310,7 @@ async fn inner_one_to_many_step_drops_unmatched_base_rows() {
             right_keys: vec!["g".to_string()],
             key_sources: Vec::new(),
             unique: false,
+            key_exprs: JoinKeyExprs::default(),
         },
         LookupChainStep {
             source: 2,
@@ -315,6 +319,7 @@ async fn inner_one_to_many_step_drops_unmatched_base_rows() {
             right_keys: vec!["k".to_string()],
             key_sources: vec![1],
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
     ];
     let columns = vec![

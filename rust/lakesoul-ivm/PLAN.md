@@ -3955,6 +3955,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **仍缺**：lookup chain（左深链）的表达式键——左键可能来自更早的步骤源，需要把表达式列引用改写为链内部
   列名（`lookup_chain_alias` / `chain_column_name`）后再物化；作为 H2c 第二步。
 
+### 10.161 H2c（第二步收尾）：表达式连接键进 lookup chain
+
+- **能力**：左深链的步骤键可以是标量表达式，只要它只读取**一个**源：
+  - 左键（来自更早的源，或基表）：在其所属源的帧上物化——基表帧保留原始列名（源 0），步骤帧在别名投影**之前**
+    用原始列名 `with_column`；
+  - 右键（步骤自身的键）：在步骤帧上物化（该帧用源自身列名）。
+- **分析器**：`analyze_lookup_chain` 的键循环区分「普通列 / 表达式」两侧：新增 `chain_source_of`
+  （先按 relation 再按唯一性解析来源，从原内联逻辑抽出）与 `chain_expression_source`（表达式引用必须同一源）；
+  右键解析时把步骤源临时并入链（步骤尚未入链）；隐藏名用 `join_key_expression_name`（每步重新计数）。
+  `LookupChainStep` 增加 `key_exprs: JoinKeyExprs`（serde 默认空）。
+- **运行时**：新增物化点——`lookup_chain_replay`（基表的计算键）、`lookup_chain_step_frame`（步骤自身的右键与
+  「更后步骤读本步骤」的计算左键）；`lookup_chain_source_columns` 跳过隐藏名并带上表达式引用的列；
+  `lookup_chain_referenced` 改为 `Result` 并同样携带表达式列；刷新的变更键探测把计算键投影为表达式。
+  校验按表达式定型（普通键仍必须是源列）。计算键使「右键 ≠ 步骤主键」，于是步骤自然成为 1:N（`unique=false`），
+  MV 主键需包含 `__step<source>_id`。
+- **测试**：`analyzes_a_lookup_chain_with_computed_keys`（左右两侧的计算键、跨源表达式拒绝）与
+  `sqllogic_lookup_chain_expr_key` + `tests/slt/lookup_chain_expr_key.slt`（1:N 身份、第二个匹配新增一行、
+  计算键移走后撤回）。
+- **至此 H2 全部落地**：单源表达式键已支持 inner / lookup / pair 外连接 / 多路扁平化 inner / 左深链；
+  跨源表达式与跨源表达式的步骤右键仍明确拒绝。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

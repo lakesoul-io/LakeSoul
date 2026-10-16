@@ -2898,6 +2898,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_a_lookup_chain_with_computed_keys() {
+        // A step key may be a scalar expression over one earlier source (the
+        // left side) or over the step source itself (the right side); a
+        // computed key is materialized under a hidden name.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             left join src b on b.k = a.k \
+             left join src c on c.k = b.v + 1",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain { steps, .. } = analyzed.spec else {
+            panic!("expected a lookup chain spec");
+        };
+        assert_eq!(steps.len(), 2);
+        let step = &steps[1];
+        assert_eq!(step.keys, vec![join_key_expression_name(0)]);
+        assert_eq!(step.key_sources, vec![1]);
+        assert!(
+            step.key_exprs.left[0].contains("v + 1"),
+            "{:?}",
+            step.key_exprs.left
+        );
+        // The right side is still the step's primary key, so one chain row
+        // matches at most one step row (the computed left key does not make
+        // the step 1:N).
+        assert_eq!(step.right_keys, vec!["k".to_string()]);
+        assert!(step.key_exprs.right[0].is_empty());
+        assert!(step.unique);
+
+        // A computed key on the step's own side must read the step source.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             left join src b on b.k = a.k \
+             left join src c on b.k = c.v + 1",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain { steps, .. } = analyzed.spec else {
+            panic!("expected a lookup chain spec");
+        };
+        let step = &steps[1];
+        assert_eq!(step.keys, vec!["k".to_string()]);
+        // The hidden names are counted per step, so the first computed key of
+        // a step is `join_key_expression_name(0)`.
+        assert_eq!(step.right_keys, vec![join_key_expression_name(0)]);
+        assert!(
+            step.key_exprs.right[0].contains("v + 1"),
+            "{:?}",
+            step.key_exprs.right
+        );
+
+        // A step's computed right key over an earlier source stays rejected
+        // (the step frame is where a right key is materialized).
+        let error = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             left join src b on b.k = a.k \
+             left join src c on b.k = a.v + 1",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap_err();
+        // DataFusion may keep the condition as a step filter instead of an
+        // `on` pair; either way the step is rejected with a clear message.
+        assert!(error.to_string().contains("lookup chain step"), "{error}");
+    }
+
+    #[tokio::test]
     async fn analyzes_quantified_in_equivalents() {
         // `= ANY` is `IN` (a semi join) and `<> ALL` / `!= ALL` is `NOT IN`
         // (an anti join) by the SQL standard.

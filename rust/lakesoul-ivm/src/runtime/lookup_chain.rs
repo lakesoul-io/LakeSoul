@@ -231,20 +231,42 @@ fn lookup_chain_identity_columns(view: &LookupChainView) -> Vec<String> {
     columns
 }
 
-/// The columns of earlier sources that later steps join on.
-fn lookup_chain_referenced(view: &LookupChainView, source: usize) -> Vec<String> {
+/// The columns of earlier sources that later steps join on.  A computed key
+/// is materialized on the frame of its source, so the columns its expression
+/// reads are carried too.
+fn lookup_chain_referenced(
+    view: &LookupChainView,
+    source: usize,
+    context: &SessionContext,
+) -> Result<Vec<String>> {
     let mut columns = Vec::new();
     for step in &view.steps {
         if step.source <= source {
             continue;
         }
         for (index, key) in step.keys.iter().enumerate() {
-            if step_key_source(step, index) == source && !columns.contains(key) {
+            if step_key_source(step, index) != source {
+                continue;
+            }
+            if let Some(expr) = step
+                .key_exprs
+                .left
+                .get(index)
+                .filter(|expr| !expr.is_empty())
+            {
+                let (table, _) = &view.sources[source];
+                for column in filter_columns(context, &table.schema, expr)? {
+                    if !columns.contains(&column) {
+                        columns.push(column);
+                    }
+                }
+            }
+            if !columns.contains(key) {
                 columns.push(key.clone());
             }
         }
     }
-    columns
+    Ok(columns)
 }
 
 /// Replay the first `steps` chain steps over `frame` (the base rows).
@@ -254,6 +276,19 @@ fn lookup_chain_replay(
     steps: usize,
     mut frame: DataFrame,
 ) -> Result<DataFrame> {
+    // The base frame's rows keep their own column names, so a computed key
+    // over the base is materialized here.
+    let context = SessionContext::new();
+    for step in &view.steps {
+        for (key_index, expr) in step.key_exprs.left.iter().enumerate() {
+            if expr.is_empty() || step_key_source(step, key_index) != 0 {
+                continue;
+            }
+            let name = &step.keys[key_index];
+            let expression = context.state().create_logical_expr(expr, frame.schema())?;
+            frame = frame.with_column(name, expression)?;
+        }
+    }
     for (index, step) in view.steps.iter().enumerate().take(steps) {
         let (_, step_frame) = lookup_chain_step_frame(view, index, &frames[index + 1])?;
         let right_keys = step
@@ -378,23 +413,52 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
                     view.view_id
                 ));
             }
+            // A computed key is materialized by the replay, so it only has
+            // to resolve against its source; a plain key must be a source
+            // column.
             let (left_table, _) = &view.sources[source];
-            let left_field = left_table.schema.field_with_name(key).map_err(|_| {
-                report!(
-                    "lookup chain view {}: join key {key} is not in {}",
-                    view.view_id,
-                    left_table.table_name
-                )
-            })?;
+            let left_type = match step
+                .key_exprs
+                .left
+                .get(key_index)
+                .filter(|expr| !expr.is_empty())
+            {
+                Some(expr) => expression_type(&left_table.schema, expr)?.0,
+                None => left_table
+                    .schema
+                    .field_with_name(key)
+                    .map_err(|_| {
+                        report!(
+                            "lookup chain view {}: join key {key} is not in {}",
+                            view.view_id,
+                            left_table.table_name
+                        )
+                    })?
+                    .data_type()
+                    .clone(),
+            };
             let right_key = &step.right_keys[key_index];
-            let right_field = table.schema.field_with_name(right_key).map_err(|_| {
-                report!(
-                    "lookup chain view {}: join key {right_key} is not in {}",
-                    view.view_id,
-                    table.table_name
-                )
-            })?;
-            if left_field.data_type() != right_field.data_type() {
+            let right_type = match step
+                .key_exprs
+                .right
+                .get(key_index)
+                .filter(|expr| !expr.is_empty())
+            {
+                Some(expr) => expression_type(&table.schema, expr)?.0,
+                None => table
+                    .schema
+                    .field_with_name(right_key)
+                    .map_err(|_| {
+                        report!(
+                            "lookup chain view {}: join key {right_key} is not in {}",
+                            view.view_id,
+                            table.table_name
+                        )
+                    })?
+                    .data_type()
+                    .clone(),
+            };
+            if left_type != right_type {
                 return Err(report!(
                     "lookup chain view {}: join key {right_key} has different types",
                     view.view_id
@@ -435,11 +499,37 @@ fn lookup_chain_source_columns(
 ) -> Result<Vec<String>> {
     let (table, filter) = &view.sources[index];
     let mut columns = lookup_chain_payload(view, index);
-    for column in lookup_chain_referenced(view, index) {
+    for column in lookup_chain_referenced(view, index, context)? {
         if !columns.contains(&column) {
             columns.push(column);
         }
     }
+    // A computed key is materialized on its own source's frame, so the
+    // columns its expression reads are carried instead of the hidden name.
+    for (step_index, step) in view.steps.iter().enumerate() {
+        for (key_index, expr) in step.key_exprs.left.iter().enumerate() {
+            if expr.is_empty() || step_key_source(step, key_index) != index {
+                continue;
+            }
+            for column in filter_columns(context, &table.schema, expr)? {
+                if !columns.contains(&column) {
+                    columns.push(column);
+                }
+            }
+        }
+        if step_index + 1 == index {
+            for expr in step.key_exprs.right.iter().filter(|expr| !expr.is_empty()) {
+                for column in filter_columns(context, &table.schema, expr)? {
+                    if !columns.contains(&column) {
+                        columns.push(column);
+                    }
+                }
+            }
+        }
+    }
+    let computed = |exprs: &[String], key_index: usize| {
+        exprs.get(key_index).is_some_and(|expr| !expr.is_empty())
+    };
     if index == 0 {
         for key in &table.primary_keys {
             if !columns.contains(key) {
@@ -447,7 +537,10 @@ fn lookup_chain_source_columns(
             }
         }
         for step in &view.steps {
-            for key in &step.keys {
+            for (key_index, key) in step.keys.iter().enumerate() {
+                if computed(&step.key_exprs.left, key_index) {
+                    continue;
+                }
                 if !columns.contains(key) {
                     columns.push(key.clone());
                 }
@@ -455,7 +548,10 @@ fn lookup_chain_source_columns(
         }
     } else {
         let step = &view.steps[index - 1];
-        for key in &step.right_keys {
+        for (key_index, key) in step.right_keys.iter().enumerate() {
+            if computed(&step.key_exprs.right, key_index) {
+                continue;
+            }
             if !columns.contains(key) {
                 columns.push(key.clone());
             }
@@ -491,12 +587,35 @@ fn lookup_chain_step_frame(
     now: &DataFrame,
 ) -> Result<(String, DataFrame)> {
     let step = &view.steps[index];
+    // The step's own computed keys and the computed keys later steps read
+    // from it are materialized before the aliasing projection: their
+    // expressions use the source's own columns.
+    let context = SessionContext::new();
+    let mut now = now.clone();
+    for (key_index, expr) in step.key_exprs.right.iter().enumerate() {
+        if expr.is_empty() {
+            continue;
+        }
+        let name = &step.right_keys[key_index];
+        let expression = context.state().create_logical_expr(expr, now.schema())?;
+        now = now.with_column(name, expression)?;
+    }
+    for later in view.steps.iter().skip(index + 1) {
+        for (key_index, expr) in later.key_exprs.left.iter().enumerate() {
+            if expr.is_empty() || step_key_source(later, key_index) != index + 1 {
+                continue;
+            }
+            let name = &later.keys[key_index];
+            let expression = context.state().create_logical_expr(expr, now.schema())?;
+            now = now.with_column(name, expression)?;
+        }
+    }
     let mut select = Vec::new();
     for key in &step.right_keys {
         select.push(col(key.as_str()).alias(lookup_chain_alias(index + 1, key)));
     }
     let mut columns = lookup_chain_payload(view, index + 1);
-    for column in lookup_chain_referenced(view, index + 1) {
+    for column in lookup_chain_referenced(view, index + 1, &SessionContext::new())? {
         if !columns.contains(&column) {
             columns.push(column);
         }
@@ -662,11 +781,28 @@ impl IvmRuntime {
             }
             let (table, _) = &view.sources[index + 1];
             let (delta, before, _) = &frames[index + 1];
+            let delta_schema = delta.schema().clone();
             let right_key_exprs = step
                 .right_keys
                 .iter()
-                .map(|key| col(key.as_str()))
-                .collect::<Vec<_>>();
+                .enumerate()
+                .map(|(key_index, key)| {
+                    Ok(
+                        match step
+                            .key_exprs
+                            .right
+                            .get(key_index)
+                            .filter(|expr| !expr.is_empty())
+                        {
+                            Some(expr) => context
+                                .state()
+                                .create_logical_expr(expr, &delta_schema)?
+                                .alias(key.as_str()),
+                            None => col(key.as_str()),
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
             let changed_keys = if table.primary_keys.is_empty() {
                 delta.clone().select(right_key_exprs)?
             } else {

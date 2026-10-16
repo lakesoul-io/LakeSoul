@@ -43,19 +43,19 @@ use lakesoul_ivm::{
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
     left_aggregate_mv_schema_for, left_aggregate_mv_schema_with_outputs,
     left_join_view_schema_for, left_join_view_schema_with_keys,
-    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_mv_schema_for,
-    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
-    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
-    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
+    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_groups_mv_schema_for,
+    min_max_mv_schema_for, multi_agg_mv_schema_for, multi_join_mv_schema_for,
+    multi_join_primary_keys, multi_window_mv_schema_for, row_expr_mv_schema_for,
+    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_expr_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
+    variance_groups_mv_schema_for, variance_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
+    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -3039,6 +3039,7 @@ fn sqllogic_lookup_chain() {
             right_keys: group_keys(&["k"]),
             key_sources: Vec::new(),
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
         LookupChainStep {
             source: 2,
@@ -3047,6 +3048,7 @@ fn sqllogic_lookup_chain() {
             right_keys: group_keys(&["k"]),
             key_sources: Vec::new(),
             unique: true,
+            key_exprs: JoinKeyExprs::default(),
         },
     ];
     let columns = vec![
@@ -3092,6 +3094,85 @@ fn sqllogic_lookup_chain() {
         ],
         mv_schema,
         group_keys(&["k"]),
+    );
+}
+
+#[test]
+fn sqllogic_lookup_chain_expr_key() {
+    let schema = source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: group_keys(&["k"]),
+            right_keys: group_keys(&["k"]),
+            key_sources: Vec::new(),
+            unique: true,
+            key_exprs: JoinKeyExprs::default(),
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: group_keys(&["v"]),
+            right_keys: vec![join_key_expression_name(0)],
+            key_sources: vec![1],
+            unique: false,
+            key_exprs: JoinKeyExprs {
+                left: vec![String::new()],
+                right: group_keys(&["v + 1"]),
+            },
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "g".to_string(),
+            name: "g".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "k".to_string(),
+            name: "ck".to_string(),
+        },
+    ];
+    let mv_schema = lookup_chain_mv_schema_for(
+        &[schema.clone(), schema.clone(), schema.clone()],
+        &steps,
+        &columns,
+    )
+    .unwrap();
+    run_script_for_sources(
+        "lookupchainexpr",
+        include_str!("slt/lookup_chain_expr_key.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__DIM2__", schema.clone(), group_keys(&["k"])),
+        ],
+        mv_schema,
+        // The computed key is not the step's primary key, so the step is a
+        // 1:N lookup whose row identity joins the MV's primary key.
+        vec!["k".to_string(), lookup_chain_step_id_column(2)],
     );
 }
 
