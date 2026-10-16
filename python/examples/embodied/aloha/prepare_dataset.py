@@ -11,7 +11,16 @@ import math
 from pathlib import Path
 import random
 
-from common import catalog_from_environment, image_column, parse_csv
+from common import (
+    catalog_from_environment,
+    image_column,
+    parse_csv,
+    metadata_root,
+    read_uri,
+    sha256,
+    read_import_manifest,
+    read_annotation_version,
+)
 
 QC_RULE_VERSION = "aloha-frames-qc-v1"
 
@@ -791,13 +800,20 @@ def generate_training_samples(catalog, args, cameras):
     }
 
 
-def load_configuration(args):
+def load_configuration(args, raw):
     """Read the source metadata used as the QC reference."""
     import pyarrow.parquet as pq
 
-    metadata = json.loads(args.raw_metadata.read_text())
+    metadata = read_import_manifest(raw.path, args.namespace, args.raw_table)
+    files = {}
+    for name in ("info.json", "tasks.parquet"):
+        entry = metadata["metadata_files"][name]
+        payload = read_uri(entry["uri"])
+        if sha256(payload) != entry["sha256"]:
+            raise ValueError(f"Import metadata checksum mismatch: {entry['uri']}")
+        files[name] = payload
     expected = metadata["expected_episodes"]
-    info = json.loads(args.info_json.read_text())
+    info = json.loads(files["info.json"])
     features = info["features"]
     dimensions = {
         "observation_state": features["observation.state"]["shape"][0],
@@ -812,7 +828,9 @@ def load_configuration(args):
         )
         height, width, _ = features[key]["shape"]
         cameras[image_column(camera)] = [width, height]
-    task_rows = pq.read_table(args.tasks, columns=["task_index", "task"]).to_pylist()
+    task_rows = pq.read_table(
+        io.BytesIO(files["tasks.parquet"]), columns=["task_index", "task"]
+    ).to_pylist()
     tasks = {row["task_index"]: row["task"] for row in task_rows}
     return metadata, expected, dimensions, cameras, tasks
 
@@ -821,23 +839,31 @@ def run(args):
     import daft
 
     started_at = datetime.now(timezone.utc).isoformat()
-    metadata, expected, dimensions, cameras, tasks = load_configuration(args)
     if args.runner == "ray":
         daft.set_runner_ray(address=args.ray_address)
     catalog = catalog_from_environment(args.namespace)
     raw = catalog.table(args.raw_table)
+    metadata, expected, dimensions, cameras, tasks = load_configuration(args, raw)
+    # Resolve latest once; a later publication does not change this run's inputs.
+    annotations, _, annotation_version = read_annotation_version(raw.path, metadata)
+    if not annotation_version["published"]:
+        print(
+            "No published annotations: applying QC without manual exclusions.",
+            flush=True,
+        )
+    excluded_behaviors = (
+        set(annotation_version["excluded_behaviors"])
+        if args.exclude_behaviors is None
+        else {
+            label.strip()
+            for label in args.exclude_behaviors.split(",")
+            if label.strip()
+        }
+    )
     # Inspect ALL rows: filtering to the expected IDs would hide unexpected episodes.
     reports = inspect_frame(raw.scan().to_daft(), expected, dimensions, cameras, tasks)
     findings = [finding for report in reports for finding in report["findings"]]
     summaries = [report["summary"] for report in reports]
-    annotations = (
-        json.loads(args.behavior_annotations.read_text())
-        if args.behavior_annotations
-        else []
-    )
-    excluded_behaviors = {
-        label.strip() for label in args.exclude_behaviors.split(",") if label.strip()
-    }
     annotations_by_episode = {report["summary"]["episode_id"]: [] for report in reports}
     episode_ends = {
         report["summary"]["episode_id"]: report["frame_end"] for report in reports
@@ -903,9 +929,7 @@ def run(args):
         interval_policy="quality_and_behavior_v1",
         behavior_annotations=annotations,
         excluded_behaviors=sorted(excluded_behaviors),
-        behavior_annotations_path=str(args.behavior_annotations)
-        if args.behavior_annotations
-        else None,
+        annotation_version=annotation_version,
         selected_intervals=sum(i["selected"] for i in intervals),
         selected_runs=len({i["valid_interval_id"] for i in intervals if i["selected"]}),
         valid_intervals=sum(i["quality_status"] == "valid" for i in intervals),
@@ -920,8 +944,9 @@ def run(args):
         issue_count=len(findings),
         issue_counts=dict(sorted(Counter(f["issue_code"] for f in findings).items())),
         inputs={
-            name: str(getattr(args, name))
-            for name in ("raw_metadata", "info_json", "tasks")
+            "manifest_uri": metadata_root(raw.path) + "/manifest.json",
+            "import_id": metadata["import_id"],
+            "metadata_files": metadata["metadata_files"],
         },
     )
     (args.output / "qc_manifest.json").write_text(
@@ -934,21 +959,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-table", required=True)
     parser.add_argument("--namespace", default="default")
-    parser.add_argument(
-        "--raw-metadata", type=Path, required=True, help="Step 1 import manifest"
-    )
-    parser.add_argument(
-        "--info-json",
-        type=Path,
-        required=True,
-        help="Source meta/info.json; only read on driver",
-    )
-    parser.add_argument(
-        "--tasks",
-        type=Path,
-        required=True,
-        help="Source meta/tasks.parquet; only read on driver",
-    )
     parser.add_argument("--prepared-table", required=True)
     parser.add_argument("--prepared-path", required=True)
     parser.add_argument(
@@ -979,14 +989,9 @@ def main():
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--behavior-annotations",
-        type=Path,
-        help="Manual episode/frame-range labels in JSON",
-    )
-    parser.add_argument(
         "--exclude-behaviors",
-        default="preparation,idle",
-        help="Comma-separated labels to exclude; use an empty string to keep all valid behavior",
+        default=None,
+        help="Override published policy; default: reviewed exclusions from latest.json",
     )
     parser.add_argument("--runner", choices=("native", "ray"), default="native")
     parser.add_argument("--ray-address", default="auto")

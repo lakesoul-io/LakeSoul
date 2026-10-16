@@ -6,15 +6,51 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `import_raw.py` | 导入指定 Episode 和两路相机，核对行数并抽查实际记录。 |
+| `import_raw.py` | 默认导入指定 Episode 和四路相机，可用 `--cameras` 选择子集；核对行数并抽查实际记录。 |
 | `prepare_dataset.py` | 全量 QC、区间筛选、Episode 划分、Prepared 写入、样本索引生成和样本回读。 |
 | `common.py` | 共用的字段名、参数辅助函数和 Catalog 连接配置。 |
+| [read_training_batch.py](read_training_batch.py) | 将 Samples 对应窗口转为 CPU Tensor；按实际观察字段解码各路相机，只读取 Batch，不训练模型。 |
+
+## 按顺序运行
+
+三个 Notebook 与脚本统一维护在本目录。将本目录放到 code-server 的工作区，从这里打开 Notebook，并使用安装了 LakeSoul 的 Python 内核；`common.py` 必须在内核当前工作目录中。Notebook 还需要 `ipywidgets`，可在单元格运行 `%pip install ipywidgets` 后重启内核。
+
+| 顺序 | 文件 | 操作与结果 |
+| --- | --- | --- |
+| 1 | [import_raw.py](import_raw.py) | 按下文命令导入四路相机，生成 Raw 表和 S3 元数据。 |
+| 2（可选） | [aloha_episode_viewer.ipynb](aloha_episode_viewer.ipynb) | 配置 `RAW_TABLE`、`EPISODE_ID`，依次运行单元格，播放轨迹、调整区间和行为、确认各段，第 6 步发布 S3 标注。 |
+| 3 | [prepare_dataset.py](prepare_dataset.py) | 自动读取 Raw 对应元数据和最新标注，执行 QC、筛选、按 Episode 划分，生成 Prepared 和 Samples。 |
+| 4 | [aloha_prepared_viewer.ipynb](aloha_prepared_viewer.ipynb) | 配置 Prepared 表名，选择 Episode 并加载，检查保留帧、有效区间和四路画面。 |
+| 5（可选） | [train_state_policy.py](train_state_policy.py) | 从 Samples 回读 state/action，训练 CPU 基线，保存预测和验证指标。 |
+| 6（可选） | [aloha_prediction_viewer.ipynb](aloha_prediction_viewer.ipynb) | 配置训练输出 `OUTPUT_DIR`，选择并加载验证样本，对比预测 action 和真实 action，旁边显示 Prepared 中的采集画面。 |
+
+Raw 标注器对帧号恰为 0～699 的 `ep000000` 预填三段：`[0,218)` approach、`[218,467)` manipulation、`[467,700)` release_or_retreat。这只是该示例的待确认草稿，不是自动行为识别；不依赖 Raw 表名或相机数量。其他 Episode 需要按实际画面划分。已修改或确认的内存草稿在重跑编辑单元格时保留；更换 Episode 前先发布。
+
+发布先写带版本号的标注和审核文件，再更新固定入口 `latest.json`；不需要将标注文件反复打包进 Ray working_dir。Prepare 不会由 Notebook 自动启动，发布后需重新运行 Prepare，使用新的输出表名和路径。
+
+## 表名如何对应
+
+本教程默认 namespace 均为 `default`，以下名称已与 Notebook 配置及命令统一。Notebook 不会自动创建或推断 Prepared 表名。
+
+```text
+import_raw.py --raw-table aloha_velcro_raw_v1
+  → aloha_episode_viewer.ipynb: RAW_TABLE = "aloha_velcro_raw_v1"
+  → 发布 S3 标注（不生成 Prepared）
+  → prepare_dataset.py --raw-table aloha_velcro_raw_v1
+                       --prepared-table aloha_velcro_prepared_v1
+                       --samples-table aloha_velcro_samples_v1
+      → aloha_prepared_viewer.ipynb: PREPARED_TABLE = "aloha_velcro_prepared_v1"
+      → train_state_policy.py --samples-table aloha_velcro_samples_v1
+          → aloha_prediction_viewer.ipynb: OUTPUT_DIR = 本次训练输出目录
+```
+
+上图用于对应参数，实际运行使用下文完整命令。预测查看器通过训练输出 `samples.json` 中的引用定位 Prepared，不需要再手填一个 Prepared 表名。改名或创建新版本时，同步修改对应的生产端和读取端；同一个 Raw 可以生成多个 Prepared 版本，不能仅靠 Raw 表名唯一推断。
 
 ## 运行环境
 
 安装的 LakeSoul 需要包含机器人数据的 Daft 导入接口，以及 Daft Sink 中对嵌套列表、字符串类型的兼容转换。PostgreSQL 元数据库结构必须与安装的 LakeSoul 版本匹配，包括必要的仓库数据库迁移。
 
-导入需要 Daft 提供 `daft.datasets.lerobot.read` 接口。本地导入使用过 Daft 0.7.25，0.7.15 不包含该接口。1
+导入需要 Daft 提供 `daft.datasets.lerobot.read` 接口。本地导入使用过 Daft 0.7.25，0.7.15 不包含该接口。
 需要安装 NumPy、PyArrow 和 Pillow；导入阶段还需要 PyAV。Ray Worker 需要相同的 LakeSoul 和兼容的依赖。
 
 运行前配置连接信息，将示例地址和凭据替换为实际值：
@@ -46,7 +82,7 @@ python python/examples/embodied/aloha/import_raw.py \
   --source /mnt/robot-data/aloha_static_thread_velcro \
   --namespace default \
   --episodes 0,1,2,3,4,5,6,7,8,9 \
-  --cameras cam_high,cam_left_wrist \
+  --cameras cam_high,cam_low,cam_left_wrist,cam_right_wrist \
   --raw-table aloha_velcro_raw_v1 \
   --raw-path s3://YOUR_BUCKET/embodied/aloha_velcro_raw_v1 \
   --runner native \
@@ -54,7 +90,7 @@ python python/examples/embodied/aloha/import_raw.py \
 ```
 
 导入程序要求源数据为 50 FPS，状态和动作均为 14 维向量，图像尺寸为 640 × 480。图像以 JPEG 字节形式保存在 Raw 表中。
-保留 `/tmp/aloha-import-v1/manifest.json`：其中记录的源 Episode 长度是后续 QC 使用的独立依据。导入阶段核对各 Episode 的行数，并抽查 5 行，不代表已经完成全量质量检查。
+导入成功后自动发布 `<raw_path>_meta/manifest.json`、`info.json`、`tasks.parquet`；本地报告保留副本。Prepare 按 Raw 表路径查找这些文件，其中源 Episode 长度是 QC 的独立依据。导入阶段核对各 Episode 的行数，并抽查 5 行，不代表已经完成全量质量检查。
 
 ## 2. QC、Prepared 和样本索引
 
@@ -91,25 +127,22 @@ Raw + 来源元数据
 
 5. **构造训练窗口：`generate_training_samples()`、`build_sample_index()`。**
    调用 `lakesoul.embodied.daft.read_samples()`，在每个连续保留区间内构造窗口。默认规则下，锚点为 `t` 时，观察取 `t-9` 到 `t`，动作取 `t` 到 `t+9`。
-   状态和两路相机使用相同的观察帧，组合成多模态样本。窗口不足直接跳过；必需字段缺失、帧序列或 Episode/Split 不一致的窗口不生成索引。
+   状态和导入清单中的相机使用相同的观察帧，组合成多模态样本。窗口不足直接跳过；必需字段缺失、帧序列或 Episode/Split 不一致的窗口不生成索引。
    Samples 表保存窗口范围和来源引用，图像内容仍存放在 Prepared 中，不重复写入。
 
 6. **回读样本预览：`read_training_sample()`。**
-   根据样本索引回读 Prepared，将窗口中的状态向量、两路相机 JPEG 序列和动作向量按顺序组织成 Python 字典。
+   根据样本索引回读 Prepared，将窗口中的状态向量、所选相机 JPEG 序列和动作向量按顺序组织成 Python 字典。
    `--preview-samples` 控制检查多少个样本。最终 `qc_manifest.json` 汇总输出引用、质量结果、数据集划分数量、采样规则及预览长度。
    这一步验证实际样本能否读出，尚未生成 Tensor Batch，也不执行模型训练。
 
 ### 执行命令
 
-使用实际的 Raw 表及其对应的导入清单。将 `YOUR_BUCKET` 替换为实际桶名：
+使用新流程导入的 Raw 表，元数据和最新标注自动从对象存储读取。将 `YOUR_BUCKET` 替换为实际桶名：
 
 ```bash
 python python/examples/embodied/aloha/prepare_dataset.py \
   --namespace default \
   --raw-table aloha_velcro_raw_v1 \
-  --raw-metadata /tmp/aloha-import-v1/manifest.json \
-  --info-json /mnt/robot-data/aloha_static_thread_velcro/meta/info.json \
-  --tasks /mnt/robot-data/aloha_static_thread_velcro/meta/tasks.parquet \
   --prepared-table aloha_velcro_prepared_v1 \
   --prepared-path s3://YOUR_BUCKET/embodied/aloha_velcro_prepared_v1 \
   --samples-table aloha_velcro_samples_v1 \
@@ -152,7 +185,7 @@ python python/examples/embodied/aloha/prepare_dataset.py \
 ]
 ```
 
-通过 `--behavior-annotations annotations.json --exclude-behaviors preparation,idle` 使用。
+在 `aloha_episode_viewer.ipynb` 确认并发布标注后，Prepare 自动读取 `<raw_path>_meta/annotations/latest.json`。默认使用审核时的排除标签；`--exclude-behaviors` 可显式覆盖。
 这些标签由用户提供，脚本不会自动识别。质量无效的区间始终排除。修改标注后，如果需要保持原来的 Episode 数据集归属，可通过 `--split-source /路径/splits.json` 指定原划分文件。
 
 ## 3. 在 Ray 上执行
@@ -163,13 +196,9 @@ python python/examples/embodied/aloha/prepare_dataset.py \
 ```text
 prepare_dataset.py
 common.py
-manifest.json
-info.json
-tasks.parquet
 ```
 
-元数据参数使用相对路径：
-`--raw-metadata manifest.json --info-json info.json --tasks tasks.parquet`。
+任务不再打包元数据或标注文件。Driver 根据 Raw 表路径，从 S3 读取导入元数据和最新标注；因此 Driver 也必须具备 S3 读取权限。
 Worker 从 LakeSoul 读取图像字节，因此 QC 不需要原始 MP4。若执行分布式导入，则 Worker 需要能够访问源数据集。
 
 Daft 的扫描、UDF 检查、聚合、关联、窗口构造和写入使用 Ray runner。
@@ -217,3 +246,58 @@ if rows:
 
 本示例不计算归一化统计量、不组装 Tensor Batch、不训练模型、不固定数据库快照，也不核对源视频的时间对应关系。
 处理和读取索引期间，应保持输入与输出数据不变。
+
+## S3 元数据与标注版本（新流程）
+
+Raw 路径末尾追加 `_meta`，包含 `manifest.json`、`info.json`、`tasks.parquet`。导入验证通过后才发布完成清单，使用独立 `import_id` 和文件 SHA-256 校验来源。
+
+标注 Notebook 与任务必须使用本目录同版 `common.py`，放到 Notebook 当前工作目录即可。Notebook 第 6 步将本轮标注与审核记录写入 `annotations/aloha_annotations_<版本>.json` 和 `aloha_review_<版本>.json`，全部成功后才更新 `annotations/latest.json`。修改一个 Episode 时保留其他 Episode 已发布的标注。当前是单人顺序发布流程，并发发布是最后一次更新生效。
+
+Prepare 自动读取元数据和入口；未发布标注时明确提示并仅执行 QC。入口已存在但损坏、文件缺失、摘要不匹配或 import_id 不符时直接失败，不静默忽略。默认沿用审核的排除标签，`--exclude-behaviors` 可覆盖。
+
+`qc_manifest.json` 保存本次实际读取的标注版本、URI、摘要、完整标注内容及最终排除策略。入口只解析一次，运行中发布新标注不会改变本轮输入。该版本固定的是标注内容，不是 Raw 表快照。
+
+已移除 `--raw-metadata`、`--info-json`、`--tasks`、`--behavior-annotations`；需要重新导入生成新元数据，旧表不兼容。报告仍写入 `--output`；QC 报告为 issues、quality、intervals、splits 和 qc_manifest 共五个 JSON，样本预览在 qc_manifest 内。
+
+## 训练与预测查看（可选）
+
+在已安装 PyTorch 的环境中，从 LakeSoul 仓库根目录运行；表名必须是本次 Prepare 输出的 Samples 表：
+
+```bash
+python python/examples/embodied/aloha/train_state_policy.py \
+  --namespace default \
+  --samples-table aloha_velcro_samples_v1 \
+  --epochs 200 \
+  --train-samples 10000 --val-samples 10000
+```
+
+样本数参数是读取上限，不会生成额外样本；数据不足时使用实际可用数量。训练依赖按 Episode 划分后的 train/val 样本；请同时检查独立 Episode 数，不能只看窗口数。
+
+输出包括 `model.pt`、`predictions.npz`、`samples.json` 和 `metrics.json`。预测 Notebook 的 `OUTPUT_DIR` 指向这个目录，三个数据文件必须来自同一次训练。它只读取已保存的预测，不重新训练，无需安装 PyTorch。训练脚本仅使用 state，不使用相机图像；查看器展示的是采集画面，不是模型控制机器人的执行结果。曲线的 MAE 是原始数值尺度下的平均绝对误差，不能单凭它判断实机任务成功率。
+
+## 小内存环境：选择相机读取 Batch
+
+在本示例目录执行，只读取一路相机，并缩小 Batch 和解码尺寸：
+
+```bash
+python read_training_batch.py --samples-table aloha_velcro_samples_v1 \
+  --cameras cam_high --batch-size 1 --image-size 160 120
+```
+
+两路使用 `--cameras cam_high,cam_left_wrist`；四路使用 `--cameras cam_high,cam_low,cam_left_wrist,cam_right_wrist`；只读向量使用 `--cameras none`。不传参数则沿用 Samples 中的全部相机。参数在查询 Prepared 前裁剪字段，不读取未选相机，也不修改已存的表；相机必须存在于样本的观察字段中。
+
+图像 Tensor 的大小为 `batch × 观察步数 × 相机数 × 3 × 高 × 宽 × 4` 字节，此外还有 JPEG、解码和堆叠临时内存。`--image-size` 只改变解码后的缩放尺寸，不减少已选相机的原始 JPEG 读取量。`train_state_policy.py` 始终只读取 state/action；其读取阶段内存主要由 `--train-samples`、`--val-samples` 和窗口长度决定，仅减小训练 `--batch-size` 不会减少已加载的全部窗口。
+
+Prepared 查看器第 1 步也提供 `CAMERAS`：默认四路，可改为 `["cam_high"]`、两路列表或 `[]`（只读向量）。重新运行第 1～4 步并加载，未选图片列不会进入查询。
+
+训练不传 `--output` 时，默认写入 `common.py` 所在目录下的 `state_policy_output/`；预测 Notebook 的 `OUTPUT_DIR` 共用此默认值，无需修改，也不受启动命令所在目录影响。两端需使用同一份 `common.py` 且能够访问输出文件。显式传 `--output` 时再相应修改 Notebook。重复训练到同一目录会覆盖同名输出；保留不同实验时请指定不同目录。
+
+## 示例回归测试
+
+从 LakeSoul 仓库根目录，在安装了 pytest、NumPy、Pillow、PyArrow 的环境中运行：
+
+```bash
+python -m pytest -c python/pyproject.toml python/examples/embodied/aloha -q
+```
+
+本目录 `conftest.py` 支持仓库的 `--import-mode=importlib`，无需手动设置 `PYTHONPATH`。这些测试覆盖示例脚本的相机选择、元数据和标注发布、Batch 组装与训练输出约定，不替代 `python/tests/embodied/` 的库测试。不需要连接 PG/S3；训练数值测试需要 PyTorch，未安装时跳过。只运行 `pytest python/tests/` 不会包含本目录，需要显式添加上述路径。

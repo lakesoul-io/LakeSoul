@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from common import (
     STATE_COLUMN,
@@ -16,6 +17,11 @@ from common import (
     parse_episodes,
     image_column,
     catalog_from_environment,
+    metadata_root,
+    read_uri,
+    write_uri,
+    json_bytes,
+    sha256,
 )
 
 
@@ -128,8 +134,16 @@ def run(args: argparse.Namespace) -> None:
         pass
     else:
         raise ValueError(f"table {args.raw_table!r} already exists")
+    if (
+        read_uri(metadata_root(args.raw_path) + "/manifest.json", optional=True)
+        is not None
+    ):
+        raise ValueError(
+            "Raw metadata already exists at this path; choose a new storage path"
+        )
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = {
+        "import_id": uuid4().hex,
         "status": "importing",
         "source": str(args.source.resolve()),
         "raw_table": args.raw_table,
@@ -163,7 +177,18 @@ def run(args: argparse.Namespace) -> None:
         width=args.width,
         height=args.height,
     )
+    # Supporting files must finish uploading before the completion manifest.
+    raw = catalog.table(args.raw_table)
+    manifest["raw_path"] = str(raw.path)
+    root = metadata_root(raw.path)
+    manifest["metadata_files"] = {}
+    for name in ("info.json", "tasks.parquet"):
+        payload = (args.source / "meta" / name).read_bytes()
+        uri = root + "/" + name
+        write_uri(uri, payload)
+        manifest["metadata_files"][name] = {"uri": uri, "sha256": sha256(payload)}
     manifest.update(status="imported", verification=verification)
+    write_uri(root + "/manifest.json", json_bytes(manifest))
     metadata_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(json.dumps(manifest, indent=2))
 
@@ -180,7 +205,12 @@ def main() -> None:
         default=list(range(10)),
         help="Comma-separated episode indices; default: 0 through 9",
     )
-    parser.add_argument("--cameras", type=parse_csv, default=list(DEFAULT_CAMERAS))
+    parser.add_argument(
+        "--cameras",
+        type=parse_csv,
+        default=list(DEFAULT_CAMERAS),
+        help="Comma-separated cameras; default: all four ALOHA cameras",
+    )
     parser.add_argument("--fps", type=int, default=50)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -190,8 +220,10 @@ def main() -> None:
     args = parser.parse_args()
     if (args.fps, args.width, args.height) != (50, 640, 480):
         parser.error("this ALOHA demo expects 50 FPS and 640x480 images")
-    if len(args.cameras) != 2 or len({image_column(c) for c in args.cameras}) != 2:
-        parser.error("choose exactly two distinct cameras")
+    # Full feature names and short names map to the same output column.
+    # Camera existence and image dimensions are checked against source metadata.
+    if len({image_column(c) for c in args.cameras}) != len(args.cameras):
+        parser.error("choose distinct cameras (output column names must be unique)")
     run(args)
 
 

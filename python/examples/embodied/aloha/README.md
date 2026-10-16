@@ -10,9 +10,28 @@ use `LakeSoulCatalog`, `scan().to_daft()` and `write_daft()`.
 
 | File | Purpose |
 | --- | --- |
-| `import_raw.py` | Import selected episodes and two cameras; verify row counts and a few actual rows. |
+| `import_raw.py` | Import selected episodes and four cameras by default; select a subset with `--cameras`. Verify row counts and a few actual rows. |
 | `prepare_dataset.py` | Full QC, interval selection, episode split, Prepared writes, sample indexing and sample readback. |
 | `common.py` | Shared field names, argument helpers and catalog connection. |
+| [read_training_batch.py](read_training_batch.py) | Convert Samples windows to CPU tensors, decoding all camera fields present. Reads batches; does not train a model. |
+
+## Run order and notebooks
+
+Keep the notebooks and `common.py` together in this directory. Open it in code-server and use a Python kernel with LakeSoul installed; the kernel working directory must contain `common.py`. Install `ipywidgets` in the kernel if needed.
+
+1. Run [import_raw.py](import_raw.py) as below to import four cameras and publish Raw metadata to S3.
+2. Optionally open [aloha_episode_viewer.ipynb](aloha_episode_viewer.ipynb): set the Raw table and episode, inspect and confirm behavior intervals, then run step 6 to publish annotations. For `ep000000` with frames 0–699, the editor prefills three unconfirmed example intervals: `[0,218)` approach, `[218,467)` manipulation, `[467,700)` release_or_retreat. These drafts do not depend on table name or camera count and are not automatic behavior detection. Publish before switching episodes.
+3. Run [prepare_dataset.py](prepare_dataset.py). It discovers metadata and the latest published annotations from the Raw path, then writes Prepared and Samples. Run it again with new output tables/paths after changing annotations.
+4. Open [aloha_prepared_viewer.ipynb](aloha_prepared_viewer.ipynb), set the Prepared table, select an episode and load its retained frames and camera views.
+5. Optionally run [train_state_policy.py](train_state_policy.py) on the Samples table, then open [aloha_prediction_viewer.ipynb](aloha_prediction_viewer.ipynb) and set `OUTPUT_DIR` to that run's output directory.
+
+Annotations are versioned in S3, with `latest.json` updated last. There is no need to repackage annotation files into Ray jobs. The notebooks do not launch Prepare automatically.
+
+## Matching table names
+
+All examples use namespace `default`. Import writes `aloha_velcro_raw_v1`, matching the episode notebook's `RAW_TABLE` and Prepare's `--raw-table`. The episode notebook publishes annotations only; it does not create Prepared.
+
+Prepare writes `--prepared-table aloha_velcro_prepared_v1`, matching the Prepared notebook's `PREPARED_TABLE`, and `--samples-table aloha_velcro_samples_v1`, matching the training command. The prediction notebook resolves Prepared references from the training output `samples.json`; set its `OUTPUT_DIR` to the same run. If names change, update the corresponding writer and reader. A Raw table may have multiple Prepared versions, so its name alone cannot uniquely identify one.
 
 ## Environment
 
@@ -59,7 +78,7 @@ python python/examples/embodied/aloha/import_raw.py \
   --source /mnt/robot-data/aloha_static_thread_velcro \
   --namespace default \
   --episodes 0,1,2,3,4,5,6,7,8,9 \
-  --cameras cam_high,cam_left_wrist \
+  --cameras cam_high,cam_low,cam_left_wrist,cam_right_wrist \
   --raw-table aloha_velcro_raw_v1 \
   --raw-path s3://YOUR_BUCKET/embodied/aloha_velcro_raw_v1 \
   --runner native \
@@ -68,7 +87,7 @@ python python/examples/embodied/aloha/import_raw.py \
 
 The importer expects 50 FPS, 14-dimensional state/action vectors and
 640 × 480 images. It stores JPEG bytes in the Raw table.
-Keep `/tmp/aloha-import-v1/manifest.json`: its source episode lengths are the
+The completed manifest is published under `<raw_path>_meta/` with source metadata; `/tmp/aloha-import-v1/manifest.json` is a local copy. Its source episode lengths are the
 independent reference used by QC. Import verifies episode row counts and
 five sampled rows, not full-table quality.
 
@@ -131,7 +150,7 @@ Raw + source metadata
 
 6. **Read sample previews — `read_training_sample()`.**
    Read the windows referenced by sample indices back from Prepared and
-   organize ordered state vectors, two camera JPEG sequences and action vectors
+   organize ordered state vectors, selected camera JPEG sequences and action vectors
    into a Python dictionary. `--preview-samples` controls how many samples are
    checked. `qc_manifest.json` records output references, QC counts, split
    counts, sampling rules and preview lengths. This is a sample readback check,
@@ -145,9 +164,6 @@ Use the actual Raw table and its import manifest. Replace `YOUR_BUCKET`:
 python python/examples/embodied/aloha/prepare_dataset.py \
   --namespace default \
   --raw-table aloha_velcro_raw_v1 \
-  --raw-metadata /tmp/aloha-import-v1/manifest.json \
-  --info-json /mnt/robot-data/aloha_static_thread_velcro/meta/info.json \
-  --tasks /mnt/robot-data/aloha_static_thread_velcro/meta/tasks.parquet \
   --prepared-table aloha_velcro_prepared_v1 \
   --prepared-path s3://YOUR_BUCKET/embodied/aloha_velcro_prepared_v1 \
   --samples-table aloha_velcro_samples_v1 \
@@ -193,7 +209,7 @@ Optional manual annotation JSON:
 ]
 ```
 
-Pass `--behavior-annotations annotations.json --exclude-behaviors preparation,idle`.
+Publish reviewed annotations from the episode notebook. Preparation resolves `<raw_path>_meta/annotations/latest.json` once and uses its exclusion policy; `--exclude-behaviors` overrides that policy.
 These labels are supplied by the user, not inferred by the script.
 Quality-invalid intervals are always excluded. To preserve an earlier
 episode split after changing annotations, pass `--split-source /path/to/splits.json`.
@@ -206,13 +222,9 @@ Bundle the following at the root of the job working directory:
 ```text
 prepare_dataset.py
 common.py
-manifest.json
-info.json
-tasks.parquet
 ```
 
-Use relative metadata arguments:
-`--raw-metadata manifest.json --info-json info.json --tasks tasks.parquet`.
+Metadata and annotations are read from the Raw table’s `_meta/` directory. The driver needs S3 access; do not bundle these files or pass the removed file-path arguments.
 The workers read image bytes from LakeSoul, so QC does not need source MP4s.
 For distributed import, the source dataset must be accessible to the workers.
 
@@ -276,3 +288,52 @@ This example does not calculate normalization statistics, build Tensor
 batches, train a model, pin a database snapshot or verify source-video
 timestamp correspondence. Keep the input/output data unchanged while
 processing and reading indices.
+
+## Shared metadata and reviewed annotation versions
+
+Import publishes `manifest.json`, `info.json` and `tasks.parquet` under `<raw_path>_meta/`. The completion manifest is uploaded last and includes an import ID and checksums. Use a new table and storage path.
+
+Place this version of `common.py` in the notebook working directory. The episode notebook publishes immutable annotation/review files under `annotations/`, then updates `latest.json`. Publishing replaces only the current episode; other reviewed episodes are retained. This is a single-reviewer workflow; concurrent publishers are last-writer-wins.
+
+Preparation resolves latest once, verifies checksums/import identity, and records the exact version and annotations in `qc_manifest.json`. No published pointer means QC only with an explicit message; a broken existing version is an error. Reviewed exclusion labels are the default; `--exclude-behaviors` overrides them. Annotation versioning does not pin Raw data.
+
+The old `--raw-metadata`, `--info-json`, `--tasks` and `--behavior-annotations` arguments are removed. Reimport Raw using the new script. Only Python code needs bundling for preparation. Source videos are still required for import, not for preparation.
+
+## Optional CPU training and prediction viewer
+
+From the repository root, with PyTorch installed and the actual Samples table name:
+
+```bash
+python python/examples/embodied/aloha/train_state_policy.py \
+  --namespace default --samples-table aloha_velcro_samples_v1 \
+  --epochs 200 --train-samples 10000 --val-samples 10000
+```
+
+Sample counts are upper limits; the script uses available samples when fewer exist. Check independent episode counts as well as window counts. Outputs are `model.pt`, `predictions.npz`, `samples.json` and `metrics.json`. The prediction notebook reads the three data files from the same training run and requires no PyTorch or retraining. This policy uses state only, not images. Camera views show recorded data, not model execution. MAE uses the original numeric scale and does not measure closed-loop task success.
+
+## Reading batches with limited memory
+
+From this directory:
+
+```bash
+python read_training_batch.py --samples-table aloha_velcro_samples_v1 \
+  --cameras cam_high --batch-size 1 --image-size 160 120
+```
+
+Use `--cameras cam_high,cam_left_wrist` for two cameras, a comma-separated list of all four for four cameras, or `--cameras none` for vectors only. Omitting the flag retains all sample camera fields. Selection projects columns before reading Prepared; it does not modify stored tables. Requested cameras must exist in the sample observation fields.
+
+Image tensors use `batch × observation steps × cameras × 3 × height × width × 4` bytes, plus compressed images and temporary decoding/stacking memory. Resizing does not reduce selected JPEG bytes read from storage. `train_state_policy.py` already excludes images; reduce its train/val sample limits to reduce total loaded-window memory, rather than only reducing training batch size.
+
+The Prepared viewer also exposes `CAMERAS` in step 1: four by default, a subset such as `["cam_high"]`, or `[]` for vectors only. Rerun steps 1–4 and load the episode; unselected image columns are excluded from the query.
+
+Without `--output`, training writes to `state_policy_output/` beside `common.py`; the prediction notebook shares this default regardless of launch working directory. Both must use the same `common.py` and access the output files. Set Notebook `OUTPUT_DIR` explicitly when overriding the training output. Repeated runs overwrite same-named outputs; use separate directories to keep experiments.
+
+## Example regression tests
+
+From the repository root, with pytest, NumPy, Pillow and PyArrow installed:
+
+```bash
+python -m pytest -c python/pyproject.toml python/examples/embodied/aloha -q
+```
+
+The local `conftest.py` supports the repository's importlib mode without manual `PYTHONPATH`. These example tests complement the library tests in `python/tests/embodied/`; they require no PG/S3 connection. The numerical training test skips when PyTorch is unavailable. Running only `pytest python/tests/` does not include these examples; add their path explicitly.
