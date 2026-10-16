@@ -2757,6 +2757,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_a_multi_join_with_a_computed_key() {
+        // A join key may be an expression over exactly one of the flattened
+        // sources: it is materialized under a hidden name.
+        let analyzed = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             join src b on a.k = b.k \
+             join src c on b.v + 1 = c.k",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiJoin { keys, .. } = analyzed.spec else {
+            panic!("expected a multi join spec");
+        };
+        assert_eq!(keys.len(), 2);
+        assert!(keys[0].left_expr.is_none() && keys[0].right_expr.is_none());
+        assert_eq!(keys[1].left_source, 1);
+        assert_eq!(keys[1].left_column, join_key_expression_name(0));
+        assert!(
+            keys[1]
+                .left_expr
+                .as_deref()
+                .is_some_and(|expr| expr.contains("v + 1")),
+            "{:?}",
+            keys[1].left_expr
+        );
+        assert_eq!(keys[1].right_source, 2);
+        assert_eq!(keys[1].right_column, "k");
+        assert!(keys[1].right_expr.is_none());
+
+        // An expression spanning two sources stays rejected.
+        let error = analyze_multi(
+            "select a.k, a.v, b.v as bv, c.v as cv from src a \
+             join src b on a.k = b.k \
+             join src c on a.v + b.v = c.k",
+            vec![source_table("src")],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must read one of the joined sources"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn analyzes_lookup_chain() {
         // A left-deep chain of keyed 1:1 lookups over a base table.
         let analyzed = analyze_multi(
@@ -2919,14 +2967,18 @@ mod tests {
                 MultiJoinKey {
                     left_source: 0,
                     left_column: "k".to_string(),
+                    left_expr: None,
                     right_source: 1,
                     right_column: "k".to_string(),
+                    right_expr: None,
                 },
                 MultiJoinKey {
                     left_source: 1,
                     left_column: "k".to_string(),
+                    left_expr: None,
                     right_source: 2,
                     right_column: "k".to_string(),
+                    right_expr: None,
                 },
             ]
         );

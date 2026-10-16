@@ -298,7 +298,9 @@ Supported within the shapes above:
   output and a computed column over a plain `SELECT DISTINCT` or a
   `GROUPING SETS` statement are rejected;
 * **multi-way inner joins** (three to sixteen sources): the join tree flattens
-  into one chained inner join; a source without a key pair is cross joined
+  into one chained inner join (a join key may be a scalar expression over
+  exactly one of the flattened sources, materialized under a hidden column
+  before the join); a source without a key pair is cross joined
   (the chain's `FROM a, b, c` and mixed keyless steps) and the MV is keyed by
   every source's row identity (`__pk0_*`, `__pk1_*`, ...); a refresh rewrites
   the tuples of the rows that changed on any source; side filters and
@@ -602,10 +604,10 @@ decision too).  Create the target with `with_allow_fallback(false)`
 rejected outright; the notes below describe the incremental analyzer's
 boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 
-* computed equality keys in a multi-way or chain join (the two-source inner
-  join, the lookup join and the pair-keyed outer joins maintain them); a
-  non-equality condition may compare unmaterialized columns, they become
-  hidden payload columns;
+* computed equality keys in a **lookup chain** (the flattened multi-way
+  inner join, the two-source inner join, the lookup join and the pair-keyed
+  outer joins maintain them); a non-equality condition may compare
+  unmaterialized columns, they become hidden payload columns;
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;

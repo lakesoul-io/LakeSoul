@@ -1968,6 +1968,73 @@ fn sqllogic_left_join_expr_key() {
 }
 
 #[test]
+fn sqllogic_multi_join_expr_key() {
+    let fact = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", DataType::Int64, false),
+        arrow::datatypes::Field::new("lk", DataType::Int64, true),
+        arrow::datatypes::Field::new("lv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let middle = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("mid", DataType::Int64, false),
+        arrow::datatypes::Field::new("mk", DataType::Int64, true),
+        arrow::datatypes::Field::new("mv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dimension = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("rid", DataType::Int64, false),
+        arrow::datatypes::Field::new("rk", DataType::Int64, true),
+        arrow::datatypes::Field::new("rv", DataType::Int64, true),
+        arrow::datatypes::Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    run_script_for_sources(
+        "multijoinexpr",
+        include_str!("slt/multi_join_expr_key.slt"),
+        vec![
+            SltSource::keyed("__SRC1__", fact.clone(), group_keys(&["id"])),
+            SltSource::keyed("__SRC2__", middle.clone(), group_keys(&["mid"])),
+            SltSource::keyed("__SRC3__", dimension.clone(), group_keys(&["rid"])),
+        ],
+        multi_join_mv_schema_for(
+            &[fact, middle, dimension],
+            &[
+                group_keys(&["id"]),
+                group_keys(&["mid"]),
+                group_keys(&["rid"]),
+            ],
+            &[
+                MultiJoinColumn {
+                    source: 0,
+                    column: "lk".to_string(),
+                    name: "lk".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 0,
+                    column: "lv".to_string(),
+                    name: "lv".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 1,
+                    column: "mv".to_string(),
+                    name: "mv".to_string(),
+                },
+                MultiJoinColumn {
+                    source: 2,
+                    column: "rv".to_string(),
+                    name: "rv".to_string(),
+                },
+            ],
+        )
+        .unwrap(),
+        multi_join_primary_keys(&[
+            group_keys(&["id"]),
+            group_keys(&["mid"]),
+            group_keys(&["rid"]),
+        ]),
+    );
+}
+
+#[test]
 fn sqllogic_full_join_expr_key() {
     let fact = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("id", DataType::Int64, false),

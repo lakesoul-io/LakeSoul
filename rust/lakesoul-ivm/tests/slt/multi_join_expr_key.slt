@@ -1,0 +1,68 @@
+# A three-way keyed inner join whose last key is computed on the middle
+# source: `b.mv + 1` is materialized under a hidden column before the join.
+
+statement ok
+/*ivm-append __SRC1__: id=1,lk=10,lv=100,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: mid=5,mk=10,mv=50,op=insert*/
+
+statement ok
+/*ivm-append __SRC3__: rid=7,rk=51,rv=1,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mv + 1 = c.rk
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__
+----
+10 100 50 1 1 5 7
+
+# A new dimension row that the computed key matches joins the tuple.
+statement ok
+/*ivm-append __SRC3__: rid=8,rk=51,rv=2,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mv + 1 = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__
+----
+10 100 50 1 1 5 7
+10 100 50 2 1 5 8
+
+# Moving the middle row's computed key drops the tuples it no longer matches.
+statement ok
+/*ivm-append __SRC2__: mid=5,mk=10,mv=99,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mv + 1 = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__
+----
+
+# Moving it back re-joins them.
+statement ok
+/*ivm-append __SRC2__: mid=5,mk=10,mv=50,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.lk, a.lv, b.mv, c.rv FROM __SRC1__ a JOIN __SRC2__ b ON a.lk = b.mk JOIN __SRC3__ c ON b.mv + 1 = c.rk
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIIIII rowsort
+SELECT lk, lv, mv, rv, "__pk0_id", "__pk1_mid", "__pk2_rid" FROM __MV__
+----
+10 100 50 1 1 5 7
+10 100 50 2 1 5 8
