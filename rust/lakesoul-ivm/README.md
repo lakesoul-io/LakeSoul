@@ -623,8 +623,9 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   operator, and `= ANY` / `<> ALL` keep the exact `IN` / `NOT IN` forms); a
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * a top-k outside the maintained subset: `LIMIT` without `ORDER BY` (the
-  kept rows are arbitrary) and a top-k over a window result (an inner join or
-  sum/count/avg aggregate source is materialized automatically);
+  kept rows are arbitrary) and a top-k over a **window** result (an inner
+  join, or an aggregate source — sum/count/avg, MIN/MAX and COUNT(DISTINCT)
+  included — is materialized as a step automatically);
 * a decimal `SUM`/`AVG` whose precision leaves no headroom for the
   accumulator: DataFusion saturates the result type at 38 digits
   (`SUM(DECIMAL(p, s))` is `DECIMAL(min(38, p + 10), s)`) and wraps the

@@ -3849,6 +3849,17 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `tests/slt/top_k_computed.slt` + `sqllogic_top_k_computed`（`SELECT k, v * 2 AS w ... ORDER BY w DESC LIMIT 2`，
   覆盖 bootstrap 与顶行更替）；README 支持表与限制清单同步。
 
+### 10.154 性能项（4）：top-k 读各类聚合步（window 仍缺）
+
+- **已验证可用**：top-k 读 **MIN/MAX** 步（自带 value-count 状态表）与 **COUNT(DISTINCT)** 步——两者都由派生步机制
+  自动物化（`derived_step_supported` 早已接受 Aggregate ✓），新增用例：
+  `derived_views.rs::a_top_k_over_a_min_step_is_materialized`、`::a_top_k_over_a_distinct_step_is_materialized`
+  （bootstrap + 边界更替，逐轮与同一 SQL 的全量重算对比；MIN 用例还断言派生步 id 不变）。
+- **仍缺（记录）**：top-k 读 **window** 步。派生步本身可以建立，但消费方（top-k）的期望 schema 会去
+  **源**里找子计划输出名（如 `rn`），而 window 步的 MV 暴露的是 `[分区键, 行键, 窗口列…]` 的布局——需要在
+  `expected_mv_schema`/派生重命名一侧对齐（错误现场：`column rn is not part of the schema`）。仍走 Tier-2 兜底。
+- README 的限制清单据此改写为「聚合源（含 MIN/MAX 与 COUNT(DISTINCT)）自动物化；window 结果仍不物化」。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

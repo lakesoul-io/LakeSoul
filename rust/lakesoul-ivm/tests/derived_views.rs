@@ -3350,3 +3350,203 @@ async fn read_multi_window_mv(
     }
     rows
 }
+
+/// The `(first, second)` rows of a query ordered by the first column.
+async fn read_pair_rows(
+    runtime: &IvmRuntime,
+    table: &IvmTable,
+    select: &str,
+) -> Vec<(String, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table(
+            table.table_name.as_str(),
+            Arc::new(runtime.table_provider(table)),
+        )
+        .unwrap();
+    let batches = context.sql(select).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            rows.push((
+                arrow::util::display::array_value_to_string(batch.column(0), row)
+                    .unwrap(),
+                batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+/// A top-k over a **MIN** step with its own value-count state table.
+#[test_log::test(tokio::test)]
+async fn a_top_k_over_a_min_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der10_f_{suffix}")).await;
+    let step_schema = lakesoul_ivm::min_max_mv_schema_for(
+        &source_schema(),
+        &["g".to_string()],
+        "v",
+        lakesoul_ivm::MinMaxKind::Min,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der10_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::top_k_mv_schema_for(
+                    &step_schema,
+                    &["g".to_string()],
+                    &["g".to_string(), "value".to_string()],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT g, value FROM (SELECT g, MIN(v) AS value FROM {}          GROUP BY g) t ORDER BY value DESC LIMIT 2",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "b", 30, "insert"),
+            (3, "c", 20, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let step = derived_step_view(runtime, &mv).await;
+    assert!(step.is_some());
+    let expected = format!(
+        "select g, value from (select g, min(v) as value from {} where op <> 'delete'          group by g) t order by value desc, g limit 2",
+        fact.table_name
+    );
+    assert_eq!(
+        read_pair_rows(
+            runtime,
+            &mv,
+            &format!("select g, value from {} order by g", mv.table_name)
+        )
+        .await,
+        read_pair_rows(runtime, &fact, &expected).await
+    );
+
+    // A new group takes the top spot; the boundary group leaves it.
+    fact.append_batch(runtime.client(), source_batch(&[(4, "d", 100, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        derived_step_view(runtime, &mv).await.as_deref(),
+        step.as_deref()
+    );
+    assert_eq!(
+        read_pair_rows(
+            runtime,
+            &mv,
+            &format!("select g, value from {} order by g", mv.table_name)
+        )
+        .await,
+        read_pair_rows(runtime, &fact, &expected).await
+    );
+}
+
+/// A top-k over a **COUNT(DISTINCT)** step.
+#[test_log::test(tokio::test)]
+async fn a_top_k_over_a_distinct_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der11_f_{suffix}")).await;
+    let step_schema = lakesoul_ivm::distinct_agg_mv_schema_for(
+        &source_schema(),
+        &["g".to_string()],
+        "v",
+        lakesoul_ivm::DistinctAggKind::Count,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der11_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lakesoul_ivm::top_k_mv_schema_for(
+                    &step_schema,
+                    &["g".to_string()],
+                    &["g".to_string(), "value".to_string()],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT g, value FROM (SELECT g, COUNT(DISTINCT v) AS value          FROM {} GROUP BY g) t ORDER BY value DESC LIMIT 2",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 20, "insert"),
+            (3, "b", 10, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert!(derived_step_view(runtime, &mv).await.is_some());
+    let expected = format!(
+        "select g, value from (select g, count(distinct v) as value from {}          where op <> 'delete' group by g) t order by value desc, g limit 2",
+        fact.table_name
+    );
+    assert_eq!(
+        read_pair_rows(
+            runtime,
+            &mv,
+            &format!("select g, value from {} order by g", mv.table_name)
+        )
+        .await,
+        read_pair_rows(runtime, &fact, &expected).await
+    );
+
+    // A new distinct value for `b` ties it with `a`; the key breaks the tie.
+    fact.append_batch(runtime.client(), source_batch(&[(4, "b", 20, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_pair_rows(
+            runtime,
+            &mv,
+            &format!("select g, value from {} order by g", mv.table_name)
+        )
+        .await,
+        read_pair_rows(runtime, &fact, &expected).await
+    );
+}
