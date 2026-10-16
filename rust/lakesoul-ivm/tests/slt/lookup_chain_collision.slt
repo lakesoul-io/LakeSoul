@@ -1,0 +1,52 @@
+# A chain whose projection selects two same-named source columns: the layout
+# disambiguates the second one (`v_1`), so no alias is needed in a subquery.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert*/
+
+statement ok
+/*ivm-append __DIM__: k=1,g=a,v=100,op=insert*/
+
+statement ok
+/*ivm-append __DIM2__: k=1,g=a,v=200,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.v, b.v, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = b.k
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIII rowsort
+SELECT k, v, v_1, cv FROM __MV__
+----
+1 10 100 200
+
+# The step payloads still follow their source.
+statement ok
+/*ivm-append __DIM2__: k=1,g=a,v=300,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.v, b.v, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = b.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIII rowsort
+SELECT k, v, v_1, cv FROM __MV__
+----
+1 10 100 300
+
+# A base change rewrites the tuple too.
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=15,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT a.k, a.v, b.v, c.v AS cv FROM __SRC__ a LEFT JOIN __DIM__ b ON b.k = a.k LEFT JOIN __DIM2__ c ON c.k = b.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIII rowsort
+SELECT k, v, v_1, cv FROM __MV__
+----
+1 15 100 300

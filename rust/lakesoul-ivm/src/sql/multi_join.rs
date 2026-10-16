@@ -407,11 +407,6 @@ pub(super) fn analyze_multi_join(
             "a multi-table join needs at least three sources",
         ));
     }
-    if flat.inputs.len() > 16 {
-        return Err(unsupported(
-            "a multi-table join supports at most sixteen sources",
-        ));
-    }
     if projection.is_some_and(|projection| !is_plain_projection(projection)) {
         return Err(unsupported("computed columns in a multi-table join output"));
     }
@@ -422,6 +417,13 @@ pub(super) fn analyze_multi_join(
                 "a multi-table join needs all sources keyed or all append-only",
             ));
         }
+    }
+    let limit = crate::runtime::multi_join_source_limit(keyed);
+    if flat.inputs.len() > limit {
+        return Err(unsupported(format!(
+            "a multi-table join supports at most {limit} {} sources",
+            if keyed { "keyed" } else { "append-only" }
+        )));
     }
     let mut columns = Vec::new();
     let mut names = Vec::new();
@@ -765,7 +767,19 @@ pub(super) fn analyze_lookup_chain(
         aliases.push(step_input.alias.clone());
         chain.push(step);
     }
-    // The materialized columns.
+    // The materialized columns.  Their names must stay unique: a generated
+    // identity column or a same-named column of another source takes part in
+    // the MV schema, so a collision is disambiguated deterministically (the
+    // first occurrence keeps its name).
+    let mut names = steps
+        .iter()
+        .filter(|step| !step.unique)
+        .map(|step| crate::runtime::lookup_chain_step_id_column(step.source))
+        .chain([
+            crate::runtime::IVM_ROW_KINDS_COLUMN.to_string(),
+            crate::runtime::IVM_EPOCH_COLUMN.to_string(),
+        ])
+        .collect::<Vec<_>>();
     let mut output_columns = Vec::new();
     for expr in &projection.expr {
         let mut inner = expr;
@@ -807,10 +821,21 @@ pub(super) fn analyze_lookup_chain(
                 column.name
             ))
         })?;
+        let mut name = alias.unwrap_or_else(|| column.name.clone());
+        if names.contains(&name) {
+            let base = format!("{name}_{source}");
+            name = base.clone();
+            let mut index = 2;
+            while names.contains(&name) {
+                name = format!("{base}_{index}");
+                index += 1;
+            }
+        }
+        names.push(name.clone());
         output_columns.push(LookupChainColumn {
             source,
             column: column.name.clone(),
-            name: alias.unwrap_or_else(|| column.name.clone()),
+            name,
         });
     }
     Ok(ViewSpec::LookupChain {

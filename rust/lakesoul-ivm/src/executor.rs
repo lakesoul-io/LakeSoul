@@ -425,6 +425,17 @@ fn derived_output_mapping(
         }
         return Ok(mapping);
     }
+    if let ViewSpec::LookupChain { output_columns, .. } = spec
+        && fields.len() == output_columns.len()
+    {
+        // The chain materializes the projection in order, so a column whose
+        // layout name was uniquified still maps from the subplan's field.
+        return Ok(fields
+            .iter()
+            .zip(output_columns)
+            .map(|(field, column)| (field.name().clone(), column.name.clone()))
+            .collect());
+    }
     Ok(fields
         .iter()
         .map(|field| (field.name().clone(), field.name().clone()))
