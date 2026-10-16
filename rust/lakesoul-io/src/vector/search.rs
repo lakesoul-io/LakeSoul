@@ -8,9 +8,12 @@
 //! module searches an already-resolved [`ResolvedIndex`] and derives index
 //! prefixes from data file paths through the shared index framework.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
+use lakesoul_common::misc::SecretMap;
+use lakesoul_vector::rabitq::math::{dot, l2_distance_sqr};
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use lakesoul_vector::{IndexKey, IvfRabitqIndex, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
@@ -20,6 +23,9 @@ use crate::Result as IoResult;
 use crate::config::LakeSoulIOConfig;
 use crate::index::cache::{self, IndexCacheEntry};
 use crate::index::commit::ResolvedIndex;
+use crate::index::key::{KeyCodec, KeyLayout};
+use crate::index::reader::read_shard_batches;
+use crate::vector::reader::extract_vector_batch;
 
 use crate::index::options::{SearchRequest, option_key};
 use crate::index::prefix::derive_index_prefixes;
@@ -155,7 +161,11 @@ pub async fn search_matching_shards(
     metric: Metric,
     resolved_shards: &[ResolvedIndex],
     expected_key_kind: u64,
+    primary_keys: &[String],
+    object_store_options: &SecretMap,
 ) -> IoResult<Option<Vec<VectorHit>>> {
+    // The index header is the authoritative metric (the caller's `metric` only
+    // selects the shard).
     let _ = (range_partitions, metric);
     let prefixes =
         derive_index_prefixes(file_paths, prefix, IndexKind::Vector, vector_column);
@@ -173,7 +183,7 @@ pub async fn search_matching_shards(
             normalized
         ));
     };
-    search_resolved_shard(
+    let hits = search_resolved_shard(
         store,
         resolved,
         query,
@@ -182,7 +192,167 @@ pub async fn search_matching_shards(
         parallelism,
         expected_key_kind,
     )
-    .await
+    .await?;
+    let Some(mut hits) = hits else {
+        return Ok(None);
+    };
+
+    // The index is built after each commit, so a commit whose build is
+    // deferred or failed leaves newer files outside it.  A row in those files
+    // has no index entry, and narrowing to the index's keys alone would
+    // silently drop it: score them exactly and merge them in.
+    let segments: Vec<SegmentEntry> = resolved.segments_as()?;
+    let covered: Vec<&str> = segments
+        .iter()
+        .flat_map(|segment| segment.data_files.iter())
+        .map(String::as_str)
+        .collect();
+    let pending = lakesoul_common::index::pending_files(file_paths, &covered);
+    if !pending.is_empty() {
+        let header = IndexHeader::deserialize(&resolved.header).map_err(|error| {
+            rootcause::report!(
+                "unreadable vector index header at '{}': {error}",
+                resolved.index_prefix
+            )
+        })?;
+        let Some(tail) = uncovered_file_candidates(
+            &pending,
+            primary_keys,
+            vector_column,
+            query,
+            header.dim,
+            header.metric,
+            top_k,
+            object_store_options,
+            expected_key_kind,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        info!(
+            "Vector search at '{}': {} file(s) are not covered by the index; \
+             scored them exactly",
+            resolved.index_prefix,
+            pending.len()
+        );
+        hits.extend(tail);
+    }
+    Ok(Some(hits))
+}
+
+/// The subset of `files` that carries `column` in its own schema.
+///
+/// A commit may write a file without the indexed column (a sparse update);
+/// such a file has no vectors to index or score, and the index build skips it
+/// the same way.  Inference is metadata-only.
+async fn files_with_column(
+    files: &[String],
+    column: &str,
+    object_store_options: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut with_column = Vec::new();
+    for file in files {
+        let config = crate::index::reader::shard_reader_config_builder(
+            std::slice::from_ref(file),
+            &[],
+            object_store_options,
+            None,
+        )
+        .set_inferring_schema(true)
+        .build();
+        let Ok(session) = crate::session::LakeSoulIOSession::try_new(config) else {
+            debug!("skipping '{}': cannot open it to infer its schema", file);
+            continue;
+        };
+        match session.get_table_schema().await {
+            Ok(schema) if schema.file_schema().field_with_name(column).is_ok() => {
+                with_column.push(file.clone());
+            }
+            Ok(_) => {
+                debug!("skipping '{}': it does not carry '{}'", file, column);
+            }
+            Err(error) => {
+                warn!("skipping '{}': schema inference failed: {}", file, error);
+            }
+        }
+    }
+    with_column
+}
+
+/// Exact candidates from the files an index commit does not cover.
+///
+/// The rows are scored with the index's own conventions (squared L2, or the
+/// negated inner product: lower is closer), so the caller can merge them with
+/// the index's hits and re-rank the union.
+#[allow(clippy::too_many_arguments)]
+async fn uncovered_file_candidates(
+    files: &[String],
+    primary_keys: &[String],
+    vector_column: &str,
+    query: &[f32],
+    dim: usize,
+    metric: Metric,
+    top_k: usize,
+    object_store_options: &SecretMap,
+    expected_key_kind: u64,
+) -> IoResult<Option<Vec<VectorHit>>> {
+    let projection = vec![vector_column.to_string()];
+    let options: HashMap<String, String> = object_store_options.clone().into();
+    // A sparse write (a commit that does not carry the vector column) has no
+    // vectors to score and must not be read: the projection would fail on it.
+    let files = files_with_column(files, vector_column, &options).await;
+    if files.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    // Boxed to break the async call graph cycle: `read_shard_batches` drives a
+    // `LakeSoulReader`, which itself runs a vector search when its options
+    // select one (never for the plain read configured here, but the compiler
+    // sees the cycle).
+    let batches = Box::pin(read_shard_batches(
+        &files,
+        primary_keys,
+        &projection,
+        &options,
+        None,
+    ))
+    .await?;
+    let Some(schema) = batches.first().map(|batch| batch.schema()) else {
+        return Ok(Some(Vec::new()));
+    };
+    let codec = KeyCodec::new(KeyLayout::from_schema(schema.as_ref(), primary_keys)?)?;
+    if codec.kind_hash() != expected_key_kind {
+        warn!(
+            "uncovered files encode keys as {:#x} but the table uses {:#x}; \
+             scanning without index narrowing",
+            codec.kind_hash(),
+            expected_key_kind
+        );
+        return Ok(None);
+    }
+
+    let mut hits: Vec<VectorHit> = Vec::new();
+    for batch in &batches {
+        let extracted = extract_vector_batch(batch, &codec, vector_column, dim)?;
+        for (index, key) in extracted.ids.iter().enumerate() {
+            let stored = &extracted.vectors[index * dim..(index + 1) * dim];
+            let score = match metric {
+                Metric::L2 => l2_distance_sqr(query, stored),
+                Metric::InnerProduct => -dot(query, stored),
+            };
+            hits.push(VectorHit {
+                key: key.clone(),
+                score,
+                // The caller keeps the newest entry per key, and these rows
+                // come from files newer than the whole index commit.
+                version: u32::MAX,
+            });
+        }
+    }
+    // The same per-bucket budget the index search uses.
+    hits.sort_by(|left, right| left.score.total_cmp(&right.score));
+    hits.truncate(top_k);
+    Ok(Some(hits))
 }
 
 /// Run the vector search selected by a parsed [`SearchRequest`].
@@ -224,6 +394,8 @@ pub async fn search_request(
         metric,
         config.resolved_index_shards_slice(),
         expected_key_kind,
+        config.primary_keys_slice(),
+        config.object_store_options(),
     )
     .await
 }

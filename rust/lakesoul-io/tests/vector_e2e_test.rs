@@ -830,3 +830,346 @@ async fn test_reader_fuses_multiple_vector_columns() {
         );
     }
 }
+
+/// Write one parquet part with `ids` and their vectors.
+fn write_vectors_parquet(
+    path: &str,
+    ids: std::ops::Range<u64>,
+    vector_of: impl Fn(u64) -> Vec<f32>,
+    dim: usize,
+    pk_col: &str,
+    vec_col: &str,
+) {
+    use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, UInt64Array};
+
+    let item = std::sync::Arc::new(arrow_schema::Field::new(
+        "item",
+        arrow_schema::DataType::Float32,
+        true,
+    ));
+    let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new(pk_col, arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new(
+            vec_col,
+            arrow_schema::DataType::FixedSizeList(item.clone(), dim as i32),
+            false,
+        ),
+    ]));
+    let ids: Vec<u64> = ids.collect();
+    let flat: Vec<f32> = ids.iter().flat_map(|id| vector_of(*id)).collect();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            std::sync::Arc::new(UInt64Array::from(ids)),
+            std::sync::Arc::new(FixedSizeListArray::new(
+                item,
+                dim as i32,
+                std::sync::Arc::new(Float32Array::from(flat)),
+                None,
+            )),
+        ],
+    )
+    .unwrap();
+    let file = std::fs::File::create(path).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// A query must not lose rows from files the index does not cover yet.
+///
+/// The index is built after each commit, so a commit whose build was deferred
+/// (or failed) leaves newer files outside the index.  Narrowing the scan to
+/// the index's own keys alone would silently drop those rows; the search has
+/// to score the uncovered files exactly as well.
+#[tokio::test]
+async fn test_reader_searches_files_the_index_does_not_cover() {
+    use lakesoul_io::config::{
+        LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
+        OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
+        OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    };
+    use lakesoul_io::reader::LakeSoulReader;
+
+    let tmp = TempDir::new().unwrap();
+    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let pk_col = "id";
+    let vec_col = "vec";
+    let dim = 4usize;
+
+    // `covered` (ids 0..20) is indexed; `pending` (ids 20..40) was written
+    // after the index was built.  Only `pending` holds the query's nearest
+    // row (id 20, at distance zero), and every pending row is closer than
+    // every covered one.
+    let covered_path = format!("{}/part-abc_0000.parquet", tmp_path);
+    let pending_path = format!("{}/part-def_0000.parquet", tmp_path);
+    write_vectors_parquet(
+        &covered_path,
+        0..20,
+        |id| vec![1.0, 0.0, 0.0, id as f32 * 0.001],
+        dim,
+        pk_col,
+        vec_col,
+    );
+    write_vectors_parquet(
+        &pending_path,
+        20..40,
+        |id| vec![0.0, 1.0, 0.0, (id - 20) as f32 * 0.01],
+        dim,
+        pk_col,
+        vec_col,
+    );
+
+    // The index only knows the committed `covered` file.
+    let store = Arc::new(LocalFileSystem::new());
+    let config = VectorIndexConfig {
+        column_name: vec_col.to_string(),
+        dim,
+        nlist: 4,
+        total_bits: 7,
+        metric: Metric::L2,
+        rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
+        seed: 42,
+        use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
+    };
+    let outcome = VectorShardIndexBuilder::new(
+        store,
+        config,
+        vec![format!("file://{}", covered_path)],
+        vec![pk_col.to_string()],
+        SecretMap::new(),
+        Some(format!("file://{}", tmp_path)),
+    )
+    .build()
+    .await
+    .unwrap();
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: outcome.index_prefix.clone(),
+        commit_id: 1,
+        generation: 1,
+        version: 1,
+        header: outcome.header.clone(),
+        segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+    };
+
+    let query = [0.0f32, 1.0, 0.0, 0.0];
+    let query_str: String = query
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let read_schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new(pk_col, arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new(
+            vec_col,
+            arrow_schema::DataType::FixedSizeList(
+                std::sync::Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                dim as i32,
+            ),
+            false,
+        ),
+    ]));
+    let config = LakeSoulIOConfigBuilder::new()
+        .with_files(vec![
+            format!("file://{}", covered_path),
+            format!("file://{}", pending_path),
+        ])
+        .with_prefix(format!("file://{}", tmp_path))
+        .with_schema(read_schema)
+        .with_primary_keys(vec![pk_col.to_string()])
+        .with_batch_size(8192)
+        .with_thread_num(2)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, vec_col)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_QUERY, query_str)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_TOP_K, "5")
+        .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, "8")
+        .with_option("skip_merge_on_read", "true")
+        .with_option("file_filter_pushdown", "false")
+        .with_resolved_index_shards(vec![resolved])
+        .build();
+
+    let mut reader = LakeSoulReader::new(config).unwrap();
+    reader.start().await.unwrap();
+    let mut ids: Vec<u64> = Vec::new();
+    while let Some(batch_result) = reader.next_rb().await {
+        let batch = batch_result.unwrap();
+        let column = batch
+            .column_by_name(pk_col)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        ids.extend(column.values());
+    }
+    ids.sort_unstable();
+
+    // The candidates are the union of the index's hits and the exactly
+    // scored rows of the file the index does not cover; the caller's global
+    // sort + limit then picks the true top-k, which all live in that file.
+    assert_eq!(
+        ids.len(),
+        10,
+        "5 index candidates + 5 tail candidates: {ids:?}"
+    );
+    for id in 20..25 {
+        assert!(
+            ids.contains(&id),
+            "row {id} from an unindexed file must be searched too: {ids:?}"
+        );
+    }
+}
+
+/// Write one parquet part with `ids` and a scalar column, no vector column:
+/// a sparse update (the shape a write takes when it omits an indexed column).
+fn write_sparse_parquet(path: &str, ids: std::ops::Range<u64>, pk_col: &str) {
+    use arrow_array::{Int64Array, RecordBatch, UInt64Array};
+
+    let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new(pk_col, arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new("value", arrow_schema::DataType::Int64, true),
+    ]));
+    let ids: Vec<u64> = ids.collect();
+    let values: Vec<i64> = ids.iter().map(|id| *id as i64 * 10).collect();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            std::sync::Arc::new(UInt64Array::from(ids)),
+            std::sync::Arc::new(Int64Array::from(values)),
+        ],
+    )
+    .unwrap();
+    let file = std::fs::File::create(path).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// A file the index does not cover and that does not carry the vector column
+/// (a sparse update) has nothing to score: the tail search must skip it
+/// instead of failing on the projection.
+#[tokio::test]
+async fn test_tail_skips_uncovered_files_without_the_vector_column() {
+    use lakesoul_io::config::{
+        LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
+        OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
+        OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    };
+    use lakesoul_io::reader::LakeSoulReader;
+
+    let tmp = TempDir::new().unwrap();
+    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let pk_col = "id";
+    let vec_col = "vec";
+    let dim = 4usize;
+
+    let covered_path = format!("{}/part-abc_0000.parquet", tmp_path);
+    let sparse_path = format!("{}/part-def_0000.parquet", tmp_path);
+    write_vectors_parquet(
+        &covered_path,
+        0..4,
+        |id| vec![0.0, 1.0, 0.0, id as f32 * 0.001],
+        dim,
+        pk_col,
+        vec_col,
+    );
+    write_sparse_parquet(&sparse_path, 4..8, pk_col);
+
+    let store = Arc::new(LocalFileSystem::new());
+    let config = VectorIndexConfig {
+        column_name: vec_col.to_string(),
+        dim,
+        nlist: 2,
+        total_bits: 7,
+        metric: Metric::L2,
+        rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
+        seed: 42,
+        use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
+    };
+    let outcome = VectorShardIndexBuilder::new(
+        store,
+        config,
+        vec![format!("file://{}", covered_path)],
+        vec![pk_col.to_string()],
+        SecretMap::new(),
+        Some(format!("file://{}", tmp_path)),
+    )
+    .build()
+    .await
+    .unwrap();
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: outcome.index_prefix.clone(),
+        commit_id: 1,
+        generation: 1,
+        version: 1,
+        header: outcome.header.clone(),
+        segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+    };
+
+    let query = [0.0f32, 1.0, 0.0, 0.0];
+    let query_str: String = query
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let read_schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new(pk_col, arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new(
+            vec_col,
+            arrow_schema::DataType::FixedSizeList(
+                std::sync::Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                dim as i32,
+            ),
+            true,
+        ),
+    ]));
+    let config = LakeSoulIOConfigBuilder::new()
+        .with_files(vec![
+            format!("file://{}", covered_path),
+            format!("file://{}", sparse_path),
+        ])
+        .with_prefix(format!("file://{}", tmp_path))
+        .with_schema(read_schema)
+        .with_primary_keys(vec![pk_col.to_string()])
+        .with_batch_size(8192)
+        .with_thread_num(2)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, vec_col)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_QUERY, query_str)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_TOP_K, "2")
+        .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, "4")
+        .with_option("skip_merge_on_read", "true")
+        .with_option("file_filter_pushdown", "false")
+        .with_resolved_index_shards(vec![resolved])
+        .build();
+
+    let mut reader = LakeSoulReader::new(config).unwrap();
+    reader.start().await.unwrap();
+    let mut ids: Vec<u64> = Vec::new();
+    while let Some(batch_result) = reader.next_rb().await {
+        let batch = batch_result.unwrap();
+        let column = batch
+            .column_by_name(pk_col)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        ids.extend(column.values());
+    }
+    ids.sort_unstable();
+    // The uncovered sparse file is skipped without an error; the candidates
+    // are the index's own (the sparse rows carry no vector at all).
+    assert_eq!(ids, vec![0, 1], "the sparse file must be skipped: {ids:?}");
+}
