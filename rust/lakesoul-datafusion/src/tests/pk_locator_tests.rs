@@ -72,12 +72,26 @@ async fn query_ids(ctx: &SessionContext, sql: &str) -> Vec<i64> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_pk_filters_use_the_row_locator() {
+    pk_locator_end_to_end("vortex").await;
+}
+
+/// The same locator path for parquet files: the candidate rows are read with
+/// a row selection, so pages outside the candidate set are never fetched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_pk_filters_use_the_row_locator_parquet() {
+    pk_locator_end_to_end("parquet").await;
+}
+
+async fn pk_locator_end_to_end(format: &str) {
     enable_index_cache();
     let client = Arc::new(MetaDataClient::from_env().await.unwrap());
-    let table_name = "pk_locator_e2e";
+    let table_name = &format!("pk_locator_e2e_{format}");
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    // The counters are process-wide: measure this case's own delta, so a
+    // fallback to the regular scan (which builds no index) fails the check.
+    let (hits_before, misses_before) = lakesoul_io::pk_locator::cache_stats();
 
     let location = std::env::current_dir()
         .unwrap()
@@ -91,7 +105,7 @@ async fn sql_pk_filters_use_the_row_locator() {
             value BIGINT NOT NULL
          ) STORED AS LAKESOUL \
          LOCATION '{location}' \
-         OPTIONS ('file_format' 'vortex')"
+         OPTIONS ('file_format' '{format}')"
     );
     ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
 
@@ -188,7 +202,6 @@ async fn sql_pk_filters_use_the_row_locator() {
     );
 
     // Repeated point queries are served from the local index cache.
-    let (hits_before, _) = lakesoul_io::pk_locator::cache_stats();
     let _ = query_ids(
         &ctx,
         &format!("select value from \"lakesoul\".default.{table_name} where id = 5"),
@@ -201,10 +214,13 @@ async fn sql_pk_filters_use_the_row_locator() {
     .await;
     let (hits_after, misses_after) = lakesoul_io::pk_locator::cache_stats();
     assert!(
+        misses_after > misses_before,
+        "the pk index should have been built (the locator path ran)"
+    );
+    assert!(
         hits_after > hits_before,
         "repeated point queries should hit the pk index cache"
     );
-    assert!(misses_after > 0, "the pk index should have been built");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
