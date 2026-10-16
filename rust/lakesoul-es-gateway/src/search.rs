@@ -2711,6 +2711,7 @@ fn vector_resolved(
             segment_filename: segment.filename.clone(),
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
+            data_files: segment.data_files.clone(),
         })
         .collect();
     Ok(ResolvedIndex {

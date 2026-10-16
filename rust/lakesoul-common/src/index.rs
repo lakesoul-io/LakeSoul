@@ -104,11 +104,21 @@ pub fn pending_shard_files<S: CatalogSegment>(
     active_files: &[String],
     segments: &[S],
 ) -> Vec<String> {
-    let covered: HashSet<&str> = segments
+    let covered: Vec<&str> = segments
         .iter()
         .flat_map(|segment| segment.data_files().iter())
-        .map(|file| file_name(file))
+        .map(String::as_str)
         .collect();
+    pending_files(active_files, &covered)
+}
+
+/// Active files the index commit does not cover, compared by file name.
+///
+/// An empty `covered` list means the coverage is unknown (segments written
+/// before coverage tracking) and no file is reported as pending: callers must
+/// keep the previous behaviour instead of treating every file as new.
+pub fn pending_files(active_files: &[String], covered: &[&str]) -> Vec<String> {
+    let covered: HashSet<&str> = covered.iter().map(|file| file_name(file)).collect();
     if covered.is_empty() {
         return Vec::new();
     }

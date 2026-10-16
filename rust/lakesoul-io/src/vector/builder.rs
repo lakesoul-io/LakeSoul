@@ -216,11 +216,16 @@ impl VectorShardIndexBuilder {
 
         info!("Writing index segments...");
         let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
-        let (header, new_segments) =
+        let (header, mut new_segments) =
             index.write_base_segments(&istore).await.map_err(|e| {
                 warn!("Failed to write index segments: {:?}", e);
                 e
             })?;
+        // Record the data files this build read, so a later search can tell
+        // which active files the commit covers (and exact-scan the rest).
+        for segment in &mut new_segments {
+            segment.data_files = self.file_paths.clone();
+        }
         info!("Fresh index built successfully");
         Ok(ShardBuildOutcome {
             index_prefix,
@@ -260,7 +265,12 @@ impl VectorShardIndexBuilder {
         }
         info!("Inserted {} vectors", total);
 
-        let (header, new_segments) = builder.flush(&istore).await?;
+        let (header, mut new_segments) = builder.flush(&istore).await?;
+        // The delta covers exactly the files this build read; the base
+        // segments keep the coverage they were committed with.
+        for segment in &mut new_segments {
+            segment.data_files = self.file_paths.clone();
+        }
         info!("Incremental index update complete");
         Ok(ShardBuildOutcome {
             index_prefix,
