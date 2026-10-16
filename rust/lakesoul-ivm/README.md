@@ -273,8 +273,10 @@ Supported within the shapes above:
   `SELECT DISTINCT` instead); the affected groups are recomputed from their
   current rows;
 * **lookup chains**: a left-deep `[LEFT] JOIN` chain over a keyed base (the
-  star-schema shape): a step key may reference any earlier source's column,
-  so `c` can be looked up by a value `b` produced. A step whose keys are the
+  star-schema shape): a step key may reference any earlier source's column
+  or be a scalar expression over one of them, so `c` can be looked up by a
+  value `b` produced or by `b.v + 1` (the expression is materialized on the
+  frame of the source it reads). A step whose keys are the
   source key is a **1:1 lookup**; any other key is a **1:N lookup**, and the
   MV materializes one extra column per 1:N step (`__step<source>_id`, the
   matched row's primary key encoded as a non-null string, `n...n` for an
@@ -604,10 +606,10 @@ decision too).  Create the target with `with_allow_fallback(false)`
 rejected outright; the notes below describe the incremental analyzer's
 boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 
-* computed equality keys in a **lookup chain** (the flattened multi-way
-  inner join, the two-source inner join, the lookup join and the pair-keyed
-  outer joins maintain them); a non-equality condition may compare
-  unmaterialized columns, they become hidden payload columns;
+* a non-equality join condition is maintained for the two-source inner and
+  cross joins (a compared column the select list does not carry becomes a
+  hidden payload column); an outer join or a chain step with a residual
+  condition stays rejected;
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;

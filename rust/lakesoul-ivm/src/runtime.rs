@@ -1487,6 +1487,10 @@ pub struct LookupChainStep {
     /// comes from the base.  A key may reference any earlier source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_sources: Vec<usize>,
+    /// The rendered key expressions, aligned with `keys`; an empty entry
+    /// means that key is a plain column of its source.
+    #[serde(default, skip_serializing_if = "JoinKeyExprs::is_empty")]
+    pub key_exprs: JoinKeyExprs,
     /// `true` when the joined source's primary key is exactly `right_keys`,
     /// so one row matches at most one chain row (a 1:1 lookup).  `false` for
     /// a 1:N lookup, which materializes the matched row's identity.
