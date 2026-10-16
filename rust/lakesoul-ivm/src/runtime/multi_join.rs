@@ -21,12 +21,22 @@ pub struct MultiJoinSource {
 pub struct MultiJoinKey {
     /// The source index of the left column.
     pub left_source: usize,
-    /// The left column name.
+    /// The left column name, or the hidden name a computed key is
+    /// materialized under.
     pub left_column: String,
+    /// The rendered expression materialized under `left_column`, when the key
+    /// is computed on that side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_expr: Option<String>,
     /// The source index of the right column.
     pub right_source: usize,
-    /// The right column name.
+    /// The right column name, or the hidden name a computed key is
+    /// materialized under.
     pub right_column: String,
+    /// The rendered expression materialized under `right_column`, when the key
+    /// is computed on that side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_expr: Option<String>,
 }
 
 /// One output column of a multi-way join.
@@ -286,6 +296,31 @@ fn multi_join_frame(
 
     let mut projected = Vec::with_capacity(source_count);
     for (source, frame) in frames.into_iter().enumerate() {
+        // A computed key is materialized on its own source before the
+        // projection: its expression reads the source's columns.
+        let mut frame = frame;
+        for key in keys {
+            for (key_source, column, expr) in [
+                (
+                    key.left_source,
+                    key.left_column.as_str(),
+                    key.left_expr.as_deref(),
+                ),
+                (
+                    key.right_source,
+                    key.right_column.as_str(),
+                    key.right_expr.as_deref(),
+                ),
+            ] {
+                let Some(rendered) = expr.filter(|_| key_source == source) else {
+                    continue;
+                };
+                let expression = context
+                    .state()
+                    .create_logical_expr(rendered, frame.schema())?;
+                frame = frame.with_column(column, expression)?;
+            }
+        }
         let expressions = needed[source]
             .iter()
             .map(|column| {
@@ -427,29 +462,43 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
                 view.view_id
             ));
         }
-        let left = view.sources[key.left_source]
-            .schema
-            .field_with_name(&key.left_column)
-            .map_err(|_| {
-                report!(
-                    "multi join view {}: column {} is not in source {}",
-                    view.view_id,
-                    key.left_column,
-                    key.left_source
-                )
-            })?;
-        let right = view.sources[key.right_source]
-            .schema
-            .field_with_name(&key.right_column)
-            .map_err(|_| {
-                report!(
-                    "multi join view {}: column {} is not in source {}",
-                    view.view_id,
-                    key.right_column,
-                    key.right_source
-                )
-            })?;
-        if left.data_type() != right.data_type() {
+        // A computed key is materialized by the runtime, so it only has to
+        // resolve against its source; a plain key must be a source column.
+        let left_type = match key.left_expr.as_deref() {
+            Some(expr) => expression_type(&view.sources[key.left_source].schema, expr)?.0,
+            None => view.sources[key.left_source]
+                .schema
+                .field_with_name(&key.left_column)
+                .map_err(|_| {
+                    report!(
+                        "multi join view {}: column {} is not in source {}",
+                        view.view_id,
+                        key.left_column,
+                        key.left_source
+                    )
+                })?
+                .data_type()
+                .clone(),
+        };
+        let right_type = match key.right_expr.as_deref() {
+            Some(expr) => {
+                expression_type(&view.sources[key.right_source].schema, expr)?.0
+            }
+            None => view.sources[key.right_source]
+                .schema
+                .field_with_name(&key.right_column)
+                .map_err(|_| {
+                    report!(
+                        "multi join view {}: column {} is not in source {}",
+                        view.view_id,
+                        key.right_column,
+                        key.right_source
+                    )
+                })?
+                .data_type()
+                .clone(),
+        };
+        if left_type != right_type {
             return Err(report!(
                 "multi join view {}: join key {} has different types on its sources",
                 view.view_id,

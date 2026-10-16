@@ -3939,6 +3939,22 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   （DataFusion 计划成两级聚合，相关键会多出 distinct 列，见 §10.158）。
 - 其余 HAVING 变体（`COUNT(*)`、多条件、组键混合、裸聚合比较、全局 HAVING + 子查询）均已支持。
 
+### 10.160 H2c（第一步）：表达式连接键进多路 inner join
+
+- **分析器**：`flatten_join_node` 的键循环不再要求「必须是普通列」——新增 `multi_key_operand`：
+  普通列走原路径；否则收集表达式引用的列，全部属于**同一个**已扁平化源即可（跨源表达式明确拒绝：
+  「a join key expression must read one of the joined sources」），表达式用 `render_expression` 渲染，
+  并以 `join_key_expression_name(计数器)` 作为隐藏键名（`FlatJoin::expression_keys` 全局计数，避免不同 join 撞名）。
+- **spec**：`MultiJoinKey` 增加 `left_expr`/`right_expr`（serde 默认 None，旧 JSON 兼容）。
+- **运行时**：`multi_join_frame` 在按源投影**之前**（表达式引用的是该源的原始列名）对带表达式的键做
+  `with_column(隐藏名, expr)`，随后照常按 `multi_join_column_alias` 别名投影、按名连接；刷新/重建共用同一函数。
+- **校验**：计算键改为 `expression_type` 解析、两侧类型比较；普通键仍要求是源列。
+- **测试**：`analyzes_a_multi_join_with_a_computed_key`（隐藏键名与跨源表达式的明确拒绝）与
+  `sqllogic_multi_join_expr_key` + `tests/slt/multi_join_expr_key.slt`（bootstrap、第三个源新增匹配、
+  中间源的计算键移走导致元组消失、移回后重新连接）。
+- **仍缺**：lookup chain（左深链）的表达式键——左键可能来自更早的步骤源，需要把表达式列引用改写为链内部
+  列名（`lookup_chain_alias` / `chain_column_name`）后再物化；作为 H2c 第二步。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

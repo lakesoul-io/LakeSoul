@@ -29,6 +29,9 @@ struct FlatJoin<'a> {
     inputs: Vec<JoinInput<'a>>,
     keys: Vec<MultiJoinKey>,
     conditions: Vec<MultiJoinCondition>,
+    /// The number of computed join keys materialized so far (they are named
+    /// by their index, see [`join_key_expression_name`]).
+    expression_keys: usize,
 }
 
 /// Flatten a join tree (three or more sources) into a linear chain: the
@@ -42,6 +45,7 @@ fn flatten_join_tree<'a>(
         inputs: Vec::new(),
         keys: Vec::new(),
         conditions: Vec::new(),
+        expression_keys: 0,
     };
     flatten_join_node(plan, tables, &mut flat)?;
     Ok(flat)
@@ -102,30 +106,19 @@ fn flatten_join_node<'a>(
                 flat.inputs.push(join_input(&join.right, tables)?);
             }
             let limit = flat.inputs.len();
+            let mut key_counter = flat.expression_keys;
             for (left_expr, right_expr) in &join.on {
-                let first = column_of(left_expr)
-                    .ok_or_else(|| unsupported("join keys must be plain columns"))?;
-                let second = column_of(right_expr)
-                    .ok_or_else(|| unsupported("join keys must be plain columns"))?;
-                let first_source = source_of_multi(&flat.inputs, first, limit)?;
-                let second_source = source_of_multi(&flat.inputs, second, limit)?;
+                let first =
+                    multi_key_operand(left_expr, &flat.inputs, limit, &mut key_counter)?;
+                let second =
+                    multi_key_operand(right_expr, &flat.inputs, limit, &mut key_counter)?;
                 let in_right = |source: usize| source >= right_start;
-                let (left_source, left_column, right_source, right_column) = match (
-                    in_right(first_source),
-                    in_right(second_source),
+                let (left, right) = match (
+                    in_right(first.source),
+                    in_right(second.source),
                 ) {
-                    (false, true) => (
-                        first_source,
-                        first.name.clone(),
-                        second_source,
-                        second.name.clone(),
-                    ),
-                    (true, false) => (
-                        second_source,
-                        second.name.clone(),
-                        first_source,
-                        first.name.clone(),
-                    ),
+                    (false, true) => (first, second),
+                    (true, false) => (second, first),
                     _ => {
                         return Err(unsupported(
                             "each join key must connect the joined source to an earlier one",
@@ -133,12 +126,15 @@ fn flatten_join_node<'a>(
                     }
                 };
                 flat.keys.push(MultiJoinKey {
-                    left_source,
-                    left_column,
-                    right_source,
-                    right_column,
+                    left_source: left.source,
+                    left_column: left.column,
+                    left_expr: left.expr,
+                    right_source: right.source,
+                    right_column: right.column,
+                    right_expr: right.expr,
                 });
             }
+            flat.expression_keys = key_counter;
             if let Some(filter) = &join.filter {
                 for conjunct in split_conjunction(filter) {
                     classify_multi_conjunct(conjunct, flat, limit)?;
@@ -151,6 +147,65 @@ fn flatten_join_node<'a>(
             Ok(())
         }
     }
+}
+
+/// One operand of a flattened join key: a plain column of one source, or a
+/// scalar expression over exactly one source (materialized under a hidden
+/// name by the runtime).
+struct MultiKeyOperand {
+    source: usize,
+    column: String,
+    expr: Option<String>,
+}
+
+/// Resolve one side of a join key into the source it reads.
+fn multi_key_operand(
+    operand: &Expr,
+    inputs: &[JoinInput<'_>],
+    limit: usize,
+    counter: &mut usize,
+) -> Result<MultiKeyOperand> {
+    if let Some(column) = column_of(operand) {
+        return Ok(MultiKeyOperand {
+            source: source_of_multi(inputs, column, limit)?,
+            column: column.name.clone(),
+            expr: None,
+        });
+    }
+    // An expression key reads exactly one of the flattened sources; the
+    // runtime materializes it under a hidden name before the join.
+    let mut columns = Vec::new();
+    operand
+        .apply(|node| {
+            if let Expr::Column(column) = node {
+                columns.push(column.clone());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .map_err(|error| unsupported(format!("a join key expression {error}")))?;
+    let mut source = None;
+    for column in &columns {
+        let found = source_of_multi(inputs, column, limit)?;
+        match source {
+            None => source = Some(found),
+            Some(existing) if existing == found => {}
+            Some(_) => {
+                return Err(unsupported(
+                    "a join key expression must read one of the joined sources",
+                ));
+            }
+        }
+    }
+    let source = source.ok_or_else(|| {
+        unsupported("a join key expression must read one of the joined sources")
+    })?;
+    let column = join_key_expression_name(*counter);
+    *counter += 1;
+    Ok(MultiKeyOperand {
+        source,
+        column,
+        expr: Some(render_expression(operand)?),
+    })
 }
 
 /// Resolve a join column to one of the flattened sources.
