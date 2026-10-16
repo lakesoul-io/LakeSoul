@@ -938,6 +938,10 @@ pub enum ViewSpec {
         right_aggregate: String,
         /// The MV column the aggregate value is materialized into.
         aggregate_column: String,
+        /// Whether the aggregate is a COUNT, which counts zero for a left row
+        /// whose key has no right rows (every other aggregate is NULL).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        count_zero: bool,
         /// The left columns materialized; the left primary keys are always
         /// contained.
         output_columns: Vec<String>,
@@ -3334,6 +3338,7 @@ impl IvmRuntime {
                 right_keys,
                 right_aggregate,
                 aggregate_column,
+                count_zero,
                 output_columns,
                 left_filter,
                 right_filter,
@@ -3347,6 +3352,7 @@ impl IvmRuntime {
                 right_keys: right_keys.clone(),
                 right_aggregate: right_aggregate.clone(),
                 aggregate_column: aggregate_column.clone(),
+                count_zero: *count_zero,
                 output_columns: output_columns.clone(),
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
