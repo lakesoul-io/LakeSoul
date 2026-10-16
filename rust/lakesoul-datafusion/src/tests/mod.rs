@@ -164,6 +164,36 @@ pub(crate) async fn create_table_with_file_format(
 ///
 /// The configuration is validated against the table schema and primary
 /// keys *before* any metadata is created.
+/// Like [`create_table_with_vector_index`], with an explicit
+/// `index_maintenance` table property (`deferred` skips inline builds, so a
+/// test can control exactly when the index is built).
+#[allow(dead_code)] // used for test
+pub(crate) async fn create_table_with_vector_index_mode(
+    client: MetaDataClientRef,
+    table_name: &str,
+    config: LakeSoulIOConfig,
+    vector_index_configs: &[crate::vector_index::VectorIndexTableConfig],
+    index_maintenance: Option<&str>,
+) -> Result<()> {
+    crate::vector_index::validate_vector_index_configs(
+        vector_index_configs,
+        config.target_schema().as_ref(),
+        config.primary_keys_slice(),
+    )?;
+    let vector_index_columns = (!vector_index_configs.is_empty())
+        .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
+    create_table_inner(
+        client,
+        table_name,
+        config,
+        vector_index_columns,
+        None,
+        index_maintenance.map(str::to_string),
+        None,
+    )
+    .await
+}
+
 #[allow(dead_code)] // used for test
 pub(crate) async fn create_table_with_vector_index(
     client: MetaDataClientRef,

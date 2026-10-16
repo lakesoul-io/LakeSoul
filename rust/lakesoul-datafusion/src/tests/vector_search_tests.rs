@@ -2348,3 +2348,120 @@ async fn vector_field_metadata_marks_only_declared_columns() {
         "the marker is opt-in"
     );
 }
+
+/// A query must not lose rows from files the index does not cover yet.
+///
+/// The index is built after each commit: with deferred maintenance (or a
+/// failed build) newer files are outside it, and a row in those files has no
+/// index entry.  Narrowing to the index's keys alone would silently drop
+/// them, so the search has to score the uncovered files exactly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vector_search_covers_files_the_index_does_not_cover() {
+    use crate::tests::create_table_with_vector_index_mode;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_uncovered";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index_mode(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+        Some("deferred"),
+    )
+    .await
+    .unwrap();
+
+    // Batch A (ids 0..60) is far from the query; deferred maintenance means
+    // the write commits data only.
+    let far = |id: u64| -> Vec<f32> {
+        let mut vector = vec![0.0f32; DIM];
+        vector[1] = 1.0;
+        vector[2] = id as f32 * 0.001;
+        vector
+    };
+    let ids_a: Vec<u64> = (0..60).collect();
+    let vectors_a: Vec<Vec<f32>> = ids_a.iter().map(|id| far(*id)).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch(&ids_a, &vectors_a))
+        .await
+        .unwrap();
+
+    // The out-of-band builder indexes batch A; batch B is written (and
+    // committed) after it, so the index cannot know about it.
+    let built = crate::index_maintenance::build_pending_indices(
+        client.clone(),
+        table_name,
+        "default",
+    )
+    .await
+    .unwrap();
+    assert!(built > 0, "the deferred build must index batch A");
+    assert_vector_index_built(table_name);
+
+    // Batch B: new keys 60..80 and an update of key 5, all near the query.
+    let near = |id: u64| -> Vec<f32> {
+        let mut vector = vec![0.0f32; DIM];
+        vector[0] = 1.0;
+        vector[3] = id as f32 * 0.001;
+        vector
+    };
+    let ids_b: Vec<u64> = (60..80).chain(std::iter::once(5)).collect();
+    let vectors_b: Vec<Vec<f32>> = ids_b.iter().map(|id| near(*id)).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch(&ids_b, &vectors_b))
+        .await
+        .unwrap();
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let query = {
+        let mut vector = vec![0.0f32; DIM];
+        vector[0] = 1.0;
+        vector
+    };
+    let q = query
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    // The index narrows the scan to its own (far) candidates.
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+
+    let df = ctx.sql(&sql).await.unwrap();
+    let batches = df.collect().await.unwrap();
+    let mut ids_result = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+        ids_result.extend(ids.values().iter().copied());
+    }
+    // The nearest rows are the update of key 5 (whose new vector the index
+    // never saw) and the new keys, not the indexed batch.
+    assert_eq!(
+        ids_result,
+        vec![5, 60, 61, 62, 63],
+        "rows outside the index must be searched too"
+    );
+
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
