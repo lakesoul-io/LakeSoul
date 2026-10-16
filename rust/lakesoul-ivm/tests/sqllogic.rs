@@ -2525,6 +2525,26 @@ fn sqllogic_distinct_on() {
 }
 
 #[test]
+fn sqllogic_having_expression_aggregate() {
+    let schema = source_schema();
+    run_script_for_mv(
+        "havingexpr",
+        include_str!("slt/having_expression_aggregate.slt"),
+        multi_agg_mv_schema_for(
+            &schema,
+            &group_keys(&["g"]),
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("sum_value".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        group_keys(&["g"]),
+    );
+}
+
+#[test]
 fn sqllogic_mixed_aggregates() {
     let schema = source_schema();
     run_script_for_mv(

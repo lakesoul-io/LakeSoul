@@ -1,0 +1,48 @@
+# A HAVING that reads an aggregate form the select list does not carry: the
+# layout falls back to the multi-aggregate view, which materializes every
+# aggregate form as its own column.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert; k=3,g=b,v=20,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FROM __SRC__ GROUP BY g HAVING SUM(v * 2) > 50
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__
+----
+a 40
+
+# A row that pushes the HAVING past its bound adds the group.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=40,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FROM __SRC__ GROUP BY g HAVING SUM(v * 2) > 50
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__
+----
+a 40
+b 60
+
+# Dropping it moves the group back below the bound.
+statement ok
+/*ivm-append __SRC__: k=4,g=b,v=40,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT g, SUM(v) FROM __SRC__ GROUP BY g HAVING SUM(v * 2) > 50
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query TI rowsort
+SELECT g, sum_v FROM __MV__
+----
+a 40

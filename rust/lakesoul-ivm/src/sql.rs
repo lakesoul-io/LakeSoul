@@ -1207,12 +1207,15 @@ mod tests {
                 .await
                 .is_err()
         );
-        // HAVING mixing aggregate kinds.
-        assert!(
+        // HAVING mixing aggregate kinds falls back to the multi-aggregate
+        // view (the mixed statement above is already asserted).
+        assert!(matches!(
             analyze("select g, sum(v) from src group by g having max(v) > 0")
                 .await
-                .is_err()
-        );
+                .unwrap()
+                .spec,
+            ViewSpec::MultiAgg { .. }
+        ));
         // Joins and computed projections are later slices.
         assert!(analyze("select k + 1 from src").await.is_err());
         assert!(
