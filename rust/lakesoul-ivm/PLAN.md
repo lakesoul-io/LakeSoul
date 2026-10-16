@@ -3896,6 +3896,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   全连接含单侧 NULL 行）；同时订正 H2a 用例里「pair 左连接拒绝表达式键」的过期负例。
 - **仍缺**：多路 / 链式 join 的表达式键（H2c）。
 
+### 10.157 M1：非唯一右侧的单侧 inner join 改写为 pair
+
+- **背景**：单侧（select 列表只取一侧）inner join 此前只有一种增量形状：右侧按连接键索引时用 semi（成员判定，
+  匹配唯一）；否则直接拒绝（「一个 join 视图至少需要一侧一列」），因为 semi 无法表达重复。
+- **能力**：右侧**有主键但不按连接键索引**时，分析器改为 pair inner join，并把右侧主键物化为右侧载荷
+  （列名 `right_value`，优先取不属于连接键的主键列），因此「一个左侧行匹配多个右侧行」会如实产生多行。
+  右侧按连接键索引时仍走 SemiAnti（保住原优化与既有用例）。
+- **边界**：右侧**没有主键**时仍拒绝（错误由「源表需要主键」给出，比原来的载荷提示更准确）；
+  fixture 随之订正：`fallback_partitions` 的 Tier-2 夹具改为无主键右侧，
+  `semi_anti_ext` 的拒绝用例改名并断言新错误。
+- **测试**：`analyzes_a_single_sided_join_with_a_non_unique_right`（pair spec 的载荷与 semi 分支并存）
+  与 `sqllogic_single_sided_join` + `tests/slt/single_sided_join.slt`（bootstrap 一对多、维度新增/删除、
+  事实键移动；MV 布局为 wide pair：`fk, id, lv, right_value, __left_pk_id, __right_pk_rk`）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

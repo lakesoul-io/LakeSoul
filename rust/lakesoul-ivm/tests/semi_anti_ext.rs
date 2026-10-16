@@ -647,11 +647,12 @@ async fn a_single_sided_inner_join_maintains_the_semi_shape() {
     assert_eq!(read_kvs(runtime, &mv).await, vec![(1, 100), (3, 300)]);
 }
 
-/// A single-sided inner join over a right side that is not keyed by the join
-/// key keeps a clear rejection: several matches per left row would duplicate
-/// it, which the membership shape cannot express.
+/// A single-sided inner join over a right side without a primary key keeps a
+/// clear rejection: the pair shape the duplicates need cannot key it (a right
+/// side keyed by something else takes the pair shape with its row identity as
+/// the right payload).
 #[test_log::test(tokio::test)]
-async fn a_single_sided_inner_join_over_a_non_keyed_right_stays_rejected() {
+async fn a_single_sided_inner_join_over_a_keyless_right_stays_rejected() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -675,7 +676,6 @@ async fn a_single_sided_inner_join_over_a_non_keyed_right_stays_rejected() {
                 table_path(&dir, "right"),
                 right_schema(),
             )
-            .with_primary_keys(vec!["rk".to_string()])
             .with_cdc_column(CHANGE_COLUMN),
         )
         .await
@@ -712,7 +712,7 @@ async fn a_single_sided_inner_join_over_a_non_keyed_right_stays_rejected() {
     let error = executor.execute(&statement).await.unwrap_err();
     let message = error.to_string();
     assert!(
-        message.contains("at least one column from each side"),
+        message.contains("has no primary key"),
         "unexpected error: {message}"
     );
     // The rejection happens before the target is registered.
