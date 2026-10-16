@@ -3361,6 +3361,9 @@ pub fn select_excode_ipfunc(ex_bits: usize) -> ExIpFunc {
         0 => ip_packed_ex0_f32, // 1-bit total (binary only)
         2 => ip_packed_ex2_f32, // 3-bit total
         6 => ip_packed_ex6_f32, // 7-bit total
+        // Reachable only if a caller skipped the up-front validation
+        // (`crate::rabitq::is_supported_total_bits`), which every build and
+        // load path enforces.
         _ => panic!(
             "Unsupported ex_bits: {}. Only 0 (1-bit total), 2 (3-bit total), and 6 (7-bit total) are supported.",
             ex_bits

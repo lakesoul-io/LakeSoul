@@ -1087,6 +1087,30 @@ async fn sql_create_table_declares_vector_index_via_option() {
         err.to_string().contains("invalid vector_index_columns"),
         "expected an option validation error, got: {err}"
     );
+
+    // Only 1/3/7-bit RaBitQ widths have an estimator kernel: an unsupported
+    // width must be rejected when the table is created instead of panicking
+    // deep inside a later search.
+    let table_name3 = "vec_search_sql_create_badbits";
+    let _ = client.drop_table(table_name3, "default").await;
+    clean_table_dir(table_name3);
+    let bad_bits = serde_json::json!([{
+        "column": "vec", "dim": DIM, "nlist": 4, "total_bits": 5, "metric": "L2"
+    }])
+    .to_string();
+    let bad_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name3} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL \
+         LOCATION 'default/{table_name3}' \
+         OPTIONS ('vector_index_columns' '{bad_bits}', 'hashBucketNum' '4')"
+    );
+    let err = ctx.sql(&bad_sql).await.unwrap_err();
+    assert!(
+        err.to_string().contains("total_bits must be 1, 3 or 7"),
+        "expected an unsupported-width error, got: {err}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

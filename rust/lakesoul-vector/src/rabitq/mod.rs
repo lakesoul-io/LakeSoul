@@ -18,6 +18,16 @@ pub(crate) mod simd;
 
 // Re-export key types at the rabitq module level for convenience
 pub use ivf::builder::IvfRabitqBuilder;
+
+/// Whether a RaBitQ index can be built or searched with `total_bits`.
+///
+/// Only these widths have an estimator kernel (`simd::select_excode_ipfunc`),
+/// so everything that turns configuration into an index — table creation,
+/// the builder, and header deserialisation — must reject the rest up front
+/// instead of panicking deep inside a search.
+pub fn is_supported_total_bits(total_bits: usize) -> bool {
+    matches!(total_bits, 1 | 3 | 7)
+}
 pub use ivf::{
     IdAndVecBatch, IvfRabitqIndex, SearchDiagnostics, SearchParams, SearchResult,
 };
