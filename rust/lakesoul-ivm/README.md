@@ -609,6 +609,11 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;
+* a `HAVING` that adds an aggregate form the select list does not carry when
+  the same function is already maintained (`GROUP BY g HAVING SUM(v * 2) >
+  10` next to `SUM(v)`: the view keeps one `SUM` slot per function); a
+  `HAVING` over a `COUNT(DISTINCT ...)` or another unmergeable aggregate the
+  select list carries works through the derived-step path;
 * a multi-way chain with more than sixteen sources; a chain step whose
   payload columns collide by name (a step the statement does not project
   names its payloads after the source columns: alias them in a subquery);

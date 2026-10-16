@@ -3928,6 +3928,17 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `sqllogic_left_aggregate_left_column`、`sqllogic_left_aggregate_count`、`sqllogic_left_aggregate_count_star`
   三个 slt（计算列随左列/右侧变化；count 的 bootstrap、掉到 0、重新计入）。
 
+### 10.159 H3（第二批，记录）：HAVING 与标量子查询的剩余边界
+
+逐条探测后按「是否属于小项」分流，本批不做实现，记录如下：
+
+- `HAVING SUM(v * 2) > 10`（与 select 列表里的 `SUM(v)` 并存）仍拒绝：报「duplicate SUM aggregate」——
+  和值聚合视图每个函数只有一个槽位，表达式参数的同类聚合需要多聚合布局扩展（非小项）。
+- `HAVING COUNT(DISTINCT v) > 1`：分析器报 `DerivedSource`，即由**派生步**机制物化（与 H1 的聚合源覆盖一致），
+  端到端可用，不是缺口；仅 select-list 标量子查询里的 `COUNT(DISTINCT ...)` 仍明确拒绝
+  （DataFusion 计划成两级聚合，相关键会多出 distinct 列，见 §10.158）。
+- 其余 HAVING 变体（`COUNT(*)`、多条件、组键混合、裸聚合比较、全局 HAVING + 子查询）均已支持。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
