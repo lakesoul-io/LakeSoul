@@ -2019,6 +2019,7 @@ impl IvfRabitqIndex {
             );
             let file_size = write_segment(istore, &fname, &seg_data, version).await?;
             entries.push(SegmentEntry {
+                data_files: Vec::new(),
                 cluster_id: cid,
                 segment_version: version,
                 segment_filename: fname,

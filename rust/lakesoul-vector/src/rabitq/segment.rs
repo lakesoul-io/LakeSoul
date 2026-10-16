@@ -221,6 +221,11 @@ pub struct SegmentEntry {
     pub segment_filename: String,
     pub num_vectors: u32,
     pub file_size: u64,
+    /// Data files whose vectors this segment indexed.  Empty for segments
+    /// written before coverage tracking, which callers must read as "unknown"
+    /// rather than "covers nothing".
+    #[serde(default)]
+    pub data_files: Vec<String>,
 }
 
 impl SegmentEntry {

@@ -526,6 +526,9 @@ impl IvfRabitqBuilder {
                         segment_filename: fname,
                         num_vectors: n_new as u32,
                         file_size,
+                        // The core builder works on vectors, not files; the
+                        // shard builder records which data files a build read.
+                        data_files: Vec::new(),
                     });
                 }
 
