@@ -236,7 +236,12 @@ async fn gateway_multi_vector_knn_contract() {
     let hits = hit_list(&body);
     assert_eq!(hits.len(), 1, "{body}");
     assert_eq!(score(&hits[0]), 1.0, "{body}");
-    assert_eq!(chunk_id(&hits[0]), "c1", "{body}");
+    // c1 and c4 both carry `image_embedding` [1.0, 0.0]: they are equally
+    // close to the query, so either of them may win the single slot.
+    assert!(
+        ["c1", "c4"].contains(&chunk_id(&hits[0])),
+        "expected one of the tied rows: {body}"
+    );
 
     // `script_score` now accepts every declared vector column as well.
     let script_body = r#"{"query":{"script_score":{"query":{"bool":{"filter":[]}},"script":{"source":"Math.max(cosineSimilarity(params.query_vector, 'image_embedding'), 0.0)","params":{"query_vector":[1.0,0.0]}}}},"size":2,"_source":{"excludes":["embedding","image_embedding"]}}"#;
