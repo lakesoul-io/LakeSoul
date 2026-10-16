@@ -60,6 +60,11 @@ pub struct VectorSearchRequest {
     /// plan shape (index-only ordering needs far fewer candidates than the
     /// exact re-rank).
     pub overfetch: usize,
+    /// True when the plan has **no filter** between the scan and the sort, so
+    /// the rows this scan keeps are exactly the rows the plan above ranks.
+    /// The scan can then read the payload columns for those rows only
+    /// (deferred payload read).
+    pub narrow: bool,
 }
 
 impl VectorSearchRequest {
@@ -86,6 +91,7 @@ pub fn marker_expr(
     metric: &str,
     order_by: bool,
     overfetch: usize,
+    narrow: bool,
 ) -> Expr {
     let query_csv = query
         .iter()
@@ -115,6 +121,7 @@ pub fn marker_expr(
                 datafusion::common::ScalarValue::Int64(Some(overfetch as i64)),
                 None,
             ),
+            Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(narrow)), None),
         ],
     ))
 }
@@ -126,6 +133,7 @@ pub fn multi_marker_expr(
     top_k: usize,
     order_by: bool,
     overfetch: usize,
+    narrow: bool,
 ) -> Expr {
     let payload = serde_json::to_string(columns).unwrap_or_else(|_| "[]".to_string());
     Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -144,6 +152,7 @@ pub fn multi_marker_expr(
                 datafusion::common::ScalarValue::Int64(Some(overfetch as i64)),
                 None,
             ),
+            Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(narrow)), None),
         ],
     ))
 }
@@ -171,7 +180,7 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
             if call.func.name() == VECTOR_SEARCH_MULTI_MARKER {
                 return parse_multi_marker(call);
             }
-            if call.args.len() != 6 {
+            if call.args.len() != 7 {
                 return None;
             }
             let vec_column = match &call.args[0] {
@@ -209,6 +218,13 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 }
                 _ => return None,
             };
+            let narrow = match &call.args[6] {
+                Expr::Literal(
+                    datafusion::common::ScalarValue::Boolean(Some(value)),
+                    _,
+                ) => *value,
+                _ => return None,
+            };
             Some(VectorSearchRequest {
                 columns: vec![VectorColumnQuery {
                     column: vec_column,
@@ -219,13 +235,14 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 top_k,
                 order_by,
                 overfetch,
+                narrow,
             })
         })
 }
 
 /// Parse the JSON payload of the multi-column marker.
 fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
-    if call.args.len() != 4 {
+    if call.args.len() != 5 {
         return None;
     }
     let payload = match &call.args[0] {
@@ -252,11 +269,16 @@ fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
         }
         _ => return None,
     };
+    let narrow = match &call.args[4] {
+        Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(value)), _) => *value,
+        _ => return None,
+    };
     Some(VectorSearchRequest {
         columns,
         top_k,
         order_by,
         overfetch,
+        narrow,
     })
 }
 
@@ -286,13 +308,13 @@ impl ScalarUDFImpl for VectorSearchMarkerUDF {
     }
 
     /// `__lakesoul_vector_search` accepts `(vec, query, top_k, metric,
-    /// order_by)`; the vector column keeps whatever type it has (any
-    /// `FixedSizeList`/`List` of floats) and the rest are the literals the
-    /// pushdown rule produces.
+    /// order_by, overfetch, narrow)`; the vector column keeps whatever type it
+    /// has (any `FixedSizeList`/`List` of floats) and the rest are the
+    /// literals the pushdown rule produces.
     fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
-        if arg_types.len() != 6 {
+        if arg_types.len() != 7 {
             return Err(DataFusionError::Execution(format!(
-                "__lakesoul_vector_search expects 6 arguments, got {}",
+                "__lakesoul_vector_search expects 7 arguments, got {}",
                 arg_types.len()
             )));
         }
@@ -301,7 +323,7 @@ impl ScalarUDFImpl for VectorSearchMarkerUDF {
                 0 => true,
                 1 | 3 => matches!(data_type, DataType::Utf8),
                 2 | 5 => matches!(data_type, DataType::Int64),
-                4 => matches!(data_type, DataType::Boolean),
+                4 | 6 => matches!(data_type, DataType::Boolean),
                 _ => false,
             };
             if !accepted {
@@ -359,11 +381,11 @@ impl ScalarUDFImpl for VectorSearchMultiMarkerUDF {
     }
 
     /// `__lakesoul_vector_search_multi` accepts `(requests_json, top_k,
-    /// order_by, overfetch)`.
+    /// order_by, overfetch, narrow)`.
     fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
-        if arg_types.len() != 4 {
+        if arg_types.len() != 5 {
             return Err(DataFusionError::Execution(format!(
-                "__lakesoul_vector_search_multi expects 4 arguments, got {}",
+                "__lakesoul_vector_search_multi expects 5 arguments, got {}",
                 arg_types.len()
             )));
         }
@@ -371,7 +393,7 @@ impl ScalarUDFImpl for VectorSearchMultiMarkerUDF {
             let accepted = match index {
                 0 => matches!(data_type, DataType::Utf8),
                 1 | 3 => matches!(data_type, DataType::Int64),
-                2 => matches!(data_type, DataType::Boolean),
+                2 | 4 => matches!(data_type, DataType::Boolean),
                 _ => false,
             };
             if !accepted {
@@ -433,6 +455,11 @@ datafusion::common::extensions_options! {
         /// so the result set is unchanged; it trades per-query latency for
         /// throughput because the groups share the thread pool.
         pub parallelism: usize, default = 1
+        /// Read the payload columns only for the rows the plan above keeps
+        /// (`LIMIT`): the scan ranks the candidates by the vector columns,
+        /// keeps the top ones and fetches their payload in a second pass.
+        /// Disable to trade IO for a single read.
+        pub deferred_payload: bool, default = true
     }
 }
 

@@ -2489,3 +2489,327 @@ async fn vector_search_covers_files_the_index_does_not_cover() {
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);
 }
+
+/// `id`, `vec`, `payload` — a table whose projected payload is not needed to
+/// rank a candidate.
+fn payload_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+        Field::new("payload", DataType::Utf8, true),
+    ]))
+}
+
+fn make_payload_batch(
+    ids: &[u64],
+    vectors: &[Vec<f32>],
+    payloads: &[String],
+) -> RecordBatch {
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    let payload_array = arrow::array::StringArray::from(payloads.to_vec());
+    RecordBatch::try_new(
+        payload_schema(),
+        vec![
+            Arc::new(id_array),
+            Arc::new(vec_array),
+            Arc::new(payload_array),
+        ],
+    )
+    .unwrap()
+}
+
+/// The `(id, payload)` rows a query returns.
+async fn collect_id_payload(
+    ctx: &Arc<datafusion::execution::context::SessionContext>,
+    sql: &str,
+) -> Vec<(u64, String)> {
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+        let payloads = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((ids.value(row), payloads.value(row).to_string()));
+        }
+    }
+    rows
+}
+
+/// A counter the exec reports, wherever it sits in the plan.
+fn plan_counter(
+    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+    name: &str,
+) -> Option<usize> {
+    use datafusion::physical_plan::metrics::MetricValue;
+
+    if let Some(metrics) = plan.metrics() {
+        for metric in metrics.iter() {
+            if let MetricValue::Count {
+                name: metric_name,
+                count,
+            } = metric.value()
+            {
+                if metric_name.as_ref() == name {
+                    return Some(count.value());
+                }
+            }
+        }
+    }
+    plan.children()
+        .iter()
+        .find_map(|child| plan_counter(child.as_ref(), name))
+}
+
+/// Session config with the re-rank mode and the deferred payload read set.
+fn session_config_with(
+    rerank: &str,
+    deferred_payload: bool,
+) -> datafusion::execution::config::SessionConfig {
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let options = LakeSoulVectorSearchConfig {
+        rerank: rerank.to_string(),
+        deferred_payload,
+        ..Default::default()
+    };
+    session_config.options_mut().extensions.insert(options);
+    session_config
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_defers_payload_reads() {
+    use crate::tests::create_table_with_vector_index;
+    use datafusion::physical_plan::collect;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_deferred_payload";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(payload_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 200u64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<u64> = (0..n).collect();
+    let payloads: Vec<String> = (0..n)
+        .map(|id| format!("payload-{id}-{}", "x".repeat(96)))
+        .collect();
+    let batch = make_payload_batch(&ids, &vectors, &payloads);
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch)
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id, payload from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+
+    // The single-read path is the reference.
+    let control_ctx = crate::create_lakesoul_session_ctx_with_config(
+        Arc::new(MetaDataClient::from_env().await.unwrap()),
+        &default_args(),
+        session_config_with("", false),
+    )
+    .unwrap();
+    let control = collect_id_payload(&control_ctx, &sql).await;
+    assert_eq!(control.len(), 5, "control rows: {control:?}");
+
+    // The deferred read must return exactly the same rows.
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let deferred = collect_id_payload(&ctx, &sql).await;
+    assert_eq!(
+        deferred, control,
+        "deferred payload read changed the result"
+    );
+
+    // ... and must have read the payload of the kept rows only.
+    let plan = ctx
+        .sql(&sql)
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let payload_rows = plan_counter(plan.as_ref(), "deferred_payload_rows")
+        .expect("deferred payload read must report its payload row count");
+    let ranked = plan_counter(plan.as_ref(), "deferred_payload_ranked")
+        .expect("deferred payload read must report its ranked row count");
+    assert!(
+        payload_rows <= 5 * 2 + 16,
+        "payload rows {payload_rows} should stay within the deferred margin"
+    );
+    assert_eq!(
+        payload_rows, ranked,
+        "every ranked row must have its payload fetched"
+    );
+
+    // Index-only ordering drops the sort; the scan ranks on the index distance
+    // and must still defer the payload.
+    let index_ctx = crate::create_lakesoul_session_ctx_with_config(
+        Arc::new(MetaDataClient::from_env().await.unwrap()),
+        &default_args(),
+        session_config_with("index", true),
+    )
+    .unwrap();
+    let index_control_ctx = crate::create_lakesoul_session_ctx_with_config(
+        Arc::new(MetaDataClient::from_env().await.unwrap()),
+        &default_args(),
+        session_config_with("index", false),
+    )
+    .unwrap();
+    let index_deferred = collect_id_payload(&index_ctx, &sql).await;
+    let index_control = collect_id_payload(&index_control_ctx, &sql).await;
+    assert_eq!(
+        index_deferred.len(),
+        5,
+        "index-only rows: {index_deferred:?}"
+    );
+    assert_eq!(
+        index_deferred, index_control,
+        "deferred payload read changed the index-only result"
+    );
+    for (id, payload) in &index_deferred {
+        assert_eq!(*payload, format!("payload-{id}-{}", "x".repeat(96)));
+    }
+    let plan = index_ctx
+        .sql(&sql)
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    collect(Arc::clone(&plan), index_ctx.task_ctx())
+        .await
+        .unwrap();
+    let payload_rows = plan_counter(plan.as_ref(), "deferred_payload_rows")
+        .expect("index-only deferred payload read must report its payload rows");
+    assert!(
+        payload_rows <= 5 * 2 + 16,
+        "index-only payload rows {payload_rows} should stay within the deferred margin"
+    );
+
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_with_filter_above_scan_reads_payload_once() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_filtered_payload";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(payload_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 200u64;
+    let vectors = seeded_vectors(n as usize, 11);
+    let ids: Vec<u64> = (0..n).collect();
+    let payloads: Vec<String> = (0..n).map(|id| format!("payload-{id}")).collect();
+    let batch = make_payload_batch(&ids, &vectors, &payloads);
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch)
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let query = [0.3f32, 0.1, -0.4, 0.2, 0.5, -0.6, 0.7, -0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id, payload from \"lakesoul\".default.{table_name} \
+         where id % 2 = 0 \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let rows = collect_id_payload(&ctx, &sql).await;
+    assert_eq!(rows.len(), 5, "filtered rows: {rows:?}");
+    for (id, payload) in &rows {
+        assert_eq!(id % 2, 0, "the filter above the scan must be applied");
+        assert_eq!(*payload, format!("payload-{id}"));
+    }
+
+    // A filter can drop candidates, so the scan must read every candidate's
+    // payload in one pass.
+    let plan = ctx
+        .sql(&sql)
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    assert!(
+        plan_counter(plan.as_ref(), "deferred_payload_rows").is_none(),
+        "a filter above the scan must keep the single-read path"
+    );
+
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
