@@ -12,7 +12,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
-    PhysicalFormat, row_mv_schema_for, sum_count_mv_schema_for,
+    JoinKeyExprs, PhysicalFormat, lookup_join_view_schema_for, row_mv_schema_for,
+    sum_count_mv_schema_for,
 };
 use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
@@ -456,6 +457,108 @@ fn refresh_io_counters_attribute_the_work() {
             assert_eq!(execution.action.label(), "overwrite");
             let written_full = state.counter("lakesoul_ivm_mv_rows_written{kind=row}");
             assert!(written_full > written, "{written_full} vs {written}");
+        });
+    });
+}
+
+#[test_log::test]
+fn lookup_refresh_rewrites_only_the_affected_rows() {
+    let state = Arc::new(Metrics::default());
+    let recorder = TestRecorder {
+        metrics: state.clone(),
+    };
+    metrics::with_local_recorder(&recorder, || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let runtime = IvmRuntime::from_env().await.unwrap();
+            runtime.init_schema().await.unwrap();
+            let dir = tempdir().unwrap();
+            let suffix = uuid::Uuid::new_v4().simple();
+            let fact = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_lookup_io_fact_{suffix}"),
+                        format!("file://{}", dir.path().join("fact").display()),
+                        schema(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_cdc_column(CHANGE_COLUMN)
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let dim = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_lookup_io_dim_{suffix}"),
+                        format!("file://{}", dir.path().join("dim").display()),
+                        schema(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_cdc_column(CHANGE_COLUMN)
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let mv = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_lookup_io_mv_{suffix}"),
+                        format!("file://{}", dir.path().join("mv").display()),
+                        lookup_join_view_schema_for(
+                            &schema(),
+                            &schema(),
+                            &["k".to_string()],
+                            &["k".to_string()],
+                            &["k".to_string()],
+                            &JoinKeyExprs::default(),
+                            "v",
+                            "v",
+                        )
+                        .unwrap(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let rows = (1..=100)
+                .map(|key| (key, "g0", key * 10, "insert"))
+                .collect::<Vec<_>>();
+            fact.append_batch(runtime.client(), batch(&rows))
+                .await
+                .unwrap();
+            dim.append_batch(runtime.client(), batch(&rows))
+                .await
+                .unwrap();
+            let executor = IvmSqlExecutor::new(runtime);
+            let sql = format!(
+                "INSERT INTO {} SELECT a.k, a.v, b.v FROM {} a \
+                 LEFT JOIN {} b ON b.k = a.k",
+                mv.table_name, fact.table_name, dim.table_name
+            );
+            executor.execute(&sql).await.unwrap();
+            let written_before =
+                state.counter("lakesoul_ivm_mv_rows_written{kind=lookup_join}");
+            // One fact update rewrites only that row's pair.
+            fact.append_batch(
+                executor.runtime().client(),
+                batch(&[(1, "g0", 999, "insert")]),
+            )
+            .await
+            .unwrap();
+            let execution = executor.execute(&sql).await.unwrap();
+            assert_eq!(execution.action.label(), "incremental");
+            let written = state.counter("lakesoul_ivm_mv_rows_written{kind=lookup_join}")
+                - written_before;
+            assert!(written > 0, "no rows written");
+            assert!(
+                written <= 4,
+                "a one-row lookup change rewrote {written} rows"
+            );
         });
     });
 }

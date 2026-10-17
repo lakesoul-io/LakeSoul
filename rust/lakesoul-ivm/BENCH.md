@@ -13,10 +13,16 @@ Both views share the plan, the source, the file format and the write path, so
 the difference is the maintenance strategy itself.  The source write is timed
 separately and is not part of the refresh numbers.
 
-This is the B0 milestone: the harness, two shapes (`row`, `sum_count`), the
-S3/local storage switch and the CSV/summary output.  Later milestones extend
-the shape matrix (lookups, top-k, multi-join, derived chains, partitions,
-skew), add IO counters (`B1`) and publish a fixed report (`B3`).
+Shapes: `row` (projection + filter), `sum_count` (grouped aggregate),
+`lookup` (a left join to a keyed dimension), `multi_join` (a three-way inner
+chain) and `top_k` (a partitioned `row_number`).  `both` runs the first two
+and `all` runs every shape, each with its own tables.  `--mix` sets the
+insert/update/delete weights and `--secondary-change` the fraction of
+mutations aimed at the dimension/non-fact side.
+
+The IO counters (`B1`) attribute files read, rows scanned/written and bytes
+written per view and round; a fixed report and the remaining shapes (derived
+chains, partitions, skew) follow in `B2b`/`B3`.
 
 ## Setup
 
@@ -78,6 +84,9 @@ cargo run --release -p lakesoul-ivm --example ivm_bench -- \
 | `--change-ratio <F>` / `--change-rows <N>` | changes per round (fraction or absolute) |
 | `--rounds <N>` / `--warmup <N>` | measured and unmeasured rounds |
 | `--groups <N>` | distinct groups (aggregate cost knob) |
+| `--mix <I,U,D>` | insert/update/delete weights (default `1,1,1`) |
+| `--dim-rows <N>` | dimension rows for the lookup shape (default `rows/2`) |
+| `--secondary-change <F>` | mutations aimed at the non-fact side (default `0.2`) |
 | `--storage <local\|s3>` | table storage |
 | `--bucket` / `--prefix` | S3 location |
 | `--out <FILE>` | write the CSV there instead of stdout |
@@ -116,6 +125,17 @@ row        20000     200       200       144.0ms    746.8ms    5.2x     173.7ms 
 sum_count  20000     200       200       311.7ms    1103.7ms   3.5x     335.2ms    1151.5ms
 ```
 
+Five-shape smoke on RustFS (20k fact rows, 200 changes per round,
+`--profile test-fast`, so indicative only):
+
+| shape | incr p50 | full p50 | speedup | incr rows scanned | incr rows written |
+|---|---|---|---|---|---|
+| row | 176–229 ms | 654–828 ms | 3.6–3.7x | ~40k | 260–267 |
+| sum_count | 229–257 ms | 1060–1132 ms | 4.4–4.6x | ~460 | 254–274 |
+| lookup | 210–248 ms | 716–841 ms | 3.4x | ~50k | 284–300 |
+| multi_join | 294 ms | 817–951 ms | 2.8–3.2x | ~81k | 265–270 |
+| top_k | 284–549 ms | 1258–2590 ms | 4.4–4.7x | ~21k | 1270–1390 |
+
 How to read it:
 
 * **speedup** = `full_p50 / incr_p50`.  The incremental path should win at
@@ -132,7 +152,17 @@ How to read it:
   refresh can read **more** files and bytes than the full recompute (it walks
   its materialized state to retract the changed tuples) while writing far
   fewer rows and finishing faster; the balance shifts as the table grows.
-  Always read the latency and the IO columns together.
+  Always read the latency and the IO columns together;
+* the join shapes currently read the **full current source state** on every
+  refresh (the affected-key computation seeds from the current left rows and
+  the materialized view), so their latency gain comes from writing far fewer
+  rows; key-filtered reads are a recorded follow-up.  A benchmark run of a
+  lookup view is also how the `limit(0, None)` affected-set bug was found
+  (DataFusion treats `None` as no fetch limit, so the lookup view was
+  rewritten in full every round — fixed to an empty seed, see PLAN §10.176).
+  The pair left/full joins keep a **conservative all-keys seed** because a
+  changed join key can drop the other side's old match; making them
+  key-filtered needs a before-match expansion (recorded follow-up).
 
 ## Methodology notes
 

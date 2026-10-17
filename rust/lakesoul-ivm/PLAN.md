@@ -4234,7 +4234,31 @@ oracle 差分对拍 `oracle_select_list_count_distinct_matches_full_recompute` �
 - **测试**：`tests/metrics.rs::refresh_io_counters_attribute_the_work` 断言增量刷新产生读文件/扫描/写入/字节计数，
   且全量 overwrite 的写入行数大于增量。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.176 性能评测 B2：多源形状与一个增量刷新 bug
+
+bench 扩展到多源算子形状，并在过程中修掉一个真实的性能 bug：
+
+- **新形状**：`lookup`（事实表 LEFT JOIN 键控维表，紧凑 lookup 布局）、`multi_join`（三源内连接链，广布局 + 各源行身份）、
+  `top_k`（`row_number() PARTITION BY g ORDER BY v DESC` + `rn <= 5`）；`both` = row+sum_count，`all` = 全部五种。
+  每个形状独立建表、独立跑完整轮次（共享逻辑在 `run_shape`）。
+- **变更策略**：`--mix I,U,D` 控制插入/更新/删除权重；`--secondary-change` 控制打到维表/非事实源的比例；
+  lookup 的维表不插入新键（不会匹配），multi_join 的新键**同时写入所有源**（保证内连接命中）。
+  每轮的变更在规划时即更新内存 live 状态，避免同轮内 update/delete 冲突。
+- **修复 `limit(0, None)`（lookup）**：`refresh_lookup_join` 用 `left_now.select(keys).limit(0, None)` 作为
+  affected 集合的「空集种子」，但 DataFusion 的 `limit(0, None)` 表示**无 fetch 限制**（整表），于是每轮增量刷新
+  都把整张 MV 当作受影响集重写：20k 行 lookup 视图每轮写 ~20k 行、时延≈全量。改为 `limit(0, Some(0))` 后
+  一行变更只写 2 行（回归测试 `lookup_refresh_rewrites_only_the_affected_rows`：100 行表一行变更写入 ≤4 行，
+  修复前 ~102 行）。
+- **pair left/full 连接保持保守种子**：这两条刷新路径的 affected 集依赖「另一侧当前键」——join 键变更会让
+  另一侧的旧匹配消失、需要重新发出 NULL 侧的行；本轮把 `limit(0, None)` 改为空集时 `full_join` 测试立刻
+  暴露漏行，因此恢复为显式「两侧当前键」的保守种子，并在代码注释/本节记录后续优化：从物化对里取
+  **旧匹配键**（before-match）后再做键过滤。
+- **发现（记录项）**：lookup/multi_join 的刷新仍会读取**全量当前源状态**（`read_current` 全表扫描 + MV 全扫），
+  因此其收益来自「写少」而非「读少」；后续可改为按受影响键做过滤读取（`read_current_filtered` + `IN` 谓词）。
+- **冒烟数据**（RustFS、20k 行、每轮 200 变更、test-fast）：row 3.6–3.7×、sum_count 4.4–4.6×、lookup 3.4×、
+  multi_join 2.8–3.2×、top_k 4.4–4.7×；所有形状末轮逐行对拍通过。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、
