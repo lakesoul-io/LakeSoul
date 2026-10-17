@@ -107,6 +107,24 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub text_index_columns: Option<String>,
+    /// Vortex write layout: rows per row block
+    /// (write option `vortex_row_block_size`). Unset means the small
+    /// LakeSoul default; the Vortex writer default is 8192.
+    #[serde(
+        rename = "vortex_row_block_size",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vortex_row_block_size: Option<String>,
+    /// Vortex write layout: target uncompressed bytes per data block
+    /// (write option `vortex_data_block_target_bytes`). Unset means the small
+    /// LakeSoul default; the Vortex writer default is 1 MiB.
+    #[serde(
+        rename = "vortex_data_block_target_bytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vortex_data_block_target_bytes: Option<String>,
     /// File format used for writes: `"parquet"`, `"vortex"` or
     /// `"vortex-compact"` (same `file_format` option as the Spark/Flink
     /// connectors). Unset means `vortex-compact`, the connectors' default.

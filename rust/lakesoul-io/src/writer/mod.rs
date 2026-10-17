@@ -185,7 +185,8 @@ pub(crate) fn create_leaf_writer(
             sink_config,
             file_schema,
             false,
-            io_config.vector_columns_slice().to_vec(),
+            io_config.vortex_row_block_size(),
+            io_config.vortex_data_block_target_bytes(),
             io_config.column_policies(),
         )),
         PhysicalFormat::VortexCompact => Arc::new(VortexSink::new(
@@ -193,7 +194,8 @@ pub(crate) fn create_leaf_writer(
             sink_config,
             file_schema,
             true,
-            io_config.vector_columns_slice().to_vec(),
+            io_config.vortex_row_block_size(),
+            io_config.vortex_data_block_target_bytes(),
             io_config.column_policies(),
         )),
     };

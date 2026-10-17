@@ -815,3 +815,62 @@ fn data_commit_timestamp_is_in_milliseconds() {
         let _ = client.drop_table(table_name, "default").await;
     });
 }
+
+/// The vortex write layout table properties reach the io config the writer
+/// is built from, so a table can restore or tune the block sizes.
+#[test]
+fn vortex_write_layout_properties_reach_the_io_config() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let table_name = "vortex_layout_properties";
+        let _ = client.drop_table(table_name, "default").await;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, true),
+        ]));
+        let (table_schema, schema_ipc, schema_hash) =
+            schema_to_metadata_parts(schema.as_ref());
+        let table_path = format!(
+            "file://{}/default/{table_name}",
+            env::current_dir().unwrap().to_str().unwrap()
+        );
+        client
+            .create_table(TableInfo {
+                table_id: format!("table_{table_name}"),
+                table_namespace: "default".to_string(),
+                table_name: table_name.to_string(),
+                table_path,
+                table_schema,
+                table_schema_arrow_ipc: schema_ipc,
+                table_schema_arrow_ipc_json_hash: schema_hash,
+                properties: serde_json::to_string(&LakeSoulTableProperty {
+                    hash_bucket_num: Some("1".to_string()),
+                    file_format: Some("vortex".to_string()),
+                    vortex_row_block_size: Some("8192".to_string()),
+                    vortex_data_block_target_bytes: Some("1048576".to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+                partitions: ";id".to_string(),
+                domain: "public".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let table = LakeSoulTable::for_name(table_name).await.unwrap();
+        let config =
+            crate::lakesoul_table::helpers::create_io_config_builder_from_table_info(
+                table.table_info(),
+                lakesoul_common::misc::SecretMap::new(),
+                lakesoul_common::misc::SecretMap::new(),
+            )
+            .unwrap()
+            .build();
+        assert_eq!(config.vortex_row_block_size(), Some(8192));
+        assert_eq!(config.vortex_data_block_target_bytes(), Some(1_048_576));
+
+        let _ = client.drop_table(table_name, "default").await;
+    });
+}

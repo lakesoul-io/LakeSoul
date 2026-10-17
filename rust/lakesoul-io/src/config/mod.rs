@@ -36,9 +36,10 @@ impl Default for IOSchema {
 /// Per-column write layout override.
 ///
 /// Every field is optional; `None` keeps the writer default for that aspect.
-/// Columns not listed fall back to the built-in defaults: vector index columns
-/// get small row blocks, binary/blob columns are written without compression so
-/// already-compressed payloads (e.g. H.264 GOPs) are not compressed twice.
+/// Columns not listed fall back to the built-in defaults: small row blocks and
+/// a small data block target (vortex), and binary/blob columns are written
+/// without compression so already-compressed payloads (e.g. H.264 GOPs) are
+/// not compressed twice.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ColumnPolicy {
     /// `Some(false)` writes the column without the BtrBlocks compressor.
@@ -279,6 +280,18 @@ impl LakeSoulIOConfig {
     pub fn max_file_size_option(&self) -> Option<u64> {
         self.option(OPTION_KEY_MAX_FILE_SIZE)
             .map(|x| x.parse().unwrap())
+    }
+
+    /// Returns the configured vortex row block size (rows) if set
+    pub fn vortex_row_block_size(&self) -> Option<usize> {
+        self.option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE)
+            .and_then(|value| value.parse().ok())
+    }
+
+    /// Returns the configured vortex data block target (bytes) if set
+    pub fn vortex_data_block_target_bytes(&self) -> Option<u64> {
+        self.option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES)
+            .and_then(|value| value.parse().ok())
     }
 
     /// Returns the memory pool size in bytes if set
