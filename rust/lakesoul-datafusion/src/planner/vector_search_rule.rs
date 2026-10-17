@@ -53,6 +53,10 @@ pub(crate) struct VectorSearchSpec {
     pub order_by: bool,
     /// Per-bucket candidate multiplier for the scan.
     pub overfetch: usize,
+    /// True when nothing filters rows between the scan and the sort, so the
+    /// scan may keep only the rows the sort will rank (and defer the payload
+    /// columns of the rest).
+    pub narrow: bool,
     /// The matched sort key; used to drop exactly that `Sort` node.
     pub sort_key: Expr,
 }
@@ -175,6 +179,10 @@ fn detect(
                 // so it keeps the exact-mode margin; the exact re-rank itself
                 // needs the margin for the sort above the scan.
                 let overfetch = if order_by && !saw_filter { 2 } else { 10 };
+                // A filter above the scan can drop rows the scan kept, so
+                // the scan cannot reduce its result to the sort's top-k and
+                // must read every candidate's payload.
+                let narrow = !saw_filter;
                 return Some((
                     VectorSearchSpec {
                         columns,
@@ -182,6 +190,7 @@ fn detect(
                         top_k,
                         order_by,
                         overfetch,
+                        narrow,
                         sort_key,
                     },
                     current,
@@ -546,6 +555,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
             &spec.metric,
             spec.order_by,
             spec.overfetch,
+            spec.narrow,
         )
     } else {
         // Several columns travel as one JSON payload; the reader intersects
@@ -566,7 +576,13 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
                 weight: term.weight,
             })
             .collect::<Vec<_>>();
-        multi_marker_expr(&columns, spec.top_k, spec.order_by, spec.overfetch)
+        multi_marker_expr(
+            &columns,
+            spec.top_k,
+            spec.order_by,
+            spec.overfetch,
+            spec.narrow,
+        )
     };
     filters.push(marker);
     LogicalPlan::TableScan(TableScan {

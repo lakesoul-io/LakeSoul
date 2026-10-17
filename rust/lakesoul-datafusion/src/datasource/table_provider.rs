@@ -966,6 +966,7 @@ impl LakeSoulTableProvider {
             self.io_config.object_store_options().clone(),
             self.io_config.cdc_column(),
             request,
+            limit,
             self.client.vector_index_catalog(),
         )?;
         let exec: Arc<dyn ExecutionPlan> = Arc::new(exec);

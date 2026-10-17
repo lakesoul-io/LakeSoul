@@ -235,6 +235,19 @@ result = df.collect().to_arrow()
 
 The distance column carries the index estimate (`sqrt` of the L2 estimate, matching `array_distance`). Keep the default `rerank="exact"` when the last fraction of a point of recall matters more than the read costs.
 
+### Payload columns
+
+A SQL scan reads the projected columns of every candidate, so a table with wide payloads pays for them even though only the rows the `LIMIT` returns are needed. When nothing filters rows between the scan and the `ORDER BY ... LIMIT` — and the plan keeps a sort (exact mode) or orders by the index (`rerank="index"`) — the scan ranks the candidates on the primary keys and vector columns alone, keeps the rows the limit can return, and reads their payload columns in a second pass:
+
+```sql
+-- phase 1 ranks candidates on (id, vec); only the 5 (+ margin) rows that
+-- LIMIT can return have their `document` column fetched.
+SELECT id, document FROM t
+ORDER BY array_distance(vec, ARRAY[...]) LIMIT 5;
+```
+
+A filter above the scan (`WHERE ...`) can drop rows the limit would otherwise return, so it keeps the single-pass read: every candidate's payload is fetched once. `SET lakesoul_vector_search.deferred_payload = false` turns the second pass off globally.
+
 ### Multi-column fusion
 
 `multi_vector_search` queries several indexed vector columns in one scan. Each column is searched independently; a row must be a candidate in **every** column's index (the candidate sets are intersected) and the rows are ranked by the weighted sum of the per-column distances:
