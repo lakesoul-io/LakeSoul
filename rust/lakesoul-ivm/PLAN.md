@@ -4062,6 +4062,21 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `right_value = "v"`）；新增 `sqllogic_single_sided_left` + `tests/slt/single_sided_left.slt`
   （bootstrap、右侧载荷更新、两侧无匹配的行不出现、左行删除撤回配对）。
 
+### 10.167 sql_oracle 扩面：把本轮新增能力纳入随机对拍
+
+六条差分 oracle（随机变更轮次 vs 同一语句的全量重算），覆盖此前只有定点用例保护的能力：
+
+| oracle | 形状 |
+|---|---|
+| `oracle_lookup_join_key_expression_…` | lookup LEFT join + fact 侧计算键（`b.k = a.v + 1`），未匹配补 NULL |
+| `oracle_left_join_key_expression_…` | pair 左连接 + 计算键（右侧不以该键为索引），同一键的两个右行各自成对；紧凑布局 |
+| `oracle_multi_join_key_expression_…` | 三源 inner join，末段键在中转源上计算（`b.v + 1 = c.v`） |
+| `oracle_lookup_chain_key_expression_…` | 左深链，步骤键在步骤源上计算（`b.v = c.v + 1`）→ 1:N，MV 主键含 `__step2_id` |
+| `oracle_having_expression_aggregate_…` | `HAVING SUM(v * 2)` 与 `SUM(v)` 并存 → 多聚合布局两列都物化 |
+| `oracle_left_aggregate_count_…` | select-list `COUNT(v)` 标量子查询，无匹配计 0 |
+
+每条都提供 seed 行以覆盖罕见匹配，参考查询显式过滤 `op <> 'delete'`；`tests/sql_oracle.rs` 现在 110 个用例全绿。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
