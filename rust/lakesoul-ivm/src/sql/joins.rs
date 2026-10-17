@@ -2545,6 +2545,74 @@ mod tests {
         table
     }
 
+    /// The plan markers the analyzer's null-safe rejection reads.  A uniform
+    /// chain keeps `NullEqualsNull` on every join, so it could be maintained;
+    /// a mixed chain does not keep per-join flags (the inner join takes the
+    /// outer's), which is why mixed chains stay rejected instead of being
+    /// maintained with semantics the plan does not execute.
+    #[tokio::test]
+    async fn reads_the_null_safe_markers_of_a_chain() {
+        use datafusion::common::NullEquality;
+        let ctx = SessionContext::new();
+        let table =
+            datafusion::datasource::memory::MemTable::try_new(schema(), vec![vec![]])
+                .unwrap();
+        ctx.register_table("src", Arc::new(table)).unwrap();
+        async fn markers(ctx: &SessionContext, sql: &str) -> Vec<bool> {
+            let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+            let optimized = ctx.state().optimize(&plan).unwrap();
+            let mut markers = Vec::new();
+            optimized
+                .apply(|node| {
+                    if let LogicalPlan::Join(join) = node {
+                        markers.push(join.null_equality == NullEquality::NullEqualsNull);
+                    }
+                    Ok(TreeNodeRecursion::Continue)
+                })
+                .unwrap();
+            markers
+        }
+        // The single maintained pair join.
+        assert_eq!(
+            markers(
+                &ctx,
+                "select a.k from src a join src b on a.k is not distinct from b.k"
+            )
+            .await,
+            vec![true]
+        );
+        // A uniform chain keeps the marker on both joins.
+        assert_eq!(
+            markers(
+                &ctx,
+                "select a.k from src a join src b on a.k is not distinct from b.k \
+                 join src c on b.v is not distinct from c.v"
+            )
+            .await,
+            vec![true, true]
+        );
+        // A mixed chain loses the inner join's flag: the markers show the
+        // outer join's setting on both nodes.
+        assert_eq!(
+            markers(
+                &ctx,
+                "select a.k from src a join src b on a.k is not distinct from b.k \
+                 join src c on b.v = c.v"
+            )
+            .await,
+            vec![false, false]
+        );
+        assert_eq!(
+            markers(
+                &ctx,
+                "select a.k from src a join src b on a.k = b.k \
+                 join src c on b.v is not distinct from c.v"
+            )
+            .await,
+            vec![true, true]
+        );
+    }
+
     #[tokio::test]
     async fn analyzes_null_safe_inner_join() {
         // `IS NOT DISTINCT FROM` keys plan as a null-aware inner join: the

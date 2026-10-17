@@ -4028,6 +4028,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   4. 派生 window 步的行键名对齐子计划字段（现沿用源 MV 的主键名 `__left_pk_k`）。
   2/3/4 共用同一条管线：分析器派生 window 时需要拿到 **Window 的父投影**（现在 `DerivedSource` 只带
   Window 节点，别名/载荷信息在上一层已丢失）。
+### 10.165 核实：多表链的 null-safe 标记（DataFusion 55.2）
+
+用当前锁定的 DataFusion（55.2.0）构造三种形态并读取**优化后**计划里每个 `Join` 节点的 `null_equality`
+（`sql/joins.rs::reads_the_null_safe_markers_of_a_chain` 固化了这组观测）：
+
+| 形态 | 观测到的标记（外→内） |
+|---|---|
+| 两表 `IS NOT DISTINCT FROM` | `[NullEqualsNull]` |
+| **全 null-safe** 三表链 | `[NullEqualsNull, NullEqualsNull]` —— **标记完整保留** |
+| 混合（内层 null-safe、外层 `=`） | `[NullEqualsNothing, NullEqualsNothing]` —— 内层的标记被外层覆盖 |
+| 混合（内层 `=`、外层 null-safe） | `[NullEqualsNull, NullEqualsNull]` —— 内层被**提升**为 null-safe |
+
+结论：
+- §B5 记录的「三表链丢失 `NullEqualsNull` 标记」需要**细化**：丢失只发生在**混合**链上（内层 join 的标记被
+  外层覆盖/提升），**全 null-safe 链的标记是逐节点正确的**；
+- 因此：**全 null-safe 链是一个可以放开的能力**（中等工作量：多路/链的 spec 增加 null-safe 标志、
+  重放/连接改用 `NullEquality::NullEqualsNull`、键列可空、身份编码已能处理 NULL）；**混合链保持拒绝**，
+  理由现在是精确的——若按 SQL 逐键实现，会与计划实际执行的语义不一致；
+- 该测试会在上游改变这一行为时立刻失败，届时可重新评估混合链。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
