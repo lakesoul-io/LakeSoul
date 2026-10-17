@@ -3855,9 +3855,8 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   自动物化（`derived_step_supported` 早已接受 Aggregate ✓），新增用例：
   `derived_views.rs::a_top_k_over_a_min_step_is_materialized`、`::a_top_k_over_a_distinct_step_is_materialized`
   （bootstrap + 边界更替，逐轮与同一 SQL 的全量重算对比；MIN 用例还断言派生步 id 不变）。
-- **仍缺（记录）**：top-k 读 **window** 步。派生步本身可以建立，但消费方（top-k）的期望 schema 会去
-  **源**里找子计划输出名（如 `rn`），而 window 步的 MV 暴露的是 `[分区键, 行键, 窗口列…]` 的布局——需要在
-  `expected_mv_schema`/派生重命名一侧对齐（错误现场：`column rn is not part of the schema`）。仍走 Tier-2 兜底。
+- **仍缺（记录）**：top-k 读 **window** 步——该记录过宽，精确分解见 §10.164（内联 window 的 top-k 已可用，
+  缺口集中在**派生 window 步**的布局与命名）。
 - README 的限制清单据此改写为「聚合源（含 MIN/MAX 与 COUNT(DISTINCT)）自动物化；window 结果仍不物化」。
 
 ### 10.155 性能项 H2a：表达式连接键进 lookup
@@ -4007,6 +4006,28 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   `sqllogic_multi_join_wide`（**10 源**星型 join 的 bootstrap / 单源更新 / 删除，覆盖被抬高的上限）、
   `analyzes_chain_payload_collisions` 与 `sqllogic_lookup_chain_collision`（同名 `v` → 布局 `v_1`，
   bootstrap 与两次增量）。
+
+### 10.164 记录订正：top-k / row 读派生 window 步
+
+逐形状实测（分析器 + 执行器探针）后的精确状态：
+
+- **① 可用**：`SELECT k, v FROM (SELECT f.k AS k, d.v AS v, row_number() OVER (PARTITION BY f.g ORDER BY d.v)
+  AS rn FROM f JOIN d ON …) t WHERE rn <= 2` —— 分析成 `top_k`，窗口被内联进 top-k（源是 join 步），
+  期望 schema `[k, v, __left_pk_k, __right_pk_k, rowKinds, epoch]`。
+- **② 派生 window 步 + 选择列表（row）**：`SELECT k, ws FROM (SELECT k, SUM(v) OVER (…) AS ws,
+  row_number() OVER (…) AS rn FROM src) t WHERE rn <= 2` —— 派生步建得出，但 `validate_row_view` 要求
+  「输出列包含源主键」（`runtime/rows.rs:266`），而 window 步的主键是**分区键 + 源主键**
+  （`executor.rs:1112-1114`），用户只选 `k, ws` 缺 `g` → 拒绝。
+- **③ 派生 window 步 over 另一个步 + top-k**：同样的断言写在 join 步之上时，`expected_mv_schema` 构造失败：
+  `invalid expression "k"`，步字段 `[g, __left_pk_k, __right_pk_k, sum_v, row_number, …]`。
+- **四个修复点**（互相独立、都属布局/命名层，均为响亮失败、Tier-2 兜底）：
+  1. row 视图对「投影省略的源主键」的覆盖（对齐 top-k 已有的做法）；
+  2. 派生 window 步的列名取子查询别名（现无别名时回落规范名 `row_number`/`sum_v`）；
+  3. window 步携带**载荷列**（`payload_columns`，布局放在窗口列之前、运行时行投影补齐、schema 助手加
+     `_with_payload` 变体保留旧签名）；
+  4. 派生 window 步的行键名对齐子计划字段（现沿用源 MV 的主键名 `__left_pk_k`）。
+  2/3/4 共用同一条管线：分析器派生 window 时需要拿到 **Window 的父投影**（现在 `DerivedSource` 只带
+  Window 节点，别名/载荷信息在上一层已丢失）。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

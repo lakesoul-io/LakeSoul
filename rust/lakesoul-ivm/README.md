@@ -617,6 +617,11 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;
+* a **derived window step** consumed by a select-list (`row`) or top-k shape
+  when the consumer needs a column the step's layout does not carry, or when
+  the step's key names differ from the subplan's fields (the step
+  materializes `[partition keys, row keys, window columns]`; the inline
+  window forms stay maintained — see PLAN §10.164);
 * a single-sided inner join over a right side without a primary key (the
   pair shape its duplicates need cannot key it): a right side keyed by the
   join key stays the semi (membership) shape, and a right side keyed by
