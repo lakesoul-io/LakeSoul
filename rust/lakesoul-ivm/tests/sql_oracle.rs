@@ -3495,6 +3495,77 @@ async fn oracle_left_aggregate_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_select_list_count_distinct_matches_full_recompute() {
+    // The select-list COUNT(DISTINCT) is planned as two aggregate levels; the
+    // view counts the distinct column per key.
+    let schema = source_schema();
+    let keys = vec!["k".to_string(), "g".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "selectcountdistinct",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+        ],
+        left_aggregate_mv_schema_for(&schema, &keys, "c", &DataType::Int64).unwrap(),
+        vec!["k".to_string()],
+        "SELECT s.k, s.g, s.v, \
+         (SELECT count(distinct u.v) FROM __SRC1__ u WHERE u.k = s.k) AS c \
+         FROM __SRC0__ s",
+        "SELECT s.k, s.g, s.v, \
+         (SELECT count(distinct u.v) FROM __SRC1__ u \
+          WHERE u.op <> 'delete' AND u.k = s.k) AS c \
+         FROM __SRC0__ s WHERE s.op <> 'delete'",
+        "SELECT k, g, v, c FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_select_list_count_distinct_outputs_match_full_recompute() {
+    // A computation over the distinct count: the value stays the count and
+    // the output expression computes on it (a missing key counts zero).
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    run_oracle_seeded(
+        "selectcountdistinctout",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+        ],
+        left_aggregate_mv_schema_with_outputs(
+            &schema,
+            &keys,
+            "__ivm_agg",
+            &DataType::Int64,
+            &[("c".to_string(), DataType::Int64)],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT s.k, \
+         (SELECT count(distinct u.v) + 1 FROM __SRC1__ u WHERE u.k = s.k) AS c \
+         FROM __SRC0__ s",
+        "SELECT s.k, \
+         (SELECT count(distinct u.v) + 1 FROM __SRC1__ u \
+          WHERE u.op <> 'delete' AND u.k = s.k) AS c \
+         FROM __SRC0__ s WHERE s.op <> 'delete'",
+        "SELECT k, c FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_multi_aggregate_left_aggregate_matches_full_recompute() {
     // The scalar value is an expression over two aggregates of the other
     // table, and the select list computes on it.

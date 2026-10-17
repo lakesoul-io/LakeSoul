@@ -1070,6 +1070,27 @@ pub(super) fn try_analyze_guarded_count(
 /// The aggregate column of DataFusion's scalar-COUNT plan, if `expr` is the
 /// `CASE WHEN <subquery>.__always_true IS NULL THEN 0 ELSE <aggregate> END`
 /// the decorrelation builds: the else branch is the aggregate's output.
+/// Whether a group key of the outer aggregate is the literal-true guard the
+/// `COUNT(DISTINCT)` rewrite adds (named by the projection between the two
+/// aggregate levels).
+fn is_literal_guard_group(plan: &LogicalPlan, key: &str) -> bool {
+    let LogicalPlan::Projection(projection) = peel(plan) else {
+        return false;
+    };
+    projection.expr.iter().any(|expr| {
+        let mut inner = expr;
+        let mut name = None;
+        while let Expr::Alias(alias) = inner {
+            if name.is_none() {
+                name = Some(alias.name.clone());
+            }
+            inner = &alias.expr;
+        }
+        name.as_deref() == Some(key)
+            && matches!(inner, Expr::Literal(ScalarValue::Boolean(Some(true)), _))
+    })
+}
+
 fn scalar_count_value(expr: &Expr) -> Option<&Column> {
     let Expr::Case(case) = expr else {
         return None;
@@ -1109,20 +1130,54 @@ fn analyze_left_aggregate(
             "a select-list scalar subquery with a residual condition",
         ));
     }
+    // DataFusion plans `count(DISTINCT ..)` as two aggregate levels (a dedup
+    // aggregate, a literal guard group key, then the count); the maintained
+    // subquery is `count(distinct x)` over the dedup input.
+    let mut right_plan: &LogicalPlan = &aggregate.input;
+    let mut distinct_expression = None;
     if subtree_has_distinct_aggregate(&join.right) {
-        // DataFusion plans `count(DISTINCT ..)` as two aggregate levels, so
-        // the maintained subquery would correlate on the distinct key too.
-        return Err(unsupported(
-            "a correlated scalar subquery with a DISTINCT aggregate",
-        ));
+        let mut detected = None;
+        if aggregate.aggr_expr.len() == 1
+            && let Expr::AggregateFunction(function) = &aggregate.aggr_expr[0]
+            && function.func.name().eq_ignore_ascii_case("count")
+            && let Some(argument) = function.params.args.first().and_then(column_of)
+            && let LogicalPlan::Projection(inner_projection) = peel(&aggregate.input)
+            && let LogicalPlan::Aggregate(dedup) = peel(&inner_projection.input)
+            && dedup.aggr_expr.is_empty()
+            && let Some(distinct) = dedup
+                .group_expr
+                .iter()
+                .find(|expr| expr.schema_name().to_string() == argument.name)
+        {
+            let mut distinct_function = function.clone();
+            distinct_function.params.args = vec![strip_alias(distinct).clone()];
+            distinct_function.params.distinct = true;
+            detected = Some((
+                dedup.input.as_ref(),
+                Expr::AggregateFunction(distinct_function),
+            ));
+        }
+        let Some((plan, expression)) = detected else {
+            return Err(unsupported(
+                "a correlated scalar subquery with a DISTINCT aggregate",
+            ));
+        };
+        right_plan = plan;
+        distinct_expression = Some(expression);
     }
     validate_decimal_accumulators(aggregate)?;
-    // The correlated keys are the aggregate's group columns.
+    // The correlated keys are the aggregate's group columns; the DISTINCT
+    // rewrite adds a literal-true guard group the maintained subquery drops.
     let mut right_keys = Vec::new();
     for expr in &aggregate.group_expr {
         let column = column_of(expr).ok_or_else(|| {
             unsupported("a correlated scalar subquery needs plain key columns")
         })?;
+        if distinct_expression.is_some()
+            && is_literal_guard_group(&aggregate.input, &column.name)
+        {
+            continue;
+        }
         right_keys.push(column.name.clone());
     }
     if right_keys.is_empty() {
@@ -1192,8 +1247,43 @@ fn analyze_left_aggregate(
     let (value_call, value_reference) =
         scalar_value_forms(value_expression, aggregate, right_qualifier.as_ref())?;
     let value_form = if several { Some(value_reference) } else { None };
+    // The decorrelated outer expression reads the subquery value by its
+    // output column; the DISTINCT rewrite maps that column to the counting
+    // aggregate with the subquery's computation kept.
+    let distinct_value = if distinct_expression.is_some() {
+        let aggregate_name = aggregate.aggr_expr[0].schema_name().to_string();
+        let mut reads_aggregate = false;
+        let value = value_expression
+            .clone()
+            .transform_down(|node| {
+                let reads = node == aggregate.aggr_expr[0]
+                    || matches!(&node, Expr::Column(column)
+                        if column.name == aggregate_name);
+                if reads {
+                    reads_aggregate = true;
+                    return Ok(Transformed::yes(Expr::Column(Column::from_name(
+                        IVM_RIGHT_AGG_COLUMN,
+                    ))));
+                }
+                Ok(Transformed::no(node))
+            })
+            .map_err(|error| unsupported(format!("a scalar subquery value {error}")))?
+            .data;
+        if !reads_aggregate {
+            return Err(unsupported(
+                "a correlated COUNT(DISTINCT ...) must read its aggregate",
+            ));
+        }
+        let reference = Expr::Column(Column::new(
+            right_qualifier.clone(),
+            aggregate_columns[0].clone(),
+        ));
+        Some((reference, value))
+    } else {
+        None
+    };
     let left_input = join_input(&join.left, tables)?;
-    let right_input = join_input(&aggregate.input, tables)?;
+    let right_input = join_input(right_plan, tables)?;
     let left = left_input.table;
     let right = right_input.table;
     // The outer projection: plain left columns plus the scalar value, or
@@ -1250,6 +1340,20 @@ fn analyze_left_aggregate(
                         return Ok(Transformed::yes(Expr::Column(Column::from_name(
                             IVM_RIGHT_AGG_COLUMN,
                         ))));
+                    }
+                    Ok(Transformed::no(node))
+                })
+                .map_err(|error| {
+                    unsupported(format!("a scalar subquery output {error}"))
+                })?
+                .data;
+        }
+        if let Some((reference, value)) = &distinct_value {
+            inner = inner
+                .clone()
+                .transform_down(|node| {
+                    if node == *reference {
+                        return Ok(Transformed::yes(value.clone()));
                     }
                     Ok(Transformed::no(node))
                 })
@@ -1350,7 +1454,9 @@ fn analyze_left_aggregate(
             )));
         }
     }
-    let call = if several {
+    let call = if let Some(distinct_expression) = &distinct_expression {
+        render_expression(distinct_expression)?
+    } else if several {
         value_call
     } else {
         render_expression(&aggregate.aggr_expr[0])?

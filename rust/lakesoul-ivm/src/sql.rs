@@ -1060,6 +1060,62 @@ mod tests {
         assert!(error.to_string().contains("several aggregates"), "{error}");
     }
 
+    #[tokio::test]
+    async fn analyzes_select_list_count_distinct_scalar_subqueries() {
+        let tables = vec![source_table("src"), source_table("dim")];
+        // DataFusion plans the correlated COUNT(DISTINCT) as two aggregate
+        // levels; the view counts the distinct column over the dedup input.
+        let analyzed = analyze_multi(
+            "select k, \
+             (select count(distinct u.v) from dim u where u.k = s.k) as c \
+             from src s",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            right_aggregate,
+            aggregate_column,
+            count_zero,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate");
+        };
+        assert_eq!(right_aggregate, "count(DISTINCT v)");
+        assert_eq!(aggregate_column, "c");
+        assert!(count_zero);
+        assert!(output_exprs.is_empty());
+
+        // A computation over the count stays a computed output over the
+        // materialized value, so the empty-set result (zero) is computed.
+        let analyzed = analyze_multi(
+            "select k, \
+             (select count(distinct u.v) + 1 from dim u where u.k = s.k) as c \
+             from src s",
+            tables,
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            right_aggregate,
+            count_zero,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate");
+        };
+        assert_eq!(right_aggregate, "count(DISTINCT v)");
+        assert!(count_zero);
+        assert_eq!(output_exprs.len(), 1);
+        assert_eq!(
+            normalized(Some(output_exprs[0].call.as_str())).as_deref(),
+            Some("__ivm_right_agg + 1")
+        );
+    }
+
     #[test]
     fn fallback_definition_hash_ignores_the_reason() {
         let first = ViewSpec::Fallback {
@@ -1103,10 +1159,12 @@ mod tests {
             ("src".to_string(), source_table("src")),
             ("dim".to_string(), source_table("dim")),
         ]);
-        // The non-distinct correlated aggregates keep analyzing.
+        // The non-distinct correlated aggregates keep analyzing, and the
+        // select-list COUNT(DISTINCT) is maintained by the two-level rewrite.
         for sql in [
             "select k, v from src s where v > (select sum(v) from dim u where u.k = s.k)",
             "select k, (select sum(v) from dim u where u.k = s.k) as m from src s",
+            "select k, (select count(DISTINCT v) from dim u where u.k = s.k) as m from src s",
         ] {
             let plan = optimized(&ctx, sql).await;
             assert!(analyze_select(&plan, &tables, &request()).is_ok(), "{sql}");
@@ -1118,7 +1176,6 @@ mod tests {
             "select k, v from src s where v > (select avg(DISTINCT v) from dim u where u.k = s.k)",
             "select k, (select sum(DISTINCT v) from dim u where u.k = s.k) as m from src s",
             "select k, (select avg(DISTINCT v) from dim u where u.k = s.k) as m from src s",
-            "select k, (select count(DISTINCT v) from dim u where u.k = s.k) as m from src s",
         ] {
             let plan = optimized(&ctx, sql).await;
             let Err(error) = analyze_select(&plan, &tables, &request()) else {

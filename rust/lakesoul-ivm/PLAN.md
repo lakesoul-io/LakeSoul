@@ -4142,7 +4142,25 @@ oracle 差分对拍 `oracle_multi_aggregate_correlated_scalar_matches_full_recom
 `oracle_multi_aggregate_left_aggregate_matches_full_recompute`，以及 HAVING 用例新增的
 `havingglobmulti` / `havingcorrmulti` 两组。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.171 B6 收尾：select-list `COUNT(DISTINCT …)` 标量子查询
+
+DataFusion 把相关 `COUNT(DISTINCT x)` 计划成两级聚合：外层 `Aggregate(groupBy=[keys, group_alias_1], aggr=[count(alias1)])`
+（`group_alias_1` 是恒真守卫组键）套在去重 `Aggregate(groupBy=[keys, x AS alias1], aggr=[])` 之上，外层投影再把
+`__always_true` 与计数值暴露出来。按 §10.170 的「整体值」框架补齐：
+
+- `analyze_left_aggregate` 不再直接拒绝 DISTINCT 形态，而是识别两级聚合：把外层 `count(alias1)` 改写成
+  `count(distinct x)`（复用外层 count 的 UDF、参数换成去重表达式、`distinct = true`），右源计划改为去重聚合的输入；
+- 守卫组键（投影里 `Boolean(true) AS group_alias_1`）从相关键中剔除；
+- 外层表达式对「子查询值列」的引用（直接值或 `count + 1` 之类的计算）先替换成
+  `__ivm_right_agg`（保留子查询里的计算），再走既有的直接/计算输出处理：物化值仍是 `count(distinct x)`，
+  计算输出放进 `output_exprs`，`count_zero = true`（缺失键计 0，`0+1 = 1` 等空集语义正确）；
+- 非 COUNT(DISTINCT) 的 DISTINCT 聚合仍明确拒绝。
+
+测试：分析器用例 `analyzes_select_list_count_distinct_scalar_subqueries`（直接值与计算输出两种 spec）；
+oracle 差分对拍 `oracle_select_list_count_distinct_matches_full_recompute` 与
+`oracle_select_list_count_distinct_outputs_match_full_recompute`。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、
