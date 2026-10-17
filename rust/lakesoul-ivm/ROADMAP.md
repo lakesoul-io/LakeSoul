@@ -156,7 +156,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | 相关标量子查询 + `GROUP BY` | **M-L** | ✅ 已核实（PLAN §10.114）：`GROUP BY` 只含**相关键**的形态（`WHERE` 与 select-list）已支持；含非相关列的 `GROUP BY` 被 DataFusion 分析器直接拒绝（“A GROUP BY clause in a scalar correlated subquery cannot contain non-correlated columns”），不在 IVM 侧 |
-| 相关子查询内 `DISTINCT`/多聚合 | **M** | ✅ COUNT 族已实现（PLAN §10.114）：`COUNT(x)` / `COUNT(*)` / `COUNT(DISTINCT x)` 的 `WHERE` 比较（DataFusion 的空集守卫 `CASE WHEN … IS NULL THEN 0` 重写为对聚合列求值；运行时改成左连接 + 谓词以填充缺失键；两级 DISTINCT 重写解析回 `count(distinct x)`）；多聚合仍明确拒绝；select-list 的 COUNT 族已单视图化（#1154，无匹配计 0），`COUNT(DISTINCT …)` 的 select-list 形态仍拒绝（两级聚合） |
+| 相关子查询内 `DISTINCT`/多聚合 | **M** | ✅ COUNT 族已实现（PLAN §10.114）：`COUNT(x)` / `COUNT(*)` / `COUNT(DISTINCT x)` 的 `WHERE` 比较（DataFusion 的空集守卫 `CASE WHEN … IS NULL THEN 0` 重写为对聚合列求值；运行时改成左连接 + 谓词以填充缺失键；两级 DISTINCT 重写解析回 `count(distinct x)`）；**多聚合已实现**（PLAN §10.170）：`WHERE` 比较、选择列表与 `HAVING`（全局/相关）都按「整体求值表达式物化」维护，`SUM+MAX`、`SUM+COUNT` 等混合形态可用；仍拒绝：值只由 COUNT 聚合组成的按行比较（空集为 0 而非 NULL）、select-list `COUNT(DISTINCT …)`（两级聚合） |
 | 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | ✅ 已实现（PR-103，PLAN §10.109）：`LeftAggregate.output_exprs`（渲染表达式对 `__ivm_right_agg` + MV 列 + 类型）；聚合值列保留（计算-only 时内部命名 `__ivm_agg`）；`left_aggregate_mv_schema_with_outputs` / expected schema / refresh+rebuild 同步 |
 | 子查询出现在 HAVING/ORDER BY | **S-M** | ✅ 单语句已实现（PR-105，PLAN §10.111）：MultiAgg 增加 `having_lookup` 第二源——相关形态按组键左连接按键盘聚合、非相关形态交叉连接全局聚合；两种源变更都会重算受影响组（全局=全部组）。两视图模式（PR-104）仍可用 |
 | 递归 CTE / LATERAL | **不做** | 非目标 |

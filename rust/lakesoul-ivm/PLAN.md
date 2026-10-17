@@ -4116,7 +4116,33 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **记录**：外层投影含**计算表达式**的 `Projection over Projection`（如 `SELECT s * 2 FROM (SELECT SUM(v) s ...) t`）
   仍由 Tier-2 兜底（README 的派生表计算聚合负例保持有效），待需求再放开。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.170 B6：多聚合标量子查询（WHERE / 选择列表 / HAVING）
+
+DataFusion 对多聚合标量子查询的去相关形态是一致的：右侧是 `Projection(值表达式, 键…)` over
+`Aggregate(keys, [agg1, agg2, …])`，投影里的值以**聚合输出列引用**表示（如 `sum(u.v) + max(u.v)`），
+`WHERE` 比较落在 semi join 的 filter、选择列表落在 left join 上方的计算列、`HAVING` 落在
+`Filter(left_agg > (<subquery>))`（全局）或 semi join 的 filter（相关）。
+
+实现按「**整体求值表达式物化**」处理，不改变 spec/布局：
+
+- 新增 `scalar_value_expression`（投影中非键、非 `__` helper 的那一列）、`scalar_value_forms`（把值表达式里的
+  聚合输出列替换成聚合调用得到物化 call，替换成带限定名的列得到谓词形式）、`strip_alias`、`counts_only`；
+- **WHERE**（`SemiAnti`）：多聚合时 `right_aggregate` = 值表达式（如 `(sum(v) + max(v))`），
+  `match_predicate` 把整个值表达式替换为 `__ivm_right_agg`（`render_match_predicate` 增加整棵子表达式匹配）；
+- **选择列表**（`LeftAggregate`）：多聚合时 `right_aggregate` = 值表达式；外层投影先做整表达式替换，
+  再按既有规则处理直接输出/计算输出（`* 2 + 1` 等）；
+- **HAVING**（`MultiAgg.having_lookup`）：全局与相关形态的 `aggregate` 都取值表达式（全局聚合恒有一行，
+  COUNT 的空集语义天然正确）；相关形态的谓词先把整表达式换成 `__ivm_lookup`；
+- **语义边界**：按行比较的值若**只由 COUNT 聚合组成**（如 `count+count`）空集为 0 而非 NULL，
+  逐键 join 无法表达，明确拒绝；混合形态（`sum+count`）由 NULL 支配，语义正确。DataFusion 对
+  「单 COUNT + 字面量」仍走空集守卫（既有 `try_analyze_guarded_count` 路径），不受影响。
+
+测试：分析器用例 `analyzes_multi_aggregate_scalar_subqueries`（四种形态的 spec 断言 + COUNT-only 拒绝）；
+oracle 差分对拍 `oracle_multi_aggregate_correlated_scalar_matches_full_recompute`、
+`oracle_multi_aggregate_left_aggregate_matches_full_recompute`，以及 HAVING 用例新增的
+`havingglobmulti` / `havingcorrmulti` 两组。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、

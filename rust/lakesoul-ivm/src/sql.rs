@@ -952,6 +952,114 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn analyzes_multi_aggregate_scalar_subqueries() {
+        let tables = vec![source_table("src"), source_table("dim")];
+        // WHERE: the threshold is one expression over two aggregates.
+        let analyzed = analyze_multi(
+            "select k, v from src s where v > \
+             (select sum(u.v) + max(u.v) from dim u where u.k = s.k)",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SemiAnti {
+            right_aggregate,
+            match_predicate,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a semi join");
+        };
+        assert_eq!(right_aggregate.as_deref(), Some("(sum(v) + max(v))"));
+        assert_eq!(
+            normalized(match_predicate.as_deref()).as_deref(),
+            Some("v > __ivm_right_agg")
+        );
+
+        // Select list: the direct value and a computed one.
+        let analyzed = analyze_multi(
+            "select k, \
+             (select sum(u.v) + max(u.v) from dim u where u.k = s.k) as m \
+             from src s",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            right_aggregate,
+            aggregate_column,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate");
+        };
+        assert_eq!(right_aggregate, "(sum(v) + max(v))");
+        assert_eq!(aggregate_column, "m");
+        assert!(output_exprs.is_empty());
+
+        let analyzed = analyze_multi(
+            "select k, \
+             (select sum(u.v) + max(u.v) from dim u where u.k = s.k) + 1 as m \
+             from src s",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LeftAggregate {
+            right_aggregate,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a left aggregate");
+        };
+        assert_eq!(right_aggregate, "(sum(v) + max(v))");
+        assert_eq!(output_exprs.len(), 1);
+        assert_eq!(
+            normalized(Some(output_exprs[0].call.as_str())).as_deref(),
+            Some("__ivm_right_agg + 1")
+        );
+
+        // HAVING: a global and a correlated lookup, both over two aggregates.
+        for sql in [
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(v) + min(v) from dim)",
+            "select g, sum(v) from src group by g \
+             having sum(v) > (select max(v) + min(v) from dim u where u.g = g)",
+        ] {
+            let analyzed = analyze_multi(sql, tables.clone()).await.unwrap();
+            let ViewSpec::MultiAgg {
+                having,
+                having_lookup,
+                ..
+            } = analyzed.spec
+            else {
+                panic!("expected a multi aggregate");
+            };
+            assert_eq!(
+                normalized(having.as_deref()).as_deref(),
+                Some("sum_v > __ivm_lookup")
+            );
+            assert_eq!(
+                having_lookup.expect("the lookup").aggregate,
+                "(max(v) + min(v))"
+            );
+        }
+
+        // A value over COUNT aggregates only has a non-NULL empty result, so
+        // a per-key join cannot express it.
+        let error = analyze_multi(
+            "select k, v from src s where v > \
+             (select count(u.v) + count(u.k) from dim u where u.k = s.k)",
+            tables,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("several aggregates"), "{error}");
+    }
+
     #[test]
     fn fallback_definition_hash_ignores_the_reason() {
         let first = ViewSpec::Fallback {

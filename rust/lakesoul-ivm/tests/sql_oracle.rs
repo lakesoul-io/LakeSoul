@@ -3436,6 +3436,36 @@ async fn oracle_correlated_scalar_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_multi_aggregate_correlated_scalar_matches_full_recompute() {
+    // The threshold is one expression over two aggregates of the other table.
+    let schema = source_schema();
+    let keys = vec!["k".to_string(), "g".to_string(), "v".to_string()];
+    run_oracle_seeded(
+        "multicorrscalar",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (0, 3, "g0", Some(60)),
+            (1, 1, "g0", Some(0)),
+            (1, 2, "g0", Some(0)),
+        ],
+        semi_anti_mv_schema_for(&schema, &keys).unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, g, v FROM __SRC0__ s WHERE s.v > \
+         (SELECT sum(u.v) + max(u.v) FROM __SRC1__ u WHERE u.k = s.k)",
+        "SELECT s.k, s.g, s.v FROM __SRC0__ s \
+         WHERE s.op <> 'delete' AND s.v > \
+         (SELECT sum(u.v) + max(u.v) FROM __SRC1__ u \
+          WHERE u.op <> 'delete' AND u.k = s.k)",
+        "SELECT k, g, v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_left_aggregate_matches_full_recompute() {
     // Every left row carries the per-key average of the other table.
     let schema = source_schema();
@@ -3460,6 +3490,45 @@ async fn oracle_left_aggregate_matches_full_recompute() {
                  WHERE u.op <> 'delete' AND u.k = s.k) AS m \
          FROM __SRC0__ s WHERE s.op <> 'delete'",
         "SELECT k, g, v, m FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_aggregate_left_aggregate_matches_full_recompute() {
+    // The scalar value is an expression over two aggregates of the other
+    // table, and the select list computes on it.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    run_oracle_seeded(
+        "multileftagg",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 2, "g0", Some(50)),
+            (1, 3, "g0", Some(70)),
+        ],
+        left_aggregate_mv_schema_with_outputs(
+            &schema,
+            &keys,
+            "__ivm_agg",
+            &DataType::Int64,
+            &[("m".to_string(), DataType::Int64)],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT s.k, \
+         (SELECT sum(u.v) + max(u.v) FROM __SRC1__ u WHERE u.k = s.k) * 2 + 1 \
+         AS m FROM __SRC0__ s",
+        "SELECT s.k, \
+         (SELECT sum(u.v) + max(u.v) FROM __SRC1__ u \
+          WHERE u.op <> 'delete' AND u.k = s.k) * 2 + 1 AS m \
+         FROM __SRC0__ s WHERE s.op <> 'delete'",
+        "SELECT k, m FROM __MV__",
     )
     .await;
 }
@@ -3531,6 +3600,19 @@ async fn oracle_having_subquery_matches_full_recompute() {
             "havingcorr",
             "SUM(v) > (SELECT MAX(d.v) FROM __SRC1__ d WHERE d.g = __SRC__.g)",
             "SUM(v) > (SELECT MAX(d.v) FROM __SRC1__ d \
+                       WHERE d.op <> 'delete' AND d.g = __SRC__.g)",
+        ),
+        (
+            "havingglobmulti",
+            "SUM(v) > (SELECT MAX(v) + MIN(v) FROM __SRC1__)",
+            "SUM(v) > (SELECT MAX(v) + MIN(v) FROM __SRC1__ \
+                       WHERE op <> 'delete')",
+        ),
+        (
+            "havingcorrmulti",
+            "SUM(v) > (SELECT MAX(d.v) + MIN(d.v) FROM __SRC1__ d \
+                       WHERE d.g = __SRC__.g)",
+            "SUM(v) > (SELECT MAX(d.v) + MIN(d.v) FROM __SRC1__ d \
                        WHERE d.op <> 'delete' AND d.g = __SRC__.g)",
         ),
     ] {
