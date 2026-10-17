@@ -656,11 +656,12 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   above 34) is rejected instead of maintaining a wrong value;
 * scalar subqueries outside the maintained subset (a correlated `(SELECT ...)`
   with a `GROUP BY` over columns other than its correlated keys (DataFusion's
-  own analyzer rejects those), several aggregates, a select-list `COUNT`
-  family (the guarded rewrite is only maintained in a `WHERE` comparison),
-  a computed value over left columns beside one, a
-  `HAVING` subquery with several aggregates / nested subqueries / correlated
-  on a non-group key, and a computed column over the lookup value),
+  own analyzer rejects those), a select-list `COUNT(DISTINCT ...)` (planned
+  as two aggregate levels), a **value computed from COUNT aggregates only**
+  in a comparison (a key without rows counts zero, which a per-key join
+  cannot express), a computed value over left columns beside one, a `HAVING`
+  subquery with nested subqueries / correlated on a non-group key, and a
+  computed column over the lookup value),
   a subquery or window function **above** an aggregate, and the derived-table
   form of a computed aggregate output
   (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained

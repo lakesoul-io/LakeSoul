@@ -2861,6 +2861,15 @@ fn having_subquery_source(
     }
     let subquery =
         subquery.ok_or_else(|| unsupported("a HAVING subquery needs a scalar value"))?;
+    // A value computed from several aggregates is materialized as one
+    // expression (a global aggregate always returns a row, so the empty-set
+    // defaults are the SQL ones).
+    let value_expression = match peel(subquery.as_ref()) {
+        LogicalPlan::Projection(projection) => {
+            scalar_value_expression(projection, &[]).map(strip_alias)
+        }
+        _ => None,
+    };
     let (aggregate, filter) = match peel_plain(subquery.as_ref()) {
         LogicalPlan::Aggregate(aggregate) => (aggregate, None),
         LogicalPlan::Filter(filter) => {
@@ -2876,15 +2885,19 @@ fn having_subquery_source(
             "an uncorrelated HAVING subquery with a GROUP BY",
         ));
     }
-    if aggregate.aggr_expr.len() != 1 {
+    if aggregate.aggr_expr.len() != 1 && value_expression.is_none() {
         return Err(unsupported("a HAVING subquery with several aggregates"));
     }
     validate_decimal_accumulators(aggregate)?;
     let (source, pushed) =
         collect_filtered_source(&aggregate.input, tables, "a HAVING subquery")?;
+    let call = match value_expression {
+        Some(expr) => scalar_value_forms(expr, aggregate, None)?.0,
+        None => render_expression(&aggregate.aggr_expr[0])?,
+    };
     Ok(HavingSubquery {
         table: source,
-        aggregate: render_expression(&aggregate.aggr_expr[0])?,
+        aggregate: call,
         join_keys: Vec::new(),
         right_keys: Vec::new(),
         filter: combine_filters(filter, pushed),
@@ -2997,11 +3010,19 @@ pub(super) fn analyze_having_join(
     join: &Join,
     left_aggregate: &Aggregate,
     right_aggregate: &Aggregate,
+    subquery_projection: &Projection,
     projection: Option<&Projection>,
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    if right_aggregate.aggr_expr.len() != 1 {
+    let value_keys = right_aggregate
+        .group_expr
+        .iter()
+        .filter_map(|expr| column_of(expr).map(|column| column.name.clone()))
+        .collect::<Vec<_>>();
+    let value_expression =
+        scalar_value_expression(subquery_projection, &value_keys).map(strip_alias);
+    if right_aggregate.aggr_expr.len() != 1 && value_expression.is_none() {
         return Err(unsupported("a HAVING subquery with several aggregates"));
     }
     if subtree_has_distinct_aggregate(&join.right) {
@@ -3076,13 +3097,43 @@ pub(super) fn analyze_having_join(
     validate_decimal_accumulators(right_aggregate)?;
     let (lookup_table, lookup_filter) =
         collect_filtered_source(&right_aggregate.input, tables, "a HAVING subquery")?;
-    let filter = join
+    let mut filter = join
         .filter
         .clone()
         .ok_or_else(|| unsupported("a HAVING subquery needs a comparison"))?;
+    // A value computed from several aggregates is one materialized column, so
+    // the whole comparison side maps to the lookup column.
+    let (value_call, value_reference) = match value_expression {
+        Some(expr) => {
+            let (call, reference) =
+                scalar_value_forms(expr, right_aggregate, qualifier.as_ref())?;
+            (Some(call), Some(reference))
+        }
+        None => (None, None),
+    };
+    if right_aggregate.aggr_expr.len() > 1
+        && let Some(value_form) = &value_reference
+    {
+        filter = filter
+            .transform_down(|node| {
+                if node == *value_form {
+                    Ok(Transformed::yes(Expr::Column(Column::from_name(
+                        IVM_HAVING_LOOKUP_COLUMN,
+                    ))))
+                } else {
+                    Ok(Transformed::no(node))
+                }
+            })
+            .map_err(|error| unsupported(format!("a HAVING subquery {error}")))?
+            .data;
+    }
+    let call = match value_call {
+        Some(call) => call,
+        None => render_expression(&right_aggregate.aggr_expr[0])?,
+    };
     let lookup = HavingSubquery {
         table: lookup_table,
-        aggregate: render_expression(&right_aggregate.aggr_expr[0])?,
+        aggregate: call,
         join_keys,
         right_keys,
         filter: lookup_filter,

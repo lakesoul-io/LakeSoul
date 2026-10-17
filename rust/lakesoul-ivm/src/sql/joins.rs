@@ -42,7 +42,7 @@ pub(super) fn analyze_join(
     }
     // A correlated scalar subquery plans as a left-semi join against one
     // aggregate row per correlated key.
-    if let Some((aggregate, _)) = aggregate_input(&join.right) {
+    if let Some((aggregate, subquery_projection)) = aggregate_input(&join.right) {
         // The correlated `HAVING` form: a semi join between the grouped
         // source and the per-key lookup aggregate.
         if join.join_type == JoinType::LeftSemi
@@ -52,6 +52,7 @@ pub(super) fn analyze_join(
                 join,
                 left_aggregate,
                 aggregate,
+                subquery_projection,
                 projection,
                 tables,
                 request,
@@ -607,6 +608,98 @@ pub(super) fn subtree_has_distinct_aggregate(plan: &LogicalPlan) -> bool {
     walk(plan, false)
 }
 
+/// The projection expression of a scalar subquery's value: the output that is
+/// not a correlated key or a decorrelation helper column.
+pub(super) fn scalar_value_expression<'a>(
+    projection: &'a Projection,
+    keys: &[String],
+) -> Option<&'a Expr> {
+    projection
+        .schema
+        .fields()
+        .iter()
+        .zip(&projection.expr)
+        .find(|(field, _)| {
+            !field.name().starts_with("__") && !keys.contains(field.name())
+        })
+        .map(|(_, expr)| expr)
+}
+
+/// The alias-free expression of a projection column.
+pub(super) fn strip_alias(expr: &Expr) -> &Expr {
+    let mut inner = expr;
+    while let Expr::Alias(alias) = inner {
+        inner = &alias.expr;
+    }
+    inner
+}
+
+/// The SQL call of a scalar subquery's value (the expression over the
+/// aggregate calls) and its predicate form (the same expression over the
+/// aggregate output columns, qualified by the subquery alias).  DataFusion's
+/// decorrelated projection references the aggregate outputs by name.
+pub(super) fn scalar_value_forms(
+    value: &Expr,
+    aggregate: &Aggregate,
+    qualifier: Option<&TableReference>,
+) -> Result<(String, Expr)> {
+    let calls = aggregate
+        .aggr_expr
+        .iter()
+        .map(|expr| (expr.schema_name().to_string(), expr.clone()))
+        .collect::<HashMap<_, _>>();
+    let call = value
+        .clone()
+        .transform_down(|node| match &node {
+            Expr::Column(column) if calls.contains_key(&column.name) => {
+                Ok(Transformed::yes(calls[&column.name].clone()))
+            }
+            _ => Ok(Transformed::no(node)),
+        })
+        .map_err(|error| unsupported(format!("a scalar subquery value {error}")))?
+        .data;
+    let reference = value
+        .clone()
+        .transform_down(|node| match &node {
+            Expr::Column(column) if calls.contains_key(&column.name) => {
+                Ok(Transformed::yes(Expr::Column(Column::new(
+                    qualifier.cloned(),
+                    column.name.clone(),
+                ))))
+            }
+            _ => Ok(Transformed::no(node)),
+        })
+        .map_err(|error| unsupported(format!("a scalar subquery value {error}")))?
+        .data;
+    Ok((render_expression(&call)?, reference))
+}
+
+/// Whether the value expression reads COUNT aggregates only.  A key without
+/// rows counts zero, not NULL, so a per-key semi/left join cannot express it
+/// unless a NULL-producing aggregate dominates the expression.
+pub(super) fn counts_only(value: &Expr, aggregate: &Aggregate) -> bool {
+    let mut has_aggregate = false;
+    let mut only_counts = true;
+    for expr in &aggregate.aggr_expr {
+        let name = expr.schema_name().to_string();
+        let referenced = value
+            .exists(|node| {
+                Ok(matches!(node, Expr::Column(column) if column.name == name))
+            })
+            .unwrap_or(false);
+        if !referenced {
+            continue;
+        }
+        has_aggregate = true;
+        if !matches!(expr, Expr::AggregateFunction(function)
+            if function.func.name().eq_ignore_ascii_case("count"))
+        {
+            only_counts = false;
+        }
+    }
+    has_aggregate && only_counts
+}
+
 fn aggregate_input(plan: &LogicalPlan) -> Option<(&Aggregate, &Projection)> {
     let plan = peel(plan);
     let LogicalPlan::Projection(projection) = plan else {
@@ -634,9 +727,6 @@ fn analyze_correlated_scalar(
         .filter
         .as_ref()
         .ok_or_else(|| unsupported("a scalar subquery comparison needs a filter"))?;
-    if aggregate.aggr_expr.len() != 1 {
-        return Err(unsupported("a scalar subquery with several aggregates"));
-    }
     if subtree_has_distinct_aggregate(&join.right) {
         return Err(unsupported(
             "a correlated scalar subquery with a DISTINCT aggregate",
@@ -663,6 +753,21 @@ fn analyze_correlated_scalar(
     }
     if aggregate_columns.len() != 1 {
         return Err(unsupported("a scalar subquery must return one column"));
+    }
+    // A value computed from several aggregates is materialized as one
+    // expression per key (only COUNT-only values need an empty-set default a
+    // per-key join cannot express).
+    let value_expression = scalar_value_expression(subquery_projection, &right_keys)
+        .ok_or_else(|| {
+            unsupported("a scalar subquery must return one aggregate value")
+        })?;
+    let value_expression = strip_alias(value_expression);
+    let several = aggregate.aggr_expr.len() > 1;
+    if several && counts_only(value_expression, aggregate) {
+        return Err(unsupported(
+            "a scalar subquery over several COUNT aggregates is not \
+             maintained (a key without rows counts zero)",
+        ));
     }
     // The join pairs the correlated keys.
     let mut join_keys = Vec::new();
@@ -699,9 +804,20 @@ fn analyze_correlated_scalar(
     let right = right_input.table;
     let (left_alias, right_alias) =
         (left_input.alias.as_deref(), right_input.alias.as_deref());
-    let predicate =
-        render_match_predicate(filter, &aggregate_columns, right_qualifier.as_ref())?;
-    let call = render_expression(&aggregate.aggr_expr[0])?;
+    let (value_call, value_reference) =
+        scalar_value_forms(value_expression, aggregate, right_qualifier.as_ref())?;
+    let call = if several {
+        value_call
+    } else {
+        render_expression(&aggregate.aggr_expr[0])?
+    };
+    let value_form = if several { Some(value_reference) } else { None };
+    let predicate = render_match_predicate(
+        filter,
+        &aggregate_columns,
+        right_qualifier.as_ref(),
+        value_form.as_ref(),
+    )?;
     let output_columns =
         semi_anti_output_columns(join, projection, left_alias, right_alias, left, right)?;
     Ok(ViewSpec::SemiAnti {
@@ -928,6 +1044,7 @@ pub(super) fn try_analyze_guarded_count(
         &predicate,
         &[aggregate_column],
         right_qualifier.as_ref(),
+        None,
     )?;
     let output_columns =
         semi_anti_output_columns(join, projection, left_alias, right_alias, left, right)?;
@@ -992,9 +1109,6 @@ fn analyze_left_aggregate(
             "a select-list scalar subquery with a residual condition",
         ));
     }
-    if aggregate.aggr_expr.len() != 1 {
-        return Err(unsupported("a scalar subquery with several aggregates"));
-    }
     if subtree_has_distinct_aggregate(&join.right) {
         // DataFusion plans `count(DISTINCT ..)` as two aggregate levels, so
         // the maintained subquery would correlate on the distinct key too.
@@ -1029,6 +1143,21 @@ fn analyze_left_aggregate(
     if aggregate_columns.len() != 1 {
         return Err(unsupported("a scalar subquery must return one column"));
     }
+    // A value computed from several aggregates is materialized as one
+    // expression per key (only COUNT-only values need an empty-set default a
+    // per-key join cannot express).
+    let value_expression = scalar_value_expression(subquery_projection, &right_keys)
+        .ok_or_else(|| {
+            unsupported("a scalar subquery must return one aggregate value")
+        })?;
+    let value_expression = strip_alias(value_expression);
+    let several = aggregate.aggr_expr.len() > 1;
+    if several && counts_only(value_expression, aggregate) {
+        return Err(unsupported(
+            "a scalar subquery over several COUNT aggregates is not \
+             maintained (a key without rows counts zero)",
+        ));
+    }
     // The join pairs the correlated keys.
     let mut join_keys = Vec::new();
     let mut on_right_keys = Vec::new();
@@ -1058,6 +1187,11 @@ fn analyze_left_aggregate(
             "a scalar subquery correlated on keys other than its grouping",
         ));
     }
+    // A value computed from several aggregates is one materialized column;
+    // its whole expression maps to the runtime's raw aggregate value.
+    let (value_call, value_reference) =
+        scalar_value_forms(value_expression, aggregate, right_qualifier.as_ref())?;
+    let value_form = if several { Some(value_reference) } else { None };
     let left_input = join_input(&join.left, tables)?;
     let right_input = join_input(&aggregate.input, tables)?;
     let left = left_input.table;
@@ -1108,12 +1242,36 @@ fn analyze_left_aggregate(
                 })?
                 .data;
         }
+        if let Some(value_form) = &value_form {
+            inner = inner
+                .clone()
+                .transform_down(|node| {
+                    if node == *value_form {
+                        return Ok(Transformed::yes(Expr::Column(Column::from_name(
+                            IVM_RIGHT_AGG_COLUMN,
+                        ))));
+                    }
+                    Ok(Transformed::no(node))
+                })
+                .map_err(|error| {
+                    unsupported(format!("a scalar subquery output {error}"))
+                })?
+                .data;
+        }
         if let Expr::Column(column) = &inner {
-            if on_right(column) {
+            let on_value =
+                column.relation.is_none() && column.name == IVM_RIGHT_AGG_COLUMN;
+            if on_value || on_right(column) {
                 if aggregate_column.is_some() {
                     return Err(unsupported("the scalar subquery value appears twice"));
                 }
-                aggregate_column = Some(alias.unwrap_or_else(|| column.name.clone()));
+                aggregate_column = Some(alias.unwrap_or_else(|| {
+                    if on_value {
+                        aggregate_columns[0].clone()
+                    } else {
+                        column.name.clone()
+                    }
+                }));
             } else {
                 output_columns.push(alias.unwrap_or_else(|| column.name.clone()));
             }
@@ -1136,11 +1294,18 @@ fn analyze_left_aggregate(
                 "a computed scalar subquery output needs an alias",
             ));
         }
+        // The outer expression reads the subquery value either as the
+        // decorrelated projection column (one per subquery) or as the raw
+        // aggregate value the earlier rewrite introduced.
+        let is_value = |column: &Column| {
+            on_right(column)
+                || (column.relation.is_none() && column.name == IVM_RIGHT_AGG_COLUMN)
+        };
         let mut references = 0usize;
         inner
             .apply(|node| {
                 if let Expr::Column(column) = node
-                    && on_right(column)
+                    && is_value(column)
                 {
                     references += 1;
                 }
@@ -1157,7 +1322,7 @@ fn analyze_left_aggregate(
             .clone()
             .transform_down(|node| {
                 if let Expr::Column(column) = &node
-                    && on_right(column)
+                    && is_value(column)
                 {
                     return Ok(Transformed::yes(Expr::Column(Column::from_name(
                         IVM_RIGHT_AGG_COLUMN,
@@ -1185,15 +1350,22 @@ fn analyze_left_aggregate(
             )));
         }
     }
-    let call = render_expression(&aggregate.aggr_expr[0])?;
+    let call = if several {
+        value_call
+    } else {
+        render_expression(&aggregate.aggr_expr[0])?
+    };
     // A COUNT counts zero for a key without rows; every other aggregate is
-    // NULL there.
-    let count_zero = count_zero
-        || matches!(
-            &aggregate.aggr_expr[0],
-            Expr::AggregateFunction(function)
-                if function.func.name().eq_ignore_ascii_case("count")
-        );
+    // NULL there.  A value computed from several aggregates is NULL when any
+    // NULL-producing aggregate participates, which the rejection above
+    // guarantees.
+    let count_zero = !several
+        && (count_zero
+            || matches!(
+                &aggregate.aggr_expr[0],
+                Expr::AggregateFunction(function)
+                    if function.func.name().eq_ignore_ascii_case("count")
+            ));
     Ok(ViewSpec::LeftAggregate {
         view_id: request.view_id.clone(),
         left_table_id: left.table_id.clone(),
@@ -1218,6 +1390,7 @@ fn render_match_predicate(
     filter: &Expr,
     aggregate_columns: &[String],
     right_qualifier: Option<&TableReference>,
+    value: Option<&Expr>,
 ) -> Result<String> {
     let mut right_column = None;
     filter
@@ -1237,8 +1410,24 @@ fn render_match_predicate(
             "a correlated condition over the right column {column}"
         )));
     }
-    let transformed = filter
-        .clone()
+    let mut transformed = filter.clone();
+    if let Some(value) = value {
+        // A value computed from several aggregates is one materialized
+        // column, so its whole expression maps to that column.
+        transformed = transformed
+            .transform_down(|node| {
+                if node == *value {
+                    Ok(Transformed::yes(Expr::Column(Column::from_name(
+                        IVM_RIGHT_AGG_COLUMN,
+                    ))))
+                } else {
+                    Ok(Transformed::no(node))
+                }
+            })
+            .map_err(|error| unsupported(format!("a scalar subquery condition {error}")))?
+            .data;
+    }
+    let transformed = transformed
         .transform_down(|node| match node {
             Expr::Column(column) if aggregate_columns.contains(&column.name) => Ok(
                 Transformed::yes(Expr::Column(Column::from_name(IVM_RIGHT_AGG_COLUMN))),
