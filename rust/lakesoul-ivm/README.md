@@ -623,7 +623,10 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   key stays the semi (membership) shape, and otherwise the pair join
   materializes the missing side's row identity as its payload (a right side
   with a non-unique join key, or a select list that takes only the right
-  side); a single-sided **outer** join stays rejected;
+  side); a single-sided **outer** join is maintained when the select list
+  takes only the kept side and the other side is keyed by the join keys (the
+  kept side is then the whole view); any other single-sided outer shape
+  (a non-unique matched side, the padded side, `FULL`) stays rejected;
 * a **list or map primary key** on a side of an outer-join or chain **step**:
   the step's row identity encodes both sides' primary keys as length-prefixed
   text - a struct key is encoded field by field **before the join**, so the
@@ -662,11 +665,8 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   cannot express), a computed value over left columns beside one, a `HAVING`
   subquery with nested subqueries / correlated on a non-group key, and a
   computed column over the lookup value),
-  a subquery or window function **above** an aggregate, and the derived-table
-  form of a computed aggregate output
-  (`SELECT s * 2 FROM (SELECT SUM(v) AS s ...) t`, which needs two chained
-  views; the direct `SELECT SUM(v) * 2 ... GROUP BY g` form is maintained);
-  correlated `EXISTS` / `IN` subqueries are supported as semi/anti joins;
+  a subquery or window function **above** an aggregate; correlated `EXISTS` /
+  `IN` subqueries are supported as semi/anti joins;
 * append-only sources (with or without a change column): incremental views
   need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete`
   marker is never materialized as a row, but the matching insert row stays

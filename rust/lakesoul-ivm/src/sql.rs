@@ -748,10 +748,11 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
     }
     Ok(format!("{hash:016x}"))
 }
-/// Collapse `Projection (outer)` over `Projection (inner)` when the outer
-/// one only selects or renames columns.  The optimizer keeps both around a
-/// pruned subquery select list, and the shape analyzers expect a single
-/// projection over the shape's input.
+/// Collapse `Projection (outer)` over `Projection (inner)` by substituting the
+/// inner projection's expressions into the outer one.  The optimizer keeps
+/// both around a pruned subquery select list (a computed aggregate output, a
+/// computed select list, say), and the shape analyzers expect one projection
+/// over the shape's input.
 fn collapse_projections(plan: &LogicalPlan) -> Option<LogicalPlan> {
     let LogicalPlan::Projection(outer) = plan else {
         return None;
@@ -759,34 +760,60 @@ fn collapse_projections(plan: &LogicalPlan) -> Option<LogicalPlan> {
     let LogicalPlan::Projection(inner) = peel(&outer.input) else {
         return None;
     };
+    // The inner projection's outputs, alias-free.
+    let outputs = inner
+        .schema
+        .fields()
+        .iter()
+        .zip(&inner.expr)
+        .map(|(field, expr)| (field.name().clone(), strip_alias(expr).clone()))
+        .collect::<HashMap<_, _>>();
     let mut exprs = Vec::with_capacity(outer.expr.len());
-    for expr in &outer.expr {
+    for (index, expr) in outer.expr.iter().enumerate() {
         let mut target = expr;
-        let mut alias = None;
         while let Expr::Alias(aliased) = target {
-            if alias.is_none() {
-                alias = Some(aliased.name.clone());
-            }
             target = &aliased.expr;
         }
-        let Expr::Column(column) = target else {
+        // A subquery keeps its own scope; leave those shapes to the
+        // subquery analyzers.
+        if target
+            .exists(|node| {
+                Ok(matches!(
+                    node,
+                    Expr::ScalarSubquery(_) | Expr::Exists { .. } | Expr::InSubquery(_)
+                ))
+            })
+            .unwrap_or(true)
+        {
             return None;
-        };
-        let (field, expression) = inner
-            .schema
-            .fields()
-            .iter()
-            .zip(&inner.expr)
-            .find(|(field, _)| field.name() == &column.name)?;
-        let expression = match &alias {
-            Some(name) if name != field.name() => Expr::Alias(Alias::new(
-                expression.clone(),
-                None::<TableReference>,
-                name.clone(),
-            )),
-            _ => expression.clone(),
-        };
-        exprs.push(expression);
+        }
+        // Every column the outer expression reads must be an inner output.
+        let mut resolved = true;
+        let substituted = target
+            .clone()
+            .transform_up(|node| match &node {
+                Expr::Column(column) => match outputs.get(&column.name) {
+                    Some(expression) => Ok(Transformed::yes(expression.clone())),
+                    None => {
+                        resolved = false;
+                        Ok(Transformed::no(node))
+                    }
+                },
+                _ => Ok(Transformed::no(node)),
+            })
+            .ok()?
+            .data;
+        if !resolved {
+            return None;
+        }
+        // Keep the statement's output names: the replacement expressions
+        // carry the inner names (or none for a computed one).
+        let name = outer.schema.fields()[index].name().clone();
+        exprs.push(Expr::Alias(Alias::new(
+            substituted,
+            None::<TableReference>,
+            name,
+        )));
     }
     // Keep the outer schema: above a derived step the inner input can carry
     // a schema that the rewrite has not refreshed, and the analyzer only
@@ -1221,6 +1248,111 @@ mod tests {
         assert!(rows.is_empty());
     }
 
+    #[tokio::test]
+    async fn analyzes_derived_computed_outputs() {
+        let tables = vec![source_table("src")];
+        // A computed output over a derived aggregate table is composed into
+        // the aggregate projection (the raw aggregate stays materialized).
+        let analyzed = analyze_multi(
+            "select g, s * 2 as s2 from \
+             (select g, sum(v) as s from src group by g) t",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiAgg { aggregates, .. } = analyzed.spec else {
+            panic!("expected a multi aggregate");
+        };
+        assert_eq!(aggregates.len(), 2);
+        assert_eq!(aggregates[1].column, "s2");
+        assert_eq!(aggregates[1].call, "(sum(v) * 2)");
+
+        // A computed select list over a derived computed projection is
+        // substituted into the row expression.
+        let analyzed = analyze_multi(
+            "select k, v1 * 2 as v2 from (select k, v + 1 as v1 from src) t",
+            tables,
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Row {
+            output_columns,
+            output_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row");
+        };
+        assert_eq!(output_columns, vec!["k".to_string(), "v2".to_string()]);
+        assert_eq!(
+            normalized(Some(output_exprs[1].as_str())).as_deref(),
+            Some("v + 1 * 2")
+        );
+    }
+
+    #[tokio::test]
+    async fn analyzes_single_sided_outer_joins() {
+        let tables = vec![source_table("a"), source_table("b")];
+        // The right side is keyed by the join keys, so a LEFT join keeps
+        // every left row once: selecting only the left side is the left
+        // table.
+        let analyzed = analyze_multi(
+            "select a.k, a.v * 2 as w from a left join b on a.k = b.k \
+             where a.v > 5",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Row {
+            source_table_id,
+            output_columns,
+            output_exprs,
+            filter,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row");
+        };
+        assert_eq!(source_table_id, "table_a");
+        assert_eq!(output_columns, vec!["k".to_string(), "w".to_string()]);
+        assert_eq!(
+            normalized(Some(output_exprs[1].as_str())).as_deref(),
+            Some("v * 2")
+        );
+        assert_eq!(normalized(filter.as_deref()).as_deref(), Some("v > 5"));
+
+        // A RIGHT join selecting only the right side, with the left keyed.
+        let analyzed = analyze_multi(
+            "select b.k, b.v from a right join b on a.k = b.k",
+            tables.clone(),
+        )
+        .await
+        .unwrap();
+        let ViewSpec::Row {
+            source_table_id, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a row");
+        };
+        assert_eq!(source_table_id, "table_b");
+
+        // A non-unique matched side keeps the outer join rejected.
+        assert!(
+            analyze_multi(
+                "select a.k, a.v from a left join b on a.v = b.v",
+                tables.clone(),
+            )
+            .await
+            .is_err()
+        );
+        // Selecting the padded side of the outer join stays rejected.
+        assert!(
+            analyze_multi("select b.k, b.v from a left join b on a.k = b.k", tables,)
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn fallback_definition_hash_ignores_the_reason() {
         let first = ViewSpec::Fallback {
@@ -1579,10 +1711,11 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unsupported_join_and_union_shapes() {
-        // A join whose select list takes no payload from either side cannot
-        // be materialized.
+        // A single-sided outer join reads only the kept side, and only when
+        // the other side is keyed by the join keys; the padded side stays
+        // rejected.
         assert!(
-            analyze_optimized("select a.k from src a left join src b on a.k = b.k")
+            analyze_optimized("select b.k from src a left join src b on a.k = b.k")
                 .await
                 .is_err()
         );
