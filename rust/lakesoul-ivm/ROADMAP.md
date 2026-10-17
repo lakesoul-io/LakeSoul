@@ -149,7 +149,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | `INTERSECT ALL`/`EXCEPT ALL` 计数放宽（左侧非唯一） | **M** | ✅ 已实现（PR-101，PLAN §10.107）：`SemiAntiView.count_mode`（rank vs 右侧 per-tuple count）；引擎自身对原始集合运算只做成员判定，oracle 用 Rust 独立计数 |
-| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | **已实现（PLAN §10.112）**：单 pair 的 inner / LEFT / RIGHT / FULL 普通列键均可空安全（spec/runtime `null_safe`、pair 计算与受影响行选择走 `NullEquality::NullEqualsNull`、输出键列可空、lookup 形态保持严格语义）；多表链与表达式键仍明确拒绝（表达式键是语义决策：null-safe 只支持普通列；多表链的理由已核实，见 PLAN §10.165——**全 null-safe 链的标记逐节点保留，可作为后续能力放开**，**混合链的内层 join 标记被外层覆盖/提升**，因此保持拒绝以免与计划实际语义分叉） |
+| 空安全谓词的非 semi/anti 形态（`IS NOT DISTINCT FROM` 连接键） | **M** | **已实现（PLAN §10.112，链见 §10.172）**：单 pair 的 inner / LEFT / RIGHT / FULL 普通列键均可空安全（spec/runtime `null_safe`、pair 计算与受影响行选择走 `NullEquality::NullEqualsNull`、输出键列可空、lookup 形态保持严格语义）；**全 null-safe 多表链已放开**（多路 inner 链与 lookup 链，spec 记录 `null_safe`、运行时逐连接 `NullEqualsNull`；按优化后计划的逐 join 标记维护——外层的 null-safe 会向内传播、内层 null-safe 在外层严格下会被简化；混合标记的计划明确拒绝）；单 pair 的表达式键仍要求普通列 |
 
 ### B6. 子查询（P2）
 

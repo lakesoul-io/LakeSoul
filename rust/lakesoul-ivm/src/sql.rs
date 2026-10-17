@@ -1116,6 +1116,111 @@ mod tests {
         );
     }
 
+    /// The chain analysis follows the plan's per-join markers, so the
+    /// maintained view reproduces what the plan itself executes.  This pins
+    /// the optimizer's marker propagation against a data-level reference.
+    #[tokio::test]
+    async fn reads_the_null_safe_chain_results() {
+        use datafusion::arrow::array::{Array, Int64Array};
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        async fn run(sql: &str) -> (Vec<bool>, Vec<(i64, Option<i64>, Option<i64>)>) {
+            let ctx = SessionContext::new();
+            // One row per source, all with a NULL value key.
+            for (name, k) in [("a", 1i64), ("b", 2), ("c", 3)] {
+                let batch = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![
+                        Field::new("k", DataType::Int64, false),
+                        Field::new("v", DataType::Int64, true),
+                    ])),
+                    vec![
+                        Arc::new(Int64Array::from(vec![k])),
+                        Arc::new(Int64Array::from(vec![None::<i64>])),
+                    ],
+                )
+                .unwrap();
+                let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+                ctx.register_table(name, Arc::new(table)).unwrap();
+            }
+            let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+            let optimized = ctx.state().optimize(&plan).unwrap();
+            let mut markers = Vec::new();
+            optimized
+                .apply(|node| {
+                    if let LogicalPlan::Join(join) = node {
+                        markers.push(
+                            join.null_equality
+                                == datafusion::common::NullEquality::NullEqualsNull,
+                        );
+                    }
+                    Ok(TreeNodeRecursion::Continue)
+                })
+                .unwrap();
+            let batches = ctx
+                .execute_logical_plan(optimized)
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let mut rows = Vec::new();
+            for batch in &batches {
+                let k = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let bv = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let cv = batch
+                    .column(2)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for row in 0..batch.num_rows() {
+                    let pick = |array: &Int64Array| {
+                        if array.is_null(row) {
+                            None
+                        } else {
+                            Some(array.value(row))
+                        }
+                    };
+                    rows.push((k.value(row), pick(bv), pick(cv)));
+                }
+            }
+            (markers, rows)
+        }
+
+        // A uniform null-safe chain matches the NULL pair.
+        let (markers, rows) = run("select a.k, b.v, c.v from a \
+             join b on a.v is not distinct from b.v \
+             join c on b.v is not distinct from c.v")
+        .await;
+        assert_eq!(markers, vec![true, true]);
+        assert_eq!(rows, vec![(1, None, None)]);
+
+        // An outer null-safe comparison propagates inward; the plan (and the
+        // view) then executes every step null-safely.
+        let (markers, rows) = run("select a.k, b.v, c.v from a \
+             join b on a.v = b.v \
+             join c on b.v is not distinct from c.v")
+        .await;
+        assert_eq!(markers, vec![true, true]);
+        assert_eq!(rows, vec![(1, None, None)]);
+
+        // An inner null-safe join under a strict outer join simplifies to
+        // strict: the extra NULL matches die at the outer strict condition.
+        let (markers, rows) = run("select a.k, b.v, c.v from a \
+             join b on a.v is not distinct from b.v \
+             join c on b.v = c.v")
+        .await;
+        assert_eq!(markers, vec![false, false]);
+        assert!(rows.is_empty());
+    }
+
     #[test]
     fn fallback_definition_hash_ignores_the_reason() {
         let first = ViewSpec::Fallback {

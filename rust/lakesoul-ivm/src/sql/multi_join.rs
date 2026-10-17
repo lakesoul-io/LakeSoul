@@ -399,6 +399,7 @@ pub(super) fn analyze_multi_join(
     projection: Option<&Projection>,
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
+    null_safe: bool,
 ) -> Result<ViewSpec> {
     let plan = LogicalPlan::Join(join.clone());
     let flat = flatten_join_tree(&plan, tables)?;
@@ -488,6 +489,7 @@ pub(super) fn analyze_multi_join(
         keys: flat.keys,
         columns,
         conditions: flat.conditions,
+        null_safe,
     })
 }
 
@@ -509,14 +511,14 @@ fn peel_chain_node(plan: &LogicalPlan) -> &LogicalPlan {
     }
 }
 
-/// Whether any step of a join tree matches its keys null-safely.
-///
-/// The flattened chain and the lookup chain compare with strict equality, so
-/// a null-safe step (including a nested one) is rejected instead of silently
-/// producing different rows.
-pub(super) fn join_tree_has_null_safe_step(join: &Join) -> bool {
-    /// One subtree: peel the wrappers a join node may carry, then recurse.
-    fn step(plan: &LogicalPlan) -> bool {
+/// The null-equality marker of a join tree.  The optimizer keeps the marker
+/// uniform across a chain (an outer null-safe comparison propagates inward,
+/// and an inner null-safe comparison under a strict outer join simplifies to
+/// strict), so the maintained chain uses one setting; a plan that mixes
+/// markers is rejected.
+pub(super) fn join_tree_null_safe(join: &Join) -> Result<bool> {
+    /// One subtree: peel the wrappers a join node may carry, then collect.
+    fn step(plan: &LogicalPlan, markers: &mut Vec<bool>) {
         let mut node = peel(plan);
         loop {
             match node {
@@ -526,18 +528,22 @@ pub(super) fn join_tree_has_null_safe_step(join: &Join) -> bool {
                 _ => break,
             }
         }
-        match node {
-            LogicalPlan::Join(join) => {
-                join.null_equality == NullEquality::NullEqualsNull
-                    || step(&join.left)
-                    || step(&join.right)
-            }
-            _ => false,
+        if let LogicalPlan::Join(join) = node {
+            markers.push(join.null_equality == NullEquality::NullEqualsNull);
+            step(&join.left, markers);
+            step(&join.right, markers);
         }
     }
-    join.null_equality == NullEquality::NullEqualsNull
-        || step(&join.left)
-        || step(&join.right)
+    let mut markers = Vec::new();
+    markers.push(join.null_equality == NullEquality::NullEqualsNull);
+    step(&join.left, &mut markers);
+    step(&join.right, &mut markers);
+    if markers.iter().any(|marker| *marker) && !markers.iter().all(|marker| *marker) {
+        return Err(unsupported(
+            "a join chain mixes null-safe and strict comparisons",
+        ));
+    }
+    Ok(markers.iter().all(|marker| *marker))
 }
 
 /// Whether a join tree contains a step that is not an inner join.
@@ -580,6 +586,7 @@ pub(super) fn analyze_lookup_chain(
     projection: Option<&Projection>,
     tables: &HashMap<String, IvmTable>,
     request: &AnalyzeRequest,
+    null_safe: bool,
 ) -> Result<ViewSpec> {
     let Some(projection) = projection else {
         return Err(unsupported("a lookup chain needs a projection"));
@@ -844,5 +851,6 @@ pub(super) fn analyze_lookup_chain(
         steps,
         output_columns,
         mv_table_id: request.mv_table_id.clone(),
+        null_safe,
     })
 }
