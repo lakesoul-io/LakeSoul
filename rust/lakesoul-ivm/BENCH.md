@@ -1,0 +1,139 @@
+# Refresh benchmark (B0)
+
+`examples/ivm_bench.rs` measures whether incremental maintenance pays off
+against a full recompute of the **same statement**.  Every round appends the
+same change batch to the source and times two independent views:
+
+| View | Statement | Expected action |
+|---|---|---|
+| incremental | `INSERT INTO <mv> SELECT ...` | `incremental` |
+| full baseline | `INSERT OVERWRITE <mv> SELECT ...` | `overwrite` |
+
+Both views share the plan, the source, the file format and the write path, so
+the difference is the maintenance strategy itself.  The source write is timed
+separately and is not part of the refresh numbers.
+
+This is the B0 milestone: the harness, two shapes (`row`, `sum_count`), the
+S3/local storage switch and the CSV/summary output.  Later milestones extend
+the shape matrix (lookups, top-k, multi-join, derived chains, partitions,
+skew), add IO counters (`B1`) and publish a fixed report (`B3`).
+
+## Setup
+
+The local development services (`devenv up`) provide PostgreSQL and RustFS
+(S3) at `127.0.0.1:5432` and `127.0.0.1:9000`.  Create the bucket once:
+
+```sh
+uv run --quiet --no-project --with boto3 python - <<'PY'
+import boto3
+client = boto3.client(
+    "s3",
+    endpoint_url="http://127.0.0.1:9000",
+    aws_access_key_id="rustfsadmin",
+    aws_secret_access_key="rustfsadmin",
+    region_name="us-east-1",
+)
+client.create_bucket(Bucket="lakesoul-test-bucket")
+PY
+```
+
+Environment:
+
+```sh
+export LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified'
+export LAKESOUL_PG_USERNAME=lakesoul_test
+export LAKESOUL_PG_PASSWORD=lakesoul_test
+export AWS_ENDPOINT=http://127.0.0.1:9000
+export AWS_ACCESS_KEY_ID=rustfsadmin
+export AWS_SECRET_ACCESS_KEY=rustfsadmin
+export AWS_REGION=us-east-1
+```
+
+## Run
+
+Build in release mode for timing (`--release`); `--profile test-fast` is fine
+for a functional smoke test.
+
+```sh
+# Smoke test on the local filesystem.
+cargo run --release -p lakesoul-ivm --example ivm_bench -- \
+    --storage local --rows 20000 --groups 200 --change-rows 200 --rounds 5
+
+# Default S3 run: both shapes, 100k rows, 1% change per round.
+cargo run --release -p lakesoul-ivm --example ivm_bench -- \
+    --shape both --rows 100000 --change-ratio 0.01 --rounds 15
+
+# Scaling run: same change size on a larger table.
+cargo run --release -p lakesoul-ivm --example ivm_bench -- \
+    --rows 1000000 --groups 10000 --change-rows 1000 --rounds 15 \
+    --verify-every 5 --out /tmp/ivm-bench-1m.csv
+```
+
+`--help` lists every flag.  The main ones:
+
+| Flag | Meaning |
+|---|---|
+| `--shape <row\|sum_count\|both>` | views to measure |
+| `--rows <N>` | source rows to seed |
+| `--change-ratio <F>` / `--change-rows <N>` | changes per round (fraction or absolute) |
+| `--rounds <N>` / `--warmup <N>` | measured and unmeasured rounds |
+| `--groups <N>` | distinct groups (aggregate cost knob) |
+| `--storage <local\|s3>` | table storage |
+| `--bucket` / `--prefix` | S3 location |
+| `--out <FILE>` | write the CSV there instead of stdout |
+| `--verify-every <N>` | compare the two views every N rounds (`0`: at the end) |
+| `--keep` | keep the tables after the run |
+
+Each run creates uniquely named tables under
+`s3://<bucket>/<prefix>/<run-id>/` (or a temporary directory), verifies that
+the actions are `incremental` and `overwrite`, optionally compares the two
+views row by row, and drops the tables at the end.  S3 objects are not
+deleted; use a prefix and clean it up out of band.
+
+## Output
+
+Per round, one CSV row per shape:
+
+```
+shape,round,change_rows,source_write_ms,incr_ms,full_ms,speedup,incr_action,full_action
+row,3,1000,31.706,173.670,968.256,5.58,incremental,overwrite
+```
+
+The trailing table summarizes p50/p95 for both paths:
+
+```
+shape      rows      groups    change    incr_p50   full_p50   speedup  incr_p95   full_p95
+row        20000     200       200       144.0ms    746.8ms    5.2x     173.7ms    968.3ms
+sum_count  20000     200       200       311.7ms    1103.7ms   3.5x     335.2ms    1151.5ms
+```
+
+How to read it:
+
+* **speedup** = `full_p50 / incr_p50`.  The incremental path should win at
+  small change ratios and on large tables;
+* the incremental latency should stay **flat as the table grows** for a fixed
+  change size — run the same `--change-rows` at `--rows 1e5` and `--rows 1e7`
+  and compare `incr_p50`;
+* the **break-even** change ratio is where `incr_ms` approaches `full_ms`;
+  sweep `--change-ratio` on a fixed table;
+* `sum_count` scales with the number of **affected groups**, not just the
+  changed rows: with `--groups 200` and 200 changes almost every group is
+  touched, which is the expected worst case.
+
+## Methodology notes
+
+* Timing wraps `IvmSqlExecutor::execute`, so it includes planning, metadata,
+  the source scan, the merge and the commit; source writes are separate.
+* The full baseline is `INSERT OVERWRITE` on the same statement: it truncates
+  and rewrites the whole MV, the cheapest fair "recompute everything".
+* Warmup rounds are excluded from the summary; results are deterministic for
+  a given `--seed`, and the CSV keeps every measured round so paired
+  comparisons are possible.
+* File format is Parquet; the initial seed uses `--batch` rows per write, so
+  the table starts with `rows / batch` files per bucket.  File counts matter
+  on S3; keep `--batch` consistent across runs you compare.
+* B0 does not yet report bytes scanned or rows written (B1 adds the counters);
+  for now compare wall-clock, actions and the change/group knobs.
+* Pin the environment (same machine, same PostgreSQL, same RustFS) when
+  comparing runs; object-store latency and OS caches dominate small-change
+  rounds.

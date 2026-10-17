@@ -674,6 +674,15 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   state are not maintained over such sources yet (see the CDC plan in
   `PLAN.md`).
 
+## Performance
+
+[`BENCH.md`](BENCH.md) describes the refresh benchmark
+(`examples/ivm_bench.rs`): it times incremental maintenance against a full
+`INSERT OVERWRITE` recompute of the same statement, per round, on local
+storage or S3, and prints a CSV plus p50/p95 summaries.  Start with
+`cargo run --release -p lakesoul-ivm --example ivm_bench -- --rows 100000
+--change-ratio 0.01 --rounds 15`.
+
 ## Tests
 
 The crate has three test layers:
