@@ -29,7 +29,8 @@ use lakesoul_ivm::{
     join_condition_column_name, join_key_expression_name, keyed_join_output_primary_keys,
     keyed_join_view_schema_for, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_for, left_aggregate_mv_schema_with_outputs,
-    left_join_view_schema_for, lookup_chain_mv_schema_for, lookup_chain_step_id_column,
+    left_join_view_schema_for, left_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
@@ -413,6 +414,296 @@ async fn oracle_join_key_expression_matches_full_recompute() {
          AND b.op <> 'delete' AND a.v + 1 = b.v",
         "SELECT k, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" \
          FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_lookup_join_key_expression_matches_full_recompute() {
+    // A lookup LEFT join whose fact key is computed: `b.k = a.v + 1`.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let key_exprs = JoinKeyExprs {
+        left: vec!["v + 1".to_string()],
+        right: vec!["k".to_string()],
+    };
+    let join_keys = vec![join_key_expression_name(0)];
+    run_oracle_seeded(
+        "lookupkeyexpr",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0usize, 1i64, "g0", Some(10i64)),
+            (0, 2, "g1", Some(30)),
+            (1, 11, "g0", Some(0)),
+            (1, 31, "g1", Some(1)),
+        ],
+        lookup_join_view_schema_for(
+            &schema, &schema, &keys, &keys, &join_keys, &key_exprs, "v", "v",
+        )
+        .unwrap(),
+        keys.clone(),
+        "SELECT a.k, a.v, b.v FROM __SRC__ a LEFT JOIN __SRC1__ b ON b.k = a.v + 1",
+        "SELECT a.k, a.v, b.v FROM \
+             (SELECT k, v FROM __SRC__ WHERE op <> 'delete') a \
+         LEFT JOIN (SELECT * FROM __SRC1__ WHERE op <> 'delete') b ON b.k = a.v + 1",
+        "SELECT k, left_value, right_value FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_left_join_key_expression_matches_full_recompute() {
+    // The right side is not keyed by the computed key, so the shape is a pair
+    // left join; two right rows matching one key keep their own pairs.
+    let schema = source_schema();
+    let keys = vec!["k".to_string()];
+    let key_exprs = JoinKeyExprs {
+        left: vec!["v + 1".to_string()],
+        right: vec!["v".to_string()],
+    };
+    let join_keys = vec![join_key_expression_name(0)];
+    run_oracle_seeded(
+        "leftkeyexpr",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0usize, 1i64, "g0", Some(10i64)),
+            (0, 2, "g1", Some(30)),
+            (1, 7, "g0", Some(11)),
+            (1, 8, "g0", Some(11)),
+            (1, 9, "g1", Some(31)),
+        ],
+        left_join_view_schema_with_keys(
+            &schema, &schema, &keys, &keys, &join_keys, &key_exprs, "v", "v",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&keys, &keys),
+        "SELECT a.v, b.v AS bv FROM __SRC__ a LEFT JOIN __SRC1__ b ON a.v + 1 = b.v",
+        "SELECT a.v, b.v, a.k, b.k FROM \
+             (SELECT * FROM __SRC__ WHERE op <> 'delete') a \
+         LEFT JOIN (SELECT * FROM __SRC1__ WHERE op <> 'delete') b ON a.v + 1 = b.v",
+        "SELECT left_value, right_value, \"__left_pk_k\", \"__right_pk_k\" FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_multi_join_key_expression_matches_full_recompute() {
+    // A three-way inner join whose last key is computed on the middle source.
+    let schema = source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", Some(10i64)),
+        (0, 1, "g1", Some(30)),
+        (1, 0, "g0", Some(20)),
+        (1, 1, "g1", Some(40)),
+        (2, 0, "g0", Some(21)),
+        (2, 5, "g2", Some(99)),
+    ];
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        MultiJoinColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "av".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "g".to_string(),
+            name: "cg".to_string(),
+        },
+    ];
+    let primary_keys = vec![
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+    ];
+    run_oracle_seeded(
+        "multijointexpr",
+        3,
+        schema.clone(),
+        false,
+        &seed,
+        multi_join_mv_schema_for(
+            &[schema.clone(), schema.clone(), schema.clone()],
+            &primary_keys,
+            &columns,
+        )
+        .unwrap(),
+        multi_join_primary_keys(&primary_keys),
+        "SELECT a.k, a.v AS av, b.v AS bv, c.g AS cg FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.k = b.k JOIN __SRC2__ c ON b.v + 1 = c.v",
+        "SELECT a.k, a.v AS av, b.v AS bv, c.g AS cg, a.k AS p0, b.k AS p1, \
+         c.k AS p2 FROM __SRC__ a JOIN __SRC1__ b ON a.k = b.k \
+         JOIN __SRC2__ c ON b.v + 1 = c.v \
+         WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
+        "SELECT k, av, bv, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_lookup_chain_key_expression_matches_full_recompute() {
+    // A chain whose last step key is computed on the step source; the
+    // computed key is not the step's primary key, so it is a 1:N step.
+    let schema = source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: vec!["k".to_string()],
+            right_keys: vec!["k".to_string()],
+            key_sources: Vec::new(),
+            unique: true,
+            key_exprs: JoinKeyExprs::default(),
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: vec!["v".to_string()],
+            right_keys: vec![join_key_expression_name(0)],
+            key_sources: vec![1],
+            unique: false,
+            key_exprs: JoinKeyExprs {
+                left: vec![String::new()],
+                right: vec!["v + 1".to_string()],
+            },
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "k".to_string(),
+            name: "ck".to_string(),
+        },
+    ];
+    run_oracle_seeded(
+        "chainkeyexpr",
+        3,
+        schema.clone(),
+        false,
+        &[
+            (0usize, 1i64, "g0", Some(10i64)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(20)),
+            (1, 3, "g0", Some(50)),
+            (2, 7, "g0", Some(19)),
+            (2, 8, "g0", Some(19)),
+            (2, 9, "g1", Some(49)),
+        ],
+        lookup_chain_mv_schema_for(
+            &[schema.clone(), schema.clone(), schema.clone()],
+            &steps,
+            &columns,
+        )
+        .unwrap(),
+        vec!["k".to_string(), lookup_chain_step_id_column(2)],
+        "SELECT a.k, a.v, b.v AS bv, c.v AS cv, c.k AS ck FROM __SRC0__ a \
+         LEFT JOIN __SRC1__ b ON b.k = a.k \
+         LEFT JOIN __SRC2__ c ON b.v = c.v + 1",
+        "SELECT a.k, a.v, b.v, c.v, c.k FROM \
+             (SELECT k, v FROM __SRC0__ WHERE op <> 'delete') a \
+         LEFT JOIN (SELECT k, v FROM __SRC1__ WHERE op <> 'delete') b ON b.k = a.k \
+         LEFT JOIN (SELECT k, v FROM __SRC2__ WHERE op <> 'delete') c ON b.v = c.v + 1",
+        "SELECT k, v, bv, cv, ck FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_having_expression_aggregate_matches_full_recompute() {
+    // HAVING reads an aggregate form the select list does not carry: the
+    // multi-aggregate layout materializes both forms.
+    let schema = source_schema();
+    run_oracle_seeded(
+        "havingexpr",
+        1,
+        schema.clone(),
+        false,
+        &[
+            (0usize, 1i64, "g0", Some(10i64)),
+            (0, 2, "g0", Some(30)),
+            (0, 3, "g1", Some(5)),
+        ],
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("sum_value".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, sum(v) FROM __SRC__ GROUP BY g HAVING sum(v * 2) > 30",
+        "SELECT g, sum(v) FROM (SELECT * FROM __SRC__ WHERE op <> 'delete') \
+         GROUP BY g HAVING sum(v * 2) > 30",
+        "SELECT g, sum_v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_left_aggregate_count_matches_full_recompute() {
+    // The select-list COUNT family: a key without rows counts zero.
+    let schema = source_schema();
+    run_oracle_seeded(
+        "leftcount",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0usize, 1i64, "g0", Some(10i64)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 1, "g0", Some(6)),
+        ],
+        left_aggregate_mv_schema_for(
+            &schema,
+            &["k".to_string(), "g".to_string(), "v".to_string()],
+            "c",
+            &DataType::Int64,
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT s.k, s.g, s.v, \
+         (SELECT count(u.v) FROM __SRC1__ u WHERE u.k = s.k) AS c FROM __SRC__ s",
+        "SELECT s.k, s.g, s.v, (SELECT count(u.v) FROM \
+             (SELECT * FROM __SRC1__ WHERE op <> 'delete') u WHERE u.k = s.k) AS c \
+         FROM (SELECT * FROM __SRC__ WHERE op <> 'delete') s",
+        "SELECT k, g, v, c FROM __MV__",
     )
     .await;
 }
