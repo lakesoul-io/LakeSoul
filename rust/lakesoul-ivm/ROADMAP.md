@@ -117,7 +117,8 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 聚合/去重叠加在 join 上（`SELECT g,SUM(f.v) FROM f JOIN d … GROUP BY g`） | ✅ 已实现（PLAN §10.117–§10.124，配合 §10.116 编排）：自动物化内部派生视图 `<target>__ivm_step0`（join 步、聚合步：sum/count/avg、MIN/MAX、DISTINCT（随步创建状态表）、**混合聚合**（PLAN §10.124）、窗口步）；定义变更复用/清理步骤 | **M** | 已完成（聚合叠加聚合亦已支持） |
 | 窗口/TopK 叠加在 join / 聚合上 | ✅ 已实现：读 **join** 与读 **sum/count/avg 聚合** 的窗口/TopK 自动派生；派生**窗口**步（单窗口）与**窗口链**步（多子句，PLAN §10.125）均已支持 | **M** | 已完成 |
 | union 各分支为 join | ✅ 已覆盖：分支为已注册 keyed 源（含 join/分支视图）时 `UNION ALL` 即可；派生 **union 步**（父算子读 union）已实现——优化器剪掉的分支主键由 `AnalyzeRequest.derived` 自动补齐（PLAN §10.121），混合键集合的分支明确拒绝 | **M** | 已完成 |
-| 嵌套/不透明派生表 | 大部分 ✅：join 层嵌套与普通派生表已按需物化；**算子步已逐项放开**（PLAN §10.138：有序子查询直读、TopK 子查询作派生步、cross join 列分类修正、投影步递归判定） | **M** | 剩余为能力性拒绝（join 两侧各需一列、行身份需可 cast 键），随需求放开 |
+| 嵌套/不透明派生表 | 大部分 ✅：join 层嵌套与普通派生表已按需物化；**算子步已逐项放开**（PLAN §10.138：有序子查询直读、TopK 子查询作派生步、cross join 列分类修正、投影步递归判定）；**层叠投影已合成**（PLAN §10.173：外层仅列引用或计算表达式时按内层投影表达式展开，`SELECT s*2 FROM (SELECT SUM(v) s …) t` 等派生计算输出可维护） | **M** | 剩余为能力性拒绝（join 两侧各需一列、行身份需可 cast 键、FULL 单侧），随需求放开 |
+| 单侧 outer join | **S** | ✅ 已实现（PLAN §10.173）：选择列表只取保留侧、另一侧按 join 键唯一（lookup）时，视图等价于保留侧的行视图（LEFT/RIGHT；`FULL` 与非唯一匹配侧仍拒绝） | **S** | 已完成 |
 | **自动编排**（依赖图、拓扑刷新、失败重试） | ✅ 已实现（PLAN §10.116）：依赖从持久化 spec 现推；3 色拓扑 + 环报错；`ChainPolicy`（重试 1 次 → 重建回退 → dirty 自愈）与「下游绝不读落后上游」；多根一次遍历；`ViewRefresh` 动作返回；`list_views` + `last_error` | **M** | 已完成（原计划：注册时记录 MV + 自动先刷上游） |
 
 ### B3. 连接族（P1）

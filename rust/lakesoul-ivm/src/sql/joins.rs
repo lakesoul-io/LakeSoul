@@ -437,6 +437,21 @@ pub(super) fn analyze_join(
             if !conditions.is_empty() {
                 return Err(unsupported("left join with non-equality conditions"));
             }
+            if let Some(projection) = projection
+                && keys_are_primary(right, &right_keys, &key_exprs.right)
+                && projection_reads_only_side(
+                    projection,
+                    Side::Left,
+                    left_alias,
+                    right_alias,
+                    left,
+                    right,
+                )
+            {
+                return single_sided_outer_join_row(
+                    projection, &join.left, tables, request,
+                );
+            }
             analyze_outer_join(
                 "LEFT",
                 &join.schema,
@@ -457,6 +472,24 @@ pub(super) fn analyze_join(
         JoinType::Right => {
             if !conditions.is_empty() {
                 return Err(unsupported("right join with non-equality conditions"));
+            }
+            if let Some(projection) = projection
+                && keys_are_primary(left, &join_keys, &key_exprs.left)
+                && projection_reads_only_side(
+                    projection,
+                    Side::Right,
+                    left_alias,
+                    right_alias,
+                    left,
+                    right,
+                )
+            {
+                return single_sided_outer_join_row(
+                    projection,
+                    &join.right,
+                    tables,
+                    request,
+                );
             }
             // `A RIGHT JOIN B` keeps every row of `B`, i.e. `B LEFT JOIN A`;
             // the swapped sides swap their key names too.
@@ -1707,6 +1740,72 @@ fn analyze_cross_join(
 /// side is keyed by the join keys (at most one match per left row), otherwise
 /// a pair-keyed left join over two keyed sources.
 #[allow(clippy::too_many_arguments)]
+/// Whether the join keys are exactly the table's primary key, so one row
+/// matches at most one joined row.
+fn keys_are_primary(table: &IvmTable, keys: &[String], exprs: &[String]) -> bool {
+    let mut expected = table.primary_keys.clone();
+    expected.sort();
+    // A computed key is materialized under a hidden name; the joined side is
+    // still keyed by the plain column its expression renders, so the key
+    // names read through the expressions.
+    let mut keys = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            match exprs
+                .get(index)
+                .filter(|expr| !expr.is_empty())
+                .filter(|expr| table.schema.field_with_name(expr).is_ok())
+            {
+                Some(expr) => expr.clone(),
+                None => key.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    keys.sort();
+    !expected.is_empty() && expected == keys
+}
+
+/// Whether a projection reads only one side of a join.
+fn projection_reads_only_side(
+    projection: &Projection,
+    side: Side,
+    left_alias: Option<&str>,
+    right_alias: Option<&str>,
+    left: &IvmTable,
+    right: &IvmTable,
+) -> bool {
+    projection.expr.iter().all(|expr| {
+        let mut only = true;
+        let _ = expr.apply(|node| {
+            if let Expr::Column(column) = node
+                && side_of(column, left_alias, right_alias, left, right) != Some(side)
+            {
+                only = false;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        only
+    })
+}
+
+/// A single-sided outer join whose other side is keyed by the join keys: a
+/// `LEFT` keeps every left row exactly once (the right side matches at most
+/// one row), so selecting only the left columns is the left table itself.
+fn single_sided_outer_join_row(
+    projection: &Projection,
+    side: &LogicalPlan,
+    tables: &HashMap<String, IvmTable>,
+    request: &AnalyzeRequest,
+) -> Result<ViewSpec> {
+    let plan = Projection::try_new(projection.expr.clone(), Arc::new(side.clone()))
+        .map_err(|error| {
+            unsupported(format!("a single-sided join projection {error}"))
+        })?;
+    analyze_row(&LogicalPlan::Projection(plan), tables, request)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn analyze_outer_join(
     kind: &str,
     join_schema: &datafusion::common::DFSchema,
@@ -1761,30 +1860,7 @@ fn analyze_outer_join(
             &effective_right_keys,
         )?,
     };
-    let lookup = {
-        let mut expected = right.primary_keys.clone();
-        expected.sort();
-        // A computed key is materialized under a hidden name; the right side
-        // is still keyed by the plain column its expression renders, so the
-        // key names read through the expressions.
-        let mut keys = effective_right_keys
-            .iter()
-            .enumerate()
-            .map(|(index, key)| {
-                match key_exprs
-                    .right
-                    .get(index)
-                    .filter(|expr| !expr.is_empty())
-                    .filter(|expr| right.schema.field_with_name(expr).is_ok())
-                {
-                    Some(expr) => expr.clone(),
-                    None => key.clone(),
-                }
-            })
-            .collect::<Vec<_>>();
-        keys.sort();
-        !expected.is_empty() && expected == keys
-    };
+    let lookup = keys_are_primary(right, &effective_right_keys, &key_exprs.right);
     let mut payloads = payloads;
     if lookup {
         // The lookup layout materializes the left primary keys itself, so

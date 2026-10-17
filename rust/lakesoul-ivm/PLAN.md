@@ -4182,7 +4182,25 @@ oracle 差分对拍 `oracle_select_list_count_distinct_matches_full_recompute` �
   （lookup 链）；oracle 差分对拍 `oracle_multi_join_null_safe_matches_full_recompute` 与
   `oracle_lookup_chain_null_safe_matches_full_recompute`（可空键、NULL 匹配、lookup 链的 1:N 步身份）。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.173 B2 收尾：层叠投影的表达式合成 + 单侧 outer join
+
+两处能力性拒绝按「能表达成既有形状就表达成既有形状」的原则放开：
+
+- **层叠投影合成**：`collapse_projections` 不再只接受外层纯列引用——把内层投影的表达式（去别名）按列名替换进外层表达式，
+  重建成单层投影（保留外层 schema 以规避派生重写留下的未刷新内层 schema）。外层表达式含子查询/`EXISTS`/`IN` 时保持拒绝
+  （子查询有自己的作用域分析）；任一列在内层投影里找不到时也保持拒绝。效果：`SELECT s*2 FROM (SELECT SUM(v) AS s … GROUP BY g) t`
+  合成为 `sum(v)*2`，走既有 MultiAgg 计算输出（原始聚合列仍物化）；`SELECT v1*2 FROM (SELECT v+1 AS v1 …) t` 合成为行视图表达式。
+- **单侧 outer join**：`LEFT JOIN` 的右表按 join 键唯一（`keys_are_primary`：键集合等于右表主键，含计算键的隐藏名解析）时，
+  每个左行恰好保留一次；若选择列表只读保留侧（`projection_reads_only_side`），视图就是保留侧的**行视图**——直接复用
+  `analyze_row` 于「外层投影 over 保留侧子计划」，左侧过滤条件、计算输出、源主键补齐都由行视图逻辑处理。`RIGHT JOIN`
+  对称（保留右表、左表唯一）；`FULL`、非唯一匹配侧、选择被填充侧仍明确拒绝。
+
+测试：分析器 `analyzes_derived_computed_outputs`（聚合与行两种合成）、`analyzes_single_sided_outer_joins`
+（LEFT/RIGHT、计算列、保留侧过滤、非唯一/被填充侧的负例）；oracle 差分对拍
+`oracle_derived_computed_aggregate_matches_full_recompute`、`oracle_derived_computed_projection_matches_full_recompute`、
+`oracle_single_sided_left_join_matches_full_recompute`（右源变化不触发刷新，输出与全量重算一致）。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、

@@ -34,15 +34,15 @@ use lakesoul_ivm::{
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_groups_mv_schema_for, min_max_mv_schema_for, multi_agg_mv_schema_for,
     multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
-    nullable_join_key_schema, row_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
-    variance_mv_schema_for, wide_keyed_join_view_schema_for,
-    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
-    window_columns_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    nullable_join_key_schema, row_expr_mv_schema_for, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
+    string_agg_groups_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, variance_groups_mv_schema_for, variance_mv_schema_for,
+    wide_keyed_join_view_schema_for, wide_outer_join_view_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -3232,6 +3232,89 @@ async fn oracle_computed_aggregate_outputs_match_full_recompute() {
         "SELECT g, SUM(v) AS sum_v, SUM(v) * 2 AS s2 FROM __SRC__ \
          WHERE op <> 'delete' GROUP BY g",
         "SELECT g, sum_v, s2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_single_sided_left_join_matches_full_recompute() {
+    // The right side is keyed by the join keys, so the LEFT join keeps every
+    // left row once; selecting only the left columns is the left table and
+    // the view does not watch the right source.
+    let schema = source_schema();
+    run_oracle_seeded(
+        "singlesidedleft",
+        2,
+        schema.clone(),
+        false,
+        &[
+            (0, 1, "g0", Some(10)),
+            (0, 2, "g0", Some(30)),
+            (1, 1, "g0", Some(5)),
+            (1, 3, "g1", Some(7)),
+        ],
+        row_mv_schema_for(
+            &schema,
+            &["k".to_string(), "g".to_string(), "v".to_string()],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT a.k, a.g, a.v FROM __SRC__ a LEFT JOIN __SRC1__ b \
+         ON a.k = b.k",
+        "SELECT a.k, a.g, a.v FROM __SRC__ a LEFT JOIN __SRC1__ b \
+         ON a.k = b.k AND b.op <> 'delete' WHERE a.op <> 'delete'",
+        "SELECT k, g, v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_derived_computed_aggregate_matches_full_recompute() {
+    // A computed output over a derived aggregate table: the outer projection
+    // is composed into the inner one, so the raw aggregate and the computed
+    // column are materialized like the direct form.
+    let schema = source_schema();
+    run_oracle(
+        "derivedcomputedagg",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_v".to_string(), DataType::Int64),
+                ("s2".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, s * 2 AS s2 FROM \
+         (SELECT g, SUM(v) AS s FROM __SRC__ GROUP BY g) t",
+        "SELECT g, SUM(v) AS sum_v, SUM(v) * 2 AS s2 FROM __SRC__ \
+         WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, sum_v, s2 FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_derived_computed_projection_matches_full_recompute() {
+    // A computed select list over a derived computed projection: the outer
+    // expression is substituted into the inner one.
+    let schema = source_schema();
+    run_oracle(
+        "derivedcomputedrow",
+        1,
+        row_expr_mv_schema_for(
+            &schema,
+            &["k".to_string(), "v2".to_string()],
+            &["k".to_string(), "((v + 1) * 2)".to_string()],
+        )
+        .unwrap(),
+        vec!["k".to_string()],
+        "SELECT k, v1 * 2 AS v2 FROM (SELECT k, v + 1 AS v1 FROM __SRC__) t",
+        "SELECT k, (v + 1) * 2 AS v2 FROM __SRC__ WHERE op <> 'delete'",
+        "SELECT k, v2 FROM __MV__",
     )
     .await;
 }
