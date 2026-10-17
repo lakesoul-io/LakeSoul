@@ -75,3 +75,12 @@ pub static OPTION_KEY_TEXT_SEARCH_VERIFY: &str = "text_search_verify";
 /// `__lakesoul_text_score` column (default false).  Requesting scores also
 /// enables the verification pass, which drops stale candidates.
 pub static OPTION_KEY_TEXT_SEARCH_SCORES: &str = "text_search_scores";
+/// Vortex: target row block size (rows) for every column of a written file.
+/// Random row access reads a row block per column, so smaller blocks make
+/// candidate/pk reads cheaper; the writer default is 8192 rows.
+pub static OPTION_KEY_VORTEX_ROW_BLOCK_SIZE: &str = "vortex_row_block_size";
+/// Vortex: target uncompressed bytes per data block of a written file.
+/// Blocks are the smallest unit a random read fetches; the writer default is
+/// 1 MiB, which reads far more than a candidate row needs.
+pub static OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES: &str =
+    "vortex_data_block_target_bytes";

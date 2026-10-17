@@ -32,6 +32,9 @@ use url::Url;
 
 use crate::Result;
 use lakesoul_common::ser::arrow_java::schema_from_table_info_metadata;
+use lakesoul_io::config::{
+    OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, OPTION_KEY_VORTEX_ROW_BLOCK_SIZE,
+};
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
 
@@ -114,6 +117,16 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .set_dynamic_partition(dynamic_partition)
         .with_option(OPTION_KEY_STABLE_SORT, use_cdc)
         .with_option(OPTION_KEY_CDC_COLUMN, cdc_column);
+
+    // Vortex files default to small row blocks so random row access stays
+    // cheap; a table can override the layout per column or as a whole.
+    if let Some(value) = &properties.vortex_row_block_size {
+        builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value.clone());
+    }
+    if let Some(value) = &properties.vortex_data_block_target_bytes {
+        builder =
+            builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value.clone());
+    }
 
     for (key, value) in options {
         builder = builder.with_option(key, value);
