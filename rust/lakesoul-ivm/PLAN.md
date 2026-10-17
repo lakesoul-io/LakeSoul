@@ -4200,7 +4200,23 @@ oracle 差分对拍 `oracle_select_list_count_distinct_matches_full_recompute` �
 `oracle_derived_computed_aggregate_matches_full_recompute`、`oracle_derived_computed_projection_matches_full_recompute`、
 `oracle_single_sided_left_join_matches_full_recompute`（右源变化不触发刷新，输出与全量重算一致）。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.174 性能评测 B0：增量 vs 全量重算的 bench 脚手架
+
+新增 `examples/ivm_bench.rs`（自定义 CLI，无新依赖）与 `BENCH.md`，先回答「增量刷新能否带来有效收益」：
+
+- **对照**：同一语句建两个视图——增量视图每轮 `INSERT INTO`（必须 action=incremental），基线视图每轮
+  `INSERT OVERWRITE`（action=overwrite，truncate + 全量重写）。两者共享规划、源表、文件格式与写入路径，
+  差异只在维护策略；源表写入时间单独记录、不计入刷新。
+- **形状**：B0 覆盖 Row（投影+过滤）与 SumCount（分组聚合）；变更按插入/更新/删除 1:1:1 确定性生成，
+  `--groups`/`--change-ratio`/`--change-rows` 控制聚合代价与变更规模。
+- **存储**：`--storage local|s3`，S3 走 IO 层已有的 `AWS_*` 环境变量（本地 RustFS）；每次运行使用唯一
+  表名前缀，结束默认 drop 表（S3 对象保留，文档说明）。
+- **输出**：逐轮 CSV（incr/full 毫秒、speedup、action、源写入时间）与 p50/p95 汇总；`--verify-every`
+  对比两视图、`--keep` 保留表。
+- **后续**：B1 补源文件/字节/扫描行/写入行指标做成本归因；B2 扩展 lookup/top-k/multi-join/派生链/分区/倾斜；
+  B3 固化报告与可选 nightly smoke。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、
