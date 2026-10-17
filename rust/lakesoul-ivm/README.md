@@ -563,6 +563,10 @@ metadata records the fallback mode and its reason.
 | `lakesoul_ivm_epochs_total` | `kind` | committed epochs |
 | `lakesoul_ivm_fallbacks_total` | — | Tier-2 fallback recomputes |
 | `lakesoul_ivm_fallback_rows` | — | rows written by fallback recomputes (a cost proxy) |
+| `lakesoul_ivm_refresh_files_read` | `kind` | data files read by one refresh |
+| `lakesoul_ivm_refresh_rows_scanned` | `kind` | rows read by one refresh |
+| `lakesoul_ivm_mv_rows_written` | `kind` | materialized-view rows written by one refresh |
+| `lakesoul_ivm_mv_bytes_written` | `kind` | materialized-view bytes written by one refresh |
 
 The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
 `union_distinct`, ...); view and table ids are never used as labels.  A

@@ -95,9 +95,18 @@ deleted; use a prefix and clean it up out of band.
 Per round, one CSV row per shape:
 
 ```
-shape,round,change_rows,source_write_ms,incr_ms,full_ms,speedup,incr_action,full_action
-row,3,1000,31.706,173.670,968.256,5.58,incremental,overwrite
+shape,round,change_rows,source_write_ms,incr_ms,full_ms,speedup,
+incr_files,incr_rows_scanned,incr_rows_written,incr_mv_bytes,incr_io_bytes,
+full_files,full_rows_scanned,full_rows_written,full_mv_bytes,full_io_bytes,
+incr_action,full_action
+row,3,1000,31.706,173.670,968.256,5.58,54,40278,267,8131,1233650,20,20134,19879,145126,706938,incremental,overwrite
 ```
+
+The IO columns come from the refresh-scoped counters
+(`lakesoul_ivm_refresh_files_read`, `_rows_scanned`, `lakesoul_ivm_mv_rows_written`,
+`lakesoul_ivm_mv_bytes_written`) and from `lakesoul_object_store_bytes_total`:
+`*_io_bytes` is 0 on local storage (plain filesystem reads are not object-store
+requests) and covers reads plus writes on S3.
 
 The trailing table summarizes p50/p95 for both paths:
 
@@ -118,7 +127,12 @@ How to read it:
   sweep `--change-ratio` on a fixed table;
 * `sum_count` scales with the number of **affected groups**, not just the
   changed rows: with `--groups 200` and 200 changes almost every group is
-  touched, which is the expected worst case.
+  touched, which is the expected worst case;
+* the IO columns explain a speedup: at a small table the incremental `row`
+  refresh can read **more** files and bytes than the full recompute (it walks
+  its materialized state to retract the changed tuples) while writing far
+  fewer rows and finishing faster; the balance shifts as the table grows.
+  Always read the latency and the IO columns together.
 
 ## Methodology notes
 
