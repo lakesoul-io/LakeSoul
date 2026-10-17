@@ -250,6 +250,8 @@ pub struct MultiWindowView {
     pub mv: IvmTable,
     /// The window clauses, in select-list order.
     pub windows: Vec<WindowGroupSpec>,
+    /// Input columns the step also carries (empty for a plain view).
+    pub payload_columns: Vec<String>,
     /// An optional filter applied before windowing.
     pub filter: Option<String>,
     /// The refresh interval hint persisted with the view.
@@ -269,6 +271,7 @@ impl MultiWindowView {
             source,
             mv,
             windows,
+            payload_columns: Vec::new(),
             filter: None,
             refresh_interval_ms: 0,
         }
@@ -286,6 +289,7 @@ impl MultiWindowView {
             source_table_id: self.source.table_id.clone(),
             mv_table_id: self.mv.table_id.clone(),
             windows: self.windows.clone(),
+            payload_columns: self.payload_columns.clone(),
             filter: self.filter.clone(),
         }
     }
@@ -666,6 +670,24 @@ pub fn multi_window_mv_schema_for(
     source_primary_keys: &[String],
     windows: &[WindowGroupSpec],
 ) -> Result<SchemaRef> {
+    multi_window_mv_schema_for_with_payload(
+        source_schema,
+        source_primary_keys,
+        &[],
+        windows,
+    )
+}
+
+/// The schema of a [`MultiWindowView`] that also carries input payload columns
+/// (a derived step a consumer reads): the source primary keys, the clauses'
+/// partition keys, the payload columns, one column per window function, the
+/// row kind and the epoch.
+pub fn multi_window_mv_schema_for_with_payload(
+    source_schema: &Schema,
+    source_primary_keys: &[String],
+    payload_columns: &[String],
+    windows: &[WindowGroupSpec],
+) -> Result<SchemaRef> {
     let mut fields = key_fields(source_schema, source_primary_keys)?;
     let mut seen = source_primary_keys
         .iter()
@@ -678,6 +700,12 @@ pub fn multi_window_mv_schema_for(
             }
         }
     }
+    fields.extend(
+        project_schema(source_schema, payload_columns)?
+            .fields()
+            .iter()
+            .cloned(),
+    );
     for group in windows {
         for column in &group.columns {
             let (data_type, nullable) = window_column_type(source_schema, column)?;
@@ -712,6 +740,11 @@ fn multi_window_output_columns(view: &MultiWindowView) -> Vec<String> {
             }
         }
     }
+    for column in &view.payload_columns {
+        if seen.insert(column.clone()) {
+            columns.push(column.clone());
+        }
+    }
     for group in &view.windows {
         for column in &group.columns {
             columns.push(column.column.clone());
@@ -741,6 +774,9 @@ fn multi_window_computed_cte(view: &MultiWindowView, source_alias: &str) -> Stri
                 fields.push(quote_ident(key));
             }
         }
+    }
+    for column in &view.payload_columns {
+        fields.push(quote_ident(column));
     }
     for group in &view.windows {
         let over_base = window_over_base(
@@ -841,6 +877,14 @@ fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
         let context = SessionContext::new();
         parse_filter(&context, &view.source.schema, filter)?;
+    }
+    for column in &view.payload_columns {
+        view.source.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "multi-window view {}: payload column {column} is not in the source",
+                view.view_id
+            )
+        })?;
     }
     if view.windows.is_empty() {
         return Err(report!(
@@ -1543,10 +1587,6 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     } else {
         String::new()
     };
-    println!(
-        "PROBE payloads={:?} sql_payloads={payloads:?}",
-        view.payload_columns
-    );
     format!(
         "with {affected}{computed}, \
          already as (select distinct {pks} from mv \

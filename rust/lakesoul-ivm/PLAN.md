@@ -4096,7 +4096,25 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - **测试**：`a_row_over_a_window_step_is_materialized`（形状 ②：值窗口 + 排名的子查询 → row 视图；bootstrap 与
   一次增量 vs 全量重算）与 `a_top_k_over_a_window_over_a_join_step_is_materialized`（形状 ③：window over join 步
   → top-k；同样两轮对拍）；二者都手工构造步 schema 以固定布局与可空性。
-- **剩余**：多窗口（多个子句）步的消费方暂不带载荷（README 限制清单已按此收窄，记录待需求）。
+- **后续**：多窗口（多个子句）步的载荷列见 §10.169（已落地）。
+
+### 10.169 B7 收尾：多窗口步携带载荷列 + 投影折叠
+
+多窗口（多个子句）步按 §10.168 的单窗口做法补齐载荷列，并修掉挡住消费方的「投影叠投影」边界：
+
+- **多窗口载荷**：`ViewSpec::MultiWindow`/`MultiWindowView` 增加 `payload_columns`（serde 默认空，旧 spec 兼容）。
+  派生时分析器取**最内层 window 输入**的字段，减去源主键、各子句分区键、全部窗口列、内部列
+  （`rowKinds`/`__ivm_epoch`/source）与 CDC 列；布局 = `[源主键, 各子句分区键（并集）, 载荷列, 窗口列, kinds, epoch]`。
+  新增 `multi_window_mv_schema_for_with_payload`（旧签名委托）；`multi_window_output_columns`（删除侧）与
+  `computed` CTE 都携带载荷，执行器的期望 schema 传入 spec 的载荷，校验器检查载荷列存在。
+- **投影折叠**：优化器会把子查询边界保留成 `Projection(outer) over Projection(inner)`（例如过滤条件下推到
+  子查询投影之下）。`analyze_select` 在形状分派前调用 `collapse_projections`：当外层投影只引用/重命名列时，
+  把外层的列按内层投影的表达式展开成单层投影（保留外层 schema 以免受派生重写留下的未刷新 schema 影响）；
+  含计算表达式的形态仍走原拒绝路径。
+- **测试**：`a_row_over_a_multi_window_step_is_materialized`——两个窗口子句（不同排序方向）的派生步携带载荷
+  `v`，选择列表消费方读取 `v`/`rn`，bootstrap 与一次增量都对全量重算；`sql_oracle`/既有派生测试全绿。
+- **记录**：外层投影含**计算表达式**的 `Projection over Projection`（如 `SELECT s * 2 FROM (SELECT SUM(v) s ...) t`）
+  仍由 Tier-2 兜底（README 的派生表计算聚合负例保持有效），待需求再放开。
 
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 

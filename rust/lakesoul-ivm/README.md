@@ -617,10 +617,6 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;
-* a **derived multi-window step** (several window clauses) consumed by a
-  select-list or top-k shape: only a single-clause window step carries the
-  input payload columns a consumer reads (see PLAN §10.168; the inline window
-  forms and single-clause steps stay maintained);
 * a single-sided inner join over a side without a primary key (the pair
   shape its duplicates need cannot key it): a right side keyed by the join
   key stays the semi (membership) shape, and otherwise the pair join
@@ -650,9 +646,9 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   operator, and `= ANY` / `<> ALL` keep the exact `IN` / `NOT IN` forms); a
   multi-column `(a, b) IN (...)` is rejected by the planner itself;
 * a top-k outside the maintained subset: `LIMIT` without `ORDER BY` (the
-  kept rows are arbitrary) and a top-k over a **window** result (an inner
-  join, or an aggregate source — sum/count/avg, MIN/MAX and COUNT(DISTINCT)
-  included — is materialized as a step automatically);
+  kept rows are arbitrary); a window result (single- or multi-clause), an
+  inner join and an aggregate source are materialized as a step
+  automatically;
 * a decimal `SUM`/`AVG` whose precision leaves no headroom for the
   accumulator: DataFusion saturates the result type at 38 digits
   (`SUM(DECIMAL(p, s))` is `DECIMAL(min(38, p + 10), s)`) and wraps the

@@ -1114,6 +1114,10 @@ pub enum ViewSpec {
         mv_table_id: String,
         /// The window clauses, in select-list order.
         windows: Vec<WindowGroupSpec>,
+        /// Input columns the step also carries (a derived multi-window step a
+        /// consumer reads); empty for a view over the user's source.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_columns: Vec<String>,
         /// An optional filter applied before windowing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -3458,12 +3462,14 @@ impl IvmRuntime {
                 source_table_id,
                 mv_table_id,
                 windows,
+                payload_columns,
                 filter,
             } => SpecView::MultiWindow(MultiWindowView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
                 mv: self.open_table_by_id(mv_table_id).await?,
                 windows: windows.clone(),
+                payload_columns: payload_columns.clone(),
                 filter: filter.clone(),
                 refresh_interval_ms,
             }),

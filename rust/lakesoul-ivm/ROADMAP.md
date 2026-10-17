@@ -165,7 +165,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| `ORDER BY … LIMIT k`（非 `rn <= k` 形式） | **M** | ✅ 已实现（PLAN §10.113）：全局 top-k（无分组）复用 TopK 视图（`group_keys` 为空；运行时 `partition by` 可选、唯一组恒受影响），边界并列由源主键打破；`OFFSET`（#1147）与计算列输出（#1149）已支持，聚合/连接之上的内联形态已支持；仍拒绝：无 `ORDER BY` 的 `LIMIT`（Tier-2）、缺源主键，以及**读派生 window 步**的消费形状（精确分解见 PLAN §10.164） |
+| `ORDER BY … LIMIT k`（非 `rn <= k` 形式） | **M** | ✅ 已实现（PLAN §10.113）：全局 top-k（无分组）复用 TopK 视图（`group_keys` 为空；运行时 `partition by` 可选、唯一组恒受影响），边界并列由源主键打破；`OFFSET`（#1147）与计算列输出（#1149）已支持，聚合/连接之上的内联形态已支持；读派生 window 步（单子句 #1171、多子句 PLAN §10.169）的消费形状也已支持；仍拒绝：无 `ORDER BY` 的 `LIMIT`（Tier-2）与缺源主键 |
 | RANGE/GROUPS 帧偏移等边角 | **M（需核实）** | ✅ 已核实并补测（PLAN §10.113）：帧文本本就完整渲染（`ROWS`/`RANGE`/`GROUPS` 与各 bound），引擎在重算分区上求值；新增 `window_range_frame.slt`（数值偏移 RANGE）与 `window_groups_frame.slt`（peer 组 GROUPS） |
 
 ### B8. 类型（P2）
@@ -193,9 +193,9 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 ## C. 执行顺序（建议）——本节的计划已全部交付
 
-清单保留作历史记录；已完成项见各行 ✅ 与 PLAN §10.90–§10.164。当前缺口只剩「B 系剩余项」
-（B2 派生表边角、B3/B5 null-safe 多链、B6 多聚合标量子查询、B7 派生 window 步的消费形状、
-B8 list/map 主键）；本轮新能力已纳入 `sql_oracle` 随机对拍（PLAN §10.167：表达式键四种形态、
+清单保留作历史记录；已完成项见各行 ✅ 与 PLAN §10.90–§10.169。当前缺口只剩「B 系剩余项」
+（B2 派生表边角、B3/B5 null-safe 多链、B6 多聚合标量子查询、B8 list/map 主键）；
+本轮新能力已纳入 `sql_oracle` 随机对拍（PLAN §10.167：表达式键四种形态、
 HAVING 混合聚合、COUNT 族标量子查询）。
 
 1. **P0（小步，正确性）**：A1 MV 主键存在性校验 → A2 CDC 契约测试 → A3 非契约源策略。

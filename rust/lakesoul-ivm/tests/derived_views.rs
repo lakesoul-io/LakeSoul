@@ -13,7 +13,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, WindowColumn, WindowFunction, row_expr_mv_schema_for,
+    IvmTableOptions, WindowColumn, WindowFunction, WindowGroupSpec,
+    multi_window_mv_schema_for_with_payload, row_expr_mv_schema_for,
     sum_count_mv_schema_for, top_k_mv_schema_for, window_columns_mv_schema_for,
     window_columns_mv_schema_for_with_payload,
 };
@@ -3749,6 +3750,167 @@ async fn a_top_k_over_a_window_over_a_join_step_is_materialized() {
     );
 }
 
+/// A select-list view over a **multi-window** step (two clauses with
+/// different order directions): the step carries the payload columns the
+/// layout holds, and its MV schema and refresh agree on them.
+#[test_log::test(tokio::test)]
+async fn a_row_over_a_multi_window_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der15_f_{suffix}")).await;
+    let window_column =
+        |function: WindowFunction, value: Option<&str>, name: &str| WindowColumn {
+            function,
+            value_column: value.map(str::to_string),
+            window_args: None,
+            window_filter: None,
+            ignore_nulls: false,
+            window_frame: None,
+            column: name.to_string(),
+        };
+    let step_schema = multi_window_mv_schema_for_with_payload(
+        &source_schema(),
+        &["k".to_string()],
+        &["v".to_string()],
+        &[
+            WindowGroupSpec {
+                partition_keys: vec!["g".to_string()],
+                order_keys: vec!["v".to_string()],
+                order_by: Vec::new(),
+                columns: vec![window_column(WindowFunction::Sum, Some("v"), "ws")],
+            },
+            WindowGroupSpec {
+                partition_keys: vec!["g".to_string()],
+                order_keys: vec!["v".to_string()],
+                order_by: vec!["v desc".to_string()],
+                columns: vec![window_column(WindowFunction::RowNumber, None, "rn")],
+            },
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der15_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_expr_mv_schema_for(
+                    &step_schema,
+                    &[
+                        "k".to_string(),
+                        "ws".to_string(),
+                        "v".to_string(),
+                        "rn".to_string(),
+                    ],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT k, ws, v, rn FROM (SELECT k, g, v, sum(v) over \
+         (partition by g order by v) AS ws, row_number() over \
+         (partition by g order by v desc) AS rn FROM {}) t WHERE v >= 20",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 30, "insert"),
+            (3, "b", 20, "insert"),
+            (4, "a", 50, "insert"),
+            (5, "b", 40, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let expected = format!(
+        "select k, ws, v from (select k, g, v, sum(v) over \
+         (partition by g order by v) as ws, row_number() over \
+         (partition by g order by v desc) as rn from {} where op <> 'delete') t \
+         where v >= 20",
+        fact.table_name
+    );
+    assert_eq!(
+        read_triples_i64(
+            runtime,
+            &[&mv],
+            &format!("select k, ws, v from {} order by k", mv.table_name)
+        )
+        .await,
+        read_triples_i64(runtime, &[&fact], &format!("{expected} order by k")).await
+    );
+    // An updated ordering value moves the row through both clauses.
+    fact.append_batch(runtime.client(), source_batch(&[(2, "a", 60, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_triples_i64(
+            runtime,
+            &[&mv],
+            &format!("select k, ws, v from {} order by k", mv.table_name)
+        )
+        .await,
+        read_triples_i64(runtime, &[&fact], &format!("{expected} order by k")).await
+    );
+}
+
+/// The `(k, ws, v)` rows of a window-consumer MV ordered by `k`.
+async fn read_triples_i64(
+    runtime: &IvmRuntime,
+    tables: &[&IvmTable],
+    select: &str,
+) -> Vec<(i64, i64, i64)> {
+    let context = SessionContext::new();
+    for table in tables {
+        context
+            .register_table(
+                table.table_name.as_str(),
+                Arc::new(runtime.table_provider(table)),
+            )
+            .unwrap();
+    }
+    let batches = context.sql(select).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            rows.push((
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+                batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+                batch
+                    .column(2)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
 /// The `(k, ws)` rows of a top-k-over-window MV ordered by `k`.
 async fn read_pairs_i64(
     runtime: &IvmRuntime,
@@ -3836,6 +3998,15 @@ async fn a_top_k_over_a_distinct_step_is_materialized() {
     .await
     .unwrap();
     let execution = executor.execute(&statement).await.unwrap();
+    let info = runtime
+        .metadata()
+        .list_views()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|view| view.view_id == mv.table_id)
+        .unwrap();
+    println!("REASON {:?}", info.fallback_reason);
     assert_eq!(execution.action.label(), "bootstrap");
     assert!(derived_step_view(runtime, &mv).await.is_some());
     let expected = format!(
@@ -3857,6 +4028,15 @@ async fn a_top_k_over_a_distinct_step_is_materialized() {
         .await
         .unwrap();
     let execution = executor.execute(&statement).await.unwrap();
+    let info = runtime
+        .metadata()
+        .list_views()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|view| view.view_id == mv.table_id)
+        .unwrap();
+    println!("REASON {:?}", info.fallback_reason);
     assert_eq!(execution.action.label(), "incremental");
     assert_eq!(
         read_pair_rows(
