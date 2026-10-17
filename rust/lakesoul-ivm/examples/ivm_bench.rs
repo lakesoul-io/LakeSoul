@@ -38,7 +38,8 @@
 //! The bucket must exist; the one-time creation for RustFS is documented in
 //! `BENCH.md`.  `--storage local` uses a temporary directory instead.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
@@ -48,6 +49,9 @@ use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_ivm::{
     IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, Result, row_mv_schema_for,
     sum_count_mv_schema_for,
+};
+use metrics::{
+    Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
 };
 
 const CHANGE_COLUMN: &str = "op";
@@ -276,12 +280,30 @@ struct RoundResult {
     full_ms: f64,
     incr_action: &'static str,
     full_action: &'static str,
+    incr: IoDelta,
+    full: IoDelta,
+}
+
+/// The IO counters a refresh moved, read from the installed recorder.
+#[derive(Clone, Copy, Default)]
+struct IoDelta {
+    files_read: u64,
+    rows_scanned: u64,
+    rows_written: u64,
+    mv_bytes_written: u64,
+    object_store_bytes: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     warn_missing_env(&args);
+    // Capture the IO counters the refresh engine and the object store emit, so
+    // every round reports what it actually read and wrote.
+    let recorder = Arc::new(BenchMetrics::default());
+    let _ = metrics::set_global_recorder(BenchRecorder {
+        state: recorder.clone(),
+    });
 
     let runtime = IvmRuntime::from_env().await?;
     runtime.init_schema().await?;
@@ -424,16 +446,20 @@ async fn main() -> Result<()> {
 
         for (shape, incremental, full) in &views {
             let select = shape.select(&source.table_name);
+            let before = recorder.snapshot();
             let incr_start = Instant::now();
             let incremental_execution = executor
                 .execute(&format!("INSERT INTO {} {select}", incremental.table_name))
                 .await?;
             let incr_ms = ms(incr_start.elapsed());
+            let incr_io = io_delta(&before, &recorder.snapshot());
+            let before = recorder.snapshot();
             let full_start = Instant::now();
             let full_execution = executor
                 .execute(&format!("INSERT OVERWRITE {} {select}", full.table_name))
                 .await?;
             let full_ms = ms(full_start.elapsed());
+            let full_io = io_delta(&before, &recorder.snapshot());
             assert_eq!(
                 incremental_execution.action.label(),
                 "incremental",
@@ -456,6 +482,8 @@ async fn main() -> Result<()> {
                     full_ms,
                     incr_action: incremental_execution.action.label(),
                     full_action: full_execution.action.label(),
+                    incr: incr_io,
+                    full: full_io,
                 });
             }
         }
@@ -540,11 +568,14 @@ fn format_ms(value: f64) -> String {
 fn write_csv(args: &Args, results: &[RoundResult]) -> Result<()> {
     let mut csv = String::from(
         "shape,round,change_rows,source_write_ms,incr_ms,full_ms,speedup,\
-         incr_action,full_action\n",
+         incr_files,incr_rows_scanned,incr_rows_written,incr_mv_bytes,\
+         incr_io_bytes,full_files,full_rows_scanned,full_rows_written,\
+         full_mv_bytes,full_io_bytes,incr_action,full_action\n",
     );
     for result in results {
         csv.push_str(&format!(
-            "{},{},{},{:.3},{:.3},{:.3},{:.2},{},{}\n",
+            "{},{},{},{:.3},{:.3},{:.3},{:.2},{},{},{},{},{},{},{},{},{},{},\
+             {},{}\n",
             result.shape,
             result.round,
             result.change_rows,
@@ -552,6 +583,16 @@ fn write_csv(args: &Args, results: &[RoundResult]) -> Result<()> {
             result.incr_ms,
             result.full_ms,
             speedup(result.incr_ms, result.full_ms),
+            result.incr.files_read,
+            result.incr.rows_scanned,
+            result.incr.rows_written,
+            result.incr.mv_bytes_written,
+            result.incr.object_store_bytes,
+            result.full.files_read,
+            result.full.rows_scanned,
+            result.full.rows_written,
+            result.full.mv_bytes_written,
+            result.full.object_store_bytes,
             result.incr_action,
             result.full_action,
         ));
@@ -571,7 +612,7 @@ fn summarize(args: &Args, results: &[RoundResult]) {
     println!();
     println!(
         "shape      rows      groups    change    incr_p50   full_p50   speedup  \
-         incr_p95   full_p95"
+         incr_p95   full_p95   incr_rows  incr_written full_rows  full_written"
     );
     for shape in &args.shapes {
         let incr = percentile(
@@ -606,8 +647,19 @@ fn summarize(args: &Args, results: &[RoundResult]) {
                 .collect::<Vec<_>>(),
             0.95,
         );
+        let mean = |pick: fn(&RoundResult) -> u64| {
+            let values = results
+                .iter()
+                .filter(|result| result.shape == shape.name())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return 0;
+            }
+            values.iter().map(|result| pick(result)).sum::<u64>() / values.len() as u64
+        };
         println!(
-            "{:<10} {:<9} {:<9} {:<9} {:<10} {:<10} {:<8} {:<10} {:<10}",
+            "{:<10} {:<9} {:<9} {:<9} {:<10} {:<10} {:<8} {:<10} {:<10} \
+             {:<10} {:<12} {:<10} {:<12}",
             shape.name(),
             args.rows,
             args.groups,
@@ -617,6 +669,10 @@ fn summarize(args: &Args, results: &[RoundResult]) {
             format!("{:.1}x", speedup(incr, full)),
             format_ms(incr_p95),
             format_ms(full_p95),
+            mean(|result| result.incr.rows_scanned),
+            mean(|result| result.incr.rows_written),
+            mean(|result| result.full.rows_scanned),
+            mean(|result| result.full.rows_written),
         );
     }
 }
@@ -777,4 +833,121 @@ impl Lcg {
 
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+/// The counters the global recorder collected, keyed by `name{label=value}`.
+#[derive(Default)]
+struct BenchMetrics {
+    counters: Mutex<BTreeMap<String, u64>>,
+}
+
+impl BenchMetrics {
+    fn snapshot(&self) -> BTreeMap<String, u64> {
+        self.counters.lock().unwrap().clone()
+    }
+}
+
+fn metric_key(key: &Key) -> String {
+    let mut labels = key
+        .labels()
+        .map(|label| format!("{}={}", label.key(), label.value()))
+        .collect::<Vec<_>>();
+    labels.sort();
+    format!("{}{{{}}}", key.name(), labels.join(","))
+}
+
+struct BenchCounter {
+    state: Arc<BenchMetrics>,
+    key: String,
+}
+
+impl metrics::CounterFn for BenchCounter {
+    fn increment(&self, value: u64) {
+        *self
+            .state
+            .counters
+            .lock()
+            .unwrap()
+            .entry(self.key.clone())
+            .or_default() += value;
+    }
+
+    fn absolute(&self, value: u64) {
+        self.state
+            .counters
+            .lock()
+            .unwrap()
+            .insert(self.key.clone(), value);
+    }
+}
+
+struct BenchRecorder {
+    state: Arc<BenchMetrics>,
+}
+
+impl Recorder for BenchRecorder {
+    fn describe_counter(
+        &self,
+        _key: KeyName,
+        _unit: Option<Unit>,
+        _description: SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _key: KeyName,
+        _unit: Option<Unit>,
+        _description: SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _key: KeyName,
+        _unit: Option<Unit>,
+        _description: SharedString,
+    ) {
+    }
+
+    fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
+        Counter::from_arc(Arc::new(BenchCounter {
+            state: self.state.clone(),
+            key: metric_key(key),
+        }))
+    }
+
+    fn register_gauge(&self, _key: &Key, _metadata: &Metadata<'_>) -> Gauge {
+        Gauge::noop()
+    }
+
+    fn register_histogram(&self, _key: &Key, _metadata: &Metadata<'_>) -> Histogram {
+        Histogram::noop()
+    }
+}
+
+/// The IO counters one `execute` moved.
+fn io_delta(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>) -> IoDelta {
+    IoDelta {
+        files_read: counter_delta(before, after, "lakesoul_ivm_refresh_files_read"),
+        rows_scanned: counter_delta(before, after, "lakesoul_ivm_refresh_rows_scanned"),
+        rows_written: counter_delta(before, after, "lakesoul_ivm_mv_rows_written"),
+        mv_bytes_written: counter_delta(before, after, "lakesoul_ivm_mv_bytes_written"),
+        object_store_bytes: counter_delta(
+            before,
+            after,
+            "lakesoul_object_store_bytes_total",
+        ),
+    }
+}
+
+fn counter_delta(
+    before: &BTreeMap<String, u64>,
+    after: &BTreeMap<String, u64>,
+    name: &str,
+) -> u64 {
+    let prefix = format!("{name}{{");
+    after
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .map(|(key, value)| value.saturating_sub(*before.get(key).unwrap_or(&0)))
+        .sum()
 }

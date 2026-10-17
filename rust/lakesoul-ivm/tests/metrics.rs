@@ -12,7 +12,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTableOptions,
-    PhysicalFormat, sum_count_mv_schema_for,
+    PhysicalFormat, row_mv_schema_for, sum_count_mv_schema_for,
 };
 use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
@@ -367,4 +367,95 @@ fn fallback_recomputes_are_counted() {
         state.counter("lakesoul_ivm_statements_total{action=fallback}"),
         2
     );
+}
+
+#[test_log::test]
+fn refresh_io_counters_attribute_the_work() {
+    let state = Arc::new(Metrics::default());
+    let recorder = TestRecorder {
+        metrics: state.clone(),
+    };
+    metrics::with_local_recorder(&recorder, || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let runtime = IvmRuntime::from_env().await.unwrap();
+            runtime.init_schema().await.unwrap();
+            let dir = tempdir().unwrap();
+            let suffix = uuid::Uuid::new_v4().simple();
+            let source = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_io_src_{suffix}"),
+                        format!("file://{}", dir.path().join("src").display()),
+                        schema(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_cdc_column(CHANGE_COLUMN)
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let mv = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_io_mv_{suffix}"),
+                        format!("file://{}", dir.path().join("mv").display()),
+                        row_mv_schema_for(
+                            &schema(),
+                            &["k".to_string(), "g".to_string(), "v".to_string()],
+                        )
+                        .unwrap(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let executor = IvmSqlExecutor::new(runtime);
+            let incremental = format!(
+                "INSERT INTO {} SELECT k, g, v FROM {} WHERE v > 5",
+                mv.table_name, source.table_name
+            );
+            source
+                .append_batch(
+                    executor.runtime().client(),
+                    batch(&[(1, "a", 10, "insert")]),
+                )
+                .await
+                .unwrap();
+            executor.execute(&incremental).await.unwrap();
+            source
+                .append_batch(
+                    executor.runtime().client(),
+                    batch(&[(2, "b", 20, "insert")]),
+                )
+                .await
+                .unwrap();
+            let execution = executor.execute(&incremental).await.unwrap();
+            assert_eq!(execution.action.label(), "incremental");
+            let files = state.counter("lakesoul_ivm_refresh_files_read{kind=row}");
+            let scanned = state.counter("lakesoul_ivm_refresh_rows_scanned{kind=row}");
+            let written = state.counter("lakesoul_ivm_mv_rows_written{kind=row}");
+            let bytes = state.counter("lakesoul_ivm_mv_bytes_written{kind=row}");
+            assert!(files > 0, "files read: {files}");
+            assert!(scanned > 0, "rows scanned: {scanned}");
+            assert!(written > 0, "rows written: {written}");
+            assert!(bytes > 0, "bytes written: {bytes}");
+
+            // The full overwrite recomputes the whole view, so it writes more.
+            let execution = executor
+                .execute(&format!(
+                    "INSERT OVERWRITE {} SELECT k, g, v FROM {} WHERE v > 5",
+                    mv.table_name, source.table_name
+                ))
+                .await
+                .unwrap();
+            assert_eq!(execution.action.label(), "overwrite");
+            let written_full = state.counter("lakesoul_ivm_mv_rows_written{kind=row}");
+            assert!(written_full > written, "{written_full} vs {written}");
+        });
+    });
 }

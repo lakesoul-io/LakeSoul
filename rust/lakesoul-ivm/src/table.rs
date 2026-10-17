@@ -428,9 +428,14 @@ impl IvmTable {
                 .with_option(OPTION_KEY_STABLE_SORT, "true");
         }
 
+        let written_rows = batch.num_rows() as u64;
         let mut writer = create_writer_with_io_config(builder.build()).await?;
         writer.write_record_batch(batch).await?;
         let outputs = writer.flush_and_close().await?;
+        let written_bytes = outputs
+            .iter()
+            .map(|output| output.object_meta.size)
+            .sum::<u64>();
 
         let modification_time = crate::now_ms();
         let files = outputs
@@ -451,6 +456,8 @@ impl IvmTable {
         let commit_ids = client
             .commit_data_files(&self.table_name, &self.namespace, files)
             .await?;
+        crate::observability::add_rows_written(written_rows);
+        crate::observability::add_bytes_written(written_bytes);
         Ok(commit_ids)
     }
 
@@ -589,6 +596,7 @@ impl IvmTable {
                 .filter(|column| schema.field_with_name(column).is_ok())
                 .cloned()
                 .collect::<Vec<_>>();
+            let group_files = group.files.len() as u64;
             let mut builder = LakeSoulIOConfig::builder()
                 .with_files(group.files)
                 .with_schema(schema)
@@ -613,9 +621,17 @@ impl IvmTable {
             }
             let mut reader = LakeSoulReader::new(builder.build())?;
             reader.start().await?;
+            let before = batches.len();
             while let Some(batch) = reader.next_rb().await {
                 batches.push(batch?);
             }
+            crate::observability::add_files_read(group_files);
+            crate::observability::add_rows_scanned(
+                batches[before..]
+                    .iter()
+                    .map(|batch| batch.num_rows() as u64)
+                    .sum(),
+            );
         }
         Ok(batches)
     }
@@ -629,6 +645,7 @@ impl IvmTable {
         if files.is_empty() {
             return Ok(Vec::new());
         }
+        let file_count = files.len() as u64;
         let mut builder = LakeSoulIOConfig::builder()
             .with_files(files)
             .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
@@ -651,6 +668,10 @@ impl IvmTable {
         while let Some(batch) = reader.next_rb().await {
             batches.push(batch?);
         }
+        crate::observability::add_files_read(file_count);
+        crate::observability::add_rows_scanned(
+            batches.iter().map(|batch| batch.num_rows() as u64).sum(),
+        );
         Ok(batches)
     }
 

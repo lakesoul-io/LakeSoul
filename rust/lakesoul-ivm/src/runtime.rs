@@ -3566,42 +3566,51 @@ impl IvmRuntime {
         let kind = spec.kind();
         let started = std::time::Instant::now();
         let view = self.spec_view(spec).await;
-        let result = match view {
-            Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
-            Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
-            Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
-            Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
-            Ok(SpecView::ApproxDistinct(view)) => {
-                self.refresh_approx_distinct(&view).await
+        let result = crate::observability::scope_refresh_io(kind, async {
+            match view {
+                Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
+                Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
+                Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
+                Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
+                Ok(SpecView::ApproxDistinct(view)) => {
+                    self.refresh_approx_distinct(&view).await
+                }
+                Ok(SpecView::ApproxPercentile(view)) => {
+                    self.refresh_approx_percentile(&view).await
+                }
+                Ok(SpecView::ComputedAgg(view)) => self.refresh_computed_agg(&view).await,
+                Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
+                Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
+                Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
+                Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
+                Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
+                Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
+                Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
+                Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
+                Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
+                Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
+                Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
+                Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
+                Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
+                Ok(SpecView::LeftAggregate(view)) => {
+                    self.refresh_left_aggregate(&view).await
+                }
+                Ok(SpecView::LookupChain(view)) => self.refresh_lookup_chain(&view).await,
+                Ok(SpecView::GroupingSets(view)) => {
+                    self.refresh_grouping_sets(&view).await
+                }
+                Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
+                Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
+                Ok(SpecView::UnionDistinct(view)) => {
+                    self.refresh_union_distinct(&view).await
+                }
+                Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+                Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
+                Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
+                Err(error) => Err(error),
             }
-            Ok(SpecView::ApproxPercentile(view)) => {
-                self.refresh_approx_percentile(&view).await
-            }
-            Ok(SpecView::ComputedAgg(view)) => self.refresh_computed_agg(&view).await,
-            Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
-            Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
-            Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
-            Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
-            Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
-            Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
-            Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
-            Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
-            Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
-            Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
-            Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
-            Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
-            Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
-            Ok(SpecView::LeftAggregate(view)) => self.refresh_left_aggregate(&view).await,
-            Ok(SpecView::LookupChain(view)) => self.refresh_lookup_chain(&view).await,
-            Ok(SpecView::GroupingSets(view)) => self.refresh_grouping_sets(&view).await,
-            Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
-            Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
-            Ok(SpecView::UnionDistinct(view)) => self.refresh_union_distinct(&view).await,
-            Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
-            Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
-            Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
-            Err(error) => Err(error),
-        };
+        })
+        .await;
         crate::observability::record_refresh(
             kind,
             matches!(result, Ok(Some(_))),
@@ -3618,42 +3627,51 @@ impl IvmRuntime {
         let kind = spec.kind();
         let started = std::time::Instant::now();
         let view = self.spec_view(spec).await;
-        let result = match view {
-            Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
-            Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
-            Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
-            Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
-            Ok(SpecView::ApproxDistinct(view)) => {
-                self.rebuild_approx_distinct(&view).await
+        let result = crate::observability::scope_refresh_io(kind, async {
+            match view {
+                Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
+                Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
+                Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
+                Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
+                Ok(SpecView::ApproxDistinct(view)) => {
+                    self.rebuild_approx_distinct(&view).await
+                }
+                Ok(SpecView::ApproxPercentile(view)) => {
+                    self.rebuild_approx_percentile(&view).await
+                }
+                Ok(SpecView::ComputedAgg(view)) => self.rebuild_computed_agg(&view).await,
+                Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
+                Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
+                Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
+                Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
+                Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
+                Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
+                Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
+                Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
+                Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
+                Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
+                Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
+                Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
+                Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
+                Ok(SpecView::LeftAggregate(view)) => {
+                    self.rebuild_left_aggregate(&view).await
+                }
+                Ok(SpecView::LookupChain(view)) => self.rebuild_lookup_chain(&view).await,
+                Ok(SpecView::GroupingSets(view)) => {
+                    self.rebuild_grouping_sets(&view).await
+                }
+                Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
+                Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
+                Ok(SpecView::UnionDistinct(view)) => {
+                    self.rebuild_union_distinct(&view).await
+                }
+                Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
+                Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
+                Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
+                Err(error) => Err(error),
             }
-            Ok(SpecView::ApproxPercentile(view)) => {
-                self.rebuild_approx_percentile(&view).await
-            }
-            Ok(SpecView::ComputedAgg(view)) => self.rebuild_computed_agg(&view).await,
-            Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
-            Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
-            Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
-            Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
-            Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
-            Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
-            Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
-            Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
-            Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
-            Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
-            Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
-            Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
-            Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
-            Ok(SpecView::LeftAggregate(view)) => self.rebuild_left_aggregate(&view).await,
-            Ok(SpecView::LookupChain(view)) => self.rebuild_lookup_chain(&view).await,
-            Ok(SpecView::GroupingSets(view)) => self.rebuild_grouping_sets(&view).await,
-            Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
-            Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
-            Ok(SpecView::UnionDistinct(view)) => self.rebuild_union_distinct(&view).await,
-            Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
-            Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
-            Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
-            Err(error) => Err(error),
-        };
+        })
+        .await;
         if result.is_ok() {
             crate::observability::record_rebuild(kind, started.elapsed());
         }

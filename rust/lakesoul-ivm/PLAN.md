@@ -4216,7 +4216,25 @@ oracle 差分对拍 `oracle_select_list_count_distinct_matches_full_recompute` �
 - **后续**：B1 补源文件/字节/扫描行/写入行指标做成本归因；B2 扩展 lookup/top-k/multi-join/派生链/分区/倾斜；
   B3 固化报告与可选 nightly smoke。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.175 性能评测 B1：刷新级 IO 埋点
+
+在既有 statement/refresh 时延指标之上，补「一次刷新读了多少、写了多少」的低基数计数器：
+
+- **作用域**：`observability::scope_refresh_io(kind, future)` 用 `tokio::task_local!` 为每个刷新任务建计数作用域
+  （跨 await 有效、按任务隔离）；`refresh_spec` 与 `rebuild_spec` 两个入口统一包裹，任务结束归集。
+- **采集点**：`IvmTable::read_files_with_options` 与分区读取分支累计「文件数 + 行数」；`append_batch` 在提交成功后
+  累计「写入行数 + 写入字节」（来自写出的对象大小）。未在刷新作用域内的读写不计入视图。
+- **指标**（`kind` 标签）：`lakesoul_ivm_refresh_files_read`、`lakesoul_ivm_refresh_rows_scanned`、
+  `lakesoul_ivm_mv_rows_written`、`lakesoul_ivm_mv_bytes_written`；读取字节沿用 IO 层已有的
+  `lakesoul_object_store_bytes_total`（本地文件系统为 0，S3 覆盖读写）。
+- **bench**：example 安装全局 recorder，逐轮对计数器取差值，CSV 增加 `incr_files/rows_scanned/rows_written/mv_bytes/io_bytes`
+  与 full 对应列；汇总增加平均扫描/写入行数。首次 S3 冒烟已显示：小表上 row 增量读 54–62 个文件/1.2MB（为撤回
+  变更行而扫描物化状态），全量读 20–24 个文件/0.7MB，但增量只写 266 行（全量 19,879 行）且快 4×——正是需要
+  用 IO 与延迟一起解读的形态。
+- **测试**：`tests/metrics.rs::refresh_io_counters_attribute_the_work` 断言增量刷新产生读文件/扫描/写入/字节计数，
+  且全量 overwrite 的写入行数大于增量。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、
