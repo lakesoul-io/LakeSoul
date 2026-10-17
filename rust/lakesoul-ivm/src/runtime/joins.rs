@@ -3561,7 +3561,10 @@ impl IvmRuntime {
 
         // The changed left rows plus the left rows referencing a changed
         // right row.
-        let mut affected = left_now.clone().select(key_exprs.clone())?.limit(0, None)?;
+        let mut affected = left_now
+            .clone()
+            .select(key_exprs.clone())?
+            .limit(0, Some(0))?;
         if !left_window.added_files.is_empty() {
             let delta_left = dataframe(
                 &context,
@@ -3880,7 +3883,11 @@ impl IvmRuntime {
             &view.right_keys
         };
 
-        let mut affected = left_now.clone().select(key_exprs.clone())?.limit(0, None)?;
+        // The pair join rewrites every pair of an affected row.  A changed
+        // join key can invalidate the other side's old match, so the seed
+        // starts from the current keys: conservative (the refresh is O(view
+        // size), a recorded follow-up) but correct.
+        let mut affected = left_now.clone().select(key_exprs.clone())?;
         if !left_window.added_files.is_empty() {
             let delta_left = dataframe(
                 &context,
@@ -4278,14 +4285,12 @@ impl IvmRuntime {
             right_join_names,
         )?;
 
-        let mut affected_left = left_now
-            .clone()
-            .select(left_key_exprs.clone())?
-            .limit(0, None)?;
-        let mut affected_right = right_now
-            .clone()
-            .select(right_key_exprs.clone())?
-            .limit(0, None)?;
+        // Same conservative seed as the pair left join: both sides' current
+        // keys, because a key change on one side can drop the other side's
+        // old match (a recorded optimization is to add only the before-match
+        // keys from the materialized pairs).
+        let mut affected_left = left_now.clone().select(left_key_exprs.clone())?;
+        let mut affected_right = right_now.clone().select(right_key_exprs.clone())?;
         if !left_window.added_files.is_empty() {
             let delta_left = apply_side_filter(
                 &context,
