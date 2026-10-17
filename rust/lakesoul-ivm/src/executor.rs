@@ -50,14 +50,14 @@ use crate::runtime::{
     left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
     lookup_join_view_schema_for, median_groups_mv_schema_for,
     min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys, multi_window_mv_schema_for,
-    nullable_join_key_schema, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for,
-    top_k_expr_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
-    union_output_schema_for, value_count_groups_state_schema_for,
-    variance_groups_mv_schema_for, wide_full_join_view_schema_with_identity_and_keys,
-    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
-    wide_keyed_join_view_schema_with_keys,
+    multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for_with_payload, nullable_join_key_schema,
+    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for,
+    value_count_groups_state_schema_for, variance_groups_mv_schema_for,
+    wide_full_join_view_schema_with_identity_and_keys, wide_join_view_schema_with_keys,
+    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for_with_payload,
 };
@@ -1847,10 +1847,16 @@ fn expected_mv_schema(
         ViewSpec::MultiWindow {
             source_table_id,
             windows,
+            payload_columns,
             ..
         } => {
             let source = find_table(tables, source_table_id)?;
-            multi_window_mv_schema_for(&source.schema, &source.primary_keys, windows)?
+            multi_window_mv_schema_for_with_payload(
+                &source.schema,
+                &source.primary_keys,
+                payload_columns,
+                windows,
+            )?
         }
         ViewSpec::Window {
             source_table_id,

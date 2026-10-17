@@ -19,8 +19,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{
     Column, DFSchema, ExprSchema, NullEquality, ScalarValue, TableReference,
 };
-use datafusion::logical_expr::expr::SetQuantifier;
 use datafusion::logical_expr::expr::{AggregateFunction, GroupingSet, NullTreatment};
+use datafusion::logical_expr::expr::{Alias, SetQuantifier};
 use datafusion::logical_expr::expr::{BinaryExpr, Exists, InSubquery, SetComparison};
 use datafusion::logical_expr::utils::{merge_schema, split_conjunction};
 use datafusion::logical_expr::{
@@ -101,6 +101,12 @@ pub fn analyze_select(
     // SQL standard; normalizing them before planning makes DataFusion plan the
     // semi/anti joins the analyzer models instead of mark joins.
     let plan = normalize_quantified_comparisons(plan)?;
+    // The optimizer keeps a projection over a projection around a pruned
+    // subquery select list (a filtered window subquery, say); every shape
+    // below reads one projection.
+    if let Some(collapsed) = collapse_projections(&plan) {
+        return analyze_select(&collapsed, tables, request);
+    }
     let plan = &plan;
     // Incremental views need keyed sources: the refresh folds the changelog
     // through merge-on-read and retracts by key.  Append-only sources (with or
@@ -742,6 +748,55 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
     }
     Ok(format!("{hash:016x}"))
 }
+/// Collapse `Projection (outer)` over `Projection (inner)` when the outer
+/// one only selects or renames columns.  The optimizer keeps both around a
+/// pruned subquery select list, and the shape analyzers expect a single
+/// projection over the shape's input.
+fn collapse_projections(plan: &LogicalPlan) -> Option<LogicalPlan> {
+    let LogicalPlan::Projection(outer) = plan else {
+        return None;
+    };
+    let LogicalPlan::Projection(inner) = peel(&outer.input) else {
+        return None;
+    };
+    let mut exprs = Vec::with_capacity(outer.expr.len());
+    for expr in &outer.expr {
+        let mut target = expr;
+        let mut alias = None;
+        while let Expr::Alias(aliased) = target {
+            if alias.is_none() {
+                alias = Some(aliased.name.clone());
+            }
+            target = &aliased.expr;
+        }
+        let Expr::Column(column) = target else {
+            return None;
+        };
+        let (field, expression) = inner
+            .schema
+            .fields()
+            .iter()
+            .zip(&inner.expr)
+            .find(|(field, _)| field.name() == &column.name)?;
+        let expression = match &alias {
+            Some(name) if name != field.name() => Expr::Alias(Alias::new(
+                expression.clone(),
+                None::<TableReference>,
+                name.clone(),
+            )),
+            _ => expression.clone(),
+        };
+        exprs.push(expression);
+    }
+    // Keep the outer schema: above a derived step the inner input can carry
+    // a schema that the rewrite has not refreshed, and the analyzer only
+    // reads names and types from this projection.
+    let projection =
+        Projection::try_new_with_schema(exprs, inner.input.clone(), outer.schema.clone())
+            .ok()?;
+    Some(LogicalPlan::Projection(projection))
+}
+
 pub(crate) fn peel(plan: &LogicalPlan) -> &LogicalPlan {
     match plan {
         LogicalPlan::SubqueryAlias(alias) => peel(&alias.input),

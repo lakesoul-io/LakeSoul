@@ -101,6 +101,42 @@ pub(super) fn analyze_window(
             filter,
         });
     }
+    // A derived multi-window step carries the input columns a consumer may
+    // read: the innermost window input's fields that are not keys, window
+    // columns or bookkeeping columns.
+    let payload_columns = if request.derived {
+        let keys = source
+            .primary_keys
+            .iter()
+            .chain(parts.iter().flat_map(|part| part.partition_keys.iter()))
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let window_columns = parts
+            .iter()
+            .flat_map(|part| part.columns.iter().map(|column| column.column.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        let mut payloads = Vec::new();
+        for field in node.schema().fields() {
+            let name = field.name();
+            let internal = matches!(
+                name.as_str(),
+                crate::runtime::IVM_ROW_KINDS_COLUMN
+                    | crate::runtime::IVM_EPOCH_COLUMN
+                    | crate::runtime::IVM_SOURCE_COLUMN
+            ) || Some(name.as_str()) == source.cdc_column.as_deref();
+            if internal
+                || keys.contains(name)
+                || window_columns.contains(name)
+                || payloads.contains(name)
+            {
+                continue;
+            }
+            payloads.push(name.clone());
+        }
+        payloads
+    } else {
+        Vec::new()
+    };
     Ok(ViewSpec::MultiWindow {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -114,6 +150,7 @@ pub(super) fn analyze_window(
                 columns: parts.columns,
             })
             .collect(),
+        payload_columns,
         filter,
     })
 }
