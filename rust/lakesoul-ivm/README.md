@@ -56,7 +56,7 @@ used as row identities must be non-nullable.
 
 | Kind | SQL shape | Materialized columns |
 |---|---|---|
-| Projection / filter | `SELECT [expr AS c, ...] FROM src [WHERE p]`; `p` may compare against an uncorrelated scalar subquery (`WHERE v > (SELECT AVG(v) FROM dim)`), whose tables are watched alongside the source (a keyed source only) | projected columns, `rowKinds`, `__ivm_epoch` |
+| Projection / filter | `SELECT [expr AS c, ...] FROM src [WHERE p]`; `p` may compare against an uncorrelated scalar subquery (`WHERE v > (SELECT AVG(v) FROM dim)`), whose tables are watched alongside the source (a keyed source only) | projected columns, the source primary keys a projection omits (a keyed source identifies its rows by them, as the top-k layout does), `rowKinds`, `__ivm_epoch` |
 | SELECT DISTINCT | `SELECT DISTINCT c, ... FROM src [WHERE p]` | the distinct columns, `count_v`, kinds, epoch |
 | DISTINCT ON | `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` over a keyed source; the picked row is deterministic (the source primary keys break ties) | keys, one column per picked column (`first_value_v`), kinds, epoch |
 | SUM / COUNT / AVG | `SELECT k, SUM(v), COUNT(*), AVG(v) FROM src [WHERE p] GROUP BY k [HAVING h]`; the same aggregates without a `GROUP BY` (global, single-row MV) | keys, `sum_v`, `count_v`, `__ivm_nonnull_count` (`avg_v` for AVG), kinds, epoch |
@@ -617,11 +617,10 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
   DataFusion plans it as two aggregate levels, so the maintained subquery
   would correlate on the distinct key too;
-* a **derived window step** consumed by a select-list (`row`) or top-k shape
-  when the consumer needs a column the step's layout does not carry, or when
-  the step's key names differ from the subplan's fields (the step
-  materializes `[partition keys, row keys, window columns]`; the inline
-  window forms stay maintained — see PLAN §10.164);
+* a **derived multi-window step** (several window clauses) consumed by a
+  select-list or top-k shape: only a single-clause window step carries the
+  input payload columns a consumer reads (see PLAN §10.168; the inline window
+  forms and single-clause steps stay maintained);
 * a single-sided inner join over a side without a primary key (the pair
   shape its duplicates need cannot key it): a right side keyed by the join
   key stays the semi (membership) shape, and otherwise the pair join

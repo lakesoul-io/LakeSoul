@@ -146,9 +146,9 @@ pub use runtime::{
     wide_keyed_join_view_schema_with_keys, wide_left_join_view_schema_with_identity,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_for, wide_outer_join_view_schema_with_keys,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for, window_key,
-    window_mv_schema, window_mv_schema_for, window_ranking_mv_schema_for,
-    window_value_mv_schema_for,
+    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
+    window_columns_mv_schema_for_with_payload, window_key, window_mv_schema,
+    window_mv_schema_for, window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
 pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select, definition_hash};
 pub use table::{

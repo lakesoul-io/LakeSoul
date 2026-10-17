@@ -59,7 +59,7 @@ use crate::runtime::{
     wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
     wide_keyed_join_view_schema_with_keys,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
-    wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for,
+    wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for_with_payload,
 };
 use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
@@ -1856,13 +1856,15 @@ fn expected_mv_schema(
             source_table_id,
             partition_keys,
             columns,
+            payload_columns,
             ..
         } => {
             let source = find_table(tables, source_table_id)?;
-            window_columns_mv_schema_for(
+            window_columns_mv_schema_for_with_payload(
                 &source.schema,
                 partition_keys,
                 &source.primary_keys,
+                payload_columns,
                 columns,
             )?
         }

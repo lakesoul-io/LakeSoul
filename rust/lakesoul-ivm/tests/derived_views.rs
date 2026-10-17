@@ -12,8 +12,10 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, sum_count_mv_schema_for,
-    top_k_mv_schema_for,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
+    IvmTableOptions, WindowColumn, WindowFunction, row_expr_mv_schema_for,
+    sum_count_mv_schema_for, top_k_mv_schema_for, window_columns_mv_schema_for,
+    window_columns_mv_schema_for_with_payload,
 };
 use tempfile::tempdir;
 
@@ -3468,6 +3470,322 @@ async fn a_top_k_over_a_min_step_is_materialized() {
         .await,
         read_pair_rows(runtime, &fact, &expected).await
     );
+}
+
+/// A select-list (row) view over a derived window step: the subquery carries
+/// a value window beside the rank, so the window cannot be inlined and the row
+/// view reads the step.
+#[test_log::test(tokio::test)]
+async fn a_row_over_a_window_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der12_f_{suffix}")).await;
+    let window_column =
+        |function: WindowFunction, value: Option<&str>, name: &str| WindowColumn {
+            function,
+            value_column: value.map(str::to_string),
+            window_args: None,
+            window_filter: None,
+            ignore_nulls: false,
+            window_frame: None,
+            column: name.to_string(),
+        };
+    // The step's layout: the partition key, the source primary key, the window
+    // columns; the row view materializes its projection plus the source keys
+    // it omits (here the partition key `g`).
+    let step_schema = window_columns_mv_schema_for(
+        &source_schema(),
+        &["g".to_string()],
+        &["k".to_string()],
+        &[
+            window_column(WindowFunction::Sum, Some("v"), "ws"),
+            window_column(WindowFunction::RowNumber, None, "rn"),
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der12_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_expr_mv_schema_for(
+                    &step_schema,
+                    &["k".to_string(), "ws".to_string(), "g".to_string()],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT k, ws FROM (SELECT k, sum(v) over \
+         (partition by g order by v) AS ws, row_number() over \
+         (partition by g order by v) AS rn FROM {}) t WHERE rn <= 2",
+        mv.table_name, fact.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 30, "insert"),
+            (3, "b", 20, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let expected = format!(
+        "select k, ws, g from (select k, g, v, sum(v) over \
+         (partition by g order by v) as ws, row_number() over \
+         (partition by g order by v) as rn from {} where op <> 'delete') t \
+         where rn <= 2",
+        fact.table_name
+    );
+    assert_eq!(
+        read_key_sum_group(
+            runtime,
+            &mv,
+            &format!("select k, ws, g from {} order by k", mv.table_name)
+        )
+        .await,
+        read_key_sum_group(runtime, &fact, &format!("{expected} order by k")).await
+    );
+
+    // A new row changes the window boundary and the projection follows.
+    fact.append_batch(runtime.client(), source_batch(&[(4, "b", 5, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_key_sum_group(
+            runtime,
+            &mv,
+            &format!("select k, ws, g from {} order by k", mv.table_name)
+        )
+        .await,
+        read_key_sum_group(runtime, &fact, &format!("{expected} order by k")).await
+    );
+}
+
+/// The `(k, ws, g)` rows of a row-over-window MV, ordered by `k`.
+async fn read_key_sum_group(
+    runtime: &IvmRuntime,
+    table: &IvmTable,
+    select: &str,
+) -> Vec<(i64, i64, String)> {
+    let context = SessionContext::new();
+    context
+        .register_table(
+            table.table_name.as_str(),
+            Arc::new(runtime.table_provider(table)),
+        )
+        .unwrap();
+    let batches = context.sql(select).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            rows.push((
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+                batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+                arrow::util::display::array_value_to_string(batch.column(2), row)
+                    .unwrap(),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+/// A top-k over a derived window step whose input is a join step: the window
+/// step carries the payload columns the consumer reads, and its own keys come
+/// from the join step's row identities.
+#[test_log::test(tokio::test)]
+async fn a_top_k_over_a_window_over_a_join_step_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_der13_f_{suffix}")).await;
+    let dim = create_source(&runtime, &dir, &format!("ivm_der13_d_{suffix}")).await;
+    let window_column =
+        |function: WindowFunction, value: Option<&str>, name: &str| WindowColumn {
+            function,
+            value_column: value.map(str::to_string),
+            window_args: None,
+            window_filter: None,
+            ignore_nulls: false,
+            window_frame: None,
+            column: name.to_string(),
+        };
+    // The join step's layout: the wide payload columns and both identities.
+    let join_step_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("__left_pk_k", DataType::Int64, false),
+        Field::new("__right_pk_k", DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let step_schema = window_columns_mv_schema_for_with_payload(
+        &join_step_schema,
+        &["g".to_string()],
+        &["__left_pk_k".to_string(), "__right_pk_k".to_string()],
+        &["k".to_string(), "v".to_string()],
+        &[
+            window_column(WindowFunction::Sum, Some("v"), "ws"),
+            window_column(WindowFunction::RowNumber, None, "rn"),
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der13_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(
+                    &step_schema,
+                    &[
+                        "g".to_string(),
+                        "__left_pk_k".to_string(),
+                        "__right_pk_k".to_string(),
+                    ],
+                    &["k".to_string(), "ws".to_string()],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec![
+                "g".to_string(),
+                "__left_pk_k".to_string(),
+                "__right_pk_k".to_string(),
+            ]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT k, ws FROM (SELECT f.k AS k, sum(d.v) over \
+         (partition by f.g order by d.v) AS ws, row_number() over \
+         (partition by f.g order by d.v) AS rn \
+         FROM {} f JOIN {} d ON d.k = f.k) t WHERE rn <= 2",
+        mv.table_name, fact.table_name, dim.table_name
+    );
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "insert"),
+            (2, "a", 30, "insert"),
+            (3, "b", 20, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 100, "insert"),
+            (2, "a", 200, "insert"),
+            (3, "b", 300, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let expected = format!(
+        "select k, ws from (select f.k as k, sum(d.v) over \
+         (partition by f.g order by d.v) as ws, row_number() over \
+         (partition by f.g order by d.v) as rn \
+         from (select * from {} where op <> 'delete') f \
+         join (select * from {} where op <> 'delete') d on d.k = f.k) t \
+         where rn <= 2",
+        fact.table_name, dim.table_name
+    );
+    assert_eq!(
+        read_pairs_i64(
+            runtime,
+            &[&mv],
+            &format!("select k, ws from {} order by k", mv.table_name)
+        )
+        .await,
+        read_pairs_i64(runtime, &[&fact, &dim], &format!("{expected} order by k")).await
+    );
+    // A new fact row shifts the ordering inside its partition.
+    fact.append_batch(runtime.client(), source_batch(&[(4, "a", 5, "insert")]))
+        .await
+        .unwrap();
+    dim.append_batch(runtime.client(), source_batch(&[(4, "a", 400, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_pairs_i64(
+            runtime,
+            &[&mv],
+            &format!("select k, ws from {} order by k", mv.table_name)
+        )
+        .await,
+        read_pairs_i64(runtime, &[&fact, &dim], &format!("{expected} order by k")).await
+    );
+}
+
+/// The `(k, ws)` rows of a top-k-over-window MV ordered by `k`.
+async fn read_pairs_i64(
+    runtime: &IvmRuntime,
+    tables: &[&IvmTable],
+    select: &str,
+) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    for table in tables {
+        context
+            .register_table(
+                table.table_name.as_str(),
+                Arc::new(runtime.table_provider(table)),
+            )
+            .unwrap();
+    }
+    let batches = context.sql(select).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            rows.push((
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+                batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
 }
 
 /// A top-k over a **COUNT(DISTINCT)** step.
