@@ -1,0 +1,70 @@
+# A single-sided inner join that selects only the right side: the left row
+# identity becomes the left payload, so every match keeps its own row.
+
+statement ok
+/*ivm-append __SRC__: k=1,g=a,v=10,op=insert; k=2,g=a,v=30,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=100,op=insert; k=2,g=a,v=200,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT b.v FROM __SRC__ a JOIN __SRC2__ b ON a.k = b.k
+
+statement ok
+/*ivm-expect-action bootstrap*/
+
+query IIIII rowsort
+SELECT k, left_value, right_value, "__left_pk_k", "__right_pk_k" FROM __MV__
+----
+1 1 100 1 1
+2 2 200 2 2
+
+# A right payload change rewrites its pair.
+statement ok
+/*ivm-append __SRC2__: k=1,g=a,v=150,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT b.v FROM __SRC__ a JOIN __SRC2__ b ON a.k = b.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT k, left_value, right_value, "__left_pk_k", "__right_pk_k" FROM __MV__
+----
+1 1 150 1 1
+2 2 200 2 2
+
+# Rows without a match on either side are absent.
+statement ok
+/*ivm-append __SRC__: k=3,g=a,v=40,op=insert*/
+
+statement ok
+/*ivm-append __SRC2__: k=4,g=a,v=400,op=insert*/
+
+statement ok
+INSERT INTO __MV__ SELECT b.v FROM __SRC__ a JOIN __SRC2__ b ON a.k = b.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT k, left_value, right_value, "__left_pk_k", "__right_pk_k" FROM __MV__
+----
+1 1 150 1 1
+2 2 200 2 2
+
+# Dropping the left row of a pair retracts it.
+statement ok
+/*ivm-append __SRC__: k=2,g=a,v=30,op=delete*/
+
+statement ok
+INSERT INTO __MV__ SELECT b.v FROM __SRC__ a JOIN __SRC2__ b ON a.k = b.k
+
+statement ok
+/*ivm-expect-action incremental*/
+
+query IIIII rowsort
+SELECT k, left_value, right_value, "__left_pk_k", "__right_pk_k" FROM __MV__
+----
+1 1 150 1 1
