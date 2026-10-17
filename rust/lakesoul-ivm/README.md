@@ -639,7 +639,10 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   mode, and a null-aware predicate on a repeated left keeps plain membership
   semantics); a null-safe key in a multi-table chain or on a computed
   expression is rejected (a single two-source join over plain columns is
-  maintained, inner or outer);
+  maintained, inner or outer; a **uniform** null-safe chain keeps correct
+  plan markers and is a recorded follow-up, while a mixed chain does not -
+  DataFusion overwrites the inner join's marker with the outer's, see PLAN
+  §10.165);
 * quantified comparisons in a position that is not a plain predicate: a
   quantifier below a wider `NOT` or inside a disjunction keeps DataFusion's
   null-aware mark-join plan and is rejected rather than mistranslated (a
