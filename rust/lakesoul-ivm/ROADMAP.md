@@ -89,7 +89,7 @@ retract 审计、row lineage / 行标识方案、`UNION ALL` over append-only CD
 单表投影/过滤、SELECT DISTINCT、DISTINCT ON、SUM/COUNT/AVG、MIN/MAX、COUNT/SUM(DISTINCT)、
 variance/stddev/median/string_agg/array_agg/bool_agg/approx_*、混合聚合、GROUPING SETS/
 ROLLUP/CUBE（含表达式键、任意聚合组合）、窗口（排名/取值/聚合、帧、多窗口）、TOP-K、
-内/LOOKUP/LEFT/FULL/RIGHT/CROSS 两表连接、2–8 源内连接链、semi/anti（EXISTS/IN）、
+内/LOOKUP/LEFT/FULL/RIGHT/CROSS 两表连接、3–32 源 keyed 内连接链（append-only 8）、semi/anti（EXISTS/IN）、
 INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关标量子查询（WHERE、
 选择列表）、keyed 1:1 左深 lookup 链（步骤键可引用前序源）、**视图链（手动拓扑序，
 见 `tests/cascading_views.rs`）**。
@@ -127,12 +127,12 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 链中 **1:N 右侧**外连接（维表按 join key 不唯一） | **L** | ✅ 已实现（PR-95，PLAN §10.101）：每步非空行标识编码列（长度前缀拼接，无碰撞）纳入 MV 主键；受影响集合按基表键重放，INNER/LEFT 均支持；设计见 `ivm-lookup-chain-1n.md` |
 | 链中 **RIGHT/FULL 步骤**、**bushy 外连接树** | **M-L** | **均已支持**（PLAN §10.130–§10.134）：bushy 外连接树的 join 侧子查询物化为派生步，外连接步物化非空行身份 `__ivm_pair_id`（两侧主键长度前缀编码；LEFT 步键=左侧身份别名+该列，FULL 步键=该列），消费方可作 keyed 源；链内 RIGHT/FULL 步同走派生步路线（最外层 RIGHT/FULL 物化其左侧、内层 RIGHT/FULL 步物化自身、子查询复合侧同理），复核后都收敛到两源外连接；步骤 payload 同名时明确拒绝（别名子查询规避） |
 | 连接键/条件引用**未物化列**（inner/cross theta join） | **S** | ✅ 已实现（PR-97，PLAN §10.103）：条件列自动物化为隐藏 wide payload（`__ivm_cond_<side>_<column>`） |
-| 连接键是**表达式**（`ON a.x+1=b.y`，两源 inner join） | **M** | ✅ 已实现（PR-98，PLAN §10.104）：两侧求值 + 隐藏 key 列 `__ivm_key_<n>`；lookup/outer/multi/chain 的表达式键仍拒绝 |
+| 连接键是**表达式**（`ON a.x+1=b.y`） | **M** | ✅ **全形态已支持**（单源表达式）：两源 inner（PR-98，PLAN §10.104）、lookup（#1151，§10.155）、pair 左/全连接（#1152，§10.156）、多路扁平化 inner（#1157，§10.160）、左深链（#1159，§10.161）；跨源表达式与链步骤的跨源右键明确拒绝 |
 | `= ANY` / `<> ALL` 量化比较 | **S** | ✅ 已实现（PR-100，PLAN §10.106）：标准精确等价，优化前重写为 `IN` / `NOT IN` |
 | 其余量化比较（`> ANY`、`> ALL`、`>= ANY` …） | **M** | ✅ 已实现（PR-102，PLAN §10.108）：优化前重写为 EXISTS/NOT EXISTS（`(x op y) IS NOT TRUE`）；`NOT` 用补算子；theta semi/anti（无等值键）；子查询外的 wider NOT / 析取仍拒绝 |
 | 多列 `(a, b) IN (...)` | **—** | DataFusion 55 计划期即报「子查询只能单列」，不在 IVM 侧 |
 | `NOT IN` 的 NULL 边角 | **已支持** | null-aware anti；`= ANY`/`<> ALL` 归一化后同路径 |
-| 超过 8 个源 | **S** | ✅ 已实现（PR-99，PLAN §10.105）：上限 8 → 16；9 源分析器用例 |
+| 超过 8 个源 | **S** | ✅ 已实现（PR-99，PLAN §10.105 升到 16；#1162 起按形态拆分为 **32 keyed / 8 append-only**，分析器与运行时共享 `multi_join_source_limit`，见 PLAN §10.163） |
 
 ### B4. 聚合/分组（P1–P2）
 
@@ -156,7 +156,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 形状 | 难度 | 说明 |
 |---|---|---|
 | 相关标量子查询 + `GROUP BY` | **M-L** | ✅ 已核实（PLAN §10.114）：`GROUP BY` 只含**相关键**的形态（`WHERE` 与 select-list）已支持；含非相关列的 `GROUP BY` 被 DataFusion 分析器直接拒绝（“A GROUP BY clause in a scalar correlated subquery cannot contain non-correlated columns”），不在 IVM 侧 |
-| 相关子查询内 `DISTINCT`/多聚合 | **M** | ✅ COUNT 族已实现（PLAN §10.114）：`COUNT(x)` / `COUNT(*)` / `COUNT(DISTINCT x)` 的 `WHERE` 比较（DataFusion 的空集守卫 `CASE WHEN … IS NULL THEN 0` 重写为对聚合列求值；运行时改成左连接 + 谓词以填充缺失键；两级 DISTINCT 重写解析回 `count(distinct x)`）；多聚合仍明确拒绝；select-list 的 COUNT 族仍走两视图 |
+| 相关子查询内 `DISTINCT`/多聚合 | **M** | ✅ COUNT 族已实现（PLAN §10.114）：`COUNT(x)` / `COUNT(*)` / `COUNT(DISTINCT x)` 的 `WHERE` 比较（DataFusion 的空集守卫 `CASE WHEN … IS NULL THEN 0` 重写为对聚合列求值；运行时改成左连接 + 谓词以填充缺失键；两级 DISTINCT 重写解析回 `count(distinct x)`）；多聚合仍明确拒绝；select-list 的 COUNT 族已单视图化（#1154，无匹配计 0），`COUNT(DISTINCT …)` 的 select-list 形态仍拒绝（两级聚合） |
 | 标量值参与计算表达式（`(SELECT …)+1`） | **S-M** | ✅ 已实现（PR-103，PLAN §10.109）：`LeftAggregate.output_exprs`（渲染表达式对 `__ivm_right_agg` + MV 列 + 类型）；聚合值列保留（计算-only 时内部命名 `__ivm_agg`）；`left_aggregate_mv_schema_with_outputs` / expected schema / refresh+rebuild 同步 |
 | 子查询出现在 HAVING/ORDER BY | **S-M** | ✅ 单语句已实现（PR-105，PLAN §10.111）：MultiAgg 增加 `having_lookup` 第二源——相关形态按组键左连接按键盘聚合、非相关形态交叉连接全局聚合；两种源变更都会重算受影响组（全局=全部组）。两视图模式（PR-104）仍可用 |
 | 递归 CTE / LATERAL | **不做** | 非目标 |
@@ -165,7 +165,7 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 
 | 形状 | 难度 | 说明 |
 |---|---|---|
-| `ORDER BY … LIMIT k`（非 `rn <= k` 形式） | **M** | ✅ 已实现（PLAN §10.113）：全局 top-k（无分组）复用 TopK 视图（`group_keys` 为空；运行时 `partition by` 可选、唯一组恒受影响），边界并列由源主键打破；`OFFSET`、无 `ORDER BY`、聚合/窗口/连接之上、缺源主键、计算列输出均明确拒绝 |
+| `ORDER BY … LIMIT k`（非 `rn <= k` 形式） | **M** | ✅ 已实现（PLAN §10.113）：全局 top-k（无分组）复用 TopK 视图（`group_keys` 为空；运行时 `partition by` 可选、唯一组恒受影响），边界并列由源主键打破；`OFFSET`（#1147）与计算列输出（#1149）已支持，聚合/连接之上的内联形态已支持；仍拒绝：无 `ORDER BY` 的 `LIMIT`（Tier-2）、缺源主键，以及**读派生 window 步**的消费形状（精确分解见 PLAN §10.164） |
 | RANGE/GROUPS 帧偏移等边角 | **M（需核实）** | ✅ 已核实并补测（PLAN §10.113）：帧文本本就完整渲染（`ROWS`/`RANGE`/`GROUPS` 与各 bound），引擎在重算分区上求值；新增 `window_range_frame.slt`（数值偏移 RANGE）与 `window_groups_frame.slt`（peer 组 GROUPS） |
 
 ### B8. 类型（P2）
@@ -191,7 +191,11 @@ INTERSECT/EXCEPT（含空安全键）、UNION ALL/DISTINCT、非相关与相关�
 | 未增量维护的形状默认全量重算 | **M** | ✅ 已实现（PLAN §10.123）：分析器拒绝（`UnsupportedShape` 标记）→ 执行器注册 `ViewSpec::Fallback{statement,tables,reason}`；刷新先看各源变更窗口（全无变化即 no-op），有变化则**先在内存算出结果**、再 truncate + 按 epoch 写回（`rowKinds`/`__ivm_epoch`）；`action=Fallback`、metrics label、`list_views` 的 `fallback/fallback_reason` 均可见；无主键 MV 允许（append-only 全量替换），有主键则校验结果唯一（重复主键明确拒绝）；`with_allow_fallback(false)`/表属性 `lakesoul.ivm.allow_fallback=false` 恢复严格拒绝；Tier-1 视图不得读 fallback 视图（`ensure_incremental_upstreams`）|
 | 增量能力补齐（RIGHT/FULL 链、嵌套类型、多窗口链…） | — | 变为**性能优化**：可用性已由 Tier-2 保证，按价值逐项增量实现 |
 
-## C. 执行顺序（建议）
+## C. 执行顺序（建议）——本节的计划已全部交付
+
+清单保留作历史记录；已完成项见各行 ✅ 与 PLAN §10.90–§10.164。当前缺口只剩「B 系剩余项」
+（B2 派生表边角、B3/B5 null-safe 多链、B6 多聚合标量子查询、B7 派生 window 步的消费形状、
+B8 list/map 主键），以及把本轮新能力纳入 `sql_oracle` 随机对拍。
 
 1. **P0（小步，正确性）**：A1 MV 主键存在性校验 → A2 CDC 契约测试 → A3 非契约源策略。
 2. **P0（大价值）**：B2 视图链编排（依赖图 + 拓扑刷新）——一次解锁组合类全部形状，
