@@ -5,6 +5,8 @@
 //! The multi-way join view: three or more sources flattened into one chain.
 
 use super::*;
+use datafusion::common::NullEquality;
+use datafusion::logical_expr::LogicalPlanBuilder;
 
 /// The most sources a **keyed** multi-way join maintains.  A keyed refresh
 /// costs one delta join per changed source, so its cost is linear in the
@@ -204,6 +206,8 @@ pub struct MultiJoinView {
     pub columns: Vec<MultiJoinColumn>,
     /// The non-equality pair conditions.
     pub conditions: Vec<MultiJoinCondition>,
+    /// Every key comparison matches NULL with NULL.
+    pub null_safe: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -226,6 +230,7 @@ impl MultiJoinView {
             keys,
             columns,
             conditions: Vec::new(),
+            null_safe: false,
             refresh_interval_ms: 0,
         }
     }
@@ -263,6 +268,7 @@ impl MultiJoinView {
             keys: self.keys.clone(),
             columns: self.columns.clone(),
             conditions: self.conditions.clone(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -285,6 +291,7 @@ fn multi_join_frame(
     conditions: &[MultiJoinCondition],
     columns: &[MultiJoinColumn],
     keyed: bool,
+    null_safe: bool,
 ) -> Result<DataFrame> {
     let source_count = schemas.len();
     let mut needed: Vec<Vec<String>> = vec![Vec::new(); source_count];
@@ -376,7 +383,21 @@ fn multi_join_frame(
         }
         let left_refs = left_names.iter().map(String::as_str).collect::<Vec<_>>();
         let right_refs = right_names.iter().map(String::as_str).collect::<Vec<_>>();
-        current = current.join(right, JoinType::Inner, &left_refs, &right_refs, None)?;
+        current = if null_safe {
+            // A NULL join key matches another NULL join key.
+            let plan = LogicalPlanBuilder::new(current.logical_plan().clone())
+                .join_detailed(
+                    right.logical_plan().clone(),
+                    JoinType::Inner,
+                    (left_names.clone(), right_names.clone()),
+                    None,
+                    NullEquality::NullEqualsNull,
+                )?
+                .build()?;
+            DataFrame::new(context.state(), plan)
+        } else {
+            current.join(right, JoinType::Inner, &left_refs, &right_refs, None)?
+        };
     }
 
     if !conditions.is_empty() {
@@ -718,6 +739,7 @@ impl IvmRuntime {
                     &view.conditions,
                     &view.columns,
                     true,
+                    view.null_safe,
                 )?);
             }
             let mut current_rows = terms
@@ -862,6 +884,7 @@ impl IvmRuntime {
                     &view.conditions,
                     &view.columns,
                     false,
+                    view.null_safe,
                 )?);
             }
             if let Some(first) = terms.pop() {
@@ -984,6 +1007,7 @@ impl IvmRuntime {
                 &view.conditions,
                 &view.columns,
                 keyed,
+                view.null_safe,
             )?;
             let joined = if keyed {
                 joined

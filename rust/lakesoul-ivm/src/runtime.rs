@@ -378,6 +378,10 @@ pub enum ViewSpec {
         /// The non-equality pair conditions.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         conditions: Vec<MultiJoinCondition>,
+        /// Every key comparison matches NULL with NULL (`IS NOT DISTINCT
+        /// FROM`); the optimizer keeps the marker uniform across a chain.
+        #[serde(default)]
+        null_safe: bool,
     },
     /// An aggregate view over one source with any mix of supported aggregate
     /// functions in a single statement.
@@ -973,6 +977,10 @@ pub enum ViewSpec {
         output_columns: Vec<LookupChainColumn>,
         /// The materialized view table id.
         mv_table_id: String,
+        /// Every step compares its keys null-safely (`IS NOT DISTINCT FROM`);
+        /// the optimizer keeps the marker uniform across a chain.
+        #[serde(default)]
+        null_safe: bool,
     },
     /// `GROUP BY GROUPING SETS`/`ROLLUP`/`CUBE` over a keyed source with
     /// `SUM`/`COUNT`/`AVG`: the MV keeps one row per (grouping index, key
@@ -2851,6 +2859,7 @@ impl IvmRuntime {
                 keys,
                 columns,
                 conditions,
+                null_safe,
             } => {
                 let mut tables = Vec::with_capacity(sources.len());
                 for source in sources {
@@ -2864,6 +2873,7 @@ impl IvmRuntime {
                     keys: keys.clone(),
                     columns: columns.clone(),
                     conditions: conditions.clone(),
+                    null_safe: *null_safe,
                     refresh_interval_ms,
                 })
             }
@@ -3326,6 +3336,7 @@ impl IvmRuntime {
                 steps,
                 output_columns,
                 mv_table_id,
+                null_safe,
             } => {
                 let mut opened = Vec::with_capacity(sources.len());
                 for source in sources {
@@ -3340,6 +3351,7 @@ impl IvmRuntime {
                     steps: steps.clone(),
                     output_columns: output_columns.clone(),
                     mv: self.open_table_by_id(mv_table_id).await?,
+                    null_safe: *null_safe,
                     refresh_interval_ms,
                 })
             }

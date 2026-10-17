@@ -5,6 +5,8 @@
 //! The left-deep lookup chain view: a base table joined to keyed 1:1 lookups.
 
 use super::*;
+use datafusion::common::NullEquality;
+use datafusion::logical_expr::LogicalPlanBuilder;
 
 use datafusion::functions::string::expr_fn::{concat, octet_length};
 use datafusion::logical_expr::Cast;
@@ -25,6 +27,8 @@ pub struct LookupChainView {
     /// The materialized view table, created from
     /// [`lookup_chain_mv_schema_for`].
     pub mv: IvmTable,
+    /// Every step compares its keys null-safely.
+    pub null_safe: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -44,6 +48,7 @@ impl LookupChainView {
             steps,
             output_columns,
             mv,
+            null_safe: false,
             refresh_interval_ms: 0,
         }
     }
@@ -62,6 +67,7 @@ impl LookupChainView {
             steps: self.steps.clone(),
             output_columns: self.output_columns.clone(),
             mv_table_id: self.mv.table_id.clone(),
+            null_safe: self.null_safe,
         }
     }
 }
@@ -302,17 +308,28 @@ fn lookup_chain_replay(
             .enumerate()
             .map(|(key, column)| chain_column_name(step_key_source(step, key), column))
             .collect::<Vec<_>>();
-        frame = frame.join(
-            step_frame,
-            if step.left {
-                JoinType::Left
-            } else {
-                JoinType::Inner
-            },
-            &left_keys.iter().map(String::as_str).collect::<Vec<_>>(),
-            &right_keys.iter().map(String::as_str).collect::<Vec<_>>(),
-            None,
-        )?;
+        let left_refs = left_keys.iter().map(String::as_str).collect::<Vec<_>>();
+        let right_refs = right_keys.iter().map(String::as_str).collect::<Vec<_>>();
+        let join_type = if step.left {
+            JoinType::Left
+        } else {
+            JoinType::Inner
+        };
+        frame = if view.null_safe {
+            // A NULL join key matches another NULL join key.
+            let plan = LogicalPlanBuilder::new(frame.logical_plan().clone())
+                .join_detailed(
+                    step_frame.logical_plan().clone(),
+                    join_type,
+                    (left_keys.clone(), right_keys.clone()),
+                    None,
+                    NullEquality::NullEqualsNull,
+                )?
+                .build()?;
+            DataFrame::new(context.state(), plan)
+        } else {
+            frame.join(step_frame, join_type, &left_refs, &right_refs, None)?
+        };
     }
     Ok(frame)
 }

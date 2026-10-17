@@ -4047,6 +4047,7 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   重放/连接改用 `NullEquality::NullEqualsNull`、键列可空、身份编码已能处理 NULL）；**混合链保持拒绝**，
   理由现在是精确的——若按 SQL 逐键实现，会与计划实际执行的语义不一致；
 - 该测试会在上游改变这一行为时立刻失败，届时可重新评估混合链。
+- **后续（§10.172）**：全 null-safe 链已按优化后计划的逐 join 标记放开（多路 inner 链与 lookup 链）。
 
 ### 10.166 B2 边角：单侧 inner join 的**左侧**方向
 
@@ -4160,7 +4161,28 @@ DataFusion 把相关 `COUNT(DISTINCT x)` 计划成两级聚合：外层 `Aggrega
 oracle 差分对拍 `oracle_select_list_count_distinct_matches_full_recompute` 与
 `oracle_select_list_count_distinct_outputs_match_full_recompute`。
 
-## 附录 A. IVM 上层设计（后续阶段，摘要）
+### 10.172 B5：全 null-safe 多表链
+
+§10.165 的结论落到两条链式视图上：多路扁平化 inner 链（`ViewSpec::MultiJoin`）与左深 lookup 链
+（`ViewSpec::LookupChain`）。两者都按**优化后计划的逐 join `null_equality` 标记**维护：
+
+- **标记来源**：`join_tree_null_safe` 收集整棵树每个 join 的标记；全部为 `NullEqualsNull` 时链按
+  可空安全维护，全部严格时维持严格；**混合标记**（理论上优化后不出现）明确拒绝。数据级核实补充了
+  §10.165 的表格：外层 null-safe 会把内层严格连接**提升**为 null-safe（DataFusion 也按提升后的计划执行），
+  内层 null-safe 在外层严格要求下被**简化**为严格且结果与 SQL 一致（NULL 侧的行本来就会被外层严格条件过滤）。
+  视图因此与「同一语句的全量重算」一致；这是本项目一贯的「按计划语义维护」取舍。
+- **spec**：`MultiJoin.null_safe` / `LookupChain.null_safe`（serde 默认 false，旧 spec 兼容并以严格语义读取）。
+- **运行时**：`multi_join_frame` 与 `lookup_chain_replay` 在 flag 为真时用
+  `LogicalPlanBuilder::join_detailed(..., NullEquality::NullEqualsNull)` 建连接（逐源/逐 step），
+  否则维持 `DataFrame::join` 的严格语义。受影响行集合按各源主键（非空）选取，不受 join 键可空影响；
+  MV 主键仍是各源主键/步身份列，schemata 不变。
+- **分析器放宽**：多路链与 lookup 链不再因 null-safe 逐步拒绝；链上的**计算键**同样物化后按
+  可空安全比较（单 pair 的表达式键仍要求普通列，语义不同不在此列）。
+- **测试**：分析器用例 `analyzes_null_safe_chains`（多路链）与 `analyzes_null_safe_lookup_chains`
+  （lookup 链）；oracle 差分对拍 `oracle_multi_join_null_safe_matches_full_recompute` 与
+  `oracle_lookup_chain_null_safe_matches_full_recompute`（可空键、NULL 匹配、lookup 链的 1:N 步身份）。
+
+## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
   join 状态表（PK=(join_key,row_id)，bucket=join_key 前缀）、

@@ -27,10 +27,11 @@ pub(super) fn analyze_join(
     // `INTERSECT`/`EXCEPT` plan as null-aware joins (a NULL row matches a
     // NULL row), and `IS NOT DISTINCT FROM` predicates are null-aware too.
     // The set operations need the per-row match counts and stay in the
-    // semi/anti analyzer; a single two-source inner or outer join is
-    // maintained with null-safe keys.  Every other null-aware shape (chains,
-    // computed keys) is rejected instead of silently producing different
-    // rows.
+    // semi/anti analyzer; a two-source inner or outer join is maintained with
+    // null-safe keys, and a uniform null-safe chain (multi-way inner or
+    // lookup) follows the plan's per-join markers.  A two-source join with a
+    // computed null-safe key is rejected instead of silently producing
+    // different rows.
     let null_safe = join.null_equality == NullEquality::NullEqualsNull;
     if null_safe
         && !matches!(
@@ -97,18 +98,14 @@ pub(super) fn analyze_join(
     // Three or more joined tables flatten into one chain: an outer step is a
     // left-deep lookup chain, anything else an inner chain.
     if join_tree_has_multiple_sources(join) {
-        if join_tree_has_null_safe_step(join) {
-            return Err(unsupported(
-                "null-safe join keys are only maintained for a single inner join",
-            ));
-        }
+        let null_safe = join_tree_null_safe(join)?;
         if join.join_type != JoinType::Inner
             || join_tree_has_outer_step(&join.left)
             || join_tree_has_outer_step(&join.right)
         {
-            return analyze_lookup_chain(join, projection, tables, request);
+            return analyze_lookup_chain(join, projection, tables, request, null_safe);
         }
-        return analyze_multi_join(join, projection, tables, request);
+        return analyze_multi_join(join, projection, tables, request, null_safe);
     }
     // `FROM a, b` / `CROSS JOIN` plans as an inner join without an `ON`
     // clause; a residual filter would need a non-equi condition and stays
@@ -2858,11 +2855,11 @@ mod tests {
         table
     }
 
-    /// The plan markers the analyzer's null-safe rejection reads.  A uniform
-    /// chain keeps `NullEqualsNull` on every join, so it could be maintained;
-    /// a mixed chain does not keep per-join flags (the inner join takes the
-    /// outer's), which is why mixed chains stay rejected instead of being
-    /// maintained with semantics the plan does not execute.
+    /// The plan markers the chain analysis follows.  The optimizer keeps the
+    /// marker uniform: a uniform null-safe chain keeps `NullEqualsNull` on
+    /// every join (and is maintained that way), while a chain whose outer
+    /// comparison is strict simplifies its inner null-safe join to strict as
+    /// well.  A plan that mixed markers would be rejected (PLAN §10.172).
     #[tokio::test]
     async fn reads_the_null_safe_markers_of_a_chain() {
         use datafusion::common::NullEquality;
@@ -2958,20 +2955,66 @@ mod tests {
             .is_err()
         );
 
-        // A null-safe step inside a multi-table chain is not maintained.
-        assert!(
-            analyze_multi(
-                "select a.k from a join b on a.k = b.k \
-                 join c on a.v is not distinct from c.v",
-                vec![
-                    nullable_key_source("a"),
-                    nullable_key_source("b"),
-                    nullable_key_source("c"),
-                ],
-            )
-            .await
-            .is_err()
-        );
+        // A uniformly null-safe chain is maintained with the flag; the
+        // optimizer keeps the marker on every join.
+        let analyzed = analyze_multi(
+            "select a.k, a.v as av, b.v as bv, c.v as cv from a \
+             join b on a.v is not distinct from b.v \
+             join c on b.v is not distinct from c.v",
+            vec![
+                nullable_key_source("a"),
+                nullable_key_source("b"),
+                nullable_key_source("c"),
+            ],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiJoin { null_safe, .. } = analyzed.spec else {
+            panic!("expected a multi join");
+        };
+        assert!(null_safe);
+
+        // A computed null-safe key is materialized by the chain and compared
+        // null-safely.
+        let analyzed = analyze_multi(
+            "select a.k from a join b on a.k = b.k \
+             join c on a.v + 1 is not distinct from c.v",
+            vec![
+                nullable_key_source("a"),
+                nullable_key_source("b"),
+                nullable_key_source("c"),
+            ],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::MultiJoin { null_safe, .. } = analyzed.spec else {
+            panic!("expected a multi join");
+        };
+        assert!(null_safe);
+    }
+
+    #[tokio::test]
+    async fn analyzes_null_safe_lookup_chains() {
+        let analyzed = analyze_multi(
+            "select a.k, a.v as av, b.v as bv, c.v as cv from a \
+             left join b on a.v is not distinct from b.v \
+             left join c on a.v is not distinct from c.v",
+            vec![
+                nullable_key_source("a"),
+                nullable_key_source("b"),
+                nullable_key_source("c"),
+            ],
+        )
+        .await
+        .unwrap();
+        let ViewSpec::LookupChain {
+            null_safe, steps, ..
+        } = analyzed.spec
+        else {
+            panic!("expected a lookup chain");
+        };
+        assert!(null_safe);
+        assert_eq!(steps.len(), 2);
     }
 
     #[tokio::test]

@@ -216,9 +216,10 @@ Supported within the shapes above:
   DISTINCT FROM b.v`, plain columns only): NULL then matches NULL on both
   sides, and the join key columns of the output are nullable.  A `LEFT JOIN`
   right side keyed by the join keys stays a strict lookup (its keys are a
-  non-nullable primary key, so a NULL left key can never match).  The
-  remaining key shapes (multi-table chains, computed keys) stay rejected
-  rather than silently dropping the NULL matches;
+  non-nullable primary key, so a NULL left key can never match).  A
+  **uniform** null-safe chain (a multi-way inner chain or a lookup chain)
+  follows the optimizer's per-join markers; a two-source join with a
+  computed key stays rejected rather than silently dropping NULL matches;
 * **derived views**: an operator whose source is a compound subplan is
   maintained by materializing the subplan as an internal derived view (named
   `<target>__ivm_step0`, marked `lakesoul.ivm.internal`, registered as a view
@@ -633,12 +634,11 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   repeat a join tuple is rejected rather than silently returning duplicate
   rows (the `ALL` variants count the matches on both sides through the count
   mode, and a null-aware predicate on a repeated left keeps plain membership
-  semantics); a null-safe key in a multi-table chain or on a computed
-  expression is rejected (a single two-source join over plain columns is
-  maintained, inner or outer; a **uniform** null-safe chain keeps correct
-  plan markers and is a recorded follow-up, while a mixed chain does not -
-  DataFusion overwrites the inner join's marker with the outer's, see PLAN
-  §10.165);
+  semantics); a null-safe **computed** key of a two-source join is rejected
+  (a two-source join over plain columns is maintained, inner or outer, and a
+  **uniform** null-safe chain — multi-way inner or lookup chain — is
+  maintained by following the optimizer's per-join markers; a plan that
+  mixes markers is rejected, see PLAN §10.172);
 * quantified comparisons in a position that is not a plain predicate: a
   quantifier below a wider `NOT` or inside a disjunction keeps DataFusion's
   null-aware mark-join plan and is rejected rather than mistranslated (a

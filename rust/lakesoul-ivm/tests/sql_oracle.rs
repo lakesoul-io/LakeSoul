@@ -491,6 +491,73 @@ async fn oracle_left_join_key_expression_matches_full_recompute() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_multi_join_null_safe_matches_full_recompute() {
+    // A three-way inner chain compared with IS NOT DISTINCT FROM: NULL keys
+    // match NULL keys at every step.
+    let schema = nullable_source_schema();
+    let seed = vec![
+        (0usize, 0i64, "g0", None),
+        (0, 1, "g1", Some(10)),
+        (1, 0, "g0", None),
+        (1, 1, "g1", Some(10)),
+        (2, 0, "g0", None),
+        (2, 1, "g9", Some(10)),
+    ];
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        MultiJoinColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "av".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "g".to_string(),
+            name: "cg".to_string(),
+        },
+    ];
+    let primary_keys = vec![
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+    ];
+    run_oracle_seeded(
+        "multijoinnullsafe",
+        3,
+        schema.clone(),
+        true,
+        &seed,
+        multi_join_mv_schema_for(
+            &[schema.clone(), schema.clone(), schema.clone()],
+            &primary_keys,
+            &columns,
+        )
+        .unwrap(),
+        multi_join_primary_keys(&primary_keys),
+        "SELECT a.k, a.v AS av, b.v AS bv, c.g AS cg FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.v IS NOT DISTINCT FROM b.v \
+         JOIN __SRC2__ c ON b.v IS NOT DISTINCT FROM c.v",
+        "SELECT a.k, a.v AS av, b.v AS bv, c.g AS cg, a.k AS p0, b.k AS p1, \
+         c.k AS p2 FROM __SRC__ a \
+         JOIN __SRC1__ b ON a.v IS NOT DISTINCT FROM b.v \
+         JOIN __SRC2__ c ON b.v IS NOT DISTINCT FROM c.v \
+         WHERE a.op <> 'delete' AND b.op <> 'delete' AND c.op <> 'delete'",
+        "SELECT k, av, bv, cg, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\" \
+         FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_multi_join_key_expression_matches_full_recompute() {
     // A three-way inner join whose last key is computed on the middle source.
     let schema = source_schema();
@@ -3708,6 +3775,90 @@ async fn oracle_having_subquery_matches_full_recompute() {
         )
         .await;
     }
+}
+
+#[test_log::test(tokio::test)]
+async fn oracle_lookup_chain_null_safe_matches_full_recompute() {
+    // A null-safe left-deep lookup chain on a nullable key: a NULL key matches
+    // NULL rows, and the 1:N steps keep the matched identities.
+    let schema = nullable_source_schema();
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: vec!["v".to_string()],
+            right_keys: vec!["v".to_string()],
+            key_sources: Vec::new(),
+            unique: false,
+            key_exprs: JoinKeyExprs::default(),
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: vec!["v".to_string()],
+            right_keys: vec!["v".to_string()],
+            key_sources: Vec::new(),
+            unique: false,
+            key_exprs: JoinKeyExprs::default(),
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+    ];
+    run_oracle_seeded(
+        "lookupchainnullsafe",
+        3,
+        schema.clone(),
+        true,
+        &[
+            (0, 0, "g0", None),
+            (0, 1, "g1", Some(10)),
+            (1, 0, "g0", None),
+            (1, 2, "g2", Some(10)),
+            (2, 1, "g0", None),
+        ],
+        lookup_chain_mv_schema_for(
+            &[schema.clone(), schema.clone(), schema.clone()],
+            &steps,
+            &columns,
+        )
+        .unwrap(),
+        vec![
+            "k".to_string(),
+            lookup_chain_step_id_column(1),
+            lookup_chain_step_id_column(2),
+        ],
+        "SELECT a.k, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a \
+         LEFT JOIN __SRC1__ b ON a.v IS NOT DISTINCT FROM b.v \
+         LEFT JOIN __SRC2__ c ON a.v IS NOT DISTINCT FROM c.v",
+        "SELECT a.k, a.v, b.v AS bv, c.v AS cv FROM __SRC__ a \
+         LEFT JOIN __SRC1__ b ON (a.v IS NOT DISTINCT FROM b.v) \
+          AND b.op <> 'delete' \
+         LEFT JOIN __SRC2__ c ON (a.v IS NOT DISTINCT FROM c.v) \
+          AND c.op <> 'delete' \
+         WHERE a.op <> 'delete'",
+        "SELECT k, v, bv, cv FROM __MV__",
+    )
+    .await;
 }
 
 #[test_log::test(tokio::test)]
