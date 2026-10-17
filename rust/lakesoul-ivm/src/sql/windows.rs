@@ -63,6 +63,32 @@ pub(super) fn analyze_window(
             order_by,
             columns,
         } = parts.into_iter().next().expect("length checked");
+        // A derived window step carries the input columns a consumer may
+        // read: the window node's input fields that are not already keys or
+        // window columns.
+        let payload_columns = if request.derived {
+            let mut payloads = Vec::new();
+            for field in window.input.schema().fields() {
+                let name = field.name().clone();
+                // A step's own bookkeeping columns are never payloads.
+                let internal = matches!(
+                    name.as_str(),
+                    crate::runtime::IVM_ROW_KINDS_COLUMN
+                        | crate::runtime::IVM_EPOCH_COLUMN
+                        | crate::runtime::IVM_SOURCE_COLUMN
+                );
+                let carried = internal
+                    || partition_keys.contains(&name)
+                    || source.primary_keys.contains(&name)
+                    || columns.iter().any(|column| column.column == name);
+                if !carried && !payloads.contains(&name) {
+                    payloads.push(name);
+                }
+            }
+            payloads
+        } else {
+            Vec::new()
+        };
         return Ok(ViewSpec::Window {
             view_id: request.view_id.clone(),
             source_table_id: source.table_id.clone(),
@@ -71,6 +97,7 @@ pub(super) fn analyze_window(
             order_keys,
             order_by,
             columns,
+            payload_columns,
             filter,
         });
     }
@@ -1073,6 +1100,7 @@ mod tests {
                     order_keys: vec!["v".to_string()],
                     order_by: Vec::new(),
                     columns: vec![WindowColumn::new(function)],
+                    payload_columns: Vec::new(),
                     filter: None,
                 }
             );

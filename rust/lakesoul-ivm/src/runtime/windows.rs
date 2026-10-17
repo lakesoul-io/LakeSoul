@@ -316,6 +316,8 @@ pub struct WindowView {
     /// The rendered `ORDER BY` items (e.g. `v desc nulls last`), when they
     /// differ from the plain ascending [`Self::order_keys`].
     pub order_by: Vec<String>,
+    /// Input columns the step also carries (empty for a plain window view).
+    pub payload_columns: Vec<String>,
     /// The window columns, sharing the partition and ordering.
     pub columns: Vec<WindowColumn>,
     /// An optional filter applied before windowing.
@@ -403,6 +405,7 @@ impl WindowView {
             partition_keys,
             order_keys,
             order_by: Vec::new(),
+            payload_columns: Vec::new(),
             columns,
             filter: None,
             refresh_interval_ms: 0,
@@ -464,6 +467,7 @@ impl WindowView {
             order_keys: self.order_keys.clone(),
             order_by: self.order_by.clone(),
             columns: self.columns.clone(),
+            payload_columns: self.payload_columns.clone(),
             filter: self.filter.clone(),
         }
     }
@@ -606,12 +610,37 @@ pub fn window_columns_mv_schema_for(
     row_keys: &[String],
     columns: &[WindowColumn],
 ) -> Result<SchemaRef> {
+    window_columns_mv_schema_for_with_payload(
+        source_schema,
+        partition_keys,
+        row_keys,
+        &[],
+        columns,
+    )
+}
+
+/// The schema of a [`WindowView`] that also carries input payload columns (a
+/// derived step a consumer reads): the keys, the payload columns, the window
+/// columns, the row kind and the epoch.
+pub fn window_columns_mv_schema_for_with_payload(
+    source_schema: &Schema,
+    partition_keys: &[String],
+    row_keys: &[String],
+    payload_columns: &[String],
+    columns: &[WindowColumn],
+) -> Result<SchemaRef> {
     let keys = partition_keys
         .iter()
         .chain(row_keys.iter())
         .cloned()
         .collect::<Vec<_>>();
     let mut fields = key_fields(source_schema, &keys)?;
+    fields.extend(
+        project_schema(source_schema, payload_columns)?
+            .fields()
+            .iter()
+            .cloned(),
+    );
     for column in columns {
         let (data_type, nullable) = window_column_type(source_schema, column)?;
         fields.push(Arc::new(Field::new(&column.column, data_type, nullable)));
@@ -1098,6 +1127,14 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             )
         })?;
     }
+    for column in &view.payload_columns {
+        view.source.schema.field_with_name(column).map_err(|_| {
+            report!(
+                "window view {}: payload column {column} is not in the source",
+                view.view_id
+            )
+        })?;
+    }
     // The primary keys identify a row, so they must not be NULL.
     for column in &view.source.primary_keys {
         let field = view.source.schema.field_with_name(column).map_err(|_| {
@@ -1267,8 +1304,14 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         source_delete_filter(source_alias, change_column(&view.source)),
         filter_clause(view.filter.as_deref()),
     );
+    let payloads = quoted_list(&view.payload_columns);
+    let payloads_select = if view.payload_columns.is_empty() {
+        String::new()
+    } else {
+        format!("{payloads}, ")
+    };
     format!(
-        "computed as (select {pks}, {keys_select}{computed} \
+        "computed as (select {pks}, {keys_select}{payloads_select}{computed} \
          from {source_alias} where {filter})"
     )
 }
@@ -1466,6 +1509,23 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     } else {
         String::new()
     };
+    let payloads = quoted_list(&view.payload_columns);
+    let payloads_select = if view.payload_columns.is_empty() {
+        String::new()
+    } else {
+        format!("{payloads}, ")
+    };
+    let computed_payloads = view
+        .payload_columns
+        .iter()
+        .map(|column| format!("c.{}", quote_ident(column)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let computed_payloads_select = if view.payload_columns.is_empty() {
+        String::new()
+    } else {
+        format!("{computed_payloads}, ")
+    };
     let parts_select = if keyed {
         format!("{parts}, ")
     } else {
@@ -1483,17 +1543,22 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     } else {
         String::new()
     };
+    println!(
+        "PROBE payloads={:?} sql_payloads={payloads:?}",
+        view.payload_columns
+    );
     format!(
         "with {affected}{computed}, \
          already as (select distinct {pks} from mv \
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv \
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-         inserts as (select {computed_parts_select}{computed_pks}, {computed_columns}, \
+         inserts as (select {computed_parts_select}{computed_pks}, \
+                            {computed_payloads_select}{computed_columns}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from computed c \
                      {computed_where}not exists (select 1 from already a where {pk_match_computed})), \
-         deletes as (select {parts_select}{pks}, {columns}, \
+         deletes as (select {parts_select}{pks}, {payloads_select}{columns}, \
                             'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from active \
                      {active_where}) \
@@ -1672,9 +1737,14 @@ fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
             .map(|column| column.column.clone())
             .collect::<Vec<_>>(),
     );
+    let payloads_select = if view.payload_columns.is_empty() {
+        String::new()
+    } else {
+        format!("{}, ", quoted_list(&view.payload_columns))
+    };
     format!(
         "with {computed} \
-         select {parts_select}{pks}, {columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         select {parts_select}{pks}, {payloads_select}{columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from computed",
         computed = window_function_cte(view, "src"),
     )

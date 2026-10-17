@@ -59,11 +59,26 @@ pub(super) fn analyze_row(
             "a scalar subquery in a filter needs a keyed source",
         ));
     }
+    // A keyed source identifies its rows by the primary keys, so a projection
+    // that omits one (a select list over one side of a derived step, say)
+    // materializes it too - the top-k layout does the same.
+    let mut output_columns = output_columns.unwrap_or_default();
+    let mut output_exprs = output_exprs;
+    if !output_columns.is_empty() {
+        for key in &source.primary_keys {
+            if !output_columns.contains(key) {
+                output_columns.push(key.clone());
+                if !output_exprs.is_empty() {
+                    output_exprs.push(key.clone());
+                }
+            }
+        }
+    }
     Ok(ViewSpec::Row {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
         mv_table_id: request.mv_table_id.clone(),
-        output_columns: output_columns.unwrap_or_default(),
+        output_columns,
         output_exprs,
         filter,
         scalar: if scalars.is_empty() {

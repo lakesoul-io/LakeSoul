@@ -4077,6 +4077,27 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 
 每条都提供 seed 行以覆盖罕见匹配，参考查询显式过滤 `op <> 'delete'`；`tests/sql_oracle.rs` 现在 110 个用例全绿。
 
+### 10.168 B7：派生 window 步的四修复点（落地）
+
+§10.164 的四点按「布局 + 命名」两条轴线落地，并把 §10.164 的 ② ③ 两个形状变成端到端通过：
+
+- **row 视图覆盖省略的源主键**（§10.164 点 1）：`analyze_row` 把投影省略的源主键追加进物化列（与 top-k 的做法一致，
+  追加在投影列之后），因此选择列表只取 window 步的一部分列时不再被「output columns must contain the source key」
+  拒绝；README 的 Projection/filter 行据此写明 MV 会带上这些主键列。
+- **window 步携带载荷列**（点 3）：`ViewSpec::Window`/`WindowView` 增加 `payload_columns`（serde 默认空，旧 spec 兼容），
+  派生时由分析器填入「window 节点的输入字段 − 分区键 − 源主键 − 窗口列 − 内部列（rowKinds/epoch/source）」；
+  布局顺序 = `[分区键, 行键, 载荷列, 窗口列, kinds, epoch]`（载荷在窗口列之前，派生映射的「尾部 = 窗口输出」假设不变）。
+  新增 `window_columns_mv_schema_for_with_payload`（旧签名保留并委托）；刷新与重建两条 SQL 都投影载荷列，
+  `computed` CTE 也携带它们；执行器的期望 schema 传入 spec 的载荷。
+- **列别名（点 2）无需新代码**：子查询别名与规范窗口列名的差异由既有的派生映射/重命名机制处理
+  （`derived_output_mapping` 的 Window 分支把 window 节点的原始输出名映射到 MV 列，`rename_derived_columns`
+  改写外层计划），实测两个形状的 filter/投影引用都已正确落地。
+- **行键名（点 4）不再需要**：消费方读的是载荷列与（top-k 追加的）源主键；行键沿用源 MV 的主键名只影响步的内部身份。
+- **测试**：`a_row_over_a_window_step_is_materialized`（形状 ②：值窗口 + 排名的子查询 → row 视图；bootstrap 与
+  一次增量 vs 全量重算）与 `a_top_k_over_a_window_over_a_join_step_is_materialized`（形状 ③：window over join 步
+  → top-k；同样两轮对拍）；二者都手工构造步 schema 以固定布局与可空性。
+- **剩余**：多窗口（多个子句）步的消费方暂不带载荷（README 限制清单已按此收窄，记录待需求）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

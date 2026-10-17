@@ -862,6 +862,10 @@ pub enum ViewSpec {
         order_by: Vec<String>,
         /// The window columns, sharing the partition and ordering.
         columns: Vec<WindowColumn>,
+        /// Input columns the step also carries (a derived window step a
+        /// consumer reads); empty for a window over the user's source.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payload_columns: Vec<String>,
         /// An optional filter applied before windowing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -3264,6 +3268,7 @@ impl IvmRuntime {
                 order_keys,
                 order_by,
                 columns,
+                payload_columns,
                 filter,
             } => SpecView::Window(WindowView {
                 view_id: view_id.clone(),
@@ -3273,6 +3278,7 @@ impl IvmRuntime {
                 order_keys: order_keys.clone(),
                 order_by: order_by.clone(),
                 columns: columns.clone(),
+                payload_columns: payload_columns.clone(),
                 filter: filter.clone(),
                 refresh_interval_ms,
             }),
