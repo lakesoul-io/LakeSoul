@@ -312,6 +312,24 @@ pub(super) fn analyze_join(
             if let Some(column) = synthetic {
                 payloads.push(Side::Right, column, "right_value".to_string());
             }
+            // The mirror shape - the select list takes only the right side -
+            // is a pair join too: the left row identity becomes the left
+            // payload, so several matches keep their pairs apart.
+            let synthetic_left = if payloads.left_count == 0
+                && payloads.right_count > 0
+                && !left.primary_keys.is_empty()
+            {
+                left.primary_keys
+                    .iter()
+                    .find(|key| !join_keys.contains(key))
+                    .or_else(|| left.primary_keys.first())
+                    .cloned()
+            } else {
+                None
+            };
+            if let Some(column) = synthetic_left {
+                payloads.push(Side::Left, column, "left_value".to_string());
+            }
             // One payload per side keeps the compact `left_value` /
             // `right_value` shape; anything else materializes the selected
             // columns under their select names.  A non-equality condition over
@@ -3428,6 +3446,22 @@ mod tests {
         };
         assert!(!anti);
         assert_eq!(output_columns, vec!["k", "g", "v"]);
+
+        // The mirror shape: only the right side is selected, so the left row
+        // identity becomes the left payload.
+        let analyzed = analyze_optimized("select b.v from src a join src b on a.k = b.k")
+            .await
+            .unwrap();
+        let ViewSpec::Join {
+            left_value,
+            right_value,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a pair join spec");
+        };
+        assert_eq!(left_value, "k");
+        assert_eq!(right_value, "v");
     }
 
     #[tokio::test]

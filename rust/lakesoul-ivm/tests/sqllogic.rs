@@ -41,21 +41,22 @@ use lakesoul_ivm::{
     full_join_view_schema_for, full_join_view_schema_with_keys,
     grouping_sets_mv_schema_for, join_key_expression_name,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    left_aggregate_mv_schema_for, left_aggregate_mv_schema_with_outputs,
-    left_join_view_schema_for, left_join_view_schema_with_keys,
-    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
-    median_mv_schema_for, min_max_expr_mv_schema_for, min_max_groups_mv_schema_for,
-    min_max_mv_schema_for, multi_agg_mv_schema_for, multi_join_mv_schema_for,
-    multi_join_primary_keys, multi_window_mv_schema_for, row_expr_mv_schema_for,
-    row_mv_schema_for, semi_anti_mv_schema_for, string_agg_expr_mv_schema_for,
-    string_agg_mv_schema_for, sum_count_groups_mv_schema_for, sum_count_mv_schema_for,
-    sum_expr_mv_schema_for, top_k_expr_mv_schema_for, top_k_mv_schema_for,
-    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
-    variance_groups_mv_schema_for, variance_mv_schema_for,
-    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
-    wide_lookup_join_view_schema_for, wide_outer_join_view_schema_for,
-    window_aggregate_mv_schema_for, window_columns_mv_schema_for,
-    window_ranking_mv_schema_for, window_value_mv_schema_for,
+    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_for,
+    left_aggregate_mv_schema_with_outputs, left_join_view_schema_for,
+    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
+    lookup_chain_step_id_column, lookup_join_view_schema_for, median_mv_schema_for,
+    min_max_expr_mv_schema_for, min_max_groups_mv_schema_for, min_max_mv_schema_for,
+    multi_agg_mv_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for, row_expr_mv_schema_for, row_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_expr_mv_schema_for, string_agg_mv_schema_for,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema_for, sum_expr_mv_schema_for,
+    top_k_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
+    union_distinct_mv_schema_for, union_output_schema_for, variance_groups_mv_schema_for,
+    variance_mv_schema_for, wide_keyed_join_view_schema_for,
+    wide_keyed_join_view_schema_with_keys, wide_lookup_join_view_schema_for,
+    wide_outer_join_view_schema_for, window_aggregate_mv_schema_for,
+    window_columns_mv_schema_for, window_ranking_mv_schema_for,
+    window_value_mv_schema_for,
 };
 use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType, Runner};
 use tempfile::tempdir;
@@ -1924,6 +1925,31 @@ fn sqllogic_single_sided_join() {
         )
         .unwrap(),
         keyed_join_output_primary_keys(&group_keys(&["id"]), &group_keys(&["rk"])),
+    );
+}
+
+#[test]
+fn sqllogic_single_sided_left() {
+    let schema = source_schema();
+    run_script_for_sources(
+        "singlesidedleft",
+        include_str!("slt/single_sided_left.slt"),
+        vec![
+            SltSource::keyed("__SRC__", schema.clone(), group_keys(&["k"])),
+            SltSource::keyed("__SRC2__", schema.clone(), group_keys(&["k"])),
+        ],
+        keyed_join_view_schema_with_keys(
+            &schema,
+            &schema,
+            &group_keys(&["k"]),
+            &group_keys(&["k"]),
+            &group_keys(&["k"]),
+            &JoinKeyExprs::default(),
+            "k",
+            "v",
+        )
+        .unwrap(),
+        keyed_join_output_primary_keys(&group_keys(&["k"]), &group_keys(&["k"])),
     );
 }
 

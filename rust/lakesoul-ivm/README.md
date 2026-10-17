@@ -622,11 +622,12 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   the step's key names differ from the subplan's fields (the step
   materializes `[partition keys, row keys, window columns]`; the inline
   window forms stay maintained — see PLAN §10.164);
-* a single-sided inner join over a right side without a primary key (the
-  pair shape its duplicates need cannot key it): a right side keyed by the
-  join key stays the semi (membership) shape, and a right side keyed by
-  something else becomes a pair join whose right payload is the right row
-  identity;
+* a single-sided inner join over a side without a primary key (the pair
+  shape its duplicates need cannot key it): a right side keyed by the join
+  key stays the semi (membership) shape, and otherwise the pair join
+  materializes the missing side's row identity as its payload (a right side
+  with a non-unique join key, or a select list that takes only the right
+  side); a single-sided **outer** join stays rejected;
 * a **list or map primary key** on a side of an outer-join or chain **step**:
   the step's row identity encodes both sides' primary keys as length-prefixed
   text - a struct key is encoded field by field **before the join**, so the

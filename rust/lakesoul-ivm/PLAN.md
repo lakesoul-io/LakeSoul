@@ -4048,6 +4048,20 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
   理由现在是精确的——若按 SQL 逐键实现，会与计划实际执行的语义不一致；
 - 该测试会在上游改变这一行为时立刻失败，届时可重新评估混合链。
 
+### 10.166 B2 边角：单侧 inner join 的**左侧**方向
+
+- **能力**：`SELECT b.v FROM a JOIN b ON a.k = b.k`（只取右侧列）此前按「一个 join 视图至少需要一侧一列」拒绝；
+  现在与 §10.157 的 M1 对称：左侧行身份（主键，优先取不属于连接键的列）作为 `left_value` 合成载荷，
+  形状落到 pair inner join，多匹配各成一行。仅当左侧**有主键**时合成；左侧 keyless 仍拒绝（keyed 契约）。
+- **边界**：两侧都没有载荷（如 `SELECT b.k FROM a JOIN b ON a.k = b.k`，右侧仅连接键）仍拒绝；
+  单侧 **outer** join 不合成（左连接需保留未匹配左行，语义另议，仍拒绝）。
+- **另一条 B2 边角「行身份需可 cast 键」无需改动**：`validate_identity_keys` 已给出清晰错误
+  （`the row identity of a derived outer join cannot encode the … primary key …`，带 `UnsupportedShape` → Tier-2），
+  README 限制清单与 §10.141 已记录。
+- **测试**：`analyzes_a_single_sided_join_with_a_non_unique_right` 增加镜像用例（`left_value = "k"`、
+  `right_value = "v"`）；新增 `sqllogic_single_sided_left` + `tests/slt/single_sided_left.slt`
+  （bootstrap、右侧载荷更新、两侧无匹配的行不出现、左行删除撤回配对）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、
