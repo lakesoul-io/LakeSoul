@@ -1,0 +1,9 @@
+shape,round,change_rows,source_write_ms,incr_ms,full_ms,speedup,incr_files,incr_rows_scanned,incr_rows_written,incr_mv_bytes,incr_io_bytes,full_files,full_rows_scanned,full_rows_written,full_mv_bytes,full_io_bytes,incr_action,full_action
+sum_count,2,10,33.443,349.969,1270.242,3.63,200,27,20,7567,3475427,64,100012,1000,248789,2612994,incremental,overwrite
+sum_count,3,10,33.340,300.166,1278.353,4.26,208,29,20,7569,3526204,68,100013,1000,248791,2632260,incremental,overwrite
+sum_count,4,10,31.804,333.269,1214.670,3.64,216,28,20,7573,3577089,72,100015,1000,248788,2651609,incremental,overwrite
+sum_count,5,10,30.144,338.509,1241.524,3.67,224,26,20,7566,3627903,76,100019,1000,248787,2670877,incremental,overwrite
+sum_count,6,10,90.007,373.231,1255.591,3.36,231,25,20,7554,3674154,79,100024,1000,248785,2685629,incremental,overwrite
+sum_count,7,10,28.679,358.878,1161.292,3.24,239,26,20,7570,3724983,83,100028,1000,248786,2704982,incremental,overwrite
+sum_count,8,10,25.738,326.288,1244.642,3.81,247,28,20,7559,3775716,87,100030,1000,248779,2724184,incremental,overwrite
+sum_count,9,10,27.923,388.118,1364.373,3.52,255,26,20,5748,3824704,91,100034,1000,248777,2743509,incremental,overwrite

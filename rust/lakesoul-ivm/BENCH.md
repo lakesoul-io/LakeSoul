@@ -179,6 +179,76 @@ How to read it:
   changed join key can drop the other side's old match; making them
   key-filtered needs a before-match expansion (recorded follow-up).
 
+## Results (release build, local RustFS)
+
+Environment: one Linux host, PostgreSQL 14 and RustFS at `127.0.0.1:9000`, a
+`--release` build, Parquet, four hash buckets, `--groups 1000`, 2 warmup +
+8 measured rounds (a few retried groups used 1 + 6), changes mixed
+insert/update/delete 1:1:1 with 20% aimed at the non-fact side for the
+two-source shapes.  Each cell is `incremental p50 -> full overwrite p50
+(speedup)` in ms.  Raw CSVs are in [`bench-results/`](bench-results/).
+
+1e5 fact rows:
+
+| shape | 0.01% changes | 1% changes |
+|---|---|---|
+| row | 314 -> 1272 (4.0x) | 350 -> 2051 (5.9x) |
+| sum_count | 339 -> 1245 (3.7x) | 396 -> 2573 (6.5x) |
+| lookup | 367 -> 1231 (3.4x) | 469 -> 1392 (3.0x) |
+| multi_join | 583 -> 1336 (2.3x) | 680 -> 2531 (3.7x) |
+| top_k | 349 -> 1236 (3.5x) | 495 -> 3100 (6.3x) |
+| chain | 723 -> 2567 (3.6x) | 910 -> 3224 (3.5x) |
+| partitioned | 702 -> 774 (1.1x) | 826 -> 885 (1.1x) |
+| skew | 354 -> 1808 (5.1x) | 390 -> 2676 (6.9x) |
+
+1e6 fact rows:
+
+| shape | 0.01% | 0.1% | 1% | 10% |
+|---|---|---|---|---|
+| row | 1260 -> 5914 (4.7x) | 1237 -> 5055 (4.1x) | 1596 -> 5414 (3.4x) | 4410 -> 5206 (1.2x) |
+| sum_count | 781 -> 1659 (2.1x) | 860 -> 2350 (2.7x) | 1041 -> 1827 (1.8x) | 11511 -> 2110 (**0.2x**) |
+| lookup | 1632 -> 5481 (3.4x) | 1568 -> 5111 (3.3x) | 3613 -> 5994 (1.7x) | not measured |
+| multi_join | 2749 -> 6357 (2.3x) | not measured | 6280 -> 6443 (1.0x) | not measured |
+| top_k | 910 -> 2327 (2.6x) | not measured | 993 -> 1703 (1.7x) | not measured |
+| chain | 3213 -> 11136 (3.5x) | not measured | 7489 -> 11396 (1.5x) | not measured |
+| partitioned | not measured | — | not measured | — |
+| skew | 805 -> 1689 (2.1x) | not measured | 1952 -> 1762 (0.9x) | not measured |
+
+`partitioned` at 1M and `lookup` at 10% could not be measured: the local
+RustFS returned intermittent 500 / connection-reset errors while serving the
+1M-row partitions under large deltas (a service limitation, not a view
+behaviour).  The 100% change points accumulate one full-table update file
+per round without compaction; they are pathological and were stopped.  The
+`partitioned` 1e5 cells already show the pruning (18–1627 rows scanned
+against 100k), with the latency floor masking it at this size.
+
+## What the numbers say
+
+* **Reads are the dominant cost.**  The incremental refresh of `row`, `top_k`,
+  `lookup`, `multi_join` and `chain` reads the full current sources and the
+  whole materialized view every round regardless of the change size (row
+  scans ~2x the table, lookup ~2.5x, multi_join ~4x, chain ~5x; `incr rows
+  scanned` in the CSVs).  The speedups therefore come from writing far fewer
+  rows (129–592 vs 1,000,000 at 0.01%), and they decay as the delta grows
+  (multi_join 2.3x at 0.01% but 1.0x at 1%).
+* **A fixed floor of ~0.3–0.8 s per refresh** is visible everywhere:
+  `partitioned` scans only 18–1627 rows yet takes 0.70–0.83 s; the small-change
+  `sum_count`/`skew` rounds take 0.34–0.39 s.  Planning, metadata round trips,
+  S3 LIST/HEAD and the epoch commit dominate there; the floor is about 2x
+  higher on S3 than on local storage.
+* **Small files amplify the read cost**: a 1M-row refresh reads 668–1356
+  files even when it scans only a few hundred rows (the seed writes 8192-row
+  batches and every round adds files; there is no compaction in between).
+* **High change ratios erase the advantage**: `sum_count` at 10% changes is
+  0.2x (11.5 s vs 2.1 s), `skew` at 1% is 0.9x and `multi_join` at 1% is 1.0x —
+  the incremental delta/merge work grows with the batch while the full
+  recompute stays a single sequential scan and write.
+* **Partition pruning works** (18–1627 rows scanned for the partitioned
+  shape) but needs a larger table to outweigh the fixed floor.
+* **Mergeable aggregates are skew-insensitive**: the `skew` shape scans only
+  ~18k rows at 1M/1% because `sum_count` keeps a group state; MIN/MAX or
+  `COUNT(DISTINCT)` variants would rescan the hot group (recorded follow-up).
+
 ## Methodology notes
 
 * Timing wraps `IvmSqlExecutor::execute`, so it includes planning, metadata,
