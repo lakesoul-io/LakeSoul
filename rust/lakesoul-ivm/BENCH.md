@@ -15,8 +15,11 @@ separately and is not part of the refresh numbers.
 
 Shapes: `row` (projection + filter), `sum_count` (grouped aggregate),
 `lookup` (a left join to a keyed dimension), `multi_join` (a three-way inner
-chain) and `top_k` (a partitioned `row_number`).  `both` runs the first two
-and `all` runs every shape, each with its own tables.  `--mix` sets the
+chain), `top_k` (a partitioned `row_number`), `chain` (a lookup view feeding a
+row view, both refreshed end to end), `partitioned` (a range-partitioned
+source and view whose changes stay in one partition) and `skew` (a
+`sum_count` whose hot group holds most of the rows).  `both` runs row and
+sum_count, `all` runs every shape, each with its own tables.  `--mix` sets the
 insert/update/delete weights and `--secondary-change` the fraction of
 mutations aimed at the dimension/non-fact side.
 
@@ -87,6 +90,9 @@ cargo run --release -p lakesoul-ivm --example ivm_bench -- \
 | `--mix <I,U,D>` | insert/update/delete weights (default `1,1,1`) |
 | `--dim-rows <N>` | dimension rows for the lookup shape (default `rows/2`) |
 | `--secondary-change <F>` | mutations aimed at the non-fact side (default `0.2`) |
+| `--partitions <N>` | range partitions for the partitioned shape (default `10`) |
+| `--hot-partition <N>` | the partition all partitioned changes hit (default `0`) |
+| `--skew <F>` | hot-group share for the skew shape (default `0.8`) |
 | `--storage <local\|s3>` | table storage |
 | `--bucket` / `--prefix` | S3 location |
 | `--out <FILE>` | write the CSV there instead of stdout |
@@ -135,6 +141,9 @@ Five-shape smoke on RustFS (20k fact rows, 200 changes per round,
 | lookup | 210–248 ms | 716–841 ms | 3.4x | ~50k | 284–300 |
 | multi_join | 294 ms | 817–951 ms | 2.8–3.2x | ~81k | 265–270 |
 | top_k | 284–549 ms | 1258–2590 ms | 4.4–4.7x | ~21k | 1270–1390 |
+| chain | 456–513 ms | 2222–2297 ms | 4.3–5.0x | ~101k | 564–592 |
+| partitioned | 409–453 ms | 473–509 ms | 1.1–1.2x | ~320 | 8–10 |
+| skew | 307–325 ms | 1358–3246 ms | 4.4–10.0x | ~367 | 54–76 |
 
 How to read it:
 
@@ -153,6 +162,12 @@ How to read it:
   its materialized state to retract the changed tuples) while writing far
   fewer rows and finishing faster; the balance shifts as the table grows.
   Always read the latency and the IO columns together;
+* `partitioned` shows the pruning (`~320` rows scanned against a 20k-row
+  source) but its latency is still dominated by fixed per-refresh overhead at
+  this size; the gap should widen with the table;
+* `skew` is a `sum_count`, whose mergeable state makes the hot group cheap
+  (`~367` rows scanned); a MIN/MAX or `COUNT(DISTINCT)` skew variant would
+  recompute the whole hot group and is a recorded follow-up;
 * the join shapes currently read the **full current source state** on every
   refresh (the affected-key computation seeds from the current left rows and
   the materialized view), so their latency gain comes from writing far fewer
