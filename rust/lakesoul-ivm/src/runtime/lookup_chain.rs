@@ -708,6 +708,10 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        // The common case: only the base changed.  Every fact row is keyed,
+        // so only the delta keys can change and the chain can be replayed over
+        // the delta instead of the whole base.
+        let base_only = changed[0] && changed[1..].iter().all(|changed| !changed);
 
         let context = SessionContext::new();
         let mut frames = Vec::with_capacity(view.sources.len());
@@ -724,7 +728,7 @@ impl IvmRuntime {
                     .await?,
                 &projection,
             )?;
-            let before = if changed[index] {
+            let before = if changed[index] && !(base_only && index == 0) {
                 dataframe(
                     &context,
                     table
@@ -743,7 +747,30 @@ impl IvmRuntime {
             // through the DataFusion provider instead of materializing it in
             // the driver.  The dimensions are small (~10k rows) and stay
             // materialized.
-            let now = if index == 0 {
+            let now = if base_only && index == 0 {
+                apply_side_filter(
+                    &context,
+                    filter_deletes(delta.clone(), change_column(table))?,
+                    &projection,
+                    filter.as_deref(),
+                )?
+            } else if base_only {
+                apply_side_filter(
+                    &context,
+                    filter_deletes(
+                        dataframe(
+                            &context,
+                            table
+                                .read_current_projected(&self.client, Some(&projection))
+                                .await?,
+                            &projection,
+                        )?,
+                        change_column(table),
+                    )?,
+                    &projection,
+                    filter.as_deref(),
+                )?
+            } else if index == 0 {
                 let provider =
                     crate::IvmTableProvider::raw(table.clone(), self.client.clone());
                 let frame = context.read_table(Arc::new(provider))?;
@@ -779,11 +806,6 @@ impl IvmRuntime {
             };
             frames.push((delta, before, now));
         }
-        let mv = dataframe(
-            &context,
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
         let (base, _) = &view.sources[0];
         let base_key_names = base
             .primary_keys
@@ -796,129 +818,169 @@ impl IvmRuntime {
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
 
+        // The view only needs the state rows of the affected keys.  In the
+        // base-only case that is a key-filtered read instead of the whole MV.
+        let mv = if base_only {
+            let key_batches = frames[0]
+                .0
+                .clone()
+                .select(base_key_exprs.clone())?
+                .distinct()?
+                .collect()
+                .await?;
+            let filters = key_filters(&base.primary_keys, &key_batches)?;
+            dataframe(
+                &context,
+                view.mv.read_current_filtered(&self.client, filters).await?,
+                &view.mv.schema,
+            )?
+        } else {
+            dataframe(
+                &context,
+                view.mv.read_current(&self.client).await?,
+                &view.mv.schema,
+            )?
+        };
+
         let now_frames = frames
             .iter()
             .map(|(_, _, now)| now.clone())
             .collect::<Vec<_>>();
 
-        // The base rows the window can change: the base delta keys plus, for
-        // every changed step source, the base rows matching the changed keys.
-        let mut affected = frames[0]
-            .0
-            .clone()
-            .select(base_key_exprs.clone())?
-            .distinct()?;
-        let mut every_base_row = false;
-        for (index, step) in view.steps.iter().enumerate() {
-            if !changed[index + 1] {
-                continue;
-            }
-            // A change in the base or in an earlier step can move any key, so
-            // every base row is re-evaluated.
-            if (0..=index).any(|source| changed[source]) {
-                every_base_row = true;
-                break;
-            }
-            let (table, _) = &view.sources[index + 1];
-            let (delta, before, _) = &frames[index + 1];
-            let delta_schema = delta.schema().clone();
-            let right_key_exprs = step
-                .right_keys
-                .iter()
-                .enumerate()
-                .map(|(key_index, key)| {
-                    Ok(
-                        match step
-                            .key_exprs
-                            .right
-                            .get(key_index)
-                            .filter(|expr| !expr.is_empty())
-                        {
-                            Some(expr) => context
-                                .state()
-                                .create_logical_expr(expr, &delta_schema)?
-                                .alias(key.as_str()),
-                            None => col(key.as_str()),
-                        },
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let changed_keys = if table.primary_keys.is_empty() {
-                delta.clone().select(right_key_exprs)?
-            } else {
-                let pk_names = table
-                    .primary_keys
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
-                let changed_pks = delta
-                    .clone()
-                    .select(
-                        table
-                            .primary_keys
-                            .iter()
-                            .map(|key| col(key.as_str()))
-                            .collect::<Vec<_>>(),
-                    )?
-                    .distinct()?;
-                before
-                    .clone()
-                    .join(changed_pks, JoinType::LeftSemi, &pk_names, &pk_names, None)?
-                    .union(delta.clone())?
-                    .distinct()?
-                    .select(right_key_exprs)?
-            }
-            .distinct()?;
-            // Match the changed keys against the prefix columns they refer
-            // to; the prefix is replayed over the current (unchanged) states.
-            let matching = (0..step.keys.len())
-                .map(|key| format!("__ivm_changed_{key}"))
-                .collect::<Vec<_>>();
-            let mut prefix_select = base_key_exprs.clone();
-            for (key, name) in step.keys.iter().zip(&matching) {
-                let position = step
-                    .keys
-                    .iter()
-                    .position(|column| column == key)
-                    .unwrap_or(0);
-                let source = step_key_source(step, position);
-                prefix_select.push(
-                    col(chain_column_name(source, key).as_str()).alias(name.as_str()),
-                );
-            }
-            let prefix =
-                lookup_chain_replay(view, &now_frames, index, frames[0].2.clone())?
-                    .select(prefix_select)?;
-            let changed_renamed = changed_keys.select(
-                step.right_keys
-                    .iter()
-                    .zip(&matching)
-                    .map(|(key, name)| col(key.as_str()).alias(name.as_str()))
-                    .collect::<Vec<_>>(),
-            )?;
-            let matched = prefix
-                .join(
-                    changed_renamed,
-                    JoinType::LeftSemi,
-                    &matching.iter().map(String::as_str).collect::<Vec<_>>(),
-                    &matching.iter().map(String::as_str).collect::<Vec<_>>(),
-                    None,
-                )?
+        let affected = if base_only {
+            // Every delta row is an affected base key; no base scan needed.
+            frames[0]
+                .0
+                .clone()
                 .select(base_key_exprs.clone())?
-                .distinct()?;
-            affected = affected.union(matched)?.distinct()?;
-        }
-        if every_base_row {
-            // Every key the base or the view knows is re-evaluated; the view
-            // side keeps the keys the base no longer has.
-            let base_now_keys = frames[0]
-                .2
+                .distinct()?
+        } else {
+            // The base rows the window can change: the base delta keys plus, for
+            // every changed step source, the base rows matching the changed keys.
+            let mut affected = frames[0]
+                .0
                 .clone()
                 .select(base_key_exprs.clone())?
                 .distinct()?;
-            let mv_keys = mv.clone().select(base_key_exprs.clone())?.distinct()?;
-            affected = affected.union(base_now_keys)?.union(mv_keys)?.distinct()?;
-        }
+            let mut every_base_row = false;
+            for (index, step) in view.steps.iter().enumerate() {
+                if !changed[index + 1] {
+                    continue;
+                }
+                // A change in the base or in an earlier step can move any key, so
+                // every base row is re-evaluated.
+                if (0..=index).any(|source| changed[source]) {
+                    every_base_row = true;
+                    break;
+                }
+                let (table, _) = &view.sources[index + 1];
+                let (delta, before, _) = &frames[index + 1];
+                let delta_schema = delta.schema().clone();
+                let right_key_exprs = step
+                    .right_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(key_index, key)| {
+                        Ok(
+                            match step
+                                .key_exprs
+                                .right
+                                .get(key_index)
+                                .filter(|expr| !expr.is_empty())
+                            {
+                                Some(expr) => context
+                                    .state()
+                                    .create_logical_expr(expr, &delta_schema)?
+                                    .alias(key.as_str()),
+                                None => col(key.as_str()),
+                            },
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let changed_keys = if table.primary_keys.is_empty() {
+                    delta.clone().select(right_key_exprs)?
+                } else {
+                    let pk_names = table
+                        .primary_keys
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    let changed_pks = delta
+                        .clone()
+                        .select(
+                            table
+                                .primary_keys
+                                .iter()
+                                .map(|key| col(key.as_str()))
+                                .collect::<Vec<_>>(),
+                        )?
+                        .distinct()?;
+                    before
+                        .clone()
+                        .join(
+                            changed_pks,
+                            JoinType::LeftSemi,
+                            &pk_names,
+                            &pk_names,
+                            None,
+                        )?
+                        .union(delta.clone())?
+                        .distinct()?
+                        .select(right_key_exprs)?
+                }
+                .distinct()?;
+                // Match the changed keys against the prefix columns they refer
+                // to; the prefix is replayed over the current (unchanged) states.
+                let matching = (0..step.keys.len())
+                    .map(|key| format!("__ivm_changed_{key}"))
+                    .collect::<Vec<_>>();
+                let mut prefix_select = base_key_exprs.clone();
+                for (key, name) in step.keys.iter().zip(&matching) {
+                    let position = step
+                        .keys
+                        .iter()
+                        .position(|column| column == key)
+                        .unwrap_or(0);
+                    let source = step_key_source(step, position);
+                    prefix_select.push(
+                        col(chain_column_name(source, key).as_str()).alias(name.as_str()),
+                    );
+                }
+                let prefix =
+                    lookup_chain_replay(view, &now_frames, index, frames[0].2.clone())?
+                        .select(prefix_select)?;
+                let changed_renamed = changed_keys.select(
+                    step.right_keys
+                        .iter()
+                        .zip(&matching)
+                        .map(|(key, name)| col(key.as_str()).alias(name.as_str()))
+                        .collect::<Vec<_>>(),
+                )?;
+                let matched = prefix
+                    .join(
+                        changed_renamed,
+                        JoinType::LeftSemi,
+                        &matching.iter().map(String::as_str).collect::<Vec<_>>(),
+                        &matching.iter().map(String::as_str).collect::<Vec<_>>(),
+                        None,
+                    )?
+                    .select(base_key_exprs.clone())?
+                    .distinct()?;
+                affected = affected.union(matched)?.distinct()?;
+            }
+            if every_base_row {
+                // Every key the base or the view knows is re-evaluated; the view
+                // side keeps the keys the base no longer has.
+                let base_now_keys = frames[0]
+                    .2
+                    .clone()
+                    .select(base_key_exprs.clone())?
+                    .distinct()?;
+                let mv_keys = mv.clone().select(base_key_exprs.clone())?.distinct()?;
+                affected = affected.union(base_now_keys)?.union(mv_keys)?.distinct()?;
+            }
+            affected
+        };
 
         // Replay the chain over the current states for the affected rows.
         let frame = lookup_chain_replay(

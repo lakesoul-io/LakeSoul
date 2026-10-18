@@ -189,6 +189,20 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 旧行用 delta semi-join join MV（或 before 事实行），避免全表读 MV。
 - 验收：10M/1% join 刷新增量 ≥ 2× 全量；5% 不慢于全量（否则代价回退）。
 
+#### P1a 结果：base-only 快路径（2026-10）
+
+- 只有事实基表变化时：`affected = base delta keys`；base `now` = 过滤后的 delta；维表读当前态
+  （万级）；join MV 按 affected 键过滤读取；不再全量读 before/base/MV，也不再走
+  `every_base_row` 的 10M replay。
+- 10M/1%：join 5.0–5.7s → **1.9–2.7s**；总增量 7.8–9.0s → **4.4–6.2s**；峰值 RSS
+  11.0GB → **6.1GB**。
+- 10M/5%：join 7.5s → **4.9s**；总增量 17.2s → **14.6s**；峰值 RSS 9.5GB → 6.2GB；
+  但聚合步骤仍 **9.7s**（全量 1.5s），所以 5% 仍慢于全量 6.9s。
+- 结论：P1 解决了 join 的全量读；**聚合的 before/state 读取成为下一瓶颈**（100k–500k keys
+  的 IN 过滤），P2 必须让聚合直接使用 join MV 的 delete+insert delta 更新组状态。
+- 维表变更/混合变更仍走通用路径（低频，代价回退）；全量/rebuild 仍走 materialized 路径
+  （P0.2 的流式 sink 尚未覆盖）。
+
 ### P2：聚合更新
 
 - join MV delta 上的万级分组聚合；SUM/COUNT/AVG 状态合并。
