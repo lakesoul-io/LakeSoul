@@ -4278,6 +4278,28 @@ bench 扩展到多源算子形状，并在过程中修掉一个真实的性能 b
 - **冒烟（RustFS，20k 行、200 变更、test-fast）**：chain 4.3–5.0×、partitioned 1.1–1.2×（扫描 320 vs 20k）、
   skew 4.4–10.0×（扫描 ~367）；所有形状末轮对拍通过。下一步用 `--release` 跑正式矩阵（B3）。
 
+### 10.178 性能评测 B3：release 正式矩阵、报告与 CI smoke
+
+用 release 构建在本地 RustFS（S3）上跑正式矩阵，并把结果固化为 `BENCH.md` 的 Results 节 + `bench-results/` CSV：
+
+- **矩阵**：8 形状 × {1e5, 1e6} 行 × {0.01%, 1%}，另补 row/sum_count/lookup 在 1M 行的
+  0.1%/10%（及尝试的 100%）；2 预热 + 8 轮（部分补跑 1+6），Parquet、4 bucket、1000 组。
+- **结果要点**：1M 行 0.01% 变更下 row 4.7×、sum_count 2.1×、lookup 3.4×、chain 3.5×、top_k 2.6×、
+  multi_join 2.3×；1% 时 multi_join 1.0×、chain 1.5×、lookup 1.7×；sum_count 在 10% 变更时 **0.2×**
+  （增量 11.5s vs 全量 2.1s），row 在 10% 仍 1.2×；partitioned 在 1e5 只扫 18–1627 行（裁剪生效）但固定开销主导（1.1×）。
+- **瓶颈结论**（详见 BENCH.md）：① 读放大——row/top_k/lookup/multi_join/chain 每轮全量读当前源与 MV
+  （row ~2×表、lookup 2.5×、multi_join 4×、chain 5×），收益主要来自写少（1M→129–592 行）；
+  ② ~0.3–0.8s 的固定地板（规划/元数据/S3 LIST/epoch 提交/新文件），S3 约为本地 2×；
+  ③ 小文件（1M 行每轮读 668–1356 个文件）；④ 高变更比例下 delta/merge 成本反超；
+  ⑤ 可合并聚合对倾斜不敏感（sum_count 只扫 ~18k 行），MIN/MAX 等需重扫分组的形状为后续变体。
+- **优化优先级（记录）**：P1 按 affected keys 过滤读取（`read_current_filtered` + `IN`）；
+  P2 固定开销（计划缓存、元数据/S3 LIST 合并）；P3 compaction/文件大小；P4 高变更比例按代价回退全量；
+  P5 阶段级指标（规划/读/计算/写）以量化地板。
+- **缺失单元格**：`partitioned@1M`、`lookup@1M 10%` 因本地 RustFS 在 1M 行大 delta 下间歇 500/连接重置
+  未能测出（服务限制，非视图行为）；100% 变更点因无 compaction 的整表更新文件累积呈病态，停止。
+- **CI smoke**：新增 `.github/workflows/ivm-bench.yml`（手动 `workflow_dispatch` + 每周定时），
+  在 rust-ci 同款 PG/RustFS 服务上跑小规模矩阵并上传 CSV，只报告、不做性能阈值阻断。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# A manual (or nightly-scheduled) benchmark smoke.  It runs the refresh
+# benchmark against the RustFS service and prints the summary; it never fails
+# on a performance threshold, it only reports.
+
+on:
+  workflow_dispatch:
+    inputs:
+      shape:
+        description: "row | sum_count | lookup | multi_join | top_k | chain | partitioned | skew | both | all"
+        default: both
+      rows:
+        description: "fact rows to seed"
+        default: "20000"
+      change_ratio:
+        description: "changed fraction per round"
+        default: "0.01"
+      rounds:
+        description: "measured rounds"
+        default: "3"
+      profile:
+        description: "test-fast or release"
+        default: test-fast
+  schedule:
+    # Weekly, Sunday 03:17 UTC.
+    - cron: "17 3 * * 0"
+
+name: IVM bench
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
+      LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+      LAKESOUL_PG_USERNAME: lakesoul_test
+      LAKESOUL_PG_PASSWORD: lakesoul_test
+      AWS_ENDPOINT: http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_REGION: us-east-1
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      rustfs:
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+          RUSTFS_CONSOLE_ENABLE: true
+
+    steps:
+      - name: Wait for RustFS
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:9000/health \
+              && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
+              echo "RustFS is ready"
+              exit 0
+            fi
+            echo "Waiting for RustFS..."
+            sleep 2
+          done
+          echo "RustFS failed to become ready"
+          exit 1
+
+      - name: Setup RustFS bucket
+        run: |
+          docker run --rm --network host \
+            --entrypoint /bin/sh \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            -c '
+              set -e
+              until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
+                sleep 2
+              done
+              until rc mb rustfs/lakesoul-test-bucket --ignore-existing; do
+                sleep 2
+              done
+            '
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: ./.github/actions/setup-flatc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          shared-key: "rust-test-fast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install requirements
+        uses: ConorMacBride/install-package@v1
+        with:
+          apt: postgresql-client-16
+
+      - name: Install lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
+
+      - name: Init PG
+        run: |
+          ./script/meta_init_for_local_test.sh -j 1
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the benchmark
+        env:
+          SHAPE: ${{ github.event.inputs.shape || 'both' }}
+          ROWS: ${{ github.event.inputs.rows || '20000' }}
+          RATIO: ${{ github.event.inputs.change_ratio || '0.01' }}
+          ROUNDS: ${{ github.event.inputs.rounds || '3' }}
+          PROFILE: ${{ github.event.inputs.profile || 'test-fast' }}
+        run: |
+          cargo run --profile "$PROFILE" -p lakesoul-ivm --example ivm_bench -- \
+            --storage s3 --shape "$SHAPE" --rows "$ROWS" \
+            --change-ratio "$RATIO" --rounds "$ROUNDS" \
+            --out /tmp/ivm-bench.csv
+
+      - name: Upload the CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: ivm-bench-csv
+          path: /tmp/ivm-bench.csv
+          if-no-files-found: warn

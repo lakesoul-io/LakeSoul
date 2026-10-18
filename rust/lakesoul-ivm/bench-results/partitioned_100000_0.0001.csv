@@ -1,0 +1,9 @@
+shape,round,change_rows,source_write_ms,incr_ms,full_ms,speedup,incr_files,incr_rows_scanned,incr_rows_written,incr_mv_bytes,incr_io_bytes,full_files,full_rows_scanned,full_rows_written,full_mv_bytes,full_io_bytes,incr_action,full_action
+partitioned,2,10,151.060,781.406,879.023,1.12,549,18,4,3238,3896217,535,100013,10,15770,3817105,incremental,overwrite
+partitioned,3,10,137.324,706.005,1070.001,1.52,555,19,2,1619,3923718,539,100015,10,15770,3832833,incremental,overwrite
+partitioned,4,10,75.569,702.348,774.059,1.10,560,16,2,1619,3946182,543,100020,10,15770,3848601,incremental,overwrite
+partitioned,5,10,36.380,613.882,769.433,1.25,565,17,2,1619,3968546,547,100024,10,15770,3864269,incremental,overwrite
+partitioned,6,10,37.383,643.745,770.465,1.20,570,18,2,1619,3990865,551,100027,10,15770,3879892,incremental,overwrite
+partitioned,7,10,28.880,656.664,731.606,1.11,575,17,2,1619,4013184,555,100031,10,15770,3895515,incremental,overwrite
+partitioned,8,10,32.664,1115.920,2032.474,1.82,580,18,2,1619,4035693,559,100034,10,15770,3911328,incremental,overwrite
+partitioned,9,10,38.415,3760.074,843.232,0.22,585,19,2,1619,4058087,563,100036,10,15770,3927026,incremental,overwrite
