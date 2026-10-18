@@ -12,6 +12,7 @@
 //! committed.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
@@ -2479,6 +2480,7 @@ pub(crate) fn key_filters(
     let mut filters = Vec::new();
     for key in partition_keys {
         let mut values: Vec<ScalarValue> = Vec::new();
+        let mut seen: HashSet<ScalarValue> = HashSet::new();
         let mut has_null = false;
         for batch in batches {
             let index = batch.schema().index_of(key).map_err(|_| {
@@ -2490,7 +2492,7 @@ pub(crate) fn key_filters(
                     has_null = true;
                 } else {
                     let scalar = ScalarValue::try_from_array(array, row)?;
-                    if !values.contains(&scalar) {
+                    if seen.insert(scalar.clone()) {
                         values.push(scalar);
                     }
                 }
