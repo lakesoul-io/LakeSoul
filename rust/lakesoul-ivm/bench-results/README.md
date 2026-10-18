@@ -6,7 +6,9 @@ ratio: `{shape}_{rows}_{change_ratio}.csv`.
 
 Environment: a single Linux host, PostgreSQL 14 and RustFS (S3 API) at
 `127.0.0.1:9000`, a `--release` build, Parquet files with the default four
-hash buckets, `--groups 1000`, two warmup rounds and eight measured rounds
+hash buckets, `--groups 1000`, two warmup rounds and eight measured rounds  (the `row_*`
+files were re-measured after the P1 key-filtered row refresh, PLAN §10.179;
+the other files are from the B3 run)
 (the retried `lookup_1000000_0.001` and `row_1000000_0.1` groups used one
 warmup and six measured rounds).  Each round appends one change batch
 (insert/update/delete 1:1:1 by default, `--secondary-change 0.2` for the

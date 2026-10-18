@@ -136,7 +136,7 @@ Five-shape smoke on RustFS (20k fact rows, 200 changes per round,
 
 | shape | incr p50 | full p50 | speedup | incr rows scanned | incr rows written |
 |---|---|---|---|---|---|
-| row | 176–229 ms | 654–828 ms | 3.6–3.7x | ~40k | 260–267 |
+| row | 176–229 ms | 654–828 ms | 3.6–3.7x | ~40k (pre-P1) | 260–267 |
 | sum_count | 229–257 ms | 1060–1132 ms | 4.4–4.6x | ~460 | 254–274 |
 | lookup | 210–248 ms | 716–841 ms | 3.4x | ~50k | 284–300 |
 | multi_join | 294 ms | 817–951 ms | 2.8–3.2x | ~81k | 265–270 |
@@ -147,6 +147,8 @@ Five-shape smoke on RustFS (20k fact rows, 200 changes per round,
 
 How to read it:
 
+* the `row` scanned count in the smoke table predates P1 (§10.179); the keyed
+  row refresh now reads only the changed keys (a few dozen rows at this size);
 * **speedup** = `full_p50 / incr_p50`.  The incremental path should win at
   small change ratios and on large tables;
 * the incremental latency should stay **flat as the table grows** for a fixed
@@ -188,11 +190,18 @@ insert/update/delete 1:1:1 with 20% aimed at the non-fact side for the
 two-source shapes.  Each cell is `incremental p50 -> full overwrite p50
 (speedup)` in ms.  Raw CSVs are in [`bench-results/`](bench-results/).
 
+The `row` cells were measured again after the P1 key-filtered read change
+(PLAN §10.179): its `incr_rows_scanned` fell from ~2x the table to 16 / 165 /
+1662 rows at 0.01% / 0.1% / 1%, and the 1M-row speedup rose from 4.7x / 4.1x /
+3.4x to 7.4x / 7.2x / 6.4x.  The other shapes still read their full current
+sources and are unchanged; their CSVs are from the B3 run.  The 1M/10% cell
+(100k changed keys, above the filter threshold) was not re-measured.
+
 1e5 fact rows:
 
 | shape | 0.01% changes | 1% changes |
 |---|---|---|
-| row | 314 -> 1272 (4.0x) | 350 -> 2051 (5.9x) |
+| row | 222 -> 1227 (5.5x) | 254 -> 1218 (4.8x) |
 | sum_count | 339 -> 1245 (3.7x) | 396 -> 2573 (6.5x) |
 | lookup | 367 -> 1231 (3.4x) | 469 -> 1392 (3.0x) |
 | multi_join | 583 -> 1336 (2.3x) | 680 -> 2531 (3.7x) |
@@ -205,7 +214,7 @@ two-source shapes.  Each cell is `incremental p50 -> full overwrite p50
 
 | shape | 0.01% | 0.1% | 1% | 10% |
 |---|---|---|---|---|
-| row | 1260 -> 5914 (4.7x) | 1237 -> 5055 (4.1x) | 1596 -> 5414 (3.4x) | 4410 -> 5206 (1.2x) |
+| row | 645 -> 4740 (7.4x) | 674 -> 4856 (7.2x) | 1055 -> 6776 (6.4x) | 4410 -> 5206 (1.2x) |
 | sum_count | 781 -> 1659 (2.1x) | 860 -> 2350 (2.7x) | 1041 -> 1827 (1.8x) | 11511 -> 2110 (**0.2x**) |
 | lookup | 1632 -> 5481 (3.4x) | 1568 -> 5111 (3.3x) | 3613 -> 5994 (1.7x) | not measured |
 | multi_join | 2749 -> 6357 (2.3x) | not measured | 6280 -> 6443 (1.0x) | not measured |
@@ -224,11 +233,14 @@ against 100k), with the latency floor masking it at this size.
 
 ## What the numbers say
 
-* **Reads are the dominant cost.**  The incremental refresh of `row`, `top_k`,
+* **Reads are the dominant cost.**  The incremental refresh of `top_k`,
   `lookup`, `multi_join` and `chain` reads the full current sources and the
-  whole materialized view every round regardless of the change size (row
-  scans ~2x the table, lookup ~2.5x, multi_join ~4x, chain ~5x; `incr rows
-  scanned` in the CSVs).  The speedups therefore come from writing far fewer
+  whole materialized view every round regardless of the change size (lookup
+  ~2.5x the table, multi_join ~4x, chain ~5x; `incr rows scanned` in the
+  CSVs).  `row` now reads the delta plus the affected keys of its state
+  (`read_current_filtered` with a primary-key `IN` list, up to 4096 keys;
+  PLAN §10.179), so it scans 16 rows instead of ~1.9M at 1M/0.01% and its
+  speedup roughly doubles.  The speedups therefore come from writing far fewer
   rows (129–592 vs 1,000,000 at 0.01%), and they decay as the delta grows
   (multi_join 2.3x at 0.01% but 1.0x at 1%).
 * **A fixed floor of ~0.3–0.8 s per refresh** is visible everywhere:

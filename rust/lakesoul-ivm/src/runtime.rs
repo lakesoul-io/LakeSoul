@@ -2464,10 +2464,15 @@ fn affected_groups_sql(
     )
 }
 
+/// The largest affected-key set materialized as an `IN` filter for the
+/// state reads; a larger set falls back to the full read (a huge literal
+/// list costs more to plan than it saves).
+pub(crate) const MAX_KEY_FILTERS: usize = 4096;
+
 /// Equality/`IN` filters over `keys` of the given rows, used to prune the
 /// source / state reads (and the reader's bucket pruning) to the affected
 /// partitions or groups.
-fn key_filters(
+pub(crate) fn key_filters(
     partition_keys: &[String],
     batches: &[RecordBatch],
 ) -> Result<Vec<datafusion::prelude::Expr>> {
