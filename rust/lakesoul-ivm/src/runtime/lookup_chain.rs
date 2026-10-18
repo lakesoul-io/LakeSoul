@@ -1051,16 +1051,12 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         commit_ids.extend(
-            view.mv
-                .append_batches(
-                    &self.client,
-                    inserts
-                        .union(deletes)?
-                        .sort_by(sort_exprs)?
-                        .collect()
-                        .await?,
-                )
-                .await?,
+            append_dataframe(
+                &view.mv,
+                &self.client,
+                inserts.union(deletes)?.sort_by(sort_exprs)?,
+            )
+            .await?,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1144,11 +1140,7 @@ impl IvmRuntime {
             .select(lookup_chain_row_exprs(view)?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        commit_ids.extend(
-            view.mv
-                .append_batches(&self.client, rows.collect().await?)
-                .await?,
-        );
+        commit_ids.extend(append_dataframe(&view.mv, &self.client, rows).await?);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
