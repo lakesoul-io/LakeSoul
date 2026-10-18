@@ -2569,11 +2569,15 @@ impl IvmRuntime {
             }
             parts.mv.truncate(&self.client).await?;
             let sql = recompute_global_sql(parts, epoch);
-            for batch in context.sql(&sql).await?.collect().await? {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+            commit_ids.extend(
+                parts
+                    .mv
+                    .append_batches(
+                        &self.client,
+                        context.sql(&sql).await?.collect().await?,
+                    )
+                    .await?,
+            );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
             self.metadata
                 .mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -2723,16 +2727,19 @@ impl IvmRuntime {
                 .await?,
             &parts.mv.schema,
         )?;
-        for batch in context
-            .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            parts
+                .mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.metadata
@@ -2824,11 +2831,15 @@ impl IvmRuntime {
                 )?;
             }
             let sql = recompute_global_sql(parts, epoch);
-            for batch in context.sql(&sql).await?.collect().await? {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+            commit_ids.extend(
+                parts
+                    .mv
+                    .append_batches(
+                        &self.client,
+                        context.sql(&sql).await?.collect().await?,
+                    )
+                    .await?,
+            );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
             self.metadata
                 .mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -2856,16 +2867,19 @@ impl IvmRuntime {
                 &lookup.table.schema,
             )?;
         }
-        for batch in context
-            .sql(&recompute_rebuild_sql(parts, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(parts.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            parts
+                .mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&recompute_rebuild_sql(parts, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.metadata

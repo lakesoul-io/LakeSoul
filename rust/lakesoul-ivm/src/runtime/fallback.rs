@@ -766,19 +766,18 @@ impl IvmRuntime {
             (false, false) => String::new(),
         };
         if !sql.is_empty() {
-            for batch in compose
+            let batches = compose
                 .sql(&sql)
                 .await
                 .map_err(|error| report!("fallback partition write: {error}"))?
                 .collect()
                 .await
-                .map_err(|error| report!("fallback partition write: {error}"))?
-            {
-                if batch.num_rows() > 0 {
-                    written += batch.num_rows() as u64;
-                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+                .map_err(|error| report!("fallback partition write: {error}"))?;
+            written += batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum::<u64>();
+            commit_ids.extend(view.mv.append_batches(&self.client, batches).await?);
         }
         crate::observability::record_fallback(written);
         Ok(Some(commit_ids))
@@ -969,12 +968,11 @@ impl IvmRuntime {
         view.mv.truncate(&self.client).await?;
         let mut written = 0u64;
         let mut commit_ids = Vec::new();
-        for batch in rows {
-            if batch.num_rows() > 0 {
-                written += batch.num_rows() as u64;
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        written += rows
+            .iter()
+            .map(|batch| batch.num_rows() as u64)
+            .sum::<u64>();
+        commit_ids.extend(view.mv.append_batches(&self.client, rows).await?);
         crate::observability::record_fallback(written);
         Ok(commit_ids)
     }

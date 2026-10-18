@@ -794,28 +794,32 @@ impl IvmRuntime {
                     .map(|key| column_expr(key)),
             );
             sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-            for batch in inserts
-                .union(deletes)?
-                .sort_by(sort_exprs)?
-                .collect()
-                .await?
-            {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+            commit_ids.extend(
+                view.mv
+                    .append_batches(
+                        &self.client,
+                        inserts
+                            .union(deletes)?
+                            .sort_by(sort_exprs)?
+                            .collect()
+                            .await?,
+                    )
+                    .await?,
+            );
         } else {
             // The append-only frames already carry the MV column order (the
             // output columns, the source index, the row kind).
-            for batch in union_frames(inserts)?
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                .collect()
-                .await?
-            {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+            commit_ids.extend(
+                view.mv
+                    .append_batches(
+                        &self.client,
+                        union_frames(inserts)?
+                            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                            .collect()
+                            .await?,
+                    )
+                    .await?,
+            );
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -899,17 +903,19 @@ impl IvmRuntime {
             .map(|column| col(column.as_str()))
             .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
             .collect::<Vec<_>>();
-        for batch in union_frames(frames)?
-            .select(output_exprs)?
-            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    union_frames(frames)?
+                        .select(output_exprs)?
+                        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata

@@ -4367,6 +4367,38 @@ P2 的文件 LIST/元数据/固定地板主导；本项把物化行数与 CPU �
 地板限制；top_k（分组键非排序键）、multi_join（各源按主键/join key 裁剪）、pair left/full
 join（需 before-match 扩展）、chain（需逐阶段键传播）仍记录为后续。
 
+### 10.181 性能优化 R1：状态写入合并
+
+100k 行实测显示 MV 被写成 107 个增量文件 / 208 个全量重写文件（5–8KB/文件），1M 行推算
+~488；延迟约 1ms/文件。原因是刷新输出按执行器 batch（~8k 行）逐批 `append_batch`，每批在
+每个 hash bucket 各产生一个文件。
+
+- **实现**：`IvmTable::append_batches` 把输出累积到 `MAX_STATE_APPEND_ROWS = 1_048_576`
+  行后 `concat_batches` 再一次 append；单个文件仍按 bucket 拆分。上限约束内存；刷新输出已
+  排序，批内 delete/insert 顺序不变。所有刷新/重建路径改用该助手：row、lookup/pair join、
+  aggregate 与状态表、window/top_k、union、semi/anti、multi_join、chain、recompute、fallback。
+- **全量路径同样受益**：`INSERT OVERWRITE` 的 MV 重写也走同一批助手，因此全量重算从
+  5.4s（lookup 1M）降到 1.1s，这是本次最重要的副作用。
+- **回归**：`tests/state_files.rs`——50k 行初始刷新/全量重写 ≤8 个状态文件，单行增量 ≤4 个，
+  且行数不丢。
+
+结果（release、本地 RustFS、1M/0.01%，p50）：
+
+| shape | incr 前 | incr 后 | full 前 | full 后 | speedup 后 | incr files 前→后 |
+|---|---|---|---|---|---|---|
+| row | 667 | **235** | 4770 | 879 | 3.7× | 518 → 30 |
+| sum_count | 786 | 680 | 1688 | **650** | 0.96× | 668 → 544 |
+| lookup | 1514 | 1017 | 5449 | 1098 | 1.08× | 1334 → 826 |
+| multi_join | 2768 | 2143 | 6365 | 2442 | 1.14× | 2100 → 1592 |
+| top_k | 913 | 743 | 2353 | **691** | 0.93× | 672 → 548 |
+| chain | 3219 | 1589 | 11256 | 1905 | 1.20× | 2634 → 1100 |
+
+- **结论**：写入合并把两条路径都变成「文件数主导」，全量重算的写优势被削平。row（大 MV +
+  delta-only 源读）仍 3.7×；join 族 1.08–1.20×；**top_k/sum_count 的全量已经更快**。
+  这直接支持 R2（代价回退）——不只是高变更比例，**小 MV / 低变更时也应选全量**。
+- 剩余 1e5 与 1M 其他比例格未重测；源表仍按 8192 行/批碎片化，compaction（R4）仍是绝对值
+  的主要杠杆。CSV 已更新 `bench-results/*_1000000_0.0001.csv`。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

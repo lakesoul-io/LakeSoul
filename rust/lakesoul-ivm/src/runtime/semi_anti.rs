@@ -1167,16 +1167,18 @@ impl IvmRuntime {
             .map(|key| column_expr(key))
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-        for batch in inserts
-            .union(deletes)?
-            .sort_by(sort_exprs)?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    inserts
+                        .union(deletes)?
+                        .sort_by(sort_exprs)?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -1283,11 +1285,11 @@ impl IvmRuntime {
         .select(output_columns)?
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        for batch in rows.collect().await? {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(&self.client, rows.collect().await?)
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2053,16 +2055,18 @@ impl IvmRuntime {
             .map(|key| column_expr(key))
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-        for batch in inserts
-            .union(deletes)?
-            .sort_by(sort_exprs)?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    inserts
+                        .union(deletes)?
+                        .sort_by(sort_exprs)?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2157,11 +2161,11 @@ impl IvmRuntime {
             .select(insert_exprs)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        for batch in rows.collect().await? {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(&self.client, rows.collect().await?)
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
