@@ -4,9 +4,12 @@
 
 //! The left-deep lookup chain view: a base table joined to keyed 1:1 lookups.
 
+use std::collections::BTreeMap;
+
 use super::*;
 use datafusion::common::NullEquality;
 use datafusion::logical_expr::LogicalPlanBuilder;
+use futures::future::join_all;
 
 use datafusion::functions::string::expr_fn::{concat, octet_length};
 use datafusion::logical_expr::Cast;
@@ -720,6 +723,40 @@ impl IvmRuntime {
         // so only the delta keys can change and the chain can be replayed over
         // the delta instead of the whole base.
         let base_only = changed[0] && changed[1..].iter().all(|changed| !changed);
+        // Bucket-parallel fast path: with a unique-step chain the MV is keyed
+        // by the base key, so a key and all of its rows live in one hash
+        // bucket.  Split the fact delta by the file's bucket suffix and
+        // refresh each bucket independently; dimensions are broadcast.
+        let bucket_parallel = base_only
+            && view.steps.iter().all(|step| step.unique)
+            && view
+                .sources
+                .iter()
+                .all(|(table, _)| table.range_partition_columns.is_empty())
+            && view.sources[0].0.hash_bucket_num == view.mv.hash_bucket_num
+            && view.sources[0].0.primary_keys == view.mv.primary_keys
+            && view.sources[0].0.bucket_columns.is_empty()
+            && view.mv.bucket_columns.is_empty()
+            && view.sources[0]
+                .0
+                .hash_bucket_num
+                .parse::<u32>()
+                .unwrap_or(1)
+                > 1;
+        if bucket_parallel
+            && let Some(commit_ids) = self
+                .refresh_lookup_chain_buckets(view, &windows, epoch)
+                .await?
+        {
+            let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            for window in windows {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+            }
+            return Ok(Some(epoch));
+        }
 
         let context = SessionContext::new();
         let mut frames = Vec::with_capacity(view.sources.len());
@@ -1067,6 +1104,173 @@ impl IvmRuntime {
             self.advance_cursors(&view.view_id, window.cursors).await?;
         }
         Ok(Some(epoch))
+    }
+
+    /// Refresh a unique-step chain bucket by bucket.
+    ///
+    /// Each hash bucket is self-contained: the fact delta files carry the
+    /// bucket in their name, the MV is keyed by the same base key, and the
+    /// dimensions are broadcast.  Returns `None` when the delta cannot be
+    /// split (unknown file names, or everything in one bucket), so the caller
+    /// can use the single-plan path.
+    async fn refresh_lookup_chain_buckets(
+        &self,
+        view: &LookupChainView,
+        windows: &[SourceWindow],
+        epoch: i64,
+    ) -> Result<Option<Vec<String>>> {
+        let mut groups: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for group in &windows[0].added_files {
+            for file in &group.files {
+                let Some(bucket) = crate::table::file_bucket(file) else {
+                    return Ok(None);
+                };
+                groups.entry(bucket).or_default().push(file.clone());
+            }
+        }
+        if groups.len() <= 1 {
+            return Ok(None);
+        }
+        let mut mv_by_bucket: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for file in view.mv.current_files(&self.client).await? {
+            let Some(bucket) = crate::table::file_bucket(&file) else {
+                return Ok(None);
+            };
+            mv_by_bucket.entry(bucket).or_default().push(file);
+        }
+
+        let context = SessionContext::new();
+        let (base, base_filter) = &view.sources[0];
+        let base_columns = lookup_chain_source_columns(view, 0, &context)?;
+        let base_projection = project_schema(&base.schema, &base_columns)?;
+        let mut dims: Vec<(SchemaRef, Vec<RecordBatch>)> = Vec::new();
+        for (index, (table, filter)) in view.sources.iter().enumerate().skip(1) {
+            let columns = lookup_chain_source_columns(view, index, &context)?;
+            let projection = project_schema(&table.schema, &columns)?;
+            let frame = apply_side_filter(
+                &context,
+                filter_deletes(
+                    dataframe(
+                        &context,
+                        table
+                            .read_current_projected(&self.client, Some(&projection))
+                            .await?,
+                        &projection,
+                    )?,
+                    change_column(table),
+                )?,
+                &projection,
+                filter.as_deref(),
+            )?;
+            dims.push((projection, frame.collect().await?));
+        }
+        let dims = Arc::new(dims);
+        let identity_columns = lookup_chain_identity_columns(view);
+        let identity_names = identity_columns;
+        let identity_exprs = identity_names
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>();
+        let key_names = base.primary_keys.clone();
+        let key_exprs = key_names
+            .iter()
+            .map(|column| col(column.as_str()))
+            .collect::<Vec<_>>();
+        let row_exprs = lookup_chain_row_exprs(view)?;
+        let row_columns = lookup_chain_row_columns(view);
+        let mut sort_exprs = identity_names
+            .iter()
+            .map(|column| column_expr(column))
+            .collect::<Vec<_>>();
+        sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+
+        let tasks = groups.into_iter().map(|(bucket, files)| {
+            let view = view.clone();
+            let base = base.clone();
+            let mv_table = view.mv.clone();
+            let client = self.client.clone();
+            let dims = dims.clone();
+            let base_filter = base_filter.clone();
+            let base_projection = base_projection.clone();
+            let key_names = key_names.clone();
+            let key_exprs = key_exprs.clone();
+            let identity_names = identity_names.clone();
+            let identity_exprs = identity_exprs.clone();
+            let row_exprs = row_exprs.clone();
+            let row_columns = row_columns.clone();
+            let sort_exprs = sort_exprs.clone();
+            let mv_files = mv_by_bucket.get(&bucket).cloned().unwrap_or_default();
+            async move {
+                let context = SessionContext::new();
+                let raw = dataframe(
+                    &context,
+                    base.read_files_projected(files, Some(&base_projection))
+                        .await?,
+                    &base_projection,
+                )?;
+                let now = apply_side_filter(
+                    &context,
+                    filter_deletes(raw.clone(), change_column(&base))?,
+                    &base_projection,
+                    base_filter.as_deref(),
+                )?;
+                let affected = raw.select(key_exprs.clone())?.distinct()?;
+                let key_batches = affected.clone().collect().await?;
+                let filters = key_filters(&base.primary_keys, &key_batches)?;
+                let mv_batches = mv_table.read_files_filtered(mv_files, filters).await?;
+                let mv = dataframe(&context, mv_batches, &mv_table.schema)?;
+                let mut now_frames = vec![now.clone()];
+                for (projection, batches) in dims.iter() {
+                    now_frames.push(dataframe(&context, batches.clone(), projection)?);
+                }
+                let frame =
+                    lookup_chain_replay(&view, &now_frames, view.steps.len(), now)?;
+                let key_refs = key_names.iter().map(String::as_str).collect::<Vec<_>>();
+                let identity_refs = identity_names
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let mv_epoch_keys = mv
+                    .clone()
+                    .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
+                    .select(identity_exprs.clone())?
+                    .distinct()?;
+                let inserts = frame
+                    .select(row_exprs.clone())?
+                    .join(
+                        mv_epoch_keys,
+                        JoinType::LeftAnti,
+                        &identity_refs,
+                        &identity_refs,
+                        None,
+                    )?
+                    .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+                let deletes = mv
+                    .join(affected, JoinType::LeftSemi, &key_refs, &key_refs, None)?
+                    .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+                    .select(
+                        row_columns
+                            .iter()
+                            .map(|column| col(column.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+                let commit_ids = append_dataframe(
+                    &mv_table,
+                    &client,
+                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                )
+                .await?;
+                Ok::<Vec<String>, rootcause::Report>(commit_ids)
+            }
+        });
+        let mut commit_ids = Vec::new();
+        for result in join_all(tasks).await {
+            commit_ids.extend(result?);
+        }
+        Ok(Some(commit_ids))
     }
 
     /// Rebuild a lookup chain from the current states of its sources.

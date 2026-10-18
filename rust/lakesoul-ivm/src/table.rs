@@ -91,6 +91,11 @@ pub struct PartitionFiles {
     pub files: Vec<String>,
 }
 
+/// The hash bucket encoded in a LakeSoul data file name.
+pub(crate) fn file_bucket(path: &str) -> Option<u32> {
+    lakesoul_io::helpers::extract_hash_bucket_id(path)
+}
+
 /// Split a comma separated partition key list.
 fn split_partition_keys(keys: &str) -> Vec<String> {
     keys.split(',')
@@ -508,6 +513,28 @@ impl IvmTable {
     /// Read the given data files with this table's schema and merge key.
     pub async fn read_files(&self, files: Vec<String>) -> Result<Vec<RecordBatch>> {
         self.read_files_with_options(files, Vec::new(), None).await
+    }
+
+    /// Read explicit data files with pushed filters (no projection).
+    pub async fn read_files_filtered(
+        &self,
+        files: Vec<String>,
+        filters: Vec<Expr>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_files_with_options(files, filters, None).await
+    }
+
+    /// The current data files of an unpartitioned table.
+    pub async fn current_files(&self, client: &MetaDataClient) -> Result<Vec<String>> {
+        let mut files = Vec::new();
+        for partition in client.get_all_partition_info(&self.table_id).await? {
+            files.extend(
+                client
+                    .get_data_files_of_single_partition(&partition)
+                    .await?,
+            );
+        }
+        Ok(files)
     }
 
     /// Read the given data files projected to `projection`.

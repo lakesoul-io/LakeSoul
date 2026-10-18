@@ -537,17 +537,14 @@ async fn main() {
     ];
     let mut schemas = vec![fact.schema.clone()];
     schemas.extend(dims.iter().map(|dim| dim.schema.clone()));
-    let join_mv = runtime
-        .create_table(
-            IvmTableOptions::new(
-                format!("ivm_star_{suffix}_join"),
-                format!("{base}/join"),
-                lookup_chain_mv_schema_for(&schemas, &steps, &columns).unwrap(),
-            )
-            .with_primary_keys(vec!["k".to_string()]),
-        )
-        .await
-        .unwrap();
+    let mut join_options = IvmTableOptions::new(
+        format!("ivm_star_{suffix}_join"),
+        format!("{base}/join"),
+        lookup_chain_mv_schema_for(&schemas, &steps, &columns).unwrap(),
+    )
+    .with_primary_keys(vec!["k".to_string()]);
+    join_options.hash_bucket_num = args.buckets.to_string();
+    let join_mv = runtime.create_table(join_options).await.unwrap();
     let chain = LookupChainView::new(
         format!("star_chain_{suffix}"),
         std::iter::once((fact.clone(), None))
@@ -559,17 +556,14 @@ async fn main() {
     );
 
     let group_keys = vec!["a1".to_string(), "a2".to_string()];
-    let agg_mv = runtime
-        .create_table(
-            IvmTableOptions::new(
-                format!("ivm_star_{suffix}_agg"),
-                format!("{base}/agg"),
-                sum_count_mv_schema_for(&join_mv.schema, &group_keys, Some("v")).unwrap(),
-            )
-            .with_primary_keys(group_keys.clone()),
-        )
-        .await
-        .unwrap();
+    let mut agg_options = IvmTableOptions::new(
+        format!("ivm_star_{suffix}_agg"),
+        format!("{base}/agg"),
+        sum_count_mv_schema_for(&join_mv.schema, &group_keys, Some("v")).unwrap(),
+    )
+    .with_primary_keys(group_keys.clone());
+    agg_options.hash_bucket_num = args.buckets.to_string();
+    let agg_mv = runtime.create_table(agg_options).await.unwrap();
     let agg = SumCountView::new_with_group_keys(
         format!("star_agg_{suffix}"),
         join_mv.clone(),
