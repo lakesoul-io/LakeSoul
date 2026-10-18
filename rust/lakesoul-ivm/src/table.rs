@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
+use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_str,
@@ -677,6 +678,205 @@ impl IvmTable {
             );
         }
         Ok(batches)
+    }
+
+    /// Stream the current merge-on-read state into `tx` batch by batch.
+    ///
+    /// Unlike [`Self::read_current`] this never materializes the table: the
+    /// reader runs on the caller's (current-thread) runtime and each batch is
+    /// handed to the consumer before the next one is read.  Used by the
+    /// DataFusion provider so a scan plan stays streaming.
+    pub(crate) async fn stream_current(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>,
+    ) -> Result<()> {
+        let mut groups = Vec::new();
+        for partition in client.get_all_partition_info(&self.table_id).await? {
+            let files = client
+                .get_data_files_of_single_partition(&partition)
+                .await?;
+            if !files.is_empty() {
+                groups.push(PartitionFiles {
+                    partition_desc: partition.partition_desc.clone(),
+                    files,
+                });
+            }
+        }
+        if self.range_partition_columns.is_empty() {
+            // Unpartitioned tables read all files as one merge group.
+            let files = groups.into_iter().flat_map(|group| group.files).collect();
+            return self
+                .stream_files(files, filters, projection, output, tx)
+                .await;
+        }
+        for group in groups {
+            if tx.is_closed() {
+                return Ok(());
+            }
+            self.stream_files_with_group(
+                group,
+                filters.clone(),
+                projection,
+                output,
+                tx.clone(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Project one streamed batch to the subscriber's output schema.
+    fn project_output(
+        batch: RecordBatch,
+        output: Option<&SchemaRef>,
+    ) -> std::result::Result<RecordBatch, DataFusionError> {
+        let Some(output) = output else {
+            return Ok(batch);
+        };
+        let batch_schema = batch.schema();
+        let indices = output
+            .fields()
+            .iter()
+            .map(|field| {
+                batch_schema.index_of(field.name()).map_err(|_| {
+                    DataFusionError::Execution(format!(
+                        "stream projection column {} is missing",
+                        field.name()
+                    ))
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        batch
+            .project(&indices)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
+    /// Stream `files` as one merge group (the unpartitioned case).
+    async fn stream_files(
+        &self,
+        files: Vec<String>,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let file_count = files.len() as u64;
+        let mut builder = LakeSoulIOConfig::builder()
+            .with_files(files)
+            .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
+            .with_primary_keys(self.primary_keys.clone())
+            .with_physical_format(self.file_format);
+        if !filters.is_empty() {
+            #[allow(deprecated)]
+            {
+                builder = builder.with_filters(filters);
+            }
+        }
+        let mut reader = LakeSoulReader::new(builder.build())?;
+        reader.start().await?;
+        let mut rows = 0u64;
+        while let Some(batch) = reader.next_rb().await {
+            match batch {
+                Ok(batch) => {
+                    rows += batch.num_rows() as u64;
+                    let batch = match Self::project_output(batch, output) {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            let _ = tx.send(Err(error)).await;
+                            return Ok(());
+                        }
+                    };
+                    if tx.send(Ok(batch)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    let _ = tx
+                        .send(Err(DataFusionError::Execution(error.to_string())))
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+        crate::observability::add_files_read(file_count);
+        crate::observability::add_rows_scanned(rows);
+        Ok(())
+    }
+
+    /// Stream one range partition group with its default partition values.
+    async fn stream_files_with_group(
+        &self,
+        group: PartitionFiles,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>,
+    ) -> Result<()> {
+        let schema = projection.cloned().unwrap_or_else(|| self.schema.clone());
+        let range_columns = self
+            .range_partition_columns
+            .iter()
+            .filter(|column| schema.field_with_name(column).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        let file_count = group.files.len() as u64;
+        let mut builder = LakeSoulIOConfig::builder()
+            .with_files(group.files)
+            .with_schema(schema)
+            .with_primary_keys(self.primary_keys.clone())
+            .with_physical_format(self.file_format);
+        if !range_columns.is_empty() {
+            builder = builder.with_range_partitions(range_columns.clone());
+            if let Some(values) =
+                parse_partition_values(&group.partition_desc, &range_columns)
+            {
+                for (column, value) in range_columns.iter().zip(values) {
+                    builder = builder.with_default_column_value(column.clone(), value);
+                }
+            }
+        }
+        if !filters.is_empty() {
+            #[allow(deprecated)]
+            {
+                builder = builder.with_filters(filters);
+            }
+        }
+        let mut reader = LakeSoulReader::new(builder.build())?;
+        reader.start().await?;
+        let mut rows = 0u64;
+        while let Some(batch) = reader.next_rb().await {
+            match batch {
+                Ok(batch) => {
+                    rows += batch.num_rows() as u64;
+                    let batch = match Self::project_output(batch, output) {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            let _ = tx.send(Err(error)).await;
+                            return Ok(());
+                        }
+                    };
+                    if tx.send(Ok(batch)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    let _ = tx
+                        .send(Err(DataFusionError::Execution(error.to_string())))
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+        crate::observability::add_files_read(file_count);
+        crate::observability::add_rows_scanned(rows);
+        Ok(())
     }
 
     async fn read_files_with_options(

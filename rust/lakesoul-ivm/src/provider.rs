@@ -19,10 +19,17 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, BooleanArray};
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::{Expr, TableType};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
+    PlanProperties, SendableRecordBatchStream,
+};
 use lakesoul_metadata::MetaDataClient;
 
 use crate::error::Result;
@@ -166,6 +173,9 @@ impl TableProvider for IvmTableProvider {
         let (reader_projection, out_schema) = self
             .reader_projection(projection)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        if matches!(self.mode, IvmReadMode::Raw) {
+            return self.raw_stream_plan(reader_projection, out_schema);
+        }
         let table = self.table.clone();
         let client = self.client.clone();
         let mode = self.mode.clone();
@@ -230,6 +240,52 @@ impl TableProvider for IvmTableProvider {
 }
 
 impl IvmTableProvider {
+    /// A re-executable streaming plan over the raw merge-on-read state.
+    ///
+    /// Each `execute` starts a fresh reader thread and hands batches to the
+    /// DataFusion plan as they arrive, so the full table is never materialized
+    /// in the driver.  The raw state keeps CDC tombstones; the caller is
+    /// expected to filter them (the chain refresh already does).
+    fn raw_stream_plan(
+        &self,
+        reader_projection: Option<SchemaRef>,
+        out_schema: SchemaRef,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let table = self.table.clone();
+        let client = self.client.clone();
+        let stream_schema = out_schema.clone();
+        let plan_schema = out_schema.clone();
+        let factory = Arc::new(move || -> DataFusionResult<SendableRecordBatchStream> {
+            let mut builder =
+                RecordBatchReceiverStreamBuilder::new(stream_schema.clone(), 2);
+            let tx = builder.tx();
+            let table = table.clone();
+            let client = client.clone();
+            let reader_projection = reader_projection.clone();
+            let out_schema = out_schema.clone();
+            builder.spawn_blocking(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                runtime.block_on(async move {
+                    table
+                        .stream_current(
+                            &client,
+                            Vec::new(),
+                            reader_projection.as_ref(),
+                            Some(&out_schema),
+                            tx,
+                        )
+                        .await
+                        .map_err(|error| DataFusionError::Execution(error.to_string()))
+                })
+            });
+            Ok(builder.build())
+        });
+        Ok(Arc::new(IvmStreamExec::new(plan_schema, factory)))
+    }
+
     /// Drop the rows whose latest version is a CDC tombstone (`delete` or
     /// so a scan returns the logical rows.
     fn drop_tombstones(&self, batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>> {
@@ -292,4 +348,109 @@ fn project_batches(batches: &[RecordBatch], out_schema: &SchemaRef) -> Vec<Recor
                 .expect("the projected columns match the output schema")
         })
         .collect()
+}
+
+/// A one-partition, re-executable streaming scan.
+struct IvmStreamExec {
+    schema: SchemaRef,
+    factory: Arc<dyn Fn() -> DataFusionResult<SendableRecordBatchStream> + Send + Sync>,
+    properties: Arc<PlanProperties>,
+}
+
+impl IvmStreamExec {
+    fn new(
+        schema: SchemaRef,
+        factory: Arc<
+            dyn Fn() -> DataFusionResult<SendableRecordBatchStream> + Send + Sync,
+        >,
+    ) -> Self {
+        Self {
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema.clone()),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+            schema,
+            factory,
+        }
+    }
+}
+
+impl std::fmt::Debug for IvmStreamExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmStreamExec")
+    }
+}
+
+impl DisplayAs for IvmStreamExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(f, "IvmStreamExec")
+    }
+}
+
+impl ExecutionPlanProperties for IvmStreamExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        None
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
+impl ExecutionPlan for IvmStreamExec {
+    fn name(&self) -> &str {
+        "IvmStreamExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        (self.factory)()
+    }
 }

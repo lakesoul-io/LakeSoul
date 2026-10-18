@@ -172,6 +172,17 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 刷新输出改为流式 writer physical plan/DataSink，按 bucket 写，驱动端不 collect。
 - 验收：10M/5% 峰值内存有界（目标 < 8GB，按机器调整）；读路径无 `Vec<RecordBatch>` 全表物化。
 
+#### P0.2a 结果：流式 provider（基础设施）
+
+- `IvmTable::stream_current` 逐批读取 current 状态；`IvmTableProvider` 的 `Raw` 模式改为
+  可重复执行的流式 `IvmStreamExec`（每次 execute 启动新的 reader 线程 + 有界 channel），
+  不再在 provider 内 `collect` 整表；`refresh_lookup_chain` 的事实基表 `now` 改走该 provider。
+- 10M/1% 复测：增量 7.5–8.7s、峰值 ~10.9GB（改造前 7.8–9.0s、11.0GB），**没有实质改善**。
+- 原因：真正占内存/时间的是 chain 的 **before 全量读**、事实变更时的 `every_base_row`
+  （affected = 全部 base keys）、以及 10M 行 replay 的 `collect()`；只把 `now` 流式化不够。
+- 结论：P0.2 的流式基础设施保留；下一步必须做 **P1（事实 delta 驱动的链）**，同时把
+  before/affected/输出改为 delta 范围，再接流式 sink。P0.2 的内存验收由 P1 一并完成。
+
 ### P1：事实 delta 驱动的多级 join
 
 - 广播维表；只读事实 delta；链式 replay 仅处理受影响行；join MV 写 delete+insert。
