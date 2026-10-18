@@ -7,6 +7,7 @@
 //! `GROUPING SETS`/`ROLLUP`/`CUBE` sets.
 
 use super::*;
+use arrow_array::Array;
 
 /// A `SUM`/`COUNT` view over a source table.
 #[derive(Debug, Clone)]
@@ -1432,7 +1433,12 @@ fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
 /// SQL for one `SUM`/`COUNT` refresh window: a `delete` part (the previous
 /// accumulator of changed groups) unioned with an `insert` part (the new
 /// accumulator). Keys already written for this epoch are skipped.
-fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String {
+fn sum_count_refresh_sql(
+    view: &SumCountView,
+    keyed: bool,
+    epoch: i64,
+    changelog: bool,
+) -> String {
     let keys = quoted_list(&view.group_keys);
     let aggregate_filter = view
         .aggregate_filter
@@ -1512,7 +1518,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                          where exists (select 1 from affected a where {active_match})), \
              inserts as (select {keys}, sum_v, count_v, {nonnull_c}{avg_col}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                          from group_now p \
-                         where count_v <> 0 and ({having}) \
+                         where count_v > 0 and ({having}) \
                            and not exists (select 1 from already a where {already_match})) \
              select * from deletes union all select * from inserts \
              order by {order}, \"rowKinds\"",
@@ -1521,6 +1527,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                 &view.group_keys,
                 keyed,
                 view.filter.as_deref(),
+                changelog,
             ),
             nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
             order = quoted_list(&refresh_order_columns(&view.mv, &view.group_keys)),
@@ -1539,7 +1546,31 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
     );
     let plain_where = filter_where(view.filter.as_deref());
     let pk_match = key_join_condition("o", "p", &view.source.primary_keys);
-    let delta_part = if keyed {
+    let coalesced_keys = view
+        .group_keys
+        .iter()
+        .map(|key| format!("coalesce(n.{q}, o.{q}) as {q}", q = quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let agg_match = key_join_condition_null_safe("n", "o", &view.group_keys);
+    let delta_part = if changelog {
+        // The source is an internal view: its delta files carry the old
+        // (delete) and new (insert) versions, so the old groups come from the
+        // delta itself and no before-state read is needed.
+        let kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
+        format!(
+            "delta_ins as (select * from delta where {kinds} = 'insert'{ins_filter}), \
+             delta_del as (select * from delta where {kinds} = 'delete'{del_filter}), \
+             new_agg as (select {keys}, {sum_expr} as dsum, count(1) as dcount, \
+                                {nonnull_expr} as dnonnull \
+                         from delta_ins group by {keys}), \
+             old_agg as (select {keys}, {sum_expr} as osum, count(1) as ocount, \
+                                {nonnull_expr} as ononnull \
+                         from delta_del group by {keys})",
+            ins_filter = filter_clause(view.filter.as_deref()),
+            del_filter = filter_clause(view.filter.as_deref()),
+        )
+    } else if keyed {
         // The delta is merged per primary key, so only the surviving version
         // contributes; the previous value is retracted through the as-of read.
         format!(
@@ -1563,7 +1594,22 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                      from delta{plain_where} group by {keys})"
         )
     };
-    let d2 = if keyed {
+    let d2 = if changelog {
+        format!(
+            "raw as (select {coalesced_keys}, n.dsum as new_sum, o.osum as old_sum, \
+                            n.dcount as new_count, o.ocount as old_count, \
+                            n.dnonnull as new_nonnull, o.ononnull as old_nonnull \
+                     from new_agg n full join old_agg o on {agg_match}), \
+             d2 as (select {keys}, \
+                           coalesce(new_sum - old_sum, new_sum, -old_sum) as dsum, \
+                           coalesce(new_count - old_count, new_count, -old_count) as dcount, \
+                           coalesce(new_nonnull - old_nonnull, new_nonnull, -old_nonnull) as dnonnull \
+                    from raw \
+                    where coalesce(new_sum - old_sum, new_sum, -old_sum) <> 0 \
+                       or coalesce(new_count - old_count, new_count, -old_count) <> 0 \
+                       or coalesce(new_nonnull - old_nonnull, new_nonnull, -old_nonnull) <> 0)"
+        )
+    } else if keyed {
         format!(
             "old_changed as (select o.* from old o where {old_filter} \
                             and exists (select 1 from delta_pks p where {pk_match})), \
@@ -1581,14 +1627,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
                     from raw \
                     where coalesce(new_sum - old_sum, new_sum, -old_sum) <> 0 \
                        or coalesce(new_count - old_count, new_count, -old_count) <> 0 \
-                       or coalesce(new_nonnull - old_nonnull, new_nonnull, -old_nonnull) <> 0)",
-            coalesced_keys = view
-                .group_keys
-                .iter()
-                .map(|key| format!("coalesce(n.{q}, o.{q}) as {q}", q = quote_ident(key)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            agg_match = key_join_condition_null_safe("n", "o", &view.group_keys),
+                       or coalesce(new_nonnull - old_nonnull, new_nonnull, -old_nonnull) <> 0)"
         )
     } else {
         format!(
@@ -1651,7 +1690,7 @@ fn sum_count_refresh_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
          inserts as (select {keys}, sum_v, count_v, {nonnull_c}{avg_col}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from new_values \
-                     where count_v <> 0 \
+                     where count_v > 0 \
                        and not exists (select 1 from already a where {already_match})) \
          select * from deletes union all select * from inserts \
          order by {order}, \"rowKinds\"",
@@ -2054,6 +2093,24 @@ fn grouping_sets_insert(
     )
 }
 
+/// Whether any batch carries a CDC delete marker.
+fn has_delete_rows(batches: &[RecordBatch]) -> bool {
+    batches.iter().any(|batch| {
+        batch
+            .schema()
+            .index_of(IVM_ROW_KINDS_COLUMN)
+            .ok()
+            .and_then(|index| {
+                batch
+                    .column(index)
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+            })
+            .map(|kinds| (0..kinds.len()).any(|row| kinds.value(row) == "delete"))
+            .unwrap_or(false)
+    })
+}
+
 /// The refresh SQL of a grouping-sets view: the affected group tuples drive
 /// every set, which recomputes and rewrites its rows.
 fn grouping_sets_refresh_sql(view: &GroupingSetsView, epoch: i64) -> String {
@@ -2063,6 +2120,7 @@ fn grouping_sets_refresh_sql(view: &GroupingSetsView, epoch: i64) -> String {
         &view.group_keys,
         keyed,
         view.filter.as_deref(),
+        false,
     );
     let src_where = format!(
         "{}{}",
@@ -2305,9 +2363,47 @@ impl IvmRuntime {
         }
 
         let context = SessionContext::new();
+        // An internal view source materializes the old (delete) and new
+        // (insert) payloads in its delta files.  Read that delta raw and use
+        // it only when it really is a changelog: a rebuild writes an
+        // insert-only snapshot (no delete rows), which must go through the
+        // before-state path or the old groups would be added again.
+        let view_source = view.having.is_none()
+            && view.source.cdc_column.is_none()
+            && view
+                .source
+                .schema
+                .field_with_name(IVM_ROW_KINDS_COLUMN)
+                .is_ok();
+        let (changelog, delta_input) = if view_source {
+            let raw = view
+                .source
+                .read_partition_files_unmerged_projected(
+                    window.added_files.clone(),
+                    Some(&view.source.schema),
+                )
+                .await?;
+            if has_delete_rows(&raw) {
+                (true, raw)
+            } else {
+                (
+                    false,
+                    view.source
+                        .read_partition_files(window.added_files.clone())
+                        .await?,
+                )
+            }
+        } else {
+            (
+                false,
+                view.source
+                    .read_partition_files(window.added_files.clone())
+                    .await?,
+            )
+        };
         let delta_batches = project_group_keys(
             &context,
-            view.source.read_partition_files(window.added_files).await?,
+            delta_input,
             &view.source.schema,
             &view.group_keys,
             &view.group_exprs,
@@ -2324,7 +2420,7 @@ impl IvmRuntime {
             delta_batches.clone(),
             &view.source.schema,
         )?;
-        let old_batches = if keyed {
+        let old_batches = if keyed && !changelog {
             let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
             let batches = project_group_keys(
                 &context,
@@ -2351,6 +2447,7 @@ impl IvmRuntime {
                 &view.group_keys,
                 keyed,
                 view.filter.as_deref(),
+                changelog,
             ))
             .await?
             .collect()
@@ -2363,7 +2460,7 @@ impl IvmRuntime {
         };
 
         register_table(&context, "delta", delta_batches, &view.source.schema)?;
-        if keyed {
+        if keyed && !changelog {
             register_table(&context, "old", old_batches, &view.source.schema)?;
         }
         if view.having.is_some() {
@@ -2388,7 +2485,7 @@ impl IvmRuntime {
             None => view.mv.read_current_filtered(&self.client, filters).await?,
         };
         register_table(&context, "mv", mv_batches, &view.mv.schema)?;
-        let sql = sum_count_refresh_sql(view, keyed, epoch);
+        let sql = sum_count_refresh_sql(view, keyed, epoch, changelog);
         commit_ids.extend(
             view.mv
                 .append_batches(&self.client, context.sql(&sql).await?.collect().await?)
@@ -2849,6 +2946,7 @@ impl IvmRuntime {
                 view.group_keys,
                 keyed,
                 view.filter,
+                false,
             ))
             .await?
             .collect()

@@ -209,6 +209,18 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - MIN/MAX/DISTINCT：value-count 状态或代价回退；区分可合并/不可合并。
 - 验收：10M/1% 可合并聚合增量 ≥ 2× 全量；不可合并允许回退但不慢于全量 1.0×。
 
+#### P2a 结果：聚合直接消费 join MV 的 changelog delta（2026-10）
+
+- 内部 MV 源且 delta 中确实含 delete 行时：读**未合并**的 delta，`new_agg` 来自 insert、
+  `old_agg` 来自 delete，跳过 before 状态读取；多轮窗口内的版本对会自然抵消。
+- rebuild 写的是 insert-only 快照（没有 delete 行），自动回退到 before 路径，避免重复累加
+  （`view_chain` 自愈测试覆盖）。
+- 10M/1%：聚合 2.5–3.4s → **0.10s**；总增量 4.4–6.2s → **2.0–2.1s**；全量 6.3s；约 3×。
+- 10M/5%：聚合 9.7s → **0.15s**；总增量 14.6s → **5.3s**；全量 6.8s。
+- 峰值 RSS 6.6–6.8GB。
+- 剩余：bootstrap/rebuild 仍走 materialized 路径（5.8–7.4s / 6–9s），流式 sink 待补；
+  维表更新/mixed 变更仍走通用路径（低频，下一步按代价回退）。
+
 ### P3：维表更新与代价模型
 
 - 估算 fanout/受影响事实行数；默认全量或全表 probe 回退；实测值得时再做 FK 状态表/索引。
