@@ -4300,6 +4300,42 @@ bench 扩展到多源算子形状，并在过程中修掉一个真实的性能 b
 - **CI smoke**：新增 `.github/workflows/ivm-bench.yml`（手动 `workflow_dispatch` + 每周定时），
   在 rust-ci 同款 PG/RustFS 服务上跑小规模矩阵并上传 CSV，只报告、不做性能阈值阻断。
 
+### 10.179 性能优化 P1a：row 视图按 affected keys 过滤读取
+
+B3 的读放大结论指出：keyed row 刷新每轮全量读源表与 MV（≈2× 表）。这一版把 row 的读
+降到 O(changes)：
+
+- **源侧**：窗口的 delta 经 `read_partition_files` 读取时已按主键 merge-on-read，
+  因此它就是受影响键的**当前行**。无标量子查询变化时直接用 `filter_deletes(delta)` 作为
+  `source_now`，不再全量读源；`affected` 仍从**未过滤 tombstone** 的 delta 取键，保证同窗口
+  内的删除也能撤回 MV 行。标量子查询源变化仍保留全量源读取（任一行都可能翻转）。
+- **状态侧**：先收集 affected 键（`select distinct pks`），用
+  `runtime::key_filters` 生成主键 `IN` 谓词（可空列附 `IS NULL`），再
+  `mv.read_current_filtered` 只读这些键的当前状态。过滤上限
+  `MAX_KEY_FILTERS = 4096`：键集为空或更大时退回全量读（超大字面量列表的规划成本高于收益；
+  多列主键的逐列 `IN` 是安全超集）。过滤列全是主键，对 merge-on-read 与行组裁剪都安全。
+- **兼容性**：`key_filters` 由 `runtime.rs` 私有改为 `pub(crate)`，聚合刷新路径不变。
+- **回归**：新增 `tests/metrics.rs::row_refresh_reads_only_the_affected_keys`——200 行表上
+  同一窗口一次更新 + 一次删除，断言扫描 ≤ 8 行且写出替换 + 撤回；全量 579 项通过。
+
+bench（release，本地 RustFS，Parquet，4 bucket，1e5/1e6 行，0.01%/0.1%/1%，2 预热 + 8 轮）：
+
+| 行数 | 变更 | 优化前 incr p50 | 优化后 incr p50 | 优化后扫描行 | speedup |
+|---|---|---|---|---|---|
+| 1e5 | 0.01% | 314ms | 222ms | 16 | 4.0× → 5.5× |
+| 1e5 | 1% | 350ms | 254ms | 1651 | 5.9× → 4.8× |
+| 1e6 | 0.01% | 1260ms | 645ms | 165 | 4.7× → 7.4× |
+| 1e6 | 0.1% | 1237ms | 674ms | 1662 | 4.1× → 7.2× |
+| 1e6 | 1% | 1596ms | 1055ms | 1,018,980¹ | 3.4× → 6.4× |
+
+¹ 10k 键超过过滤阈值，MV 退回全量读；源侧仍只读 delta，因此仍快于优化前。1M/10% 未重测。
+CSV 已更新 `bench-results/row_*`，`BENCH.md` 的 row 行与“读放大”结论同步。
+
+**P1 剩余形状（记录）**：top_k 按受影响分组过滤源/MV（分组键非排序键，主要省计算而非
+IO）；lookup 左/右源与 MV 按主键过滤（右源按变更 join key 过滤；computed join key 退回全量）；
+multi_join 各源按主键/join key 过滤（inner-only，可安全按 join key 裁剪）；pair left/full
+join 仍需 before-match 扩展后才能过滤；chain 继承 lookup/row 的改进后再按阶段键过滤。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

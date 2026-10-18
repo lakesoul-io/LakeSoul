@@ -562,3 +562,94 @@ fn lookup_refresh_rewrites_only_the_affected_rows() {
         });
     });
 }
+
+/// A keyed row refresh reads the changed keys only: the delta replaces the
+/// full source read, and the state read is filtered to the same keys.
+#[test_log::test]
+fn row_refresh_reads_only_the_affected_keys() {
+    let state = Arc::new(Metrics::default());
+    let recorder = TestRecorder {
+        metrics: state.clone(),
+    };
+    metrics::with_local_recorder(&recorder, || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let runtime = IvmRuntime::from_env().await.unwrap();
+            runtime.init_schema().await.unwrap();
+            let dir = tempdir().unwrap();
+            let suffix = uuid::Uuid::new_v4().simple();
+            let source = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_row_io_src_{suffix}"),
+                        format!("file://{}", dir.path().join("src").display()),
+                        schema(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_cdc_column(CHANGE_COLUMN)
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let mv = runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_row_io_mv_{suffix}"),
+                        format!("file://{}", dir.path().join("mv").display()),
+                        row_mv_schema_for(
+                            &schema(),
+                            &["k".to_string(), "g".to_string(), "v".to_string()],
+                        )
+                        .unwrap(),
+                    )
+                    .with_primary_keys(vec!["k".to_string()])
+                    .with_file_format(PhysicalFormat::Vortex),
+                )
+                .await
+                .unwrap();
+            let executor = IvmSqlExecutor::new(runtime);
+            let incremental = format!(
+                "INSERT INTO {} SELECT k, g, v FROM {} WHERE v > 5",
+                mv.table_name, source.table_name
+            );
+            let rows = (1..=200)
+                .map(|key| (key, "g0", key * 10, "insert"))
+                .collect::<Vec<_>>();
+            source
+                .append_batch(executor.runtime().client(), batch(&rows))
+                .await
+                .unwrap();
+            executor.execute(&incremental).await.unwrap();
+
+            let scanned_before =
+                state.counter("lakesoul_ivm_refresh_rows_scanned{kind=row}");
+            let written_before = state.counter("lakesoul_ivm_mv_rows_written{kind=row}");
+            // One update and one delete in the same window: the refresh reads
+            // the state of exactly those keys instead of the whole table.
+            source
+                .append_batch(
+                    executor.runtime().client(),
+                    batch(&[(7, "g0", 777, "insert"), (8, "g0", 0, "delete")]),
+                )
+                .await
+                .unwrap();
+            let execution = executor.execute(&incremental).await.unwrap();
+            assert_eq!(execution.action.label(), "incremental");
+            let scanned = state.counter("lakesoul_ivm_refresh_rows_scanned{kind=row}")
+                - scanned_before;
+            let written =
+                state.counter("lakesoul_ivm_mv_rows_written{kind=row}") - written_before;
+            assert!(
+                written >= 2,
+                "expected one replacement and one retraction, wrote {written}"
+            );
+            assert!(
+                scanned <= 8,
+                "a one-row update plus one delete scanned {scanned} rows"
+            );
+        });
+    });
+}

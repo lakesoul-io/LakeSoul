@@ -454,19 +454,6 @@ impl IvmRuntime {
         let predicate = row_filter_predicate(&context, view).await?;
 
         if keyed {
-            let source_now = filter_deletes(
-                dataframe(
-                    &context,
-                    view.source.read_current(&self.client).await?,
-                    &view.source.schema,
-                )?,
-                change_column(&view.source),
-            )?;
-            let mv = dataframe(
-                &context,
-                view.mv.read_current(&self.client).await?,
-                &view.mv.schema,
-            )?;
             let key_names = view
                 .source
                 .primary_keys
@@ -479,24 +466,69 @@ impl IvmRuntime {
                 .iter()
                 .map(|column| col(column.as_str()))
                 .collect::<Vec<_>>();
-            let affected = if scalar_changed {
+            // The delta is the merged current state of the changed keys, so
+            // only a scalar-subquery change (which can flip any row) needs
+            // the full source read.  The view only needs the affected keys:
+            // reading it with a primary-key filter keeps a refresh's reads
+            // proportional to the change when the key set is small enough
+            // for an `IN` list.
+            let (source_now, mv, affected) = if scalar_changed {
+                let source_now = filter_deletes(
+                    dataframe(
+                        &context,
+                        view.source.read_current(&self.client).await?,
+                        &view.source.schema,
+                    )?,
+                    change_column(&view.source),
+                )?;
+                let mv = dataframe(
+                    &context,
+                    view.mv.read_current(&self.client).await?,
+                    &view.mv.schema,
+                )?;
                 // A scalar subquery change re-evaluates every key either the
                 // current source or the view knows.
-                source_now
+                let affected = source_now
                     .clone()
                     .select(key_exprs.clone())?
                     .distinct()?
-                    .union(mv.clone().select(key_exprs.clone())?.distinct()?)?
+                    .union(mv.clone().select(key_exprs.clone())?.distinct()?)?;
+                (source_now, mv, affected)
             } else {
-                delta.select(key_exprs.clone())?.distinct()?
+                // The changed keys include delete tombstones: their state row
+                // must be retracted even though no new row survives.
+                let affected = delta.clone().select(key_exprs.clone())?.distinct()?;
+                let source_now = filter_deletes(delta, change_column(&view.source))?;
+                let key_batches = affected.clone().collect().await?;
+                let key_count = key_batches
+                    .iter()
+                    .map(|batch| batch.num_rows())
+                    .sum::<usize>();
+                let mv_batches =
+                    if key_count > 0 && key_count <= crate::runtime::MAX_KEY_FILTERS {
+                        let filters = crate::runtime::key_filters(
+                            &view.source.primary_keys,
+                            &key_batches,
+                        )?;
+                        view.mv.read_current_filtered(&self.client, filters).await?
+                    } else {
+                        view.mv.read_current(&self.client).await?
+                    };
+                let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
+                (source_now, mv, affected)
             };
-            let mut passing = source_now.join(
-                affected.clone(),
-                JoinType::LeftSemi,
-                &key_names,
-                &key_names,
-                None,
-            )?;
+            let mut passing = if scalar_changed {
+                source_now.join(
+                    affected.clone(),
+                    JoinType::LeftSemi,
+                    &key_names,
+                    &key_names,
+                    None,
+                )?
+            } else {
+                // Every delta row belongs to an affected key.
+                source_now
+            };
             if let Some(predicate) = predicate {
                 passing = passing.filter(predicate)?;
             }
