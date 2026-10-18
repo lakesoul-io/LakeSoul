@@ -34,6 +34,10 @@ use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableIn
 
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
+/// The largest state write (in rows) a refresh coalesces before appending.
+/// State batches above this size are split so one append stays bounded in
+/// memory; the writer still emits one file per hash bucket per append.
+pub(crate) const MAX_STATE_APPEND_ROWS: usize = 1_048_576;
 
 /// The row kind column of materialized view outputs (`insert` / `delete`).
 pub const IVM_ROW_KINDS_COLUMN: &str = "rowKinds";
@@ -458,6 +462,45 @@ impl IvmTable {
             .await?;
         crate::observability::add_rows_written(written_rows);
         crate::observability::add_bytes_written(written_bytes);
+        Ok(commit_ids)
+    }
+
+    /// Append refresh output as few state files as possible.
+    ///
+    /// A SQL refresh can emit many small record batches (the executor's
+    /// batch size), and every [`Self::append_batch`] call becomes its own
+    /// file per hash bucket.  Concatenating up to [`MAX_STATE_APPEND_ROWS`]
+    /// rows per append keeps the row order (the refresh already sorted the
+    /// output) while cutting the state file count by an order of magnitude
+    /// for initial and rebuild refreshes.
+    pub async fn append_batches(
+        &self,
+        client: &MetaDataClient,
+        batches: Vec<RecordBatch>,
+    ) -> Result<Vec<String>> {
+        let mut commit_ids = Vec::new();
+        let mut pending: Vec<RecordBatch> = Vec::new();
+        let mut pending_rows = 0usize;
+        for batch in batches {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            if pending_rows + batch.num_rows() > MAX_STATE_APPEND_ROWS && pending_rows > 0
+            {
+                let schema = pending[0].schema();
+                let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
+                commit_ids.extend(self.append_batch(client, coalesced).await?);
+                pending.clear();
+                pending_rows = 0;
+            }
+            pending_rows += batch.num_rows();
+            pending.push(batch);
+        }
+        if pending_rows > 0 {
+            let schema = pending[0].schema();
+            let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
+            commit_ids.extend(self.append_batch(client, coalesced).await?);
+        }
         Ok(commit_ids)
     }
 

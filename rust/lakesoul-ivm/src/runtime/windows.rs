@@ -2006,16 +2006,18 @@ impl IvmRuntime {
         register_table(&context, "delta", delta_batches, &view.source.schema)?;
         register_table(&context, "mv", mv_batches, &view.mv.schema)?;
         register_table(&context, "src", src_batches, &view.source.schema)?;
-        for batch in context
-            .sql(&window_refresh_sql(view, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&window_refresh_sql(view, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2083,16 +2085,18 @@ impl IvmRuntime {
             view.source.read_current(&self.client).await?,
             &view.source.schema,
         )?;
-        for batch in context
-            .sql(&multi_window_refresh_sql(view, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&multi_window_refresh_sql(view, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2142,16 +2146,18 @@ impl IvmRuntime {
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
-        for batch in context
-            .sql(&multi_window_rebuild_sql(view, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&multi_window_rebuild_sql(view, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2205,16 +2211,18 @@ impl IvmRuntime {
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
-        for batch in context
-            .sql(&window_rebuild_sql(view, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&window_rebuild_sql(view, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2271,16 +2279,18 @@ impl IvmRuntime {
             view.mv.read_current(&self.client).await?,
             &view.mv.schema,
         )?;
-        for batch in context
-            .sql(&top_k_refresh_sql(view, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&top_k_refresh_sql(view, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2330,16 +2340,18 @@ impl IvmRuntime {
 
         let context = SessionContext::new();
         register_table(&context, "src", baseline.batches, &view.source.schema)?;
-        for batch in context
-            .sql(&top_k_rebuild_sql(view, epoch))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        commit_ids.extend(
+            view.mv
+                .append_batches(
+                    &self.client,
+                    context
+                        .sql(&top_k_rebuild_sql(view, epoch))
+                        .await?
+                        .collect()
+                        .await?,
+                )
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata

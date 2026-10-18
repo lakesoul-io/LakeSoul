@@ -830,11 +830,11 @@ impl IvmRuntime {
                     .sort_by(sort_exprs)?,
                 None => inserts,
             };
-            for batch in rows.collect().await? {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+            commit_ids.extend(
+                view.mv
+                    .append_batches(&self.client, rows.collect().await?)
+                    .await?,
+            );
         } else {
             let mut before = Vec::with_capacity(view.sources.len());
             let mut delta = Vec::with_capacity(view.sources.len());
@@ -1016,11 +1016,11 @@ impl IvmRuntime {
             } else {
                 joined.with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             };
-            for batch in joined.collect().await? {
-                if batch.num_rows() > 0 {
-                    commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-                }
-            }
+            commit_ids.extend(
+                view.mv
+                    .append_batches(&self.client, joined.collect().await?)
+                    .await?,
+            );
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;

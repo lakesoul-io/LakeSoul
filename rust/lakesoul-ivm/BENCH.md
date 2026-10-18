@@ -201,6 +201,8 @@ while at 1e5 the latency is flat within run noise; its file count is unchanged,
 so the fixed floor still dominates.  The other lookup cells (¹) and the
 remaining shapes still read their full sources and are from the B3 run.
 
+Baseline tables (B3; `row`/`lookup` updated through P1b; **pre-R1**):
+
 1e5 fact rows:
 
 | shape | 0.01% changes | 1% changes |
@@ -227,6 +229,28 @@ remaining shapes still read their full sources and are from the B3 run.
 | partitioned | not measured | — | not measured | — |
 | skew | 805 -> 1689 (2.1x) | not measured | 1952 -> 1762 (0.9x) | not measured |
 
+**R1 state-write coalescing (1M/0.01%, same environment)** — refresh output is
+appended in up-to-1M-row chunks instead of one file per executor batch.  The
+full path uses the same write helper, so it also got much faster:
+
+| shape | incr before | incr after | full before | full after | speedup after | incr files before -> after |
+|---|---|---|---|---|---|---|
+| row | 667 | **235** | 4770 | 879 | 3.7x | 518 -> 30 |
+| sum_count | 786 | 680 | 1688 | **650** | 0.96x | 668 -> 544 |
+| lookup | 1514 | 1017 | 5449 | 1098 | 1.08x | 1334 -> 826 |
+| multi_join | 2768 | 2143 | 6365 | 2442 | 1.14x | 2100 -> 1592 |
+| top_k | 913 | 743 | 2353 | **691** | 0.93x | 672 -> 548 |
+| chain | 3219 | 1589 | 11256 | 1905 | 1.20x | 2634 -> 1100 |
+
+The state tables now stay at a few files per append (the 50k-row layout test
+asserts <= 8 for an initial refresh or overwrite), but the bench source seed
+still writes 8192-row batches, so joins and chain still open 800-1600 files.
+After R1 the two paths are both file-bound: the incremental win survives where
+the MV is large and the source read is avoided (`row`, 3.7x), is small for the
+join family (1.08-1.20x), and **disappears for small-MV aggregates/top-k**
+(0.93-0.96x), where a full overwrite is now cheaper.  This motivates the
+cost-based fallback (ROADMAP §G, R2) before more read-path work.
+
 `partitioned` at 1M and `lookup` at 10% could not be measured: the local
 RustFS returned intermittent 500 / connection-reset errors while serving the
 1M-row partitions under large deltas (a service limitation, not a view
@@ -237,13 +261,14 @@ against 100k), with the latency floor masking it at this size.
 
 ## What the numbers say
 
-* **Reads are the dominant cost.**  The incremental refresh of `top_k`,
-  `multi_join` and `chain` reads the full current sources and the whole
-  materialized view every round regardless of the change size (multi_join
-  ~4x the table, chain ~5x; `incr rows scanned` in the CSVs).  `lookup` is now
-  key-filtered too (PLAN §10.180): it scans a few hundred rows instead of
-  ~2.5x the table, but still opens every file, so its latency gain is small
-  until the fixed file/metadata floor is addressed.  `row` now reads the delta plus the affected keys of its state
+* **Reads and file counts are the dominant cost.**  The incremental refresh
+  of `top_k`, `multi_join` and `chain` reads the full current sources every
+  round regardless of the change size (multi_join ~4x the table, chain ~5x;
+  `incr rows scanned` in the CSVs).  `lookup` is key-filtered (PLAN §10.180)
+  but still opens every source file, so its latency gain is small until the
+  file floor is addressed.  After R1 the full overwrite is fast too (a 1M-row
+  MV write is now a handful of files), which is why the relative speedups in
+  the R1 table shrink even though absolute incremental latency improved.  `row` now reads the delta plus the affected keys of its state
   (`read_current_filtered` with a primary-key `IN` list, up to 4096 keys;
   PLAN §10.179), so it scans 16 rows instead of ~1.9M at 1M/0.01% and its
   speedup roughly doubles.  The speedups therefore come from writing far fewer
