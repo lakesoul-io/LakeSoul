@@ -739,21 +739,44 @@ impl IvmRuntime {
             } else {
                 dataframe(&context, Vec::new(), &projection)?
             };
-            let now = apply_side_filter(
-                &context,
-                filter_deletes(
-                    dataframe(
-                        &context,
-                        table
-                            .read_current_projected(&self.client, Some(&projection))
-                            .await?,
-                        &projection,
+            // The base table is the large side (the fact table): stream it
+            // through the DataFusion provider instead of materializing it in
+            // the driver.  The dimensions are small (~10k rows) and stay
+            // materialized.
+            let now = if index == 0 {
+                let provider =
+                    crate::IvmTableProvider::raw(table.clone(), self.client.clone());
+                let frame = context.read_table(Arc::new(provider))?;
+                let frame = filter_deletes(frame, change_column(table))?;
+                let frame = frame.select(
+                    columns
+                        .iter()
+                        .map(|column| col(column.as_str()))
+                        .collect::<Vec<_>>(),
+                )?;
+                apply_side_filter(
+                    &context,
+                    filter_deletes(frame, change_column(table))?,
+                    &projection,
+                    filter.as_deref(),
+                )?
+            } else {
+                apply_side_filter(
+                    &context,
+                    filter_deletes(
+                        dataframe(
+                            &context,
+                            table
+                                .read_current_projected(&self.client, Some(&projection))
+                                .await?,
+                            &projection,
+                        )?,
+                        change_column(table),
                     )?,
-                    change_column(table),
-                )?,
-                &projection,
-                filter.as_deref(),
-            )?;
+                    &projection,
+                    filter.as_deref(),
+                )?
+            };
             frames.push((delta, before, now));
         }
         let mv = dataframe(
