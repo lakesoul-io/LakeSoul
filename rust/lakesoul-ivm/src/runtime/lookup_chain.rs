@@ -690,6 +690,14 @@ impl IvmRuntime {
         if !changed.iter().any(|changed| *changed) {
             return Ok(None);
         }
+        // A changed step source (a dimension) can fan out to an unbounded
+        // number of base rows: the partial affected-key replay is neither
+        // bounded nor, for large fanout, correct in the current shape.  The
+        // dimensions change rarely, so rebuild the chain from the current
+        // sources instead of taking the incremental path.
+        if changed[1..].iter().any(|changed| *changed) {
+            return self.rebuild_lookup_chain(view).await.map(Some);
+        }
         let mut identity = Vec::new();
         for window in &windows {
             identity.extend(window.identity.iter().cloned());

@@ -2093,6 +2093,11 @@ fn grouping_sets_insert(
     )
 }
 
+/// An insert-only delta above this many rows is treated as a rebuilt
+/// upstream snapshot: recompute the aggregate instead of reading the before
+/// state for every key.
+const SNAPSHOT_REBUILD_ROWS: usize = 1_000_000;
+
 /// Whether any batch carries a CDC delete marker.
 fn has_delete_rows(batches: &[RecordBatch]) -> bool {
     batches.iter().any(|batch| {
@@ -2315,6 +2320,36 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
+        // An internal view source materializes the old (delete) and new
+        // (insert) payloads in its delta files.  A rebuild writes an
+        // insert-only snapshot instead; when that snapshot is large, the
+        // before-state path would build a filter for every source key, so
+        // rebuild the aggregate as well.
+        let view_source = view.having.is_none()
+            && view.source.cdc_column.is_none()
+            && view
+                .source
+                .schema
+                .field_with_name(IVM_ROW_KINDS_COLUMN)
+                .is_ok();
+        let raw_delta = if view_source {
+            Some(
+                view.source
+                    .read_partition_files_unmerged_projected(
+                        window.added_files.clone(),
+                        Some(&view.source.schema),
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(raw) = &raw_delta {
+            let rows = raw.iter().map(|batch| batch.num_rows()).sum::<usize>();
+            if rows > SNAPSHOT_REBUILD_ROWS && !has_delete_rows(raw) {
+                return self.rebuild_sum_count(view).await.map(Some);
+            }
+        }
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -2363,43 +2398,17 @@ impl IvmRuntime {
         }
 
         let context = SessionContext::new();
-        // An internal view source materializes the old (delete) and new
-        // (insert) payloads in its delta files.  Read that delta raw and use
-        // it only when it really is a changelog: a rebuild writes an
-        // insert-only snapshot (no delete rows), which must go through the
-        // before-state path or the old groups would be added again.
-        let view_source = view.having.is_none()
-            && view.source.cdc_column.is_none()
-            && view
-                .source
-                .schema
-                .field_with_name(IVM_ROW_KINDS_COLUMN)
-                .is_ok();
-        let (changelog, delta_input) = if view_source {
-            let raw = view
-                .source
-                .read_partition_files_unmerged_projected(
-                    window.added_files.clone(),
-                    Some(&view.source.schema),
-                )
-                .await?;
-            if has_delete_rows(&raw) {
-                (true, raw)
-            } else {
-                (
-                    false,
-                    view.source
-                        .read_partition_files(window.added_files.clone())
-                        .await?,
-                )
-            }
-        } else {
-            (
+        // Use the raw delta only when it really is a changelog: a small
+        // insert-only snapshot goes through the before-state path so the old
+        // groups are subtracted exactly once.
+        let (changelog, delta_input) = match raw_delta {
+            Some(raw) if has_delete_rows(&raw) => (true, raw),
+            _ => (
                 false,
                 view.source
                     .read_partition_files(window.added_files.clone())
                     .await?,
-            )
+            ),
         };
         let delta_batches = project_group_keys(
             &context,
