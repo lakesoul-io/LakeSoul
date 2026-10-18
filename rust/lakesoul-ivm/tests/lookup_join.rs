@@ -386,3 +386,61 @@ async fn lookup_join_refreshes_both_sides() {
 
     fixture.cleanup().await;
 }
+
+/// A window that changes both sides, including a left and a right delete,
+/// retracts every affected row.
+#[test_log::test(tokio::test)]
+async fn lookup_join_retracts_both_sides_in_one_window() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+            (3, Some("c"), "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                ("a", 10, "insert"),
+                ("b", 20, "insert"),
+                ("c", 30, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_lookup_join(view).await.unwrap().unwrap();
+
+    // One window: a left delete, a right delete and a right update.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(2, Some("b"), "L2", "delete")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[("a", 10, "delete"), ("c", 31, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_lookup_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        lookup_rows(runtime, output).await,
+        full_lookup_rows(runtime, left, right).await
+    );
+
+    fixture.cleanup().await;
+}

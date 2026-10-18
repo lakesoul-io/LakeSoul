@@ -2522,6 +2522,22 @@ fn with_computed_keys(
     Ok(frame)
 }
 
+/// OR together groups of filters whose members are ANDed (the shape
+/// `key_filters` produces for a composite key).  An unused group is skipped.
+fn any_of_filters(groups: Vec<Vec<Expr>>) -> Option<Expr> {
+    let mut combined: Option<Expr> = None;
+    for group in groups {
+        let Some(group) = group.into_iter().reduce(|left, right| left.and(right)) else {
+            continue;
+        };
+        combined = Some(match combined {
+            Some(filter) => filter.or(group),
+            None => group,
+        });
+    }
+    combined
+}
+
 /// Project one side's key columns under its own key names: a computed key is
 /// selected as its expression, a plain key as its column.
 fn key_columns(
@@ -3510,36 +3526,33 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
-        let mut left_now = filter_deletes(
-            dataframe(
+        let left_changed = !left_window.added_files.is_empty();
+        let right_changed = !right_window.added_files.is_empty();
+        // The window deltas are the merged current state of the changed keys
+        // and are read once: they seed the affected keys and, when the other
+        // side did not change, replace that side's source read entirely.
+        let delta_left = if left_changed {
+            Some(dataframe(
                 &context,
-                view.left.read_current(&self.client).await?,
+                view.left
+                    .read_partition_files(left_window.added_files.clone())
+                    .await?,
                 &view.left.schema,
-            )?,
-            change_column(&view.left),
-        )?;
-        if let Some(filter) = view.left_filter.as_deref() {
-            left_now =
-                left_now.filter(parse_filter(&context, &view.left.schema, filter)?)?;
-        }
-        let right_now = apply_side_filter(
-            &context,
-            filter_deletes(
-                dataframe(
-                    &context,
-                    view.right.read_current(&self.client).await?,
-                    &view.right.schema,
-                )?,
-                change_column(&view.right),
-            )?,
-            &view.right.schema,
-            view.right_filter.as_deref(),
-        )?;
-        let mv = dataframe(
-            &context,
-            view.output.read_current(&self.client).await?,
-            &view.output.schema,
-        )?;
+            )?)
+        } else {
+            None
+        };
+        let delta_right = if right_changed {
+            Some(dataframe(
+                &context,
+                view.right
+                    .read_partition_files(right_window.added_files.clone())
+                    .await?,
+                &view.right.schema,
+            )?)
+        } else {
+            None
+        };
 
         let key_names = view
             .left
@@ -3559,59 +3572,206 @@ impl IvmRuntime {
             .map(String::as_str)
             .collect::<Vec<_>>();
 
+        // The changed right key values, under the left key names: a computed
+        // left key is materialized by the probe below, so the probe joins by
+        // name.  Delete tombstones are kept: a right row that moved leaves
+        // left rows at its old key to retract.
+        let changed_keys = match &delta_right {
+            Some(delta_right) => {
+                let delta_schema = delta_right.schema().clone();
+                Some(
+                    delta_right
+                        .clone()
+                        .select(
+                            view.join_keys
+                                .iter()
+                                .enumerate()
+                                .map(|(index, key)| {
+                                    let expr = match view
+                                        .key_exprs
+                                        .right
+                                        .get(index)
+                                        .filter(|expr| !expr.is_empty())
+                                    {
+                                        Some(rendered) => {
+                                            context.state().create_logical_expr(
+                                                rendered,
+                                                &delta_schema,
+                                            )?
+                                        }
+                                        None => {
+                                            col(view.right_join_keys()[index].as_str())
+                                        }
+                                    };
+                                    Ok(expr.alias(key.as_str()))
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                        )?
+                        .distinct()?,
+                )
+            }
+            None => None,
+        };
+
+        // The current left rows a refresh can touch: the changed left keys
+        // plus the left rows matching a changed right join key.  A computed
+        // left key cannot be pushed into the scan, so a right-side change
+        // falls back to the full read; a left-only change is just the delta.
+        let left_full =
+            right_changed && view.key_exprs.left.iter().any(|expr| !expr.is_empty());
+        let left_now = if !right_changed {
+            delta_left
+                .clone()
+                .ok_or_else(|| report!("lookup refresh without a left change"))?
+        } else if left_full {
+            dataframe(
+                &context,
+                view.left.read_current(&self.client).await?,
+                &view.left.schema,
+            )?
+        } else {
+            let mut groups = Vec::new();
+            let mut too_many = false;
+            if let Some(delta_left) = &delta_left {
+                let batches = delta_left
+                    .clone()
+                    .select(key_exprs.clone())?
+                    .distinct()?
+                    .collect()
+                    .await?;
+                too_many |= batches.iter().map(|batch| batch.num_rows()).sum::<usize>()
+                    > crate::runtime::MAX_KEY_FILTERS;
+                groups.push(crate::runtime::key_filters(
+                    &view.left.primary_keys,
+                    &batches,
+                )?);
+            }
+            if let Some(changed_keys) = &changed_keys {
+                let batches = changed_keys.clone().collect().await?;
+                too_many |= batches.iter().map(|batch| batch.num_rows()).sum::<usize>()
+                    > crate::runtime::MAX_KEY_FILTERS;
+                groups.push(crate::runtime::key_filters(&view.join_keys, &batches)?);
+            }
+            if too_many {
+                dataframe(
+                    &context,
+                    view.left.read_current(&self.client).await?,
+                    &view.left.schema,
+                )?
+            } else {
+                match any_of_filters(groups) {
+                    Some(filter) => dataframe(
+                        &context,
+                        view.left
+                            .read_current_filtered(&self.client, vec![filter])
+                            .await?,
+                        &view.left.schema,
+                    )?,
+                    None => dataframe(&context, Vec::new(), &view.left.schema)?,
+                }
+            }
+        };
+        let mut left_now = filter_deletes(left_now, change_column(&view.left))?;
+        if let Some(filter) = view.left_filter.as_deref() {
+            left_now =
+                left_now.filter(parse_filter(&context, &view.left.schema, filter)?)?;
+        }
+
+        // The current right rows the projection can use: the changed right
+        // keys plus the right rows matching the changed left keys.  A
+        // computed right key likewise forces the full read when the left
+        // changed.
+        let right_full =
+            left_changed && view.key_exprs.right.iter().any(|expr| !expr.is_empty());
+        let right_now = if !left_changed {
+            delta_right
+                .clone()
+                .ok_or_else(|| report!("lookup refresh without a right change"))?
+        } else if right_full {
+            dataframe(
+                &context,
+                view.right.read_current(&self.client).await?,
+                &view.right.schema,
+            )?
+        } else {
+            let mut values: Option<DataFrame> = None;
+            if let Some(delta_right) = &delta_right {
+                values = Some(
+                    delta_right.clone().select(
+                        view.right_join_keys()
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?,
+                );
+            }
+            if let Some(delta_left) = &delta_left {
+                let left_keys = with_computed_keys(
+                    &context,
+                    delta_left.clone(),
+                    &view.key_exprs.left,
+                    &view.join_keys,
+                )?
+                .select(
+                    view.join_keys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, key)| {
+                            col(key.as_str())
+                                .alias(view.right_join_keys()[index].as_str())
+                        })
+                        .collect::<Vec<_>>(),
+                )?;
+                values = Some(match values {
+                    Some(values) => values.union(left_keys)?,
+                    None => left_keys,
+                });
+            }
+            let batches = values
+                .ok_or_else(|| report!("lookup refresh without a change"))?
+                .collect()
+                .await?;
+            if batches.iter().map(|batch| batch.num_rows()).sum::<usize>()
+                > crate::runtime::MAX_KEY_FILTERS
+            {
+                dataframe(
+                    &context,
+                    view.right.read_current(&self.client).await?,
+                    &view.right.schema,
+                )?
+            } else {
+                let filters =
+                    crate::runtime::key_filters(view.right_join_keys(), &batches)?;
+                dataframe(
+                    &context,
+                    view.right
+                        .read_current_filtered(&self.client, filters)
+                        .await?,
+                    &view.right.schema,
+                )?
+            }
+        };
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(right_now, change_column(&view.right))?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
+        )?;
+
         // The changed left rows plus the left rows referencing a changed
         // right row.
         let mut affected = left_now
             .clone()
             .select(key_exprs.clone())?
             .limit(0, Some(0))?;
-        if !left_window.added_files.is_empty() {
-            let delta_left = dataframe(
-                &context,
-                view.left
-                    .read_partition_files(left_window.added_files.clone())
-                    .await?,
-                &view.left.schema,
-            )?;
+        if let Some(delta_left) = &delta_left {
             affected = delta_left
+                .clone()
                 .select(key_exprs.clone())?
                 .distinct()?
                 .union(affected)?;
         }
-        if !right_window.added_files.is_empty() {
-            let delta_right = dataframe(
-                &context,
-                view.right
-                    .read_partition_files(right_window.added_files.clone())
-                    .await?,
-                &view.right.schema,
-            )?;
-            // The changed right key values, under the left key names: a
-            // computed left key is materialized below, so the probe joins by
-            // name.
-            let delta_schema = delta_right.schema().clone();
-            let changed_keys = delta_right
-                .select(
-                    view.join_keys
-                        .iter()
-                        .enumerate()
-                        .map(|(index, key)| {
-                            let expr = match view
-                                .key_exprs
-                                .right
-                                .get(index)
-                                .filter(|expr| !expr.is_empty())
-                            {
-                                Some(rendered) => context
-                                    .state()
-                                    .create_logical_expr(rendered, &delta_schema)?,
-                                None => col(view.right_join_keys()[index].as_str()),
-                            };
-                            Ok(expr.alias(key.as_str()))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                )?
-                .distinct()?;
+        if let Some(changed_keys) = &changed_keys {
             // The computed key is materialized under its join name.
             let probe = with_computed_keys(
                 &context,
@@ -3622,7 +3782,7 @@ impl IvmRuntime {
             affected = affected.union(
                 probe
                     .join(
-                        changed_keys,
+                        changed_keys.clone(),
                         JoinType::LeftSemi,
                         &join_key_names,
                         &join_key_names,
@@ -3632,6 +3792,30 @@ impl IvmRuntime {
             )?;
         }
         let affected = affected.distinct()?;
+
+        // Only the state rows of the affected keys are needed; a key filter
+        // lets the reader prune them (and a large set falls back to the full
+        // read).  The collected keys also feed the semi joins, so the probe
+        // above is not re-run.
+        let affected_schema: SchemaRef = Arc::new(affected.schema().as_arrow().clone());
+        let affected_batches = affected.collect().await?;
+        let key_count = affected_batches
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        let mv_batches = if key_count == 0 {
+            Vec::new()
+        } else if key_count <= crate::runtime::MAX_KEY_FILTERS {
+            let filters =
+                crate::runtime::key_filters(&view.left.primary_keys, &affected_batches)?;
+            view.output
+                .read_current_filtered(&self.client, filters)
+                .await?
+        } else {
+            view.output.read_current(&self.client).await?
+        };
+        let affected = dataframe(&context, affected_batches, &affected_schema)?;
+        let mv = dataframe(&context, mv_batches, &view.output.schema)?;
 
         // Rows written by this epoch make a replay a no-op.
         let already = mv

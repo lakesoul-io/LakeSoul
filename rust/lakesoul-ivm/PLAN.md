@@ -4336,6 +4336,37 @@ IO）；lookup 左/右源与 MV 按主键过滤（右源按变更 join key 过�
 multi_join 各源按主键/join key 过滤（inner-only，可安全按 join key 裁剪）；pair left/full
 join 仍需 before-match 扩展后才能过滤；chain 继承 lookup/row 的改进后再按阶段键过滤。
 
+### 10.180 性能优化 P1b：lookup join 按变更键过滤读
+
+row 之后，把单步 lookup join 的源与 MV 读取也改为只读受影响键：
+
+- 窗口 delta（merge-on-read 后）就是变更键的当前行：只有一侧变化时该侧直接用 delta，另一侧按
+  变更 join key 过滤；两侧都变时左侧读 `pk IN (delta_left) OR join_key IN (changed_keys)`，
+  右侧读 `join_key IN (delta_right keys ∪ delta_left keys)`。集合超过 `MAX_KEY_FILTERS = 4096`
+  或 join key 是计算表达式时退回全量读（计算键无法下推）。
+- `affected` 先物化一次（避免 probe 重复执行），MV 再按 affected 左主键过滤；`already` 与
+  `deletes` 复用同一批键。
+- **修正**：过滤读取分支也必须应用 `filter_deletes`，否则同窗口的 delete tombstone 会进入
+  投影，让被删行以旧值重新插入。新增
+  `lookup_join.rs::lookup_join_retracts_both_sides_in_one_window`（同窗口左删 + 右删 + 右更新）
+  覆盖，`metrics.rs` 的 lookup 测试增加扫描行数断言。
+
+bench（release、本地 RustFS、`--secondary-change 0.2`）：
+
+| 表 | 变更 | 优化前 p50 | 优化后 p50 | 扫描行 | speedup |
+|---|---|---|---|---|---|
+| 1e5 | 0.01% | 367ms | 379ms | ~150k → 32 | 3.4× → 3.2×（噪声内持平） |
+| 1e6 | 0.01% | 1632ms | 1505ms | ~2.5M → 322 | 3.4× → 3.6× |
+
+收益有限的原因：过滤读仍会打开全部数据文件（`incr_files` 在 1M 下 1300+ 不变），延迟由
+P2 的文件 LIST/元数据/固定地板主导；本项把物化行数与 CPU 开销降到 O(changes)，为 P2 之后
+的收益打基础。1M/0.1% 与 1% 未重测（4096 上限使 1% 退回全量）。CSV 已更新
+`bench-results/lookup_*`。
+
+**P1 小结**：row 的读放大已消除（1M/0.01% 7.4×）；lookup 行数降到 O(changes) 但时间受固定
+地板限制；top_k（分组键非排序键）、multi_join（各源按主键/join key 裁剪）、pair left/full
+join（需 before-match 扩展）、chain（需逐阶段键传播）仍记录为后续。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

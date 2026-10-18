@@ -543,6 +543,8 @@ fn lookup_refresh_rewrites_only_the_affected_rows() {
             executor.execute(&sql).await.unwrap();
             let written_before =
                 state.counter("lakesoul_ivm_mv_rows_written{kind=lookup_join}");
+            let scanned_before =
+                state.counter("lakesoul_ivm_refresh_rows_scanned{kind=lookup_join}");
             // One fact update rewrites only that row's pair.
             fact.append_batch(
                 executor.runtime().client(),
@@ -558,6 +560,13 @@ fn lookup_refresh_rewrites_only_the_affected_rows() {
             assert!(
                 written <= 4,
                 "a one-row lookup change rewrote {written} rows"
+            );
+            let scanned = state
+                .counter("lakesoul_ivm_refresh_rows_scanned{kind=lookup_join}")
+                - scanned_before;
+            assert!(
+                scanned <= 20,
+                "a one-row lookup change scanned {scanned} rows"
             );
         });
     });
