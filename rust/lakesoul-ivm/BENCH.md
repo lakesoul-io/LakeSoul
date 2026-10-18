@@ -249,14 +249,24 @@ against 100k), with the latency floor masking it at this size.
   speedup roughly doubles.  The speedups therefore come from writing far fewer
   rows (129–592 vs 1,000,000 at 0.01%), and they decay as the delta grows
   (multi_join 2.3x at 0.01% but 1.0x at 1%).
-* **A fixed floor of ~0.3–0.8 s per refresh** is visible everywhere:
-  `partitioned` scans only 18–1627 rows yet takes 0.70–0.83 s; the small-change
-  `sum_count`/`skew` rounds take 0.34–0.39 s.  Planning, metadata round trips,
-  S3 LIST/HEAD and the epoch commit dominate there; the floor is about 2x
-  higher on S3 than on local storage.
-* **Small files amplify the read cost**: a 1M-row refresh reads 668–1356
-  files even when it scans only a few hundred rows (the seed writes 8192-row
-  batches and every round adds files; there is no compaction in between).
+* **Latency tracks the file count, not the rows.**  At 1M rows `lookup` reads
+  1334 files in 1514 ms while `row` reads 518 in 667 ms: the 816-file gap
+  accounts for 847 ms, about **1.0 ms per file**; `chain` reads 2634 files in
+  3219 ms and its 5M scanned rows cost only ~0.25 s more.  The marginal cost
+  is roughly **0.3 us per scanned row** and **4 us per written row**, so one
+  file costs about as much as 3000–4000 scanned rows.
+* **The state table is written as many tiny files**: a 100k-row `--keep` run
+  wrote **107 files** for the incremental MV and **208** for the full-recompute
+  MV (5–8 KB each), plus 56 files for the source; at 1M the MV is ~488 files
+  by extrapolation (8192-row batches, four buckets).  The bench seed
+  (`--batch 8192`) fragments every source the same way, so a join reads 2–5
+  fragmented sources plus the MV (1300–2700 files at 1M).  The next lever is
+  therefore file-count reduction (state-file coalescing first, then source
+  compaction), not more row filtering; see `ROADMAP.md` §G.
+* **A fixed floor of ~0.1–0.3 s per refresh** remains after the file term:
+  `partitioned` scans only 18–1627 rows yet takes 0.70–1.9 s (568–702 files);
+  planning, metadata round trips, S3 LIST/HEAD and the epoch commit dominate
+  there.  The floor is about 2x higher on S3 than on local storage.
 * **High change ratios erase the advantage**: `sum_count` at 10% changes is
   0.2x (11.5 s vs 2.1 s), `skew` at 1% is 0.9x and `multi_join` at 1% is 1.0x —
   the incremental delta/merge work grows with the batch while the full
