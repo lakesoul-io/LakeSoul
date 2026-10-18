@@ -4258,6 +4258,26 @@ bench 扩展到多源算子形状，并在过程中修掉一个真实的性能 b
 - **冒烟数据**（RustFS、20k 行、每轮 200 变更、test-fast）：row 3.6–3.7×、sum_count 4.4–4.6×、lookup 3.4×、
   multi_join 2.8–3.2×、top_k 4.4–4.7×；所有形状末轮逐行对拍通过。
 
+### 10.177 性能评测 B2b：链式视图、分区裁剪与倾斜
+
+补齐 bench 的三类形状，bench 的核心能力（形状矩阵）到此完成：
+
+- **`chain`（两段视图）**：step 0 = lookup 视图（事实表 LEFT JOIN 维表），step 1 = 读 step 0 物化视图的行视图
+  （`SELECT k, left_value, right_value FROM <step0>`）。增量侧与全量侧各维护一条链：每轮按序执行两条
+  `INSERT INTO`（或两条 `INSERT OVERWRITE`），测量的是**端到端**时延与 IO；两条链的末步逐行对拍。
+- **`partitioned`（范围分区）**：源表与 MV 都按 `g` 声明 range partition（MV 主键 = `g`，满足分区列 ⊆ 主键），
+  所有变更集中在 `--hot-partition`（默认 `g0`），每轮只应重算受影响分区；全量侧重写所有分区。
+  冒烟显示增量扫描 ~320 行（20k 行源），写入 8–10 行，裁剪生效；此时时延仍被固定开销主导（1.1–1.2×），
+  规模变大后差距才显著。
+- **`skew`（热点分组）**：`sum_count` 的种子按 `--skew`（默认 0.8）把大部分行放入 `g_hot`，新增行同样按该分布；
+  冒烟显示扫描仅 ~367 行——**可合并聚合**（sum/count）维护的是分组状态，热点分组不会导致整组重扫，
+  因此对倾斜不敏感（MIN/MAX、COUNT(DISTINCT) 这类需要重扫分组的形状会退化，记录为后续 skew 变体）。
+- **实现**：`Shape::steps()` 把「一条视图」推广为「视图链」，`run_shape` 按 step 建表（step 1 的 schema 由
+  step 0 的 MV schema 推出）、按序 bootstrap/刷新/重建，并在末步对拍；`--partitions`/`--hot-partition`/`--skew`
+  控制分区与倾斜；分区 MV 通过 `with_range_partition_columns` 声明。
+- **冒烟（RustFS，20k 行、200 变更、test-fast）**：chain 4.3–5.0×、partitioned 1.1–1.2×（扫描 320 vs 20k）、
+  skew 4.4–10.0×（扫描 ~367）；所有形状末轮对拍通过。下一步用 `--release` 跑正式矩阵（B3）。
+
 ## 附录 A. IVM 上层设计（后续阶段，摘要）## 附录 A. IVM 上层设计（后续阶段，摘要）
 
 - **表模型**：MV 输出表（PK=输出键，含 `__ivm_cnt/__ivm_epoch/rowKinds`）、

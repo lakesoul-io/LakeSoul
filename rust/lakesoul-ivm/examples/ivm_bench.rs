@@ -72,6 +72,9 @@ enum Shape {
     Lookup,
     MultiJoin,
     TopK,
+    Chain,
+    Partitioned,
+    Skew,
 }
 
 impl Shape {
@@ -82,6 +85,9 @@ impl Shape {
             Shape::Lookup => "lookup",
             Shape::MultiJoin => "multi_join",
             Shape::TopK => "top_k",
+            Shape::Chain => "chain",
+            Shape::Partitioned => "partitioned",
+            Shape::Skew => "skew",
         }
     }
 
@@ -92,6 +98,9 @@ impl Shape {
             "lookup" => Some(vec![Shape::Lookup]),
             "multi_join" => Some(vec![Shape::MultiJoin]),
             "top_k" => Some(vec![Shape::TopK]),
+            "chain" => Some(vec![Shape::Chain]),
+            "partitioned" => Some(vec![Shape::Partitioned]),
+            "skew" => Some(vec![Shape::Skew]),
             "both" => Some(vec![Shape::Row, Shape::SumCount]),
             "all" => Some(vec![
                 Shape::Row,
@@ -99,6 +108,9 @@ impl Shape {
                 Shape::Lookup,
                 Shape::MultiJoin,
                 Shape::TopK,
+                Shape::Chain,
+                Shape::Partitioned,
+                Shape::Skew,
             ]),
             _ => None,
         }
@@ -107,24 +119,63 @@ impl Shape {
     /// The source tables the shape reads, in chain order.
     fn source_count(self) -> usize {
         match self {
-            Shape::Row | Shape::SumCount | Shape::TopK => 1,
-            Shape::Lookup => 2,
+            Shape::Row
+            | Shape::SumCount
+            | Shape::TopK
+            | Shape::Partitioned
+            | Shape::Skew => 1,
+            Shape::Lookup | Shape::Chain => 2,
             Shape::MultiJoin => 3,
         }
     }
 
-    /// The MV layout, given the source schemas.
-    fn mv_schema(self, schemas: &[SchemaRef]) -> Result<SchemaRef> {
+    /// The materialized-view steps: the chain refreshes a lookup view and then
+    /// a row view over it; every other shape is one view.
+    fn steps(self) -> usize {
+        match self {
+            Shape::Chain => 2,
+            _ => 1,
+        }
+    }
+
+    /// The range partition columns of the view (and of the source).
+    fn range_partitions(self) -> &'static [&'static str] {
+        match self {
+            Shape::Partitioned => &["g"],
+            _ => &[],
+        }
+    }
+
+    /// The MV layout of one step.  `previous` is the schema of the step the
+    /// chain view reads.
+    fn mv_schema(
+        self,
+        schemas: &[SchemaRef],
+        step: usize,
+        previous: Option<&SchemaRef>,
+    ) -> Result<SchemaRef> {
+        if step == 1 {
+            let previous =
+                previous.expect("a chain step needs the previous step's schema");
+            return row_mv_schema_for(
+                previous,
+                &[
+                    "k".to_string(),
+                    "left_value".to_string(),
+                    "right_value".to_string(),
+                ],
+            );
+        }
         let schema = &schemas[0];
         match self {
             Shape::Row => row_mv_schema_for(
                 schema,
                 &["k".to_string(), "g".to_string(), "v".to_string()],
             ),
-            Shape::SumCount => {
+            Shape::SumCount | Shape::Partitioned | Shape::Skew => {
                 sum_count_mv_schema_for(schema, &["g".to_string()], Some("v"))
             }
-            Shape::Lookup => lookup_join_view_schema_for(
+            Shape::Lookup | Shape::Chain => lookup_join_view_schema_for(
                 schema,
                 &schemas[1],
                 &["k".to_string()],
@@ -147,13 +198,18 @@ impl Shape {
         }
     }
 
-    fn mv_primary_keys(self) -> Vec<String> {
+    fn mv_primary_keys(self, step: usize) -> Vec<String> {
+        if step == 1 {
+            return vec!["k".to_string()];
+        }
         match self {
-            Shape::Row => vec!["k".to_string()],
-            Shape::SumCount => vec!["g".to_string()],
-            Shape::Lookup => vec!["k".to_string()],
+            Shape::Row | Shape::Lookup | Shape::Chain | Shape::TopK => {
+                vec!["k".to_string()]
+            }
+            Shape::SumCount | Shape::Partitioned | Shape::Skew => {
+                vec!["g".to_string()]
+            }
             Shape::MultiJoin => multi_join_primary_keys(&vec![vec!["k".to_string()]; 3]),
-            Shape::TopK => vec!["k".to_string()],
         }
     }
 
@@ -182,37 +238,41 @@ impl Shape {
         ]
     }
 
-    /// The SELECT producing the view, over the source table names.
-    fn select(self, sources: &[String]) -> String {
+    /// The SELECT producing one step, over the source table names (step 0) or
+    /// the previous step's view (step 1).
+    fn select(self, step: usize, names: &[String]) -> String {
+        if step == 1 {
+            return format!("SELECT k, left_value, right_value FROM {}", names[0]);
+        }
         match self {
-            Shape::Row => format!("SELECT k, g, v FROM {} WHERE v > 5", sources[0]),
-            Shape::SumCount => {
-                format!("SELECT g, SUM(v), COUNT(v) FROM {} GROUP BY g", sources[0])
+            Shape::Row => format!("SELECT k, g, v FROM {} WHERE v > 5", names[0]),
+            Shape::SumCount | Shape::Partitioned | Shape::Skew => {
+                format!("SELECT g, SUM(v), COUNT(v) FROM {} GROUP BY g", names[0])
             }
-            Shape::Lookup => format!(
+            Shape::Lookup | Shape::Chain => format!(
                 "SELECT a.k, a.v, b.v FROM {} a LEFT JOIN {} b ON b.k = a.k",
-                sources[0], sources[1]
+                names[0], names[1]
             ),
             Shape::MultiJoin => format!(
                 "SELECT a.k, a.g AS ag, b.v AS bv, c.v AS cv FROM {} a \
                  JOIN {} b ON a.k = b.k JOIN {} c ON b.k = c.k",
-                sources[0], sources[1], sources[2]
+                names[0], names[1], names[2]
             ),
             Shape::TopK => format!(
                 "SELECT k, g, v FROM (SELECT k, g, v, \
                  row_number() OVER (PARTITION BY g ORDER BY v DESC) AS rn \
                  FROM {}) t WHERE rn <= 5",
-                sources[0]
+                names[0]
             ),
         }
     }
 
-    /// The visible MV output columns, for the end-to-end comparison.
+    /// The visible MV output columns of the final step.
     fn output_columns(self) -> &'static str {
         match self {
             Shape::Row | Shape::TopK => "k, g, v",
-            Shape::SumCount => "g, sum_v, count_v",
-            Shape::Lookup => "k, left_value, right_value",
+            Shape::SumCount | Shape::Partitioned | Shape::Skew => "g, sum_v, count_v",
+            Shape::Lookup | Shape::Chain => "k, left_value, right_value",
             Shape::MultiJoin => "k, ag, bv, cv, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\"",
         }
     }
@@ -297,6 +357,9 @@ struct Args {
     mix: Mix,
     /// The fraction of mutations aimed at the non-fact side(s).
     secondary_change: f64,
+    partitions: usize,
+    hot_partition: usize,
+    skew: f64,
     storage: Storage,
     bucket: String,
     prefix: String,
@@ -320,6 +383,9 @@ impl Default for Args {
             dim_rows: None,
             mix: Mix::default(),
             secondary_change: 0.2,
+            partitions: 10,
+            hot_partition: 0,
+            skew: 0.8,
             storage: Storage::S3,
             bucket: "lakesoul-test-bucket".to_string(),
             prefix: "ivm-bench".to_string(),
@@ -370,6 +436,11 @@ impl Args {
                 "--secondary-change" => {
                     args.secondary_change = parse_float(&value()).clamp(0.0, 1.0)
                 }
+                "--partitions" => {
+                    args.partitions = parse_num(&value()).max(1);
+                }
+                "--hot-partition" => args.hot_partition = parse_num(&value()),
+                "--skew" => args.skew = parse_float(&value()).clamp(0.0, 1.0),
                 "--storage" => {
                     args.storage = match value().as_str() {
                         "local" => Storage::Local,
@@ -437,6 +508,9 @@ Usage: ivm_bench [OPTIONS]
   --dim-rows <N>                dimension rows for lookup (default rows/2)
   --mix <I,U,D>                 insert,update,delete weights (default 1,1,1)
   --secondary-change <F>        mutations aimed at the non-fact side (default 0.2)
+  --partitions <N>              range partitions for the partitioned shape (default 10)
+  --hot-partition <N>           the partition all partitioned changes hit (default 0)
+  --skew <F>                    hot-group share for the skew shape (default 0.8)
   --storage <local|s3>          table storage (default s3)
   --bucket <NAME>               S3 bucket (default lakesoul-test-bucket)
   --prefix <PREFIX>             S3 key prefix (default ivm-bench)
@@ -561,6 +635,11 @@ async fn run_shape(
         Field::new(CHANGE_COLUMN, DataType::Utf8, false),
     ]));
     let source_count = shape.source_count();
+    let range_partitions = shape
+        .range_partitions()
+        .iter()
+        .map(|column| column.to_string())
+        .collect::<Vec<_>>();
     let mut schemas = Vec::with_capacity(source_count);
     let mut tables = Vec::with_capacity(source_count);
     let mut lives: Vec<Vec<LiveRow>> = vec![Vec::new(); source_count];
@@ -569,27 +648,26 @@ async fn run_shape(
     let load_start = Instant::now();
     for source in 0..source_count {
         let name = format!("ivm_bench_{suffix}_s{source}");
-        let table = runtime
-            .create_table(
-                IvmTableOptions::new(
-                    name,
-                    format!("{root}/s{source}"),
-                    source_schema.clone(),
-                )
-                .with_primary_keys(vec!["k".to_string()])
-                .with_cdc_column(CHANGE_COLUMN)
-                .with_file_format(PhysicalFormat::Parquet),
-            )
-            .await?;
+        let mut options = IvmTableOptions::new(
+            name,
+            format!("{root}/s{source}"),
+            source_schema.clone(),
+        )
+        .with_primary_keys(vec!["k".to_string()])
+        .with_cdc_column(CHANGE_COLUMN)
+        .with_file_format(PhysicalFormat::Parquet);
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions.clone());
+        }
+        let table = runtime.create_table(options).await?;
         let rows = seed_rows(shape, source, args);
-        let start_key = 1;
         let mut batch_rows = Vec::with_capacity(rows.min(args.batch));
         let mut written = 0;
-        let mut key = start_key;
+        let mut key = 1i64;
         while written < rows {
             let count = args.batch.min(rows - written);
             for _ in 0..count {
-                let group = format!("g{}", key % args.groups as i64);
+                let group = initial_group(shape, key, args, &mut rng);
                 let value = rng.value();
                 batch_rows.push((key, group.clone(), value, "insert"));
                 lives[source].push(LiveRow {
@@ -625,53 +703,81 @@ async fn run_shape(
         ms(load_start.elapsed()),
     );
 
-    // Create the incremental and the full-recompute view of the shape.
-    let mv_schema = shape.mv_schema(&schemas)?;
-    let incremental = runtime
-        .create_table(
-            IvmTableOptions::new(
-                format!("ivm_bench_{suffix}_mv"),
-                format!("{root}/mv"),
-                mv_schema.clone(),
+    // One MV layout per step: step 0 reads the sources, a chain's step 1 reads
+    // step 0's view.
+    let mut step_schemas: Vec<SchemaRef> = Vec::new();
+    for step in 0..shape.steps() {
+        let schema = shape.mv_schema(&schemas, step, step_schemas.last())?;
+        step_schemas.push(schema);
+    }
+    let mut incremental_views: Vec<IvmTable> = Vec::new();
+    let mut full_views: Vec<IvmTable> = Vec::new();
+    for (step, schema) in step_schemas.iter().enumerate() {
+        let tag = if shape.steps() == 1 {
+            String::new()
+        } else {
+            format!("_s{step}")
+        };
+        for (side, suffix_name) in [("mv", "inc"), ("full", "full")] {
+            let mut options = IvmTableOptions::new(
+                format!("ivm_bench_{suffix}_{suffix_name}{tag}"),
+                format!("{root}/{suffix_name}{tag}"),
+                schema.clone(),
             )
-            .with_primary_keys(shape.mv_primary_keys())
-            .with_file_format(PhysicalFormat::Parquet),
-        )
-        .await?;
-    let full = runtime
-        .create_table(
-            IvmTableOptions::new(
-                format!("ivm_bench_{suffix}_full"),
-                format!("{root}/full"),
-                mv_schema,
-            )
-            .with_primary_keys(shape.mv_primary_keys())
-            .with_file_format(PhysicalFormat::Parquet),
-        )
-        .await?;
+            .with_primary_keys(shape.mv_primary_keys(step))
+            .with_file_format(PhysicalFormat::Parquet);
+            if !range_partitions.is_empty() {
+                options = options.with_range_partition_columns(range_partitions.clone());
+            }
+            let table = runtime.create_table(options).await?;
+            match side {
+                "mv" => incremental_views.push(table),
+                _ => full_views.push(table),
+            }
+        }
+    }
 
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
-    let names = tables
+    let source_names = tables
         .iter()
         .map(|table| table.table_name.clone())
         .collect::<Vec<_>>();
-    let select = shape.select(&names);
-    let incremental_sql = format!("INSERT INTO {} {select}", incremental.table_name);
-    // The full baseline bootstraps with INSERT INTO as well (a fresh target
-    // under INSERT OVERWRITE reports `rebuild`); the rounds then overwrite.
-    let full_bootstrap_sql = format!("INSERT INTO {} {select}", full.table_name);
-    let full_sql = format!("INSERT OVERWRITE {} {select}", full.table_name);
-    let bootstrap = executor.execute(&incremental_sql).await?;
-    assert_eq!(bootstrap.action.label(), "bootstrap");
-    let bootstrap_full = executor.execute(&full_bootstrap_sql).await?;
-    assert_eq!(bootstrap_full.action.label(), "bootstrap");
-    println!(
-        "bootstrapped {} (epochs {} / {})",
-        shape.name(),
-        bootstrap.epoch.unwrap_or_default(),
-        bootstrap_full.epoch.unwrap_or_default()
-    );
+    let mut incremental_selects = Vec::with_capacity(shape.steps());
+    let mut full_selects = Vec::with_capacity(shape.steps());
+    for step in 0..shape.steps() {
+        let incremental_names = if step == 0 {
+            source_names.clone()
+        } else {
+            vec![incremental_views[step - 1].table_name.clone()]
+        };
+        let full_names = if step == 0 {
+            source_names.clone()
+        } else {
+            vec![full_views[step - 1].table_name.clone()]
+        };
+        incremental_selects.push(shape.select(step, &incremental_names));
+        full_selects.push(shape.select(step, &full_names));
+    }
+
+    // Bootstrap both chains step by step.
+    for step in 0..shape.steps() {
+        let incremental = executor
+            .execute(&format!(
+                "INSERT INTO {} {}",
+                incremental_views[step].table_name, incremental_selects[step]
+            ))
+            .await?;
+        assert_eq!(incremental.action.label(), "bootstrap");
+        let full = executor
+            .execute(&format!(
+                "INSERT INTO {} {}",
+                full_views[step].table_name, full_selects[step]
+            ))
+            .await?;
+        assert_eq!(full.action.label(), "bootstrap");
+    }
+    println!("bootstrapped {} ({} step(s))", shape.name(), shape.steps());
 
     let change_rows = args.change_rows();
     let mut results: Vec<RoundResult> = Vec::new();
@@ -688,10 +794,10 @@ async fn run_shape(
         let write_start = Instant::now();
         let mut per_source: Vec<Vec<(i64, String, i64, &'static str)>> =
             vec![Vec::new(); source_count];
+        let mut applied = 0usize;
         for mutation in mutations {
             per_source[mutation.source].push(mutation.row);
         }
-        let mut applied = 0usize;
         for (source, rows) in per_source.iter_mut().enumerate() {
             if rows.is_empty() {
                 continue;
@@ -705,26 +811,40 @@ async fn run_shape(
 
         let before = recorder.snapshot();
         let incr_start = Instant::now();
-        let incremental_execution = executor.execute(&incremental_sql).await?;
+        for step in 0..shape.steps() {
+            let execution = executor
+                .execute(&format!(
+                    "INSERT INTO {} {}",
+                    incremental_views[step].table_name, incremental_selects[step]
+                ))
+                .await?;
+            assert_eq!(
+                execution.action.label(),
+                "incremental",
+                "round {round} {} step {step} did not refresh incrementally",
+                shape.name()
+            );
+        }
         let incr_ms = ms(incr_start.elapsed());
         let incr_io = io_delta(&before, &recorder.snapshot());
         let before = recorder.snapshot();
         let full_start = Instant::now();
-        let full_execution = executor.execute(&full_sql).await?;
+        for step in 0..shape.steps() {
+            let execution = executor
+                .execute(&format!(
+                    "INSERT OVERWRITE {} {}",
+                    full_views[step].table_name, full_selects[step]
+                ))
+                .await?;
+            assert_eq!(
+                execution.action.label(),
+                "overwrite",
+                "round {round} {} step {step} did not recompute in full",
+                shape.name()
+            );
+        }
         let full_ms = ms(full_start.elapsed());
         let full_io = io_delta(&before, &recorder.snapshot());
-        assert_eq!(
-            incremental_execution.action.label(),
-            "incremental",
-            "round {round} {} did not refresh incrementally",
-            shape.name()
-        );
-        assert_eq!(
-            full_execution.action.label(),
-            "overwrite",
-            "round {round} {} did not recompute in full",
-            shape.name()
-        );
         if round >= args.warmup {
             results.push(RoundResult {
                 shape: shape.name(),
@@ -733,8 +853,8 @@ async fn run_shape(
                 source_write_ms,
                 incr_ms,
                 full_ms,
-                incr_action: incremental_execution.action.label(),
-                full_action: full_execution.action.label(),
+                incr_action: "incremental",
+                full_action: "overwrite",
                 incr: incr_io,
                 full: full_io,
             });
@@ -743,7 +863,9 @@ async fn run_shape(
         let verify = args.verify_every > 0 && (round + 1) % args.verify_every == 0
             || (args.verify_every == 0 && round + 1 == total_rounds);
         if verify {
-            verify_views(runtime, shape, &incremental, &full).await?;
+            let last = shape.steps() - 1;
+            verify_views(runtime, shape, &incremental_views[last], &full_views[last])
+                .await?;
         }
         if round >= args.warmup
             && let Some(result) = results.iter().find(|result| result.round == round)
@@ -767,12 +889,60 @@ async fn run_shape(
         for table in &tables {
             drop_table(runtime, table).await;
         }
-        drop_table(runtime, &incremental).await;
-        drop_table(runtime, &full).await;
+        for table in incremental_views.iter().chain(full_views.iter()) {
+            drop_table(runtime, table).await;
+        }
     } else {
         println!("kept the tables under {root}");
     }
     Ok(results)
+}
+
+/// The initial group of a seeded row.
+fn initial_group(shape: Shape, key: i64, args: &Args, rng: &mut Lcg) -> String {
+    match shape {
+        Shape::Partitioned => format!("g{}", key % args.partitions as i64),
+        Shape::Skew => {
+            if rng.fraction() < args.skew {
+                "g_hot".to_string()
+            } else {
+                format!("g{}", rng.index(args.groups))
+            }
+        }
+        _ => format!("g{}", key % args.groups as i64),
+    }
+}
+
+/// The group a newly inserted row takes.
+fn insert_group(shape: Shape, key: i64, args: &Args, rng: &mut Lcg) -> String {
+    match shape {
+        Shape::Partitioned => {
+            format!("g{}", args.hot_partition % args.partitions)
+        }
+        Shape::Skew => {
+            if rng.fraction() < args.skew {
+                "g_hot".to_string()
+            } else {
+                format!("g{}", rng.index(args.groups))
+            }
+        }
+        _ => format!("g{}", key % args.groups as i64),
+    }
+}
+
+/// The live row an update/delete targets.  The partitioned shape keeps every
+/// change in the hot partition.
+fn pick_live(shape: Shape, live: &[LiveRow], args: &Args, rng: &mut Lcg) -> usize {
+    if shape == Shape::Partitioned {
+        let hot = format!("g{}", args.hot_partition % args.partitions);
+        for _ in 0..32 {
+            let position = rng.index(live.len());
+            if live[position].g == hot {
+                return position;
+            }
+        }
+    }
+    rng.index(live.len())
 }
 
 async fn drop_table(runtime: &IvmRuntime, table: &IvmTable) {
@@ -842,7 +1012,7 @@ fn plan_mutations(
                 for source in 0..lives.len() {
                     next_keys[source] += 1;
                     let value = rng.value();
-                    let group = format!("g{}", key % args.groups as i64);
+                    let group = insert_group(shape, key, args, rng);
                     lives[source].push(LiveRow {
                         k: key,
                         g: group.clone(),
@@ -864,7 +1034,7 @@ fn plan_mutations(
             Operation::Insert => {
                 let key = next_keys[target];
                 next_keys[target] += 1;
-                let group = format!("g{}", key % args.groups as i64);
+                let group = insert_group(shape, key, args, rng);
                 let value = rng.value();
                 lives[target].push(LiveRow {
                     k: key,
@@ -877,7 +1047,7 @@ fn plan_mutations(
                 });
             }
             Operation::Update => {
-                let position = rng.index(lives[target].len());
+                let position = pick_live(shape, &lives[target], args, rng);
                 let value = rng.value();
                 lives[target][position].v = value;
                 let live = &lives[target][position];
@@ -887,7 +1057,7 @@ fn plan_mutations(
                 });
             }
             Operation::Delete => {
-                let position = rng.index(lives[target].len());
+                let position = pick_live(shape, &lives[target], args, rng);
                 let live = lives[target].swap_remove(position);
                 mutations.push(Mutation {
                     source: target,
