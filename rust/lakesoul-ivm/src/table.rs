@@ -543,6 +543,67 @@ impl IvmTable {
             .await
     }
 
+    /// Read delta files **without** merge-on-read.
+    ///
+    /// A table written by an internal view stores a delete row with the old
+    /// payload followed by the insert row for the same primary key.  The
+    /// aggregate over such a view needs both versions to subtract the old
+    /// contribution and add the new one; the merged delta keeps only the
+    /// insert.  Reading the added files raw exposes the changelog.
+    pub async fn read_partition_files_unmerged_projected(
+        &self,
+        groups: Vec<PartitionFiles>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        let groups = groups
+            .into_iter()
+            .filter(|group| !group.files.is_empty())
+            .collect::<Vec<_>>();
+        if groups.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut batches = Vec::new();
+        for group in groups {
+            let schema = projection.cloned().unwrap_or_else(|| self.schema.clone());
+            let range_columns = self
+                .range_partition_columns
+                .iter()
+                .filter(|column| schema.field_with_name(column).is_ok())
+                .cloned()
+                .collect::<Vec<_>>();
+            let file_count = group.files.len() as u64;
+            let mut builder = LakeSoulIOConfig::builder()
+                .with_files(group.files)
+                .with_schema(schema)
+                .with_physical_format(self.file_format);
+            if !range_columns.is_empty() {
+                builder = builder.with_range_partitions(range_columns.clone());
+                if let Some(values) =
+                    parse_partition_values(&group.partition_desc, &range_columns)
+                {
+                    for (column, value) in range_columns.iter().zip(values) {
+                        builder =
+                            builder.with_default_column_value(column.clone(), value);
+                    }
+                }
+            }
+            let mut reader = LakeSoulReader::new(builder.build())?;
+            reader.start().await?;
+            let before = batches.len();
+            while let Some(batch) = reader.next_rb().await {
+                batches.push(batch?);
+            }
+            crate::observability::add_files_read(file_count);
+            crate::observability::add_rows_scanned(
+                batches[before..]
+                    .iter()
+                    .map(|batch| batch.num_rows() as u64)
+                    .sum(),
+            );
+        }
+        Ok(batches)
+    }
+
     /// Read the state of the table before a refresh window.
     ///
     /// Every partition the window touched is pinned to the version it was

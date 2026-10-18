@@ -2442,10 +2442,11 @@ fn affected_groups_sql(
     group_keys: &[String],
     keyed: bool,
     filter: Option<&str>,
+    changelog: bool,
 ) -> String {
     let keys = quoted_list(group_keys);
     let plain_where = filter_where(filter);
-    if !keyed {
+    if !keyed || changelog {
         return format!("select distinct {keys} from delta{plain_where}");
     }
     let pks = quoted_list(&source.primary_keys);

@@ -2223,12 +2223,13 @@ fn recompute_refresh_sql(
                     parts.source,
                     parts.group_keys,
                     keyed,
-                    parts.filter
+                    parts.filter,
+                    false,
                 ),
             )
         }
     } else {
-        affected_groups_sql(parts.source, parts.group_keys, keyed, parts.filter)
+        affected_groups_sql(parts.source, parts.group_keys, keyed, parts.filter, false)
     };
     format!(
         "with affected as ({affected}), \
@@ -2638,6 +2639,7 @@ impl IvmRuntime {
                 parts.group_keys,
                 keyed,
                 parts.filter,
+                false,
             ))
             .await?
             .collect()
