@@ -138,7 +138,7 @@ Five-shape smoke on RustFS (20k fact rows, 200 changes per round,
 |---|---|---|---|---|---|
 | row | 176–229 ms | 654–828 ms | 3.6–3.7x | ~40k (pre-P1) | 260–267 |
 | sum_count | 229–257 ms | 1060–1132 ms | 4.4–4.6x | ~460 | 254–274 |
-| lookup | 210–248 ms | 716–841 ms | 3.4x | ~50k | 284–300 |
+| lookup | 210–248 ms | 716–841 ms | 3.4x | ~50k (pre-P1b) | 284–300 |
 | multi_join | 294 ms | 817–951 ms | 2.8–3.2x | ~81k | 265–270 |
 | top_k | 284–549 ms | 1258–2590 ms | 4.4–4.7x | ~21k | 1270–1390 |
 | chain | 456–513 ms | 2222–2297 ms | 4.3–5.0x | ~101k | 564–592 |
@@ -193,9 +193,13 @@ two-source shapes.  Each cell is `incremental p50 -> full overwrite p50
 The `row` cells were measured again after the P1 key-filtered read change
 (PLAN §10.179): its `incr_rows_scanned` fell from ~2x the table to 16 / 165 /
 1662 rows at 0.01% / 0.1% / 1%, and the 1M-row speedup rose from 4.7x / 4.1x /
-3.4x to 7.4x / 7.2x / 6.4x.  The other shapes still read their full current
-sources and are unchanged; their CSVs are from the B3 run.  The 1M/10% cell
-(100k changed keys, above the filter threshold) was not re-measured.
+3.4x to 7.4x / 7.2x / 6.4x.  The 1M/10% cell (100k changed keys, above the
+filter threshold) was not re-measured.  The `lookup` 0.01% cells were measured
+again after the P1b key-filtered lookup read (PLAN §10.180): at 1M it scans
+322 rows instead of ~2.5M and p50 falls from 1632ms to 1505ms (3.4x -> 3.6x),
+while at 1e5 the latency is flat within run noise; its file count is unchanged,
+so the fixed floor still dominates.  The other lookup cells (¹) and the
+remaining shapes still read their full sources and are from the B3 run.
 
 1e5 fact rows:
 
@@ -203,7 +207,7 @@ sources and are unchanged; their CSVs are from the B3 run.  The 1M/10% cell
 |---|---|---|
 | row | 222 -> 1227 (5.5x) | 254 -> 1218 (4.8x) |
 | sum_count | 339 -> 1245 (3.7x) | 396 -> 2573 (6.5x) |
-| lookup | 367 -> 1231 (3.4x) | 469 -> 1392 (3.0x) |
+| lookup | 379 -> 1224 (3.2x) | 469 -> 1392 (3.0x) |
 | multi_join | 583 -> 1336 (2.3x) | 680 -> 2531 (3.7x) |
 | top_k | 349 -> 1236 (3.5x) | 495 -> 3100 (6.3x) |
 | chain | 723 -> 2567 (3.6x) | 910 -> 3224 (3.5x) |
@@ -216,7 +220,7 @@ sources and are unchanged; their CSVs are from the B3 run.  The 1M/10% cell
 |---|---|---|---|---|
 | row | 645 -> 4740 (7.4x) | 674 -> 4856 (7.2x) | 1055 -> 6776 (6.4x) | 4410 -> 5206 (1.2x) |
 | sum_count | 781 -> 1659 (2.1x) | 860 -> 2350 (2.7x) | 1041 -> 1827 (1.8x) | 11511 -> 2110 (**0.2x**) |
-| lookup | 1632 -> 5481 (3.4x) | 1568 -> 5111 (3.3x) | 3613 -> 5994 (1.7x) | not measured |
+| lookup | 1505 -> 5430 (3.6x) | 1568 -> 5111 (3.3x)¹ | 3613 -> 5994 (1.7x)¹ | not measured |
 | multi_join | 2749 -> 6357 (2.3x) | not measured | 6280 -> 6443 (1.0x) | not measured |
 | top_k | 910 -> 2327 (2.6x) | not measured | 993 -> 1703 (1.7x) | not measured |
 | chain | 3213 -> 11136 (3.5x) | not measured | 7489 -> 11396 (1.5x) | not measured |
@@ -234,10 +238,12 @@ against 100k), with the latency floor masking it at this size.
 ## What the numbers say
 
 * **Reads are the dominant cost.**  The incremental refresh of `top_k`,
-  `lookup`, `multi_join` and `chain` reads the full current sources and the
-  whole materialized view every round regardless of the change size (lookup
-  ~2.5x the table, multi_join ~4x, chain ~5x; `incr rows scanned` in the
-  CSVs).  `row` now reads the delta plus the affected keys of its state
+  `multi_join` and `chain` reads the full current sources and the whole
+  materialized view every round regardless of the change size (multi_join
+  ~4x the table, chain ~5x; `incr rows scanned` in the CSVs).  `lookup` is now
+  key-filtered too (PLAN §10.180): it scans a few hundred rows instead of
+  ~2.5x the table, but still opens every file, so its latency gain is small
+  until the fixed file/metadata floor is addressed.  `row` now reads the delta plus the affected keys of its state
   (`read_current_filtered` with a primary-key `IN` list, up to 4096 keys;
   PLAN §10.179), so it scans 16 rows instead of ~1.9M at 1M/0.01% and its
   speedup roughly doubles.  The speedups therefore come from writing far fewer
