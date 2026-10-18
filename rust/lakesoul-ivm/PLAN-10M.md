@@ -238,6 +238,16 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 维表更新低频，~7s 可接受；后续若需要，再按 fanout/代价选择部分增量或全量。旧的通用
   dim 增量路径保留但不再默认使用，需修复后才能作为低成本选项。
 
+#### P0.2b 结果：流式输出到状态写入（2026-10）
+
+- chain/row 的最终写改为 `DataFrame::execute_stream` + 每 100 万行分块 `append_batches`；
+  驱动端不再 `collect` 整个输出（首次/重建的 1000 万行）。
+- 10M/1%：bootstrap 峰值 RSS **6.7GB → 3.2GB**、总耗时 12–14s → **8.1s**；全量 rebuild 峰值
+  **6.6GB → 5.1GB**、6.8s；增量总 2.9–3.4s（join 比 collect 版略慢 ~0.6s），仍约 2× 于全量。
+- 峰值（含全量）5.2GB；增量校验通过。
+- 剩余：聚合/其他形状的输出仍 collect（输出小）；bootstrap 的**输入** delta 仍 materialize
+  （10M 行），后续可把初始刷新也改为 provider 流式扫描 + 流式 delta。
+
 ### P4：状态表 compaction 与布局
 
 - 状态表写入方 compaction（文件数/小文件阈值、新 generation、原子切换）；

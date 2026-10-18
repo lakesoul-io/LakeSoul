@@ -562,16 +562,12 @@ impl IvmRuntime {
                 .collect::<Vec<_>>();
             sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
             commit_ids.extend(
-                view.mv
-                    .append_batches(
-                        &self.client,
-                        inserts
-                            .union(deletes)?
-                            .sort_by(sort_exprs)?
-                            .collect()
-                            .await?,
-                    )
-                    .await?,
+                append_dataframe(
+                    &view.mv,
+                    &self.client,
+                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                )
+                .await?,
             );
         } else {
             // A CDC tombstone (`delete`) is not a row: an
@@ -582,16 +578,14 @@ impl IvmRuntime {
                 rows = rows.filter(predicate)?;
             }
             commit_ids.extend(
-                view.mv
-                    .append_batches(
-                        &self.client,
-                        rows.select(output_exprs)?
-                            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                            .collect()
-                            .await?,
-                    )
-                    .await?,
+                append_dataframe(
+                    &view.mv,
+                    &self.client,
+                    rows.select(output_exprs)?
+                        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
+                )
+                .await?,
             );
         }
 
@@ -655,16 +649,14 @@ impl IvmRuntime {
         }
         let output_exprs = row_projection(view, &context)?;
         commit_ids.extend(
-            view.mv
-                .append_batches(
-                    &self.client,
-                    rows.select(output_exprs)?
-                        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                        .collect()
-                        .await?,
-                )
-                .await?,
+            append_dataframe(
+                &view.mv,
+                &self.client,
+                rows.select(output_exprs)?
+                    .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
+            )
+            .await?,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;

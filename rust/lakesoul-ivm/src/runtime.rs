@@ -2519,6 +2519,44 @@ pub(crate) fn key_filters(
     Ok(filters)
 }
 
+/// Execute a refresh data frame and append its batches as they arrive.
+///
+/// The driver never holds the whole output: up to
+/// [`crate::table::MAX_STATE_APPEND_ROWS`] rows are buffered and appended,
+/// while DataFusion streams the rest of the physical plan.  Used by the
+/// initial/rebuild paths whose output can be millions of rows.
+pub(crate) async fn append_dataframe(
+    table: &IvmTable,
+    client: &MetaDataClient,
+    frame: DataFrame,
+) -> Result<Vec<String>> {
+    use futures::StreamExt;
+    let mut stream = frame.execute_stream().await?;
+    let mut commit_ids = Vec::new();
+    let mut pending: Vec<RecordBatch> = Vec::new();
+    let mut rows = 0usize;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        rows += batch.num_rows();
+        pending.push(batch);
+        if rows >= crate::table::MAX_STATE_APPEND_ROWS {
+            commit_ids.extend(
+                table
+                    .append_batches(client, std::mem::take(&mut pending))
+                    .await?,
+            );
+            rows = 0;
+        }
+    }
+    if !pending.is_empty() {
+        commit_ids.extend(table.append_batches(client, pending).await?);
+    }
+    Ok(commit_ids)
+}
+
 fn dataframe(
     context: &SessionContext,
     batches: Vec<RecordBatch>,
