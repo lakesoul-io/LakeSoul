@@ -227,6 +227,17 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 代价模型输入：delta 行数、维表 fanout、分组数、文件数、MV 行数、内存。
 - 验收：维表更新不出现 >2× 的性能悬崖；错误回退率可观测。
 
+#### P3a 结果：维表变更回退（2026-10）
+
+- **通用增量路径在维表变更时不可用**：10M/1% fact + 0.1%/1% 维表更新实测 **195s、峰值 52GB**，
+  且增量结果比全量少 3.3 万行（正确性 bug）。
+- 回退策略：任何 step source（维表）变化时直接 `rebuild_lookup_chain`；上游 rebuild 写出的是
+  insert-only 全量快照（>1M 行），下游聚合检测到后走 `rebuild_sum_count`，避免按 1000 万 key
+  读 before 状态。
+- 结果：10M/1% fact + 0.1%/1% 维表：总刷新 **7.3–7.5s**，峰值 **6.9GB**，与全量重建结果一致。
+- 维表更新低频，~7s 可接受；后续若需要，再按 fanout/代价选择部分增量或全量。旧的通用
+  dim 增量路径保留但不再默认使用，需修复后才能作为低成本选项。
+
 ### P4：状态表 compaction 与布局
 
 - 状态表写入方 compaction（文件数/小文件阈值、新 generation、原子切换）；
