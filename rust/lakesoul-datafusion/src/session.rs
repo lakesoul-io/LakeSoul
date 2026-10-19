@@ -274,8 +274,9 @@ type CatalogDecorator =
 
 /// Pins every `MergeParquetExec` to a single distributed task.
 ///
-/// A merge-on-read work unit must see the complete file set of its partition.
-/// Without this cap the distributed planner derives the merge subtree's task
+/// Every bucket work unit in a range merge must see all its version files.
+/// This distributed-task cap does not limit the merge's local output lanes.
+/// Without it the distributed planner derives the merge subtree's task
 /// count from its file scans (`Desired(N)` for large file sets or a small
 /// `bytes_per_partition`), the children-isolator union allocates several tasks
 /// to one merge, and the leaf scale-up slices every version file into byte
@@ -283,7 +284,7 @@ type CatalogDecorator =
 /// the scan emits stale or duplicate rows. `Maximum(1)` wins over the scans'
 /// `Desired(N)` during task-count reconciliation, for both the union and the
 /// no-union (single range partition) plan shape; parallelism across merges of
-/// different partitions is preserved.
+/// different range partitions and across local bucket lanes is preserved.
 fn merge_parquet_exec_single_task(
     ev: DesiredTaskCountEvent<'_>,
 ) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {

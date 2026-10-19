@@ -9,6 +9,7 @@ use crate::physical_plan::merge::sorted::v2::batch_range::{
 use crate::physical_plan::merge::sorted::v2::record_batch_builder::{
     ColumnMapping, build_record_batch_from_pk_groups,
 };
+use crate::stream::merge_memory::{MergeMemory, send_batch};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use smallvec::smallvec;
@@ -29,6 +30,7 @@ pub struct LoserTreeRangeMerge<'a, C: CursorValues> {
     schema: SchemaRef,
 
     column_mapping: Arc<ColumnMapping>,
+    buffer_ledger: Option<MergeMemory>,
 }
 
 impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
@@ -47,7 +49,13 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             target_batch_size,
             schema,
             column_mapping,
+            buffer_ledger: None,
         }
+    }
+
+    pub(crate) fn with_buffer_ledger(mut self, ledger: Option<MergeMemory>) -> Self {
+        self.buffer_ledger = ledger;
+        self
     }
 
     pub async fn merge(
@@ -79,7 +87,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             } else {
                 if self.pk_groups.len() >= self.target_batch_size {
                     let batch = self.flush_pk_groups()?;
-                    tx.send(Ok(batch)).await?;
+                    send_batch(tx, batch, self.buffer_ledger.as_ref()).await?;
                 }
                 self.pk_groups.push(smallvec![InProgressRow {
                     range_idx: winner,
@@ -92,7 +100,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
         }
         if !self.pk_groups.is_empty() {
             let batch = self.flush_pk_groups()?;
-            tx.send(Ok(batch)).await?;
+            send_batch(tx, batch, self.buffer_ledger.as_ref()).await?;
         }
         Ok(())
     }

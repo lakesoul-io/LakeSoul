@@ -53,7 +53,7 @@ impl<C: CursorValues + Send + Sync + 'static> DeduplicateStream<C> {
                         // try produce [last_begin, i - 2]
                         let length = i - last_begin - 1;
                         if length > 0 {
-                            yield (c.slice(last_begin, length),
+                            yield (c.slice(last_begin, length)?,
                                           batch.slice(last_begin, length));
                         }
                         // skip to next unequal row
@@ -95,17 +95,17 @@ impl<C: CursorValues + Send + Sync + 'static> DeduplicateStream<C> {
                         // just skip last row when it's only one non-dup row
                         if i > last_begin + 1 {
                             let length = i - last_begin - 1;
-                            yield (c.slice(last_begin, length), batch.slice(last_begin, length));
+                            yield (c.slice(last_begin, length)?, batch.slice(last_begin, length));
                         }
                     } else {
                         // produce [last_begin, num_rows - 1] for no duplicate in next batch
                         let length = i - last_begin;
-                        yield (c.slice(last_begin, length), batch.slice(last_begin, length));
+                        yield (c.slice(last_begin, length)?, batch.slice(last_begin, length));
                     }
                 } else {
                     // produce [last_begin, num_rows - 1] for no next bath
                     let length = i - last_begin;
-                    yield (c.slice(last_begin, length), batch.slice(last_begin, length));
+                    yield (c.slice(last_begin, length)?, batch.slice(last_begin, length));
                 }
             }
         })

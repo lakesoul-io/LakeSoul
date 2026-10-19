@@ -28,7 +28,6 @@ use datafusion::physical_plan::{
 use datafusion_common::DataFusionError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
-use rootcause::compat::boxed_error::IntoBoxedError;
 
 use super::combiner::*;
 use super::cursor::{ArrayValues, CursorArray, CursorValues, RowValues};
@@ -36,6 +35,7 @@ use super::merge_operator::MergeOperator;
 use super::sort_key_range::SortKeyBatchRange;
 use super::v2::window_sliding_merger::WindowSlidingMerger;
 use crate::Result;
+use crate::stream::merge_memory::{MergeMemory, merge_error};
 use crate::stream::{
     FieldCursorStream, RowCursorStream, default_column::DefaultColumnStream,
 };
@@ -153,7 +153,7 @@ macro_rules! primitive_merge_helper {
 }
 
 macro_rules! merge_helper {
-    ($t:ty, $streams:ident, $col_name:ident, $physical_schema:ident, $merged_schema:ident, $batch_size:ident, $default_column_value:ident, $reservation:ident, $merge_operator:ident, $fields_map:ident, $is_compacted:ident) => {{
+    ($t:ty, $streams:ident, $col_name:ident, $physical_schema:ident, $merged_schema:ident, $batch_size:ident, $default_column_value:ident, $reservation:ident, $merge_operator:ident, $fields_map:ident, $is_compacted:ident, $ledger:ident) => {{
         let streams = $streams
             .into_iter()
             .map(|s| {
@@ -164,7 +164,8 @@ macro_rules! merge_helper {
                     PhysicalSortExpr::new(col_expr, SortOptions::default()),
                     stream,
                     $reservation.new_empty(),
-                );
+                )
+                .with_buffer_ledger($ledger.clone());
                 let stream: CursorStream<ArrayValues<<$t as CursorArray>::Values>> =
                     Box::pin(stream);
                 Ok(stream)
@@ -179,13 +180,14 @@ macro_rules! merge_helper {
             $batch_size,
             $merge_operator,
             $default_column_value,
-            $is_compacted
+            $is_compacted,
+            $ledger
         );
     }};
 }
 
 macro_rules! create_merger {
-    ($t:ty, $streams:ident, $physical_schema:ident, $merged_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident, $is_compacted:ident) => {{
+    ($t:ty, $streams:ident, $physical_schema:ident, $merged_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident, $is_compacted:ident, $ledger:ident) => {{
         let streams_num = $streams.len();
         if $merge_operator.is_empty()
             || $merge_operator
@@ -227,7 +229,7 @@ macro_rules! create_merger {
                     streams_num,
                     $batch_size,
                     column_mapping,
-                )?;
+                )?.with_buffer_ledger($ledger.clone());
                 let merge_stream = WindowSlidingMerger::build_merged_stream(combiner)?;
                 return Ok(Box::pin(
                     DefaultColumnStream::new_from_streams_with_default(
@@ -325,6 +327,49 @@ pub(crate) fn build_sorted_stream_merger(
     reservation: MemoryReservation,
     is_compacted: Vec<bool>,
 ) -> Result<SendableRecordBatchStream> {
+    let ledger = MergeMemory::new(reservation.new_empty());
+    let streams = streams
+        .into_iter()
+        .map(|sorted| {
+            let schema = sorted.stream.schema();
+            let ledger = ledger.clone();
+            SortedStream::new(Box::pin(
+                datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(
+                    schema,
+                    sorted.stream.map(move |batch| {
+                        batch.and_then(|batch| ledger.track_batch(batch))
+                    }),
+                ),
+            ))
+        })
+        .collect();
+    let stream = build_sorted_stream_merger_inner(
+        streams,
+        primary_keys,
+        physical_schema,
+        merged_schema,
+        batch_size,
+        default_column_value,
+        merge_operator,
+        reservation,
+        is_compacted,
+        ledger.clone(),
+    )?;
+    Ok(ledger.output_stream(stream))
+}
+
+fn build_sorted_stream_merger_inner(
+    streams: Vec<SortedStream>,
+    primary_keys: Arc<Vec<String>>,
+    physical_schema: SchemaRef,
+    merged_schema: SchemaRef,
+    batch_size: usize,
+    default_column_value: Arc<HashMap<String, String>>,
+    merge_operator: Vec<MergeOperator>,
+    reservation: MemoryReservation,
+    is_compacted: Vec<bool>,
+    ledger: MergeMemory,
+) -> Result<SendableRecordBatchStream> {
     let fields_map = streams
         .iter()
         .map(|s| {
@@ -359,12 +404,12 @@ pub(crate) fn build_sorted_stream_merger(
         if let Some(data_type) = single_primary_key_stream_data_type(&streams, col_name)?
         {
             downcast_primitive! {
-                &data_type => (primitive_merge_helper, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-                DataType::Utf8 => merge_helper!(StringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-                DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-                DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-                DataType::Binary => merge_helper!(BinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-                DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                &data_type => (primitive_merge_helper, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted, ledger),
+                DataType::Utf8 => merge_helper!(StringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted, ledger),
+                DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted, ledger),
+                DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted, ledger),
+                DataType::Binary => merge_helper!(BinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted, ledger),
+                DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted, ledger),
                 _ => {}
             }
         }
@@ -404,7 +449,8 @@ pub(crate) fn build_sorted_stream_merger(
         batch_size,
         merge_operator,
         default_column_value,
-        is_compacted
+        is_compacted,
+        ledger
     );
 }
 
@@ -592,7 +638,7 @@ impl<C: CursorValues, R: RangeCombinerTrait<C>> Stream for SortedStreamMerger<C,
             inner.map(|res| {
                 res.map_err(|e| {
                     error!("{}", e);
-                    DataFusionError::External(e.into_boxed_error())
+                    merge_error(e)
                 })
             })
         })
@@ -633,6 +679,127 @@ mod tests {
         SortedStream, build_sorted_stream_merger,
     };
 
+    use datafusion_common::DataFusionError;
+    use datafusion_common::utils::memory::get_record_batch_memory_size;
+    use datafusion_execution::SendableRecordBatchStream;
+    use datafusion_execution::memory_pool::MemoryPool;
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+    use futures::{StreamExt, stream};
+
+    fn memory_payload_batch() -> RecordBatch {
+        RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..64)) as ArrayRef,
+            ),
+            (
+                "payload",
+                Arc::new(StringArray::from_iter_values(
+                    (0..64).map(|_| "payload".repeat(1024)),
+                )) as ArrayRef,
+            ),
+        ])
+        .unwrap()
+    }
+
+    fn memory_test_merge(
+        batch: &RecordBatch,
+        pool: &Arc<dyn MemoryPool>,
+        legacy: bool,
+        pending_tail: bool,
+    ) -> SendableRecordBatchStream {
+        let slices = (0..32)
+            .map(|index| Ok(batch.slice(index * 2, 2)))
+            .collect::<Vec<_>>();
+        let input: SendableRecordBatchStream = if pending_tail {
+            Box::pin(RecordBatchStreamAdapter::new(
+                batch.schema(),
+                stream::iter(slices).chain(stream::pending()),
+            ))
+        } else {
+            Box::pin(RecordBatchStreamAdapter::new(
+                batch.schema(),
+                stream::iter(slices),
+            ))
+        };
+        // A non-UseLast operator selects the legacy heap combiner without
+        // mutating process-global environment variables in concurrent tests.
+        let operators = if legacy {
+            vec![MergeOperator::UseLast, MergeOperator::UseLastNotNull]
+        } else {
+            vec![]
+        };
+        build_sorted_stream_merger(
+            vec![SortedStream::new(input)],
+            Arc::new(vec!["id".into()]),
+            batch.schema(),
+            batch.schema(),
+            8,
+            Arc::new(HashMap::new()),
+            operators,
+            MemoryConsumer::new("merge-memory-test").register(pool),
+            vec![false],
+        )
+        .unwrap()
+    }
+
+    async fn memory_released(pool: &Arc<dyn MemoryPool>) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while pool.reserved() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("merge retained memory after completion/drop");
+    }
+
+    #[tokio::test]
+    async fn merge_memory_rejects_non_key_payload() {
+        for legacy in [false, true] {
+            let batch = memory_payload_batch();
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
+            let mut merge = memory_test_merge(&batch, &pool, legacy, false);
+            assert!(matches!(
+                merge.next().await.unwrap(),
+                Err(DataFusionError::ResourcesExhausted(_))
+            ));
+            memory_released(&pool).await;
+            assert!(merge.next().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_memory_shared_input_completes_and_releases() {
+        for legacy in [false, true] {
+            let batch = memory_payload_batch();
+            let bytes = get_record_batch_memory_size(&batch);
+            // Exactly one original allocation set fits: charging PK cursors,
+            // prefetch/dedup slices or zero-copy outputs again would fail.
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(bytes));
+            let merge = memory_test_merge(&batch, &pool, legacy, false);
+            let output = common::collect(merge).await.unwrap();
+            assert_eq!(output.iter().map(RecordBatch::num_rows).sum::<usize>(), 64);
+            memory_released(&pool).await;
+            assert_eq!(pool.reserved(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_memory_early_drop_releases_pending_inputs() {
+        for legacy in [false, true] {
+            let batch = memory_payload_batch();
+            let pool: Arc<dyn MemoryPool> =
+                Arc::new(GreedyMemoryPool::new(get_record_batch_memory_size(&batch)));
+            let mut merge = memory_test_merge(&batch, &pool, legacy, true);
+            let output = merge.next().await.unwrap().unwrap();
+            assert!(pool.reserved() > 0);
+            drop(merge);
+            memory_released(&pool).await;
+            // The returned output is downstream-owned, not merge-retained.
+            assert!(output.num_rows() > 0);
+            assert_eq!(pool.reserved(), 0);
+        }
+    }
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
         let a: ArrayRef = Arc::new(Int32Array::from(Vec::from(vec)));
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()

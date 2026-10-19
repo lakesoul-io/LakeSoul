@@ -1247,6 +1247,55 @@ impl LakeSoulTableProvider {
         }
     }
 
+    /// Regroup aligned file/input pairs without changing version order within
+    /// a bucket. Untrusted filenames make the whole range partition atomic:
+    /// an unknown file may contain versions of keys from any known bucket.
+    fn bucket_merge_work_units(
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        files: Vec<String>,
+        defaults: Arc<HashMap<String, String>>,
+        bucket_count: usize,
+        lane_budget: usize,
+    ) -> (
+        Vec<Arc<dyn ExecutionPlan>>,
+        Vec<lakesoul_io::physical_plan::merge::MergeWorkUnit>,
+        usize,
+    ) {
+        let buckets: Option<Vec<_>> = files
+            .iter()
+            .map(|file| {
+                lakesoul_io::helpers::extract_hash_bucket_id(file)
+                    .filter(|bucket| (*bucket as usize) < bucket_count)
+            })
+            .collect();
+        let buckets = buckets.unwrap_or_else(|| vec![0; files.len()]);
+        let mut positions = HashMap::new();
+        let mut groups = Vec::new();
+        for ((input, file), bucket) in inputs.into_iter().zip(files).zip(buckets) {
+            let next = groups.len();
+            let index = *positions.entry(bucket).or_insert(next);
+            if index == groups.len() {
+                groups.push((Vec::<Arc<dyn ExecutionPlan>>::new(), Vec::<String>::new()));
+            }
+            groups[index].0.push(input);
+            groups[index].1.push(file);
+        }
+        let lanes = lane_budget.max(1).min(groups.len().max(1));
+        let mut inputs = Vec::new();
+        let mut units = Vec::with_capacity(groups.len());
+        for (index, (group_inputs, files)) in groups.into_iter().enumerate() {
+            let start = inputs.len();
+            inputs.extend(group_inputs);
+            units.push(lakesoul_io::physical_plan::merge::MergeWorkUnit {
+                input_range: start..inputs.len(),
+                files,
+                default_column_value: defaults.clone(),
+                lane: index % lanes,
+            });
+        }
+        (inputs, units, lanes)
+    }
+
     fn build_partitioned_exec(
         partitioned_execs: Vec<Arc<dyn ExecutionPlan>>,
         empty_schema: SchemaRef,
@@ -1806,6 +1855,11 @@ impl TableProvider for LakeSoulTableProvider {
         };
 
         let mut partitioned_execs = Vec::new();
+        // Keep range merges as separate distributed subtrees. Dividing the
+        // lane budget prevents every range from claiming target_partitions.
+        let range_count = inputs_map.len().max(1);
+        let lane_budget =
+            (session_state.config().target_partitions() / range_count).max(1);
         for (_, (partition_values, (inputs, file_paths, configs))) in inputs_map {
             // A work unit of a table without primary keys never merges
             // (`merge_stream` concatenates), so it is served by a plain scan
@@ -1833,13 +1887,27 @@ impl TableProvider for LakeSoulTableProvider {
                 Some(exec) => exec,
                 None => {
                     let mut io_config = self.io_config.clone();
-                    io_config.set_files(file_paths);
+                    io_config.set_files(file_paths.clone());
+                    let bucket_count = if self.primary_keys.is_empty() {
+                        // Mixed-format append-only fallback concatenates one range.
+                        0
+                    } else {
+                        self.io_config.hash_bucket_num()
+                    };
+                    let (inputs, units, lanes) = Self::bucket_merge_work_units(
+                        inputs,
+                        file_paths,
+                        partition_values,
+                        bucket_count,
+                        lane_budget,
+                    );
                     Arc::new(
-                        lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                        lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
                             merged_schema.clone(),
                             inputs,
                             io_config,
-                            partition_values,
+                            units,
+                            lanes,
                         )
                         .map_err(|report| {
                             DataFusionError::External(report.into_boxed_error())
@@ -2044,7 +2112,103 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
     use chrono::TimeZone;
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlanProperties, PlanProperties,
+        RecordBatchStream, SendableRecordBatchStream,
+    };
     use object_store::{ObjectMeta, path::Path};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct LaneProbe {
+        input: Arc<dyn ExecutionPlan>,
+        opened: Arc<AtomicUsize>,
+        active: Arc<AtomicUsize>,
+    }
+
+    impl DisplayAs for LaneProbe {
+        fn fmt_as(
+            &self,
+            _: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            write!(f, "LaneProbe")
+        }
+    }
+
+    impl ExecutionPlan for LaneProbe {
+        fn name(&self) -> &str {
+            "LaneProbe"
+        }
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.input.properties()
+        }
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![&self.input]
+        }
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(
+                &Arc<dyn PhysicalExpr>,
+            ) -> DFResult<
+                datafusion_common::tree_node::TreeNodeRecursion,
+            >,
+        ) -> DFResult<datafusion_common::tree_node::TreeNodeRecursion> {
+            Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+        }
+        fn with_new_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> DFResult<Arc<dyn ExecutionPlan>> {
+            Ok(Arc::new(Self {
+                input: children[0].clone(),
+                opened: self.opened.clone(),
+                active: self.active.clone(),
+            }))
+        }
+        fn execute(
+            &self,
+            partition: usize,
+            context: Arc<TaskContext>,
+        ) -> DFResult<SendableRecordBatchStream> {
+            assert_eq!(partition, 0, "merge children always execute partition zero");
+            assert_eq!(
+                self.active.fetch_add(1, Ordering::SeqCst),
+                0,
+                "a later unit opened before the previous child stream was dropped"
+            );
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(LaneProbeStream {
+                inner: self.input.execute(partition, context)?,
+                active: self.active.clone(),
+            }))
+        }
+    }
+
+    struct LaneProbeStream {
+        inner: SendableRecordBatchStream,
+        active: Arc<AtomicUsize>,
+    }
+    impl futures::Stream for LaneProbeStream {
+        type Item = DFResult<arrow::record_batch::RecordBatch>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.inner.as_mut().poll_next(cx)
+        }
+    }
+    impl RecordBatchStream for LaneProbeStream {
+        fn schema(&self) -> SchemaRef {
+            self.inner.schema()
+        }
+    }
+    impl Drop for LaneProbeStream {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
 
     fn object_meta(location: &str) -> ObjectMeta {
         ObjectMeta {
@@ -2054,6 +2218,278 @@ mod tests {
             e_tag: None,
             version: None,
         }
+    }
+    async fn bucket_test_input(id: i32, value: i32) -> Arc<dyn ExecutionPlan> {
+        use arrow::array::Int32Array;
+        use arrow::record_batch::RecordBatch;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![id])),
+                Arc::new(Int32Array::from(vec![value])),
+            ],
+        )
+        .unwrap();
+        datafusion::prelude::SessionContext::new()
+            .read_batch(batch)
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap()
+    }
+
+    fn bucket_test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, true),
+            Field::new("part", DataType::Utf8, false),
+        ]))
+    }
+
+    async fn collect_bucket_rows(
+        exec: Arc<dyn ExecutionPlan>,
+    ) -> Vec<(i32, i32, String)> {
+        use arrow::array::{Int32Array, StringArray};
+        let batches = datafusion::physical_plan::collect(
+            exec,
+            Arc::new(datafusion::execution::TaskContext::default()),
+        )
+        .await
+        .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            let values = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            let parts = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            rows.extend((0..batch.num_rows()).map(|row| {
+                (
+                    ids.value(row),
+                    values.value(row),
+                    parts.value(row).to_string(),
+                )
+            }));
+        }
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn bucket_merge_lanes_preserve_file_versions_and_all_buckets() {
+        let originals = vec![
+            bucket_test_input(2, 20).await,
+            bucket_test_input(1, 10).await,
+            bucket_test_input(2, 22).await,
+            bucket_test_input(1, 11).await,
+        ];
+        let (inputs, units, lanes) = LakeSoulTableProvider::bucket_merge_work_units(
+            originals.clone(),
+            [
+                "part-a_0001.parquet",
+                "part-b_0000.parquet",
+                "part-c_0001.parquet",
+                "part-d_0000.parquet",
+            ]
+            .map(String::from)
+            .to_vec(),
+            Arc::new(HashMap::from([("part".into(), "range-a".into())])),
+            2,
+            8,
+        );
+        assert_eq!(lanes, 2);
+        assert_eq!(units.len(), 2);
+        // PK locator inputs were selected in the original file order before
+        // regrouping; pointer identity verifies the aligned associations.
+        for (input, original_index) in inputs.iter().zip([0, 2, 1, 3]) {
+            assert!(Arc::ptr_eq(input, &originals[original_index]));
+        }
+        assert_eq!(
+            units[0].files,
+            ["part-a_0001.parquet", "part-c_0001.parquet"]
+        );
+        let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["id".into()])
+            .build();
+        let exec = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                bucket_test_schema(),
+                inputs,
+                config,
+                units,
+                lanes,
+            )
+            .unwrap(),
+        );
+        assert_eq!(exec.output_partitioning().partition_count(), 2);
+        assert!(exec.output_ordering().is_none());
+        assert_eq!(
+            collect_bucket_rows(exec).await,
+            vec![(1, 11, "range-a".into()), (2, 22, "range-a".into()),]
+        );
+    }
+
+    #[tokio::test]
+    async fn bucket_merge_unknown_or_out_of_range_file_keeps_whole_range_atomic() {
+        for untrusted in ["unknown.parquet", "part-a_0002.parquet"] {
+            let originals = vec![
+                bucket_test_input(1, 10).await,
+                bucket_test_input(1, 11).await,
+                bucket_test_input(1, 12).await,
+            ];
+            let (inputs, units, lanes) = LakeSoulTableProvider::bucket_merge_work_units(
+                originals.clone(),
+                vec![
+                    "part-a_0000.parquet".into(),
+                    untrusted.into(),
+                    "part-c_0001.parquet".into(),
+                ],
+                Arc::new(HashMap::from([("part".into(), "range-a".into())])),
+                2,
+                8,
+            );
+            assert_eq!(lanes, 1);
+            assert_eq!(units.len(), 1);
+            assert_eq!(units[0].input_range, 0..3);
+            for (actual, expected) in inputs.iter().zip(&originals) {
+                assert!(Arc::ptr_eq(actual, expected));
+            }
+            let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
+                .with_primary_keys(vec!["id".into()])
+                .build();
+            let exec = Arc::new(
+                lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                    bucket_test_schema(),
+                    inputs,
+                    config,
+                    units,
+                    lanes,
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                collect_bucket_rows(exec).await,
+                vec![(1, 12, "range-a".into())]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bucket_merge_sequential_units_keep_partition_constants() {
+        use lakesoul_io::physical_plan::merge::MergeWorkUnit;
+        let inputs = vec![
+            bucket_test_input(1, 10).await,
+            bucket_test_input(2, 20).await,
+            bucket_test_input(3, 30).await,
+        ];
+        let units = ["range-a", "range-a", "range-b"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| MergeWorkUnit {
+                input_range: index..index + 1,
+                files: vec![format!("part-{index}_0000.parquet")],
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".into(),
+                    part.into(),
+                )])),
+                lane: 0,
+            })
+            .collect();
+        let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["id".into()])
+            .build();
+        let exec = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                bucket_test_schema(),
+                inputs,
+                config,
+                units,
+                1,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            collect_bucket_rows(exec).await,
+            vec![
+                (1, 10, "range-a".into()),
+                (2, 20, "range-a".into()),
+                (3, 30, "range-b".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn bucket_merge_lane_opens_and_drops_units_lazily() {
+        use lakesoul_io::physical_plan::merge::MergeWorkUnit;
+        let opened = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut inputs = Vec::new();
+        let mut units = Vec::new();
+        for index in 0..3 {
+            inputs.push(Arc::new(LaneProbe {
+                input: bucket_test_input(index as i32, index as i32).await,
+                opened: opened.clone(),
+                active: active.clone(),
+            }) as Arc<dyn ExecutionPlan>);
+            units.push(MergeWorkUnit {
+                input_range: index..index + 1,
+                files: vec![format!("part-{index}_0000.parquet")],
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".into(),
+                    "range-a".into(),
+                )])),
+                lane: 0,
+            });
+        }
+        let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["id".into()])
+            .build();
+        let exec = lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+            bucket_test_schema(),
+            inputs,
+            config,
+            units,
+            1,
+        )
+        .unwrap();
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        assert_eq!(
+            opened.load(Ordering::SeqCst),
+            0,
+            "execute only creates a lazy lane"
+        );
+        assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 1);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        let mut rows = 1;
+        while let Some(batch) = stream.next().await {
+            rows += batch.unwrap().num_rows();
+        }
+        assert_eq!(rows, 3);
+        assert_eq!(opened.load(Ordering::SeqCst), 3);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+
+        // Dropping a partially consumed lane closes only its current unit and
+        // never opens children belonging to the remaining units.
+        opened.store(0, Ordering::SeqCst);
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        stream.next().await.unwrap().unwrap();
+        drop(stream);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -2389,6 +2825,29 @@ mod tests {
             &[old_input.clone(), new_input.clone()],
             &[],
         );
+
+        let (bucket_inputs, bucket_units, lanes) =
+            LakeSoulTableProvider::bucket_merge_work_units(
+                vec![old_input.clone(), new_input.clone()],
+                vec![
+                    "part-old_0000.parquet".into(),
+                    "part-new_0001.parquet".into(),
+                ],
+                Arc::new(HashMap::new()),
+                2,
+                2,
+            );
+        let bucket_partition =
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                merged_schema.clone(),
+                bucket_inputs,
+                LakeSoulIOConfig::default(),
+                bucket_units,
+                lanes,
+            )
+            .unwrap();
+        assert_eq!(bucket_partition.output_partitioning().partition_count(), 2);
+        assert_eq!(bucket_partition.schema(), merged_schema);
 
         let old_partition = Arc::new(
             lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
