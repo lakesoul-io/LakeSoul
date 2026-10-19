@@ -14,11 +14,34 @@ use futures::future::join_all;
 use datafusion::functions::string::expr_fn::{concat, octet_length};
 use datafusion::logical_expr::Cast;
 
-/// Above this change ratio (percent of the estimated live view rows) a full
-/// bucket-parallel rebuild is cheaper than the incremental replay.  Calibrated
-/// on the 10M star benchmark: 1% incremental ~1s, 5% incremental ~3.5s,
-/// full rebuild ~2.5s.
-const REBUILD_RATIO_PERCENT: u64 = 4;
+// The change ratio (percent of the estimated live view rows) above which a
+// full bucket-parallel rebuild is cheaper than the incremental replay.  It is
+// per storage format because the state read dominates the replay and its
+// random-read granularity differs (Vortex blocks vs Parquet pages).
+// `LAKESOUL_IVM_REBUILD_RATIO` overrides it at runtime (a percentage).
+
+/// The calibrated crossover for a Parquet MV (pages cannot skip a random key
+/// set, so the state read is a full pass even at small ratios).
+const PARQUET_REBUILD_RATIO_PERCENT: u64 = 4;
+
+/// The calibrated crossover for a Vortex MV: 1024-row blocks let the pk index
+/// skip non-matching blocks, so the replay stays cheaper up to a higher ratio.
+const VORTEX_REBUILD_RATIO_PERCENT: u64 = 8;
+
+/// The rebuild crossover for `mv`, overridable with
+/// `LAKESOUL_IVM_REBUILD_RATIO` (percent of the estimated live rows).
+fn rebuild_ratio_percent(mv: &IvmTable) -> u64 {
+    if let Ok(value) = std::env::var("LAKESOUL_IVM_REBUILD_RATIO")
+        && let Ok(percent) = value.parse::<u64>()
+    {
+        return percent;
+    }
+    if matches!(mv.file_format, crate::PhysicalFormat::Parquet) {
+        PARQUET_REBUILD_RATIO_PERCENT
+    } else {
+        VORTEX_REBUILD_RATIO_PERCENT
+    }
+}
 
 /// The typed view of a left-deep chain of keyed lookups over a base table.
 /// A step whose keys are the source key is a 1:1 lookup; any other key is a
@@ -517,6 +540,60 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
     Ok(())
 }
 
+/// The MV range partitions an affected base key can live in.
+///
+/// Sound when the MV's partition columns are base partition columns and the
+/// base primary keys carry all of them (a key cannot move between partitions):
+/// every affected MV row then lies in one of the delta's partitions, so the
+/// unchanged MV partitions can be skipped.
+fn lookup_chain_mv_partitions(
+    view: &LookupChainView,
+    window: &SourceWindow,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let mv_partitions = &view.mv.range_partition_columns;
+    if mv_partitions.is_empty() {
+        return None;
+    }
+    let (base, _) = view.sources.first()?;
+    if !mv_partitions
+        .iter()
+        .all(|column| base.range_partition_columns.contains(column))
+        || !base
+            .range_partition_columns
+            .iter()
+            .all(|column| base.primary_keys.contains(column))
+        || !mv_partitions
+            .iter()
+            .all(|column| view.mv.primary_keys.contains(column))
+    {
+        return None;
+    }
+    let mut restriction = mv_partitions
+        .iter()
+        .map(|column| (column.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    for files in &window.added_files {
+        let values = crate::table::parse_partition_values(
+            &files.partition_desc,
+            &base.range_partition_columns,
+        )?;
+        for (column, allowed) in restriction.iter_mut() {
+            let index = base
+                .range_partition_columns
+                .iter()
+                .position(|candidate| candidate == column)?;
+            let value = values.get(index)?.clone();
+            if !allowed.contains(&value) {
+                allowed.push(value);
+            }
+        }
+    }
+    restriction
+        .iter()
+        .all(|(_, allowed)| !allowed.is_empty())
+        .then_some(restriction)
+}
+
 /// The columns of one source a refresh must read.
 fn lookup_chain_source_columns(
     view: &LookupChainView,
@@ -731,7 +808,7 @@ impl IvmRuntime {
                 .iter()
                 .map(|batch| batch.num_rows() as u64)
                 .sum::<u64>();
-            if delta_rows * 100 >= base_rows * REBUILD_RATIO_PERCENT {
+            if delta_rows * 100 >= base_rows * rebuild_ratio_percent(&view.mv) {
                 return self.rebuild_lookup_chain(view).await.map(Some);
             }
         }
@@ -905,7 +982,9 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
 
         // The view only needs the state rows of the affected keys.  In the
-        // base-only case that is a key-filtered read instead of the whole MV.
+        // base-only case that is a key-filtered read instead of the whole MV;
+        // a range-partitioned MV additionally skips the partitions the delta
+        // did not touch.
         let mv = if base_only {
             let key_batches = frames[0]
                 .0
@@ -915,11 +994,19 @@ impl IvmRuntime {
                 .collect()
                 .await?;
             let filters = key_filters(&base.primary_keys, &key_batches)?;
-            dataframe(
-                &context,
-                view.mv.read_current_filtered(&self.client, filters).await?,
-                &view.mv.schema,
-            )?
+            let batches = match lookup_chain_mv_partitions(view, &windows[0]) {
+                Some(restriction) => {
+                    view.mv
+                        .read_current_filtered_partitions(
+                            &self.client,
+                            filters,
+                            &restriction,
+                        )
+                        .await?
+                }
+                None => view.mv.read_current_filtered(&self.client, filters).await?,
+            };
+            dataframe(&context, batches, &view.mv.schema)?
         } else {
             dataframe(
                 &context,

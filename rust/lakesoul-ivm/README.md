@@ -687,6 +687,19 @@ storage or S3, and prints a CSV plus p50/p95 summaries.  Start with
 `cargo run --release -p lakesoul-ivm --example ivm_bench -- --rows 100000
 --change-ratio 0.01 --rounds 15`.
 
+A refresh that retracts rows reads the affected keys of its state (the MV
+rows being replaced).  On **Vortex** tables that read goes through the
+row-level pk index by default: the sink writes every column in 1024-row
+blocks, so only the blocks with a matched key are read (the index itself
+needs `LAKESOUL_CACHE`; without it the read falls back to a scan).  On the
+10M star this is 182–204 / 266–279 / 402–421 ms for the join step at
+0.01%/0.1%/1% change (635–662 ms with `vortex-compact`), against 2.0–2.2 s
+for a full rebuild; at 3% the chain is still ~0.8 s.  On **Parquet** the index
+is off by default: a page holds tens of thousands of rows, the random key set
+cannot skip pages, and the scan is faster.  See the state-read experiment in
+[`BENCH.md`](BENCH.md); the benchmark selects the format with
+`ivm_bench_star --format parquet|vortex|vortex-compact`.
+
 ## Tests
 
 The crate has three test layers:

@@ -90,6 +90,12 @@ use crate::file_format::PhysicalFormat;
 /// is better off scanning.
 pub const MAX_PK_CANDIDATES: usize = 10_000;
 
+/// The candidate count above which the sorted index merge replaces the
+/// per-key binary search.  Below it the binary search is cheaper (the merge
+/// sorts the candidates first); above it the merge's `rows + keys` pass wins
+/// over `keys * log(rows)`.
+const BULK_LOOKUP_MIN_KEYS: usize = 64;
+
 /// When the candidate files of a query hold fewer rows than this in total, a
 /// plain scan is cheaper than building local indexes.  The decision spans all
 /// files of the query: a table of many small files (IVM writes several files
@@ -293,6 +299,32 @@ impl MmapIndex {
         }
         start..low
     }
+
+    /// The rows whose key starts with any of `prefixes`, in row order.
+    ///
+    /// The prefixes must be sorted and have the same key layout: the index
+    /// rows use the same order-preserving encoding, so one merge pass answers
+    /// them all.  Each prefix ranges over disjoint, increasing rows (equal
+    /// length encodings are never prefixes of one another unless equal), so
+    /// the cursor only moves forward.
+    ///
+    /// `rows_with_prefix` per key costs `log(rows)` per key; for the candidate
+    /// sets of an incremental refresh (many keys over many files) that is
+    /// `keys * files * log(rows)`.  This pass is `rows + keys` per file.
+    fn rows_with_prefixes(&self, prefixes: &[&[u8]]) -> Vec<u32> {
+        let mut rows = Vec::new();
+        let mut cursor = 0usize;
+        for prefix in prefixes {
+            while cursor < self.rows && self.row(cursor) < *prefix {
+                cursor += 1;
+            }
+            while cursor < self.rows && self.row(cursor).starts_with(prefix) {
+                rows.push(cursor as u32);
+                cursor += 1;
+            }
+        }
+        rows
+    }
 }
 
 /// Streaming writer of a [`MmapIndex`] file.
@@ -459,6 +491,19 @@ pub fn extract_key_constraints(
     filters: &[Expr],
     primary_keys: &[(String, DataType)],
 ) -> Option<KeyConstraint> {
+    extract_key_constraints_with_cap(filters, primary_keys, MAX_PK_CANDIDATES)
+}
+
+/// [`extract_key_constraints`] with an explicit candidate cap.
+///
+/// The cap bounds the cross product of the prefix columns; a refresh with a
+/// large change ratio passes a bigger one (its candidate set is the change
+/// ratio times the view size, not a point lookup).
+pub fn extract_key_constraints_with_cap(
+    filters: &[Expr],
+    primary_keys: &[(String, DataType)],
+    max_candidates: usize,
+) -> Option<KeyConstraint> {
     if primary_keys.is_empty() {
         return None;
     }
@@ -487,7 +532,7 @@ pub fn extract_key_constraints(
                 next.push(candidate);
             }
         }
-        if next.len() > MAX_PK_CANDIDATES {
+        if next.len() > max_candidates {
             return None;
         }
         values = next;
@@ -1382,7 +1427,9 @@ pub async fn try_build_key_inputs(
     constraint: &KeyConstraint,
 ) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
     index_disk_cache()?;
-    if constraint.values.is_empty() || constraint.values.len() > MAX_PK_CANDIDATES {
+    if constraint.values.is_empty()
+        || constraint.values.len() > io_config.max_pk_candidates()
+    {
         return None;
     }
     if configs.is_empty() {
@@ -1430,6 +1477,7 @@ pub async fn try_build_key_inputs(
         &encoded_refs,
         int_candidates.as_deref(),
         encoded.len(),
+        io_config.bulk_pk_lookup(),
     )
     .await
 }
@@ -1488,6 +1536,7 @@ pub async fn try_build_key_inputs_encoded(
         &encoded_refs,
         None,
         keys.len(),
+        io_config.bulk_pk_lookup(),
     )
     .await
 }
@@ -1503,6 +1552,7 @@ async fn build_key_inputs(
     encoded: &[&[u8]],
     int_candidates: Option<&[i64]>,
     key_count: usize,
+    bulk: bool,
 ) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
     // Built lazily: only files that actually need a vortex scan create one,
     // and creating a session costs far more than this check.
@@ -1514,6 +1564,18 @@ async fn build_key_inputs(
     let mut n_files = 0usize;
     let mut n_pruned = 0usize;
     let mut n_rows = 0usize;
+    // One binary search per key costs `keys * log(rows)` per file.  Above the
+    // threshold the candidates are sorted once and merged with each file's
+    // sorted index instead (`rows + keys` per file), which is what keeps the
+    // large candidate sets of an incremental refresh affordable.
+    let bulk = bulk && encoded.len() >= BULK_LOOKUP_MIN_KEYS;
+    let sorted: Vec<&[u8]> = if bulk {
+        let mut sorted = encoded.to_vec();
+        sorted.sort_unstable();
+        sorted
+    } else {
+        Vec::new()
+    };
 
     // Indexing costs one key-column read plus a small local file per data
     // file; when the candidate set as a whole is tiny, a plain scan is
@@ -1576,10 +1638,20 @@ async fn build_key_inputs(
         .await?;
         t_cache += t.elapsed();
 
-        let mut indices: Vec<u64> = Vec::new();
-        for key in encoded {
-            indices.extend(entry.index.rows_with_prefix(key).map(|row| row as u64));
-        }
+        let mut indices: Vec<u64> = if bulk {
+            entry
+                .index
+                .rows_with_prefixes(&sorted)
+                .into_iter()
+                .map(u64::from)
+                .collect()
+        } else {
+            let mut indices = Vec::new();
+            for key in encoded {
+                indices.extend(entry.index.rows_with_prefix(key).map(|row| row as u64));
+            }
+            indices
+        };
         if indices.is_empty() {
             inputs.push(empty_input(&projected_schema)?);
             continue;
@@ -1968,6 +2040,40 @@ mod tests {
         // Missing keys yield an empty range; "ab" must not match "a".
         assert_eq!(index.rows_with_prefix(&encode_utf8("z")), 5..5);
         assert_eq!(index.rows_with_prefix(&encode_utf8("ab")), 2..2);
+    }
+
+    #[test]
+    fn bulk_merge_answers_many_sorted_prefixes() {
+        let (_dir, index) = build_test_index(&["a", "a", "ab", "b", "b", "c", "e"]);
+        // Sorted prefixes, duplicates and a miss: rows come out in row order.
+        let prefixes = ["a", "b", "c", "e", "z"].map(encode_utf8);
+        let refs: Vec<&[u8]> = prefixes.iter().map(Vec::as_slice).collect();
+        assert_eq!(index.rows_with_prefixes(&refs), vec![0, 1, 3, 4, 5, 6]);
+        // The merge keeps the per-key prefix semantics: "a" excludes "ab".
+        assert_eq!(index.rows_with_prefix(&encode_utf8("a")), 0..2);
+    }
+
+    #[test]
+    fn bulk_merge_matches_binary_search_on_many_keys() {
+        // A sorted key space and a large candidate set, as an incremental
+        // refresh reads it: every 7th key is a candidate.
+        let keys: Vec<String> = (0..5_000).map(|i| format!("k{i:05}")).collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let (_dir, index) = build_test_index(&refs);
+
+        let mut probes: Vec<String> = keys.iter().step_by(7).cloned().collect();
+        probes.push("zzz".to_string());
+        probes.sort();
+        let encoded: Vec<Vec<u8>> = probes.iter().map(|key| encode_utf8(key)).collect();
+        let sorted: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
+
+        let bulk = index.rows_with_prefixes(&sorted);
+        let mut expected = Vec::new();
+        for prefix in &sorted {
+            expected.extend(index.rows_with_prefix(prefix).map(|row| row as u32));
+        }
+        assert_eq!(bulk, expected);
+        assert!(!bulk.is_empty());
     }
 
     #[test]

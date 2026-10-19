@@ -40,6 +40,41 @@ use crate::metadata::PartitionVersion;
 /// memory; the writer still emits one file per hash bucket per append.
 pub(crate) const MAX_STATE_APPEND_ROWS: usize = 1_048_576;
 
+/// The largest affected-key set a key-filtered state read resolves through the
+/// row-level pk index.  A refresh's candidate set is the change ratio times
+/// the view size (hundreds of thousands of keys at 1%–5% of a 10M view), far
+/// above the point-lookup default of the locator; above this the read falls
+/// back to a full scan.
+pub(crate) const MAX_STATE_KEY_CANDIDATES: usize = 1_000_000;
+
+/// Let a key-filtered state read resolve candidate rows through the row-level
+/// pk index.
+///
+/// Enabled for Vortex tables: the writer gives every column a 1024-row block,
+/// so a scattered candidate read touches a small block per matched row instead
+/// of a whole Parquet page.  Measured on the 10M star (join step p50):
+/// Vortex + index 402–421 ms at 1% change vs 756–1258 ms for the Parquet
+/// key-filtered scan, and 182–204 ms vs 367–422 ms at 0.01%.
+///
+/// Parquet stays off by default: a page holds tens of thousands of rows, so at
+/// 0.1%–1% almost every page contains a key and the index cannot skip data —
+/// measured slower than the plain scan (639–674 ms vs 367–422 ms at 10M/0.01%).
+/// `LAKESOUL_IVM_STATE_INDEX=1` forces it on for any format (clustered key sets
+/// and point lookups can still benefit on Parquet).  The index needs the local
+/// disk cache (`LAKESOUL_CACHE`); without it the read falls back to a scan.
+fn with_state_key_lookup(
+    builder: lakesoul_io::config::LakeSoulIOConfigBuilder,
+    file_format: PhysicalFormat,
+) -> lakesoul_io::config::LakeSoulIOConfigBuilder {
+    let vortex = !matches!(file_format, PhysicalFormat::Parquet);
+    if !vortex && std::env::var("LAKESOUL_IVM_STATE_INDEX").is_err() {
+        return builder;
+    }
+    builder
+        .with_max_pk_candidates(MAX_STATE_KEY_CANDIDATES)
+        .with_bulk_pk_lookup(true)
+}
+
 /// The row kind column of materialized view outputs (`insert` / `delete`).
 pub const IVM_ROW_KINDS_COLUMN: &str = "rowKinds";
 /// The epoch a materialized view row was written in.
@@ -669,6 +704,24 @@ impl IvmTable {
             .await
     }
 
+    /// Read the before state of a refresh window with pushed filters and a
+    /// pushed projection.
+    ///
+    /// Both are handed to the LakeSoul reader: the filter is the affected-key
+    /// constraint (and drives the row-level pk index), the projection keeps
+    /// the scan to the columns the refresh actually consumes.  The projection
+    /// must contain the merge key and the change column.
+    pub async fn read_before_window_filtered_projected(
+        &self,
+        client: &MetaDataClient,
+        before: &std::collections::HashMap<String, Option<i64>>,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_before_window_with_options(client, before, filters, projection)
+            .await
+    }
+
     async fn read_before_window_with_options(
         &self,
         client: &MetaDataClient,
@@ -746,6 +799,7 @@ impl IvmTable {
                 }
             }
             if !filters.is_empty() {
+                builder = with_state_key_lookup(builder, self.file_format);
                 #[allow(deprecated)]
                 {
                     builder = builder.with_filters(filters.clone());
@@ -862,6 +916,7 @@ impl IvmTable {
             .with_primary_keys(self.primary_keys.clone())
             .with_physical_format(self.file_format);
         if !filters.is_empty() {
+            builder = with_state_key_lookup(builder, self.file_format);
             #[allow(deprecated)]
             {
                 builder = builder.with_filters(filters);
@@ -931,6 +986,7 @@ impl IvmTable {
             }
         }
         if !filters.is_empty() {
+            builder = with_state_key_lookup(builder, self.file_format);
             #[allow(deprecated)]
             {
                 builder = builder.with_filters(filters);
@@ -983,6 +1039,7 @@ impl IvmTable {
             .with_primary_keys(self.primary_keys.clone())
             .with_physical_format(self.file_format);
         if !filters.is_empty() {
+            builder = with_state_key_lookup(builder, self.file_format);
             // `with_filters` is deprecated in favour of the string/proto
             // variants, but it is the only API that keeps the filters as typed
             // expressions, which is what the runtime builds.

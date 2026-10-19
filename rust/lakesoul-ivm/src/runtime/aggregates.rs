@@ -2310,6 +2310,55 @@ impl IvmRuntime {
     /// and the result is merged with the current MV state: rows whose key was
     /// already written by this epoch are skipped, which makes a replay a
     /// no-op.
+    /// The source columns a SUM/COUNT refresh reads: the merge key, the change
+    /// column, the group/value/count columns and every column the aggregate
+    /// expressions and predicates reference.
+    ///
+    /// The before-state read of a large source is the expensive one (a full pass
+    /// at high change ratios), so pruning its projection keeps the scan to the
+    /// columns the refresh consumes instead of the whole table schema.
+    fn sum_count_source_projection(view: &SumCountView) -> Result<Option<SchemaRef>> {
+        if std::env::var("LAKESOUL_IVM_NO_PROJECTION").is_ok() {
+            return Ok(None);
+        }
+        let mut columns = view.source.primary_keys.clone();
+        if let Some(change) = change_column(&view.source) {
+            columns.push(change.to_string());
+        }
+        for key in &view.group_keys {
+            // A computed group key is an alias, not a source column; its inputs
+            // come from the rendered expression below.
+            if view.source.schema.field_with_name(key).is_ok() {
+                columns.push(key.clone());
+            }
+        }
+        columns.extend(view.value_column.clone());
+        columns.extend(view.count_column.clone());
+        let context = SessionContext::new();
+        for expression in view
+            .group_exprs
+            .iter()
+            .chain(view.value_expr.iter())
+            .chain(view.aggregate_filter.iter())
+            .chain(view.filter.iter())
+        {
+            columns.extend(filter_columns(&context, &view.source.schema, expression)?);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let ordered = view
+            .source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| columns.contains(name) && seen.insert(name.clone()))
+            .collect::<Vec<_>>();
+        if ordered.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(project_schema(&view.source.schema, &ordered)?))
+    }
+
     pub async fn refresh_sum_count(&self, view: &SumCountView) -> Result<Option<i64>> {
         self.register_view(view).await?;
         validate_sum_count_view(view)?;
@@ -2446,21 +2495,24 @@ impl IvmRuntime {
         )?;
         let old_batches = if keyed && !changelog {
             let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
+            let projection = Self::sum_count_source_projection(view)?;
+            let old_schema = projection.as_ref().unwrap_or(&view.source.schema);
             let batches = project_group_keys(
                 &context,
                 view.source
-                    .read_before_window_filtered(
+                    .read_before_window_filtered_projected(
                         &self.client,
                         &window.before_versions,
                         pk_filters,
+                        projection.as_ref(),
                     )
                     .await?,
-                &view.source.schema,
+                old_schema,
                 &view.group_keys,
                 &view.group_exprs,
             )
             .await?;
-            register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
+            register_table(&delta_context, "old", batches.clone(), old_schema)?;
             batches
         } else {
             Vec::new()

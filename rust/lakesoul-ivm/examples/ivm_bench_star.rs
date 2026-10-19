@@ -72,6 +72,7 @@ struct Args {
     bucket: String,
     prefix: String,
     buckets: u32,
+    format: PhysicalFormat,
     hot_dim: Option<usize>,
     verify: bool,
     keep: bool,
@@ -93,6 +94,7 @@ impl Default for Args {
             bucket: "lakesoul-test-bucket".to_string(),
             prefix: "ivm-bench-star".to_string(),
             buckets: 4,
+            format: PhysicalFormat::Parquet,
             hot_dim: None,
             verify: false,
             keep: false,
@@ -133,6 +135,8 @@ Usage: ivm_bench_star [OPTIONS]
   --batch <N>                source write batch size (default 65536)
   --seed <N>                 deterministic workload seed (default 42)
   --buckets <N>              hash buckets per table (default 4)
+  --format <parquet|vortex|vortex-compact>
+                             data file format (default parquet)
   --hot-dim <N>              map fact FKs into N dimension keys (default:
                              all dimension keys; smaller N increases fanout)
   --storage <local|s3>       table storage (default s3)
@@ -166,6 +170,18 @@ fn parse_args() -> Args {
             "--batch" => args.batch = number(&value_of(&argv, &mut index)),
             "--seed" => args.seed = number(&value_of(&argv, &mut index)),
             "--buckets" => args.buckets = number(&value_of(&argv, &mut index)),
+            "--format" => {
+                args.format = match value_of(&argv, &mut index).as_str() {
+                    "parquet" => PhysicalFormat::Parquet,
+                    "vortex" => PhysicalFormat::Vortex,
+                    "vortex-compact" => PhysicalFormat::VortexCompact,
+                    other => {
+                        panic!(
+                            "--format must be parquet, vortex or vortex-compact, not {other}"
+                        )
+                    }
+                }
+            }
             "--hot-dim" => args.hot_dim = Some(number(&value_of(&argv, &mut index))),
             "--storage" => {
                 args.storage = match value_of(&argv, &mut index).as_str() {
@@ -437,7 +453,7 @@ async fn main() {
             IvmTableOptions::new(name.to_string(), format!("{base}/{name}"), schema)
                 .with_primary_keys(keys)
                 .with_cdc_column(CHANGE_COLUMN)
-                .with_file_format(PhysicalFormat::Parquet);
+                .with_file_format(args.format);
         options.hash_bucket_num = args.buckets.to_string();
         options
     };
@@ -542,7 +558,8 @@ async fn main() {
         format!("{base}/join"),
         lookup_chain_mv_schema_for(&schemas, &steps, &columns).unwrap(),
     )
-    .with_primary_keys(vec!["k".to_string()]);
+    .with_primary_keys(vec!["k".to_string()])
+    .with_file_format(args.format);
     join_options.hash_bucket_num = args.buckets.to_string();
     let join_mv = runtime.create_table(join_options).await.unwrap();
     let chain = LookupChainView::new(
@@ -561,7 +578,8 @@ async fn main() {
         format!("{base}/agg"),
         sum_count_mv_schema_for(&join_mv.schema, &group_keys, Some("v")).unwrap(),
     )
-    .with_primary_keys(group_keys.clone());
+    .with_primary_keys(group_keys.clone())
+    .with_file_format(args.format);
     agg_options.hash_bucket_num = args.buckets.to_string();
     let agg_mv = runtime.create_table(agg_options).await.unwrap();
     let agg = SumCountView::new_with_group_keys(
@@ -730,17 +748,17 @@ async fn main() {
         fact_files, join_files, agg_files
     );
 
-    if let Some(path) = &args.out {
-        if let Ok(file) = File::create(path) {
-            let mut writer = BufWriter::new(file);
-            writeln!(
-                writer,
-                "round,fact_changes,dim_changes,write_ms,join_ms,agg_ms,total_ms,peak_rss_mb"
-            )
-            .ok();
-            for line in &csv {
-                writeln!(writer, "{line}").ok();
-            }
+    if let Some(path) = &args.out
+        && let Ok(file) = File::create(path)
+    {
+        let mut writer = BufWriter::new(file);
+        writeln!(
+            writer,
+            "round,fact_changes,dim_changes,write_ms,join_ms,agg_ms,total_ms,peak_rss_mb"
+        )
+        .ok();
+        for line in &csv {
+            writeln!(writer, "{line}").ok();
         }
     }
 
