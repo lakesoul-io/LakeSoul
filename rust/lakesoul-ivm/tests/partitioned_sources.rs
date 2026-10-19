@@ -1526,3 +1526,147 @@ async fn a_partitioned_row_view_prunes_unchanged_partitions() {
         ]
     );
 }
+
+/// A window view over a partitioned source prunes the MV partitions the delta
+/// did not touch.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_window_view_prunes_unchanged_partitions() {
+    use lakesoul_ivm::{
+        WindowColumn, WindowFunction, WindowView, window_columns_mv_schema_for,
+    };
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pwin_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let partition_keys = vec!["g".to_string()];
+    let row_keys = vec!["k".to_string(), "day".to_string()];
+    let schema = window_columns_mv_schema_for(
+        &source.schema,
+        &partition_keys,
+        &row_keys,
+        &[WindowColumn::new(WindowFunction::RowNumber)],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pwin_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                schema,
+            )
+            .with_primary_keys(vec!["g".to_string(), "k".to_string(), "day".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = WindowView::new(
+        format!("pwin_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        partition_keys,
+        vec!["v".to_string()],
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "d1", "insert"),
+                (2, "a", 20, "d1", "insert"),
+                (3, "b", 5, "d2", "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap();
+
+    async fn read_rows(
+        runtime: &IvmRuntime,
+        mv: &IvmTable,
+    ) -> Vec<(String, i64, String, i64)> {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(mv)))
+            .unwrap();
+        let batches = context
+            .sql("select g, k, day, row_number from mv order by k, day")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let g = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let k = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let day = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let number = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((
+                    g.value(row).to_string(),
+                    k.value(row),
+                    day.value(row).to_string(),
+                    number.value(row),
+                ));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![
+            ("a".to_string(), 1, "d1".to_string(), 1),
+            ("a".to_string(), 2, "d1".to_string(), 2),
+            ("b".to_string(), 3, "d2".to_string(), 1),
+        ]
+    );
+
+    // Only d1 changes: the d2 partition of the MV is pruned, its row stays.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 30, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![
+            ("a".to_string(), 1, "d1".to_string(), 2),
+            ("a".to_string(), 2, "d1".to_string(), 1),
+            ("b".to_string(), 3, "d2".to_string(), 1),
+        ]
+    );
+}

@@ -1970,8 +1970,24 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
+        // A range-partitioned MV only holds affected rows in the partitions
+        // the delta touched (the MV keys carry the partition columns and a
+        // source key cannot move between them).
+        let mv_partitions =
+            super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta_batches = view.source.read_partition_files(window.added_files).await?;
-        let mv_batches = view.mv.read_current(&self.client).await?;
+        let mv_batches = match mv_partitions {
+            Some(restriction) => {
+                view.mv
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+            }
+            None => view.mv.read_current(&self.client).await?,
+        };
 
         // Phase 1: the affected partitions follow from the delta and the MV
         // alone, so the source scan can be pruned to them.
@@ -2261,6 +2277,8 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
 
         let context = SessionContext::new();
+        let mv_partitions =
+            super::mv_partitions_for_source(&view.mv, &view.source, &window);
         register_table(
             &context,
             "delta",
@@ -2273,12 +2291,19 @@ impl IvmRuntime {
             view.source.read_current(&self.client).await?,
             &view.source.schema,
         )?;
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
+        let mv_batches = match mv_partitions {
+            Some(restriction) => {
+                view.mv
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+            }
+            None => view.mv.read_current(&self.client).await?,
+        };
+        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
         commit_ids.extend(
             view.mv
                 .append_batches(
