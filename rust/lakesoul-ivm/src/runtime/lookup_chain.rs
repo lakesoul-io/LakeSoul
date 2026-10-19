@@ -14,6 +14,12 @@ use futures::future::join_all;
 use datafusion::functions::string::expr_fn::{concat, octet_length};
 use datafusion::logical_expr::Cast;
 
+/// Above this change ratio (percent of the estimated live view rows) a full
+/// bucket-parallel rebuild is cheaper than the incremental replay.  Calibrated
+/// on the 10M star benchmark: 1% incremental ~1s, 5% incremental ~3.5s,
+/// full rebuild ~2.5s.
+const REBUILD_RATIO_PERCENT: u64 = 4;
+
 /// The typed view of a left-deep chain of keyed lookups over a base table.
 /// A step whose keys are the source key is a 1:1 lookup; any other key is a
 /// 1:N lookup, whose matched row identity becomes part of the MV merge key.
@@ -701,6 +707,34 @@ impl IvmRuntime {
         if changed[1..].iter().any(|changed| *changed) {
             return self.rebuild_lookup_chain(view).await.map(Some);
         }
+        let base_only = changed[0];
+        let unique_steps = view.steps.iter().all(|step| step.unique);
+        let mv_empty = view.mv.current_files(&self.client).await?.is_empty();
+        // Cost-based fallback: at a high enough change ratio the bucket-parallel
+        // rebuild is cheaper than replaying the incremental delta.  The live
+        // row estimate is maintained on bootstrap/rebuild/refreshes below.
+        if base_only
+            && unique_steps
+            && !mv_empty
+            && let Some(base_rows) = self.known_view_rows(&view.view_id)
+            && base_rows > 0
+        {
+            let base = &view.sources[0].0;
+            let key_schema = project_schema(&base.schema, &base.primary_keys)?;
+            let batches = base
+                .read_partition_files_projected(
+                    windows[0].added_files.clone(),
+                    Some(&key_schema),
+                )
+                .await?;
+            let delta_rows = batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum::<u64>();
+            if delta_rows * 100 >= base_rows * REBUILD_RATIO_PERCENT {
+                return self.rebuild_lookup_chain(view).await.map(Some);
+            }
+        }
         let mut identity = Vec::new();
         for window in &windows {
             identity.extend(window.identity.iter().cloned());
@@ -719,10 +753,6 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        // The common case: only the base changed.  Every fact row is keyed,
-        // so only the delta keys can change and the chain can be replayed over
-        // the delta instead of the whole base.
-        let base_only = changed[0] && changed[1..].iter().all(|changed| !changed);
         // Bucket-parallel fast path: with a unique-step chain the MV is keyed
         // by the base key, so a key and all of its rows live in one hash
         // bucket.  Split the fact delta by the file's bucket suffix and
@@ -744,13 +774,24 @@ impl IvmRuntime {
                 .unwrap_or(1)
                 > 1;
         if bucket_parallel
-            && let Some(commit_ids) = self
+            && let Some(outcome) = self
                 .refresh_lookup_chain_buckets(view, &windows, epoch)
                 .await?
         {
+            if unique_steps {
+                if mv_empty {
+                    self.set_view_rows(&view.view_id, outcome.inserts);
+                } else {
+                    self.adjust_view_rows(
+                        &view.view_id,
+                        outcome.inserts,
+                        outcome.deletes,
+                    );
+                }
+            }
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
             self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .mark_epoch_committed(&record, &mv_versions, &outcome.commit_ids)
                 .await?;
             for window in windows {
                 self.advance_cursors(&view.view_id, window.cursors).await?;
@@ -1087,14 +1128,20 @@ impl IvmRuntime {
             .map(|column| column_expr(column))
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-        commit_ids.extend(
-            append_dataframe(
-                &view.mv,
-                &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
-            )
-            .await?,
-        );
+        let outcome = append_dataframe(
+            &view.mv,
+            &self.client,
+            inserts.union(deletes)?.sort_by(sort_exprs)?,
+        )
+        .await?;
+        if unique_steps {
+            if mv_empty {
+                self.set_view_rows(&view.view_id, outcome.inserts);
+            } else {
+                self.adjust_view_rows(&view.view_id, outcome.inserts, outcome.deletes);
+            }
+        }
+        commit_ids.extend(outcome.commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -1118,7 +1165,7 @@ impl IvmRuntime {
         view: &LookupChainView,
         windows: &[SourceWindow],
         epoch: i64,
-    ) -> Result<Option<Vec<String>>> {
+    ) -> Result<Option<AppendOutcome>> {
         let mut groups: BTreeMap<u32, Vec<String>> = BTreeMap::new();
         for group in &windows[0].added_files {
             for file in &group.files {
@@ -1257,20 +1304,29 @@ impl IvmRuntime {
                     )?
                     .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-                let commit_ids = append_dataframe(
+                let outcome = append_dataframe(
                     &mv_table,
                     &client,
                     inserts.union(deletes)?.sort_by(sort_exprs)?,
                 )
                 .await?;
-                Ok::<Vec<String>, rootcause::Report>(commit_ids)
+                Ok::<AppendOutcome, rootcause::Report>(outcome)
             }
         });
-        let mut commit_ids = Vec::new();
+        let mut outcome = AppendOutcome {
+            commit_ids: Vec::new(),
+            rows: 0,
+            inserts: 0,
+            deletes: 0,
+        };
         for result in join_all(tasks).await {
-            commit_ids.extend(result?);
+            let part = result?;
+            outcome.commit_ids.extend(part.commit_ids);
+            outcome.rows += part.rows;
+            outcome.inserts += part.inserts;
+            outcome.deletes += part.deletes;
         }
-        Ok(Some(commit_ids))
+        Ok(Some(outcome))
     }
 
     /// Rebuild a lookup chain from the current states of its sources.
@@ -1321,6 +1377,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let unique_steps = view.steps.iter().all(|step| step.unique);
 
         // Rebuild a unique-step, single-bucket-column chain bucket by bucket:
         // the MV was just truncated, so each task only writes its own inserts.
@@ -1431,12 +1488,18 @@ impl IvmRuntime {
                             .select(row_exprs.clone())?
                             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-                        let commit_ids = append_dataframe(&mv, &client, rows).await?;
-                        Ok::<Vec<String>, rootcause::Report>(commit_ids)
+                        let outcome = append_dataframe(&mv, &client, rows).await?;
+                        Ok::<AppendOutcome, rootcause::Report>(outcome)
                     }
                 });
+                let mut rebuilt_rows = 0u64;
                 for result in join_all(tasks).await {
-                    commit_ids.extend(result?);
+                    let part = result?;
+                    commit_ids.extend(part.commit_ids);
+                    rebuilt_rows += part.inserts;
+                }
+                if unique_steps {
+                    self.set_view_rows(&view.view_id, rebuilt_rows);
                 }
                 let mv_versions =
                     output_partition_versions(&self.client, &view.mv).await?;
@@ -1478,7 +1541,11 @@ impl IvmRuntime {
             .select(lookup_chain_row_exprs(view)?)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        commit_ids.extend(append_dataframe(&view.mv, &self.client, rows).await?);
+        let outcome = append_dataframe(&view.mv, &self.client, rows).await?;
+        if unique_steps {
+            self.set_view_rows(&view.view_id, outcome.inserts);
+        }
+        commit_ids.extend(outcome.commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata

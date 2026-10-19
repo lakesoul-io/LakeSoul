@@ -2332,6 +2332,21 @@ impl IvmRuntime {
                 .schema
                 .field_with_name(IVM_ROW_KINDS_COLUMN)
                 .is_ok();
+        // A rebuild of the upstream view truncates it and writes every row,
+        // so the window contains exactly the source's current files.  Detect
+        // that cheaply (file counts) and rebuild the aggregate directly
+        // instead of reading 10M rows just to discover it is a snapshot.
+        if view_source {
+            let added = window
+                .added_files
+                .iter()
+                .map(|group| group.files.len())
+                .sum::<usize>();
+            let current = view.source.current_files(&self.client).await?.len();
+            if added > 0 && added == current {
+                return self.rebuild_sum_count(view).await.map(Some);
+            }
+        }
         let raw_delta = if view_source {
             Some(
                 view.source

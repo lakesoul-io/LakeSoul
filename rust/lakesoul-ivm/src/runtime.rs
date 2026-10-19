@@ -13,9 +13,10 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::record_batch::RecordBatch;
+use arrow_array::Array;
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -2025,6 +2026,11 @@ fn group_key_fields(
 pub struct IvmRuntime {
     client: MetaDataClient,
     metadata: IvmMetadata,
+    /// Estimated live row count per view, used by the cost-based refresh
+    /// fallback.  Updated on bootstrap, rebuild and incremental refreshes of
+    /// unique-key chains; unknown after a process restart until the next
+    /// rebuild/bootstrap.
+    view_rows: Mutex<HashMap<String, u64>>,
 }
 
 /// The attachment a refresh failure carries when a source partition was
@@ -2528,6 +2534,43 @@ pub(crate) fn key_filters(
     Ok(filters)
 }
 
+/// The result of streaming a refresh output into a table.
+pub(crate) struct AppendOutcome {
+    pub(crate) commit_ids: Vec<String>,
+    /// Rows appended in total.
+    pub(crate) rows: u64,
+    /// Insert-kind rows.
+    pub(crate) inserts: u64,
+    /// Delete-kind rows.
+    pub(crate) deletes: u64,
+}
+
+impl IvmRuntime {
+    /// The estimated live row count of a view, when known.
+    pub(crate) fn known_view_rows(&self, view_id: &str) -> Option<u64> {
+        self.view_rows
+            .lock()
+            .ok()
+            .and_then(|rows| rows.get(view_id).copied())
+    }
+
+    /// Replace the estimated live row count of a view.
+    pub(crate) fn set_view_rows(&self, view_id: &str, rows: u64) {
+        if let Ok(mut counts) = self.view_rows.lock() {
+            counts.insert(view_id.to_string(), rows);
+        }
+    }
+
+    /// Apply an incremental round to the estimated live row count.
+    pub(crate) fn adjust_view_rows(&self, view_id: &str, inserts: u64, deletes: u64) {
+        if let Ok(mut counts) = self.view_rows.lock()
+            && let Some(rows) = counts.get_mut(view_id)
+        {
+            *rows = rows.saturating_sub(deletes).saturating_add(inserts);
+        }
+    }
+}
+
 /// Execute a refresh data frame and append its batches as they arrive.
 ///
 /// The driver never holds the whole output: up to
@@ -2538,16 +2581,32 @@ pub(crate) async fn append_dataframe(
     table: &IvmTable,
     client: &MetaDataClient,
     frame: DataFrame,
-) -> Result<Vec<String>> {
+) -> Result<AppendOutcome> {
     use futures::StreamExt;
     let mut stream = frame.execute_stream().await?;
     let mut commit_ids = Vec::new();
     let mut pending: Vec<RecordBatch> = Vec::new();
     let mut rows = 0usize;
+    let mut inserts = 0u64;
+    let mut deletes = 0u64;
     while let Some(batch) = stream.next().await {
         let batch = batch?;
         if batch.num_rows() == 0 {
             continue;
+        }
+        if let Ok(index) = batch.schema().index_of(IVM_ROW_KINDS_COLUMN)
+            && let Some(kinds) = batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+        {
+            for row in 0..kinds.len() {
+                match kinds.value(row) {
+                    "insert" => inserts += 1,
+                    "delete" => deletes += 1,
+                    _ => {}
+                }
+            }
         }
         rows += batch.num_rows();
         pending.push(batch);
@@ -2563,7 +2622,12 @@ pub(crate) async fn append_dataframe(
     if !pending.is_empty() {
         commit_ids.extend(table.append_batches(client, pending).await?);
     }
-    Ok(commit_ids)
+    Ok(AppendOutcome {
+        commit_ids,
+        rows: inserts + deletes,
+        inserts,
+        deletes,
+    })
 }
 
 fn dataframe(
@@ -2738,6 +2802,7 @@ impl IvmRuntime {
         Ok(Self {
             client: MetaDataClient::from_env().await?,
             metadata: IvmMetadata::from_env().await?,
+            view_rows: Mutex::new(HashMap::new()),
         })
     }
 
