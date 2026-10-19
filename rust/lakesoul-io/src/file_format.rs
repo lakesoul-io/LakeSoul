@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use ::vortex::layout::scan::memory::{ScanMemoryBudget, ScanMemorySessionExt};
 use ::vortex::{VortexSessionDefault, session::VortexSession};
 use arrow::datatypes::SchemaRef;
 use arrow_cast::can_cast_types;
@@ -102,15 +103,43 @@ impl FromStr for PhysicalFormat {
     }
 }
 
+/// The process-wide budget for decoded Vortex data in flight. Set at most once,
+/// at startup, from the process configuration.
+static VORTEX_DECODE_BUDGET: OnceLock<Arc<ScanMemoryBudget>> = OnceLock::new();
+
+/// Bounds the decoded Vortex data in flight across every scan of the process
+/// to `bytes`.
+///
+/// Each scan then starts decoding a split only once the split's estimated size
+/// fits, and a decoded batch counts against the budget until it and every
+/// slice of it are dropped, so a consumer that stops pulling stops decoding
+/// and the segment reads behind it. Call before building any
+/// [`LakeSoulFormatRegistry`] or distributed codec: sessions built earlier are
+/// unbudgeted. A second call must ask for the same size.
+pub fn install_vortex_decode_budget(bytes: usize) -> Result<()> {
+    let budget = VORTEX_DECODE_BUDGET.get_or_init(|| ScanMemoryBudget::new(bytes));
+    if budget.limit() != bytes {
+        bail!(
+            "vortex decode budget already installed as {} bytes, cannot change it to {bytes}",
+            budget.limit()
+        );
+    }
+    Ok(())
+}
+
 /// The [`VortexSession`] every LakeSoul vortex scan runs with.
 ///
 /// [`LakeSoulFormatRegistry`] builds its vortex sources with this session, and
 /// the distributed codec rebuilds a worker-side scan with the same call
 /// (`lakesoul_datafusion::distributed::codec::user_codecs`), so the coordinator
 /// and the workers decode files with identical codecs, expressions and
-/// coercions.
+/// coercions. Carries the [`install_vortex_decode_budget`] budget, if any.
 pub fn vortex_scan_session() -> VortexSession {
-    VortexSession::default()
+    let session = VortexSession::default();
+    match VORTEX_DECODE_BUDGET.get() {
+        Some(budget) => session.with_scan_memory_budget(Arc::clone(budget)),
+        None => session,
+    }
 }
 
 #[derive(Debug)]

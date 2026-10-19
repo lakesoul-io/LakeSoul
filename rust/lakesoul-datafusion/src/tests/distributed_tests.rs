@@ -192,6 +192,7 @@ pub(super) async fn spawn_workers(workers: usize) -> (Vec<String>, JoinSet<()>) 
         urls.push(format!("http://127.0.0.1:{port}"));
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
+            memory: Default::default(),
         };
         join_set.spawn(async move {
             crate::distributed::spawn_lakesoul_worker(&options, listener)
@@ -968,7 +969,11 @@ async fn spawn_workers_with_task_recording(
             received: Arc::clone(&received),
         })
         .with_runtime_env(
-            crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap(),
+            crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                &Default::default(),
+            )
+            .unwrap(),
         )
         .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
         join_set.spawn(async move {
@@ -1114,8 +1119,11 @@ async fn spawn_gated_workers(
             listener.local_addr().unwrap().port()
         ));
         let arrived_at_gate = Arc::new(AtomicUsize::new(0));
-        let runtime =
-            crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap();
+        let runtime = crate::session::build_worker_runtime_env(
+            &CoreArgs::default(),
+            &Default::default(),
+        )
+        .unwrap();
         runtime.register_object_store(
             &url::Url::parse("file://").unwrap(),
             Arc::new(GatedStore {
@@ -1127,6 +1135,7 @@ async fn spawn_gated_workers(
         );
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
+            memory: Default::default(),
         };
         let worker = crate::distributed::lakesoul_worker(&options)
             .unwrap()
@@ -3072,6 +3081,7 @@ async fn spawn_observable_workers(workers: usize) -> (Vec<String>, JoinSet<()>) 
         urls.push(url.clone());
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
+            memory: Default::default(),
         };
         let worker = crate::distributed::lakesoul_worker(&options).unwrap();
         let observability = worker.with_observability_service(Arc::new(
@@ -3411,7 +3421,10 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
         for _ in 0..WORKER_COUNT {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             urls.push(format!("http://{}", listener.local_addr()?));
-            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            let runtime = crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                &Default::default(),
+            )?;
             runtime.register_object_store(
                 &url::Url::parse("file://")?,
                 Arc::new(FailAfterFirstRead {
@@ -3425,6 +3438,7 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
             let worker = crate::distributed::lakesoul_worker(
                 &crate::distributed::LakeSoulWorkerOptions {
                     core_args: CoreArgs::default(),
+                    memory: Default::default(),
                 },
             )?
             .with_runtime_env(runtime);
@@ -3497,7 +3511,10 @@ fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
         for _ in 0..WORKER_COUNT {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             urls.push(format!("http://{}", listener.local_addr()?));
-            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            let runtime = crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                &Default::default(),
+            )?;
             let worker = datafusion_distributed::Worker::from_session_builder(
                 RecordingQueryIdBuilder {
                     seen: Arc::clone(&seen),
@@ -3654,7 +3671,11 @@ async fn spawn_workers_with_one_failing() -> (Vec<String>, JoinSet<()>, Arc<Atom
     // The runtime and version a real worker advertises, or discovery keeps it
     // out of the set and the query never reaches it.
     .with_runtime_env(
-        crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap(),
+        crate::session::build_worker_runtime_env(
+            &CoreArgs::default(),
+            &Default::default(),
+        )
+        .unwrap(),
     )
     .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
     workers.spawn(async move {
@@ -4438,7 +4459,10 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             let url = format!("http://{}", listener.local_addr()?);
             urls.push(url.clone());
-            let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
+            let runtime = crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                &Default::default(),
+            )?;
             runtime.register_object_store(
                 &url::Url::parse("file://")?,
                 Arc::new(FailAfterFirstRead {
@@ -4452,6 +4476,7 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
             let worker = crate::distributed::lakesoul_worker(
                 &crate::distributed::LakeSoulWorkerOptions {
                     core_args: CoreArgs::default(),
+                    memory: Default::default(),
                 },
             )?
             .with_runtime_env(runtime);

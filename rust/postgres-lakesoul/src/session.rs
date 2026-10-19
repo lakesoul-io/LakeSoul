@@ -24,7 +24,9 @@ use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::headers::{
     SessionActor, StatementIdGuard, set_identity_headers,
 };
-use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
+use lakesoul_datafusion::session::{
+    ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions,
+};
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
@@ -155,12 +157,31 @@ pub struct PgSessionFactory {
 }
 
 impl PgSessionFactory {
+    #[cfg(test)]
     pub fn new(
         meta_client: MetaDataClientRef,
         args: &CoreArgs,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self> {
-        let base = LakeSoulSessionFactory::new(Arc::clone(&meta_client), args)?;
+        Self::new_with_memory(
+            meta_client,
+            args,
+            auth_manager,
+            &ExecutionMemoryArgs::default(),
+        )
+    }
+
+    pub fn new_with_memory(
+        meta_client: MetaDataClientRef,
+        args: &CoreArgs,
+        auth_manager: Arc<AuthManager>,
+        memory: &ExecutionMemoryArgs,
+    ) -> Result<Self> {
+        let base = LakeSoulSessionFactory::new_with_memory_pool(
+            Arc::clone(&meta_client),
+            args,
+            memory.create_pool(),
+        )?;
         Ok(Self {
             meta_client,
             base,

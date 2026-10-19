@@ -25,6 +25,7 @@ use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::{
     DISTRIBUTED_PROTOCOL_VERSION, LakeSoulWorkerOptions, spawn_lakesoul_worker,
 };
+use lakesoul_datafusion::session::ExecutionMemoryArgs;
 use lakesoul_observability::{
     LogFormat, PrometheusMetricsConfig, TracingConfig, init_tracing,
     install_prometheus_metrics, spawn_reload_on_sighup,
@@ -56,6 +57,9 @@ struct Args {
 
     #[command(flatten)]
     core: CoreArgs,
+
+    #[command(flatten)]
+    memory: ExecutionMemoryArgs,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -64,8 +68,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         port,
         metrics_addr,
         core,
+        memory,
     } = Args::parse();
-    let options = LakeSoulWorkerOptions { core_args: core };
+    let options = LakeSoulWorkerOptions {
+        core_args: core,
+        memory,
+    };
 
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(options.core_args.worker_threads.max(2))

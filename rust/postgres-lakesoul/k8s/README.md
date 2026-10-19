@@ -218,10 +218,59 @@ Downward API),
 `LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION`.
 Metadata DB variables (`LAKESOUL_PG_URL/USERNAME/PASSWORD`) are unchanged.
 
+| Coordinator execution memory | Default | Meaning |
+|---|---|---|
+| `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Process-wide DataFusion execution budget shared by every connection. Integer bytes or case-insensitive `K/M/G` (decimal), `Ki/Mi/Gi` (binary), e.g. `512Mi`. |
+| `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` (FairSpillPool) or `greedy` (GreedyMemoryPool), used only with a nonzero limit. |
+| `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Process-wide bytes of decoded Vortex splits in flight, separate from the execution budget. A scan starts decoding a split only once the split's estimated size fits, and a decoded batch counts until it and every slice of it are dropped. Each scan can always have one split in flight, so a full budget slows scans but cannot deadlock them. `0` is unbounded. Same syntax as the memory limit. |
+
 Worker (`/app/lakesoul-worker`): `LAKESOUL_WORKER_BIND` (0.0.0.0),
 `LAKESOUL_WORKER_PORT` (50051), `LAKESOUL_WORKER_METRICS_ADDR`,
 `LAKESOUL_WORKER_THREADS`, plus the same warehouse/S3 variables; both binaries
 share the `CoreArgs` CLI (`--warehouse-prefix`, `--endpoint`, …).
+
+| Worker execution memory | Default | Meaning |
+|---|---|---|
+| `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Independent per-worker-process DataFusion execution budget shared by every task; same byte/suffix syntax as the coordinator. |
+| `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` or `greedy`, used only with a nonzero limit. |
+| `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Per-worker-process budget for decoded Vortex splits in flight; same meaning as on the coordinator. |
+
+These budgets govern DataFusion execution reservations, not process RSS,
+LakeSoul IO pools or writer-internal buffers. Spill files use DataFusion's
+default OS temporary directory (`TMPDIR`, `/var/scratch` in these deployments).
+The runtime still registers the warehouse object store independently per
+coordinator session. Pools report the five largest consumers on bounded
+allocation errors. Prometheus exports `lakesoul_memory_pool_reserved_bytes`,
+`lakesoul_memory_pool_limit_bytes` (0 when unbounded), and
+`lakesoul_memory_reservation_failures_total` (includes recoverable attempts
+that trigger spilling), without query labels. Unbounded execution retains the
+same allocation policy, with cached metric handles updating reservation
+gauges/counters; it does not pay for bounded consumer tracking.
+
+Measured sizing (Vortex TPC-H on the medium profile, 4 CPU / 4Gi):
+
+- Leave the limit unset only for trusted, serial SF1-sized work: without a
+  budget every SF10 scan-heavy query was OOMKilled at 4Gi.
+- `LAKESOUL_MEMORY_LIMIT=2Gi` with `fair` under a 4Gi container limit is the
+  tested setting: SF10 q01/q06/q09/q13/q18/q21 completed without restarts, and
+  SF1 mixed load ran to 64 closed-loop clients / 2 qps open loop without an
+  OOM kill (excess work failed with `57014` timeouts or `ResourcesExhausted`).
+  `greedy` rejects most concurrent work at the same budget; 1Gi rejects
+  SF10 q09.
+- Execution accounting does not cover per-connection session state or
+  extended-protocol portal buffering; budget at most ~50–75% of the
+  container limit. The small profile (2Gi) still OOMKilled under concurrent
+  SF10 load with a 1Gi budget.
+- `LAKESOUL_VORTEX_DECODE_BUDGET` bounds Vortex decoded splits in flight,
+  which the execution budget does not cover. Measured locally (SF10 q01,
+  4 lanes, 1Gi limit), maxRSS was 1861 MiB unbounded, 1148 MiB at the
+  default 256 MiB and 1022 MiB at 64 MiB. The floor of about one decoded
+  split per open merge input remains whatever the budget.
+- Images built before the session-teardown fix (all benchmark images,
+  including `:dev`) leak each accepted connection's session catalog
+  (~5.6 MB RSS, never freed on disconnect), so connection-per-query clients
+  exhaust the container. With the fix, 4 × 300 connections settled at
+  ~314 MB RSS locally instead of growing by ~1.7 GB per round.
 
 ## Verification / acceptance plan (runs against a real cluster; NOT yet
 executed — the manifests and the failure paths are untested beyond `cargo`

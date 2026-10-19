@@ -81,13 +81,17 @@ pub struct LakeSoulWorkerOptions {
     /// Object-store / warehouse configuration. Must match the coordinator's
     /// (`CoreArgs` is shared exactly for this reason).
     pub core_args: CoreArgs,
+    /// One execution memory budget shared by all tasks in this worker.
+    pub memory: crate::session::ExecutionMemoryArgs,
 }
 
 /// Builds a LakeSoul [`Worker`]: RuntimeEnv with warehouse object stores, the
 /// LakeSoul codec, and the UDF registry, advertising
 /// [`DISTRIBUTED_PROTOCOL_VERSION`].
 pub fn lakesoul_worker(options: &LakeSoulWorkerOptions) -> crate::Result<Worker> {
-    let runtime = crate::session::build_worker_runtime_env(&options.core_args)?;
+    options.memory.install_vortex_decode_budget()?;
+    let runtime =
+        crate::session::build_worker_runtime_env(&options.core_args, &options.memory)?;
     Ok(Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
         .with_runtime_env(runtime)
         .with_version(DISTRIBUTED_PROTOCOL_VERSION))
