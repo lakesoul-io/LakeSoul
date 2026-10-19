@@ -260,6 +260,21 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
   1% 增量仍约 2–3×。这直接验证了「不是所有情况都追求增量」。
 - 剩余：聚合 rebuild 约 1.4s 未桶并行（可按 group 分区）；跨节点任务调度。
 
+#### P3b 结果：代价回退 + 快照识别（2026-10）
+
+- 运行时维护每个 view 的 live rows：bootstrap/rebuild 时设置为写入行数，增量刷新按
+  inserts - deletes 调整；进程重启后未知，直到下一次 rebuild/bootstrap。
+- 唯一键 chain 的 base-only 刷新按 `delta_rows / live_rows` 估算：≥ **4%** 直接调用
+  bucket-parallel `rebuild_lookup_chain`，否则走增量。
+- 聚合的快照识别改为「window added files 数 == source current files 数」→ 直接
+  `rebuild_sum_count`，不再为了判断快照而扫描 10M 行。
+- 10M/4 桶：1% 增量 **0.84–1.21s**（全量 2.8s，约 2.3–3.3×）；5% 回退 **2.80s**
+  （原增量 3.5s、全量 2.9s）；维表更新 **2.63s**；bootstrap **2.7s**（聚合 1.35s）；
+  峰值 2.0–4.0GB。
+- 交叉点约 4%：1% 增量、5% 全量。所有结果与全量重建校验一致。
+- 注意：live rows 是 MV 逻辑行数的近似（唯一键 chain ≈ 基表行数）；重启后的首次刷新在
+  未知时保守走增量，直到 rebuild/bootstrap 建立估计。
+
 ### P4：状态表 compaction 与布局
 
 - 状态表写入方 compaction（文件数/小文件阈值、新 generation、原子切换）；

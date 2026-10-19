@@ -567,7 +567,8 @@ impl IvmRuntime {
                     &self.client,
                     inserts.union(deletes)?.sort_by(sort_exprs)?,
                 )
-                .await?,
+                .await?
+                .commit_ids,
             );
         } else {
             // A CDC tombstone (`delete`) is not a row: an
@@ -585,7 +586,8 @@ impl IvmRuntime {
                         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
                 )
-                .await?,
+                .await?
+                .commit_ids,
             );
         }
 
@@ -656,7 +658,8 @@ impl IvmRuntime {
                     .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
             )
-            .await?,
+            .await?
+            .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
