@@ -1670,3 +1670,271 @@ async fn a_partitioned_window_view_prunes_unchanged_partitions() {
         ]
     );
 }
+
+/// A semi join over a partitioned left source reads only the delta's keys and
+/// MV partitions when the right side did not change.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_semi_view_reads_only_changed_partitions() {
+    use lakesoul_ivm::{SemiAntiView, semi_anti_mv_schema};
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_psemi_left_{suffix}"),
+                table_path(&dir, "left"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("rk", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_psemi_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema.clone(),
+            )
+            .with_primary_keys(vec!["rk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_psemi_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                semi_anti_mv_schema(&left.schema),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = SemiAntiView::new(
+        format!("psemi_{suffix}"),
+        left.clone(),
+        right.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        false,
+    );
+
+    left.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 20, "d2", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1, 2])),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                    Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap();
+
+    async fn read_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, String, i64)> {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(mv)))
+            .unwrap();
+        let batches = context
+            .sql("select k, g, v from mv order by k")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let k = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let g = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let v = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((k.value(row), g.value(row).to_string(), v.value(row)));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(1, "a".to_string(), 10), (2, "b".to_string(), 20),]
+    );
+
+    // Only d1 changes: key 1 loses its match and its MV row; key 2's row in
+    // the untouched d2 partition stays.
+    left.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "z", 10, "d1", "insert")]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(2, "b".to_string(), 20)]
+    );
+}
+
+/// A union over partitioned sources reads only the MV partitions the changed
+/// branches touched.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_union_view_prunes_unchanged_partitions() {
+    use lakesoul_ivm::{
+        IVM_SOURCE_COLUMN, UnionAllView, UnionSource, union_all_mv_schema_for,
+    };
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let mut sources = Vec::new();
+    for (name, id) in [("a", "a"), ("b", "b")] {
+        sources.push(
+            runtime
+                .create_table(
+                    IvmTableOptions::new(
+                        format!("ivm_punion_{id}_{suffix}"),
+                        table_path(&dir, name),
+                        source_schema(),
+                    )
+                    .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+                    .with_cdc_column(CHANGE_COLUMN)
+                    .with_range_partition_columns(vec!["day".to_string()]),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_punion_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                union_all_mv_schema_for(&sources[0].schema).unwrap(),
+            )
+            .with_primary_keys(vec![
+                IVM_SOURCE_COLUMN.to_string(),
+                "k".to_string(),
+                "day".to_string(),
+            ])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = UnionAllView::new(
+        format!("punion_{suffix}"),
+        sources
+            .iter()
+            .map(|source| UnionSource::new(source.clone()))
+            .collect(),
+        mv.clone(),
+    );
+
+    sources[0]
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "x", 10, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    sources[1]
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(2, "y", 20, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_union_all(&view).await.unwrap();
+
+    async fn read_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, i64, String)> {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(mv)))
+            .unwrap();
+        let batches = context
+            .sql("select k, v, day from mv order by k")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let k = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let v = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let day = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((k.value(row), v.value(row), day.value(row).to_string()));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(1, 10, "d1".to_string()), (2, 20, "d2".to_string())]
+    );
+
+    // Only branch a's d1 changes: the d2 partition of the MV is pruned, the
+    // branch b row stays.
+    sources[0]
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "x", 11, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_union_all(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(1, 11, "d1".to_string()), (2, 20, "d2".to_string())]
+    );
+}

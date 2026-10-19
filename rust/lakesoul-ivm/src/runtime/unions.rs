@@ -550,6 +550,44 @@ fn validate_union_distinct_view(view: &UnionDistinctView) -> Result<()> {
 /// The output columns of a union branch: the projection, or the source's data
 /// columns when the branch selects everything (`change_column` is excluded
 /// when set).
+/// The MV range partitions a union refresh can touch.
+///
+/// A union row comes from one of the branches, so every branch must satisfy
+/// `mv_partitions_for_source` and the restriction is the union of the changed
+/// partitions.  Branches without changes contribute nothing.
+fn union_mv_partitions(
+    mv: &IvmTable,
+    sources: &[UnionSource],
+    windows: &[SourceWindow],
+) -> Option<Vec<(String, Vec<String>)>> {
+    let mut merged: Option<Vec<(String, Vec<String>)>> = None;
+    for (source, window) in sources.iter().zip(windows) {
+        if window.added_files.is_empty() {
+            continue;
+        }
+        let restriction = super::mv_partitions_for_source(mv, &source.table, window)?;
+        match &mut merged {
+            None => merged = Some(restriction),
+            Some(accumulated) => {
+                if accumulated.len() != restriction.len() {
+                    return None;
+                }
+                for (index, (column, values)) in restriction.into_iter().enumerate() {
+                    if accumulated[index].0 != column {
+                        return None;
+                    }
+                    for value in values {
+                        if !accumulated[index].1.contains(&value) {
+                            accumulated[index].1.push(value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    merged
+}
+
 fn union_branch_columns(
     source: &UnionSource,
     change_column: Option<&str>,
@@ -682,18 +720,33 @@ impl IvmRuntime {
                 .as_deref()
                 .map(|filter| parse_filter(&context, &table.schema, filter))
                 .transpose()?;
-            let delta = dataframe(
-                &context,
-                table
-                    .read_partition_files(windows[index].added_files.clone())
-                    .await?,
-                &table.schema,
-            )?;
+            let delta_batches = table
+                .read_partition_files(windows[index].added_files.clone())
+                .await?;
+            let delta = dataframe(&context, delta_batches.clone(), &table.schema)?;
             if keyed {
+                // Only the delta's keys can change this branch's rows.
+                let filters = if table.primary_keys.is_empty() {
+                    Vec::new()
+                } else {
+                    let rows = delta_batches
+                        .iter()
+                        .map(|batch| batch.num_rows())
+                        .sum::<usize>();
+                    if rows > 0 && rows <= crate::runtime::MAX_KEY_FILTERS {
+                        crate::runtime::key_filters(&table.primary_keys, &delta_batches)?
+                    } else {
+                        Vec::new()
+                    }
+                };
                 let source_now = filter_deletes(
                     dataframe(
                         &context,
-                        table.read_current(&self.client).await?,
+                        if filters.is_empty() {
+                            table.read_current(&self.client).await?
+                        } else {
+                            table.read_current_filtered(&self.client, filters).await?
+                        },
                         &table.schema,
                     )?,
                     change_column(table),
@@ -756,11 +809,20 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
 
         if keyed {
-            let mv = dataframe(
-                &context,
-                view.mv.read_current(&self.client).await?,
-                &view.mv.schema,
-            )?;
+            let mv_batches = match union_mv_partitions(&view.mv, &view.sources, &windows)
+            {
+                Some(restriction) => {
+                    view.mv
+                        .read_current_filtered_partitions(
+                            &self.client,
+                            Vec::new(),
+                            &restriction,
+                        )
+                        .await?
+                }
+                None => view.mv.read_current(&self.client).await?,
+            };
+            let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
             let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
             pair_names.extend(view.sources[0].table.primary_keys.iter().cloned());
             let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -994,12 +1056,19 @@ impl IvmRuntime {
             }
             register_table(&context, &format!("src{index}"), delta, &table.schema)?;
         }
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
+        let mv_batches = match union_mv_partitions(&view.mv, &view.sources, &windows) {
+            Some(restriction) => {
+                view.mv
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+            }
+            None => view.mv.read_current(&self.client).await?,
+        };
+        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
         let sql = union_distinct_refresh_sql(view, keyed, epoch)?;
         for batch in context.sql(&sql).await?.collect().await? {
             if batch.num_rows() > 0 {
