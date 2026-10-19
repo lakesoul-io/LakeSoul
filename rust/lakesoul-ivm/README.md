@@ -476,7 +476,10 @@ over an internal table:
 Logical reads drop tombstone rows by default, so consumers see the MV as an
 ordinary table: no `"rowKinds" = 'insert'` filter is needed (the internal
 `rowKinds` / `__ivm_epoch` columns are an implementation detail), and a scan
-that materializes no column (`SELECT COUNT(*) FROM mv`) works too.
+that materializes no column (`SELECT COUNT(*) FROM mv`) works too.  Scans are
+streaming plans: the query projection is pushed into the reader, and only
+primary-key predicates are pushed as a scan narrowing (a payload predicate runs
+after merge-on-read, so it can never resurrect an older version of a key).
 
 ## Refresh semantics
 
