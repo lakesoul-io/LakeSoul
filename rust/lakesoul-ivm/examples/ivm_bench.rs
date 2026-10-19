@@ -363,6 +363,7 @@ struct Args {
     hot_partition: usize,
     skew: f64,
     storage: Storage,
+    format: PhysicalFormat,
     bucket: String,
     prefix: String,
     out: Option<String>,
@@ -389,6 +390,7 @@ impl Default for Args {
             hot_partition: 0,
             skew: 0.8,
             storage: Storage::S3,
+            format: PhysicalFormat::Parquet,
             bucket: "lakesoul-test-bucket".to_string(),
             prefix: "ivm-bench".to_string(),
             out: None,
@@ -448,6 +450,16 @@ impl Args {
                         "local" => Storage::Local,
                         "s3" => Storage::S3,
                         other => panic!("--storage must be local or s3, got {other}"),
+                    }
+                }
+                "--format" => {
+                    args.format = match value().as_str() {
+                        "parquet" => PhysicalFormat::Parquet,
+                        "vortex" => PhysicalFormat::Vortex,
+                        "vortex-compact" => PhysicalFormat::VortexCompact,
+                        other => panic!(
+                            "--format must be parquet, vortex or vortex-compact, got {other}"
+                        ),
                     }
                 }
                 "--bucket" => args.bucket = value(),
@@ -514,6 +526,8 @@ Usage: ivm_bench [OPTIONS]
   --hot-partition <N>           the partition all partitioned changes hit (default 0)
   --skew <F>                    hot-group share for the skew shape (default 0.8)
   --storage <local|s3>          table storage (default s3)
+  --format <parquet|vortex|vortex-compact>
+                                data file format (default parquet)
   --bucket <NAME>               S3 bucket (default lakesoul-test-bucket)
   --prefix <PREFIX>             S3 key prefix (default ivm-bench)
   --out <FILE>                  write the CSV there instead of stdout
@@ -657,7 +671,7 @@ async fn run_shape(
         )
         .with_primary_keys(vec!["k".to_string()])
         .with_cdc_column(CHANGE_COLUMN)
-        .with_file_format(PhysicalFormat::Parquet);
+        .with_file_format(args.format);
         if !range_partitions.is_empty() {
             options = options.with_range_partition_columns(range_partitions.clone());
         }
@@ -727,7 +741,7 @@ async fn run_shape(
                 schema.clone(),
             )
             .with_primary_keys(shape.mv_primary_keys(step))
-            .with_file_format(PhysicalFormat::Parquet);
+            .with_file_format(args.format);
             if !range_partitions.is_empty() {
                 options = options.with_range_partition_columns(range_partitions.clone());
             }

@@ -888,6 +888,36 @@ PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com
 - 结论：收益集中在稳态增量刷新；`MIN_INDEX_ROWS`/`MAX_INDEX_CACHE_RATIO` 暂无需再调，
   写时预计算（Phase B）仍无必要。
 
+**pk_locator Step 3：大候选集 bulk 归并 + Vortex 默认开启（2026-10）**
+
+- 背景：Step 2 的 26 万行场景首窗候选 key 超过 `MAX_PK_CANDIDATES`（1 万）回退全扫；
+  10M star 的 1% 变更每桶约 2.5 万 key 同样超限，状态读退化为整桶扫描。
+- 改动：
+  - `MmapIndex::rows_with_prefixes`：候选 key 排序后与文件索引**一次归并**
+    （`rows + keys`），替代每 key 两次二分（`keys * log(rows)`）；候选 ≥64 时启用。
+  - `extract_key_constraints_with_cap` + `LakeSoulIOConfig::{max_pk_candidates,
+    bulk_pk_lookup}`：上限与 bulk 从常量变为配置；IVM 过滤读上限提到 100 万。
+  - `with_state_key_lookup`：**Vortex 表默认开启**（1024 行 block 让 scattered take 便宜），
+    Parquet 默认关闭（page 数万行，row selection 跳不掉）；`LAKESOUL_IVM_STATE_INDEX=1`
+    可强制开启。索引仍依赖 `LAKESOUL_CACHE`，未开启时自动回退扫描。
+  - benchmark：`ivm_bench_star --format parquet|vortex|vortex-compact`。
+- 10M star（本地、4 桶、1 warmup + 2–3 轮，join p50；括号内为链总耗时）：
+  - Vortex+索引：0.01% **182–204ms**（0.25–0.27s）、0.1% **266–279ms**（0.33–0.35s）、
+    1% **402–421ms**（0.48–0.56s）、3% **707–721ms**（0.79–0.80s）；
+    全量重建 2.0–2.2s。
+  - Vortex-compact+索引（1%）：635–662ms；Parquet+索引（1%）：965–990ms；
+    Parquet 扫描（1%）：756–1258ms。
+  - 5%：4% 代价回退触发，Vortex 2.1–2.2s（全量 2.3s）。
+- 回退阈值按格式标定（`LAKESOUL_IVM_REBUILD_RATIO` 可覆盖）：Parquet 4%，Vortex **8%**。
+  Vortex 上 5%/6%/7% 走增量的链总耗时 1.18–1.37s / 1.29–1.35s / 1.51–1.63s，
+  强制回退重建为 2.20–2.27s / 2.38–2.45s / 2.37–2.45s；8% 时两者接近
+  （1.83–2.34s vs 1.69–1.93s）。原 4% 阈值在 5–7% 少赚 1.5–1.7×。
+  1% 下 8 桶比 4 桶慢（550–583ms vs 402–421ms，文件数 1272 vs 636），单机保留 4 桶。
+- 结论：状态读能否降到 O(delta) 由**文件格式的随机读粒度**决定，而不是索引本身。
+  Parquet 的 page 粒度让 0.01%–1% 的随机 key 几乎每页都命中，索引只省比较；
+  Vortex 的 1024 行 block 让 `take` 只读命中 block，1% 内基本 delta 近似，
+  目标场景应使用 Vortex + `LAKESOUL_CACHE`。
+
 **SQL 增量执行入口 M1：按 spec 驱动刷新与注册表扩展（已完成）**
 
 - 背景：SQL 层不做 `CREATE/REFRESH MATERIALIZED VIEW` DDL，改为一个专用执行入口把

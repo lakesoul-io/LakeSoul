@@ -259,6 +259,85 @@ per round without compaction; they are pathological and were stopped.  The
 `partitioned` 1e5 cells already show the pruning (18–1627 rows scanned
 against 100k), with the latency floor masking it at this size.
 
+### State-read key index experiment (2026-10)
+
+The 10M star benchmark reads its join state (the join MV) to produce the
+delete rows' before-images.  That read used a key `IN` predicate only, so the
+row-level pk index (`lakesoul-io/src/pk_locator.rs`) was extended with a sorted
+merge lookup (one pass over each file's index instead of one binary search per
+key) and the candidate cap was made configurable.  Measured on this host,
+local storage, four buckets, 1 warmup + 2–3 rounds (join step p50 in ms):
+
+| ratio | Parquet scan + `IN` | Parquet + index | **Vortex + index** | Vortex-compact + index | full rebuild (Parquet / Vortex) |
+|---|---|---|---|---|---|
+| 0.01% | 367–422 | 639–674 | **182–204** | — | 2.6–2.8 s / 2.0–2.1 s |
+| 0.1% | 390–457 | 757–904 | **266–279** | — | 2.7 s / 2.1–2.2 s |
+| 1% | 756–1258 | 965–990 | **402–421** | 635–662 | 2.6–2.8 s / 2.0–2.2 s |
+| 3% | — | — | **707–721** | — | 2.2 s |
+
+The format decides whether the index pays:
+
+* **Parquet**: the index is slower at every ratio.  `LAKESOUL_PK_PROFILE=1`
+  shows `take` costing 340–740 ms for 150–1,700 matched rows over 3–8 files.
+  A page holds tens of thousands of rows, so at 0.01%–1% of 10M almost every
+  page still contains a key; the row selection cannot skip pages and the index
+  only removes comparisons.  Off by default.
+* **Vortex**: the index wins 2–3x.  The sink writes every column in
+  **1024-row blocks** (128 KiB data blocks), so a scattered candidate reads
+  only the blocks with a match.  `take` falls to 45–170 ms and the join drops
+  to 182/266/418 ms at 0.01%/0.1%/1%.  Chain totals: **0.25–0.27 s** at 0.01%,
+  **0.33–0.35 s** at 0.1%, **0.48–0.56 s** at 1%, **0.79–0.80 s** at 3%,
+  against a 2.0–2.2 s full rebuild — ~4x at 1% and ~8x at 0.01%.  On by default
+  for Vortex tables (the index needs `LAKESOUL_CACHE`; without it the read
+  falls back to a scan, and the no-cache Vortex join at 1% is 742–1285 ms, i.e.
+  Parquet-level).  Vortex-compact (zstd) still beats Parquet but pays
+  decompression: 635–662 ms at 1% vs 402–421 ms uncompressed.
+
+Vortex also speeds up the full recompute itself (2.0–2.2 s vs 2.6–2.8 s),
+mostly on the aggregate rebuild.  `LAKESOUL_IVM_STATE_INDEX=1` still forces the
+index on for Parquet (clustered key sets and point lookups can benefit there).
+
+Consequence for the refresh path: on Parquet the state read is throughput-bound
+at ~one full pass, so the incremental join only saves the MV rewrite, while the
+downstream aggregate saves its whole pass by consuming the join MV's
+delete/insert delta; the cost-based rebuild fallback (4% change ratio) covers
+the ratios where even that no longer pays.  On Vortex the state read becomes
+delta-proportional through 3%, so the target scenario should use Vortex tables
+with the local cache enabled.
+
+The rebuild crossover is calibrated per format (`lookup_chain`,
+`LAKESOUL_IVM_REBUILD_RATIO` overrides): Parquet 4%, Vortex **8%**.  On Vortex,
+chain totals (incremental vs forced rebuild) are 5%: **1.18–1.37 s** vs
+2.20–2.27 s, 6%: **1.29–1.35 s** vs 2.38–2.45 s, 7%: **1.51–1.63 s** vs
+2.37–2.45 s, 8%: 1.83–2.34 s vs **1.69–1.93 s** — incremental wins up to 7%,
+so the old 4% threshold left 1.5–1.7x on the table.  More buckets do not help
+on one node: 8 buckets at 1% is 550–583 ms vs 402–421 ms with 4 (file count
+1272 vs 636).
+
+### Column projection and object storage (2026-10)
+
+Two follow-ups from the state-read experiment:
+
+* **Column projection on the before-state read.**  A `SUM/COUNT` refresh over a
+  keyed CDC table reads the before-state of the changed keys; only the merge
+  key, the change column, the group/value/count columns and the predicate
+  columns are needed.  `sum_count_source_projection` now pushes that
+  projection into the reader (`read_before_window_filtered_projected`).  On a
+  10M-row source with 8 payload columns (`examples/ivm_bench_wide.rs`) the
+  refresh drops from 1401/1351 ms to 1332/1172 ms (~9–12%) at 1% change; a
+  narrow source has nothing to prune.  `LAKESOUL_IVM_NO_PROJECTION=1` restores
+  the full read.
+* **Object storage (RustFS, loopback S3) at 1M/1%.**  The state is only four
+  MV files here, so the fixed per-request cost dominates and the ranking flips
+  relative to local NVMe: Parquet join 235–250 ms / agg 91–100 ms; Vortex
+  (uncompressed) join 252–330 / agg 180–202; Vortex-compact join 413–415 / agg
+  178–386.  Uncompressed Vortex also uploads more bytes (source write 94–196 ms
+  vs 30–37 ms for Parquet).  The 10M local result (Vortex+index 402–421 ms
+  join) relies on the index skipping 1024-row blocks; at 1M on object storage
+  there is little to skip.  Measure at 10M on the target object store before
+  choosing a format; `vortex-compact` is the candidate when bandwidth/bytes
+  dominate, uncompressed Vortex when read latency does.
+
 ## What the numbers say
 
 * **Reads and file counts are the dominant cost.**  The incremental refresh

@@ -293,6 +293,90 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 回退：维表变更、1:N 步骤、分区表、桶数/主键不一致、未知后缀 → 单计划路径。
 - 下一步 P5b：rebuild 也按桶并行；聚合按 group 分区；跨节点任务调度。
 
+#### R6 结果：状态读的 pk 索引（2026-10，格式决定成败）
+
+问题：增量 join 为产生 delete 行的 before-image，要按 affected keys 读取 join MV
+（状态）；文件按主键哈希分桶、桶内按主键排序，但随机 key 的 `IN` 谓词无法做任何
+文件/row-group 裁剪，1%–5% 时等价于整表扫描。
+
+改动（`lakesoul-io/src/pk_locator.rs`）：
+
+- 新增 `MmapIndex::rows_with_prefixes`：把候选 key 排序后与每个文件的已排序索引
+  **一次归并**（`rows + keys`），替代每 key 两次二分（`keys * log(rows)`）；候选数
+  ≥64 时启用。
+- `extract_key_constraints_with_cap` + `LakeSoulIOConfig::{max_pk_candidates,
+  bulk_pk_lookup}`：候选上限与 bulk 从常量变成配置，IVM 过滤读可传入更大的上限。
+  索引对 **Vortex 表默认开启**（vortex sink 每列 1024 行一个 block），Parquet 默认
+  关闭（`LAKESOUL_IVM_STATE_INDEX=1` 可强制开启）。
+- 单元测试：`bulk_merge_answers_many_sorted_prefixes`、
+  `bulk_merge_matches_binary_search_on_many_keys`（5000 key 与逐 key 二分对拍）。
+- benchmark：`ivm_bench_star --format parquet|vortex|vortex-compact`。
+
+10M star、本地存储、4 桶、1 warmup + 2–3 轮（join p50，ms；全量为同格式重建）：
+
+| 变更比例 | Parquet 扫描+IN | Parquet+索引 | **Vortex+索引** | Vortex-compact+索引 | 全量重建 |
+|---|---|---|---|---|---|
+| 0.01% | 367–422 | 639–674 | **182–204** | — | 2.0–2.8s |
+| 0.1% | 390–457 | 757–904 | **266–279** | — | 2.1–2.7s |
+| 1% | 756–1258 | 965–990 | **402–421** | 635–662 | 2.0–2.8s |
+| 3% | — | — | **707–721** | — | 2.2s |
+| 5% | 2862–2890（回退） | — | 2103–2160（回退） | — | 2.3s |
+
+结论：
+
+- **Parquet**：索引每一档都更慢。`LAKESOUL_PK_PROFILE=1` 显示 `take` 为 340–740ms
+  （150–1700 命中行、3–8 个文件）：page 有数万行，0.01%–1% 的随机 key 几乎每页都有
+  命中，row selection 跳不掉 page；索引只省比较次数，没省 page 读。
+- **Vortex**：索引快 2–3×。1024 行 block 让 scattered candidate 只读命中的 block，
+  `take` 降到 45–170ms；链总耗时 0.25–0.27s / 0.33–0.35s / 0.48–0.56s / 0.79–0.80s
+  （0.01% / 0.1% / 1% / 3%），对 2.0–2.2s 的全量重建是 **4×（1%）到 8×（0.01%）**。
+  Vortex 连全量重建也更快（2.0–2.2s vs Parquet 2.6–2.8s，主要省在聚合重算）。
+- **Vortex-compact（zstd）** 仍优于 Parquet，但比未压缩慢 ~1.6×（1%：635–662ms vs
+  402–421ms），是「体积/IO vs 解压 CPU」的取舍。
+- 索引需要 `LAKESOUL_CACHE`（本地索引缓存）；未开启时 locator 自动回退为扫描，
+  1% 的 Vortex join 为 742–1285ms（与 Parquet 扫描同级）。**目标场景建议：
+  Vortex + LAKESOUL_CACHE**。
+- **回退阈值按格式标定**（`lookup_chain`，`LAKESOUL_IVM_REBUILD_RATIO` 可覆盖）：
+  Parquet 4%，Vortex **8%**。Vortex 上强制两条路径对比（链总耗时）：
+
+  | 变更比例 | 增量 | 回退重建 |
+  |---|---|---|
+  | 3% | 0.79–0.80s | — |
+  | 5% | **1.18–1.37s** | 2.20–2.27s |
+  | 6% | **1.29–1.35s** | 2.38–2.45s |
+  | 7% | **1.51–1.63s** | 2.37–2.45s |
+  | 8% | 1.83–2.34s | **1.69–1.93s** |
+
+  交叉点在 8% 附近；5–7% 走增量比原 4% 阈值快 1.5–1.7×。回退路径的聚合耗时在
+  0.09–0.97s 之间波动（快照识别/页缓存），所以阈值是经验值，8% 是保守取值。
+- **桶数**：1% 下 8 桶（583/550ms）比 4 桶（402–421ms）慢，文件数翻倍（1272 vs 636）；
+  单机推荐 4 桶，更多桶留给分布式。
+- 所以之前「状态读只能全量扫」的结论是 **Parquet page 粒度**造成的；换成 Vortex 后
+  key-filtered 状态读在 7% 以内都优于整表重建。
+
+#### P6 结果：分区级刷新、列裁剪与对象存储（2026-10）
+
+- **分区级刷新现状**：
+  - source 侧始终是分区级的：`get_table_changelog` 只返回发生变化的分区，
+    `window.added_files` 只含这些分区的文件；
+  - MV 侧裁剪：`SumCount` 已实现（`mv_partition_restriction`，测试
+    `a_partitioned_mv_refresh_prunes_unchanged_partitions`）；本轮为 `LookupChain`
+    的 base-only 增量补上（`lookup_chain_mv_partitions`）。条件：MV 分区列 ⊆ 源分区列、
+    源主键包含所有源分区列（key 不跨分区）、MV 主键包含分区列；
+  - 其余算子（Row/Window/SemiAnti/Union/两表 Join/MultiJoin）仍读取全部 MV 分区；
+    两表 join 目前直接拒绝分区源（`ensure_unpartitioned`）；Fallback 有分区局部重算。
+- **列裁剪**：`SUM/COUNT` 的 before-state 读已按列下推（`sum_count_source_projection`
+  + `read_before_window_filtered_projected`）；10M、8 个 payload 列、1% 变更下刷新
+  1401/1351ms → 1332/1172ms（约 9–12%）。窄表无可裁剪列。
+- **对象存储**：RustFS 1M/1% 下 Parquet 反而最快（join 235–250ms），Vortex 252–330ms，
+  vortex-compact 413–415ms；此时 MV 只有 4 个文件，固定开销主导，索引无 block 可跳。
+  10M 本地 NVMe 上 Vortex+索引的 2–3× 优势来自状态读；对象存储上需要在 10M 重测，
+  且 compact/未压缩的选择取决于带宽 vs 读延迟。
+- **下一步（DataFusion plan）**：把刷新输入从 `MemTable` 换成带 filter/projection 下推的
+  `IvmTableProvider`（新增 `Delta(files)` / `Before(versions)` 模式），让整条刷新形成一个
+  DataFusion plan，由优化器做跨算子的列裁剪与谓词下推；当前 `IvmTableProvider::scan`
+  仍忽略 filters，且非 Raw 模式会整体物化。
+
 ### P5：分布式/多线程
 
 - bucket 级任务拆分、维表广播、分区聚合、状态合并；单机多线程先验证，再做分布式调度。

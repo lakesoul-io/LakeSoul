@@ -1225,3 +1225,231 @@ async fn read_group_sums(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(String, i6
     }
     rows
 }
+
+/// A lookup chain over a partitioned fact table prunes the MV partitions the
+/// delta did not touch.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_lookup_chain_prunes_unchanged_partitions() {
+    use lakesoul_ivm::{
+        JoinKeyExprs, LookupChainColumn, LookupChainStep, LookupChainView,
+        lookup_chain_mv_schema_for,
+    };
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("day", DataType::Utf8, false),
+        Field::new("fk", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("a", DataType::Utf8, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let fact_batch = |rows: &[(i64, &str, i64, i64, &str)]| {
+        RecordBatch::try_new(
+            fact_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.0))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.1))),
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.2))),
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.3))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.4))),
+            ],
+        )
+        .unwrap()
+    };
+    let dim_batch = |rows: &[(i64, &str, &str)]| {
+        RecordBatch::try_new(
+            dim_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.0))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.1))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.2))),
+            ],
+        )
+        .unwrap()
+    };
+
+    let fact = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_fact_{suffix}"),
+                table_path(&dir, "fact"),
+                fact_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let dim = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_dim_{suffix}"),
+                table_path(&dir, "dim"),
+                dim_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+
+    let steps = vec![LookupChainStep {
+        source: 1,
+        left: true,
+        keys: vec!["fk".to_string()],
+        right_keys: vec!["k".to_string()],
+        key_sources: Vec::new(),
+        key_exprs: JoinKeyExprs::default(),
+        unique: true,
+    }];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "day".to_string(),
+            name: "day".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "a".to_string(),
+            name: "a".to_string(),
+        },
+    ];
+    let schema = lookup_chain_mv_schema_for(
+        &[fact.schema.clone(), dim.schema.clone()],
+        &steps,
+        &columns,
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                schema,
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = LookupChainView::new(
+        format!("pchain_{suffix}"),
+        vec![(fact.clone(), None), (dim.clone(), None)],
+        steps,
+        columns,
+        mv.clone(),
+    );
+
+    fact.append_batch(
+        runtime.client(),
+        fact_batch(&[(1, "d1", 10, 100, "insert"), (2, "d2", 11, 200, "insert")]),
+    )
+    .await
+    .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        dim_batch(&[(10, "a", "insert"), (11, "b", "insert")]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_lookup_chain(&view).await.unwrap();
+
+    async fn read_rows(
+        runtime: &IvmRuntime,
+        mv: &IvmTable,
+    ) -> Vec<(i64, String, i64, String)> {
+        let context = SessionContext::new();
+        let batches = mv.read_current(runtime.client()).await.unwrap();
+        let provider: Arc<dyn datafusion::catalog::TableProvider> = Arc::new(
+            datafusion::datasource::memory::MemTable::try_new(
+                mv.schema.clone(),
+                vec![batches],
+            )
+            .unwrap(),
+        );
+        context.register_table("mv", provider).unwrap();
+        let batches = context
+            .sql("select k, day, v, a from mv order by k, day")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let k = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let day = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let v = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let a = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((
+                    k.value(row),
+                    day.value(row).to_string(),
+                    v.value(row),
+                    a.value(row).to_string(),
+                ));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![
+            (1, "d1".to_string(), 100, "a".to_string()),
+            (2, "d2".to_string(), 200, "b".to_string()),
+        ]
+    );
+
+    // Only d1 changes: the d2 partition of the MV is pruned, its row stays.
+    fact.append_batch(
+        runtime.client(),
+        fact_batch(&[(1, "d1", 10, 150, "insert")]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_lookup_chain(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![
+            (1, "d1".to_string(), 150, "a".to_string()),
+            (2, "d2".to_string(), 200, "b".to_string()),
+        ]
+    );
+}

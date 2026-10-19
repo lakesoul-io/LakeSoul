@@ -148,6 +148,17 @@ pub struct LakeSoulIOConfig {
     /// Receiver capacity
     #[educe(Default = 8)]
     pub(crate) receiver_capacity: usize,
+    /// Maximum number of primary-key candidates a filtered scan resolves
+    /// through the row-level pk index.  Above it the scan falls back to the
+    /// regular path.  IVM refreshes raise it for their key-filtered state
+    /// reads, whose candidate sets reach the change ratio times the view size.
+    #[educe(Default = 10_000)]
+    pub(crate) max_pk_candidates: usize,
+    /// Answer large `pk IN (...)` candidate sets with the sorted index merge
+    /// instead of one binary search per key.  The merge is O(index rows +
+    /// keys) per file, so it stays cheap when the candidate set is large.
+    #[educe(Default = false)]
+    pub(crate) bulk_pk_lookup: bool,
 }
 
 impl LakeSoulIOConfig {
@@ -169,6 +180,16 @@ impl LakeSoulIOConfig {
     /// Returns a slice of primary key column names
     pub fn primary_keys_slice(&self) -> &[String] {
         &self.primary_keys
+    }
+
+    /// The largest `pk IN (...)` candidate set the pk index resolves.
+    pub fn max_pk_candidates(&self) -> usize {
+        self.max_pk_candidates
+    }
+
+    /// Whether large candidate sets use the sorted index merge.
+    pub fn bulk_pk_lookup(&self) -> bool {
+        self.bulk_pk_lookup
     }
 
     /// Returns the columns used for hash partitioning.
@@ -687,6 +708,27 @@ impl LakeSoulIOConfigBuilder {
     /// * `prefetch_size` - The number of batches to prefetch
     pub fn with_prefetch_size(mut self, prefetch_size: usize) -> Self {
         self.config.prefetch_size = prefetch_size;
+        self
+    }
+
+    /// Sets the largest `pk IN (...)` candidate set the pk index resolves.
+    ///
+    /// Above this many candidates the scan falls back to the regular path.
+    /// The default ([`crate::pk_locator::MAX_PK_CANDIDATES`]) suits point
+    /// lookups; IVM refreshes raise it for their key-filtered state reads.
+    pub fn with_max_pk_candidates(mut self, max_pk_candidates: usize) -> Self {
+        self.config.max_pk_candidates = max_pk_candidates;
+        self
+    }
+
+    /// Answers large candidate sets with the sorted index merge.
+    ///
+    /// One binary search per key costs `keys * log(rows)` per file, which
+    /// stops paying off for the candidate sets of an incremental refresh
+    /// (thousands to hundreds of thousands of keys over many files).  The
+    /// merge answers them in one pass: `rows + keys` per file.
+    pub fn with_bulk_pk_lookup(mut self, bulk_pk_lookup: bool) -> Self {
+        self.config.bulk_pk_lookup = bulk_pk_lookup;
         self
     }
 

@@ -849,7 +849,11 @@ impl LakeSoulIOSession {
                 })
                 .collect::<Vec<_>>();
             if fields.len() == primary_keys.len() {
-                pk_locator::extract_key_constraints(&filters, &fields)
+                pk_locator::extract_key_constraints_with_cap(
+                    &filters,
+                    &fields,
+                    self.io_config.max_pk_candidates(),
+                )
             } else {
                 None
             }
