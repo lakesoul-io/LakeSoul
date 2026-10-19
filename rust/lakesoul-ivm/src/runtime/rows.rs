@@ -183,6 +183,70 @@ pub fn row_expr_mv_schema_for(
 /// The source columns a [`RowView`] materializes.
 /// The aliased projection expressions of a row view, parsed against the
 /// source schema.
+/// The MV range partitions an affected source row can live in.
+///
+/// Sound when every MV partition column is a plain source column the view
+/// materializes unchanged, the source primary keys carry its partition columns
+/// (a key cannot move between partitions), and the MV keys carry the partition
+/// columns.  Every row the window can change then lies in one of the delta's
+/// partitions, so the other MV partitions can be skipped.
+fn row_mv_partitions(
+    view: &RowView,
+    window: &SourceWindow,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let mv_partitions = &view.mv.range_partition_columns;
+    if mv_partitions.is_empty() {
+        return None;
+    }
+    let source = &view.source;
+    if !source
+        .range_partition_columns
+        .iter()
+        .all(|column| source.primary_keys.contains(column))
+    {
+        return None;
+    }
+    let outputs = row_output_columns(view);
+    for partition in mv_partitions {
+        if !source.range_partition_columns.contains(partition)
+            || !view.mv.primary_keys.contains(partition)
+        {
+            return None;
+        }
+        let index = outputs.iter().position(|column| column == partition)?;
+        // A computed projection would not carry the source's partition value.
+        if let Some(expression) = view.output_exprs.get(index)
+            && expression.trim() != partition
+        {
+            return None;
+        }
+    }
+    let mut restriction = mv_partitions
+        .iter()
+        .map(|column| (column.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    for files in &window.added_files {
+        let values = crate::table::parse_partition_values(
+            &files.partition_desc,
+            &source.range_partition_columns,
+        )?;
+        for (column, allowed) in restriction.iter_mut() {
+            let index = source
+                .range_partition_columns
+                .iter()
+                .position(|candidate| candidate == column)?;
+            let value = values.get(index)?.clone();
+            if !allowed.contains(&value) {
+                allowed.push(value);
+            }
+        }
+    }
+    restriction
+        .iter()
+        .all(|(_, allowed)| !allowed.is_empty())
+        .then_some(restriction)
+}
+
 fn row_projection(view: &RowView, context: &SessionContext) -> Result<Vec<Expr>> {
     let columns = row_output_columns(view);
     if view.output_exprs.is_empty() {
@@ -441,6 +505,8 @@ impl IvmRuntime {
         let keyed = !view.source.primary_keys.is_empty();
 
         let context = self.scalar_context_with_state(view).await?;
+        // Computed before the delta read moves `window.added_files`.
+        let partitions = row_mv_partitions(view, &window);
         let delta = if outer_changed {
             dataframe(
                 &context,
@@ -504,16 +570,41 @@ impl IvmRuntime {
                     .iter()
                     .map(|batch| batch.num_rows())
                     .sum::<usize>();
-                let mv_batches =
-                    if key_count > 0 && key_count <= crate::runtime::MAX_KEY_FILTERS {
-                        let filters = crate::runtime::key_filters(
-                            &view.source.primary_keys,
-                            &key_batches,
-                        )?;
-                        view.mv.read_current_filtered(&self.client, filters).await?
-                    } else {
-                        view.mv.read_current(&self.client).await?
-                    };
+                let mv_batches = if key_count > 0
+                    && key_count <= crate::runtime::MAX_KEY_FILTERS
+                {
+                    let filters = crate::runtime::key_filters(
+                        &view.source.primary_keys,
+                        &key_batches,
+                    )?;
+                    match &partitions {
+                        Some(restriction) => {
+                            view.mv
+                                .read_current_filtered_partitions(
+                                    &self.client,
+                                    filters,
+                                    restriction,
+                                )
+                                .await?
+                        }
+                        None => {
+                            view.mv.read_current_filtered(&self.client, filters).await?
+                        }
+                    }
+                } else {
+                    match &partitions {
+                        Some(restriction) => {
+                            view.mv
+                                .read_current_filtered_partitions(
+                                    &self.client,
+                                    Vec::new(),
+                                    restriction,
+                                )
+                                .await?
+                        }
+                        None => view.mv.read_current(&self.client).await?,
+                    }
+                };
                 let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
                 (source_now, mv, affected)
             };

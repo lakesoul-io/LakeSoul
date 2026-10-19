@@ -1453,3 +1453,76 @@ async fn a_partitioned_lookup_chain_prunes_unchanged_partitions() {
         ]
     );
 }
+
+/// A row view over a partitioned source prunes the MV partitions the delta
+/// did not touch.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_row_view_prunes_unchanged_partitions() {
+    use lakesoul_ivm::RowView;
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_prow_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let output_columns = ["k", "g", "v", "day"].map(String::from);
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_prow_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_mv_schema_for(&source.schema, &output_columns).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "day".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = RowView::new(format!("prow_{suffix}"), source.clone(), mv.clone())
+        .with_output_columns(output_columns.to_vec());
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 20, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_row(&view).await.unwrap();
+    assert_eq!(
+        read_row_tuples(&runtime, &mv).await,
+        vec![
+            (1, "a".to_string(), "d1".to_string()),
+            (2, "b".to_string(), "d2".to_string()),
+        ]
+    );
+
+    // Only d1 changes: the d2 partition of the MV is pruned, its row stays.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 11, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_row(&view).await.unwrap();
+    assert_eq!(
+        read_row_tuples(&runtime, &mv).await,
+        vec![
+            (1, "a".to_string(), "d1".to_string()),
+            (2, "b".to_string(), "d2".to_string()),
+        ]
+    );
+}
