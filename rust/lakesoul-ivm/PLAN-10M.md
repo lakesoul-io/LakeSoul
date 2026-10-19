@@ -248,6 +248,18 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 剩余：聚合/其他形状的输出仍 collect（输出小）；bootstrap 的**输入** delta 仍 materialize
   （10M 行），后续可把初始刷新也改为 provider 流式扫描 + 流式 delta。
 
+#### P5b 结果：rebuild 桶并行（2026-10）
+
+- `source_baseline` 拆出只取文件/版本/游标的 metadata 版本；rebuild 不再先整表读一遍
+  baseline、再读一遍数据。
+- 唯一键 chain 的 rebuild 也按当前文件的 bucket 后缀并行：MV 已 truncate，每个桶只写自己的
+  insert 行；万级维表只读一次并广播。
+- 4 桶、10M：bootstrap 7.7s → **3.6s**（峰值 2.7GB）；全量 rebuild 6.8s → **2.5s**；
+  维表更新（rebuild）7.3s → **3.3s**；增量 1% 仍 0.8–1.1s、5% 3.5s。
+- **交叉点变化**：5% 时全量（2.6s）已快于增量（3.5s）；代价回退应在约 3–5% 以上选择全量，
+  1% 增量仍约 2–3×。这直接验证了「不是所有情况都追求增量」。
+- 剩余：聚合 rebuild 约 1.4s 未桶并行（可按 group 分区）；跨节点任务调度。
+
 ### P4：状态表 compaction 与布局
 
 - 状态表写入方 compaction（文件数/小文件阈值、新 generation、原子切换）；

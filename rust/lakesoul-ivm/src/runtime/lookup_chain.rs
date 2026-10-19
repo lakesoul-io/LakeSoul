@@ -1287,7 +1287,9 @@ impl IvmRuntime {
 
         let mut baselines = Vec::with_capacity(view.sources.len());
         for (table, _) in &view.sources {
-            baselines.push(self.source_baseline(table).await?);
+            // The rebuild reads the data below (per bucket when possible);
+            // only the versions and cursors are needed here.
+            baselines.push(self.source_baseline_meta(table).await?);
         }
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
@@ -1319,6 +1321,138 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+
+        // Rebuild a unique-step, single-bucket-column chain bucket by bucket:
+        // the MV was just truncated, so each task only writes its own inserts.
+        let bucket_parallel = view.steps.iter().all(|step| step.unique)
+            && view
+                .sources
+                .iter()
+                .all(|(table, _)| table.range_partition_columns.is_empty())
+            && view.sources[0].0.hash_bucket_num == view.mv.hash_bucket_num
+            && view.sources[0].0.primary_keys == view.mv.primary_keys
+            && view.sources[0].0.bucket_columns.is_empty()
+            && view.mv.bucket_columns.is_empty()
+            && view.sources[0]
+                .0
+                .hash_bucket_num
+                .parse::<u32>()
+                .unwrap_or(1)
+                > 1;
+        if bucket_parallel {
+            let mut groups: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+            let mut splittable = true;
+            for group in &baselines[0].groups {
+                for file in &group.files {
+                    let Some(bucket) = crate::table::file_bucket(file) else {
+                        splittable = false;
+                        break;
+                    };
+                    groups.entry(bucket).or_default().push(file.clone());
+                }
+                if !splittable {
+                    break;
+                }
+            }
+            if splittable && groups.len() > 1 {
+                let context = SessionContext::new();
+                let (base, base_filter) = &view.sources[0];
+                let base_columns = lookup_chain_source_columns(view, 0, &context)?;
+                let base_projection = project_schema(&base.schema, &base_columns)?;
+                let mut dims: Vec<(SchemaRef, Vec<RecordBatch>)> = Vec::new();
+                for (index, (table, filter)) in view.sources.iter().enumerate().skip(1) {
+                    let columns = lookup_chain_source_columns(view, index, &context)?;
+                    let projection = project_schema(&table.schema, &columns)?;
+                    let frame = apply_side_filter(
+                        &context,
+                        filter_deletes(
+                            dataframe(
+                                &context,
+                                table
+                                    .read_current_projected(
+                                        &self.client,
+                                        Some(&projection),
+                                    )
+                                    .await?,
+                                &projection,
+                            )?,
+                            change_column(table),
+                        )?,
+                        &projection,
+                        filter.as_deref(),
+                    )?;
+                    dims.push((projection, frame.collect().await?));
+                }
+                let dims = Arc::new(dims);
+                let row_exprs = lookup_chain_row_exprs(view)?;
+                let tasks = groups.into_values().map(|files| {
+                    let view = view.clone();
+                    let base = base.clone();
+                    let mv = view.mv.clone();
+                    let client = self.client.clone();
+                    let dims = dims.clone();
+                    let base_filter = base_filter.clone();
+                    let base_projection = base_projection.clone();
+                    let row_exprs = row_exprs.clone();
+                    async move {
+                        let context = SessionContext::new();
+                        let base_frame = apply_side_filter(
+                            &context,
+                            filter_deletes(
+                                dataframe(
+                                    &context,
+                                    base.read_files_projected(
+                                        files,
+                                        Some(&base_projection),
+                                    )
+                                    .await?,
+                                    &base_projection,
+                                )?,
+                                change_column(&base),
+                            )?,
+                            &base_projection,
+                            base_filter.as_deref(),
+                        )?;
+                        let mut frames = vec![base_frame];
+                        for (projection, batches) in dims.iter() {
+                            frames.push(dataframe(
+                                &context,
+                                batches.clone(),
+                                projection,
+                            )?);
+                        }
+                        let frame = lookup_chain_replay(
+                            &view,
+                            &frames,
+                            view.steps.len(),
+                            frames[0].clone(),
+                        )?;
+                        let rows = frame
+                            .select(row_exprs.clone())?
+                            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+                        let commit_ids = append_dataframe(&mv, &client, rows).await?;
+                        Ok::<Vec<String>, rootcause::Report>(commit_ids)
+                    }
+                });
+                for result in join_all(tasks).await {
+                    commit_ids.extend(result?);
+                }
+                let mv_versions =
+                    output_partition_versions(&self.client, &view.mv).await?;
+                self.metadata
+                    .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                    .await?;
+                for baseline in baselines {
+                    self.advance_cursors(&view.view_id, baseline.cursors)
+                        .await?;
+                }
+                self.metadata
+                    .set_view_status(&view.view_id, "active")
+                    .await?;
+                return Ok(epoch);
+            }
+        }
 
         let context = SessionContext::new();
         let mut frames = Vec::with_capacity(view.sources.len());

@@ -2082,6 +2082,15 @@ struct SourceBaseline {
     to_versions: Vec<SourceVersionRange>,
 }
 
+/// The metadata half of [`SourceBaseline`]: current partition files, cursors
+/// and versions, without reading the data.  Rebuild paths that read the base
+/// bucket by bucket use it to avoid materializing the whole source once more.
+struct SourceBaselineMeta {
+    groups: Vec<PartitionFiles>,
+    cursors: Vec<Cursor>,
+    to_versions: Vec<SourceVersionRange>,
+}
+
 /// The canonical identity of a refresh window.
 ///
 /// Entries are `(source_table_id, partition_desc, from_version, to_version)`
@@ -3836,6 +3845,19 @@ impl IvmRuntime {
     /// Read the full current state of a source and the cursors / source ranges
     /// that represent it (a rebuild baseline).
     async fn source_baseline(&self, source: &IvmTable) -> Result<SourceBaseline> {
+        let meta = self.source_baseline_meta(source).await?;
+        let batches = source.read_partition_files(meta.groups.clone()).await?;
+        Ok(SourceBaseline {
+            batches,
+            cursors: meta.cursors,
+            to_versions: meta.to_versions,
+        })
+    }
+
+    async fn source_baseline_meta(
+        &self,
+        source: &IvmTable,
+    ) -> Result<SourceBaselineMeta> {
         let mut groups = Vec::new();
         let mut cursors = Vec::new();
         let mut to_versions = Vec::new();
@@ -3861,9 +3883,8 @@ impl IvmRuntime {
                 to_version: i64::from(partition.version),
             });
         }
-        let batches = source.read_partition_files(groups).await?;
-        Ok(SourceBaseline {
-            batches,
+        Ok(SourceBaselineMeta {
+            groups,
             cursors,
             to_versions,
         })
