@@ -122,9 +122,29 @@ async fn collect_rows(ctx: &SessionContext, sql: &str) -> Vec<Vec<String>> {
                     .map(|column| {
                         let array = batch.column(column);
                         if array.is_null(row) {
-                            "NULL".to_string()
-                        } else {
-                            array_value_to_string(array.as_ref(), row).unwrap()
+                            return "NULL".to_string();
+                        }
+                        // A plan change can reorder a floating-point
+                        // aggregate by one ULP; compare floats at a fixed
+                        // precision instead of their shortest representation.
+                        match array.data_type() {
+                            DataType::Float64 => format!(
+                                "{:.12}",
+                                array
+                                    .as_any()
+                                    .downcast_ref::<arrow_array::Float64Array>()
+                                    .unwrap()
+                                    .value(row)
+                            ),
+                            DataType::Float32 => format!(
+                                "{:.6}",
+                                array
+                                    .as_any()
+                                    .downcast_ref::<arrow_array::Float32Array>()
+                                    .unwrap()
+                                    .value(row)
+                            ),
+                            _ => array_value_to_string(array.as_ref(), row).unwrap(),
                         }
                     })
                     .collect(),
@@ -4107,25 +4127,27 @@ async fn oracle_lookup_chain_1n_matches_full_recompute() {
 /// deletes).
 #[test_log::test(tokio::test)]
 async fn oracle_fallback_matches_full_recompute() {
-    // The statement's output (`k, g, v`) plus the row kind and epoch columns.
+    // A mixed statement with a DISTINCT aggregate is not maintained
+    // incrementally, and the result is deterministic, so the recompute can be
+    // compared row by row.  (A `LIMIT` without `ORDER BY` is a fallback too,
+    // but two plans may legitimately pick different rows.)
     let mv_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int64, false),
         Field::new("g", DataType::Utf8, false),
-        Field::new("v", DataType::Int64, false),
+        Field::new("sum_v", DataType::Int64, true),
+        Field::new("count_v", DataType::Int64, false),
         Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
         Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
     ]));
-    // `LIMIT` without `ORDER BY` is not maintained incrementally; the key
-    // stays unique, so the MV keeps a primary key and the result is checked
-    // for uniqueness on every recompute.
     run_oracle(
         "fallback",
         1,
         mv_schema,
-        vec!["k".to_string()],
-        "SELECT k, g, v FROM __SRC__ LIMIT 3",
-        "SELECT k, g, v FROM __SRC__ WHERE op <> 'delete' LIMIT 3",
-        "SELECT k, g, v FROM __MV__",
+        vec!["g".to_string()],
+        "SELECT g, SUM(v) AS sum_v, COUNT(DISTINCT v) AS count_v \
+         FROM __SRC__ GROUP BY g",
+        "SELECT g, SUM(v) AS sum_v, COUNT(DISTINCT v) AS count_v \
+         FROM __SRC__ WHERE op <> 'delete' GROUP BY g",
+        "SELECT g, sum_v, count_v FROM __MV__",
     )
     .await;
 }

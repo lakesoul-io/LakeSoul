@@ -372,10 +372,12 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
   vortex-compact 413–415ms；此时 MV 只有 4 个文件，固定开销主导，索引无 block 可跳。
   10M 本地 NVMe 上 Vortex+索引的 2–3× 优势来自状态读；对象存储上需要在 10M 重测，
   且 compact/未压缩的选择取决于带宽 vs 读延迟。
-- **下一步（DataFusion plan）**：把刷新输入从 `MemTable` 换成带 filter/projection 下推的
-  `IvmTableProvider`（新增 `Delta(files)` / `Before(versions)` 模式），让整条刷新形成一个
-  DataFusion plan，由优化器做跨算子的列裁剪与谓词下推；当前 `IvmTableProvider::scan`
-  仍忽略 filters，且非 Raw 模式会整体物化。
+- **DataFusion plan（部分完成）**：`IvmTableProvider::scan` 对所有模式返回流式
+  `IvmStreamExec`（不再整表物化）；投影下推到 reader，CDC 墓碑在 merge-on-read 之后
+  过滤；只把**主键谓词**下推给 reader（`Inexact`，其余谓词交给 DataFusion 的
+  `FilterExec`，避免 merge 之前过滤掉某个 key 的最新版本）。fallback recompute 和
+  消费端查询因此不再在 driver 端聚齐整表。刷新 SQL 仍把输入注册成 `MemTable`
+  （同一个 `mv` 被 SQL 引用多次时 provider 会重复扫描），下一步是单 plan 重写。
 
 ### P5：分布式/多线程
 

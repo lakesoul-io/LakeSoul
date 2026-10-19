@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
+use arrow_array::Array;
 use arrow_schema::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
@@ -35,6 +36,10 @@ use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableIn
 
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
+/// The channel a streaming scan sends its batches through.
+type BatchSender =
+    tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>;
+
 /// The largest state write (in rows) a refresh coalesces before appending.
 /// State batches above this size are split so one append stays bounded in
 /// memory; the writer still emits one file per hash bucket per append.
@@ -822,20 +827,11 @@ impl IvmTable {
         Ok(batches)
     }
 
-    /// Stream the current merge-on-read state into `tx` batch by batch.
-    ///
-    /// Unlike [`Self::read_current`] this never materializes the table: the
-    /// reader runs on the caller's (current-thread) runtime and each batch is
-    /// handed to the consumer before the next one is read.  Used by the
-    /// DataFusion provider so a scan plan stays streaming.
-    pub(crate) async fn stream_current(
+    /// The partition groups of the current state (non-empty ones only).
+    async fn current_groups(
         &self,
         client: &MetaDataClient,
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-        output: Option<&SchemaRef>,
-        tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>,
-    ) -> Result<()> {
+    ) -> Result<Vec<PartitionFiles>> {
         let mut groups = Vec::new();
         for partition in client.get_all_partition_info(&self.table_id).await? {
             let files = client
@@ -848,11 +844,133 @@ impl IvmTable {
                 });
             }
         }
+        Ok(groups)
+    }
+
+    /// The partition groups as of `as_of_ms`.
+    async fn as_of_groups(
+        &self,
+        client: &MetaDataClient,
+        as_of_ms: i64,
+    ) -> Result<Vec<PartitionFiles>> {
+        let mut groups = Vec::new();
+        for partition in client
+            .get_all_partition_info_as_of(&self.table_id, as_of_ms)
+            .await?
+        {
+            let files = client
+                .get_data_files_of_single_partition(&partition)
+                .await?;
+            groups.push(PartitionFiles {
+                partition_desc: partition.partition_desc.clone(),
+                files,
+            });
+        }
+        Ok(groups)
+    }
+
+    /// The partition groups pinned to `versions`.
+    async fn version_groups(
+        &self,
+        client: &MetaDataClient,
+        versions: &[PartitionVersion],
+    ) -> Result<Vec<PartitionFiles>> {
+        let mut groups = Vec::new();
+        for version in versions {
+            let version_i32 = version
+                .version
+                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                as i32;
+            if let Some(partition) = client
+                .get_partition_info_by_version(
+                    &self.table_id,
+                    &version.partition_desc,
+                    version_i32,
+                )
+                .await?
+            {
+                let files = client
+                    .get_data_files_of_single_partition(&partition)
+                    .await?;
+                groups.push(PartitionFiles {
+                    partition_desc: version.partition_desc.clone(),
+                    files,
+                });
+            }
+        }
+        Ok(groups)
+    }
+
+    /// Stream the current merge-on-read state into `tx` batch by batch.
+    ///
+    /// Unlike [`Self::read_current`] this never materializes the table: the
+    /// reader runs on the caller's (current-thread) runtime and each batch is
+    /// handed to the consumer before the next one is read.  Used by the
+    /// DataFusion provider so a scan plan stays streaming.  `change_filter`
+    /// drops the CDC tombstones after merge-on-read (the raw mode keeps them).
+    pub(crate) async fn stream_current(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        change_filter: Option<&str>,
+        tx: BatchSender,
+    ) -> Result<()> {
+        let groups = self.current_groups(client).await?;
+        self.stream_groups(groups, filters, projection, output, change_filter, tx)
+            .await
+    }
+
+    /// Stream the state pinned to the given partition versions.
+    pub(crate) async fn stream_at_versions(
+        &self,
+        client: &MetaDataClient,
+        versions: &[PartitionVersion],
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        change_filter: Option<&str>,
+        tx: BatchSender,
+    ) -> Result<()> {
+        let groups = self.version_groups(client, versions).await?;
+        self.stream_groups(groups, filters, projection, output, change_filter, tx)
+            .await
+    }
+
+    /// Stream the state as of `as_of_ms`.
+    pub(crate) async fn stream_as_of(
+        &self,
+        client: &MetaDataClient,
+        as_of_ms: i64,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        change_filter: Option<&str>,
+        tx: BatchSender,
+    ) -> Result<()> {
+        let groups = self.as_of_groups(client, as_of_ms).await?;
+        self.stream_groups(groups, filters, projection, output, change_filter, tx)
+            .await
+    }
+
+    async fn stream_groups(
+        &self,
+        groups: Vec<PartitionFiles>,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+        output: Option<&SchemaRef>,
+        change_filter: Option<&str>,
+        tx: BatchSender,
+    ) -> Result<()> {
+        if groups.is_empty() {
+            return Ok(());
+        }
         if self.range_partition_columns.is_empty() {
             // Unpartitioned tables read all files as one merge group.
             let files = groups.into_iter().flat_map(|group| group.files).collect();
             return self
-                .stream_files(files, filters, projection, output, tx)
+                .stream_files(files, filters, projection, output, change_filter, tx)
                 .await;
         }
         for group in groups {
@@ -864,11 +982,38 @@ impl IvmTable {
                 filters.clone(),
                 projection,
                 output,
+                change_filter,
                 tx.clone(),
             )
             .await?;
         }
         Ok(())
+    }
+
+    /// Keep the rows whose change column is not a CDC tombstone.
+    fn filter_change_batch(
+        batch: RecordBatch,
+        column: &str,
+    ) -> std::result::Result<RecordBatch, DataFusionError> {
+        let index = batch.schema().index_of(column).map_err(|_| {
+            DataFusionError::Execution(format!(
+                "change column {column} is not part of the batch"
+            ))
+        })?;
+        let values = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "change column {column} is not a string column"
+                ))
+            })?;
+        let mask = arrow_array::BooleanArray::from_iter(
+            (0..values.len()).map(|row| Some(values.value(row) != "delete")),
+        );
+        arrow::compute::filter_record_batch(&batch, &mask)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
     }
 
     /// Project one streamed batch to the subscriber's output schema.
@@ -879,6 +1024,16 @@ impl IvmTable {
         let Some(output) = output else {
             return Ok(batch);
         };
+        if output.fields().is_empty() {
+            // A scan that needs no columns (`COUNT(*)`): keep the row count.
+            return RecordBatch::try_new_with_options(
+                output.clone(),
+                Vec::new(),
+                &arrow::array::RecordBatchOptions::new()
+                    .with_row_count(Some(batch.num_rows())),
+            )
+            .map_err(|error| DataFusionError::Execution(error.to_string()));
+        }
         let batch_schema = batch.schema();
         let indices = output
             .fields()
@@ -904,7 +1059,8 @@ impl IvmTable {
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
         output: Option<&SchemaRef>,
-        tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>,
+        change_filter: Option<&str>,
+        tx: BatchSender,
     ) -> Result<()> {
         if files.is_empty() {
             return Ok(());
@@ -929,6 +1085,16 @@ impl IvmTable {
             match batch {
                 Ok(batch) => {
                     rows += batch.num_rows() as u64;
+                    let batch = match change_filter {
+                        Some(column) => match Self::filter_change_batch(batch, column) {
+                            Ok(batch) => batch,
+                            Err(error) => {
+                                let _ = tx.send(Err(error)).await;
+                                return Ok(());
+                            }
+                        },
+                        None => batch,
+                    };
                     let batch = match Self::project_output(batch, output) {
                         Ok(batch) => batch,
                         Err(error) => {
@@ -960,7 +1126,8 @@ impl IvmTable {
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
         output: Option<&SchemaRef>,
-        tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>,
+        change_filter: Option<&str>,
+        tx: BatchSender,
     ) -> Result<()> {
         let schema = projection.cloned().unwrap_or_else(|| self.schema.clone());
         let range_columns = self
@@ -999,6 +1166,16 @@ impl IvmTable {
             match batch {
                 Ok(batch) => {
                     rows += batch.num_rows() as u64;
+                    let batch = match change_filter {
+                        Some(column) => match Self::filter_change_batch(batch, column) {
+                            Ok(batch) => batch,
+                            Err(error) => {
+                                let _ = tx.send(Err(error)).await;
+                                return Ok(());
+                            }
+                        },
+                        None => batch,
+                    };
                     let batch = match Self::project_output(batch, output) {
                         Ok(batch) => batch,
                         Err(error) => {
