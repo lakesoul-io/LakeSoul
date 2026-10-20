@@ -21,13 +21,19 @@ package org.apache.flink.table.runtime.arrow;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.columnar.ColumnarRowData;
+import org.apache.flink.table.data.columnar.vector.BytesColumnVector;
+import org.apache.flink.table.data.columnar.vector.BytesColumnVector.Bytes;
 import org.apache.flink.table.data.columnar.vector.ColumnVector;
 import org.apache.flink.table.data.columnar.vector.VectorizedColumnBatch;
 import org.apache.flink.util.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** {@link ArrowReader} which read the underlying Arrow format data as {@link RowData}. */
 @Internal
 public final class ArrowReader {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ArrowReader.class);
 
     /**
      * An array of vectors which are responsible for the deserialization of each column of the rows.
@@ -51,6 +57,43 @@ public final class ArrowReader {
     /** Read the specified row from underlying Arrow format data. */
     public RowData read(int rowId) {
         reuseRow.setRowId(rowId);
+        if (LOG.isDebugEnabled()) {
+            StringBuilder sb =
+                    new StringBuilder("rowId=")
+                            .append(rowId)
+                            .append(",arity=")
+                            .append(columnVectors.length);
+            for (int i = 0; i < columnVectors.length; i++) {
+                ColumnVector vector = columnVectors[i];
+                sb.append(" [")
+                        .append(i)
+                        .append(':')
+                        .append(vector.getClass().getSimpleName())
+                        .append(",null=")
+                        .append(vector.isNullAt(rowId));
+                if (vector instanceof BytesColumnVector) {
+                    try {
+                        Bytes bytes = ((BytesColumnVector) vector).getBytes(rowId);
+                        sb.append(",bytes=")
+                                .append(
+                                        bytes == null
+                                                ? "null"
+                                                : "data="
+                                                        + (bytes.data == null
+                                                                ? "null"
+                                                                : bytes.data.length)
+                                                        + ",offset="
+                                                        + bytes.offset
+                                                        + ",len="
+                                                        + bytes.len);
+                    } catch (Throwable t) {
+                        sb.append(",bytesErr=").append(t);
+                    }
+                }
+                sb.append(']');
+            }
+            LOG.debug("ArrowReader.read {}", sb);
+        }
         return reuseRow;
     }
 }

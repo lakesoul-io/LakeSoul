@@ -23,10 +23,16 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.columnar.vector.DecimalColumnVector;
 import org.apache.flink.util.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.math.BigDecimal;
 
 /** Arrow column vector for DecimalData. */
 @Internal
 public final class ArrowDecimalColumnVector implements DecimalColumnVector {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ArrowDecimalColumnVector.class);
 
     /** Container which is used to store the sequence of DecimalData values of a column to read. */
     private final DecimalVector decimalVector;
@@ -37,11 +43,39 @@ public final class ArrowDecimalColumnVector implements DecimalColumnVector {
 
     @Override
     public DecimalData getDecimal(int i, int precision, int scale) {
-        return DecimalData.fromBigDecimal(decimalVector.getObject(i), precision, scale);
+        BigDecimal value = decimalVector.getObject(i);
+        if (value == null) {
+            LOG.warn(
+                    "ArrowDecimal.getDecimal null i={} isNull={} valueCount={} nullCount={}"
+                            + " field={} class={}",
+                    i,
+                    decimalVector.isNull(i),
+                    decimalVector.getValueCount(),
+                    decimalVector.getNullCount(),
+                    decimalVector.getField(),
+                    decimalVector.getClass().getName());
+            return null;
+        }
+        return DecimalData.fromBigDecimal(value, precision, scale);
     }
 
     @Override
     public boolean isNullAt(int i) {
-        return decimalVector.isNull(i);
+        // Guard both the Arrow validity bit and the actual value; native-reader
+        // batches can present null values inconsistently.
+        boolean isNull = decimalVector.isNull(i);
+        if (!isNull && decimalVector.getObject(i) == null) {
+            LOG.warn(
+                    "ArrowDecimal null mismatch i={} isNull={} valueCount={} nullCount={} field={}"
+                            + " class={}",
+                    i,
+                    isNull,
+                    decimalVector.getValueCount(),
+                    decimalVector.getNullCount(),
+                    decimalVector.getField(),
+                    decimalVector.getClass().getName());
+            return true;
+        }
+        return isNull;
     }
 }
