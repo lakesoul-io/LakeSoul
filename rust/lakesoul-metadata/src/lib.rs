@@ -529,11 +529,21 @@ async fn get_prepared_statement<'a>(
             from table_snapshot
             where table_id = $1::TEXT
             order by snapshot_id",
+        // `snapshot_commit` does not store the position of a commit inside the
+        // frozen partition snapshot, so recover it from the (pinned)
+        // `partition_info` row that produced the snapshot. The left join keeps
+        // commits readable even if that version row is no longer available.
         DaoType::ListSnapshotCommitsBySnapshot =>
-            "select table_id, snapshot_id, partition_desc, version, commit_id
-            from snapshot_commit
-            where table_id = $1::TEXT and snapshot_id = $2::BIGINT
-            order by partition_desc, commit_id",
+            "select sc.table_id, sc.snapshot_id, sc.partition_desc, sc.version, sc.commit_id
+            from snapshot_commit sc
+            left join partition_info pi
+              on pi.table_id = sc.table_id
+             and pi.partition_desc = sc.partition_desc
+             and pi.version = sc.version
+            where sc.table_id = $1::TEXT and sc.snapshot_id = $2::BIGINT
+            order by sc.partition_desc,
+                     array_position(pi.snapshot, sc.commit_id) nulls last,
+                     sc.commit_id",
         DaoType::ListTagsByTableId =>
             "select table_id, tag, snapshot_id, created_at, coalesce(expire_at, 0)
             from table_snapshot_tag

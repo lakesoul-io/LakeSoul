@@ -292,6 +292,9 @@ class NativeMetadataClient:
     ) -> SnapshotInfo:
         """Freeze the current per-partition versions into a new snapshot."""
         table_info = self.get_table_info_by_name(table_name, namespace)
+        partitions = self.get_all_partition_info(table_info.table_id)
+        if not any(partition.snapshot for partition in partitions):
+            raise ValueError(f"cannot create a snapshot of empty table {table_name!r}")
         wrapper = self._query(
             DaoType.CreateSnapshot, [table_info.table_id, description]
         )

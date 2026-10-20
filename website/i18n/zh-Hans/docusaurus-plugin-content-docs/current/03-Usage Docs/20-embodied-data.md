@@ -279,6 +279,7 @@ ids = catalog.scan("pusht").options(
 - `timestamp`、`snapshot`、`tag` 三者互斥；
 - `time_zone` 只能与 `timestamp` 搭配（IANA 名称）。自带时区的时间戳会忽略它；naive datetime 与 `date` 必须显式传入；
 - 快照与标签会 pin 住对应数据，清理不会删除它们；
+- 空表不能创建快照：`create_snapshot` 以及未显式指定 snapshot 的 `create_tag` 会抛出 `ValueError`（没有可冻结的提交）；
 - `catalog.drop_tag(...)` / `catalog.drop_snapshot(...)` 解除 pin（有标签指向时 `drop_snapshot` 会拒绝）；
 - `catalog.purge(table, older_than=..., dry_run=True)` 删除超过宽限期且未被 pin 的旧版本与文件。
 
