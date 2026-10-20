@@ -2660,6 +2660,18 @@ fn mv_compaction_threshold() -> Option<usize> {
     (threshold > 0).then_some(threshold)
 }
 
+/// The largest MV (in estimated live rows) the internal test switch compacts.
+///
+/// Compaction materializes the whole MV; at 10M rows it costs gigabytes of
+/// memory and seconds per round.  Production MVs are compacted by the
+/// external service, so the internal switch is capped to test-sized views.
+fn mv_compaction_max_rows() -> u64 {
+    std::env::var("LAKESOUL_IVM_COMPACT_MV_MAX_ROWS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(2_000_000)
+}
+
 impl IvmRuntime {
     /// Compact an auxiliary state table when it accumulated enough files.
     pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
@@ -2676,10 +2688,19 @@ impl IvmRuntime {
 
     /// Compact an MV when the internal test switch is on and enough files
     /// accumulated.  Production MVs are compacted by the external service.
-    pub(crate) async fn maybe_compact_mv(&self, mv: &IvmTable) -> Result<()> {
+    pub(crate) async fn maybe_compact_mv(
+        &self,
+        view_id: &str,
+        mv: &IvmTable,
+    ) -> Result<()> {
         let Some(threshold) = mv_compaction_threshold() else {
             return Ok(());
         };
+        if let Some(rows) = self.known_view_rows(view_id)
+            && rows > mv_compaction_max_rows()
+        {
+            return Ok(());
+        }
         if mv.current_file_count(&self.client).await? < threshold {
             return Ok(());
         }

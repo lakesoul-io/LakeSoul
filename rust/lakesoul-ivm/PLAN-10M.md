@@ -298,6 +298,17 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
     total **478ms**；第 100 轮 total **263ms**。
   - 内部压缩在 refresh 内执行，压缩轮有 ~1.1–1.3s 尖峰（每 ~10 轮），峰值 RSS
     1.6GB（压缩时物化 MV）；生产由外部服务承担，不进入 refresh 延迟。
+- **10M / RustFS（127.0.0.1:9000，Vortex，4 桶，`LAKESOUL_CACHE=1`）**：
+  - 基线（无 compaction）20 轮：bootstrap 2.5s；增量平均 join ~630ms、agg ~350ms、
+    total ~950ms；全量重建 2.9s，增量约为全量的 3×；20 轮时 MV 约 80 文件，join 仍
+    ~630ms，对象存储的 I/O 底噪掩盖了文件数增长。
+  - 关闭行数上限的内部 MV compaction（阈值 40 文件）：从压缩轮起 join 5–11s、峰值
+    RSS 8.4GB —— 10M 行 MV 的物化重写在 refresh 内不可行。
+  - 加 `LAKESOUL_IVM_COMPACT_MV_MAX_ROWS`（默认 2,000,000）后，10M 跳过内部压缩，
+    恢复 join ~530–620ms、total ~714–805ms；生产由外部 NewCompactionTask 压缩。
+- **阈值结论**：state 表 `LAKESOUL_IVM_STATE_COMPACT_FILES=32`；MV 外部压缩建议
+  32–64 文件（10M/80 文件时 join 仍 ~630ms，可偏 64 以减少重写）；内部 MV 测试开关
+  仅用于 ≤2M 行，且不进入生产路径。
 - 结论：MV/state 文件增长是 100 轮漂移的主因；按文件数阈值压缩可把增量读延迟稳定在
   数百 ms，避免增量退化为全量的数倍慢。
 
