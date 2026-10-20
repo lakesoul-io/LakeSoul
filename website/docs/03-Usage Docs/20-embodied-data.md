@@ -297,6 +297,8 @@ ids = catalog.scan("pusht").options(
 - `time_zone` is only valid with `timestamp` (an IANA name). Timestamps with their own zone
   ignore it; naive datetimes and dates require it;
 - snapshots and tags pin their data, so cleanup never removes them;
+- an empty table cannot be snapshotted: `create_snapshot` (and `create_tag` when it has to create
+  the snapshot) raises `ValueError` because there is no committed state to freeze;
 - `catalog.drop_tag(...)` / `catalog.drop_snapshot(...)` release the pin (`drop_snapshot` refuses
   while a tag still points at it);
 - `catalog.purge(table, older_than=..., dry_run=True)` removes unpinned versions and files older

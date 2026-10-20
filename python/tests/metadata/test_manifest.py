@@ -21,7 +21,12 @@ def _table_name(prefix: str) -> str:
 
 
 def _make_table(catalog: LakeSoulCatalog, tmp_path: Path, name: str):
-    return catalog.create_table(name, path=(tmp_path / name).as_uri(), schema=SCHEMA)
+    table = catalog.create_table(name, path=(tmp_path / name).as_uri(), schema=SCHEMA)
+    table.write_arrow(
+        pa.table({"id": pa.array([0], type=pa.int64())}, schema=SCHEMA),
+        format="parquet",
+    )
+    return table
 
 
 def _samples(anchors: list[int]) -> pa.Table:

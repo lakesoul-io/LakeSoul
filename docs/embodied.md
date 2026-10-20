@@ -103,6 +103,7 @@
 - `scan.options(timestamp=..., time_zone=..., snapshot=..., tag=...)`：三者互斥（同时传报错）；`time_zone` 只与 `timestamp` 搭配；
 - `timestamp` 接受毫秒整数、`datetime`、ISO-8601 字符串、`date`；带时区的值忽略 `time_zone`，naive 值必须显式传 IANA `time_zone`，否则报错；
 - `tag > snapshot > timestamp` 的优先级仅作为设计意图记录；当前实现要求显式区分，不自动挑选；
+- 空表不能创建快照：`create_snapshot`（以及未显式指定 snapshot 的 `create_tag`）会抛 `ValueError`，因为空表没有可冻结的提交；
 - `EmbodiedDataset` 可 pickle，反序列化后固定同一版本配置；配合 `set_epoch(epoch)` 保证洗牌可复现。
 
 ### 4.4 Sample manifest（Phase D）
