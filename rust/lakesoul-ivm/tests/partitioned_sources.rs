@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Range-partitioned source tables: the partition values are injected on every
 //! read (changelog window, current state, before state and rebuild baseline),
 //! so filters, group keys and joins see the partition columns exactly like the
@@ -36,6 +38,32 @@ fn source_schema() -> SchemaRef {
         Field::new("day", DataType::Utf8, false),
         Field::new(CHANGE_COLUMN, DataType::Utf8, false),
     ]))
+}
+
+fn source_schema_with_day() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("day", DataType::Utf8, false),
+        Field::new("lk", DataType::Int64, false),
+        Field::new("lv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn source_batch_with_day(rows: &[(i64, &str, i64, i64)]) -> RecordBatch {
+    RecordBatch::try_new(
+        source_schema_with_day(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.3))),
+            Arc::new(StringArray::from_iter_values(
+                (0..rows.len()).map(|_| "insert"),
+            )),
+        ],
+    )
+    .unwrap()
 }
 
 fn source_batch(rows: &[(i64, &str, i64, &str, &str)]) -> RecordBatch {
@@ -2135,5 +2163,260 @@ async fn a_partitioned_left_join_prunes_unchanged_partitions() {
     assert_eq!(
         read_rows(&runtime, &mv).await,
         vec![(1, "d1".to_string(), 101, 5), (2, "d2".to_string(), 200, 6),]
+    );
+}
+
+/// A multi-way join over a partitioned base prunes the MV partitions the
+/// delta did not touch when only the base source changed.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_multi_join_prunes_unchanged_partitions() {
+    use lakesoul_ivm::{
+        MultiJoinColumn, MultiJoinKey, MultiJoinView, multi_join_mv_schema_for,
+        multi_join_primary_keys,
+    };
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact_schema = source_schema_with_day();
+    let middle_schema = Arc::new(Schema::new(vec![
+        Field::new("mid", DataType::Int64, false),
+        Field::new("mk", DataType::Int64, false),
+        Field::new("mv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("rid", DataType::Int64, false),
+        Field::new("rk", DataType::Int64, false),
+        Field::new("rv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let fact = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmj_fact_{suffix}"),
+                table_path(&dir, "fact"),
+                fact_schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string(), "day".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let middle = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmj_middle_{suffix}"),
+                table_path(&dir, "middle"),
+                middle_schema.clone(),
+            )
+            .with_primary_keys(vec!["mid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let dim = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmj_dim_{suffix}"),
+                table_path(&dir, "dim"),
+                dim_schema.clone(),
+            )
+            .with_primary_keys(vec!["rid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "day".to_string(),
+            name: "day".to_string(),
+        },
+        MultiJoinColumn {
+            source: 0,
+            column: "lv".to_string(),
+            name: "lv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "mv".to_string(),
+            name: "mv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "rv".to_string(),
+            name: "rv".to_string(),
+        },
+    ];
+    let mut mv_keys = multi_join_primary_keys(&[
+        vec!["id".to_string(), "day".to_string()],
+        vec!["mid".to_string()],
+        vec!["rid".to_string()],
+    ]);
+    mv_keys.push("day".to_string());
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmj_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                multi_join_mv_schema_for(
+                    &[
+                        fact_schema.clone(),
+                        middle_schema.clone(),
+                        dim_schema.clone(),
+                    ],
+                    &[
+                        vec!["id".to_string(), "day".to_string()],
+                        vec!["mid".to_string()],
+                        vec!["rid".to_string()],
+                    ],
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(mv_keys)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MultiJoinView::new(
+        format!("pmj_{suffix}"),
+        vec![fact.clone(), middle.clone(), dim.clone()],
+        mv.clone(),
+        vec![
+            MultiJoinKey {
+                left_source: 0,
+                left_column: "lk".to_string(),
+                left_expr: None,
+                right_source: 1,
+                right_column: "mk".to_string(),
+                right_expr: None,
+            },
+            MultiJoinKey {
+                left_source: 1,
+                left_column: "mv".to_string(),
+                left_expr: None,
+                right_source: 2,
+                right_column: "rk".to_string(),
+                right_expr: None,
+            },
+        ],
+        columns,
+    );
+
+    fact.append_batch(
+        runtime.client(),
+        source_batch_with_day(&[(1, "d1", 10, 100), (2, "d2", 20, 200)]),
+    )
+    .await
+    .unwrap();
+    middle
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                middle_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1, 2])),
+                    Arc::new(Int64Array::from_iter_values([10, 20])),
+                    Arc::new(Int64Array::from_iter_values([1000, 2000])),
+                    Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            dim_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1, 2])),
+                Arc::new(Int64Array::from_iter_values([1000, 2000])),
+                Arc::new(Int64Array::from_iter_values([5, 6])),
+                Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_multi_join(&view).await.unwrap();
+
+    async fn read_rows(
+        runtime: &IvmRuntime,
+        mv: &IvmTable,
+    ) -> Vec<(String, i64, i64, i64)> {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(mv)))
+            .unwrap();
+        let batches = context
+            .sql("select \"day\", \"lv\", \"mv\", \"rv\" from mv order by \"day\"")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let day = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let lv = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let mv = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let rv = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((
+                    day.value(row).to_string(),
+                    lv.value(row),
+                    mv.value(row),
+                    rv.value(row),
+                ));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![
+            ("d1".to_string(), 100, 1000, 5),
+            ("d2".to_string(), 200, 2000, 6),
+        ]
+    );
+
+    // Only the base's d1 changes: the d2 partition of the MV is pruned, its
+    // row stays.
+    fact.append_batch(
+        runtime.client(),
+        source_batch_with_day(&[(1, "d1", 10, 101)]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_multi_join(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![
+            ("d1".to_string(), 101, 1000, 5),
+            ("d2".to_string(), 200, 2000, 6),
+        ]
     );
 }

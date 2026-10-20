@@ -87,6 +87,42 @@ pub struct MultiJoinCondition {
 }
 
 /// The row identity column of a source in a multi-way join output.
+/// The MV partitions a multi-way join refresh can touch when only the base
+/// source changed.
+///
+/// The output carries the base columns under their MV names and the base
+/// primary keys under `__pk0_<key>`; map them back so the partition columns
+/// can be matched.  A change in a later source can match base rows in any
+/// partition (the join keys do not have to include the partition column), so
+/// those windows fall back to the full read.
+fn multi_join_base_partitions(
+    view: &MultiJoinView,
+    windows: &[SourceWindow],
+) -> Option<Vec<(String, Vec<String>)>> {
+    if !windows
+        .iter()
+        .skip(1)
+        .all(|window| window.added_files.is_empty())
+    {
+        return None;
+    }
+    let mut mapping = view
+        .columns
+        .iter()
+        .filter(|column| column.source == 0)
+        .map(|column| (column.column.clone(), column.name.clone()))
+        .collect::<Vec<_>>();
+    for key in &view.sources[0].primary_keys {
+        mapping.push((key.clone(), multi_join_pk_alias(0, key)));
+    }
+    super::mv_partitions_for_source_mapped(
+        &view.mv,
+        &view.sources[0],
+        &windows[0],
+        &mapping,
+    )
+}
+
 fn multi_join_pk_alias(source: usize, key: &str) -> String {
     format!("__pk{source}_{key}")
 }
@@ -759,11 +795,19 @@ impl IvmRuntime {
                 .iter()
                 .map(|name| col(name.as_str()))
                 .collect::<Vec<_>>();
-            let mv = dataframe(
-                &context,
-                view.mv.read_current(&self.client).await?,
-                &view.mv.schema,
-            )?;
+            let mv_batches = match multi_join_base_partitions(view, &windows) {
+                Some(restriction) => {
+                    view.mv
+                        .read_current_filtered_partitions(
+                            &self.client,
+                            Vec::new(),
+                            &restriction,
+                        )
+                        .await?
+                }
+                None => view.mv.read_current(&self.client).await?,
+            };
+            let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
             let already = mv
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?

@@ -366,9 +366,10 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
   - 已补齐 `Row`、`Window`/`TopK`/`SemiAnti`/`Union*` 和两表 keyed Join：
     `mv_partitions_for_source` / `mv_partitions_for_source_mapped` 的条件是 MV 分区列
     映射到源分区列、源主键含源分区列（key 不跨分区）、MV 主键含分区列；Row 还要求该列
-    由视图原样物化，Join 用 source column -> 输出别名映射。SemiAnti 仅在右侧无变更时
-    按左侧 delta 的 key 过滤状态读并裁剪 MV；Union 取各变更分支的并集；Join 仅在一侧
-    变更时裁剪（两侧都变时另一侧的匹配行可在任意分区）。MultiJoin 仍全读；无主键
+    由视图原样物化，Join/MultiJoin 用 source column -> 输出列/别名映射。SemiAnti 仅在
+    右侧无变更时按左侧 delta 的 key 过滤状态读并裁剪 MV；Union 取各变更分支的并集；
+    Join 仅在一侧变更时裁剪（两侧都变时另一侧的匹配行可在任意分区）；MultiJoin 仅在
+    base 源变更时按 base 分区裁剪（非 base 源变更可能匹配任意 base 分区）。无主键
     （append-only）的两表 join 仍要求单分区（`ensure_unpartitioned`）；Fallback 有
     分区局部重算。
 - **列裁剪**：`SUM/COUNT` 的 before-state 读已按列下推（`sum_count_source_projection`
