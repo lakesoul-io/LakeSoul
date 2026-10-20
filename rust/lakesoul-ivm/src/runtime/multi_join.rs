@@ -5,6 +5,7 @@
 //! The multi-way join view: three or more sources flattened into one chain.
 
 use super::*;
+use arrow_array::Array;
 use datafusion::common::NullEquality;
 use datafusion::logical_expr::LogicalPlanBuilder;
 
@@ -95,6 +96,13 @@ pub struct MultiJoinCondition {
 /// can be matched.  A change in a later source can match base rows in any
 /// partition (the join keys do not have to include the partition column), so
 /// those windows fall back to the full read.
+/// The MV partitions a multi-way join refresh can touch when only the base
+/// source changed.
+///
+/// Every affected MV row carries a base row, so the base's changed range
+/// partitions bound the read.  The output carries the base columns under
+/// their MV names and the base primary keys under `__pk0_<key>`; map them
+/// back so the partition columns can be matched.
 fn multi_join_base_partitions(
     view: &MultiJoinView,
     windows: &[SourceWindow],
@@ -121,6 +129,110 @@ fn multi_join_base_partitions(
         &windows[0],
         &mapping,
     )
+}
+
+fn multi_join_mv_partitions(
+    view: &MultiJoinView,
+    windows: &[SourceWindow],
+    changed_deltas: &[Option<Vec<RecordBatch>>],
+) -> Option<Vec<(String, Vec<String>)>> {
+    let changed = windows
+        .iter()
+        .enumerate()
+        .filter(|(_, window)| !window.added_files.is_empty())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    match changed.as_slice() {
+        [0] => multi_join_base_partitions(view, windows),
+        [1] => multi_join_join_key_partitions(view, changed_deltas[1].as_deref()?),
+        _ => None,
+    }
+}
+
+/// The base column an MV partition column carries: an output column of the
+/// base, or one of its `__pk0_<key>` aliases.
+fn multi_join_base_column(view: &MultiJoinView, name: &str) -> Option<String> {
+    for column in &view.columns {
+        if column.source == 0 && column.name == name {
+            return Some(column.column.clone());
+        }
+    }
+    view.sources[0]
+        .primary_keys
+        .iter()
+        .find(|key| multi_join_pk_alias(0, key) == name)
+        .cloned()
+}
+
+/// The distinct non-null values of `column` in `batches`, rendered the way a
+/// partition value is.
+fn multi_join_column_values(
+    batches: &[RecordBatch],
+    column: &str,
+) -> Option<Vec<String>> {
+    let mut values: Vec<String> = Vec::new();
+    for batch in batches {
+        let index = batch.schema().index_of(column).ok()?;
+        let array = batch.column(index);
+        for row in 0..array.len() {
+            if array.is_null(row) {
+                continue;
+            }
+            let value =
+                arrow::util::display::array_value_to_string(array.as_ref(), row).ok()?;
+            if !values.contains(&value) {
+                values.push(value);
+            }
+        }
+    }
+    Some(values)
+}
+
+/// The MV partitions a change of source 1 can touch, when the base partition
+/// column is also the join key to source 1.
+///
+/// A source-1 row joins the base rows whose join-key value equals its own, so
+/// the affected base partitions are exactly the join-key values the source-1
+/// delta carries.  This needs the join key to be part of source 1's primary
+/// keys: an in-place update can then not change it, so the delta (deletes
+/// included) carries every affected value.  A NULL join key matches nothing.
+fn multi_join_join_key_partitions(
+    view: &MultiJoinView,
+    delta: &[RecordBatch],
+) -> Option<Vec<(String, Vec<String>)>> {
+    if view.mv.range_partition_columns.len() != 1 {
+        return None;
+    }
+    let mv_column = &view.mv.range_partition_columns[0];
+    let base_column = multi_join_base_column(view, mv_column)?;
+    let base = &view.sources[0];
+    if !base.range_partition_columns.contains(&base_column)
+        || !base.primary_keys.contains(&base_column)
+        || !view.mv.primary_keys.contains(mv_column)
+    {
+        return None;
+    }
+    let mut join_column = None;
+    for key in &view.keys {
+        if key.left_source == 0 && key.left_column == base_column && key.right_source == 1
+        {
+            join_column = Some(key.right_column.clone());
+        } else if key.right_source == 0
+            && key.right_column == base_column
+            && key.left_source == 1
+        {
+            join_column = Some(key.left_column.clone());
+        }
+    }
+    let join_column = join_column?;
+    if !view.sources[1].primary_keys.contains(&join_column) {
+        return None;
+    }
+    let values = multi_join_column_values(delta, &join_column)?;
+    if values.is_empty() {
+        return None;
+    }
+    Some(vec![(mv_column.clone(), values)])
 }
 
 fn multi_join_pk_alias(source: usize, key: &str) -> String {
@@ -707,6 +819,8 @@ impl IvmRuntime {
                 Vec::with_capacity(view.sources.len());
             let mut affected: Vec<Option<DataFrame>> =
                 Vec::with_capacity(view.sources.len());
+            let mut changed_deltas: Vec<Option<Vec<RecordBatch>>> =
+                vec![None; view.sources.len()];
             for (index, (source, window)) in view.sources.iter().zip(&windows).enumerate()
             {
                 let now = apply_side_filter(
@@ -728,13 +842,12 @@ impl IvmRuntime {
                     affected.push(None);
                     continue;
                 }
-                let delta = dataframe(
-                    &context,
-                    source
-                        .read_partition_files(window.added_files.clone())
-                        .await?,
-                    &source.schema,
-                )?;
+                let delta_batches = source
+                    .read_partition_files(window.added_files.clone())
+                    .await?;
+                // Retained for the join-key partition rule below.
+                changed_deltas[index] = Some(delta_batches.clone());
+                let delta = dataframe(&context, delta_batches, &source.schema)?;
                 let key_names = source
                     .primary_keys
                     .iter()
@@ -795,18 +908,19 @@ impl IvmRuntime {
                 .iter()
                 .map(|name| col(name.as_str()))
                 .collect::<Vec<_>>();
-            let mv_batches = match multi_join_base_partitions(view, &windows) {
-                Some(restriction) => {
-                    view.mv
-                        .read_current_filtered_partitions(
-                            &self.client,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
-                }
-                None => view.mv.read_current(&self.client).await?,
-            };
+            let mv_batches =
+                match multi_join_mv_partitions(view, &windows, &changed_deltas) {
+                    Some(restriction) => {
+                        view.mv
+                            .read_current_filtered_partitions(
+                                &self.client,
+                                Vec::new(),
+                                &restriction,
+                            )
+                            .await?
+                    }
+                    None => view.mv.read_current(&self.client).await?,
+                };
             let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
             let already = mv
                 .clone()

@@ -2420,3 +2420,270 @@ async fn a_partitioned_multi_join_prunes_unchanged_partitions() {
         ]
     );
 }
+
+/// A multi-way join prunes the MV by the join-key values of a changed middle
+/// source when the base partition column is that join key.
+#[test_log::test(tokio::test)]
+async fn a_multi_join_prunes_by_the_changed_join_key_values() {
+    use lakesoul_ivm::{
+        MultiJoinColumn, MultiJoinKey, MultiJoinView, multi_join_mv_schema_for,
+        multi_join_primary_keys,
+    };
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("lk", DataType::Int64, false),
+        Field::new("lv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let middle_schema = Arc::new(Schema::new(vec![
+        Field::new("mid", DataType::Int64, false),
+        Field::new("mk", DataType::Int64, false),
+        Field::new("mv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("rid", DataType::Int64, false),
+        Field::new("rk", DataType::Int64, false),
+        Field::new("rv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let fact = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjk_fact_{suffix}"),
+                table_path(&dir, "fact"),
+                fact_schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string(), "lk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["lk".to_string()]),
+        )
+        .await
+        .unwrap();
+    let middle = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjk_middle_{suffix}"),
+                table_path(&dir, "middle"),
+                middle_schema.clone(),
+            )
+            .with_primary_keys(vec!["mid".to_string(), "mk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let dim = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjk_dim_{suffix}"),
+                table_path(&dir, "dim"),
+                dim_schema.clone(),
+            )
+            .with_primary_keys(vec!["rid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "lk".to_string(),
+            name: "lk".to_string(),
+        },
+        MultiJoinColumn {
+            source: 0,
+            column: "lv".to_string(),
+            name: "lv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "mv".to_string(),
+            name: "mv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "rv".to_string(),
+            name: "rv".to_string(),
+        },
+    ];
+    let mut mv_keys = multi_join_primary_keys(&[
+        vec!["id".to_string(), "lk".to_string()],
+        vec!["mid".to_string(), "mk".to_string()],
+        vec!["rid".to_string()],
+    ]);
+    mv_keys.push("lk".to_string());
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                multi_join_mv_schema_for(
+                    &[
+                        fact_schema.clone(),
+                        middle_schema.clone(),
+                        dim_schema.clone(),
+                    ],
+                    &[
+                        vec!["id".to_string(), "lk".to_string()],
+                        vec!["mid".to_string(), "mk".to_string()],
+                        vec!["rid".to_string()],
+                    ],
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(mv_keys)
+            .with_range_partition_columns(vec!["lk".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MultiJoinView::new(
+        format!("pjk_{suffix}"),
+        vec![fact.clone(), middle.clone(), dim.clone()],
+        mv.clone(),
+        vec![
+            MultiJoinKey {
+                left_source: 0,
+                left_column: "lk".to_string(),
+                left_expr: None,
+                right_source: 1,
+                right_column: "mk".to_string(),
+                right_expr: None,
+            },
+            MultiJoinKey {
+                left_source: 1,
+                left_column: "mv".to_string(),
+                left_expr: None,
+                right_source: 2,
+                right_column: "rk".to_string(),
+                right_expr: None,
+            },
+        ],
+        columns,
+    );
+
+    fact.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            fact_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1, 2])),
+                Arc::new(Int64Array::from_iter_values([10, 20])),
+                Arc::new(Int64Array::from_iter_values([100, 200])),
+                Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    middle
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                middle_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1, 2])),
+                    Arc::new(Int64Array::from_iter_values([10, 20])),
+                    Arc::new(Int64Array::from_iter_values([1000, 2000])),
+                    Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            dim_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1, 2, 3])),
+                Arc::new(Int64Array::from_iter_values([1000, 2000, 1001])),
+                Arc::new(Int64Array::from_iter_values([5, 6, 7])),
+                Arc::new(StringArray::from_iter_values([
+                    "insert", "insert", "insert",
+                ])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_multi_join(&view).await.unwrap();
+
+    async fn read_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, i64, i64, i64)> {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(mv)))
+            .unwrap();
+        let batches = context
+            .sql("select \"lk\", \"lv\", \"mv\", \"rv\" from mv order by \"lk\"")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let lk = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let lv = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let mv = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let rv = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((lk.value(row), lv.value(row), mv.value(row), rv.value(row)));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(10, 100, 1000, 5), (20, 200, 2000, 6)]
+    );
+
+    // Only the middle changes: the join-key rule prunes the MV to lk=10, so
+    // the lk=20 partition's row is untouched.
+    middle
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                middle_schema,
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1])),
+                    Arc::new(Int64Array::from_iter_values([10])),
+                    Arc::new(Int64Array::from_iter_values([1001])),
+                    Arc::new(StringArray::from_iter_values(["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_multi_join(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(10, 100, 1001, 7), (20, 200, 2000, 6)]
+    );
+}
