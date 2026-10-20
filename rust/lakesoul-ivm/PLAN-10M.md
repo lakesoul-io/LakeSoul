@@ -281,6 +281,26 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 用户表外部 compaction；文件大小目标与 bucket 数按集群并行度设计。
 - 验收：100 轮后状态表文件数稳定；单文件大小接近目标。
 
+#### P4 结果：state 自动 compaction + MV 测试开关（2026-10）
+
+- **原语**：`IvmTable::compact` 读当前合并状态 → 丢弃 CDC 墓碑、`rowKinds=insert`、
+  `__ivm_epoch=0` → 按桶重写 → `metadata.commit_compaction`（输入分区 + 输出文件，
+  一次 `CompactionCommit` 替换分区快照；旧文件由保留清理回收）。
+- **state 表**：refresh 开始前，当前文件数 ≥ `LAKESOUL_IVM_STATE_COMPACT_FILES`
+  （默认 32，0 关闭）时自动压缩；MIN/MAX 12 轮测试中 state 文件数稳定 ≤9。
+- **MV**：生产仍由外部 `NewCompactionTask` 压缩；`LAKESOUL_IVM_INTERNAL_COMPACT_MV=1`
+  （默认关）+ `LAKESOUL_IVM_COMPACT_MV_FILES`（默认 32）打开内部测试开关，refresh
+  提交 epoch/推进 cursor 后压缩。
+- **1M/1%/4 桶/Vortex，100 轮**：
+  - 无 compaction：平均 join **1458ms**、total **1641ms**；第 100 轮 join 2385ms、
+    total 2711ms（比 0.5s 的全量重建慢 5.4×）。
+  - 开启 MV 内部 compaction（阈值 40 文件 ≈ 每 10 轮）：平均 join **385ms**、
+    total **478ms**；第 100 轮 total **263ms**。
+  - 内部压缩在 refresh 内执行，压缩轮有 ~1.1–1.3s 尖峰（每 ~10 轮），峰值 RSS
+    1.6GB（压缩时物化 MV）；生产由外部服务承担，不进入 refresh 延迟。
+- 结论：MV/state 文件增长是 100 轮漂移的主因；按文件数阈值压缩可把增量读延迟稳定在
+  数百 ms，避免增量退化为全量的数倍慢。
+
 #### P5a 结果：bucket 并行刷新（2026-10）
 
 - 条件：唯一键 chain、源/MV 桶数相同、空 bucket columns（按主键哈希）、非分区、无未知文件后缀。

@@ -459,3 +459,29 @@ async fn delete_view_removes_states() {
             .is_none()
     );
 }
+
+/// The internal test switch compacts a refreshed MV once it accumulates
+/// enough files.
+#[test_log::test(tokio::test)]
+async fn internal_mv_compaction_bounds_the_mv_files() {
+    // SAFETY: the test binary owns its environment; the switch only affects
+    // the SumCount refreshes in this binary.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_INTERNAL_COMPACT_MV", "1");
+        std::env::set_var("LAKESOUL_IVM_COMPACT_MV_FILES", "4");
+    }
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let (mv, view) = sum_count_fixture(&runtime, &dir).await;
+
+    for round in 0..8 {
+        runtime.refresh_sum_count(&view).await.unwrap();
+        let files = mv.current_file_count(runtime.client()).await.unwrap();
+        assert!(files <= 4, "round {round}: {files} MV files");
+        view.source
+            .append_batch(runtime.client(), source_batch())
+            .await
+            .unwrap();
+    }
+}

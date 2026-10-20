@@ -2630,7 +2630,63 @@ pub(crate) struct AppendOutcome {
     pub(crate) deletes: u64,
 }
 
+/// The state table file count at which a refresh compacts it (0 disables).
+///
+/// A state table gains one file set per refresh; compaction rewrites the
+/// current logical state into one file per bucket so the state read (and the
+/// metadata) stays bounded.  The default is a compromise between write
+/// amplification and read latency for a few-minute refresh cadence.
+fn state_compaction_threshold() -> usize {
+    std::env::var("LAKESOUL_IVM_STATE_COMPACT_FILES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(32)
+}
+
+/// The MV file count at which a refresh compacts it, when the internal test
+/// switch is enabled.  Production MV compaction is owned by the external
+/// compaction service, so this defaults to off.
+fn mv_compaction_threshold() -> Option<usize> {
+    let enabled = std::env::var("LAKESOUL_IVM_INTERNAL_COMPACT_MV")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    if !enabled {
+        return None;
+    }
+    let threshold = std::env::var("LAKESOUL_IVM_COMPACT_MV_FILES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(32);
+    (threshold > 0).then_some(threshold)
+}
+
 impl IvmRuntime {
+    /// Compact an auxiliary state table when it accumulated enough files.
+    pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
+        let threshold = state_compaction_threshold();
+        if threshold == 0 {
+            return Ok(());
+        }
+        if state.current_file_count(&self.client).await? < threshold {
+            return Ok(());
+        }
+        state.compact(&self.client).await?;
+        Ok(())
+    }
+
+    /// Compact an MV when the internal test switch is on and enough files
+    /// accumulated.  Production MVs are compacted by the external service.
+    pub(crate) async fn maybe_compact_mv(&self, mv: &IvmTable) -> Result<()> {
+        let Some(threshold) = mv_compaction_threshold() else {
+            return Ok(());
+        };
+        if mv.current_file_count(&self.client).await? < threshold {
+            return Ok(());
+        }
+        mv.compact(&self.client).await?;
+        Ok(())
+    }
+
     /// The estimated live row count of a view, when known.
     pub(crate) fn known_view_rows(&self, view_id: &str) -> Option<u64> {
         self.view_rows

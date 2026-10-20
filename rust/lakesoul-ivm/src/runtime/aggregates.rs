@@ -2573,6 +2573,7 @@ impl IvmRuntime {
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
+        self.maybe_compact_mv(&view.mv).await?;
         Ok(Some(epoch))
     }
 
@@ -2932,6 +2933,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
+        self.maybe_compact_state(view.state).await?;
         let record = match self
             .begin_window(view.view_id, &window.identity, view.mv)
             .await?
