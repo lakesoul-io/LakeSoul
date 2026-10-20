@@ -77,6 +77,7 @@ struct Args {
     verify: bool,
     keep: bool,
     out: Option<String>,
+    compact_every: usize,
 }
 
 impl Default for Args {
@@ -99,6 +100,7 @@ impl Default for Args {
             verify: false,
             keep: false,
             out: None,
+            compact_every: 0,
         }
     }
 }
@@ -144,6 +146,9 @@ Usage: ivm_bench_star [OPTIONS]
   --prefix <PREFIX>          S3 key prefix (default ivm-bench-star)
   --verify                   compare the incremental result with a full rebuild
   --keep                     keep the tables when the run finishes
+  --compact-every <N>        compact the MVs out of band every N rounds
+                             (the time is printed but excluded from the
+                             refresh timings; 0 disables, default 0)
   --out <FILE>               write the per-round CSV there
   -h, --help
 
@@ -194,6 +199,9 @@ fn parse_args() -> Args {
             "--prefix" => args.prefix = value_of(&argv, &mut index),
             "--verify" => args.verify = true,
             "--keep" => args.keep = true,
+            "--compact-every" => {
+                args.compact_every = number(&value_of(&argv, &mut index))
+            }
             "--out" => args.out = Some(value_of(&argv, &mut index)),
             "-h" | "--help" => {
                 print_help();
@@ -707,6 +715,18 @@ async fn main() {
                 total_ms,
                 rss
             ));
+        }
+        // The production compaction is external and runs between refreshes;
+        // the test harness plays that role here and keeps it out of the
+        // measured refresh timings.
+        if args.compact_every > 0 && round > 0 && round % args.compact_every == 0 {
+            let compaction_started = Instant::now();
+            join_mv.compact(runtime.client()).await.unwrap();
+            agg_mv.compact(runtime.client()).await.unwrap();
+            eprintln!(
+                "compaction after round {round}: {:.0}ms (excluded from refresh timings)",
+                compaction_started.elapsed().as_secs_f64() * 1_000.0
+            );
         }
     }
 

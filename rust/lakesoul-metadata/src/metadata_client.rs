@@ -1483,6 +1483,72 @@ impl MetaDataClient {
         Ok(commit_ids)
     }
 
+    /// Commit compacted output files as a compaction of the given input
+    /// partitions.
+    ///
+    /// Unlike [`Self::commit_data_files_with_commit_op`] this passes the read
+    /// partition snapshot, so the metadata coordinator can mark the compacted
+    /// files as superseded and detect a concurrent append.
+    pub async fn commit_compaction(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_name} is not found in namespace {namespace}"
+                ))
+            })?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+        let commit_op = CommitOp::CompactionCommit;
+        let data_commit_info_list = data_commit_info_list_from_files(
+            &table_info,
+            files,
+            commit_op,
+            timestamp,
+            &domain,
+        );
+        let commit_ids = data_commit_info_list
+            .iter()
+            .filter_map(|info| info.commit_id)
+            .map(|id| uuid::Uuid::from_u64_pair(id.high, id.low).to_string())
+            .collect::<Vec<_>>();
+        self.transaction_insert_data_commit_info(data_commit_info_list.clone())
+            .await?;
+        self.commit_data(
+            MetaInfo {
+                table_info: Some(table_info.clone()),
+                list_partition: data_commit_info_list
+                    .iter()
+                    .map(|data_commit_info| PartitionInfo {
+                        table_id: table_info.table_id.clone(),
+                        partition_desc: data_commit_info.partition_desc.clone(),
+                        commit_op: commit_op.into(),
+                        domain: domain.clone(),
+                        snapshot: data_commit_info.commit_id.into_iter().collect(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                read_partition_info: read_partitions,
+            },
+            commit_op,
+        )
+        .await?;
+        Ok(commit_ids)
+    }
+
     pub async fn get_table_domain(&self, table_id: &str) -> Result<TableNameId> {
         match self
             .execute_query(

@@ -281,6 +281,34 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 用户表外部 compaction；文件大小目标与 bucket 数按集群并行度设计。
 - 验收：100 轮后状态表文件数稳定；单文件大小接近目标。
 
+#### P4 结果：state 自动 compaction + MV 外部压缩（2026-10）
+
+- **原语**：`IvmTable::compact` 读当前合并状态 → 丢弃 CDC 墓碑、`rowKinds=insert`、
+  `__ivm_epoch=0` → 按桶重写 → `metadata.commit_compaction`（输入分区 + 输出文件，
+  一次 `CompactionCommit` 替换分区快照；旧文件由保留清理回收）。
+- **state 表**：refresh 开始前，当前文件数 ≥ `LAKESOUL_IVM_STATE_COMPACT_FILES`
+  （默认 32，0 关闭）时自动压缩；MIN/MAX 12 轮测试中 state 文件数稳定 ≤9。
+- **MV**：生产由外部 `NewCompactionTask` 压缩；bench 在轮次之间调用
+  `IvmTable::compact` 模拟外部服务（`--compact-every N`），压缩耗时单独打印、**不计入**
+  refresh 的 join/agg/total。refresh 内不再做 MV compaction。
+- **1M/1%/4 桶/Vortex，100 轮（每 10 轮 out-of-band 压缩）**：
+  - 平均 join **319ms**、agg **98ms**、total **417ms**；无 compaction 时平均 total
+    1641ms，第 100 轮 2711ms（比 0.5s 全量重建慢 5.4×）。
+  - 每次 MV compaction 约 **0.9s**（物化 1M 行），在轮次之外执行，refresh 无尖峰。
+- **10M / RustFS（127.0.0.1:9000，Vortex，4 桶，`LAKESOUL_CACHE=1`），20 轮（每 10
+  轮 out-of-band 压缩）**：
+  - 第 1–10 轮：join **525–644ms**、total **764–1105ms**；压缩后第 11–20 轮：
+    join 533–874ms、total 697–2313ms（一次 agg 1439ms 的抖动，来自压缩后的缓存/内存）。
+  - 每次 MV compaction **9.5–10.8s**（物化 10M 行，RSS 升到 ~4.3GB），属于外部服务
+    成本，**不计入** refresh 延迟；全量重建 2.5s。
+  - 无 compaction 的 10M 基线约 join 630ms / total 950ms，20 轮/80 文件时 join 仍
+    ~630ms——对象存储 I/O 底噪掩盖了文件增长，10M 的 MV 压缩间隔可以更宽。
+- **阈值结论**：state 表 `LAKESOUL_IVM_STATE_COMPACT_FILES=32`；MV 外部压缩建议
+  **32–64 文件**（1M/4 桶约每 10 轮 = 40 文件；10M 可偏 64 以减少 ~10s 的重写次数）。
+  compaction 耗时不属于 IVM refresh 性能，评测时单独统计。
+- 结论：MV/state 文件增长是 100 轮漂移的主因；外部按文件数阈值压缩可把 refresh 的
+  增量读延迟稳定在数百 ms，避免增量退化为全量的数倍慢。
+
 #### P5a 结果：bucket 并行刷新（2026-10）
 
 - 条件：唯一键 chain、源/MV 桶数相同、空 bucket columns（按主键哈希）、非分区、无未知文件后缀。

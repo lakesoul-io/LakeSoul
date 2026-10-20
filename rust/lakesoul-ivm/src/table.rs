@@ -458,6 +458,18 @@ impl IvmTable {
         client: &MetaDataClient,
         batch: RecordBatch,
     ) -> Result<Vec<String>> {
+        let files = self.write_batch(batch).await?;
+        self.commit_files(client, files).await
+    }
+
+    /// Write one batch to new data files without publishing them.
+    ///
+    /// Keyed tables write through the partitioning writer with stable sort, so
+    /// rows with the same key keep their input order (a `delete` written before
+    /// an `insert` still wins in merge-on-read).  The returned files can be
+    /// committed by a coordinator with [`Self::commit_files`], which is what a
+    /// distributed refresh does: workers write, the driver publishes once.
+    pub async fn write_batch(&self, batch: RecordBatch) -> Result<Vec<DataFileInfo>> {
         if batch.num_rows() == 0 {
             return Ok(Vec::new());
         }
@@ -500,14 +512,23 @@ impl IvmTable {
                 file_exist_cols: output.file_exist_cols.join(","),
             })
             .collect::<Vec<_>>();
+        crate::observability::add_rows_written(written_rows);
+        crate::observability::add_bytes_written(written_bytes);
+        Ok(files)
+    }
+
+    /// Publish already written files in one metadata commit.
+    pub async fn commit_files(
+        &self,
+        client: &MetaDataClient,
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
         if files.is_empty() {
             return Ok(Vec::new());
         }
         let commit_ids = client
             .commit_data_files(&self.table_name, &self.namespace, files)
             .await?;
-        crate::observability::add_rows_written(written_rows);
-        crate::observability::add_bytes_written(written_bytes);
         Ok(commit_ids)
     }
 
@@ -524,7 +545,16 @@ impl IvmTable {
         client: &MetaDataClient,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<String>> {
-        let mut commit_ids = Vec::new();
+        let files = self.write_batches(batches).await?;
+        self.commit_files(client, files).await
+    }
+
+    /// Write refresh output as few state files as possible, without publishing.
+    pub async fn write_batches(
+        &self,
+        batches: Vec<RecordBatch>,
+    ) -> Result<Vec<DataFileInfo>> {
+        let mut files = Vec::new();
         let mut pending: Vec<RecordBatch> = Vec::new();
         let mut pending_rows = 0usize;
         for batch in batches {
@@ -535,7 +565,7 @@ impl IvmTable {
             {
                 let schema = pending[0].schema();
                 let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-                commit_ids.extend(self.append_batch(client, coalesced).await?);
+                files.extend(self.write_batch(coalesced).await?);
                 pending.clear();
                 pending_rows = 0;
             }
@@ -545,9 +575,79 @@ impl IvmTable {
         if pending_rows > 0 {
             let schema = pending[0].schema();
             let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-            commit_ids.extend(self.append_batch(client, coalesced).await?);
+            files.extend(self.write_batch(coalesced).await?);
         }
+        Ok(files)
+    }
+
+    /// The current data file count across all partitions.
+    pub async fn current_file_count(&self, client: &MetaDataClient) -> Result<usize> {
+        Ok(self.current_files(client).await?.len())
+    }
+
+    /// Rewrite the current logical state into a fresh file set and publish it
+    /// as one compaction commit.
+    ///
+    /// CDC tombstones are dropped and the rows written by this compaction are
+    /// marked as old state (`rowKinds = insert`, epoch `0`), so a later refresh
+    /// treats them exactly like rows written by an earlier window.  The commit
+    /// replaces the partition snapshot, so the old files stop being read and
+    /// are reclaimed by the table's retention cleanup.
+    pub async fn compact(&self, client: &MetaDataClient) -> Result<Vec<String>> {
+        let batches = self.read_current(client).await?;
+        let rows = self.compacted_batches(batches)?;
+        if rows.iter().all(|batch| batch.num_rows() == 0) {
+            self.truncate(client).await?;
+            return Ok(Vec::new());
+        }
+        let files = self.write_batches(rows).await?;
+        let read_partitions = client.get_all_partition_info(&self.table_id).await?;
+        let commit_ids = client
+            .commit_compaction(&self.table_name, &self.namespace, files, read_partitions)
+            .await?;
         Ok(commit_ids)
+    }
+
+    /// The logical rows to rewrite: tombstones dropped, bookkeeping reset.
+    fn compacted_batches(&self, batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>> {
+        let schema = self.schema.clone();
+        let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
+        let epoch = schema.index_of(IVM_EPOCH_COLUMN).ok();
+        let mut out = Vec::new();
+        for batch in batches {
+            let filtered = match kinds {
+                Some(index) => {
+                    let values = batch
+                        .column(index)
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| {
+                            rootcause::report!("row kind column is not a string column")
+                        })?;
+                    let mask = arrow_array::BooleanArray::from_iter(
+                        (0..values.len()).map(|row| Some(values.value(row) != "delete")),
+                    );
+                    arrow::compute::filter_record_batch(&batch, &mask)?
+                }
+                None => batch,
+            };
+            if filtered.num_rows() == 0 {
+                continue;
+            }
+            let mut columns = filtered.columns().to_vec();
+            if let Some(index) = kinds {
+                columns[index] = Arc::new(arrow_array::StringArray::from_iter_values(
+                    (0..filtered.num_rows()).map(|_| "insert"),
+                ));
+            }
+            if let Some(index) = epoch {
+                columns[index] = Arc::new(arrow_array::Int64Array::from_iter_values(
+                    (0..filtered.num_rows()).map(|_| 0i64),
+                ));
+            }
+            out.push(RecordBatch::try_new(schema.clone(), columns)?);
+        }
+        Ok(out)
     }
 
     /// Read the given data files with this table's schema and merge key.

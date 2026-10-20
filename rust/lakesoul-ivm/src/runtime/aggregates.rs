@@ -2932,6 +2932,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
+        self.maybe_compact_state(view.state).await?;
         let record = match self
             .begin_window(view.view_id, &window.identity, view.mv)
             .await?

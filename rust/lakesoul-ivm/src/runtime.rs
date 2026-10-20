@@ -28,6 +28,7 @@ use datafusion::logical_expr::when;
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
+use lakesoul_metadata::transfusion::DataFileInfo;
 use rootcause::report;
 use serde::{Deserialize, Serialize};
 
@@ -2629,7 +2630,33 @@ pub(crate) struct AppendOutcome {
     pub(crate) deletes: u64,
 }
 
+/// The state table file count at which a refresh compacts it (0 disables).
+///
+/// A state table gains one file set per refresh; compaction rewrites the
+/// current logical state into one file per bucket so the state read (and the
+/// metadata) stays bounded.  The default is a compromise between write
+/// amplification and read latency for a few-minute refresh cadence.
+fn state_compaction_threshold() -> usize {
+    std::env::var("LAKESOUL_IVM_STATE_COMPACT_FILES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(32)
+}
+
 impl IvmRuntime {
+    /// Compact an auxiliary state table when it accumulated enough files.
+    pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
+        let threshold = state_compaction_threshold();
+        if threshold == 0 {
+            return Ok(());
+        }
+        if state.current_file_count(&self.client).await? < threshold {
+            return Ok(());
+        }
+        state.compact(&self.client).await?;
+        Ok(())
+    }
+
     /// The estimated live row count of a view, when known.
     pub(crate) fn known_view_rows(&self, view_id: &str) -> Option<u64> {
         self.view_rows
@@ -2655,22 +2682,33 @@ impl IvmRuntime {
     }
 }
 
-/// Execute a refresh data frame and append its batches as they arrive.
+/// The files a refresh output produced, before publication.
+pub(crate) struct WrittenFiles {
+    pub(crate) files: Vec<DataFileInfo>,
+    /// Insert-kind plus delete-kind rows.
+    pub(crate) rows: u64,
+    /// Insert-kind rows.
+    pub(crate) inserts: u64,
+    /// Delete-kind rows.
+    pub(crate) deletes: u64,
+}
+
+/// Execute a refresh data frame and write its batches as they arrive.
 ///
 /// The driver never holds the whole output: up to
-/// [`crate::table::MAX_STATE_APPEND_ROWS`] rows are buffered and appended,
-/// while DataFusion streams the rest of the physical plan.  Used by the
-/// initial/rebuild paths whose output can be millions of rows.
-pub(crate) async fn append_dataframe(
+/// [`crate::table::MAX_STATE_APPEND_ROWS`] rows are buffered and written,
+/// while DataFusion streams the rest of the physical plan.  Publication is
+/// left to the caller, so a distributed refresh can have workers write and the
+/// driver commit every file once.
+pub(crate) async fn write_dataframe(
     table: &IvmTable,
-    client: &MetaDataClient,
     frame: DataFrame,
-) -> Result<AppendOutcome> {
+) -> Result<WrittenFiles> {
     use futures::StreamExt;
     let mut stream = frame.execute_stream().await?;
-    let mut commit_ids = Vec::new();
+    let mut files = Vec::new();
     let mut pending: Vec<RecordBatch> = Vec::new();
-    let mut rows = 0usize;
+    let mut buffer_rows = 0usize;
     let mut inserts = 0u64;
     let mut deletes = 0u64;
     while let Some(batch) = stream.next().await {
@@ -2692,25 +2730,42 @@ pub(crate) async fn append_dataframe(
                 }
             }
         }
-        rows += batch.num_rows();
+        buffer_rows += batch.num_rows();
         pending.push(batch);
-        if rows >= crate::table::MAX_STATE_APPEND_ROWS {
-            commit_ids.extend(
-                table
-                    .append_batches(client, std::mem::take(&mut pending))
-                    .await?,
-            );
-            rows = 0;
+        if buffer_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+            let schema = pending[0].schema();
+            let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
+            files.extend(table.write_batch(coalesced).await?);
+            pending.clear();
+            buffer_rows = 0;
         }
     }
     if !pending.is_empty() {
-        commit_ids.extend(table.append_batches(client, pending).await?);
+        let schema = pending[0].schema();
+        let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
+        files.extend(table.write_batch(coalesced).await?);
     }
-    Ok(AppendOutcome {
-        commit_ids,
+    Ok(WrittenFiles {
+        files,
         rows: inserts + deletes,
         inserts,
         deletes,
+    })
+}
+
+/// Write a refresh data frame and publish its files in one commit.
+pub(crate) async fn append_dataframe(
+    table: &IvmTable,
+    client: &MetaDataClient,
+    frame: DataFrame,
+) -> Result<AppendOutcome> {
+    let written = write_dataframe(table, frame).await?;
+    let commit_ids = table.commit_files(client, written.files).await?;
+    Ok(AppendOutcome {
+        commit_ids,
+        rows: written.rows,
+        inserts: written.inserts,
+        deletes: written.deletes,
     })
 }
 
