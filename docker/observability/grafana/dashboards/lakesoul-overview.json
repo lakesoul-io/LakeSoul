@@ -24,7 +24,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(lakesoul_object_store_requests_total, service)",
+          "query": "label_values(build_info, service)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -637,7 +637,7 @@
       "id": 13,
       "type": "logs",
       "title": "Logs \u2014 startup identity and runtime output (Loki)",
-      "description": "stdout of the LakeSoul host processes, shipped by Alloy. The startup banner of every process carries version/commit/target/profile; `| logfmt` in Explore turns them into fields.",
+      "description": "stdout of the LakeSoul processes. Query A matches the `service` label Alloy derives from the log file name (docker/observability); query B matches the `container` label promtail sets on Kubernetes Pods, whose container names equal the service names. The startup banner of every process carries version/commit/target/profile; `| logfmt` in Explore turns them into fields.",
       "datasource": {
         "type": "loki",
         "uid": "loki"
@@ -656,6 +656,15 @@
             "uid": "loki"
           },
           "expr": "{service=~\"$service\"}",
+          "queryType": "range"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{container=~\"$service\"}",
           "queryType": "range"
         }
       ],

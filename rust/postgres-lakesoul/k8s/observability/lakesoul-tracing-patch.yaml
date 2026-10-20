@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Turns on OTLP trace export in the base's coordinator and workers. Changing
+# the Pod templates (not lakesoul-config) rolls both Deployments on apply.
+# `service.name` stays the binary's default (`postgres-lakesoul`,
+# `lakesoul-worker`); the Pod name tells replicas apart, as
+# `service.instance.id=worker-1` does in docker/observability. POD_NAME must
+# precede the variable that expands it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres-lakesoul
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://lakesoul-tempo:4317
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.instance.id=$(POD_NAME)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      containers:
+        - name: lakesoul-worker
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://lakesoul-tempo:4317
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.instance.id=$(POD_NAME)

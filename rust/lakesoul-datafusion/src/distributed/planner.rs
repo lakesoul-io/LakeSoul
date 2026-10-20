@@ -7,17 +7,20 @@
 //! The gate decides per query what a distributed session does when the
 //! distributed planner cannot produce a *distributable* plan:
 //!
+//! - the worker resolver fails (Kubernetes discovery without an eligible
+//!   worker, or a stale snapshot) → the query fails before planning, whatever
+//!   `fallback_to_local` says;
 //! - the distributed planner plans the query and every stage it would send to a
 //!   worker has a wire form → its plan is used, whether or not it contains a
 //!   distributed stage: the planner itself executes a query it is not worth
-//!   distributing - including any query while no worker is ready - on the
-//!   coordinator, and that is not a failure;
+//!   distributing - including any query while a static worker list is empty -
+//!   on the coordinator, and that is not a failure;
 //! - the distributed planner fails, or plans a query whose worker stages cannot
 //!   cross the wire, `fallback_to_local = true` (development) → plan the query
 //!   with the plain LakeSoul planner and execute it single-node on the
 //!   coordinator;
-//! - either case with `fallback_to_local = false` (production) → the error
-//!   fails the query instead of silently degrading it to coordinator-only
+//! - either planner case with `fallback_to_local = false` (production) → the
+//!   error fails the query instead of silently degrading it to coordinator-only
 //!   execution.
 //!
 //! The wire check is part of the gate because a stage is serialized when it is

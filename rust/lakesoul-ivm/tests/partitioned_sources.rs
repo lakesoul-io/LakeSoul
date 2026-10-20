@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#![recursion_limit = "512"]
-
 //! Range-partitioned source tables: the partition values are injected on every
 //! read (changelog window, current state, before state and rebuild baseline),
 //! so filters, group keys and joins see the partition columns exactly like the

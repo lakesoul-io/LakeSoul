@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every image is mirrored into the private SWR repository (README,
+# Observability), so each ServiceAccount carries the base's pull Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesoul-prometheus
+  namespace: lakesoul
+# Pod discovery reads the mounted token.
+automountServiceAccountToken: true
+imagePullSecrets:
+  - name: lakesoul-registry
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesoul-tempo
+  namespace: lakesoul
+automountServiceAccountToken: false
+imagePullSecrets:
+  - name: lakesoul-registry
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesoul-grafana
+  namespace: lakesoul
+automountServiceAccountToken: false
+imagePullSecrets:
+  - name: lakesoul-registry
+---
+# Scrape discovery is namespaced and read-only: the Pods of this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lakesoul-prometheus-discovery
+  namespace: lakesoul
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lakesoul-prometheus-discovery
+  namespace: lakesoul
+subjects:
+  - kind: ServiceAccount
+    name: lakesoul-prometheus
+    namespace: lakesoul
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lakesoul-prometheus-discovery

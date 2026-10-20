@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# PG-wire endpoint for compute/CLI clients. Coordinator Pod DNS is unused for
+# executing tasks: tasks are dispatched straight to the worker Pods' IPs (the
+# coordinator resolves EndpointSlices itself); this Service load-balances
+# client connections only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: lakesoul
+    app.kubernetes.io/component: coordinator
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: lakesoul
+    app.kubernetes.io/component: coordinator
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: pg

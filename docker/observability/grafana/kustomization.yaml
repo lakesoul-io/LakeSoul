@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Publishes the dashboard and its file provider as ConfigMaps for the
+# Kubernetes stack in rust/postgres-lakesoul/k8s/observability. Kustomize only
+# loads files under a kustomization's own root, so the generator lives next to
+# the files instead of the overlay keeping a copy of the dashboard.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: lakesoul-grafana-dashboards
+    files:
+      - dashboards/lakesoul-overview.json
+  - name: lakesoul-grafana-dashboard-provider
+    files:
+      - provisioning/dashboards/dashboards.yml

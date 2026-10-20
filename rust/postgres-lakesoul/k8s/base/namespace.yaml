@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lakesoul
+  labels:
+    app.kubernetes.io/name: lakesoul

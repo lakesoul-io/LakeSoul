@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Single-binary Tempo: OTLP ingest from the coordinator and workers, trace
+# storage, and span metrics remote-written into lakesoul-prometheus.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lakesoul-tempo-data
+  namespace: lakesoul
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # Default StorageClass; 10Gi is also the smallest EVS disk on CCE.
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-tempo
+  namespace: lakesoul
+spec:
+  replicas: 1
+  # ReadWriteOnce volume: the old Pod must release it before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+      app.kubernetes.io/part-of: lakesoul
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tempo
+        app.kubernetes.io/part-of: lakesoul
+    spec:
+      serviceAccountName: lakesoul-tempo
+      securityContext:
+        # The image runs as tempo (10001); the group makes the volume writable.
+        fsGroup: 10001
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.7.2
+          args: ["-config.file=/etc/tempo/tempo.yml"]
+          ports:
+            - name: http
+              containerPort: 3200
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+              readOnly: true
+            - name: data
+              mountPath: /var/tempo
+      volumes:
+        - name: config
+          configMap:
+            name: lakesoul-tempo-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: lakesoul-tempo-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lakesoul-tempo
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/part-of: lakesoul
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/part-of: lakesoul
+  ports:
+    - name: http
+      port: 3200
+      targetPort: http
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http

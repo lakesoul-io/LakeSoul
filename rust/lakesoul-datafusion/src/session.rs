@@ -223,7 +223,11 @@ impl LakeSoulSessionFactory {
             &runtime,
         )?;
 
-        let resolver = distributed
+        // `DistributedOptions::discovery` is one resolver per process: the
+        // shared variant (used by coordinator binaries after start-up
+        // initialization) clones the same Arc for every session, so exactly
+        // one discovery loop exists.
+        let resolver: Option<Arc<dyn WorkerResolver>> = distributed
             .as_ref()
             .map(|dist| build_worker_resolver(&dist.discovery))
             .transpose()?;
@@ -420,7 +424,12 @@ pub fn build_worker_runtime_env(args: &CoreArgs) -> Result<Arc<RuntimeEnv>> {
 }
 
 /// Instantiates the worker resolver for the configured discovery backend.
-pub(crate) fn build_worker_resolver(
+///
+/// Public for the coordinator binaries' tests (and the session factory): with
+/// [`WorkerDiscovery::Shared`] this returns the same single instance every
+/// session of the process passes its resolver from, which is how
+/// "one discovery loop per process" is preserved across sessions.
+pub fn build_worker_resolver(
     discovery: &WorkerDiscovery,
 ) -> Result<Arc<dyn WorkerResolver>> {
     match discovery {
@@ -430,5 +439,10 @@ pub(crate) fn build_worker_resolver(
         WorkerDiscovery::Kubernetes(config) => {
             Ok(Arc::new(KubernetesWorkerResolver::start(config)?))
         }
+        // A shared resolver is handed out by the factory and is never rebuilt:
+        // cloning the Arc preserves "one discovery loop per process" across
+        // sessions and would never be constructed here (parser-resolved
+        // options always go through `DistributedArgs::resolve_distributed_options`).
+        WorkerDiscovery::Shared(resolver) => Ok(Arc::clone(resolver)),
     }
 }

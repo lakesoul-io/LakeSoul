@@ -187,7 +187,12 @@ cargo run -p postgres-lakesoul -- -p 6543 \
 - **LakeSoul Overview dashboard** (folder *LakeSoul*): query latency / rate,
   metadata DAO latency, object store throughput, cache hit ratio, execution
   stream p95, Tempo-generated span metrics, the per-replica build identity
-  table, and the Loki log panel.
+  table, and the Loki log panel. The Kubernetes stack in
+  `rust/postgres-lakesoul/k8s/observability` provisions the same file through
+  `grafana/kustomization.yaml`, so the dashboard serves both label schemes:
+  the `service` variable reads `build_info`, which every process exports, and
+  the log panel queries Alloy's `service` label and promtail's `container`
+  label side by side.
 - **Trace → Metrics**: open a trace in Tempo, the *Metrics* tab queries the
   span metrics through the Prometheus datasource.
 - **Trace → Logs**: the trace view's *Logs* link opens the Loki stream of the

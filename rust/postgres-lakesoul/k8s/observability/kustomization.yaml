@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# The base plus Grafana, Prometheus and Tempo, with OTLP trace export turned on
+# in the coordinator and workers. `kubectl apply -k` this directory instead of
+# ../base; the base alone keeps running without any of it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: lakesoul
+resources:
+  - ../base
+  # The LakeSoul Overview dashboard and its provider, shared with the
+  # docker/observability stack.
+  - ../../../../docker/observability/grafana
+  - rbac.yaml
+  - tempo.yaml
+  - prometheus.yaml
+  - grafana.yaml
+configMapGenerator:
+  - name: lakesoul-tempo-config
+    files:
+      - config/tempo.yml
+  - name: lakesoul-prometheus-config
+    files:
+      - config/prometheus.yml
+  - name: lakesoul-grafana-datasources
+    files:
+      - config/datasources.yml
+patches:
+  - path: lakesoul-tracing-patch.yaml
+images:
+  # Mirrors of the upstream images (README, Observability).
+  - name: grafana/grafana
+    newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/grafana
+  - name: prom/prometheus
+    newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prometheus
+  - name: grafana/tempo
+    newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/tempo

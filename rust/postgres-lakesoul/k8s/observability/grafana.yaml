@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Grafana with the LakeSoul datasources (Prometheus, Tempo, the cluster's Loki)
+# and the shared LakeSoul Overview dashboard, all provisioned from ConfigMaps.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-grafana
+  namespace: lakesoul
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+      app.kubernetes.io/part-of: lakesoul
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/part-of: lakesoul
+    spec:
+      serviceAccountName: lakesoul-grafana
+      containers:
+        - name: grafana
+          # Pinned like docker/observability: Traces Drilldown needs >= 11.6.11,
+          # and 11.6.x cannot parse Tempo 2.7's TraceQL metrics response.
+          image: grafana/grafana:12.2.5
+          env:
+            # No anonymous access: the Service is reachable from every Pod in
+            # the cluster. The password Secret is created out of band (README).
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-grafana
+                  key: admin-password
+                  optional: false
+            # Traces Drilldown is not bundled with the OSS image. Installed in
+            # the background from grafana.com; without egress Grafana logs the
+            # failure and runs without the app.
+            - name: GF_PLUGINS_PREINSTALL
+              value: grafana-exploretraces-app
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            # Grafana state (users, UI-made dashboards, plugins) is disposable:
+            # datasources and the LakeSoul dashboard are re-provisioned on start.
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            # The provider's path (docker/observability/grafana/provisioning).
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: datasources
+          configMap:
+            name: lakesoul-grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: lakesoul-grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: lakesoul-grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lakesoul-grafana
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: lakesoul
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: lakesoul
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

@@ -13,25 +13,32 @@
 //!   every listed worker once and drop those answering with a different
 //!   protocol version; unreachable workers stay listed and fail at dispatch
 //!   time as before.
-//! - [`KubernetesWorkerResolver`]: a background task watches the Kubernetes
+//! - [`KubernetesWorkerResolver`]: a background task polls the Kubernetes
 //!   API (EndpointSlice listing refreshed on a fixed interval) and probes each
 //!   discovered endpoint's protocol version over the worker gRPC channel.
 //!   Only endpoints that are Ready and report
 //!   [`crate::distributed::DISTRIBUTED_PROTOCOL_VERSION`] enter the snapshot.
+//!   The resolver is created once per process and shared by every session
+//!   ([`WorkerDiscovery::Shared`]); snapshot staleness beyond the configured
+//!   maximum makes `get_urls()` fail rather than planning against outdated
+//!   workers. Empty snapshots are *not* silently planned locally either.
 //!
 //! No `get_urls()` call ever performs a synchronous Kubernetes API request.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion_distributed::{
     ChannelResolver, GetWorkerInfoRequest, WorkerResolver, grpc,
 };
 use parking_lot::RwLock;
+use reqwest::StatusCode;
+use rootcause::markers::Cloneable;
 use rootcause::prelude::ResultExt;
-use rootcause::{bail, report};
+use rootcause::{Report, bail, report};
 use url::Url;
 
 use crate::Result;
@@ -62,70 +69,37 @@ impl WorkerResolver for WorkerSnapshot {
 }
 
 /// Where the coordinator discovers workers from.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum WorkerDiscovery {
     /// Static URL list for local development and bare-metal clusters.
     Static(Vec<String>),
     /// Kubernetes EndpointSlice watching.
     Kubernetes(KubernetesDiscovery),
+    /// An already-built resolver shared by every session of one process.
+    ///
+    /// Coordinator binaries build the resolver once at start-up (bounded
+    /// waiting for the first Kubernetes sync, see
+    /// [`KubernetesWorkerResolver::start_and_wait_for_first_sync`]) and
+    /// wrap it in here; every session of the process then reuses the same
+    /// instance instead of starting its own discovery loop. `get_urls()`
+    /// continues to return only in-memory snapshot data.
+    Shared(Arc<dyn WorkerResolver>),
 }
 
-/// Parameters for the Kubernetes EndpointSlice watcher.
-#[derive(Debug, Clone)]
-pub struct KubernetesDiscovery {
-    /// Namespace that holds the worker EndpointSlices.
-    pub namespace: String,
-    /// Label selector identifying the EndpointSlices,
-    /// e.g. `app=lakesoul-worker`.
-    pub label_selector: String,
-    /// API server base URL. Defaults to the in-cluster environment
-    /// (`KUBERNETES_SERVICE_HOST`/`KUBERNETES_SERVICE_PORT`).
-    pub api_url: Option<String>,
-    /// Bearer token override. Defaults to the in-cluster service account
-    /// token.
-    pub token: Option<String>,
-    /// CA bundle path override. Defaults to the in-cluster CA.
-    pub ca_cert_path: Option<String>,
-    /// How often the EndpointSlice list is refreshed and version probes are
-    /// re-checked. Defaults to 5 s.
-    pub poll_interval: Option<Duration>,
-}
-
-impl KubernetesDiscovery {
-    pub fn new(namespace: impl Into<String>, label_selector: impl Into<String>) -> Self {
-        Self {
-            namespace: namespace.into(),
-            label_selector: label_selector.into(),
-            api_url: None,
-            token: None,
-            ca_cert_path: None,
-            poll_interval: None,
+impl fmt::Debug for WorkerDiscovery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Static(urls) => f.debug_tuple("Static").field(urls).finish(),
+            Self::Kubernetes(kubernetes) => {
+                f.debug_tuple("Kubernetes").field(kubernetes).finish()
+            }
+            // Deliberately opaque: the resolver's snapshot changes over time
+            // and its inside is not part of the options' contract.
+            Self::Shared(_) => f
+                .debug_tuple("Shared")
+                .field(&"<shared worker resolver>")
+                .finish(),
         }
-    }
-
-    fn api_url(&self) -> String {
-        if let Some(url) = &self.api_url {
-            return url.trim_end_matches('/').to_string();
-        }
-        let host = std::env::var("KUBERNETES_SERVICE_HOST").unwrap_or_default();
-        let port =
-            std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".into());
-        format!("https://{host}:{port}")
-    }
-
-    fn token(&self) -> Option<String> {
-        self.token.clone().or_else(|| {
-            std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
-                .ok()
-                .map(|token| token.trim().to_string())
-        })
-    }
-
-    fn ca_cert(&self) -> Option<Vec<u8>> {
-        let path = self.ca_cert_path.clone().unwrap_or_else(|| {
-            "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt".into()
-        });
-        std::fs::read(path).ok()
     }
 }
 
@@ -176,83 +150,368 @@ impl WorkerResolver for StaticWorkerResolver {
     }
 }
 
+/// Parameters for the Kubernetes EndpointSlice watcher.
+#[derive(Debug, Clone)]
+pub struct KubernetesDiscovery {
+    /// Name of the worker Service. The watcher lists the EndpointSlices of
+    /// this Service via the `kubernetes.io/service-name=<service>` label
+    /// selector; EndpointSlices do not inherit Pod labels, so relying on some
+    /// `app=` label would silently list nothing.
+    pub service: String,
+    /// Namespace that holds the worker Service and its EndpointSlices.
+    pub namespace: String,
+    /// API server base URL. Defaults to the in-cluster environment
+    /// (`KUBERNETES_SERVICE_HOST`/`KUBERNETES_SERVICE_PORT`).
+    api_url: Url,
+    /// Bearer token override. When `Some`, this token is fixed: the mounted
+    /// service account token rotates, so it is **re-read from the token file
+    /// on every request** except when an operator supplies this override.
+    pub token: Option<String>,
+    /// Mounted token file to read each request from when `token` is `None`.
+    /// `None` means the in-cluster default path; tests and non-standard
+    /// mounts use this knob instead of environment-variable tricks.
+    pub token_path: Option<String>,
+    /// How often the EndpointSlice list is refreshed and version probes are
+    /// re-checked. Defaults to 5 s. Must be at least 1 s (never zero).
+    pub poll_interval: Duration,
+    /// How long the last successful snapshot stays eligible after the last
+    /// successful refresh. Defaults to 30 s. Once exceeded, new distributed
+    /// queries fail until a refresh succeeds again; within the window the
+    /// last known-good snapshot keeps serving (a transient API outage must
+    /// not drain an otherwise healthy cluster). Must be at least 1 s.
+    pub max_staleness: Duration,
+}
+
+impl KubernetesDiscovery {
+    /// `api_url` overrides the Kubernetes API server base URL; `None` uses
+    /// the in-cluster environment (`KUBERNETES_SERVICE_HOST`/`_PORT`).
+    pub fn new(
+        service: impl Into<String>,
+        namespace: impl Into<String>,
+        api_url: Url,
+        poll_interval: Duration,
+        max_staleness: Duration,
+    ) -> Self {
+        Self {
+            service: service.into(),
+            namespace: namespace.into(),
+            api_url,
+            token: None,
+            token_path: None,
+            poll_interval,
+            max_staleness,
+        }
+    }
+
+    /// The label selector identifying this Service's EndpointSlices.
+    pub fn label_selector(&self) -> String {
+        format!("kubernetes.io/service-name={}", self.service)
+    }
+
+    /// Base URL of the Kubernetes API server, normalized without a trailing
+    /// slash. Defaults to the in-cluster environment
+    /// (`KUBERNETES_SERVICE_HOST`/`KUBERNETES_SERVICE_PORT`).
+    pub(crate) fn api_url(&self) -> &Url {
+        &self.api_url
+    }
+
+    /// Path of the service account token file to (re-)read on every request.
+    pub(crate) fn token_path(&self) -> String {
+        self.token_path
+            .clone()
+            .unwrap_or_else(|| TOKEN_PATH.to_string())
+    }
+}
+
+const TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+const CA_CERT_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+
+/// Reads the service account token file, erroring (never falling back to an
+/// anonymous request) when it is missing or unreadable.
+pub(crate) fn read_service_account_token(path: &str) -> Result<String> {
+    Ok(std::fs::read_to_string(path)
+        .map(|token| token.trim().to_string())
+        .context(format!(
+            "service account token unreadable at {path}; \
+                    kubernetes discovery refuses to send anonymous requests, \
+                    set LAKESOUL_K8S_WORKER_TOKEN or mount a token ",
+        ))?)
+}
+
 fn parse_urls(urls: Vec<String>) -> Result<Vec<Url>> {
     urls.iter()
-        .map(|url| {
-            Url::parse(url).map_err(|err| report!("invalid worker url {url:?}: {err}"))
-        })
+        .map(|url| Ok(Url::parse(url).context(format!("invalid worker url: {url}"))?))
         .collect()
 }
 
-/// Resolver backed by a Kubernetes EndpointSlice watch.
+/// Resolver backed by a Kubernetes EndpointSlice poll.
 ///
-/// A background task periodically lists the EndpointSlices matching the
-/// configured label selector, probes each Ready endpoint's protocol version
-/// and publishes the matching URLs into the snapshot. `get_urls()` only ever
-/// reads the snapshot; if the Kubernetes API becomes unreachable the last
-/// known-good snapshot is kept.
-#[derive(Clone)]
+/// A background task periodically lists the EndpointSlices matching
+/// `kubernetes.io/service-name=<service>`, probes each Ready endpoint's
+/// protocol version and publishes the matching URLs into the snapshot.
+/// `get_urls()` only ever reads the snapshot:
+///
+/// - never synced → error (the query fails instead of silently planning
+///   single-node);
+/// - last successful refresh older than `max_staleness` → error, whatever the
+///   fresher failures were;
+/// - synced but empty (no endpoint currently reports this coordinator's
+///   protocol version) → error;
+/// - within staleness after a successful refresh → the last snapshot, even if
+///   interim refresh attempts failed (a transient API outage must not drain
+///   an otherwise healthy pipeline).
+///
+/// Authorization and configuration errors (401/403, missing token/CA) are
+/// surfaced in the error and logs — never presented as a healthy state. A
+/// successful refresh yielding candidates but zero eligible workers replaces
+/// the snapshot with the empty list immediately: "no ready worker now" is a
+/// fact, not a reason to keep routing to workers that have disappeared.
+#[derive(Clone, Debug)]
 pub struct KubernetesWorkerResolver {
-    snapshot: Arc<RwLock<WorkerSnapshot>>,
+    state: Arc<KubernetesDiscoveryState>,
+    max_staleness: Duration,
+    description: String,
+}
+
+/// State shared between the background refresh loop and every
+/// [`KubernetesWorkerResolver`] (and therefore every session) of a process.
+#[derive(Debug, Default)]
+struct KubernetesDiscoveryState {
+    snapshot: RwLock<WorkerSnapshot>,
+    status: RwLock<DiscoveryStatus>,
+}
+
+/// Visibility into the last refresh outcome; kept small and summary-shaped
+/// (no large state machinery): what the logs and start-up errors need.
+#[derive(Debug, Default, Clone)]
+struct DiscoveryStatus {
+    last_success: Option<Instant>,
+    last_error: Option<Report<DiscoveryFailure, Cloneable>>,
+    /// Set by [`DiscoveryFailure::Hard`] refreshes (authorization, config,
+    /// uninterpretable documents). While set, `get_urls` fails immediately
+    /// even within the staleness window: these states must not read as
+    /// healthy. Cleared by the next successful refresh.
+    hard_error: Option<Report<DiscoveryFailure, Cloneable>>,
+    candidates: usize,
+    eligible: usize,
+}
+
+impl KubernetesDiscoveryState {
+    fn has_synced(&self) -> bool {
+        self.status.read().last_success.is_some()
+    }
 }
 
 impl KubernetesWorkerResolver {
-    /// Starts the watcher task and returns the resolver.
+    /// Starts the polling task and returns the resolver immediately.
     ///
-    /// The watcher terminates when the last snapshot handle is dropped.
+    /// The task terminates when the last resolver-clone state is dropped.
     pub fn start(discovery: &KubernetesDiscovery) -> Result<Self> {
         let client = build_http_client(discovery)?;
-        let api_url = discovery.api_url();
+        let api_url = discovery.api_url().clone();
         let namespace = discovery.namespace.clone();
-        let selector = discovery.label_selector.clone();
-        let token = discovery.token();
-        let interval = discovery.poll_interval.unwrap_or(Duration::from_secs(5));
+        let service_label = discovery.service.clone();
+        let token_override = discovery.token.clone();
+        let interval = discovery.poll_interval;
 
-        let snapshot = Arc::new(RwLock::new(WorkerSnapshot::default()));
-        let handle = Arc::downgrade(&snapshot);
+        let max_staleness = discovery.max_staleness;
+        let state = Arc::new(KubernetesDiscoveryState::default());
 
+        let loop_state = Arc::downgrade(&state);
+        let selector = discovery.label_selector();
+        let loop_service = service_label.clone();
+        let loop_namespace = namespace.clone();
+        let loop_token_path = discovery.token_path();
+        let description = format!(
+            "service={} namespace={} api={api_url}",
+            service_label, namespace
+        );
         tokio::spawn(async move {
-            loop {
-                match fetch_endpointslices(
-                    &client, &api_url, &namespace, &selector, &token,
+            // The polling loop exit condition is `Upgrade::upgrade` returning
+            // None, which happens once every Arc reference to the resolver
+            // has been dropped.
+            while let Some(handle) = loop_state.upgrade() {
+                let status = fetch_endpointslices(
+                    &client,
+                    &api_url,
+                    &loop_namespace,
+                    &selector,
+                    token_override.as_deref(),
+                    &loop_token_path,
                 )
-                .await
-                {
+                .await;
+                match status {
                     Ok(candidates) => {
+                        let candidates_count = candidates.len();
                         let eligible = filter_version_matched(candidates).await;
-                        let Some(handle) = handle.upgrade() else {
-                            // All resolver clones dropped: stop watching.
-                            break;
-                        };
-                        *handle.write() = WorkerSnapshot::new(eligible);
-                    }
-                    Err(err) => {
-                        // Keep the last known-good snapshot; a transient API
-                        // outage must not drain an otherwise healthy cluster.
-                        warn!(
-                            "LakeSoul worker discovery: EndpointSlice refresh failed: {err}"
+                        *handle.snapshot.write() = WorkerSnapshot::new(eligible.clone());
+                        {
+                            let mut snapshot_status = handle.status.write();
+                            snapshot_status.last_success = Some(Instant::now());
+                            snapshot_status.last_error = None;
+                            snapshot_status.hard_error = None;
+                            snapshot_status.candidates = candidates_count;
+                            snapshot_status.eligible = eligible.len();
+                        }
+                        info!(
+                            service = %loop_service,
+                            namespace = %loop_namespace,
+                            candidates = candidates_count,
+                            eligible = eligible.len(),
+                            "LakeSoul worker discovery: EndpointSlice refresh ok"
                         );
                     }
+                    Err(report) => {
+                        // Transient failures keep the last successful
+                        // snapshot (staleness decides when it expires);
+                        // hard failures additionally block get_urls at
+                        // once by recording `hard_error`.
+                        let report = report.into_cloneable();
+                        warn!(
+                            service = %loop_service,
+                            namespace = %loop_namespace,
+                            error = %report,
+                            "LakeSoul worker discovery: EndpointSlice refresh failed"
+                        );
+                        let mut handle_status = handle.status.write();
+                        if let DiscoveryFailure::Hard(_) = report.current_context() {
+                            handle_status.hard_error = Some(report.clone());
+                        }
+                        handle_status.last_error = Some(report);
+                    }
                 }
-                if handle.upgrade().is_none() {
+                drop(handle);
+                if loop_state.upgrade().is_none() {
                     break;
                 }
                 tokio::time::sleep(interval).await;
             }
         });
+        Ok(Self {
+            state,
+            max_staleness,
+            description,
+        })
+    }
 
-        Ok(Self { snapshot })
+    /// Starts the polling task and waits, bounded, for the first successful
+    /// refresh.
+    ///
+    /// Coordinator processes build the resolver at start-up with this instead
+    /// of the first PG connection: once serving, the shared resolver is only
+    /// read. Authorization errors, missing token/CA and uninterpretable API
+    /// responses fail here with the refresh status instead of inside a query.
+    /// An empty worker set is a valid start: queries fail with "no eligible
+    /// worker" until a worker turns Ready and a later refresh lists it.
+    pub async fn start_and_wait_for_first_sync(
+        discovery: &KubernetesDiscovery,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let resolver = Self::start(discovery)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if resolver.state.has_synced() {
+                let (candidates, eligible) = {
+                    let status = resolver.state.status.read();
+                    (status.candidates, status.eligible)
+                };
+                if eligible == 0 {
+                    warn!(
+                        candidates,
+                        "LakeSoul worker discovery: starting without an eligible \
+                         worker ({}); queries fail until one is Ready",
+                        resolver.description
+                    );
+                }
+                return Ok(resolver);
+            }
+            if Instant::now() >= deadline {
+                let last_error = resolver.state.status.read().last_error.clone();
+                let summary = format!(
+                    "kubernetes worker discovery did not complete an EndpointSlice \
+                     refresh within {timeout:?} ({})",
+                    resolver.description
+                );
+                return Err(match last_error {
+                    Some(error) => error.context(summary).into_dynamic(),
+                    None => report!("{summary}: no refresh attempt finished"),
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     /// The current snapshot (for diagnostics).
     pub fn snapshot(&self) -> WorkerSnapshot {
-        self.snapshot.read().clone()
+        self.state.snapshot.read().clone()
+    }
+
+    /// Last refresh outcome for diagnostics: (age since last success, error
+    /// text, candidate count, eligible count).
+    pub fn refresh_status(&self) -> (Option<Duration>, Option<String>, usize, usize) {
+        let status = self.state.status.read();
+        (
+            status.last_success.map(|at| at.elapsed()),
+            status.last_error.as_ref().map(ToString::to_string),
+            status.candidates,
+            status.eligible,
+        )
     }
 }
 
 impl WorkerResolver for KubernetesWorkerResolver {
+    /// Snapshot read only: never a network request, never a Kubernetes API
+    /// call.
     fn get_urls(&self) -> DFResult<Vec<Url>> {
-        Ok(self.snapshot.read().urls.clone())
+        let status = self.state.status.read().clone();
+        let Some(last_success) = status.last_success else {
+            return Err(DataFusionError::Configuration(format!(
+                "kubernetes worker discovery ({}) has not completed a \
+                 successful EndpointSlice refresh{}; refusing to plan against \
+                 an unknown worker set",
+                self.description,
+                match status.last_error {
+                    Some(error) => format!(" (last refresh error: {error})"),
+                    None => String::new(),
+                }
+            )));
+        };
+        // A hard refresh failure (authorization, config, uninterpretable
+        // document) follows successful syncs too: serving the previous
+        // snapshot as if nothing happened would hide the breakage.
+        if let Some(hard_error) = &status.hard_error {
+            return Err(DataFusionError::Configuration(format!(
+                "kubernetes worker discovery ({}) hit an unrecoverable                  refresh failure while holding a valid snapshot: {}",
+                self.description, hard_error
+            )));
+        }
+        let age = last_success.elapsed();
+        if age > self.max_staleness {
+            return Err(DataFusionError::Configuration(format!(
+                "kubernetes worker discovery ({}) snapshot is stale: last \
+                 successful refresh {:.1?} ago, staleness limit {:.1?}{}; \
+                 refusing to plan against possibly outdated workers",
+                self.description,
+                age,
+                self.max_staleness,
+                match status.last_error {
+                    Some(error) => format!(" (pending refresh failure: {error})"),
+                    None => String::new(),
+                }
+            )));
+        }
+        let urls = self.state.snapshot.read().urls().to_vec();
+        if urls.is_empty() {
+            return Err(DataFusionError::Configuration(format!(
+                "kubernetes worker discovery ({}) found no eligible worker: \
+                 the endpoints are not Ready (or not terminating-safe) or \
+                 rejected this coordinator's protocol version \
+                 {DISTRIBUTED_PROTOCOL_VERSION}; refusing silent single-node \
+                 planning",
+                self.description
+            )));
+        }
+        Ok(urls)
     }
 }
 
@@ -260,87 +519,233 @@ fn build_http_client(discovery: &KubernetesDiscovery) -> Result<reqwest::Client>
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(concat!("lakesoul-datafusion/", env!("CARGO_PKG_VERSION")));
-    if let Some(ca) = discovery.ca_cert() {
-        let cert = reqwest::Certificate::from_pem(&ca).map_err(|err| {
-            DataFusionError::Configuration(format!("invalid Kubernetes CA bundle: {err}"))
+    // The CA bundle is only needed for HTTPS: a plain-HTTP API server (only
+    // ever a test harness) needs no trust anchor. For HTTPS a missing bundle
+    // is an explicit configuration error — no anonymous, no system-default
+    // trust pool for the in-cluster CA.
+    if discovery.api_url().scheme() == "https" {
+        let ca_path = CA_CERT_PATH;
+        let pem = std::fs::read(&ca_path).context(format!(
+            "kubernetes API is HTTPS but the CA bundle is unreadable at {};",
+            ca_path
+        ))?;
+        let cert = reqwest::Certificate::from_pem(&pem).map_err(|err| {
+            DataFusionError::Configuration(format!(
+                "invalid Kubernetes CA bundle at {ca_path}: {err}"
+            ))
         })?;
         builder = builder.add_root_certificate(cert);
     }
     Ok(builder.build().context("building kubernetes client")?)
 }
 
+/// A failed EndpointSlice refresh, classified by what it means for the
+/// last published snapshot.
+#[derive(Debug)]
+enum DiscoveryFailure {
+    /// Authorization, configuration or protocol incompatibilities (401/403,
+    /// unreadable token, a document the parser cannot interpret). Suppresses
+    /// the previous snapshot immediately — those states are not "healthy".
+    Hard(String),
+    /// Transport-level outages (connection refused, timeouts, 5xx). The
+    /// last snapshot stays usable until staleness expires it.
+    Transient(String),
+}
+
+impl fmt::Display for DiscoveryFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hard(message) => write!(f, "{message}"),
+            Self::Transient(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for DiscoveryFailure {}
+
 async fn fetch_endpointslices(
     client: &reqwest::Client,
-    api_url: &str,
+    api_url: &Url,
     namespace: &str,
     selector: &str,
-    token: &Option<String>,
-) -> Result<Vec<Url>> {
-    let url = format!(
-        "{api_url}/apis/discovery.k8s.io/v1/namespaces/{namespace}/endpointslices?labelSelector={selector}"
-    );
-    let mut request = client.get(&url);
-    // The mounted token rotates: re-read it every round unless the operator
-    // supplied an explicit one.
-    let token = token.clone().or_else(|| {
-        std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
-            .ok()
-            .map(|t| t.trim().to_string())
-    });
-    if let Some(token) = token {
-        request = request.bearer_auth(&token);
-    }
-    let response = request
+    token_override: Option<&str>,
+    token_path: &str,
+) -> Result<Vec<Url>, Report<DiscoveryFailure>> {
+    let mut url = api_url
+        .join(&format!(
+            "/apis/discovery.k8s.io/v1/namespaces/{namespace}/endpointslices"
+        ))
+        .context(DiscoveryFailure::Hard(
+            "failed to construct Kubernetes EndpointSlice URL".into(),
+        ))?;
+
+    url.query_pairs_mut().append_pair("labelSelector", selector);
+
+    // Bearer token: an explicit override is fixed; otherwise the mounted
+    // token is re-read on every request because Kubernetes rotates it.
+    // A missing token errors — authentication is never skipped.
+    let token = match token_override {
+        Some(token) => token.to_owned(),
+
+        None => read_service_account_token(token_path)
+            .context(DiscoveryFailure::Hard(
+                "failed to read Kubernetes service account token".into(),
+            ))
+            .attach(format!("token_path={token_path}"))?,
+    };
+
+    let response = client
+        .get(url.clone())
+        .bearer_auth(token)
         .send()
         .await
-        .map_err(|err| DataFusionError::External(Box::new(err)))?;
-    let status = response.status();
-    if !status.is_success() {
-        bail!("EndpointSlice request returned {status}")
+        .context(DiscoveryFailure::Transient(
+            "EndpointSlice request failed".into(),
+        ))
+        .attach(format!("url={url}"))?;
+
+    let http_status = response.status();
+
+    if !http_status.is_success() {
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(err) => {
+                return Err(report!(DiscoveryFailure::Transient(
+                    "failed to read unsuccessful EndpointSlice response body".into(),
+                ))
+                .attach(format!("status={http_status}"))
+                .attach(format!("url={url}"))
+                .attach(err));
+            }
+        };
+
+        let body = body.chars().take(200).collect::<String>();
+
+        // Server-side outages and throttling are transient. Other HTTP
+        // failures generally indicate authentication, authorization,
+        // request/configuration, or protocol problems and suppress the
+        // previous snapshot immediately.
+        let transient =
+            http_status.is_server_error() || http_status == StatusCode::TOO_MANY_REQUESTS;
+
+        let failure = if transient {
+            DiscoveryFailure::Transient(format!(
+                "EndpointSlice request returned {http_status}"
+            ))
+        } else {
+            DiscoveryFailure::Hard(format!(
+                "EndpointSlice request returned {http_status}"
+            ))
+        };
+
+        let mut report = report!(failure)
+            .attach(format!("url={url}"))
+            .attach(format!("status={http_status}"));
+
+        if !body.is_empty() {
+            report = report.attach(format!("response_body={body}"));
+        }
+
+        return Err(report);
     }
-    let body = response.text().await?;
-    ready_worker_urls(&body)
+
+    let body = response
+        .text()
+        .await
+        .context(DiscoveryFailure::Transient(
+            "failed to read EndpointSliceList response body".into(),
+        ))
+        .attach(format!("url={url}"))?;
+
+    ready_worker_urls(&body).context(DiscoveryFailure::Hard(
+        "failed to interpret EndpointSliceList".into(),
+    ))
+}
+
+/// The worker gRPC port the slice declares, if any.
+///
+/// Rules, in order:
+/// 1. the TCP port named `grpc` — the documented worker service port; a
+///    `grpc` port without a numeric value or outside 1..=65535 is a hard
+///    error;
+/// 2. no TCP port named `grpc` but exactly one TCP port → that port, for
+///    compatibility with slices that declare a single unnamed TCP port
+///    (invalid values are a hard error);
+/// 3. several TCP ports and none named `grpc` → `None`: ambiguous, the slice
+///    cannot be interpreted and is skipped rather than guessed.
+///
+/// UDP/SCTP ports never count (the worker channel is gRPC over TCP).
+fn slice_grpc_port(ports: &[SlicePort]) -> Result<Option<i64>> {
+    // Validate numeric values but retain a slice that may still have a grpc port
+    let mut named_grpc = None;
+    let mut unnamed_tcp = Vec::new();
+    for port in ports {
+        let is_tcp = port
+            .protocol
+            .as_deref()
+            .unwrap_or("TCP")
+            .eq_ignore_ascii_case("TCP");
+        if !is_tcp {
+            continue;
+        }
+        if let Some(name) = port.name.as_deref()
+            && name == "grpc"
+        {
+            named_grpc = Some(port.port);
+            break;
+        }
+        unnamed_tcp.push(port.port);
+    }
+    if let Some(port) = named_grpc {
+        return match port {
+            Some(value) if valid_port(value) => Ok(Some(value)),
+            // Named `grpc` with an out-of-range/missing value means a broken
+            // service port declaration, not "no worker here": fail visibly.
+            Some(value) => bail!(
+                "EndpointSlice declares TCP port named `grpc` with invalid \
+                 port value {value}: expected 1..=65535"
+            ),
+            None => bail!(
+                "EndpointSlice declares TCP port named `grpc` without a \
+                 numeric port value"
+            ),
+        };
+    }
+    if unnamed_tcp.len() == 1 {
+        return match unnamed_tcp[0] {
+            Some(value) if valid_port(value) => Ok(Some(value)),
+            Some(value) => bail!(
+                "EndpointSlice declares a single TCP port with invalid value \
+                 {value}: expected 1..=65535"
+            ),
+            None => bail!(
+                "EndpointSlice declares a single TCP port without a numeric \
+                 port value"
+            ),
+        };
+    }
+    Ok(None)
+}
+
+/// Builds `http://<address>:<port>`, bracketing IPv6 literals.
+fn endpoint_url(address: &str, port: i64) -> Result<Url> {
+    let host = if address.contains(':') {
+        format!("[{address}]")
+    } else {
+        address.to_string()
+    };
+    Url::parse(&format!("http://{host}:{port}"))
+        .map_err(|err| report!("invalid worker endpoint address {address:?}: {err}"))
 }
 
 /// Extracts worker URLs from an EndpointSliceList JSON document.
 ///
 /// Only endpoints whose `conditions.ready` is `true` (and not terminating)
-/// are considered; the first TCP port declared on the slice is used.
+/// are considered; [`slice_grpc_port`] picks the port. Addresses parse as
+/// IPv4 or IPv6 URL hosts; a malformed address is a hard error, and repeated
+/// addresses (rolling updates can list one address in several slices) are
+/// deduplicated.
 pub fn ready_worker_urls(list_json: &str) -> Result<Vec<Url>> {
-    #[derive(serde::Deserialize)]
-    struct EndpointSliceList {
-        #[serde(default)]
-        items: Vec<EndpointSlice>,
-    }
-    #[derive(serde::Deserialize)]
-    struct EndpointSlice {
-        #[serde(default)]
-        endpoints: Vec<Endpoint>,
-        #[serde(default)]
-        ports: Vec<SlicePort>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Endpoint {
-        #[serde(default)]
-        addresses: Vec<String>,
-        #[serde(default)]
-        conditions: Option<Conditions>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Conditions {
-        #[serde(default)]
-        ready: Option<bool>,
-        #[serde(default)]
-        terminating: Option<bool>,
-    }
-    #[derive(serde::Deserialize)]
-    struct SlicePort {
-        #[serde(default)]
-        port: Option<i64>,
-        #[serde(default)]
-        protocol: Option<String>,
-    }
-
     let list: EndpointSliceList =
         serde_json::from_str(list_json).context("invalid EndpointSliceList")?;
 
@@ -349,17 +754,9 @@ pub fn ready_worker_urls(list_json: &str) -> Result<Vec<Url>> {
     // collapsing them keeps one entry (and one probe) per worker.
     let mut seen = HashSet::new();
     for slice in list.items {
-        let port = slice
-            .ports
-            .iter()
-            .filter(|port| {
-                port.protocol
-                    .as_deref()
-                    .unwrap_or("TCP")
-                    .eq_ignore_ascii_case("TCP")
-            })
-            .find_map(|port| port.port.filter(|port| (0..=65535).contains(port)));
-        let Some(port) = port else { continue };
+        let Some(port) = slice_grpc_port(&slice.ports)? else {
+            continue;
+        };
         for endpoint in slice.endpoints {
             let ready = endpoint
                 .conditions
@@ -375,15 +772,79 @@ pub fn ready_worker_urls(list_json: &str) -> Result<Vec<Url>> {
                 continue;
             }
             for address in endpoint.addresses {
-                if let Ok(url) = Url::parse(&format!("http://{address}:{port}"))
-                    && seen.insert(url.clone())
-                {
+                let url = endpoint_url(&address, port)?;
+                if seen.insert(url.clone()) {
                     urls.push(url);
                 }
             }
         }
     }
     Ok(urls)
+}
+
+/// EndpointSliceList JSON node (the list returned by the API server).
+#[derive(serde::Deserialize)]
+struct EndpointSliceList {
+    #[serde(default, deserialize_with = "null_as_empty")]
+    items: Vec<EndpointSlice>,
+}
+
+/// One EndpointSlice JSON node.
+#[derive(serde::Deserialize)]
+struct EndpointSlice {
+    #[serde(default, deserialize_with = "null_as_empty")]
+    endpoints: Vec<SliceEndpoint>,
+    #[serde(default, deserialize_with = "null_as_empty")]
+    ports: Vec<SlicePort>,
+}
+
+/// One endpoint JSON node of a slice.
+#[derive(serde::Deserialize)]
+struct SliceEndpoint {
+    #[serde(default, deserialize_with = "null_as_empty")]
+    addresses: Vec<String>,
+    #[serde(default)]
+    conditions: Option<SliceEndpointConditions>,
+}
+
+/// Endpoint readiness conditions, all optional per the API.
+#[derive(serde::Deserialize)]
+struct SliceEndpointConditions {
+    #[serde(default)]
+    ready: Option<bool>,
+    #[serde(default)]
+    terminating: Option<bool>,
+}
+
+/// One declared port JSON node of a slice.
+#[derive(serde::Deserialize)]
+struct SlicePort {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    port: Option<i64>,
+    #[serde(default)]
+    protocol: Option<String>,
+}
+
+/// Reads a JSON list that may be `null` as empty. The API server encodes nil Go
+/// slices of fields without `omitempty` as `null`: the placeholder EndpointSlice
+/// the controller keeps for a Service without Pods carries
+/// `"endpoints":null,"ports":null`.
+fn null_as_empty<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(
+        <Option<Vec<T>> as serde::Deserialize>::deserialize(deserializer)?
+            .unwrap_or_default(),
+    )
+}
+
+/// Whether `port` is a valid TCP port value.
+fn valid_port(port: i64) -> bool {
+    (1..=65535).contains(&port)
 }
 
 /// Result of probing a worker's advertised protocol version.
@@ -502,10 +963,6 @@ fn drop_version_mismatched_blocking(urls: Vec<Url>) -> Vec<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distributed::worker::LakeSoulWorkerSessionBuilder;
-    use datafusion::execution::runtime_env::RuntimeEnv;
-    use datafusion_distributed::Worker;
-    use tokio_stream::wrappers::TcpListenerStream;
 
     #[test]
     fn static_resolver_keeps_unreachable_worker() {
@@ -547,136 +1004,5 @@ mod tests {
         // policy only covers failures of that planner.
         let resolver = StaticWorkerResolver::new(Vec::new()).unwrap();
         assert!(resolver.get_urls().unwrap().is_empty());
-    }
-
-    fn slice_json(endpoints: &str, ports: &str) -> String {
-        format!(r#"{{"items":[{{"endpoints":{endpoints},"ports":{ports}}}]}}"#)
-    }
-
-    #[test]
-    fn endpoint_slices_ready_only() {
-        let json = slice_json(
-            r#"[
-                {"addresses":["10.0.0.1"],"conditions":{"ready":true,"terminating":false}},
-                {"addresses":["10.0.0.2"],"conditions":{"ready":false}},
-                {"addresses":["10.0.0.3"],"conditions":{"ready":true,"terminating":true}},
-                {"addresses":["10.0.0.4"]}
-            ]"#,
-            r#"[{"port":50051,"protocol":"TCP"}]"#,
-        );
-        let urls = ready_worker_urls(&json).unwrap();
-        assert_eq!(
-            urls,
-            vec![
-                Url::parse("http://10.0.0.1:50051").unwrap(),
-                // Missing conditions default to ready.
-                Url::parse("http://10.0.0.4:50051").unwrap(),
-            ]
-        );
-    }
-
-    #[test]
-    fn endpoint_slices_collapse_duplicate_addresses() {
-        // A rolling update can report the same address in more than one
-        // EndpointSlice (and more than once within one); that must not become
-        // two workers in the snapshot, which would skew task routing.
-        let json = r#"{"items":[
-            {"endpoints":[{"addresses":["10.0.0.1","10.0.0.1"]}],"ports":[{"port":50051}]},
-            {"endpoints":[{"addresses":["10.0.0.1"]}],"ports":[{"port":50051}]}
-        ]}"#;
-        assert_eq!(
-            ready_worker_urls(json).unwrap(),
-            vec![Url::parse("http://10.0.0.1:50051").unwrap()]
-        );
-    }
-
-    #[test]
-    fn endpoint_slices_skip_non_tcp_and_bad_ports() {
-        let json = slice_json(
-            r#"[{"addresses":["10.0.0.1"],"conditions":{"ready":true}}]"#,
-            r#"[{"port":5353,"protocol":"UDP"},{"port":70000},{"port":-1},{"port":8080}]"#,
-        );
-        let urls = ready_worker_urls(&json).unwrap();
-        assert_eq!(urls, vec![Url::parse("http://10.0.0.1:8080").unwrap()]);
-    }
-
-    #[test]
-    fn endpoint_slices_invalid_json_errors() {
-        assert!(ready_worker_urls("{not json").is_err());
-    }
-
-    #[tokio::test]
-    async fn version_probe_reports_unreachable() {
-        // Nothing listens here; the probe must report Unreachable (and never
-        // panic).
-        let url = Url::parse("http://127.0.0.1:1").unwrap();
-        assert_eq!(probe_version(&url).await, VersionProbe::Unreachable);
-    }
-
-    /// Serves a worker gRPC endpoint reporting `version` on an ephemeral
-    /// port, on its own OS thread and runtime.
-    ///
-    /// The runtime cannot be the test's own: `StaticWorkerResolver::new`
-    /// probes synchronously, blocking the calling thread while the probe
-    /// round-trips, and a worker hosted on the blocked runtime could not
-    /// answer it. Waiting for the first probe answer keeps the verdicts in
-    /// the callers deterministic.
-    async fn spawn_test_worker(version: &'static str) -> Url {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let url =
-            Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(async move {
-                listener.set_nonblocking(true).unwrap();
-                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-                let worker = Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
-                    .with_runtime_env(Arc::new(RuntimeEnv::default()))
-                    .with_version(version);
-                tonic::transport::Server::builder()
-                    .add_service(worker.into_worker_server())
-                    .serve_with_incoming(TcpListenerStream::new(listener))
-                    .await
-                    .unwrap();
-            });
-        });
-        for _ in 0..100 {
-            if probe_version(&url).await != VersionProbe::Unreachable {
-                return url;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("test worker on {url} never answered a version probe");
-    }
-
-    #[tokio::test]
-    async fn static_resolver_admits_version_matching_worker() {
-        let url = spawn_test_worker(DISTRIBUTED_PROTOCOL_VERSION).await;
-        let resolver = StaticWorkerResolver::new(vec![url.to_string()]).unwrap();
-        assert_eq!(resolver.get_urls().unwrap(), vec![url]);
-    }
-
-    #[tokio::test]
-    async fn static_resolver_drops_version_mismatched_worker() {
-        // A /1 worker would silently accept plans written by the versioned
-        // encoder (protobuf ignores unknown fields), so discovery must drop
-        // it before any dispatch.
-        let url = spawn_test_worker("lakesoul-distributed/1").await;
-        let resolver = StaticWorkerResolver::new(vec![url.to_string()]).unwrap();
-        assert!(resolver.get_urls().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn static_resolver_update_drops_version_mismatched_worker() {
-        let matching = spawn_test_worker(DISTRIBUTED_PROTOCOL_VERSION).await;
-        let mismatched = spawn_test_worker("lakesoul-distributed/1").await;
-        let resolver = StaticWorkerResolver::new(vec![matching.to_string()]).unwrap();
-        resolver
-            .update(vec![matching.to_string(), mismatched.to_string()])
-            .unwrap();
-        assert_eq!(resolver.get_urls().unwrap(), vec![matching]);
     }
 }

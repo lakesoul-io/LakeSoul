@@ -1424,13 +1424,14 @@ async fn test_explain_analyze_shows_distributed_stages_inner() -> Result<()> {
     Ok(())
 }
 
-/// A query is refused without a ready worker only when the distributed
-/// planner cannot plan it at all.
+/// With static discovery, an empty worker list refuses a query only when the
+/// distributed planner cannot plan it at all.
 ///
-/// While no worker is ready the distributed planner plans the query
-/// single-node by itself — it caps every stage at one task, so no network
-/// boundary survives — and that plan is not a failure: it runs on the
-/// coordinator in both modes. `fallback_to_local` only decides what happens
+/// With no worker listed the distributed planner plans the query single-node
+/// by itself — it caps every stage at one task, so no network boundary
+/// survives — and that plan is not a failure: it runs on the coordinator in
+/// both modes. Kubernetes discovery differs: without an eligible worker its
+/// resolver fails the query. `fallback_to_local` only decides what happens
 /// when the distributed planner fails, which is pinned by the gate's unit
 /// tests.
 #[test]

@@ -5,8 +5,6 @@
 //! The state write layout: a refresh coalesces its output batches instead of
 //! writing one file per batch per hash bucket.
 
-#![recursion_limit = "256"]
-
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
