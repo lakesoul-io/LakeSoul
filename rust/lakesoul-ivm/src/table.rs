@@ -458,6 +458,18 @@ impl IvmTable {
         client: &MetaDataClient,
         batch: RecordBatch,
     ) -> Result<Vec<String>> {
+        let files = self.write_batch(batch).await?;
+        self.commit_files(client, files).await
+    }
+
+    /// Write one batch to new data files without publishing them.
+    ///
+    /// Keyed tables write through the partitioning writer with stable sort, so
+    /// rows with the same key keep their input order (a `delete` written before
+    /// an `insert` still wins in merge-on-read).  The returned files can be
+    /// committed by a coordinator with [`Self::commit_files`], which is what a
+    /// distributed refresh does: workers write, the driver publishes once.
+    pub async fn write_batch(&self, batch: RecordBatch) -> Result<Vec<DataFileInfo>> {
         if batch.num_rows() == 0 {
             return Ok(Vec::new());
         }
@@ -500,14 +512,23 @@ impl IvmTable {
                 file_exist_cols: output.file_exist_cols.join(","),
             })
             .collect::<Vec<_>>();
+        crate::observability::add_rows_written(written_rows);
+        crate::observability::add_bytes_written(written_bytes);
+        Ok(files)
+    }
+
+    /// Publish already written files in one metadata commit.
+    pub async fn commit_files(
+        &self,
+        client: &MetaDataClient,
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
         if files.is_empty() {
             return Ok(Vec::new());
         }
         let commit_ids = client
             .commit_data_files(&self.table_name, &self.namespace, files)
             .await?;
-        crate::observability::add_rows_written(written_rows);
-        crate::observability::add_bytes_written(written_bytes);
         Ok(commit_ids)
     }
 
@@ -524,7 +545,7 @@ impl IvmTable {
         client: &MetaDataClient,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<String>> {
-        let mut commit_ids = Vec::new();
+        let mut files = Vec::new();
         let mut pending: Vec<RecordBatch> = Vec::new();
         let mut pending_rows = 0usize;
         for batch in batches {
@@ -535,7 +556,7 @@ impl IvmTable {
             {
                 let schema = pending[0].schema();
                 let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-                commit_ids.extend(self.append_batch(client, coalesced).await?);
+                files.extend(self.write_batch(coalesced).await?);
                 pending.clear();
                 pending_rows = 0;
             }
@@ -545,9 +566,9 @@ impl IvmTable {
         if pending_rows > 0 {
             let schema = pending[0].schema();
             let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-            commit_ids.extend(self.append_batch(client, coalesced).await?);
+            files.extend(self.write_batch(coalesced).await?);
         }
-        Ok(commit_ids)
+        self.commit_files(client, files).await
     }
 
     /// Read the given data files with this table's schema and merge key.

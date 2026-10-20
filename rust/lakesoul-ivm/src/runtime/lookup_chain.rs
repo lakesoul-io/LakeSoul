@@ -1322,7 +1322,6 @@ impl IvmRuntime {
             let view = view.clone();
             let base = base.clone();
             let mv_table = view.mv.clone();
-            let client = self.client.clone();
             let dims = dims.clone();
             let base_filter = base_filter.clone();
             let base_projection = base_projection.clone();
@@ -1391,13 +1390,12 @@ impl IvmRuntime {
                     )?
                     .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-                let outcome = append_dataframe(
+                let written = write_dataframe(
                     &mv_table,
-                    &client,
                     inserts.union(deletes)?.sort_by(sort_exprs)?,
                 )
                 .await?;
-                Ok::<AppendOutcome, rootcause::Report>(outcome)
+                Ok::<WrittenFiles, rootcause::Report>(written)
             }
         });
         let mut outcome = AppendOutcome {
@@ -1406,13 +1404,18 @@ impl IvmRuntime {
             inserts: 0,
             deletes: 0,
         };
+        let mut files = Vec::new();
         for result in join_all(tasks).await {
             let part = result?;
-            outcome.commit_ids.extend(part.commit_ids);
+            files.extend(part.files);
             outcome.rows += part.rows;
             outcome.inserts += part.inserts;
             outcome.deletes += part.deletes;
         }
+        // The buckets wrote in parallel; publish every file in one commit so
+        // no two writers race on the partition version (and a distributed
+        // refresh can have the driver do the same after collecting the files).
+        outcome.commit_ids = view.mv.commit_files(&self.client, files).await?;
         Ok(Some(outcome))
     }
 
@@ -1533,7 +1536,6 @@ impl IvmRuntime {
                     let view = view.clone();
                     let base = base.clone();
                     let mv = view.mv.clone();
-                    let client = self.client.clone();
                     let dims = dims.clone();
                     let base_filter = base_filter.clone();
                     let base_projection = base_projection.clone();
@@ -1575,16 +1577,18 @@ impl IvmRuntime {
                             .select(row_exprs.clone())?
                             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-                        let outcome = append_dataframe(&mv, &client, rows).await?;
-                        Ok::<AppendOutcome, rootcause::Report>(outcome)
+                        let written = write_dataframe(&mv, rows).await?;
+                        Ok::<WrittenFiles, rootcause::Report>(written)
                     }
                 });
                 let mut rebuilt_rows = 0u64;
+                let mut files = Vec::new();
                 for result in join_all(tasks).await {
                     let part = result?;
-                    commit_ids.extend(part.commit_ids);
+                    files.extend(part.files);
                     rebuilt_rows += part.inserts;
                 }
+                commit_ids.extend(view.mv.commit_files(&self.client, files).await?);
                 if unique_steps {
                     self.set_view_rows(&view.view_id, rebuilt_rows);
                 }
