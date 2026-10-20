@@ -2687,3 +2687,297 @@ async fn a_multi_join_prunes_by_the_changed_join_key_values() {
         vec![(10, 100, 1001, 7), (20, 200, 2000, 6)]
     );
 }
+
+/// A multi-way join propagates a deep source's changed key values down the
+/// chain to the base partition.
+#[test_log::test(tokio::test)]
+async fn a_multi_join_prunes_a_deep_source_by_chain_keys() {
+    use lakesoul_ivm::{
+        MultiJoinColumn, MultiJoinKey, MultiJoinView, multi_join_mv_schema_for,
+        multi_join_primary_keys,
+    };
+
+    fn batch_i64(schema: &SchemaRef, columns: &[&[i64]]) -> RecordBatch {
+        let rows = columns.first().map_or(0, |column| column.len());
+        let mut arrays: Vec<Arc<dyn arrow_array::Array>> = columns
+            .iter()
+            .map(|values| {
+                Arc::new(Int64Array::from_iter_values(values.iter().copied()))
+                    as Arc<dyn arrow_array::Array>
+            })
+            .collect();
+        arrays.push(Arc::new(StringArray::from_iter_values(
+            (0..rows).map(|_| "insert"),
+        )));
+        RecordBatch::try_new(schema.clone(), arrays).unwrap()
+    }
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("lk", DataType::Int64, false),
+        Field::new("lv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let s1_schema = Arc::new(Schema::new(vec![
+        Field::new("m1", DataType::Int64, false),
+        Field::new("mk", DataType::Int64, false),
+        Field::new("mv1", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let s2_schema = Arc::new(Schema::new(vec![
+        Field::new("m2", DataType::Int64, false),
+        Field::new("k2", DataType::Int64, false),
+        Field::new("v2", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let s3_schema = Arc::new(Schema::new(vec![
+        Field::new("rid", DataType::Int64, false),
+        Field::new("k3", DataType::Int64, false),
+        Field::new("rv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let fact = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_fact_{suffix}"),
+                table_path(&dir, "fact"),
+                fact_schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string(), "lk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["lk".to_string()]),
+        )
+        .await
+        .unwrap();
+    let s1 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_s1_{suffix}"),
+                table_path(&dir, "s1"),
+                s1_schema.clone(),
+            )
+            .with_primary_keys(vec!["m1".to_string(), "mk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let s2 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_s2_{suffix}"),
+                table_path(&dir, "s2"),
+                s2_schema.clone(),
+            )
+            .with_primary_keys(vec!["m2".to_string(), "k2".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let s3 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_s3_{suffix}"),
+                table_path(&dir, "s3"),
+                s3_schema.clone(),
+            )
+            .with_primary_keys(vec!["rid".to_string(), "k3".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "lk".to_string(),
+            name: "lk".to_string(),
+        },
+        MultiJoinColumn {
+            source: 0,
+            column: "lv".to_string(),
+            name: "lv".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "mv1".to_string(),
+            name: "mv1".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "v2".to_string(),
+            name: "v2".to_string(),
+        },
+        MultiJoinColumn {
+            source: 3,
+            column: "rv".to_string(),
+            name: "rv".to_string(),
+        },
+    ];
+    let primary_keys = [
+        vec!["id".to_string(), "lk".to_string()],
+        vec!["m1".to_string(), "mk".to_string()],
+        vec!["m2".to_string(), "k2".to_string()],
+        vec!["rid".to_string(), "k3".to_string()],
+    ];
+    let mut mv_keys = multi_join_primary_keys(&primary_keys);
+    mv_keys.push("lk".to_string());
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pchain_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                multi_join_mv_schema_for(
+                    &[
+                        fact_schema.clone(),
+                        s1_schema.clone(),
+                        s2_schema.clone(),
+                        s3_schema.clone(),
+                    ],
+                    &primary_keys,
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(mv_keys)
+            .with_range_partition_columns(vec!["lk".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MultiJoinView::new(
+        format!("pchain_{suffix}"),
+        vec![fact.clone(), s1.clone(), s2.clone(), s3.clone()],
+        mv.clone(),
+        vec![
+            MultiJoinKey {
+                left_source: 0,
+                left_column: "lk".to_string(),
+                left_expr: None,
+                right_source: 1,
+                right_column: "mk".to_string(),
+                right_expr: None,
+            },
+            MultiJoinKey {
+                left_source: 1,
+                left_column: "mv1".to_string(),
+                left_expr: None,
+                right_source: 2,
+                right_column: "k2".to_string(),
+                right_expr: None,
+            },
+            MultiJoinKey {
+                left_source: 2,
+                left_column: "v2".to_string(),
+                left_expr: None,
+                right_source: 3,
+                right_column: "k3".to_string(),
+                right_expr: None,
+            },
+        ],
+        columns,
+    );
+    fact.append_batch(
+        runtime.client(),
+        batch_i64(&fact_schema, &[&[1, 2], &[10, 20], &[100, 200]]),
+    )
+    .await
+    .unwrap();
+    s1.append_batch(
+        runtime.client(),
+        batch_i64(&s1_schema, &[&[1, 2], &[10, 20], &[1000, 2000]]),
+    )
+    .await
+    .unwrap();
+    s2.append_batch(
+        runtime.client(),
+        batch_i64(&s2_schema, &[&[1, 2], &[1000, 2000], &[7, 8]]),
+    )
+    .await
+    .unwrap();
+    s3.append_batch(
+        runtime.client(),
+        batch_i64(&s3_schema, &[&[1, 2], &[7, 8], &[5, 6]]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_multi_join(&view).await.unwrap();
+
+    async fn read_rows(
+        runtime: &IvmRuntime,
+        mv: &IvmTable,
+    ) -> Vec<(i64, i64, i64, i64, i64)> {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(mv)))
+            .unwrap();
+        let batches = context
+            .sql(
+                "select \"lk\", \"lv\", \"mv1\", \"v2\", \"rv\" from mv \
+                 order by \"lk\"",
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let lk = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let lv = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let mv1 = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let v2 = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let rv = batch
+                .column(4)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((
+                    lk.value(row),
+                    lv.value(row),
+                    mv1.value(row),
+                    v2.value(row),
+                    rv.value(row),
+                ));
+            }
+        }
+        rows
+    }
+
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(10, 100, 1000, 7, 5), (20, 200, 2000, 8, 6)]
+    );
+
+    // Only the deepest source changes: the chain rule propagates k3=7 down to
+    // the base join key lk=10, so the lk=20 partition is untouched.
+    s3.append_batch(
+        runtime.client(),
+        batch_i64(&s3_schema, &[&[1], &[7], &[55]]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_multi_join(&view).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &mv).await,
+        vec![(10, 100, 1000, 7, 55), (20, 200, 2000, 8, 6)]
+    );
+}

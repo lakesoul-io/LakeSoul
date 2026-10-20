@@ -991,7 +991,7 @@ impl IvmTable {
     }
 
     /// Keep the rows whose change column is not a CDC tombstone.
-    fn filter_change_batch(
+    pub(crate) fn filter_change_batch(
         batch: RecordBatch,
         column: &str,
     ) -> std::result::Result<RecordBatch, DataFusionError> {

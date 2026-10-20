@@ -369,9 +369,10 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
     由视图原样物化，Join/MultiJoin 用 source column -> 输出列/别名映射。SemiAnti 仅在
     右侧无变更时按左侧 delta 的 key 过滤状态读并裁剪 MV；Union 取各变更分支的并集；
     Join 仅在一侧变更时裁剪（两侧都变时另一侧的匹配行可在任意分区）；MultiJoin 在
-    base 源变更时按 base 分区裁剪，仅在 source 1 变更且 base 分区列就是到 source 1 的
-    join key（且该 key 在 source 1 主键内）时按 delta 的 join-key 值裁剪；更深层源或
-    可变 join key 时保持全读。无主键（append-only）的两表 join 仍要求单分区
+    base 源变更时按 base 分区裁剪，单源变更且 base 分区列是到 source 1 的 join key 时，
+    从变更源 delta 的 join-key 值出发，逐级过滤中间源 current 状态并取出下一级 key，
+    最终得到受影响的 base 分区（要求变更源的 join key 在其主键内；可变更 join key 属于
+    重建场景，保持全读）。无主键（append-only）的两表 join 仍要求单分区
     （`ensure_unpartitioned`）；Fallback 有分区局部重算。
 - **列裁剪**：`SUM/COUNT` 的 before-state 读已按列下推（`sum_count_source_projection`
   + `read_before_window_filtered_projected`）；10M、8 个 payload 列、1% 变更下刷新
