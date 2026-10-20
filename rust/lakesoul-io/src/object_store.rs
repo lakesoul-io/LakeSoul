@@ -7,7 +7,7 @@ use std::{sync::Arc, time::Duration};
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnv;
 use object_store::{
-    ClientOptions, RetryConfig,
+    BackoffConfig, ClientOptions, RetryConfig,
     aws::{AmazonS3, AmazonS3Builder},
 };
 use rootcause::{bail, report};
@@ -74,9 +74,16 @@ pub fn create_s3_store_from_options(
         bail!("missing fs.s3a.bucket");
     }
 
-    let mut retry_config = RetryConfig::default();
-    retry_config.backoff.base = 2.5;
-    retry_config.backoff.max_backoff = Duration::from_secs(20);
+    let retry_config = RetryConfig {
+        // First attempt plus at most 3 retries.
+        max_retries: 3,
+        backoff: BackoffConfig {
+            base: 2.5,
+            max_backoff: Duration::from_secs(20),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     let skip_signature = options
         .get("fs.s3a.s3.signing-algorithm")
@@ -94,9 +101,11 @@ pub fn create_s3_store_from_options(
         .with_client_options(
             ClientOptions::new()
                 .with_allow_http(true)
-                .with_connect_timeout(Duration::from_secs(30))
+                // Fail a stuck request quickly instead of letting the Flink
+                // task block for minutes; retries are bounded separately.
+                .with_connect_timeout(Duration::from_secs(10))
                 .with_pool_idle_timeout(Duration::from_secs(600))
-                .with_timeout(Duration::from_secs(30)),
+                .with_timeout(Duration::from_secs(10)),
         )
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret)
