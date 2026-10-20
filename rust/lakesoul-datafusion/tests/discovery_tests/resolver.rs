@@ -341,8 +341,9 @@ impl MockK8sApi {
     /// Replaces the script: `response` is served for the next request and
     /// then repeats.
     fn set_response(&self, response: MockApiResponse) {
-        self.script.lock().clear();
-        self.script.lock().push_back(response);
+        let mut guard = self.script.lock();
+        guard.clear();
+        guard.push_back(response);
     }
 
     fn snapshots(&self) -> Vec<MockApiRequest> {

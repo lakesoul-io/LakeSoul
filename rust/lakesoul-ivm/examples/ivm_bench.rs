@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#![recursion_limit = "256"]
-
 //! A refresh benchmark: incremental maintenance against a full recompute of
 //! the same statement.
 //!

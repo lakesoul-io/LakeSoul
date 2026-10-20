@@ -576,7 +576,11 @@ impl IvmSqlExecutor {
     /// Execute one incremental statement.
     pub async fn execute(&self, sql: &str) -> Result<IvmExecution> {
         let started = std::time::Instant::now();
-        let result = self.execute_inner(sql).await;
+        // Boxed: the statement future nests the refresh, the lakesoul-io
+        // reader and its moka file cache by value, which puts its layout just
+        // under rustc's default query depth limit (128). Without the box any
+        // caller awaiting `execute` overflows it.
+        let result = Box::pin(self.execute_inner(sql)).await;
         let action = match &result {
             Ok(execution) => execution.action.label(),
             Err(_) => "error",

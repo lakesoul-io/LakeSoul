@@ -526,9 +526,7 @@ fn build_http_client(discovery: &KubernetesDiscovery) -> Result<reqwest::Client>
     if discovery.api_url().scheme() == "https" {
         let ca_path = CA_CERT_PATH;
         let pem = std::fs::read(&ca_path).context(format!(
-            "kubernetes API is HTTPS but the CA bundle is unreadable at \
-         {}; set LAKESOUL_K8S_CA_CERT_PATH or mount the \
-         service account bundle",
+            "kubernetes API is HTTPS but the CA bundle is unreadable at {};",
             ca_path
         ))?;
         let cert = reqwest::Certificate::from_pem(&pem).map_err(|err| {
