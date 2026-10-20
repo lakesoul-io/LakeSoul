@@ -292,6 +292,50 @@ pub fn join_view_schema_with_keys(
 }
 
 /// The hidden column holding a left primary key in a keyed join output.
+/// The MV partitions a keyed join refresh can touch when exactly one side
+/// changed.
+///
+/// The join output carries each side's primary keys under an alias, so map
+/// the source column to its output alias.  When both sides changed the other
+/// side's matching rows can live in any partition, so no restriction is
+/// returned.
+fn single_side_join_mv_partitions(
+    output: &IvmTable,
+    left: &IvmTable,
+    left_window: &SourceWindow,
+    right: &IvmTable,
+    right_window: &SourceWindow,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let left_mapping = left
+        .primary_keys
+        .iter()
+        .map(|key| (key.clone(), left_pk_alias(key)))
+        .collect::<Vec<_>>();
+    let right_mapping = right
+        .primary_keys
+        .iter()
+        .map(|key| (key.clone(), right_pk_alias(key)))
+        .collect::<Vec<_>>();
+    match (
+        left_window.added_files.is_empty(),
+        right_window.added_files.is_empty(),
+    ) {
+        (false, true) => super::mv_partitions_for_source_mapped(
+            output,
+            left,
+            left_window,
+            &left_mapping,
+        ),
+        (true, false) => super::mv_partitions_for_source_mapped(
+            output,
+            right,
+            right_window,
+            &right_mapping,
+        ),
+        _ => None,
+    }
+}
+
 fn left_pk_alias(key: &str) -> String {
     format!("__left_pk_{key}")
 }
@@ -3222,11 +3266,25 @@ impl IvmRuntime {
                     .await?,
                 &view.right.schema,
             )?;
-            let mv = dataframe(
-                &context,
-                view.output.read_current(&self.client).await?,
-                &view.output.schema,
-            )?;
+            let mv_batches = match single_side_join_mv_partitions(
+                &view.output,
+                &view.left,
+                &left_window,
+                &view.right,
+                &right_window,
+            ) {
+                Some(restriction) => {
+                    view.output
+                        .read_current_filtered_partitions(
+                            &self.client,
+                            Vec::new(),
+                            &restriction,
+                        )
+                        .await?
+                }
+                None => view.output.read_current(&self.client).await?,
+            };
+            let mv = dataframe(&context, mv_batches, &view.output.schema)?;
 
             let left_key_names = view
                 .left
@@ -4034,11 +4092,25 @@ impl IvmRuntime {
             &view.right.schema,
             view.right_filter.as_deref(),
         )?;
-        let mv = dataframe(
-            &context,
-            view.output.read_current(&self.client).await?,
-            &view.output.schema,
-        )?;
+        let mv_batches = match single_side_join_mv_partitions(
+            &view.output,
+            &view.left,
+            &left_window,
+            &view.right,
+            &right_window,
+        ) {
+            Some(restriction) => {
+                view.output
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+            }
+            None => view.output.read_current(&self.client).await?,
+        };
+        let mv = dataframe(&context, mv_batches, &view.output.schema)?;
 
         let key_names = view
             .left
@@ -4397,11 +4469,25 @@ impl IvmRuntime {
             &view.right.schema,
             view.right_filter.as_deref(),
         )?;
-        let mv = dataframe(
-            &context,
-            view.output.read_current(&self.client).await?,
-            &view.output.schema,
-        )?;
+        let mv_batches = match single_side_join_mv_partitions(
+            &view.output,
+            &view.left,
+            &left_window,
+            &view.right,
+            &right_window,
+        ) {
+            Some(restriction) => {
+                view.output
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+            }
+            None => view.output.read_current(&self.client).await?,
+        };
+        let mv = dataframe(&context, mv_batches, &view.output.schema)?;
 
         let left_key_names = view
             .left
@@ -4854,11 +4940,25 @@ impl IvmRuntime {
             &view.right.schema,
             view.right_filter.as_deref(),
         )?;
-        let mv = dataframe(
-            &context,
-            view.output.read_current(&self.client).await?,
-            &view.output.schema,
-        )?;
+        let mv_batches = match single_side_join_mv_partitions(
+            &view.output,
+            &view.left,
+            &left_window,
+            &view.right,
+            &right_window,
+        ) {
+            Some(restriction) => {
+                view.output
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+            }
+            None => view.output.read_current(&self.client).await?,
+        };
+        let mv = dataframe(&context, mv_batches, &view.output.schema)?;
 
         let left_key_names = view
             .left
