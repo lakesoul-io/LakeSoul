@@ -2573,7 +2573,6 @@ impl IvmRuntime {
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
-        self.maybe_compact_mv(&view.view_id, &view.mv).await?;
         Ok(Some(epoch))
     }
 

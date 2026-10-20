@@ -2643,35 +2643,6 @@ fn state_compaction_threshold() -> usize {
         .unwrap_or(32)
 }
 
-/// The MV file count at which a refresh compacts it, when the internal test
-/// switch is enabled.  Production MV compaction is owned by the external
-/// compaction service, so this defaults to off.
-fn mv_compaction_threshold() -> Option<usize> {
-    let enabled = std::env::var("LAKESOUL_IVM_INTERNAL_COMPACT_MV")
-        .ok()
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-    if !enabled {
-        return None;
-    }
-    let threshold = std::env::var("LAKESOUL_IVM_COMPACT_MV_FILES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(32);
-    (threshold > 0).then_some(threshold)
-}
-
-/// The largest MV (in estimated live rows) the internal test switch compacts.
-///
-/// Compaction materializes the whole MV; at 10M rows it costs gigabytes of
-/// memory and seconds per round.  Production MVs are compacted by the
-/// external service, so the internal switch is capped to test-sized views.
-fn mv_compaction_max_rows() -> u64 {
-    std::env::var("LAKESOUL_IVM_COMPACT_MV_MAX_ROWS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(2_000_000)
-}
-
 impl IvmRuntime {
     /// Compact an auxiliary state table when it accumulated enough files.
     pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
@@ -2683,28 +2654,6 @@ impl IvmRuntime {
             return Ok(());
         }
         state.compact(&self.client).await?;
-        Ok(())
-    }
-
-    /// Compact an MV when the internal test switch is on and enough files
-    /// accumulated.  Production MVs are compacted by the external service.
-    pub(crate) async fn maybe_compact_mv(
-        &self,
-        view_id: &str,
-        mv: &IvmTable,
-    ) -> Result<()> {
-        let Some(threshold) = mv_compaction_threshold() else {
-            return Ok(());
-        };
-        if let Some(rows) = self.known_view_rows(view_id)
-            && rows > mv_compaction_max_rows()
-        {
-            return Ok(());
-        }
-        if mv.current_file_count(&self.client).await? < threshold {
-            return Ok(());
-        }
-        mv.compact(&self.client).await?;
         Ok(())
     }
 

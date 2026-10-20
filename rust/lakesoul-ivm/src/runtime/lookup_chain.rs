@@ -873,7 +873,6 @@ impl IvmRuntime {
             for window in windows {
                 self.advance_cursors(&view.view_id, window.cursors).await?;
             }
-            self.maybe_compact_mv(&view.view_id, &view.mv).await?;
             return Ok(Some(epoch));
         }
 
@@ -1238,7 +1237,6 @@ impl IvmRuntime {
         for window in windows {
             self.advance_cursors(&view.view_id, window.cursors).await?;
         }
-        self.maybe_compact_mv(&view.view_id, &view.mv).await?;
         Ok(Some(epoch))
     }
 
