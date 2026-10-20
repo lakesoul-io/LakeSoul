@@ -1262,6 +1262,17 @@ impl IvmTable {
         self.read_current_with_options(client, filters, None).await
     }
 
+    /// Read the current merge-on-read state filtered and projected.
+    pub async fn read_current_filtered_projected(
+        &self,
+        client: &MetaDataClient,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_current_with_options(client, filters, projection)
+            .await
+    }
+
     /// Read the current merge-on-read state projected to `projection`.
     ///
     /// The projection is pushed into the LakeSoul reader; it must contain the

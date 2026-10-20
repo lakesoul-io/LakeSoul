@@ -2534,6 +2534,63 @@ pub(crate) fn key_filters(
     Ok(filters)
 }
 
+/// The MV range partitions an affected source row can live in.
+///
+/// Sound when the MV's partition columns are source partition columns, the MV
+/// keys carry them and the source primary keys carry the source's partition
+/// columns (a key cannot move between partitions).  Callers must have verified
+/// that the MV materializes the partition column unchanged: the window/top-k
+/// and row views carry the source primary keys, so a partition column drawn
+/// from them is copied through as-is.
+fn mv_partitions_for_source(
+    mv: &IvmTable,
+    source: &IvmTable,
+    window: &SourceWindow,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let mv_partitions = &mv.range_partition_columns;
+    if mv_partitions.is_empty() {
+        return None;
+    }
+    if !source
+        .range_partition_columns
+        .iter()
+        .all(|column| source.primary_keys.contains(column))
+    {
+        return None;
+    }
+    for partition in mv_partitions {
+        if !source.range_partition_columns.contains(partition)
+            || !mv.primary_keys.contains(partition)
+        {
+            return None;
+        }
+    }
+    let mut restriction = mv_partitions
+        .iter()
+        .map(|column| (column.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    for files in &window.added_files {
+        let values = parse_partition_values(
+            &files.partition_desc,
+            &source.range_partition_columns,
+        )?;
+        for (column, allowed) in restriction.iter_mut() {
+            let index = source
+                .range_partition_columns
+                .iter()
+                .position(|candidate| candidate == column)?;
+            let value = values.get(index)?.clone();
+            if !allowed.contains(&value) {
+                allowed.push(value);
+            }
+        }
+    }
+    restriction
+        .iter()
+        .all(|(_, allowed)| !allowed.is_empty())
+        .then_some(restriction)
+}
+
 /// The result of streaming a refresh output into a table.
 pub(crate) struct AppendOutcome {
     pub(crate) commit_ids: Vec<String>,

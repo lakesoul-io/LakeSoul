@@ -864,6 +864,8 @@ impl IvmRuntime {
         let left_projection = project_schema(&view.left.schema, &left_columns)?;
         let right_projection = project_schema(&view.right.schema, &right_columns)?;
 
+        let mv_partitions =
+            super::mv_partitions_for_source(&view.mv, &view.left, &left_window);
         let delta_left = view
             .left
             .read_partition_files_projected(
@@ -878,15 +880,43 @@ impl IvmRuntime {
                 Some(&right_projection),
             )
             .await?;
-        let left_before = view
-            .left
-            .read_before_window_projected(
-                &self.client,
-                &left_window.before_versions,
-                Some(&left_projection),
-            )
-            .await?;
         let right_changed = !delta_right.is_empty();
+        // With only the left side changed (and no rank mode, which also
+        // touches the other rows of a changed tuple) the affected left keys
+        // are exactly the delta's: filter the state reads by them and prune
+        // the MV partitions the delta did not touch.
+        let left_filters = if !right_changed && !view.count_mode {
+            let changed = delta_left
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>();
+            if changed > 0 && changed <= crate::runtime::MAX_KEY_FILTERS {
+                crate::runtime::key_filters(&view.left.primary_keys, &delta_left)?
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        let mv_partitions = if right_changed { None } else { mv_partitions };
+        let left_before = if left_filters.is_empty() {
+            view.left
+                .read_before_window_projected(
+                    &self.client,
+                    &left_window.before_versions,
+                    Some(&left_projection),
+                )
+                .await?
+        } else {
+            view.left
+                .read_before_window_filtered_projected(
+                    &self.client,
+                    &left_window.before_versions,
+                    left_filters.clone(),
+                    Some(&left_projection),
+                )
+                .await?
+        };
         let right_before = if !right_changed {
             Vec::new()
         } else {
@@ -898,15 +928,40 @@ impl IvmRuntime {
                 )
                 .await?
         };
-        let left_now = view
-            .left
-            .read_current_projected(&self.client, Some(&left_projection))
-            .await?;
+        let left_now = if left_filters.is_empty() {
+            view.left
+                .read_current_projected(&self.client, Some(&left_projection))
+                .await?
+        } else {
+            view.left
+                .read_current_filtered_projected(
+                    &self.client,
+                    left_filters.clone(),
+                    Some(&left_projection),
+                )
+                .await?
+        };
         let right_now = view
             .right
             .read_current_projected(&self.client, Some(&right_projection))
             .await?;
-        let mv_batches = view.mv.read_current(&self.client).await?;
+        let mv_batches = match &mv_partitions {
+            Some(restriction) => {
+                view.mv
+                    .read_current_filtered_partitions(
+                        &self.client,
+                        left_filters.clone(),
+                        restriction,
+                    )
+                    .await?
+            }
+            None if !left_filters.is_empty() => {
+                view.mv
+                    .read_current_filtered(&self.client, left_filters.clone())
+                    .await?
+            }
+            None => view.mv.read_current(&self.client).await?,
+        };
 
         let context = SessionContext::new();
         let delta_left = dataframe(&context, delta_left, &left_projection)?;
