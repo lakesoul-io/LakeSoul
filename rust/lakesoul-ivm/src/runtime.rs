@@ -2547,6 +2547,28 @@ fn mv_partitions_for_source(
     source: &IvmTable,
     window: &SourceWindow,
 ) -> Option<Vec<(String, Vec<String>)>> {
+    let mapping = mv
+        .range_partition_columns
+        .iter()
+        .map(|column| (column.clone(), column.clone()))
+        .collect::<Vec<_>>();
+    mv_partitions_for_source_mapped(mv, source, window, &mapping)
+}
+
+/// The MV range partitions an affected source row can live in.
+///
+/// `mapping` maps a source column to the MV column that carries it (the same
+/// name for most views, an alias for join outputs).  Sound when every MV
+/// partition column maps to a source partition column, the source primary keys
+/// carry its partition columns (a key cannot move between partitions) and the
+/// MV keys carry the MV partition columns.  Callers must have verified that
+/// the MV materializes the mapped column unchanged.
+fn mv_partitions_for_source_mapped(
+    mv: &IvmTable,
+    source: &IvmTable,
+    window: &SourceWindow,
+    mapping: &[(String, String)],
+) -> Option<Vec<(String, Vec<String>)>> {
     let mv_partitions = &mv.range_partition_columns;
     if mv_partitions.is_empty() {
         return None;
@@ -2558,27 +2580,32 @@ fn mv_partitions_for_source(
     {
         return None;
     }
+    let mut restriction = Vec::with_capacity(mv_partitions.len());
     for partition in mv_partitions {
-        if !source.range_partition_columns.contains(partition)
+        let (source_column, _) = mapping
+            .iter()
+            .find(|(_, mv_column)| mv_column == partition)?;
+        if !source.range_partition_columns.contains(source_column)
             || !mv.primary_keys.contains(partition)
         {
             return None;
         }
+        restriction.push((partition.clone(), Vec::new()));
     }
-    let mut restriction = mv_partitions
-        .iter()
-        .map(|column| (column.clone(), Vec::new()))
-        .collect::<Vec<_>>();
     for files in &window.added_files {
         let values = parse_partition_values(
             &files.partition_desc,
             &source.range_partition_columns,
         )?;
-        for (column, allowed) in restriction.iter_mut() {
+        for (mv_column, allowed) in restriction.iter_mut() {
+            let source_column = mapping
+                .iter()
+                .find(|(_, mapped)| mapped == mv_column)
+                .map(|(source, _)| source)?;
             let index = source
                 .range_partition_columns
                 .iter()
-                .position(|candidate| candidate == column)?;
+                .position(|candidate| candidate == source_column)?;
             let value = values.get(index)?.clone();
             if !allowed.contains(&value) {
                 allowed.push(value);
