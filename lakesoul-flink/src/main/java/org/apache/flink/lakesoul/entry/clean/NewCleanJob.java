@@ -47,6 +47,12 @@ public class NewCleanJob {
     private static String targetTables;
     private static String startMode;
 
+    /**
+     * 删除算子用 processing-time timer 做定时批量提交，而 Flink 只支持在 keyed stream 上注册 timer。 这里用固定 key
+     * 把所有待删除路径汇到同一个 keyed 上下文，保证只有一个待删除列表和一个定时器。
+     */
+    private static final String DISCARD_FILE_DELETE_KEY = "discard-file-delete";
+
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -252,6 +258,7 @@ public class NewCleanJob {
                 .keyBy(value -> value.f0)
                 .process(new DiscardFilePathProcessFunction(expiredTime))
                 .name("处理新版过期数据")
+                .keyBy(value -> DISCARD_FILE_DELETE_KEY)
                 .process(new DiscardFileDeleteFunction(pgUrl, userName, passWord))
                 .name("批量异步删除数据");
     }

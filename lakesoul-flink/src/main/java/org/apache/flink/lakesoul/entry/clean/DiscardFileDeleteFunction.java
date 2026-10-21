@@ -8,11 +8,10 @@ import com.zaxxer.hikari.HikariDataSource;
 
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.state.FunctionInitializationContext;
-import org.apache.flink.runtime.state.FunctionSnapshotContext;
-import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,31 +22,31 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 import javax.sql.DataSource;
 
 /**
  * Deletes discard-compressed file records and the corresponding files on disk.
  *
- * <p>Pending file paths are buffered in an in-memory {@link ConcurrentLinkedQueue} (fast path), and
- * periodically flushed by a {@link ScheduledExecutorService}. The queue is synced into Flink
- * operator state in {@link #snapshotState} so pending deletes are checkpointed and survive task
- * failure/restart. Only paths whose deletion succeeded are dropped; failed paths are re-queued and
- * retried on the next flush.
+ * <p>Pending file paths are tracked in Flink keyed state ({@link #pendingDeletes}) instead of an
+ * in-memory queue, so they are checkpointed and survive task failure/restart without a background
+ * thread touching operator state. A processing-time timer drives the periodic flush on the task
+ * thread.
+ *
+ * <p>Flink only supports timers on keyed streams, so this function is a {@link
+ * KeyedProcessFunction} and {@code NewCleanJob} applies it to a stream keyed by a constant key:
+ * each subtask holds one pending list and one flush timer.
  */
-public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
-        implements CheckpointedFunction {
+public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, String, String> {
 
     private static final Logger log = LoggerFactory.getLogger(DiscardFileDeleteFunction.class);
 
-    private static final String STATE_NAME = "pending-deletes";
+    private static final String PENDING_DELETES_STATE = "pending-deletes";
+    private static final String FLUSH_SCHEDULED_STATE = "flush-scheduled";
     private final int batchSize = 50;
     private final long flushIntervalMs = 10000;
 
@@ -57,13 +56,12 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
 
     private transient DataSource dataSource;
     private transient ExecutorService asyncExecutor;
-    private transient ScheduledExecutorService scheduler;
 
-    /** In-memory buffer of file paths waiting to be deleted. Thread-safe, fast path. */
-    private final ConcurrentLinkedQueue<String> pendingDeletes = new ConcurrentLinkedQueue<>();
+    /** Checkpointed list of file paths that still need to be deleted. */
+    private transient ListState<String> pendingDeletes;
 
-    /** Checkpointed snapshot of {@link #pendingDeletes}, synced in {@link #snapshotState}. */
-    private transient ListState<String> checkpointedState;
+    /** Whether a flush timer is already registered, so one flush is not scheduled per record. */
+    private transient ValueState<Boolean> flushScheduled;
 
     public DiscardFileDeleteFunction(String pgUrl, String pgUserName, String pgPasswd) {
         this.pgUrl = pgUrl;
@@ -73,6 +71,14 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
 
     @Override
     public void open(Configuration parameters) throws Exception {
+        pendingDeletes =
+                getRuntimeContext()
+                        .getListState(
+                                new ListStateDescriptor<>(PENDING_DELETES_STATE, String.class));
+        flushScheduled =
+                getRuntimeContext()
+                        .getState(new ValueStateDescriptor<>(FLUSH_SCHEDULED_STATE, Boolean.class));
+
         // 初始化 HikariCP
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(pgUrl);
@@ -91,37 +97,60 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
         dataSource = new HikariDataSource(config);
 
         asyncExecutor = Executors.newFixedThreadPool(8);
-        scheduler = Executors.newSingleThreadScheduledExecutor();
-        scheduler.scheduleAtFixedRate(
-                this::flushBatchDeletes, 0, flushIntervalMs, TimeUnit.MILLISECONDS);
     }
 
     @Override
     public void processElement(
-            String filePath, ProcessFunction<String, String>.Context ctx, Collector<String> out)
+            String filePath,
+            KeyedProcessFunction<String, String, String>.Context ctx,
+            Collector<String> out)
             throws Exception {
         pendingDeletes.add(filePath);
+        if (flushScheduled.value() == null) {
+            scheduleFlush(ctx);
+        }
     }
 
-    private void flushBatchDeletes() {
-        log.info("flush batch deletes, pending {}", pendingDeletes.size());
-        if (pendingDeletes.isEmpty()) {
-            return;
+    @Override
+    public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out)
+            throws Exception {
+        flushScheduled.clear();
+        List<String> remaining = flushBatchDeletes();
+        // Failed batches stay in state; retry on the next timer instead of waiting for new
+        // records.
+        if (!remaining.isEmpty()) {
+            scheduleFlush(ctx);
+        }
+    }
+
+    private void scheduleFlush(KeyedProcessFunction<String, String, String>.Context ctx)
+            throws Exception {
+        flushScheduled.update(true);
+        long fireTime = ctx.timerService().currentProcessingTime() + flushIntervalMs;
+        ctx.timerService().registerProcessingTimeTimer(fireTime);
+    }
+
+    /**
+     * Deletes all pending paths and returns the paths that could not be deleted, so they can be
+     * retried.
+     */
+    private List<String> flushBatchDeletes() throws Exception {
+        // Snapshot the pending paths out of state before deleting, so the async deletes do not
+        // race with subsequent checkpointing.
+        List<String> pending = new ArrayList<>();
+        for (String path : pendingDeletes.get()) {
+            pending.add(path);
+        }
+        if (pending.isEmpty()) {
+            return pending;
         }
 
-        // Drain the queue into batches.
+        log.info("flush batch deletes, pending {}", pending.size());
+
         List<List<String>> batches = new ArrayList<>();
-        while (!pendingDeletes.isEmpty()) {
-            List<String> batch = new ArrayList<>();
-            while (!pendingDeletes.isEmpty() && batch.size() < batchSize) {
-                String path = pendingDeletes.poll();
-                if (path != null) {
-                    batch.add(path);
-                }
-            }
-            if (!batch.isEmpty()) {
-                batches.add(batch);
-            }
+        for (int i = 0; i < pending.size(); i += batchSize) {
+            batches.add(
+                    new ArrayList<>(pending.subList(i, Math.min(i + batchSize, pending.size()))));
         }
 
         // Delete batches in parallel, collecting futures so we can wait for the results.
@@ -130,22 +159,25 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
             futures.add(asyncExecutor.submit(() -> deleteBatch(batch)));
         }
 
-        // Wait for all deletions to complete. Failed batches are re-queued so they are checkpointed
-        // and retried on the next flush; successful batches stay dropped.
+        // Wait for all deletions to complete. Only paths whose deletion succeeded are removed
+        // from state; failed batches stay in state and are retried on the next flush.
+        List<String> remaining = new ArrayList<>();
         for (int i = 0; i < batches.size(); i++) {
             boolean success = false;
             try {
                 success = futures.get(i).get();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.error("删除批次被中断，重新入队待重试", e);
+                log.error("删除批次被中断，保留待重试", e);
             } catch (ExecutionException e) {
-                log.error("删除批次执行异常，重新入队待重试", e);
+                log.error("删除批次执行异常，保留待重试", e);
             }
             if (!success) {
-                pendingDeletes.addAll(batches.get(i));
+                remaining.addAll(batches.get(i));
             }
         }
+        pendingDeletes.update(remaining);
+        return remaining;
     }
 
     private boolean deleteBatch(List<String> batch) {
@@ -209,29 +241,7 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String>
     }
 
     @Override
-    public void initializeState(FunctionInitializationContext context) throws Exception {
-        checkpointedState =
-                context.getOperatorStateStore()
-                        .getListState(new ListStateDescriptor<>(STATE_NAME, String.class));
-        if (context.isRestored()) {
-            for (String path : checkpointedState.get()) {
-                pendingDeletes.add(path);
-            }
-        }
-    }
-
-    @Override
-    public void snapshotState(FunctionSnapshotContext context) throws Exception {
-        // Sync the in-memory queue into operator state so pending deletes are checkpointed.
-        checkpointedState.update(new ArrayList<>(pendingDeletes));
-    }
-
-    @Override
     public void close() throws Exception {
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-            scheduler = null;
-        }
         if (asyncExecutor != null) {
             asyncExecutor.shutdownNow();
             asyncExecutor = null;
