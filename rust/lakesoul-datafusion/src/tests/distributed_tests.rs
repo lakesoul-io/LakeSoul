@@ -40,6 +40,9 @@
 //! - a query keeping the file set it captured at planning time across commits
 //!   landing while its workers run, with deterministic barriers
 //!   (`test_a_query_keeps_the_file_set_it_captured`);
+//! - Parquet and Vortex scans narrowed to the columns a query reads, filtered
+//!   on columns past the end of that projection (TPC-H q16/q19 shapes)
+//!   (`test_filters_past_the_scan_projection_run_on_workers`);
 //! - a scalar aggregate subquery over split Parquet and Vortex scans (TPC-H
 //!   q22 shape), partial where the scan runs and final exactly once, under
 //!   the default and the forced-splitting configuration
@@ -1651,6 +1654,45 @@ const SCAN_FORMATS: [PhysicalFormat; 2] =
 /// scan over the workers.
 const SPLIT_CONFIGS: [Option<usize>; 2] = [None, Some(1)];
 
+/// TPC-H `part` columns in table order: every filtered column sits past the
+/// end of the projection a query narrows the scan to.
+fn part_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("p_partkey", DataType::Int64, false),
+        Field::new("p_name", DataType::Utf8, false),
+        Field::new("p_brand", DataType::Utf8, false),
+        Field::new("p_type", DataType::Utf8, false),
+        Field::new("p_size", DataType::Int32, false),
+        Field::new("p_container", DataType::Utf8, false),
+    ]))
+}
+
+/// File `file` of the part table: keys `4 * file ..`, `p_size = key + 1`,
+/// `Brand#12` on even rows, one `p_type` per file parity and one container
+/// per row slot.
+fn part_batch(file: i64) -> RecordBatch {
+    let keys: Vec<i64> = (file * 4..file * 4 + 4).collect();
+    let part_type = if file % 2 == 0 {
+        "MEDIUM POLISHED TIN"
+    } else {
+        "SMALL BRUSHED COPPER"
+    };
+    let sizes: Vec<i32> = keys.iter().map(|key| *key as i32 + 1).collect();
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(keys)),
+        Arc::new(StringArray::from(vec!["part"; 4])),
+        Arc::new(StringArray::from(vec![
+            "Brand#12", "Brand#45", "Brand#12", "Brand#45",
+        ])),
+        Arc::new(StringArray::from(vec![part_type; 4])),
+        Arc::new(Int32Array::from(sizes)),
+        Arc::new(StringArray::from(vec![
+            "SM CASE", "SM BOX", "LG PACK", "MED BAG",
+        ])),
+    ];
+    RecordBatch::try_new(part_schema(), columns).unwrap()
+}
+
 /// Creates an append-only table in `format` and writes `batches` to it, one
 /// file each.
 async fn seed_append_table(
@@ -1882,6 +1924,89 @@ fn assert_merge_inputs_are_sorted_streams(
     })
     .expect("walking a physical plan cannot fail");
     assert!(inputs > 0, "{sql}: no merge input to check:\n{explain}");
+}
+
+/// Filters on columns past the end of the scan's projection run on the
+/// workers, for Parquet and Vortex scans (TPC-H q16 and q19).
+///
+/// The scan reads only the columns a query projects, so a filter pushed into
+/// it must address those columns by the narrowed schema. Bound against the
+/// table schema instead, `p_size` (q16) or `p_container` (q19) points past
+/// the end of the narrowed schema and the worker rejects the plan, or into
+/// another column of it.
+#[test]
+fn test_filters_past_the_scan_projection_run_on_workers() {
+    run_distributed_test(test_filters_past_the_scan_projection_run_on_workers_inner());
+}
+
+async fn test_filters_past_the_scan_projection_run_on_workers_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let (worker_urls, mut workers) = spawn_workers(SPLIT_WORKERS).await;
+    let distributed = distributed_factory_with(
+        client.clone(),
+        worker_urls,
+        SPLIT_TARGET_PARTITIONS,
+        false,
+    )?;
+    let single_node = single_node_factory(client.clone())?;
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+
+    for format in SCAN_FORMATS {
+        let table = seed_append_table(
+            client.clone(),
+            "distributed_part",
+            format,
+            part_schema(),
+            (0..SPLIT_FILES).map(part_batch).collect(),
+        )
+        .await?;
+        let queries: Vec<(String, Vec<&str>)> = vec![
+            (
+                // q16: the scan projects p_brand, p_type, p_size.
+                format!(
+                    "SELECT p_brand, p_type, count(*) AS cnt, sum(p_size) AS total \
+                     FROM {table} \
+                     WHERE p_brand <> 'Brand#45' AND p_size IN (1, 2, 3, 5, 9, 11, 13, 16) \
+                     GROUP BY p_brand, p_type"
+                ),
+                vec![
+                    "+----------+----------------------+-----+-------+",
+                    "| p_brand  | p_type               | cnt | total |",
+                    "+----------+----------------------+-----+-------+",
+                    "| Brand#12 | MEDIUM POLISHED TIN  | 4   | 24    |",
+                    "| Brand#12 | SMALL BRUSHED COPPER | 2   | 18    |",
+                    "+----------+----------------------+-----+-------+",
+                ],
+            ),
+            (
+                // q19: the scan projects p_partkey, p_brand, p_size, p_container.
+                format!(
+                    "SELECT p_container, count(*) AS cnt, sum(p_partkey) AS total \
+                     FROM {table} \
+                     WHERE p_brand = 'Brand#12' \
+                       AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG') \
+                       AND p_size BETWEEN 1 AND 12 \
+                     GROUP BY p_container"
+                ),
+                vec![
+                    "+-------------+-----+-------+",
+                    "| p_container | cnt | total |",
+                    "+-------------+-----+-------+",
+                    "| SM CASE     | 3   | 12    |",
+                    "+-------------+-----+-------+",
+                ],
+            ),
+        ];
+        assert_matches_single_node(&distributed, &single_node, &queries).await?;
+        for (sql, _) in &queries {
+            let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+            assert_scan_split_over_tasks(&plan, sql);
+            assert_input_distributions_hold(&plan, sql);
+        }
+    }
+
+    workers.abort_all();
+    Ok(())
 }
 
 /// `t1_schema()` rows of four files: file `r` holds `b = 100 * r + {1, 2, 3}`
