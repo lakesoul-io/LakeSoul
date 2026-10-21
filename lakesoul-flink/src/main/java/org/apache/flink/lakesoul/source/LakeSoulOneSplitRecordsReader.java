@@ -216,10 +216,10 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.curArrowReaderRequestedSchema =
                 ArrowUtils.createArrowReader(
                         new VectorSchemaRoot(requestedVectors), projectedRowType);
-        if (LOG.isInfoEnabled()) {
+        if (LOG.isDebugEnabled()) {
             int requestedRows =
                     requestedVectors.isEmpty() ? 0 : requestedVectors.get(0).getValueCount();
-            LOG.info(
+            LOG.debug(
                     "makeCurrentArrowReader split={} vcrRows={} requestedRows={} curRecordIdx={}"
                         + " totalRead={} vcrFields={} requestedFields={} cdcField={} cdcColumn={}",
                     split,
@@ -403,7 +403,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                     makeCurrentArrowReader();
                     curRecordIdx = 0;
-                    LOG.info(
+                    LOG.debug(
                             "nextRecordFromSplit new batch split={} rows={} curRecordIdx={}"
                                     + " totalRead={} limit={}",
                             split,
