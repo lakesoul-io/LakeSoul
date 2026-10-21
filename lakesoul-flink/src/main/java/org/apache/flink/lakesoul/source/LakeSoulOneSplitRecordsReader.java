@@ -68,9 +68,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private final int cdcFieldIndex;
 
     private static final int MAX_MISMATCH_LOGS = 30;
-    private static final int MAX_CDC_LOGS = 10;
     private final AtomicLong mismatchLogCount = new AtomicLong();
-    private final AtomicLong cdcLogCount = new AtomicLong();
 
     List<String> pkColumns;
 
@@ -218,10 +216,10 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.curArrowReaderRequestedSchema =
                 ArrowUtils.createArrowReader(
                         new VectorSchemaRoot(requestedVectors), projectedRowType);
-        if (LOG.isInfoEnabled()) {
+        if (LOG.isDebugEnabled()) {
             int requestedRows =
                     requestedVectors.isEmpty() ? 0 : requestedVectors.get(0).getValueCount();
-            LOG.info(
+            LOG.debug(
                     "makeCurrentArrowReader split={} vcrRows={} requestedRows={} curRecordIdx={}"
                         + " totalRead={} vcrFields={} requestedFields={} cdcField={} cdcColumn={}",
                     split,
@@ -295,57 +293,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 limit,
                 skipRecords,
                 reader);
-    }
-
-    private void logCdcState(RowData rd, int rowId, String phase) {
-        if (cdcFieldIndex < 0 || cdcFieldGetter == null) {
-            return;
-        }
-        long afterRecovery = totalRead - skipRecords;
-        if (afterRecovery > 200 && (totalRead % 10000) != 0) {
-            return;
-        }
-        boolean nullFlag;
-        Object value;
-        try {
-            nullFlag = rd.isNullAt(cdcFieldIndex);
-            value = cdcFieldGetter.getFieldOrNull(rd);
-        } catch (Throwable t) {
-            if (cdcLogCount.incrementAndGet() <= MAX_CDC_LOGS) {
-                LOG.warn(
-                        "CDC_STATE read error split={} phase={} rowId={} curRecordIdx={} vcrRows={}"
-                                + " totalRead={} cdcField={}",
-                        split,
-                        phase,
-                        rowId,
-                        curRecordIdx,
-                        currentVCR == null ? -1 : currentVCR.getRowCount(),
-                        totalRead,
-                        cdcFieldIndex,
-                        t);
-            }
-            return;
-        }
-        if (!nullFlag && value != null) {
-            return;
-        }
-        if (cdcLogCount.incrementAndGet() > MAX_CDC_LOGS) {
-            return;
-        }
-        LOG.info(
-                "CDC_STATE split={} phase={} rowId={} curRecordIdx={} vcrRows={} totalRead={}"
-                        + " cdcField={} nullFlag={} value={} valueClass={} rowClass={}",
-                split,
-                phase,
-                rowId,
-                curRecordIdx,
-                currentVCR == null ? -1 : currentVCR.getRowCount(),
-                totalRead,
-                cdcFieldIndex,
-                nullFlag,
-                value,
-                value == null ? "null" : value.getClass().getName(),
-                rd.getClass().getName());
     }
 
     private void logNullMismatch(RowData rd, int rowId) {
@@ -456,7 +403,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                     makeCurrentArrowReader();
                     curRecordIdx = 0;
-                    LOG.info(
+                    LOG.debug(
                             "nextRecordFromSplit new batch split={} rows={} curRecordIdx={}"
                                     + " totalRead={} limit={}",
                             split,
@@ -481,7 +428,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 curRecordIdx++;
                 // row kind by default is insert
                 rd = this.curArrowReader.read(rowId);
-                logCdcState(rd, rowId, "cdc");
                 if (!cdcColumn.isEmpty()) {
                     if (!this.isBounded) {
                         // set rowkind according to cdc row kind field value;
