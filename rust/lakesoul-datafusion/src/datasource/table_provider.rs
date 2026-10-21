@@ -14,7 +14,6 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::error::ArrowError;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::{Constraint, DFSchema, Statistics, ToDFSchema, project_schema};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::FileFormat;
@@ -1742,7 +1741,10 @@ impl TableProvider for LakeSoulTableProvider {
             let file_path = config.file_groups[0].files()[0].path().to_string();
             let input: Arc<dyn ExecutionPlan> = match &candidate_inputs {
                 Some(inputs) => Arc::clone(&inputs[index]),
-                None => DataSourceExec::from_data_source(config.clone()),
+                None => lakesoul_io::physical_plan::merge::merge_input_scan(
+                    config.clone(),
+                    &self.primary_keys,
+                ),
             };
             all_inputs.push(input.clone());
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {

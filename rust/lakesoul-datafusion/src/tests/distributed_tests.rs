@@ -40,6 +40,16 @@
 //! - a query keeping the file set it captured at planning time across commits
 //!   landing while its workers run, with deterministic barriers
 //!   (`test_a_query_keeps_the_file_set_it_captured`);
+//! - a scalar aggregate subquery over split Parquet and Vortex scans (TPC-H
+//!   q22 shape), partial where the scan runs and final exactly once, under
+//!   the default and the forced-splitting configuration
+//!   (`test_scalar_subquery_aggregates_once_over_split_scans`);
+//! - global Top-K, windows and ordered aggregations over split scans, which
+//!   must keep every operator's input distribution and ordering in each stage
+//!   (`test_split_scans_keep_operator_input_requirements`);
+//! - merge-on-read inputs large enough for DataFusion to byte-split, which
+//!   must stay one sorted stream each, with each merge in one task
+//!   (`test_merge_inputs_stay_sorted_streams`);
 //! - the failure tests below also assert that a failed query drains its tasks
 //!   from the workers and that the system recovers once the fault is removed.
 //!
@@ -91,19 +101,24 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use arrow::array::{ArrayRef, Int32Array, Int64Array};
+use arrow::array::{ArrayRef, BinaryArray, Int32Array, Int64Array};
 use arrow::record_batch::RecordBatch;
 use datafusion::arrow::array::StringArray;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_optimizer::sanity_checker::check_plan_sanity;
+use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+use datafusion::physical_plan::{Distribution, ExecutionPlan, collect, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::grpc::{GetTaskProgressRequest, ObservabilityServiceClient};
 use datafusion_distributed::{
-    DistributedExec, DistributedExt, DistributedLeafExec, Worker, display_plan_ascii,
+    DistributedExec, DistributedExt, DistributedLeafExec, NetworkBoundaryExt, Stage,
+    Worker, display_plan_ascii,
 };
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
@@ -199,13 +214,31 @@ fn distributed_factory_with(
     target_partitions: usize,
     fallback_to_local: bool,
 ) -> Result<LakeSoulSessionFactory> {
+    distributed_factory_sized(
+        client,
+        worker_urls,
+        target_partitions,
+        Some(1),
+        fallback_to_local,
+    )
+}
+
+/// Like [`distributed_factory_with`], with an explicit
+/// `bytes_per_partition` (`None` keeps the library default).
+fn distributed_factory_sized(
+    client: MetaDataClientRef,
+    worker_urls: Vec<String>,
+    target_partitions: usize,
+    bytes_per_partition: Option<usize>,
+    fallback_to_local: bool,
+) -> Result<LakeSoulSessionFactory> {
     Ok(
         LakeSoulSessionFactory::new(client, &CoreArgs::default())?.with_distributed(
             DistributedOptions {
                 discovery: WorkerDiscovery::Static(worker_urls),
                 fallback_to_local,
                 target_partitions,
-                bytes_per_partition: Some(1),
+                bytes_per_partition,
             },
         ),
     )
@@ -1596,6 +1629,783 @@ async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
         "single-work-unit append-only scan ran in {stage_tasks} task(s); \
          its {FILES} files must fan out over the stage's tasks:\n{explain}"
     );
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Workers and stage tasks of the tests that split every append-only scan:
+/// with `bytes_per_partition = 1`, a scan of four files wants more tasks than
+/// the two workers offer, so each stage of such a scan runs in two tasks.
+const SPLIT_WORKERS: usize = 2;
+const SPLIT_TARGET_PARTITIONS: usize = 4;
+const SPLIT_FILES: i64 = 4;
+
+/// The physical formats an append-only scan leaf is built for.
+const SCAN_FORMATS: [PhysicalFormat; 2] =
+    [PhysicalFormat::Parquet, PhysicalFormat::Vortex];
+
+/// `bytes_per_partition` of the two distributed configurations the split
+/// tests run under: the library default, under which this suite's
+/// kilobyte-sized scans stay in one task, and one byte, which splits every
+/// scan over the workers.
+const SPLIT_CONFIGS: [Option<usize>; 2] = [None, Some(1)];
+
+/// Creates an append-only table in `format` and writes `batches` to it, one
+/// file each.
+async fn seed_append_table(
+    client: MetaDataClientRef,
+    prefix: &str,
+    format: PhysicalFormat,
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("{prefix}_{format:?}_{suffix}").to_lowercase();
+    create_table_with_file_format(
+        client,
+        &name,
+        LakeSoulIOConfigBuilder::new().with_schema(schema).build(),
+        format,
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    for batch in batches {
+        table.execute_upsert(batch).await?;
+    }
+    Ok(name)
+}
+
+/// Whether `plan` reaches a scan leaf split over the tasks of its stage
+/// without leaving the stage.
+fn reaches_split_leaf_within_stage(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    !plan.is_network_boundary()
+        && (plan.is::<DistributedLeafExec>()
+            || plan
+                .children()
+                .into_iter()
+                .any(reaches_split_leaf_within_stage))
+}
+
+/// The stages of a distributed plan below its head stage.
+fn worker_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<(usize, Arc<dyn ExecutionPlan>)> {
+    let mut stages = vec![];
+    plan.apply(|node| {
+        if let Some(boundary) = node.as_network_boundary()
+            && let Stage::Local(stage) = boundary.input_stage()
+        {
+            stages.push((stage.tasks, Arc::clone(&stage.plan)));
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("walking a physical plan cannot fail");
+    stages
+}
+
+/// Asserts that no stage running in several tasks feeds a split scan into an
+/// operator that requires a distribution of its input.
+///
+/// DataFusion plans such an operator — a `Single` aggregate, a global sort or
+/// limit, the build side of a collect join — against the scan's single
+/// partition, which the split hands to each task only in part, so each task
+/// would compute it over its share of the rows.
+fn assert_input_distributions_hold(plan: &Arc<dyn ExecutionPlan>, sql: &str) {
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    for (tasks, stage) in worker_stages(plan) {
+        if tasks < 2 {
+            continue;
+        }
+        stage
+            .apply(|node| {
+                if node.is_network_boundary() {
+                    return Ok(TreeNodeRecursion::Jump);
+                }
+                for (required, child) in node
+                    .required_input_distribution()
+                    .iter()
+                    .zip(node.children())
+                {
+                    assert!(
+                        matches!(required, Distribution::UnspecifiedDistribution)
+                            || !reaches_split_leaf_within_stage(child),
+                        "{sql}: {} requires {required} of an input split over \
+                         {tasks} tasks:\n{explain}",
+                        node.name(),
+                    );
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .expect("walking a physical plan cannot fail");
+    }
+}
+
+/// Asserts `plan` is distributed and splits a scan over several tasks.
+fn assert_scan_split_over_tasks(plan: &Arc<dyn ExecutionPlan>, sql: &str) {
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    assert!(
+        plan.is::<DistributedExec>(),
+        "{sql} must be distributed:\n{explain}"
+    );
+    assert!(
+        worker_stages(plan)
+            .iter()
+            .any(|(tasks, stage)| *tasks > 1 && reaches_split_leaf_within_stage(stage)),
+        "{sql} must split its scan over several tasks:\n{explain}"
+    );
+}
+
+/// Every operator of `plan` with the task count of the stage running it,
+/// network boundaries excluded. The head stage of a distributed plan, like a
+/// plan the distributed planner kept on the coordinator, runs in one task.
+fn stage_nodes(plan: &Arc<dyn ExecutionPlan>) -> Vec<(usize, Arc<dyn ExecutionPlan>)> {
+    let mut nodes = vec![];
+    for (tasks, stage) in
+        std::iter::once((1, Arc::clone(plan))).chain(worker_stages(plan))
+    {
+        stage
+            .apply(|node| {
+                if node.is_network_boundary() {
+                    return Ok(TreeNodeRecursion::Jump);
+                }
+                nodes.push((tasks, Arc::clone(node)));
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .expect("walking a physical plan cannot fail");
+    }
+    nodes
+}
+
+/// Asserts every operator of every stage still gets its input partitioned
+/// and ordered as it requires, by DataFusion's own sanity check, once the
+/// distributed planner has cut the plan into stages and split its scans.
+///
+/// The check sees partitions, which within a stage are one task's;
+/// [`assert_input_distributions_hold`] covers what a stage of several tasks
+/// splits between them.
+fn assert_stages_keep_input_requirements(plan: &Arc<dyn ExecutionPlan>, sql: &str) {
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    let options = ConfigOptions::default();
+    for (tasks, node) in stage_nodes(plan) {
+        if let Err(err) = check_plan_sanity(&node, &options.optimizer) {
+            panic!(
+                "{sql}: {} in a stage of {tasks} task(s) lost an input requirement: \
+                 {err}\n{explain}",
+                node.name()
+            );
+        }
+    }
+}
+
+/// An ungrouped (scalar) aggregate of a physical plan.
+#[derive(Debug)]
+struct ScalarAggregate {
+    mode: AggregateMode,
+    /// Tasks of the stage running it.
+    tasks: usize,
+    /// Partitions DataFusion planned for the scan below it that its stage
+    /// splits over tasks, if any.
+    split_scan_partitions: Option<usize>,
+}
+
+impl ScalarAggregate {
+    /// Whether this aggregate produces the final value: a `Final` or `Single`
+    /// one must run exactly once for the value to cover every row.
+    fn finalizes(&self) -> bool {
+        matches!(self.mode, AggregateMode::Final | AggregateMode::Single)
+    }
+}
+
+fn scalar_aggregates(plan: &Arc<dyn ExecutionPlan>) -> Vec<ScalarAggregate> {
+    stage_nodes(plan)
+        .into_iter()
+        .filter_map(|(tasks, node)| {
+            let aggregate = node.downcast_ref::<AggregateExec>()?;
+            aggregate.group_expr().is_empty().then(|| ScalarAggregate {
+                mode: *aggregate.mode(),
+                tasks,
+                split_scan_partitions: split_scan_partitions(&node),
+            })
+        })
+        .collect()
+}
+
+/// Partitions DataFusion planned for the split scan `plan` reaches within its
+/// stage: the scan as it was before the distributed planner split it over the
+/// stage's tasks.
+fn split_scan_partitions(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    if plan.is_network_boundary() {
+        return None;
+    }
+    if let Some(leaf) = plan.downcast_ref::<DistributedLeafExec>() {
+        return Some(leaf.original().properties().partitioning.partition_count());
+    }
+    plan.children().into_iter().find_map(split_scan_partitions)
+}
+
+/// Asserts every merge-on-read input of `plan` is one stream sorted by
+/// `primary_key`.
+///
+/// The k-way merge deduplicates a key only when its versions surface
+/// adjacently across its inputs: an input split into byte ranges fails the
+/// query (`Invalid input partition count`), and one read out of order — a
+/// vortex scan reads its splits concurrently unless it declares an order —
+/// yields stale and duplicate rows.
+fn assert_merge_inputs_are_sorted_streams(
+    plan: &Arc<dyn ExecutionPlan>,
+    primary_key: &str,
+    sql: &str,
+) {
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    let mut inputs = 0;
+    plan.apply(|node| {
+        if node.is::<MergeParquetExec>() {
+            for input in node.children() {
+                inputs += 1;
+                let properties = input.properties();
+                let partitions = properties.partitioning.partition_count();
+                let leading_key = properties.output_ordering().and_then(|ordering| {
+                    ordering
+                        .first()
+                        .expr
+                        .downcast_ref::<Column>()
+                        .map(|column| column.name().to_string())
+                });
+                assert!(
+                    partitions == 1 && leading_key.as_deref() == Some(primary_key),
+                    "{sql}: merge input {} must be one stream sorted by {primary_key}, \
+                     has {partitions} partition(s) led by {leading_key:?}:\n{explain}",
+                    input.name(),
+                );
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("walking a physical plan cannot fail");
+    assert!(inputs > 0, "{sql}: no merge input to check:\n{explain}");
+}
+
+/// `t1_schema()` rows of four files: file `r` holds `b = 100 * r + {1, 2, 3}`
+/// in part 0, `+ {11, 12, 13}` in part 1 and `+ {21, 22, 23}` in part 2, so
+/// `avg(b)` is 162 and only the last two files are above it.
+fn split_batches() -> Vec<RecordBatch> {
+    (0..SPLIT_FILES as i32)
+        .map(|round| {
+            batch(
+                t1_schema(),
+                vec![0, 0, 0, 1, 1, 1, 2, 2, 2],
+                [1, 2, 3, 11, 12, 13, 21, 22, 23]
+                    .iter()
+                    .map(|b| round * 100 + b)
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// The same scalar-query values repeated 1024 times, with 72 MiB of seeded,
+/// incompressible padding. The normal 16 MiB/partition configuration must
+/// distribute this scan too; projection pruning must not change the task
+/// count derived from the files' sizes.
+fn large_split_batches() -> Vec<RecordBatch> {
+    use rand::{RngCore, SeedableRng};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("b", DataType::Int32, false),
+        Field::new("padding", DataType::Binary, false),
+    ]));
+    let mut rng = rand::rngs::StdRng::seed_from_u64(22);
+    (0..SPLIT_FILES as i32)
+        .map(|round| {
+            let rows = 9 * 1024;
+            let mut padding = vec![0; rows * 2048];
+            rng.fill_bytes(&mut padding);
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int32Array::from(
+                        (0..rows)
+                            .map(|row| (row / 3 % 3) as i32)
+                            .collect::<Vec<_>>(),
+                    )) as ArrayRef,
+                    Arc::new(Int32Array::from(
+                        (0..rows)
+                            .map(|row| {
+                                round * 100 + [1, 2, 3, 11, 12, 13, 21, 22, 23][row % 9]
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    Arc::new(BinaryArray::from_iter_values(
+                        padding.as_chunks::<2048>().0,
+                    )),
+                ],
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
+/// A scalar aggregate subquery over split scans (TPC-H q22 shape) aggregates
+/// partially where its scan runs and finally exactly once, in both
+/// distributed configurations.
+///
+/// The subquery's `avg` reaches every task of the outer scan through a
+/// broadcast, which concatenates what every task of the producing stage
+/// emits: a final aggregate run per task broadcast one partial average per
+/// task and multiplied the outer counts. A scan the distributed planner
+/// splits must therefore reach it planned in several partitions — a
+/// `Partial` aggregate on the scan, the `Final` one behind a coalesce, which
+/// closes the stage — and a scan DataFusion keeps whole must keep its
+/// `Single` aggregate in one task:
+///
+/// - under forced splitting the session caps `repartition_file_min_size` at
+///   the distributed split size, so DataFusion splits a vortex scan into
+///   `target_partitions` partitions and its `Partial` aggregate runs split
+///   over the workers;
+/// - LakeSoul labels Parquet files compressed, which DataFusion never
+///   repartitions: the scan stays one partition under a `Single` aggregate,
+///   whose stage `input_distribution_single_task` keeps in one task;
+/// - under the default `bytes_per_partition` the small scans stay in one
+///   task, while a 72 MiB vortex scan must partially aggregate on workers;
+///   both must finalize once.
+#[test]
+fn test_scalar_subquery_aggregates_once_over_split_scans() {
+    run_distributed_test(test_scalar_subquery_aggregates_once_over_split_scans_inner());
+}
+
+async fn test_scalar_subquery_aggregates_once_over_split_scans_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let (worker_urls, mut workers) = spawn_workers(SPLIT_WORKERS).await;
+    let single_node = single_node_factory(client.clone())?;
+
+    for (format, large) in [
+        (PhysicalFormat::Parquet, false),
+        (PhysicalFormat::Vortex, false),
+        (PhysicalFormat::Vortex, true),
+    ] {
+        let batches = if large {
+            large_split_batches()
+        } else {
+            split_batches()
+        };
+        let table = seed_append_table(
+            client.clone(),
+            "distributed_scalar",
+            format,
+            batches[0].schema(),
+            batches,
+        )
+        .await?;
+        let sql = format!(
+            "SELECT part, count(*) AS cnt, sum(b) AS total FROM {table} \
+             WHERE b > (SELECT avg(b) FROM {table}) GROUP BY part"
+        );
+        let expected = if large {
+            vec![
+                "+------+------+---------+",
+                "| part | cnt  | total   |",
+                "+------+------+---------+",
+                "| 0    | 6144 | 1548288 |",
+                "| 1    | 6144 | 1609728 |",
+                "| 2    | 6144 | 1671168 |",
+                "+------+------+---------+",
+            ]
+        } else {
+            vec![
+                "+------+-----+-------+",
+                "| part | cnt | total |",
+                "+------+-----+-------+",
+                "| 0    | 6   | 1512  |",
+                "| 1    | 6   | 1572  |",
+                "| 2    | 6   | 1632  |",
+                "+------+-----+-------+",
+            ]
+        };
+        for bytes_per_partition in SPLIT_CONFIGS {
+            let label = format!(
+                "{format:?}, large={large}, bytes_per_partition={bytes_per_partition:?}: {sql}"
+            );
+            let distributed = distributed_factory_sized(
+                client.clone(),
+                worker_urls.clone(),
+                SPLIT_TARGET_PARTITIONS,
+                bytes_per_partition,
+                false,
+            )?;
+            assert_matches_single_node(
+                &distributed,
+                &single_node,
+                &[(sql.clone(), expected.clone())],
+            )
+            .await?;
+
+            let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+            let plan = ctx.sql(&sql).await?.create_physical_plan().await?;
+            assert_input_distributions_hold(&plan, &label);
+            assert_stages_keep_input_requirements(&plan, &label);
+            let explain = display_plan_ascii(plan.as_ref(), false);
+            let aggregates = scalar_aggregates(&plan);
+            let finals: Vec<&ScalarAggregate> = aggregates
+                .iter()
+                .filter(|aggregate| aggregate.finalizes())
+                .collect();
+            assert!(
+                matches!(finals.as_slice(), [only] if only.tasks == 1),
+                "{label}: the scalar aggregate must be finalized exactly once, in one \
+                 task: {aggregates:?}\n{explain}"
+            );
+            if bytes_per_partition.is_none() && !large {
+                continue;
+            }
+            assert_scan_split_over_tasks(&plan, &label);
+            if format == PhysicalFormat::Vortex {
+                assert!(
+                    finals[0].mode == AggregateMode::Final
+                        && aggregates.iter().any(|aggregate| {
+                            aggregate.mode == AggregateMode::Partial
+                                && aggregate.tasks > 1
+                                && aggregate.split_scan_partitions
+                                    == Some(SPLIT_TARGET_PARTITIONS)
+                        }),
+                    "{label}: DataFusion must split the subquery's scan into \
+                     {SPLIT_TARGET_PARTITIONS} partitions, aggregated partially in a \
+                     stage of several tasks and finally once: {aggregates:?}\n{explain}"
+                );
+            } else {
+                assert_eq!(
+                    finals[0].mode,
+                    AggregateMode::Single,
+                    "{label}: a Parquet scan stays one partition under a `Single` \
+                     aggregate:\n{explain}"
+                );
+            }
+        }
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Operators that need their input whole or in order get it over split
+/// scans, in both distributed configurations.
+///
+/// DataFusion puts a global Top-K or window directly on a scan it keeps in
+/// one partition, which already satisfies a `SinglePartition` (and any hash)
+/// requirement; when the distributed planner then splits the scan's files
+/// over the tasks of its stage, such an operator in a stage of several tasks
+/// computes one answer per task — a Top-K kept the top rows of every task. A
+/// scan DataFusion splits instead feeds per-partition sorts into a
+/// sort-preserving merge, which must stay in one task above the stage
+/// boundary. Each query puts an order-dependent operator over a scan of four
+/// files: a Top-K below an aggregation's hash shuffle, a window per hash
+/// partition, a window over the whole input, and an ordered aggregation.
+/// Rows are compared in output order, and every stage must keep its
+/// operators' input distribution and ordering requirements.
+#[test]
+fn test_split_scans_keep_operator_input_requirements() {
+    run_distributed_test(test_split_scans_keep_operator_input_requirements_inner());
+}
+
+async fn test_split_scans_keep_operator_input_requirements_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let (worker_urls, mut workers) = spawn_workers(SPLIT_WORKERS).await;
+    let single_node = single_node_factory(client.clone())?;
+
+    for format in SCAN_FORMATS {
+        let table = seed_append_table(
+            client.clone(),
+            "distributed_split",
+            format,
+            t1_schema(),
+            split_batches(),
+        )
+        .await?;
+        // Each query with its rows in output order, and whether a hash
+        // shuffle rather than the order-dependent operator sits on its scan,
+        // which then splits under forced splitting even while DataFusion
+        // keeps it one partition.
+        let queries: Vec<(String, Vec<&str>, bool)> = vec![
+            (
+                format!(
+                    "SELECT part, count(*) AS cnt FROM \
+                     (SELECT part, b FROM {table} ORDER BY b DESC LIMIT 4) \
+                     GROUP BY part ORDER BY part"
+                ),
+                vec![
+                    "+------+-----+",
+                    "| part | cnt |",
+                    "+------+-----+",
+                    "| 1    | 1   |",
+                    "| 2    | 3   |",
+                    "+------+-----+",
+                ],
+                false,
+            ),
+            (
+                format!(
+                    "SELECT part, b FROM (SELECT part, b, row_number() OVER \
+                     (PARTITION BY part ORDER BY b DESC) AS rn FROM {table}) \
+                     WHERE rn <= 2 ORDER BY part, b"
+                ),
+                vec![
+                    "+------+-----+",
+                    "| part | b   |",
+                    "+------+-----+",
+                    "| 0    | 302 |",
+                    "| 0    | 303 |",
+                    "| 1    | 312 |",
+                    "| 1    | 313 |",
+                    "| 2    | 322 |",
+                    "| 2    | 323 |",
+                    "+------+-----+",
+                ],
+                true,
+            ),
+            (
+                format!(
+                    "SELECT b, sum(b) OVER (ORDER BY b ROWS BETWEEN UNBOUNDED \
+                     PRECEDING AND CURRENT ROW) AS running FROM {table} \
+                     ORDER BY b LIMIT 4"
+                ),
+                vec![
+                    "+----+---------+",
+                    "| b  | running |",
+                    "+----+---------+",
+                    "| 1  | 1       |",
+                    "| 2  | 3       |",
+                    "| 3  | 6       |",
+                    "| 11 | 17      |",
+                    "+----+---------+",
+                ],
+                false,
+            ),
+            (
+                format!(
+                    "SELECT part, count(*) AS cnt, max(b) AS top FROM {table} \
+                     GROUP BY part ORDER BY part"
+                ),
+                vec![
+                    "+------+-----+-----+",
+                    "| part | cnt | top |",
+                    "+------+-----+-----+",
+                    "| 0    | 12  | 303 |",
+                    "| 1    | 12  | 313 |",
+                    "| 2    | 12  | 323 |",
+                    "+------+-----+-----+",
+                ],
+                true,
+            ),
+        ];
+        let expected: Vec<(String, Vec<&str>)> = queries
+            .iter()
+            .map(|(sql, rows, _)| (sql.clone(), rows.clone()))
+            .collect();
+        for bytes_per_partition in SPLIT_CONFIGS {
+            let distributed = distributed_factory_sized(
+                client.clone(),
+                worker_urls.clone(),
+                SPLIT_TARGET_PARTITIONS,
+                bytes_per_partition,
+                false,
+            )?;
+            assert_matches_single_node_ordered(&distributed, &single_node, &expected)
+                .await?;
+            let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+            for (sql, _, shuffles_scan) in &queries {
+                let label = format!(
+                    "{format:?}, bytes_per_partition={bytes_per_partition:?}: {sql}"
+                );
+                let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+                assert_input_distributions_hold(&plan, &label);
+                assert_stages_keep_input_requirements(&plan, &label);
+                if bytes_per_partition.is_some()
+                    && (format == PhysicalFormat::Vortex || *shuffles_scan)
+                {
+                    assert_scan_split_over_tasks(&plan, &label);
+                }
+            }
+        }
+    }
+
+    workers.abort_all();
+    Ok(())
+}
+
+/// Rows per range partition in the first file round of
+/// [`seed_merge_split_table`]: more than a batch, so DataFusion's
+/// exact-statistics gate does not keep a merge input whole, and over 1 MiB of
+/// incompressible values, so the default `repartition_file_min_size` does not
+/// either.
+const MERGE_SPLIT_KEYS: i64 = 200_000;
+
+/// `part, id, v`: `id` is the primary key, `part` a range partition.
+fn merge_split_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+    ]))
+}
+
+/// Rows `(part, id, value(id))` for every id of `ids` in range partitions 0
+/// and 1.
+fn merge_split_batch(ids: &[i64], value: impl Fn(i64) -> i64) -> RecordBatch {
+    let parts: Vec<i32> = [0, 1]
+        .into_iter()
+        .flat_map(|part| std::iter::repeat_n(part, ids.len()))
+        .collect();
+    let ids = [ids, ids].concat();
+    let values: Vec<i64> = ids.iter().map(|id| value(*id)).collect();
+    RecordBatch::try_new(
+        merge_split_schema(),
+        vec![
+            Arc::new(Int32Array::from(parts)) as ArrayRef,
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(Int64Array::from(values)),
+        ],
+    )
+    .unwrap()
+}
+
+/// Creates a primary-key table in `format` with two range partitions of two
+/// files each: every key below [`MERGE_SPLIT_KEYS`] with a scrambled value,
+/// then every even key again with `v = id`.
+async fn seed_merge_split_table(
+    client: MetaDataClientRef,
+    format: PhysicalFormat,
+) -> Result<String> {
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let name = format!("distributed_merge_split_{format:?}_{suffix}").to_lowercase();
+    create_table_with_file_format(
+        client,
+        &name,
+        LakeSoulIOConfigBuilder::new()
+            .with_schema(merge_split_schema())
+            .with_primary_keys(vec!["id".to_string()])
+            .with_range_partitions(vec!["part".to_string()])
+            .build(),
+        format,
+    )
+    .await?;
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(&name).await?;
+    let keys: Vec<i64> = (0..MERGE_SPLIT_KEYS).collect();
+    // A multiplicative scramble: incompressible, and `v != id` for every
+    // key but 0.
+    table
+        .execute_upsert(merge_split_batch(&keys, |id| {
+            id.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64)
+        }))
+        .await?;
+    let even: Vec<i64> = keys.iter().copied().step_by(2).collect();
+    table
+        .execute_upsert(merge_split_batch(&even, |id| id))
+        .await?;
+    Ok(name)
+}
+
+/// Merge-on-read inputs stay one sorted stream each, in both distributed
+/// configurations, so every merge sees all versions of its keys in order.
+///
+/// `EnforceDistribution` byte-splits a repartitionable file scan of at least
+/// `repartition_file_min_size` bytes into `target_partitions` ranges,
+/// whatever its parent consumes, and forced splitting lowers that threshold
+/// to a few bytes. A merge input split that way failed the query (`Invalid
+/// input partition count 4`), and a vortex input read out of order emitted
+/// duplicate keys. The first-round files hold more than a batch of rows and
+/// over 1 MiB each, so neither DataFusion's exact-statistics gate nor the
+/// default threshold keeps them whole: the inputs' declared partitioning
+/// must. Half the keys have two versions; the counts must see every key
+/// once, with its latest value, and each range partition's merge must run in
+/// one task.
+#[test]
+fn test_merge_inputs_stay_sorted_streams() {
+    run_distributed_test(test_merge_inputs_stay_sorted_streams_inner());
+}
+
+async fn test_merge_inputs_stay_sorted_streams_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let (worker_urls, mut workers) = spawn_workers(SPLIT_WORKERS).await;
+    let single_node = single_node_factory(client.clone())?;
+
+    for format in SCAN_FORMATS {
+        let table = seed_merge_split_table(client.clone(), format).await?;
+        let queries: Vec<(String, Vec<&str>)> = vec![
+            (
+                format!(
+                    "SELECT part, count(*) AS cnt, count(DISTINCT id) AS keys, \
+                     sum(CASE WHEN v = id THEN 1 ELSE 0 END) AS updated \
+                     FROM {table} WHERE id > 100 GROUP BY part ORDER BY part"
+                ),
+                vec![
+                    "+------+--------+--------+---------+",
+                    "| part | cnt    | keys   | updated |",
+                    "+------+--------+--------+---------+",
+                    "| 0    | 199899 | 199899 | 99949   |",
+                    "| 1    | 199899 | 199899 | 99949   |",
+                    "+------+--------+--------+---------+",
+                ],
+            ),
+            (
+                format!("SELECT count(*) AS cnt FROM {table}"),
+                vec![
+                    "+--------+",
+                    "| cnt    |",
+                    "+--------+",
+                    "| 400000 |",
+                    "+--------+",
+                ],
+            ),
+            (
+                format!(
+                    "SELECT part, id, v FROM {table} WHERE v = id \
+                     ORDER BY id DESC, part LIMIT 4"
+                ),
+                vec![
+                    "+------+--------+--------+",
+                    "| part | id     | v      |",
+                    "+------+--------+--------+",
+                    "| 0    | 199998 | 199998 |",
+                    "| 1    | 199998 | 199998 |",
+                    "| 0    | 199996 | 199996 |",
+                    "| 1    | 199996 | 199996 |",
+                    "+------+--------+--------+",
+                ],
+            ),
+        ];
+        for bytes_per_partition in SPLIT_CONFIGS {
+            let distributed = distributed_factory_sized(
+                client.clone(),
+                worker_urls.clone(),
+                SPLIT_TARGET_PARTITIONS,
+                bytes_per_partition,
+                false,
+            )?;
+            assert_matches_single_node_ordered(&distributed, &single_node, &queries)
+                .await?;
+            let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+            for (sql, _) in &queries {
+                let label = format!(
+                    "{format:?}, bytes_per_partition={bytes_per_partition:?}: {sql}"
+                );
+                let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+                assert_eq!(
+                    count_merge_work_units(&plan),
+                    2,
+                    "{label}: one merge per range partition:\n{}",
+                    display_plan_ascii(plan.as_ref(), false)
+                );
+                assert_merge_inputs_are_sorted_streams(&plan, "id", &label);
+                assert_input_distributions_hold(&plan, &label);
+                assert_stages_keep_input_requirements(&plan, &label);
+                // A plan kept on the coordinator runs each merge in its one
+                // task; forced splitting must distribute the plan, and a
+                // distributed plan must pin each merge to one task.
+                if bytes_per_partition.is_some() || plan.is::<DistributedExec>() {
+                    assert_merge_units_pinned(&ctx, sql, 2).await?;
+                }
+            }
+        }
+    }
 
     workers.abort_all();
     Ok(())

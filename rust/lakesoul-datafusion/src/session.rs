@@ -15,10 +15,14 @@ use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::{Distribution, ExecutionPlan, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::{
-    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt,
-    SessionStateBuilderExt, WorkerResolver,
+    BroadcastExec, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
+    DistributedConfig, DistributedExt, SessionStateBuilderExt, WorkerResolver,
 };
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::object_store::{register_hdfs_object_store, register_s3_object_store};
@@ -100,6 +104,106 @@ fn merge_parquet_exec_single_task(
 ) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
     ev.plan.downcast_ref::<MergeParquetExec>()?;
     Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
+}
+
+/// Caps a stage at one task when splitting its scans would break the input
+/// distribution an operator in it was planned against.
+///
+/// DataFusion satisfies an operator's `required_input_distribution` with the
+/// partitioning its input declares, and a one-partition input — an
+/// append-only work unit is one file group — satisfies `SinglePartition` and
+/// every `HashPartitioned` requirement on its own. So an `AggregateExec` in
+/// `Single` or `SinglePartitioned` mode, a global `SortExec`, a
+/// `GlobalLimitExec`, a window or a sort-merge join lands directly on the
+/// scan. The distributed planner then splits the scan's files over the
+/// stage's tasks without consulting those requirements, and every task runs
+/// the operator over its share: a scalar subquery's `avg` is broadcast as one
+/// row per task (TPC-H q22), a `LIMIT` holds per task, a join misses the
+/// matches in other tasks.
+///
+/// An input keeps its distribution across tasks only when it arrives through
+/// a stage boundary: a hash shuffle (above a hash `RepartitionExec`), a
+/// broadcast, or a coalesce (`CoalescePartitionsExec`,
+/// `SortPreservingMergeExec`), whose consumer runs in one task. An operator
+/// with a distribution requirement on an input that reaches a leaf without
+/// crossing one of them therefore answers `Maximum(1)`, which wins over the
+/// scans' `Desired(N)` for the whole stage: the stage reads every row in one
+/// task instead of splitting them. This is a placement policy, not a
+/// fallback: the stage stays a stage of the distributed plan when it borders
+/// another one, and only a plan left without any boundary is the original
+/// single-node plan, which the distributed planner returns as is.
+fn input_distribution_single_task(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let plan = ev.plan;
+    plan.required_input_distribution()
+        .iter()
+        .zip(plan.children())
+        .any(|(required, child)| {
+            !matches!(required, Distribution::UnspecifiedDistribution)
+                && reaches_leaf_within_stage(child)
+        })
+        .then(|| Ok(DesiredTaskCountEventResponse::maximum(1)))
+}
+
+/// Whether `plan` reaches a leaf without crossing a stage boundary of the
+/// distributed planner.
+fn reaches_leaf_within_stage(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if closes_stage(plan.as_ref()) {
+        return false;
+    }
+    let children = plan.children();
+    children.is_empty() || children.into_iter().any(reaches_leaf_within_stage)
+}
+
+/// Whether the distributed planner ends a stage at `plan`, handing its
+/// consumer an input that is distributed across tasks as declared.
+fn closes_stage(plan: &dyn ExecutionPlan) -> bool {
+    plan.is::<BroadcastExec>()
+        || plan.is::<CoalescePartitionsExec>()
+        || plan.is::<SortPreservingMergeExec>()
+        || plan
+            .downcast_ref::<RepartitionExec>()
+            .is_some_and(|repartition| {
+                matches!(repartition.partitioning(), Partitioning::Hash(..))
+            })
+}
+
+/// Caps `datafusion.optimizer.repartition_file_min_size` at the scan size
+/// from which the distributed planner splits a scan over several tasks.
+///
+/// The two split decisions are taken independently. `EnforceDistribution`
+/// byte-splits a file scan into `target_partitions` partitions once it holds
+/// `repartition_file_min_size` bytes (1 MiB by default); the distributed
+/// planner gives a scan `ceil(ceil(bytes / bytes_per_partition) /
+/// target_partitions)` tasks, i.e. several once it holds more than
+/// `bytes_per_partition * target_partitions` bytes. A scan the distributed
+/// planner splits but DataFusion kept whole was planned as one partition, so
+/// a `Single`-mode aggregate (or a global sort, limit, window) sits directly
+/// on it and [`input_distribution_single_task`] must run the stage in one
+/// task. With the cap, DataFusion plans such a scan multi-partition — a
+/// `Partial` aggregate on the scan and its `Final` half behind a coalesce or
+/// hash shuffle — and the stage keeps its tasks.
+///
+/// A plan-shape optimization, not a correctness mechanism: DataFusion keeps a
+/// scan whole for reasons this threshold does not reach (a source labelled
+/// compressed — LakeSoul's Parquet files — or without byte-range support,
+/// exact row statistics of at most one batch, a declared output
+/// partitioning such as a merge-on-read input's, or a `SET` of either knob
+/// after the session was created), and `input_distribution_single_task`
+/// keeps those plans correct. Only ever lowers the threshold, so a template
+/// asking for a smaller one keeps it.
+fn align_repartition_file_min_size(
+    config: &mut SessionConfig,
+    bytes_per_partition: usize,
+) {
+    let options = config.options_mut();
+    let distributed_split_size =
+        bytes_per_partition.saturating_mul(options.execution.target_partitions);
+    options.optimizer.repartition_file_min_size = options
+        .optimizer
+        .repartition_file_min_size
+        .min(distributed_split_size);
 }
 
 /// Factory for independent LakeSoul [`SessionContext`]s.
@@ -206,6 +310,13 @@ impl LakeSoulSessionFactory {
                 .max(1),
         };
         session_config.options_mut().execution.target_partitions = target_partitions;
+        if let Some(distributed) = &distributed {
+            let bytes_per_partition =
+                distributed.bytes_per_partition.unwrap_or_else(|| {
+                    DistributedConfig::default().file_scan_config_bytes_per_partition
+                });
+            align_repartition_file_min_size(&mut session_config, bytes_per_partition);
+        }
 
         // Object-store options (`fs.s3a.*`, `fs.defaultFS`, …) must be
         // reachable beyond the warehouse store registered on the session
@@ -256,6 +367,9 @@ impl LakeSoulSessionFactory {
                 .with_distributed_metrics_collection(true)?
                 .with_distributed_desired_task_count_handler(
                     merge_parquet_exec_single_task,
+                )
+                .with_distributed_desired_task_count_handler(
+                    input_distribution_single_task,
                 );
             // The codec list is position-addressed on the wire, so it comes
             // from one function the workers call too; see `codec::user_codecs`.
