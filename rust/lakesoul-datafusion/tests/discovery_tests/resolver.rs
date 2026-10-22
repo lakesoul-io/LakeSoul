@@ -17,6 +17,7 @@ use lakesoul_datafusion::distributed::worker::LakeSoulWorkerSessionBuilder;
 use lakesoul_datafusion::distributed::{
     DISTRIBUTED_PROTOCOL_VERSION, DistributedOptions, WorkerDiscovery,
 };
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use parking_lot::Mutex;
 use tokio_stream::wrappers::TcpListenerStream;
 use url::Url;
@@ -670,6 +671,81 @@ async fn discovery_snapshot_goes_stale_after_failed_refreshes() {
         error.contains("stale") && error.contains("503"),
         "staleness must cite the pending transient refresh failure: {error}"
     );
+}
+
+/// Value of the exact series `series` (name plus labels) in `rendered`.
+fn metric_value(rendered: &str, series: &str) -> Option<f64> {
+    rendered.lines().find_map(|line| {
+        line.strip_prefix(series)?
+            .strip_prefix(' ')?
+            .parse()
+            .ok()
+    })
+}
+
+/// Bounded wait until `series` satisfies `accept`.
+async fn wait_for_metric(
+    exporter: &PrometheusHandle,
+    series: &str,
+    accept: impl Fn(f64) -> bool,
+) {
+    for _ in 0..400 {
+        if metric_value(&exporter.render(), series).is_some_and(&accept) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{series} never reached the expected value in:\n{}", exporter.render());
+}
+
+const ELIGIBLE: &str = "lakesoul_worker_discovery_eligible_workers";
+const AGE: &str = "lakesoul_worker_discovery_snapshot_age_seconds";
+const HARD_FAILURES: &str = r#"lakesoul_worker_discovery_refresh_failures_total{kind="hard"}"#;
+const TRANSIENT_FAILURES: &str =
+    r#"lakesoul_worker_discovery_refresh_failures_total{kind="transient"}"#;
+
+/// An API outage must be visible without the logs: failures by kind, an age
+/// that keeps growing while refreshes fail, and the eligible worker count.
+#[tokio::test]
+async fn discovery_metrics_expose_refresh_outage() {
+    let worker = spawn_test_worker(DISTRIBUTED_PROTOCOL_VERSION).await;
+    let api = MockK8sApi::start(vec![mocked(200, slice_list_json(&[worker.as_ref()]))]);
+    let discovery = with_token(mock_discovery(&api), "token-1");
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let exporter = recorder.handle();
+    // The polling loop keeps the handles resolved at start, so the local
+    // recorder only has to be active while starting. The loop task does not
+    // run before the first await on this current-thread runtime.
+    let resolver = metrics::with_local_recorder(&recorder, || {
+        KubernetesWorkerResolver::start(&discovery)
+    })
+    .unwrap();
+
+    let rendered = exporter.render();
+    assert_eq!(metric_value(&rendered, ELIGIBLE), Some(0.0), "{rendered}");
+    assert_eq!(metric_value(&rendered, HARD_FAILURES), Some(0.0), "{rendered}");
+    assert_eq!(metric_value(&rendered, TRANSIENT_FAILURES), Some(0.0), "{rendered}");
+    assert_eq!(
+        metric_value(&rendered, AGE),
+        Some(f64::INFINITY),
+        "never synced must not read as fresh: {rendered}"
+    );
+
+    wait_for_snapshot(&resolver, &[&worker]).await;
+    wait_for_metric(&exporter, ELIGIBLE, |eligible| eligible == 1.0).await;
+    wait_for_metric(&exporter, AGE, |age| age < 5.0).await;
+
+    // Transient outage: the snapshot (and its eligible count) stays while
+    // the age grows past the poll interval.
+    api.set_response(mocked(503, String::new()));
+    wait_for_metric(&exporter, TRANSIENT_FAILURES, |failures| failures >= 2.0).await;
+    wait_for_metric(&exporter, AGE, |age| age >= 0.3 && age.is_finite()).await;
+    let rendered = exporter.render();
+    assert_eq!(metric_value(&rendered, ELIGIBLE), Some(1.0), "{rendered}");
+    assert_eq!(metric_value(&rendered, HARD_FAILURES), Some(0.0), "{rendered}");
+
+    api.set_response(mocked(403, String::new()));
+    wait_for_metric(&exporter, HARD_FAILURES, |failures| failures >= 1.0).await;
 }
 
 #[tokio::test]

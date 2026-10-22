@@ -21,7 +21,17 @@ Included:
   coordinator serves, queries fail with `no eligible worker` until a worker
   turns Ready, and the next poll picks it up without a restart. Snapshots
   older than `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` fail newly
-  distributed queries instead of silently planning against outdated workers.
+  distributed queries instead of silently planning against outdated workers;
+- discovery state on the coordinator's metrics endpoint:
+  `lakesoul_worker_discovery_refresh_failures_total{kind}` (`hard`:
+  401/403, token or unparseable response, blocks planning at once;
+  `transient`: transport errors and 5xx, the snapshot serves until stale),
+  `lakesoul_worker_discovery_snapshot_age_seconds` (since the last successful
+  refresh, updated after every attempt, `+Inf` before the first one; alert on
+  it exceeding the staleness limit) and
+  `lakesoul_worker_discovery_eligible_workers` (workers in the last
+  published snapshot, also set by static discovery). The failure counters
+  start at 0, so the first outage shows in `increase()`.
 
 Deliberately **not** included (later phases):
 
@@ -305,7 +315,10 @@ Scenarios, each with concrete expected state:
 5. **API unreachable**: block egress to the API server after a successful
    sync: queries keep working against the last snapshot until
    `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` elapse, then fail with the
-   staleness error naming the pending refresh failure.
+   staleness error naming the pending refresh failure. Meanwhile
+   `lakesoul_worker_discovery_refresh_failures_total{kind="transient"}`
+   climbs and `lakesoul_worker_discovery_snapshot_age_seconds` passes the
+   limit.
 6. **Real remote stage**: prepare the data with a writable LakeSoul engine
    (Spark/DataFrame client, or the lakesoul console) — the PG entry exposes
    a read-only projection: INSERT/DDL through the coordinator process are

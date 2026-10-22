@@ -24,6 +24,18 @@
 //!   workers. Empty snapshots are *not* silently planned locally either.
 //!
 //! No `get_urls()` call ever performs a synchronous Kubernetes API request.
+//!
+//! Discovery state is exported through the `metrics` facade:
+//! - `lakesoul_worker_discovery_eligible_workers`: workers in the published
+//!   snapshot (both backends);
+//! - `lakesoul_worker_discovery_refresh_failures_total{kind="hard"|"transient"}`:
+//!   failed EndpointSlice refreshes;
+//! - `lakesoul_worker_discovery_snapshot_age_seconds`: time since the last
+//!   successful refresh, updated after every refresh attempt; `+Inf` until the
+//!   first success.
+//!
+//! The Kubernetes series are registered when the resolver starts, so a
+//! failure burst right after startup still shows in `increase()`.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -43,6 +55,78 @@ use url::Url;
 
 use crate::Result;
 use crate::distributed::DISTRIBUTED_PROTOCOL_VERSION;
+
+const ELIGIBLE_WORKERS: &str = "lakesoul_worker_discovery_eligible_workers";
+const REFRESH_FAILURES_TOTAL: &str = "lakesoul_worker_discovery_refresh_failures_total";
+const SNAPSHOT_AGE_SECONDS: &str = "lakesoul_worker_discovery_snapshot_age_seconds";
+
+fn describe_discovery_metrics() {
+    metrics::describe_gauge!(
+        ELIGIBLE_WORKERS,
+        "Workers in the published discovery snapshot"
+    );
+    metrics::describe_counter!(
+        REFRESH_FAILURES_TOTAL,
+        "Failed worker discovery refreshes grouped by kind (hard blocks planning \
+         at once, transient keeps the snapshot until it goes stale)"
+    );
+    metrics::describe_gauge!(
+        SNAPSHOT_AGE_SECONDS,
+        metrics::Unit::Seconds,
+        "Time since the last successful worker discovery refresh, +Inf before \
+         the first one"
+    );
+}
+
+/// Handles of the Kubernetes discovery series, resolved once against the
+/// recorder installed when the resolver starts.
+struct DiscoveryMetrics {
+    eligible: metrics::Gauge,
+    hard_failures: metrics::Counter,
+    transient_failures: metrics::Counter,
+    snapshot_age: metrics::Gauge,
+}
+
+impl DiscoveryMetrics {
+    /// Registers every series: failure counters at 0, no eligible worker,
+    /// and an infinite age until the first successful refresh.
+    fn register() -> Self {
+        describe_discovery_metrics();
+        let this = Self {
+            eligible: metrics::gauge!(ELIGIBLE_WORKERS),
+            hard_failures: metrics::counter!(REFRESH_FAILURES_TOTAL, "kind" => "hard"),
+            transient_failures: metrics::counter!(
+                REFRESH_FAILURES_TOTAL,
+                "kind" => "transient"
+            ),
+            snapshot_age: metrics::gauge!(SNAPSHOT_AGE_SECONDS),
+        };
+        this.eligible.set(0.0);
+        this.hard_failures.increment(0);
+        this.transient_failures.increment(0);
+        this.snapshot_age.set(f64::INFINITY);
+        this
+    }
+
+    fn record_failure(&self, failure: &DiscoveryFailure) {
+        match failure {
+            DiscoveryFailure::Hard(_) => self.hard_failures.increment(1),
+            DiscoveryFailure::Transient(_) => self.transient_failures.increment(1),
+        }
+    }
+
+    fn record_age(&self, last_success: Option<Instant>) {
+        self.snapshot_age.set(
+            last_success.map_or(f64::INFINITY, |at| at.elapsed().as_secs_f64()),
+        );
+    }
+}
+
+/// Publishes the eligible-worker count of a static snapshot.
+fn record_static_eligible(snapshot: &WorkerSnapshot) {
+    describe_discovery_metrics();
+    metrics::gauge!(ELIGIBLE_WORKERS).set(snapshot.urls.len() as f64);
+}
 
 /// In-memory snapshot of the currently eligible workers.
 #[derive(Debug, Clone, Default)]
@@ -123,18 +207,21 @@ impl StaticWorkerResolver {
     /// Builds the resolver from raw URL strings; invalid entries fail here
     /// instead of at query time.
     pub fn new(urls: Vec<String>) -> Result<Self> {
+        let snapshot =
+            WorkerSnapshot::new(drop_version_mismatched_blocking(parse_urls(urls)?));
+        record_static_eligible(&snapshot);
         Ok(Self {
-            snapshot: Arc::new(RwLock::new(WorkerSnapshot::new(
-                drop_version_mismatched_blocking(parse_urls(urls)?),
-            ))),
+            snapshot: Arc::new(RwLock::new(snapshot)),
         })
     }
 
     /// Replaces the URL list (e.g. after an operator-side rebalance). The
     /// new list is version-probed like [`StaticWorkerResolver::new`].
     pub fn update(&self, urls: Vec<String>) -> Result<()> {
-        let filtered = drop_version_mismatched_blocking(parse_urls(urls)?);
-        *self.snapshot.write() = WorkerSnapshot::new(filtered);
+        let snapshot =
+            WorkerSnapshot::new(drop_version_mismatched_blocking(parse_urls(urls)?));
+        record_static_eligible(&snapshot);
+        *self.snapshot.write() = snapshot;
         Ok(())
     }
 
@@ -316,6 +403,7 @@ impl KubernetesWorkerResolver {
 
         let max_staleness = discovery.max_staleness;
         let state = Arc::new(KubernetesDiscoveryState::default());
+        let discovery_metrics = DiscoveryMetrics::register();
 
         let loop_state = Arc::downgrade(&state);
         let selector = discovery.label_selector();
@@ -353,6 +441,7 @@ impl KubernetesWorkerResolver {
                             snapshot_status.candidates = candidates_count;
                             snapshot_status.eligible = eligible.len();
                         }
+                        discovery_metrics.eligible.set(eligible.len() as f64);
                         info!(
                             service = %loop_service,
                             namespace = %loop_namespace,
@@ -373,6 +462,7 @@ impl KubernetesWorkerResolver {
                             error = %report,
                             "LakeSoul worker discovery: EndpointSlice refresh failed"
                         );
+                        discovery_metrics.record_failure(report.current_context());
                         let mut handle_status = handle.status.write();
                         if let DiscoveryFailure::Hard(_) = report.current_context() {
                             handle_status.hard_error = Some(report.clone());
@@ -380,6 +470,7 @@ impl KubernetesWorkerResolver {
                         handle_status.last_error = Some(report);
                     }
                 }
+                discovery_metrics.record_age(handle.status.read().last_success);
                 drop(handle);
                 if loop_state.upgrade().is_none() {
                     break;

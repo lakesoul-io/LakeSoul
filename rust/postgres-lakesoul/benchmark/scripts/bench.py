@@ -473,6 +473,9 @@ PROM_SERIES = [
     'sum by (pod, operation) (rate(lakesoul_object_store_requests_total[1m]))',
     'sum by (pod, operation) (rate(lakesoul_object_store_bytes_total[1m]))',
     'sum by (pod) (lakesoul_metadata_pool_connections)',
+    'max by (pod) (lakesoul_worker_discovery_snapshot_age_seconds)',
+    'sum by (pod) (lakesoul_worker_discovery_eligible_workers)',
+    'sum by (pod, kind) (increase(lakesoul_worker_discovery_refresh_failures_total[1m]))',
     'sum by (pod, span_name) (rate(traces_spanmetrics_calls_total[1m]))',
     'up',
 ]
