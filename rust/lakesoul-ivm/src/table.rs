@@ -104,8 +104,15 @@ fn with_state_key_lookup(
     builder: lakesoul_io::config::LakeSoulIOConfigBuilder,
     file_format: PhysicalFormat,
 ) -> lakesoul_io::config::LakeSoulIOConfigBuilder {
+    let configured = std::env::var("LAKESOUL_IVM_STATE_INDEX").ok();
+    if matches!(
+        configured.as_deref(),
+        Some("0") | Some("false") | Some("off")
+    ) {
+        return builder;
+    }
     let vortex = !matches!(file_format, PhysicalFormat::Parquet);
-    if !vortex && std::env::var("LAKESOUL_IVM_STATE_INDEX").is_err() {
+    if !vortex && configured.is_none() {
         return builder;
     }
     builder

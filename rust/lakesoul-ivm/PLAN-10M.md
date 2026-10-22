@@ -577,3 +577,87 @@ full_ref 行数与 MV 均为 3,755,984，逐行 hash `equal=true`。
 2. 复用一次排序写两种 schema；
 3. 减少 15 次 writer chunk 的建立/排序/提交开销；
 4. 检查 MV bucket 倾斜。
+
+### 7.6 full-day 增量首测：暴露 source 全分区扫描
+
+full-day（source 10.9M 行、3.76M group、state/MV/full_ref 各 3.76M 行）
+使用 1% 合成 update/delete/insert 后，增量 refresh **失败**：
+
+- 32GB cgroup：OOM kill；
+- 48GB cgroup：DataFusion 报错：
+
+```text
+HashJoinInput ... can_spill: false
+greedy(used: 6.4 GB, pool_size: 6.4 GB)
+```
+
+错误发生在 refresh 内部，`multi-agg keyed incremental finished` 尚未打印。
+
+结论：
+
+- state 的流式 PK lookup 已经生效；
+- 但 source 的 `before` 和 `current` 仍然按 changed range partition 全量读取，
+  再与 delta keys 做 `LeftSemi`；
+- full-day 的 10.9M source 行 + 1% delta keys 仍会产生多个 1GB 级
+  HashJoinInput，无法靠扩大 heap 解决；
+- 这也说明 source 侧也必须做 **流式 source PK lookup**，不能只优化 state。
+
+下一步：
+
+1. 对 delta stream 按 batch 提取 source primary-key keys；
+2. 通过 source reader 的 PK filter 只读 affected rows：
+   - before version 用 `read_before_window_filtered`；
+   - current 用 changed partition + PK filter；
+3. 每个 delta batch 生成有界 contributions，合并后再走现有 state PK lookup；
+4. 重新测 full-day 1%、5%；
+5. 如果 source delta 本身已经包含完整的新值，可进一步去掉 current source 的全量读。
+
+### 7.7 full-day 1% 增量：source PK lookup + state 分桶并发扫描
+
+在 7.6 的失败之后补了两层优化：
+
+- source 不再把 changed range partition 与 delta keys 做 `LeftSemi`；delta
+  stream 按有界 key chunk 取 source before rows，new rows 直接取 delta 的
+  `insert` 行（去掉 source current 全量读）。
+- state lookup 改走 `IvmTableProvider` 的 lazy scan，而不再直接调用
+  `read_current_filtered`。provider 会按 hash bucket 把 scan 拆成多个
+  DataFusion execution partition；每个 partition 的 Vortex reader 自动使用
+  PK locator。contributions 按
+  `LAKESOUL_IVM_STATE_LOOKUP_BATCH_ROWS`（默认 131072）合并成一个有界
+  batch 后再发起 state scan。
+
+full-day 1% 实测（source 10.9M、3.76M group；16 buckets；target partitions=4；
+48GB cgroup；cache 开启；`LAKESOUL_PK_PROFILE=1`）：
+
+```text
+first incremental:
+  source before lookup: keys=130998 files=64 total=1.3s
+  source chunk total:   1.7s
+  state lookup:         keys=119300, 16 bucket partitions,
+                        files=15/partition, total=5.9s
+  state/MV write:       <1s
+  refresh total:        8.5s
+
+second incremental (PK index cached):
+  source before lookup: 1.9s
+  state lookup:         4.0s
+  refresh total:        6.7s
+```
+
+对比优化前（state 每个 8192-key batch 都重新打开 256 个 state 文件）：
+
+```text
+first incremental state read:  65.5s
+second incremental state read: 59.9s
+```
+
+结论：
+
+- bucket 并发 + 一次大 key batch 让 state lookup 从 ~60s 降到 4–6s；
+- PK index 缓存确实有效，第二次 state lookup 只需 4.0s；
+- 当前每个 bucket partition 仍会收到完整的 119k key filter，下一步可以按
+  bucket 预先分流 key，进一步降低内存和 locator 候选量；
+- 32GB cgroup 在第二次增量前仍会 OOM，48GB 可以完成；内存峰值需要继续
+  优化，不能把 48GB 当成生产结论；
+- full-day 1% 的最终 full/MV 等价校验和 5% 压测仍未在本轮完成。
+
