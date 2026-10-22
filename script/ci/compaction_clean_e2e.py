@@ -101,6 +101,20 @@ def _container_logs(container: str, tail: int = 20000) -> str:
     return result.stdout + result.stderr
 
 
+def _taskmanager_logs(tail: int = 20000) -> str:
+    """Aggregate the logs of all taskmanager replicas (the compose service has two)."""
+    prefix = os.environ.get(
+        "LAKESOUL_E2E_TM_PREFIX", "lakesoul-docker-compose-env-taskmanager"
+    )
+    names = subprocess.run(
+        ["docker", "ps", "--filter", f"name={prefix}", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.split()
+    return "\n".join(_container_logs(name, tail) for name in names)
+
+
 DATA_SUFFIXES = (".parquet", ".vortex")
 
 
@@ -324,14 +338,10 @@ def scenario_update_commit() -> None:
         # the clean job falls back to its (hourly) timer and the test times
         # out. The marker is logged by CompactionBroadcastProcessFunction.
         marker = f"Received compaction state for {table_id}/-5: version=0"
-        taskmanager = os.environ.get(
-            "LAKESOUL_E2E_TM_CONTAINER",
-            "lakesoul-docker-compose-env-taskmanager-1",
-        )
         _wait_for(
-            lambda: marker in _container_logs(taskmanager),
+            lambda: marker in _taskmanager_logs(),
             "clean job to receive the update commit",
-            seconds=int(os.environ.get("LAKESOUL_E2E_UPDATE_WAIT", "120")),
+            seconds=int(os.environ.get("LAKESOUL_E2E_UPDATE_WAIT", "180")),
         )
 
         _psql(
