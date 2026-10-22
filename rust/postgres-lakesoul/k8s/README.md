@@ -247,6 +247,13 @@ that trigger spilling), without query labels. Unbounded execution retains the
 same allocation policy, with cached metric handles updating reservation
 gauges/counters; it does not pay for bounded consumer tracking.
 
+The failure counter, and every `outcome` series of the coordinator's
+`lakesoul_query_requests_total`, `lakesoul_query_rows_total` and
+`lakesoul_query_duration_seconds` (`completed`, `canceled`, `timed_out`,
+`result_limit`, `failed`, `abandoned`), are exported at 0 from startup, so
+`increase()`/`rate()` see the first burst of an outcome instead of starting
+the series at its first nonzero sample.
+
 Measured sizing (Vortex TPC-H on the medium profile, 4 CPU / 4Gi):
 
 - Leave the limit unset only for trusted, serial SF1-sized work: without a

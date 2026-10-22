@@ -132,8 +132,11 @@ impl ExecutionMemoryArgs {
         let reserved = metrics::gauge!("lakesoul_memory_pool_reserved_bytes");
         reserved.set(0.0);
         metrics::gauge!("lakesoul_memory_pool_limit_bytes").set(self.memory_limit as f64);
+        // Exported at 0 from startup so the first failures show in
+        // `increase()`; `increment(0)` registers without resetting a counter
+        // an earlier pool in this process already advanced.
         let failures = metrics::counter!("lakesoul_memory_reservation_failures_total");
-        failures.absolute(0);
+        failures.increment(0);
         tracing::info!(
             pool = kind,
             limit_bytes = self.memory_limit,

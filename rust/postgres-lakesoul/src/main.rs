@@ -113,6 +113,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
         "postgres-lakesoul",
         cli.metrics_addr,
     ))?;
+    cancel::register_query_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
