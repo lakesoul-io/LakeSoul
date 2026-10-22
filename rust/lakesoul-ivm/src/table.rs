@@ -549,6 +549,42 @@ impl IvmTable {
         self.commit_files(client, files).await
     }
 
+    /// Publish a refresh output stream without collecting the whole result.
+    ///
+    /// The stream runs the DataFusion plan; batches are written and committed
+    /// in bounded chunks so refresh memory stays independent of the MV/state
+    /// size.
+    pub async fn append_stream<S>(
+        &self,
+        client: &MetaDataClient,
+        mut stream: S,
+    ) -> Result<Vec<String>>
+    where
+        S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
+    {
+        use futures::StreamExt;
+        let mut files = Vec::new();
+        let mut pending: Vec<RecordBatch> = Vec::new();
+        let mut pending_rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            let batch = batch
+                .map_err(|error| rootcause::report!("refresh output batch: {error}"))?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            pending_rows += batch.num_rows();
+            pending.push(batch);
+            if pending_rows >= MAX_STATE_APPEND_ROWS {
+                files.extend(self.write_batches(std::mem::take(&mut pending)).await?);
+                pending_rows = 0;
+            }
+        }
+        if !pending.is_empty() {
+            files.extend(self.write_batches(pending).await?);
+        }
+        self.commit_files(client, files).await
+    }
+
     /// Write refresh output as few state files as possible, without publishing.
     pub async fn write_batches(
         &self,
@@ -827,13 +863,11 @@ impl IvmTable {
             .await
     }
 
-    async fn read_before_window_with_options(
+    pub(crate) async fn before_window_groups(
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-    ) -> Result<Vec<RecordBatch>> {
+    ) -> Result<Vec<PartitionFiles>> {
         let mut versions = Vec::new();
         for partition in client.get_all_partition_info(&self.table_id).await? {
             match before.get(&partition.partition_desc) {
@@ -851,7 +885,18 @@ impl IvmTable {
                 }),
             }
         }
-        self.read_at_versions_with_options(client, &versions, filters, projection)
+        self.version_groups(client, &versions).await
+    }
+
+    async fn read_before_window_with_options(
+        &self,
+        client: &MetaDataClient,
+        before: &std::collections::HashMap<String, Option<i64>>,
+        filters: Vec<Expr>,
+        projection: Option<&SchemaRef>,
+    ) -> Result<Vec<RecordBatch>> {
+        let groups = self.before_window_groups(client, before).await?;
+        self.read_groups_with_options(groups, filters, projection)
             .await
     }
 
@@ -927,8 +972,37 @@ impl IvmTable {
         Ok(batches)
     }
 
-    /// The partition groups of the current state (non-empty ones only).
-    async fn current_groups(
+    /// The current partition groups whose descriptor matches `partitions`
+    /// (`(column, allowed values)`).  Used to skip partitions a refresh
+    /// cannot touch without materializing the table.
+    pub(crate) async fn current_groups_for_partitions(
+        &self,
+        client: &MetaDataClient,
+        partitions: &[(String, Vec<String>)],
+    ) -> Result<Vec<PartitionFiles>> {
+        let mut groups = Vec::new();
+        for partition in client.get_all_partition_info(&self.table_id).await? {
+            if !partition_matches(
+                &partition.partition_desc,
+                &self.range_partition_columns,
+                partitions,
+            ) {
+                continue;
+            }
+            let files = client
+                .get_data_files_of_single_partition(&partition)
+                .await?;
+            if !files.is_empty() {
+                groups.push(PartitionFiles {
+                    partition_desc: partition.partition_desc.clone(),
+                    files,
+                });
+            }
+        }
+        Ok(groups)
+    }
+
+    pub(crate) async fn current_groups(
         &self,
         client: &MetaDataClient,
     ) -> Result<Vec<PartitionFiles>> {
@@ -948,7 +1022,7 @@ impl IvmTable {
     }
 
     /// The partition groups as of `as_of_ms`.
-    async fn as_of_groups(
+    pub(crate) async fn as_of_groups(
         &self,
         client: &MetaDataClient,
         as_of_ms: i64,
@@ -970,7 +1044,7 @@ impl IvmTable {
     }
 
     /// The partition groups pinned to `versions`.
-    async fn version_groups(
+    pub(crate) async fn version_groups(
         &self,
         client: &MetaDataClient,
         versions: &[PartitionVersion],
@@ -999,95 +1073,6 @@ impl IvmTable {
             }
         }
         Ok(groups)
-    }
-
-    /// Stream the current merge-on-read state into `tx` batch by batch.
-    ///
-    /// Unlike [`Self::read_current`] this never materializes the table: the
-    /// reader runs on the caller's (current-thread) runtime and each batch is
-    /// handed to the consumer before the next one is read.  Used by the
-    /// DataFusion provider so a scan plan stays streaming.  `change_filter`
-    /// drops the CDC tombstones after merge-on-read (the raw mode keeps them).
-    pub(crate) async fn stream_current(
-        &self,
-        client: &MetaDataClient,
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-        output: Option<&SchemaRef>,
-        change_filter: Option<&str>,
-        tx: BatchSender,
-    ) -> Result<()> {
-        let groups = self.current_groups(client).await?;
-        self.stream_groups(groups, filters, projection, output, change_filter, tx)
-            .await
-    }
-
-    /// Stream the state pinned to the given partition versions.
-    pub(crate) async fn stream_at_versions(
-        &self,
-        client: &MetaDataClient,
-        versions: &[PartitionVersion],
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-        output: Option<&SchemaRef>,
-        change_filter: Option<&str>,
-        tx: BatchSender,
-    ) -> Result<()> {
-        let groups = self.version_groups(client, versions).await?;
-        self.stream_groups(groups, filters, projection, output, change_filter, tx)
-            .await
-    }
-
-    /// Stream the state as of `as_of_ms`.
-    pub(crate) async fn stream_as_of(
-        &self,
-        client: &MetaDataClient,
-        as_of_ms: i64,
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-        output: Option<&SchemaRef>,
-        change_filter: Option<&str>,
-        tx: BatchSender,
-    ) -> Result<()> {
-        let groups = self.as_of_groups(client, as_of_ms).await?;
-        self.stream_groups(groups, filters, projection, output, change_filter, tx)
-            .await
-    }
-
-    async fn stream_groups(
-        &self,
-        groups: Vec<PartitionFiles>,
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-        output: Option<&SchemaRef>,
-        change_filter: Option<&str>,
-        tx: BatchSender,
-    ) -> Result<()> {
-        if groups.is_empty() {
-            return Ok(());
-        }
-        if self.range_partition_columns.is_empty() {
-            // Unpartitioned tables read all files as one merge group.
-            let files = groups.into_iter().flat_map(|group| group.files).collect();
-            return self
-                .stream_files(files, filters, projection, output, change_filter, tx)
-                .await;
-        }
-        for group in groups {
-            if tx.is_closed() {
-                return Ok(());
-            }
-            self.stream_files_with_group(
-                group,
-                filters.clone(),
-                projection,
-                output,
-                change_filter,
-                tx.clone(),
-            )
-            .await?;
-        }
-        Ok(())
     }
 
     /// Keep the rows whose change column is not a CDC tombstone.
@@ -1152,81 +1137,15 @@ impl IvmTable {
             .map_err(|error| DataFusionError::Execution(error.to_string()))
     }
 
-    /// Stream `files` as one merge group (the unpartitioned case).
-    async fn stream_files(
-        &self,
-        files: Vec<String>,
-        filters: Vec<Expr>,
-        projection: Option<&SchemaRef>,
-        output: Option<&SchemaRef>,
-        change_filter: Option<&str>,
-        tx: BatchSender,
-    ) -> Result<()> {
-        if files.is_empty() {
-            return Ok(());
-        }
-        let file_count = files.len() as u64;
-        let mut builder = LakeSoulIOConfig::builder()
-            .with_files(files)
-            .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
-            .with_primary_keys(self.primary_keys.clone())
-            .with_physical_format(self.file_format);
-        if !filters.is_empty() {
-            builder = with_state_key_lookup(builder, self.file_format);
-            #[allow(deprecated)]
-            {
-                builder = builder.with_filters(filters);
-            }
-        }
-        let mut reader = LakeSoulReader::new(builder.build())?;
-        reader.start().await?;
-        let mut rows = 0u64;
-        while let Some(batch) = reader.next_rb().await {
-            match batch {
-                Ok(batch) => {
-                    rows += batch.num_rows() as u64;
-                    let batch = match change_filter {
-                        Some(column) => match Self::filter_change_batch(batch, column) {
-                            Ok(batch) => batch,
-                            Err(error) => {
-                                let _ = tx.send(Err(error)).await;
-                                return Ok(());
-                            }
-                        },
-                        None => batch,
-                    };
-                    let batch = match Self::project_output(batch, output) {
-                        Ok(batch) => batch,
-                        Err(error) => {
-                            let _ = tx.send(Err(error)).await;
-                            return Ok(());
-                        }
-                    };
-                    if tx.send(Ok(batch)).await.is_err() {
-                        return Ok(());
-                    }
-                }
-                Err(error) => {
-                    let _ = tx
-                        .send(Err(DataFusionError::Execution(error.to_string())))
-                        .await;
-                    return Ok(());
-                }
-            }
-        }
-        crate::observability::add_files_read(file_count);
-        crate::observability::add_rows_scanned(rows);
-        Ok(())
-    }
-
     /// Stream one range partition group with its default partition values.
-    async fn stream_files_with_group(
+    pub(crate) async fn stream_files_with_group(
         &self,
         group: PartitionFiles,
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
         output: Option<&SchemaRef>,
         change_filter: Option<&str>,
+        merge: bool,
         tx: BatchSender,
     ) -> Result<()> {
         let schema = projection.cloned().unwrap_or_else(|| self.schema.clone());
@@ -1240,7 +1159,11 @@ impl IvmTable {
         let mut builder = LakeSoulIOConfig::builder()
             .with_files(group.files)
             .with_schema(schema)
-            .with_primary_keys(self.primary_keys.clone())
+            .with_primary_keys(if merge {
+                self.primary_keys.clone()
+            } else {
+                Vec::new()
+            })
             .with_physical_format(self.file_format);
         if !range_columns.is_empty() {
             builder = builder.with_range_partitions(range_columns.clone());

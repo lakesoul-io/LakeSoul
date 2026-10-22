@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! TOP-K views: the top `limit` rows of every group, recomputed per affected
 //! group, with ties broken deterministically by the source primary keys.
 

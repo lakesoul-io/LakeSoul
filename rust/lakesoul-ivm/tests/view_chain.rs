@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! View-chain orchestration: the dependency graph, the topological refresh
 //! order, the retry/rebuild policy and the dirty self-heal.
 

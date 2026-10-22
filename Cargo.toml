@@ -65,7 +65,11 @@ opt-level = 2
 inherits = "test"
 # Use a slightly better optimization level for ci-tests
 opt-level = 1
-debug = "line-tables-only"
+# Do not embed debug info in test binaries.  With `line-tables-only` every
+# integration test linked ~700 MB of debug sections (~900 MB per binary);
+# `cargo test --tests` links dozens of them, which makes rust-lld IO-bound and
+# dominates the build.  Tests still get symbol names in panics/backtraces.
+debug = 0
 
 [workspace.dependencies]
 # datafusion

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Generic type coverage for the join and window views: string join keys and
 //! payloads, multi-column join keys, and string window partition keys.
 

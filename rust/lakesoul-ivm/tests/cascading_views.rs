@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Cascading views: a materialized view feeding another view.
 //!
 //! The downstream view treats the upstream MV as an ordinary keyed source;

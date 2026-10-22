@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Derived-table rewriting: a statement whose operator reads a compound
 //! subplan (an aggregate over a join) is maintained through an internal
 //! derived view, materialized and refreshed automatically.

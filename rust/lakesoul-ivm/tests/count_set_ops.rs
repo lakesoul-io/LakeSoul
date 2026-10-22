@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! `INTERSECT ALL` / `EXCEPT ALL` over a repeated left: the maintained view
 //! keeps `min(count_l, count_r)` (INTERSECT) or `max(count_l - count_r, 0)`
 //! (EXCEPT) copies per tuple.

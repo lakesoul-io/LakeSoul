@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! NULL semantics. SQL treats NULL as a regular value where rows are grouped
 //! (`GROUP BY`, window `PARTITION BY`, `DISTINCT`), so the refresh pipelines
 //! must match NULL keys with NULL (`IS NOT DISTINCT FROM`). Join equality

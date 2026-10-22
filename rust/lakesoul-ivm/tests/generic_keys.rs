@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for generic group keys and values: several key columns and non-Int64
 //! (strings) are supported by the aggregate views, with the same
 //! upsert/delete semantics.

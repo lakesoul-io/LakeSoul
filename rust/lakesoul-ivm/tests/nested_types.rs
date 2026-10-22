@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Nested column types (`Struct`, `List`, `Map`) in the maintained views: the
 //! values are opaque payloads the refresh copies through, and expressions may
 //! read single fields out of them.

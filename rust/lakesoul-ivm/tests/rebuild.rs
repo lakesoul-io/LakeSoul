@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for rebuilds and consumer epoch pinning (`EPOCH.md` steps 4–5).
 
 mod common;

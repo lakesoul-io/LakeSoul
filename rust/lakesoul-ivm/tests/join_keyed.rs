@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Keyed inner join views (both sources have primary keys). The output is
 //! keyed by the pair of row identities, so an upsert, a delete or a join-key
 //! change on either side retracts and rewrites exactly the affected pairs

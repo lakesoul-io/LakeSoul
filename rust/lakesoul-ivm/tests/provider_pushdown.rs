@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! The IVM table provider scans as a streaming DataFusion plan.
 //!
 //! Logical reads hide the CDC tombstones, projections are pushed into the

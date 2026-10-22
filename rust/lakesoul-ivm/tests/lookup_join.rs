@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! LEFT lookup join views: every left row keeps its referenced right payload
 //! (or NULL), the right source is keyed by the join keys so a left row has at
 //! most one match, and a change on either side rewrites exactly the affected

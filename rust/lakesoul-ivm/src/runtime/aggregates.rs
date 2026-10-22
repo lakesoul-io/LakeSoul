@@ -7,7 +7,6 @@
 //! `GROUPING SETS`/`ROLLUP`/`CUBE` sets.
 
 use super::*;
-use arrow_array::Array;
 
 /// A `SUM`/`COUNT` view over a source table.
 #[derive(Debug, Clone)]
@@ -318,11 +317,11 @@ fn validate_grouping_sets_view(view: &GroupingSetsView) -> Result<()> {
         sum_result_type(&value_type)?;
     }
     if let Some(filter) = &view.filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if let Some(filter) = &view.aggregate_filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     Ok(())
@@ -1406,7 +1405,7 @@ fn validate_sum_count_view(view: &SumCountView) -> Result<()> {
         sum_result_type(&field_type(&view.source.schema, value_column)?)?;
     }
     if let Some(aggregate_filter) = &view.aggregate_filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, aggregate_filter)?;
     }
     if let Some(count_column) = &view.count_column {
@@ -1479,16 +1478,25 @@ fn sum_count_refresh_sql(
             );
             (signed_sum, signed_count, signed_nonnull)
         };
+        let affected_match = key_join_condition_null_safe("src", "a", &view.group_keys);
         let src_from = if keyed {
             format!(
-                "src where {}{}",
+                "src where {}{} and exists (select 1 from affected a where {affected_match})",
                 source_delete_filter("src", change_column(&view.source)),
                 filter_clause(view.filter.as_deref()),
             )
         } else {
             // Append-only changelogs keep their markers; the signed
             // aggregation above turns them into retractions.
-            format!("src{}", filter_where(view.filter.as_deref()))
+            let plain_where = filter_where(view.filter.as_deref());
+            let prefix = if plain_where.is_empty() {
+                " where true".to_string()
+            } else {
+                plain_where
+            };
+            format!(
+                "src{prefix} and exists (select 1 from affected a where {affected_match})"
+            )
         };
         let active_match = key_join_condition_null_safe("a", "s", &view.group_keys);
         let already_match = key_join_condition_null_safe("a", "p", &view.group_keys);
@@ -1868,7 +1876,7 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
         .collect::<Vec<_>>()
         .join(" and ");
     format!(
-        "with {new_agg}, \
+        "{new_agg}, \
          {counts}, \
          already as (select distinct {state_list} from state \
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
@@ -2098,24 +2106,6 @@ fn grouping_sets_insert(
 /// state for every key.
 const SNAPSHOT_REBUILD_ROWS: usize = 1_000_000;
 
-/// Whether any batch carries a CDC delete marker.
-fn has_delete_rows(batches: &[RecordBatch]) -> bool {
-    batches.iter().any(|batch| {
-        batch
-            .schema()
-            .index_of(IVM_ROW_KINDS_COLUMN)
-            .ok()
-            .and_then(|index| {
-                batch
-                    .column(index)
-                    .as_any()
-                    .downcast_ref::<arrow_array::StringArray>()
-            })
-            .map(|kinds| (0..kinds.len()).any(|row| kinds.value(row) == "delete"))
-            .unwrap_or(false)
-    })
-}
-
 /// The refresh SQL of a grouping-sets view: the affected group tuples drive
 /// every set, which recomputes and rewrites its rows.
 fn grouping_sets_refresh_sql(view: &GroupingSetsView, epoch: i64) -> String {
@@ -2334,7 +2324,7 @@ impl IvmRuntime {
         }
         columns.extend(view.value_column.clone());
         columns.extend(view.count_column.clone());
-        let context = SessionContext::new();
+        let context = refresh_session();
         for expression in view
             .group_exprs
             .iter()
@@ -2396,24 +2386,31 @@ impl IvmRuntime {
                 return self.rebuild_sum_count(view).await.map(Some);
             }
         }
+        let check_context = refresh_session();
         let raw_delta = if view_source {
-            Some(
-                view.source
-                    .read_partition_files_unmerged_projected(
-                        window.added_files.clone(),
-                        Some(&view.source.schema),
-                    )
-                    .await?,
-            )
+            Some(self.unmerged_groups_table_frame(
+                &check_context,
+                &view.source,
+                window.added_files.clone(),
+            )?)
         } else {
             None
         };
-        if let Some(raw) = &raw_delta {
-            let rows = raw.iter().map(|batch| batch.num_rows()).sum::<usize>();
-            if rows > SNAPSHOT_REBUILD_ROWS && !has_delete_rows(raw) {
+        let raw_deletes = if let Some(raw) = &raw_delta {
+            let rows = count_frame_rows(raw.clone()).await?;
+            let deletes = count_frame_rows(
+                raw.clone()
+                    .filter(column_expr(IVM_ROW_KINDS_COLUMN).eq(lit("delete")))?,
+            )
+            .await?;
+            if rows > SNAPSHOT_REBUILD_ROWS as u64 && deletes == 0 {
                 return self.rebuild_sum_count(view).await.map(Some);
             }
-        }
+            deletes
+        } else {
+            0
+        };
+        drop(check_context);
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -2436,21 +2433,14 @@ impl IvmRuntime {
             // single row without a primary key, so the row is recomputed over
             // the current source and the MV is rewritten wholesale.
             let keyed = !view.source.primary_keys.is_empty();
-            let context = SessionContext::new();
-            register_table(
-                &context,
-                "src",
-                view.source.read_current(&self.client).await?,
-                &view.source.schema,
-            )?;
+            let context = refresh_session();
+            context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
             view.mv.truncate(&self.client).await?;
             let sql = sum_count_rebuild_sql(view, keyed, epoch);
+            let frame = context.sql(&sql).await?;
             commit_ids.extend(
                 view.mv
-                    .append_batches(
-                        &self.client,
-                        context.sql(&sql).await?.collect().await?,
-                    )
+                    .append_stream(&self.client, frame.execute_stream().await?)
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -2461,110 +2451,92 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         // Use the raw delta only when it really is a changelog: a small
         // insert-only snapshot goes through the before-state path so the old
         // groups are subtracted exactly once.
-        let (changelog, delta_input) = match raw_delta {
-            Some(raw) if has_delete_rows(&raw) => (true, raw),
-            _ => (
-                false,
-                view.source
-                    .read_partition_files(window.added_files.clone())
-                    .await?,
-            ),
+        let changelog = raw_deletes > 0;
+        let delta = match raw_delta {
+            Some(raw) if changelog => raw,
+            _ => self.groups_table_frame(
+                &context,
+                &view.source,
+                window.added_files.clone(),
+            )?,
         };
-        let delta_batches = project_group_keys(
+        let delta = project_group_keys_frame(
             &context,
-            delta_input,
+            delta,
             &view.source.schema,
             &view.group_keys,
             &view.group_exprs,
-        )
-        .await?;
-        let keyed = !view.source.primary_keys.is_empty();
-        // The window only touches the delta groups (plus the previous groups
-        // of the changed rows), so the old state and the MV are read pruned to
-        // those keys; the reader also prunes their buckets.
-        let delta_context = SessionContext::new();
-        register_table(
-            &delta_context,
-            "delta",
-            delta_batches.clone(),
-            &view.source.schema,
         )?;
-        let old_batches = if keyed && !changelog {
-            let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
-            let projection = Self::sum_count_source_projection(view)?;
-            let old_schema = projection.as_ref().unwrap_or(&view.source.schema);
-            let batches = project_group_keys(
+        let keyed = !view.source.primary_keys.is_empty();
+        let old_projection = Self::sum_count_source_projection(view)?;
+        let old_schema = old_projection.as_ref().unwrap_or(&view.source.schema);
+        let old_frame = if keyed && !changelog {
+            let before = self
+                .before_window_table_frame(
+                    &context,
+                    &view.source,
+                    &window.before_versions,
+                )
+                .await?;
+            let before = match old_projection.as_ref() {
+                Some(projection) => project_frame(
+                    before,
+                    &projection
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().clone())
+                        .collect::<Vec<_>>(),
+                )?,
+                None => before,
+            };
+            project_group_keys_frame(
                 &context,
-                view.source
-                    .read_before_window_filtered_projected(
-                        &self.client,
-                        &window.before_versions,
-                        pk_filters,
-                        projection.as_ref(),
-                    )
-                    .await?,
+                before,
                 old_schema,
                 &view.group_keys,
                 &view.group_exprs,
-            )
-            .await?;
-            register_table(&delta_context, "old", batches.clone(), old_schema)?;
-            batches
+            )?
         } else {
-            Vec::new()
-        };
-        let groups = delta_context
-            .sql(&affected_groups_sql(
-                &view.source,
-                &view.group_keys,
-                keyed,
-                view.filter.as_deref(),
-                changelog,
-            ))
-            .await?
-            .collect()
-            .await?;
-        // A computed group key cannot prune the source reads.
-        let filters = if view.group_exprs.is_empty() {
-            key_filters(&view.group_keys, &groups)?
-        } else {
-            Vec::new()
+            dataframe(&context, Vec::new(), old_schema)?
         };
 
-        register_table(&context, "delta", delta_batches, &view.source.schema)?;
+        context.register_table("delta", delta.into_view())?;
         if keyed && !changelog {
-            register_table(&context, "old", old_batches, &view.source.schema)?;
+            context.register_table("old", old_frame.into_view())?;
         }
         if view.having.is_some() {
-            let batches = project_group_keys(
+            let src = self.current_table_frame(&context, &view.source)?;
+            let src = project_group_keys_frame(
                 &context,
-                view.source
-                    .read_current_filtered(&self.client, filters.clone())
-                    .await?,
+                src,
                 &view.source.schema,
                 &view.group_keys,
                 &view.group_exprs,
-            )
-            .await?;
-            register_table(&context, "src", batches, &view.source.schema)?;
+            )?;
+            context.register_table("src", src.into_view())?;
         }
-        let mv_batches = match &mv_partitions {
+        let mv = match &mv_partitions {
             Some(partitions) => {
-                view.mv
-                    .read_current_filtered_partitions(&self.client, filters, partitions)
-                    .await?
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.mv,
+                    Vec::new(),
+                    partitions,
+                )
+                .await?
             }
-            None => view.mv.read_current_filtered(&self.client, filters).await?,
+            None => self.current_table_frame(&context, &view.mv)?,
         };
-        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
+        context.register_table("mv", mv.into_view())?;
         let sql = sum_count_refresh_sql(view, keyed, epoch, changelog);
+        let frame = context.sql(&sql).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(&self.client, context.sql(&sql).await?.collect().await?)
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2643,64 +2615,41 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        register_table(
+        let context = refresh_session();
+        let delta = project_group_keys_frame(
             &context,
-            "delta",
-            project_group_keys(
+            self.groups_table_frame(&context, &view.source, window.added_files)?,
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        context.register_table("delta", delta.into_view())?;
+        let old = project_group_keys_frame(
+            &context,
+            self.before_window_table_frame(
                 &context,
-                view.source.read_partition_files(window.added_files).await?,
-                &view.source.schema,
-                &view.group_keys,
-                &view.group_exprs,
+                &view.source,
+                &window.before_versions,
             )
             .await?,
             &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
         )?;
-        register_table(
+        context.register_table("old", old.into_view())?;
+        let src = project_group_keys_frame(
             &context,
-            "old",
-            project_group_keys(
-                &context,
-                view.source
-                    .read_before_window(&self.client, &window.before_versions)
-                    .await?,
-                &view.source.schema,
-                &view.group_keys,
-                &view.group_exprs,
-            )
-            .await?,
+            self.current_table_frame(&context, &view.source)?,
             &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
         )?;
-        register_table(
-            &context,
-            "src",
-            project_group_keys(
-                &context,
-                view.source.read_current(&self.client).await?,
-                &view.source.schema,
-                &view.group_keys,
-                &view.group_exprs,
-            )
-            .await?,
-            &view.source.schema,
-        )?;
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
+        context.register_table("src", src.into_view())?;
+        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&grouping_sets_refresh_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2750,30 +2699,21 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        register_table(
+        let context = refresh_session();
+        let frame =
+            self.groups_table_frame(&context, &view.source, baseline.groups.clone())?;
+        let frame = project_group_keys_frame(
             &context,
-            "src",
-            project_group_keys(
-                &context,
-                baseline.batches,
-                &view.source.schema,
-                &view.group_keys,
-                &view.group_exprs,
-            )
-            .await?,
+            frame,
             &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
         )?;
+        context.register_table("src", frame.into_view())?;
+        let frame = context.sql(&grouping_sets_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&grouping_sets_rebuild_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2827,27 +2767,24 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        let batches = project_group_keys(
+        let context = refresh_session();
+        let frame =
+            self.groups_table_frame(&context, &view.source, baseline.groups.clone())?;
+        let frame = project_group_keys_frame(
             &context,
-            baseline.batches,
+            frame,
             &view.source.schema,
             &view.group_keys,
             &view.group_exprs,
-        )
-        .await?;
-        register_table(&context, "src", batches, &view.source.schema)?;
+        )?;
+        context.register_table("src", frame.into_view())?;
         let rebuild_keyed = !view.source.primary_keys.is_empty();
+        let frame = context
+            .sql(&sum_count_rebuild_sql(view, rebuild_keyed, epoch))
+            .await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&sum_count_rebuild_sql(view, rebuild_keyed, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2951,21 +2888,14 @@ impl IvmRuntime {
             // single row without a primary key, so the aggregate is
             // recomputed over the current source and the MV is rewritten
             // wholesale.
-            let context = SessionContext::new();
-            register_table(
-                &context,
-                "src",
-                view.source.read_current(&self.client).await?,
-                &view.source.schema,
-            )?;
+            let context = refresh_session();
+            context.register_table("src", Arc::new(self.table_provider(view.source)))?;
             view.mv.truncate(&self.client).await?;
             let sql = value_count_global_sql(view, epoch);
+            let frame = context.sql(&sql).await?;
             commit_ids.extend(
                 view.mv
-                    .append_batches(
-                        &self.client,
-                        context.sql(&sql).await?.collect().await?,
-                    )
+                    .append_stream(&self.client, frame.execute_stream().await?)
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, view.mv).await?;
@@ -2976,139 +2906,68 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = SessionContext::new();
-        let delta_batches = project_group_keys(
+        let context = refresh_session();
+        let delta = project_group_keys_frame(
             &context,
-            view.source.read_partition_files(window.added_files).await?,
+            self.groups_table_frame(&context, view.source, window.added_files)?,
             &view.source.schema,
             view.group_keys,
             view.group_exprs,
-        )
-        .await?;
-        let keyed = !view.source.primary_keys.is_empty();
-        // As in the SUM/COUNT path, only the delta groups (and the previous
-        // groups of the changed rows) can change, so the old state, the value
-        // state and the MV are read pruned to them (buckets included).
-        let delta_context = SessionContext::new();
-        register_table(
-            &delta_context,
-            "delta",
-            delta_batches.clone(),
-            &view.source.schema,
         )?;
-        let old_batches = if keyed {
-            let pk_filters = key_filters(&view.source.primary_keys, &delta_batches)?;
-            let batches = project_group_keys(
+        let keyed = !view.source.primary_keys.is_empty();
+        let old_frame = if keyed {
+            let before = self
+                .before_window_table_frame(&context, view.source, &window.before_versions)
+                .await?;
+            project_group_keys_frame(
                 &context,
-                view.source
-                    .read_before_window_filtered(
-                        &self.client,
-                        &window.before_versions,
-                        pk_filters,
-                    )
-                    .await?,
+                before,
                 &view.source.schema,
                 view.group_keys,
                 view.group_exprs,
-            )
-            .await?;
-            register_table(&delta_context, "old", batches.clone(), &view.source.schema)?;
-            batches
+            )?
         } else {
-            Vec::new()
-        };
-        let groups = delta_context
-            .sql(&affected_groups_sql(
-                view.source,
-                view.group_keys,
-                keyed,
-                view.filter,
-                false,
-            ))
-            .await?
-            .collect()
-            .await?;
-        // A computed group key cannot prune the reads.
-        let filters = if view.group_exprs.is_empty() {
-            key_filters(view.group_keys, &groups)?
-        } else {
-            Vec::new()
+            dataframe(&context, Vec::new(), &view.source.schema)?
         };
 
-        register_table(&context, "delta", delta_batches, &view.source.schema)?;
+        context.register_table("delta", delta.into_view())?;
         if keyed {
-            register_table(&context, "old", old_batches, &view.source.schema)?;
+            context.register_table("old", old_frame.into_view())?;
         }
-        register_table(
-            &context,
-            "state",
-            view.state
-                .read_current_filtered(&self.client, filters.clone())
-                .await?,
-            &view.state.schema,
-        )?;
+        context.register_table("state", Arc::new(self.table_provider(view.state)))?;
 
         let cte = value_count_refresh_cte(view, keyed, epoch);
+        let state_frame = context
+            .sql(&format!(
+                "with {cte} select * from state_del union all select * from state_ins \
+                 order by {}, \"rowKinds\"",
+                quoted_list(
+                    &view
+                        .group_keys
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(IVM_VALUE_COLUMN.to_string()))
+                        .collect::<Vec<_>>(),
+                )
+            ))
+            .await?;
         view.state
-            .append_batches(
-                &self.client,
-                context
-                    .sql(&format!(
-                        "{cte} select * from state_del union all select * from state_ins \
-                         order by {}, \"rowKinds\"",
-                        quoted_list(
-                            &view
-                                .group_keys
-                                .iter()
-                                .cloned()
-                                .chain(std::iter::once(IVM_VALUE_COLUMN.to_string()))
-                                .collect::<Vec<_>>(),
-                        )
-                    ))
-                    .await?
-                    .collect()
-                    .await?,
-            )
+            .append_stream(&self.client, state_frame.execute_stream().await?)
             .await?;
 
         let affected = context
             .sql(&format!(
-                "{cte} select distinct {} from counts",
+                "with {cte} select distinct {} from counts",
                 quoted_list(view.group_keys)
             ))
-            .await?
-            .collect()
             .await?;
-        register_table(
-            &context,
-            "affected",
-            affected,
-            &key_schema_for(&view.source.schema, view.group_keys, view.group_exprs)?,
-        )?;
-        register_table(
-            &context,
-            "state_now",
-            view.state
-                .read_current_filtered(&self.client, filters.clone())
-                .await?,
-            &view.state.schema,
-        )?;
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current_filtered(&self.client, filters).await?,
-            &view.mv.schema,
-        )?;
+        context.register_table("affected", affected.into_view())?;
+        context.register_table("state_now", Arc::new(self.table_provider(view.state)))?;
+        context.register_table("mv", Arc::new(self.table_provider(view.mv)))?;
+        let frame = context.sql(&value_count_mv_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&value_count_mv_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -3213,20 +3072,13 @@ impl IvmRuntime {
         if view.group_keys.is_empty() {
             // A global aggregate is recomputed over the baseline into the
             // single MV row (the state table stays empty).
-            let context = SessionContext::new();
-            register_table(
-                &context,
-                "src",
-                view.source.read_current(&self.client).await?,
-                &view.source.schema,
-            )?;
+            let context = refresh_session();
+            context.register_table("src", Arc::new(self.table_provider(view.source)))?;
             let sql = value_count_global_sql(view, epoch);
+            let frame = context.sql(&sql).await?;
             commit_ids.extend(
                 view.mv
-                    .append_batches(
-                        &self.client,
-                        context.sql(&sql).await?.collect().await?,
-                    )
+                    .append_stream(&self.client, frame.execute_stream().await?)
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, view.mv).await?;
@@ -3240,16 +3092,17 @@ impl IvmRuntime {
             return Ok(epoch);
         }
 
-        let context = SessionContext::new();
-        let baseline_batches = project_group_keys(
+        let context = refresh_session();
+        let frame =
+            self.groups_table_frame(&context, view.source, baseline.groups.clone())?;
+        let frame = project_group_keys_frame(
             &context,
-            baseline.batches,
+            frame,
             &view.source.schema,
             view.group_keys,
             view.group_exprs,
-        )
-        .await?;
-        register_table(&context, "src", baseline_batches, &view.source.schema)?;
+        )?;
+        context.register_table("src", frame.into_view())?;
         let state_sql = if view.source.primary_keys.is_empty() {
             let retract = source_retract_condition("src", change_column(view.source));
             let plain_where = filter_where(view.filter);
@@ -3283,19 +3136,12 @@ impl IvmRuntime {
                 value_count_value_sql(view),
             )
         };
+        let state_frame = context.sql(&state_sql).await?;
         view.state
-            .append_batches(
-                &self.client,
-                context.sql(&state_sql).await?.collect().await?,
-            )
+            .append_stream(&self.client, state_frame.execute_stream().await?)
             .await?;
 
-        register_table(
-            &context,
-            "state_now",
-            view.state.read_current(&self.client).await?,
-            &view.state.schema,
-        )?;
+        context.register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         let rebuild = format!(
             "select {}, {} as {}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
              from state_now where \"rowKinds\" = 'insert' and {} > 0 group by {}",
@@ -3309,12 +3155,10 @@ impl IvmRuntime {
             Some(having) => format!("select * from ({rebuild}) t where {having}"),
             None => rebuild,
         };
+        let mv_frame = context.sql(&mv_sql).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context.sql(&mv_sql).await?.collect().await?,
-                )
+                .append_stream(&self.client, mv_frame.execute_stream().await?)
                 .await?,
         );
 

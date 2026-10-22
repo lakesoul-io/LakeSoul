@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for `SUM`/`COUNT` views over sources with a primary key (upserts).
 //!
 //! A keyed source's changelog only contains the new version of a changed row,

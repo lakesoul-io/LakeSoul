@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! M1 of the SQL frontend: open existing tables by name/id, drive a refresh
 //! from a persisted `ViewSpec`, and manage the state registry (a rebuilt view
 //! must be able to replace its state table) plus the stored definition hash.

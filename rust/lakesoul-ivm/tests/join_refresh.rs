@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Integration tests for the incremental join refresh.
 //!
 //! They require a running PostgreSQL configured through `LAKESOUL_PG_*`

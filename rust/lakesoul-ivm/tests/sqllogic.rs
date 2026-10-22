@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! sqllogictest harness for the incremental SQL entry.
 //!
 //! Statements run through the dedicated executor when they start with

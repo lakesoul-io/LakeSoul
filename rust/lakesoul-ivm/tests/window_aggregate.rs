@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Aggregate window views: `SUM(value)` and `COUNT(*)`/`COUNT(value)` over a
 //! partition, either whole-partition (no order keys) or running with the SQL
 //! default frame. The refresh reads only the affected partitions of the

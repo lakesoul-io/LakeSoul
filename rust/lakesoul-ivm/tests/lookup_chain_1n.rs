@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! A 1:N lookup step: one base row matches several source rows, the MV merge
 //! key carries the matched row's identity column, and a missing match leaves
 //! one NULL-padded row.

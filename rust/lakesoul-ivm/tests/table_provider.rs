@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! The DataFusion table provider: register an internal table in a session and
 //! query it with SQL, in the current, as-of or pinned-epoch modes.
 
@@ -248,7 +250,14 @@ async fn provider_reads_current_as_of_and_pinned_epochs() {
         .unwrap();
     // a = 10 + 5 = 15 and b = 20 both pass the filter.
     assert_eq!(projected[0].num_columns(), 1);
-    assert_eq!(projected[0].column(0).len(), 2);
+    // DataFusion may return the rows in more than one batch.
+    assert_eq!(
+        projected
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>(),
+        2
+    );
 }
 
 #[test_log::test(tokio::test)]

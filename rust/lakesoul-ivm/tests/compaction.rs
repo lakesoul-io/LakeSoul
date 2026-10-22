@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Table compaction: the current logical state is rewritten into a fresh file
 //! set and published as one compaction commit.
 

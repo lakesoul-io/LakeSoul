@@ -47,11 +47,23 @@ async fn create_pool(config: &str) -> Result<Pool<PgConnectionManager>> {
     trace!("try to build pooled pg client");
     let config = config.parse::<Config>()?;
     let manager = PgConnectionManager::new(config);
+    let max_size = std::env::var("LAKESOUL_PG_POOL_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(16);
+    let connection_timeout = std::env::var("LAKESOUL_PG_POOL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(10);
+    let idle_timeout = std::env::var("LAKESOUL_PG_POOL_IDLE_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(300);
     let pool = Pool::builder()
-        .max_size(16)
+        .max_size(max_size)
         .min_idle(1)
-        .connection_timeout(Duration::from_secs(10))
-        .idle_timeout(Some(Duration::from_secs(30)))
+        .connection_timeout(Duration::from_secs(connection_timeout))
+        .idle_timeout(Some(Duration::from_secs(idle_timeout)))
         .queue_strategy(QueueStrategy::Lifo)
         .build(manager)
         .await?;

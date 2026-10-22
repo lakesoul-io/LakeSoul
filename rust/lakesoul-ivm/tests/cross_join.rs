@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! CROSS join views over two keyed sources: every pair of rows, maintained by
 //! rewriting the pairs of the identities that changed.
 

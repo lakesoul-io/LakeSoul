@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! `RANK()` and `DENSE_RANK()` window views. They reuse the ROW_NUMBER
 //! maintenance (recompute the affected partitions), but the declared ordering
 //! is used as-is so ties share a rank, and the MV column is named after the

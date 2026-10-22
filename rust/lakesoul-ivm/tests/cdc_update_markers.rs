@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! The three-marker CDC contract: `insert` / `update` / `delete`.
 //!
 //! `update` carries the after image of a change and is simply a newer version

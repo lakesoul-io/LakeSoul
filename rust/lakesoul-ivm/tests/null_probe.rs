@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Probe: internal LakeSoul tables with NULL merge keys (hash + stable sort +
 //! merge-on-read), used to decide the NULL group key strategy.
 

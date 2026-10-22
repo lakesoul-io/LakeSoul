@@ -9,7 +9,6 @@
 //! export them. The labels stay low cardinality: the view kind and the action,
 //! never a view or table id.
 
-use std::cell::RefCell;
 use std::future::Future;
 use std::sync::Once;
 use std::time::Duration;
@@ -168,7 +167,9 @@ pub(crate) struct RefreshIo {
 }
 
 tokio::task_local! {
-    static REFRESH_IO: RefCell<RefreshIo>;
+    /// Shared so reader tasks started with `spawn_blocking` (whose thread
+    /// does not inherit the task-local) can still attribute their IO.
+    static REFRESH_IO: std::sync::Arc<std::sync::Mutex<RefreshIo>>;
 }
 
 /// Run one view refresh (or rebuild) with its IO counters scoped to the task.
@@ -179,34 +180,73 @@ pub(crate) async fn scope_refresh_io<F, T>(kind: &str, future: F) -> T
 where
     F: Future<Output = T>,
 {
+    let io = std::sync::Arc::new(std::sync::Mutex::new(RefreshIo::default()));
     REFRESH_IO
-        .scope(RefCell::new(RefreshIo::default()), async {
+        .scope(io.clone(), async {
             let value = future.await;
-            let io = REFRESH_IO.with(|cell| *cell.borrow());
+            let io = *io.lock().expect("refresh IO mutex");
             record_refresh_io(kind, io);
             value
         })
         .await
 }
 
+/// The IO sink of the refresh currently executing on this task, if any.
+pub(crate) fn current_refresh_io() -> Option<std::sync::Arc<std::sync::Mutex<RefreshIo>>>
+{
+    REFRESH_IO.try_with(std::sync::Arc::clone).ok()
+}
+
 /// One data file read by the current refresh.
 pub(crate) fn add_files_read(files: u64) {
-    let _ = REFRESH_IO.try_with(|cell| cell.borrow_mut().files_read += files);
+    if let Ok(io) = REFRESH_IO.try_with(std::sync::Arc::clone) {
+        add_files_read_shared(&io, files);
+    }
+}
+
+/// Like [`add_files_read`], for a sink captured in another thread.
+pub(crate) fn add_files_read_shared(
+    io: &std::sync::Arc<std::sync::Mutex<RefreshIo>>,
+    files: u64,
+) {
+    if let Ok(mut io) = io.lock() {
+        io.files_read += files;
+    }
 }
 
 /// Rows returned by the reader of the current refresh.
 pub(crate) fn add_rows_scanned(rows: u64) {
-    let _ = REFRESH_IO.try_with(|cell| cell.borrow_mut().rows_scanned += rows);
+    if let Ok(io) = REFRESH_IO.try_with(std::sync::Arc::clone) {
+        add_rows_scanned_shared(&io, rows);
+    }
+}
+
+/// Like [`add_rows_scanned`], for a sink captured in another thread.
+pub(crate) fn add_rows_scanned_shared(
+    io: &std::sync::Arc<std::sync::Mutex<RefreshIo>>,
+    rows: u64,
+) {
+    if let Ok(mut io) = io.lock() {
+        io.rows_scanned += rows;
+    }
 }
 
 /// Rows appended to a materialized view by the current refresh.
 pub(crate) fn add_rows_written(rows: u64) {
-    let _ = REFRESH_IO.try_with(|cell| cell.borrow_mut().rows_written += rows);
+    if let Ok(io) = REFRESH_IO.try_with(std::sync::Arc::clone)
+        && let Ok(mut io) = io.lock()
+    {
+        io.rows_written += rows;
+    }
 }
 
 /// Bytes of the files a materialized-view append wrote.
 pub(crate) fn add_bytes_written(bytes: u64) {
-    let _ = REFRESH_IO.try_with(|cell| cell.borrow_mut().bytes_written += bytes);
+    if let Ok(io) = REFRESH_IO.try_with(std::sync::Arc::clone)
+        && let Ok(mut io) = io.lock()
+    {
+        io.bytes_written += bytes;
+    }
 }
 
 fn record_refresh_io(kind: &str, io: RefreshIo) {

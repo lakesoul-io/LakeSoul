@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Vortex internal tables: IVM sources/MVs/state tables can be created with
 //! `with_file_format(PhysicalFormat::Vortex)` and refresh, merge-on-read,
 //! filtered reads and rebuilds all work (parquet sources feeding vortex MVs

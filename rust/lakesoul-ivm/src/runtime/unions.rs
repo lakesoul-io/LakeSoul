@@ -239,7 +239,7 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
     let first = &view.sources[0].table.schema;
     for source in &view.sources {
         if let Some(filter) = &source.filter {
-            let context = SessionContext::new();
+            let context = refresh_session();
             parse_filter(&context, &source.table.schema, filter)?;
         }
         let table = &source.table;
@@ -499,7 +499,7 @@ fn validate_union_distinct_view(view: &UnionDistinctView) -> Result<()> {
     let first = &view.sources[0].table.schema;
     for source in &view.sources {
         if let Some(filter) = &source.filter {
-            let context = SessionContext::new();
+            let context = refresh_session();
             parse_filter(&context, &source.table.schema, filter)?;
         }
         let table = &source.table;
@@ -710,7 +710,7 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
         let keyed = !view.sources[0].table.primary_keys.is_empty();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mut inserts = Vec::new();
         let mut changed = Vec::new();
         for (index, source) in view.sources.iter().enumerate() {
@@ -720,35 +720,16 @@ impl IvmRuntime {
                 .as_deref()
                 .map(|filter| parse_filter(&context, &table.schema, filter))
                 .transpose()?;
-            let delta_batches = table
-                .read_partition_files(windows[index].added_files.clone())
-                .await?;
-            let delta = dataframe(&context, delta_batches.clone(), &table.schema)?;
+            let delta = self.groups_table_frame(
+                &context,
+                table,
+                windows[index].added_files.clone(),
+            )?;
             if keyed {
-                // Only the delta's keys can change this branch's rows.
-                let filters = if table.primary_keys.is_empty() {
-                    Vec::new()
-                } else {
-                    let rows = delta_batches
-                        .iter()
-                        .map(|batch| batch.num_rows())
-                        .sum::<usize>();
-                    if rows > 0 && rows <= crate::runtime::MAX_KEY_FILTERS {
-                        crate::runtime::key_filters(&table.primary_keys, &delta_batches)?
-                    } else {
-                        Vec::new()
-                    }
-                };
+                // The delta keys select the affected rows through the
+                // semi-join below; the current source stays streaming.
                 let source_now = filter_deletes(
-                    dataframe(
-                        &context,
-                        if filters.is_empty() {
-                            table.read_current(&self.client).await?
-                        } else {
-                            table.read_current_filtered(&self.client, filters).await?
-                        },
-                        &table.schema,
-                    )?,
+                    self.current_table_frame(&context, table)?,
                     change_column(table),
                 )?;
                 let key_names = table
@@ -809,20 +790,18 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
 
         if keyed {
-            let mv_batches = match union_mv_partitions(&view.mv, &view.sources, &windows)
-            {
+            let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
                 Some(restriction) => {
-                    view.mv
-                        .read_current_filtered_partitions(
-                            &self.client,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
                 }
-                None => view.mv.read_current(&self.client).await?,
+                None => self.current_table_frame(&context, &view.mv)?,
             };
-            let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
             let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
             pair_names.extend(view.sources[0].table.primary_keys.iter().cloned());
             let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -857,30 +836,25 @@ impl IvmRuntime {
             );
             sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
             commit_ids.extend(
-                view.mv
-                    .append_batches(
-                        &self.client,
-                        inserts
-                            .union(deletes)?
-                            .sort_by(sort_exprs)?
-                            .collect()
-                            .await?,
-                    )
-                    .await?,
+                append_dataframe(
+                    &view.mv,
+                    &self.client,
+                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                )
+                .await?
+                .commit_ids,
             );
         } else {
             // The append-only frames already carry the MV column order (the
             // output columns, the source index, the row kind).
             commit_ids.extend(
-                view.mv
-                    .append_batches(
-                        &self.client,
-                        union_frames(inserts)?
-                            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                            .collect()
-                            .await?,
-                    )
-                    .await?,
+                append_dataframe(
+                    &view.mv,
+                    &self.client,
+                    union_frames(inserts)?.with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
+                )
+                .await?
+                .commit_ids,
             );
         }
 
@@ -942,12 +916,16 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mut frames = Vec::new();
         for (index, source) in view.sources.iter().enumerate() {
             let table = &source.table;
             let rows = filter_deletes(
-                dataframe(&context, baselines[index].batches.clone(), &table.schema)?,
+                self.groups_table_frame(
+                    &context,
+                    table,
+                    baselines[index].groups.clone(),
+                )?,
                 change_column(table),
             )?;
             let rows = match &source.filter {
@@ -966,17 +944,16 @@ impl IvmRuntime {
             .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
             .collect::<Vec<_>>();
         commit_ids.extend(
-            view.mv
-                .append_batches(
-                    &self.client,
-                    union_frames(frames)?
-                        .select(output_exprs)?
-                        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                        .collect()
-                        .await?,
-                )
-                .await?,
+            append_dataframe(
+                &view.mv,
+                &self.client,
+                union_frames(frames)?
+                    .select(output_exprs)?
+                    .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
+            )
+            .await?
+            .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1037,44 +1014,46 @@ impl IvmRuntime {
         let mut commit_ids = Vec::new();
         let keyed = !view.sources[0].table.primary_keys.is_empty();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         for (index, source) in view.sources.iter().enumerate() {
             let table = &source.table;
-            let delta = table
-                .read_partition_files(windows[index].added_files.clone())
-                .await?;
+            let delta = self.groups_table_frame(
+                &context,
+                table,
+                windows[index].added_files.clone(),
+            )?;
             if keyed {
-                let pk_filters = key_filters(&table.primary_keys, &delta)?;
-                let before = table
-                    .read_before_window_filtered(
-                        &self.client,
+                let before = self
+                    .before_window_table_frame(
+                        &context,
+                        table,
                         &windows[index].before_versions,
-                        pk_filters,
                     )
                     .await?;
-                register_table(&context, &format!("old{index}"), before, &table.schema)?;
+                context.register_table(format!("old{index}"), before.into_view())?;
             }
-            register_table(&context, &format!("src{index}"), delta, &table.schema)?;
+            context.register_table(format!("src{index}"), delta.into_view())?;
         }
-        let mv_batches = match union_mv_partitions(&view.mv, &view.sources, &windows) {
+        let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
             Some(restriction) => {
-                view.mv
-                    .read_current_filtered_partitions(
-                        &self.client,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.mv,
+                    Vec::new(),
+                    &restriction,
+                )
+                .await?
             }
-            None => view.mv.read_current(&self.client).await?,
+            None => self.current_table_frame(&context, &view.mv)?,
         };
-        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
+        context.register_table("mv", mv.into_view())?;
         let sql = union_distinct_refresh_sql(view, keyed, epoch)?;
-        for batch in context.sql(&sql).await?.collect().await? {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        let frame = context.sql(&sql).await?;
+        commit_ids.extend(
+            view.mv
+                .append_stream(&self.client, frame.execute_stream().await?)
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -1134,21 +1113,23 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         for (index, source) in view.sources.iter().enumerate() {
-            register_table(
-                &context,
-                &format!("src{index}"),
-                baselines[index].batches.clone(),
-                &source.table.schema,
+            context.register_table(
+                format!("src{index}"),
+                Arc::new(self.table_provider_groups(
+                    &source.table,
+                    baselines[index].groups.clone(),
+                )),
             )?;
         }
         let sql = union_distinct_rebuild_sql(view, epoch)?;
-        for batch in context.sql(&sql).await?.collect().await? {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        let frame = context.sql(&sql).await?;
+        commit_ids.extend(
+            view.mv
+                .append_stream(&self.client, frame.execute_stream().await?)
+                .await?,
+        );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata

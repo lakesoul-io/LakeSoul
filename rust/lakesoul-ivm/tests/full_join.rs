@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! FULL join views over two keyed sources: all matching pairs plus the
 //! unmatched rows of either side (NULL-padded).
 

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! The `ivm.states` registry: every view registers the internal LakeSoul
 //! tables it keeps its state in, the binding is stable across refreshes, a
 //! conflicting table for the same `(view, role)` is refused, and deleting a

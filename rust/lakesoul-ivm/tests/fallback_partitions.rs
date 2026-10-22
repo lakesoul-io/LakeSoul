@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tier-2 fallback views over range-partitioned sources: a refresh whose
 //! statement is partition local recomputes only the partitions that changed,
 //! and a change in an unpartitioned source recomputes the whole view.
