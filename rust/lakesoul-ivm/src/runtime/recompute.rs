@@ -3167,6 +3167,8 @@ impl IvmRuntime {
             )?)
         };
         let keyed = !view.source.primary_keys.is_empty();
+        let source_partitions = self
+            .changed_partition_restriction(&window, &view.source.range_partition_columns);
         let versions: Vec<PartitionVersion> = window
             .before_versions
             .iter()
@@ -3204,7 +3206,17 @@ impl IvmRuntime {
                 &key_names,
                 None,
             )?;
-            let current = self.current_table_frame(&context, &view.source)?;
+            let current = if let Some(restriction) = source_partitions.as_deref() {
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.source,
+                    Vec::new(),
+                    restriction,
+                )
+                .await?
+            } else {
+                self.current_table_frame(&context, &view.source)?
+            };
             let new = current.join(
                 delta_keys,
                 JoinType::LeftSemi,
@@ -3334,7 +3346,20 @@ impl IvmRuntime {
         let contrib = context.sql(&contrib_sql).await?;
         let merge_context = refresh_session();
         merge_context.register_table("contrib", contrib.into_view())?;
-        merge_context.register_table("state", Arc::new(self.table_provider(state)))?;
+        let state_partitions =
+            self.changed_partition_restriction(&window, &state.range_partition_columns);
+        let state_frame = if let Some(restriction) = state_partitions.as_deref() {
+            self.current_table_frame_filtered_partitions(
+                &merge_context,
+                state,
+                Vec::new(),
+                restriction,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&merge_context, state)?
+        };
+        merge_context.register_table("state", state_frame.into_view())?;
         let row = quote_ident(IVM_GROUP_ROW_COLUMN);
         let row_count = quote_ident(IVM_ROW_COUNT_COLUMN);
         let row_kinds = quote_ident(IVM_ROW_KINDS_COLUMN);

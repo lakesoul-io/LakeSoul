@@ -11,7 +11,7 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{ArrayRef, BinaryArray, BinaryBuilder};
@@ -4003,6 +4003,51 @@ impl IvmRuntime {
             .current_groups_for_partitions(&self.client, partitions)
             .await?;
         apply_filters(self.groups_table_frame(context, table, groups)?, filters)
+    }
+
+    /// The range-partition values touched by a source window.
+    ///
+    /// A refresh only needs the source/state rows of the partitions whose
+    /// changelog it is consuming.  The descriptors come from the source, so a
+    /// state table whose range columns have the same names and order can reuse
+    /// them directly.  Any descriptor that does not parse for `columns`
+    /// disables pruning: reading an extra partition is safe, dropping one is
+    /// not.
+    fn changed_partition_restriction(
+        &self,
+        window: &SourceWindow,
+        columns: &[String],
+    ) -> Option<Vec<(String, Vec<String>)>> {
+        if columns.is_empty() {
+            return None;
+        }
+        let mut values: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut saw_partition = false;
+        for descriptor in window
+            .added_files
+            .iter()
+            .map(|group| group.partition_desc.as_str())
+            .chain(window.before_versions.keys().map(String::as_str))
+        {
+            let parsed = parse_partition_values(descriptor, columns)?;
+            saw_partition = true;
+            for (column, value) in columns.iter().zip(parsed) {
+                values.entry(column.clone()).or_default().insert(value);
+            }
+        }
+        if !saw_partition {
+            return None;
+        }
+        Some(
+            columns
+                .iter()
+                .filter_map(|column| {
+                    values
+                        .get(column)
+                        .map(|values| (column.clone(), values.iter().cloned().collect()))
+                })
+                .collect(),
+        )
     }
 
     /// A lazy frame over explicit delta groups, keeping delete+insert rows.
