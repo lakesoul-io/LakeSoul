@@ -129,26 +129,53 @@ Deliberately **not** included (later phases):
 
 ## Observability (optional overlay)
 
-`observability/` is the base plus Grafana 12.2.5, Prometheus v3.2.1 and Tempo
-2.7.2, the versions and configuration of `docker/observability`. Apply it
-instead of `base/`; the base alone keeps running without it.
+`observability/` is the base plus Grafana 12.2.5, Prometheus v3.2.1, Tempo
+2.7.2 (the versions and configuration of `docker/observability`) and
+kube-state-metrics v2.13.0. Apply it instead of `base/`; the base alone keeps
+running without it.
 
 | Component | What it does |
 |---|---|
 | `lakesoul-tempo` | OTLP ingest (4317 gRPC, 4318 HTTP), 24 h of traces on the `lakesoul-tempo-data` PVC (10Gi), span metrics / service graphs remote-written to Prometheus |
-| `lakesoul-prometheus` | Scrapes every Pod in the namespace labelled `app.kubernetes.io/name: lakesoul` on its `metrics` port (labels `pod`, `role` = container name); receives Tempo's remote writes; 15 d / 8 GB on the `lakesoul-prometheus-data` PVC (10Gi) |
+| `lakesoul-prometheus` | Scrapes every Pod in the namespace labelled `app.kubernetes.io/name: lakesoul` on its `metrics` port (labels `pod`, `role` = container name), every kubelet's cAdvisor and `lakesoul-kube-state-metrics` (below); receives Tempo's remote writes; 15 d / 8 GB on the `lakesoul-prometheus-data` PVC (10Gi) |
+| `lakesoul-kube-state-metrics` | Restart counts and last termination reasons of this namespace's containers (`--namespaces=lakesoul --resources=pods`, namespaced Role) |
 | `lakesoul-grafana` | Datasources Prometheus, Tempo and the cluster's existing Loki (`lakeinsight-loki.lakeinsight`, fed by `lakeinsight-promtail`), plus the *LakeSoul Overview* dashboard shared with `docker/observability` |
 | coordinator and worker patch | `OTEL_EXPORTER_OTLP_ENDPOINT=http://lakesoul-tempo:4317`, `service.instance.id` = Pod name; both Deployments roll on apply |
 
-1. Mirror the three upstream images into the SWR repository the
+The processes cannot see their own OOM kills, restarts or CPU throttling, so
+the overlay's Prometheus collects them next to the process metrics:
+
+- job `kubelet-cadvisor` scrapes `https://<node>:10250/metrics/cadvisor` on
+  every node and keeps `container_memory_rss`,
+  `container_memory_working_set_bytes`, `container_spec_memory_limit_bytes`
+  and `container_cpu_cfs_{,throttled_}periods_total` of the
+  `postgres-lakesoul` and `lakesoul-worker` containers in `lakesoul`. This is
+  the overlay's only cluster-scoped permission (ClusterRole
+  `lakesoul-prometheus-kubelet`: list/watch `nodes`, get `nodes/metrics`;
+  not `nodes/proxy`), so applying it needs rights to create ClusterRoles. The
+  kubelet certificate is not verified (commonly self-signed), the
+  ServiceAccount token authenticates the scrape;
+- job `kube-state-metrics` scrapes the overlay's own kube-state-metrics for
+  `kube_pod_container_status_restarts_total` and
+  `kube_pod_container_status_last_terminated_reason`.
+
+The dashboard panels *Memory: container RSS vs. execution pool*, *Container
+restarts and OOM kills* and *CPU throttling* read these series and line them
+up with the process metrics by `pod`. OOM kills come from
+`last_terminated_reason{reason="OOMKilled"}`, not cAdvisor's
+`container_oom_events_total`, whose series disappears with the killed
+container.
+
+1. Mirror the upstream images into the SWR repository the
    `images:` entries in `observability/kustomization.yaml` point at (the
    ServiceAccounts reuse the `lakesoul-registry` pull Secret):
 
    ```sh
-   for image in grafana/grafana:12.2.5 prom/prometheus:v3.2.1 grafana/tempo:2.7.2; do
+   for image in grafana/grafana:12.2.5 prom/prometheus:v3.2.1 grafana/tempo:2.7.2 \
+       registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0; do
      docker pull "$image"
-     docker tag "$image" "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image#*/}"
-     docker push "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image#*/}"
+     docker tag "$image" "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image##*/}"
+     docker push "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image##*/}"
    done
    ```
 
@@ -192,6 +219,9 @@ the dashboard panel and the trace-to-logs link are unaffected.
 | coordinator, workers -> `lakesoul-tempo` (4317) | OTLP trace export (observability overlay) |
 | `lakesoul-prometheus` -> coordinator (19090), workers (19091) | metrics scrape, direct to Pod IP; Pod discovery via the API server (443) |
 | `lakesoul-tempo` -> `lakesoul-prometheus` (9090) | span metrics remote write |
+| `lakesoul-prometheus` -> every node's kubelet (10250) | cAdvisor scrape; node discovery via the API server (443) |
+| `lakesoul-prometheus` -> `lakesoul-kube-state-metrics` (8080) | restart / termination-reason scrape, direct to Pod IP |
+| `lakesoul-kube-state-metrics` -> Kubernetes API server (443) | Pod list/watch in `lakesoul` |
 | `lakesoul-grafana` -> Prometheus (9090), Tempo (3200), `lakeinsight-loki.lakeinsight` (3100) | dashboards and Explore |
 
 No LoadBalancer or Ingress is configured: the PG wire endpoint lacks
