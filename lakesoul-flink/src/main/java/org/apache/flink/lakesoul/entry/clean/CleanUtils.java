@@ -129,73 +129,206 @@ public class CleanUtils {
         }
     }
 
+    /**
+     * Deletes files and data_commit_info rows of an old snapshot.
+     *
+     * <p>An UpdateCommit replaces the partition snapshot but re-adds unchanged files with their
+     * original paths (see Spark {@code TransactionCommit.createDataCommitInfo}), and leveled
+     * compaction reuses paths as well. A file is therefore only removed when the latest partition
+     * version no longer references it.
+     *
+     * @param oldCompaction whether files may be deleted; false deletes metadata only
+     */
     public void deleteFileAndDataCommitInfo(
             List<String> snapshot,
             String tableId,
             String partitionDesc,
             Connection connection,
             Boolean oldCompaction) {
-        snapshot.forEach(
-                commitId -> {
-                    if (oldCompaction) {
-                        String sql =
-                                "SELECT \n"
-                                        + "    dci.table_id, \n"
-                                        + "    dci.partition_desc, \n"
-                                        + "    dci.commit_id, \n"
-                                        + "    file_op.path \n"
-                                        + "FROM \n"
-                                        + "    data_commit_info dci, \n"
-                                        + "    unnest(dci.file_ops) AS file_op \n"
-                                        + "WHERE \n"
-                                        + "    dci.table_id = '"
-                                        + tableId
-                                        + "' \n"
-                                        + "    AND dci.partition_desc = '"
-                                        + partitionDesc
-                                        + "' \n"
-                                        + "    AND dci.commit_id = '"
-                                        + commitId
-                                        + "' \n"
-                                        + "    AND dci.pinned = false";
-                        try (PreparedStatement preparedStatement =
-                                connection.prepareStatement(sql)) {
-                            // 执行删除操作
-                            ResultSet pathSet = preparedStatement.executeQuery();
-                            logger.info(sql);
-                            List<String> oldCompactionFileList = new ArrayList<>();
-                            while (pathSet.next()) {
-                                String path = pathSet.getString("path");
-                                oldCompactionFileList.add(path);
-                            }
-                            if (!oldCompactionFileList.isEmpty()) {
-                                deleteFile(oldCompactionFileList);
-                            }
-                        } catch (SQLException e) {
-                            logger.error("删除 compaction 文件失败，将重试", e);
-                            throw new RuntimeException(e);
-                        }
+        Set<String> livePaths = null;
+        if (oldCompaction) {
+            try {
+                if (hasMissingLiveCommit(connection, tableId, partitionDesc)) {
+                    logger.error(
+                            "{}/{} latest snapshot has missing data_commit_info, skip file"
+                                    + " deletion",
+                            tableId,
+                            partitionDesc);
+                } else {
+                    livePaths = getLatestSnapshotPaths(connection, tableId, partitionDesc);
+                    if (livePaths.isEmpty()) {
+                        logger.warn(
+                                "no live file path resolved for {}/{}, skip file deletion",
+                                tableId,
+                                partitionDesc);
+                        livePaths = null;
                     }
-                    String deleteDataCommitInfoSql =
-                            "DELETE FROM data_commit_info \n"
-                                    + "WHERE table_id = '"
-                                    + tableId
-                                    + "' \n"
-                                    + "AND commit_id = '"
-                                    + commitId
-                                    + "' \n"
-                                    + "AND partition_desc = '"
-                                    + partitionDesc
-                                    + "' \n"
-                                    + "AND pinned = false";
-                    try (PreparedStatement preparedStatement =
-                            connection.prepareStatement(deleteDataCommitInfoSql)) {
-                        logger.info(deleteDataCommitInfoSql);
-                        preparedStatement.executeUpdate();
+                }
+            } catch (SQLException e) {
+                logger.error(
+                        "failed to resolve live files for {}/{}, skip file deletion",
+                        tableId,
+                        partitionDesc,
+                        e);
+            }
+        }
+
+        for (String commitId : snapshot) {
+            if (livePaths != null) {
+                List<String> commitPaths;
+                try {
+                    commitPaths = getCommitFilePaths(connection, tableId, partitionDesc, commitId);
+                } catch (SQLException e) {
+                    logger.error(
+                            "failed to query files of commit {}, keep data_commit_info for retry",
+                            commitId,
+                            e);
+                    continue;
+                }
+                List<String> deletable = new ArrayList<>();
+                int protectedCount = 0;
+                for (String path : commitPaths) {
+                    if (livePaths.contains(path)) {
+                        protectedCount++;
+                    } else {
+                        deletable.add(path);
+                    }
+                }
+                if (protectedCount > 0) {
+                    logger.warn(
+                            "skip {} files of commit {} still referenced by the latest snapshot of"
+                                    + " {}/{}",
+                            protectedCount,
+                            commitId,
+                            tableId,
+                            partitionDesc);
+                }
+                if (!deletable.isEmpty()) {
+                    try {
+                        deleteFile(deletable);
                     } catch (SQLException e) {
-                        throw new RuntimeException(e);
+                        logger.error(
+                                "failed to delete files of commit {}, keep data_commit_info for"
+                                        + " retry",
+                                commitId,
+                                e);
+                        continue;
                     }
-                });
+                }
+            }
+
+            deleteDataCommitInfo(connection, tableId, partitionDesc, commitId);
+        }
+    }
+
+    private void deleteDataCommitInfo(
+            Connection connection, String tableId, String partitionDesc, String commitId) {
+        String deleteDataCommitInfoSql =
+                "DELETE FROM data_commit_info \n"
+                        + "WHERE table_id = '"
+                        + tableId
+                        + "' \n"
+                        + "AND commit_id = '"
+                        + commitId
+                        + "' \n"
+                        + "AND partition_desc = '"
+                        + partitionDesc
+                        + "' \n"
+                        + "AND pinned = false";
+        try (PreparedStatement preparedStatement =
+                connection.prepareStatement(deleteDataCommitInfoSql)) {
+            logger.info(deleteDataCommitInfoSql);
+            preparedStatement.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * All add paths referenced by the latest partition version. The union of adds is a conservative
+     * check: leaking a file is acceptable, deleting a referenced one is not.
+     */
+    private Set<String> getLatestSnapshotPaths(
+            Connection connection, String tableId, String partitionDesc) throws SQLException {
+        String sql =
+                "SELECT DISTINCT file_op.path \n"
+                        + "FROM partition_info p \n"
+                        + "JOIN data_commit_info d \n"
+                        + "  ON d.table_id = p.table_id \n"
+                        + " AND d.partition_desc = p.partition_desc \n"
+                        + " AND d.commit_id = ANY(p.snapshot) \n"
+                        + "CROSS JOIN LATERAL unnest(d.file_ops) AS file_op \n"
+                        + "WHERE p.table_id = ? \n"
+                        + "  AND p.partition_desc = ? \n"
+                        + "  AND p.version = (SELECT max(version) FROM partition_info \n"
+                        + "                   WHERE table_id = ? AND partition_desc = ?) \n"
+                        + "  AND file_op.file_op = 'add'";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, tableId);
+            ps.setString(2, partitionDesc);
+            ps.setString(3, tableId);
+            ps.setString(4, partitionDesc);
+            try (ResultSet rs = ps.executeQuery()) {
+                Set<String> paths = new HashSet<>();
+                while (rs.next()) {
+                    paths.add(rs.getString("path"));
+                }
+                return paths;
+            }
+        }
+    }
+
+    /**
+     * Whether a commit of the latest snapshot has no data_commit_info row. Without the full live
+     * set file deletion is unsafe.
+     */
+    private boolean hasMissingLiveCommit(
+            Connection connection, String tableId, String partitionDesc) throws SQLException {
+        String sql =
+                "SELECT count(*) \n"
+                        + "FROM partition_info p, unnest(p.snapshot) c \n"
+                        + "WHERE p.table_id = ? \n"
+                        + "  AND p.partition_desc = ? \n"
+                        + "  AND p.version = (SELECT max(version) FROM partition_info \n"
+                        + "                   WHERE table_id = ? AND partition_desc = ?) \n"
+                        + "  AND NOT EXISTS (SELECT 1 FROM data_commit_info d \n"
+                        + "                  WHERE d.table_id = p.table_id \n"
+                        + "                    AND d.partition_desc = p.partition_desc \n"
+                        + "                    AND d.commit_id = c)";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, tableId);
+            ps.setString(2, partitionDesc);
+            ps.setString(3, tableId);
+            ps.setString(4, partitionDesc);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1) > 0;
+            }
+        }
+    }
+
+    private List<String> getCommitFilePaths(
+            Connection connection, String tableId, String partitionDesc, String commitId)
+            throws SQLException {
+        String sql =
+                "SELECT file_op.path \n"
+                        + "FROM data_commit_info dci, unnest(dci.file_ops) AS file_op \n"
+                        + "WHERE dci.table_id = ? \n"
+                        + "  AND dci.partition_desc = ? \n"
+                        + "  AND dci.commit_id = ? \n"
+                        + "  AND dci.pinned = false";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, tableId);
+            ps.setString(2, partitionDesc);
+            ps.setObject(3, UUID.fromString(commitId));
+            try (ResultSet rs = ps.executeQuery()) {
+                List<String> paths = new ArrayList<>();
+                while (rs.next()) {
+                    paths.add(rs.getString("path"));
+                }
+                return paths;
+            }
+        }
     }
 
     /** 使用 Flink FileSystem API 删除空的父目录 */

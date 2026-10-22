@@ -171,6 +171,9 @@ public class CompactionBroadcastProcessFunction
                     log.info(ctx.getCurrentKey() + " 执行删除操作");
                     CleanUtils cleanUtils = new CleanUtils();
                     boolean latestCompactVersionIsOld = state.get(key).isOldCompaction();
+                    // Older commits are obsolete, but a file may be re-added by a newer commit
+                    // with the same path (UpdateCommit / leveled compaction). CleanUtils checks
+                    // the latest snapshot before deleting any file.
                     boolean belongOldCompaction =
                             value.version < state.get(key).switchVersion
                                     || latestCompactVersionIsOld;
@@ -237,6 +240,9 @@ public class CompactionBroadcastProcessFunction
             long compactTimestamp = compactionOut.timestamp;
             if (eventTimestamp < compactTimestamp && timestamp - eventTimestamp > expiredTime) {
                 boolean latestCompactVersionIsOld = state.get(partitionDescKey).isOldCompaction();
+                // Older commits are obsolete, but a file may be re-added by a newer commit with
+                // the same path (UpdateCommit / leveled compaction). CleanUtils checks the latest
+                // snapshot before deleting any file.
                 boolean belongOldCompaction =
                         value.version < state.get(partitionDescKey).switchVersion
                                 || latestCompactVersionIsOld;
