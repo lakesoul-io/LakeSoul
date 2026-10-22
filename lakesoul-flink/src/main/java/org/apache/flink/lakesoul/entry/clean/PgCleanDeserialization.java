@@ -38,6 +38,21 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
 
         result.put("commitOp", operation.toString().toLowerCase());
         result.put("tableName", tableName);
+        // Retention for discard_compressed_file_info must start when the file was marked
+        // discarded (the transaction commit time), not when it was originally written.
+        Struct source = value.getStruct("source");
+        if (source != null) {
+            Object tsMs = source.get("ts_ms");
+            if (tsMs instanceof Number) {
+                result.put("eventTime", ((Number) tsMs).longValue());
+            }
+            Object snapshot = source.get("snapshot");
+            result.put(
+                    "snapshot",
+                    snapshot != null
+                            && ("true".equalsIgnoreCase(snapshot.toString())
+                                    || "last".equalsIgnoreCase(snapshot.toString())));
+        }
         if (tableName.equals("table_info")) {
             boolean hasPartitionTtlProperty = false;
             if (beforeJson.containsKey("properties")
