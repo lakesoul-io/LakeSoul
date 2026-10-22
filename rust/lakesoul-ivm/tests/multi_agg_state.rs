@@ -183,6 +183,27 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
         vec![(0, 1, 7), (0, 2, 20), (1, 1, 30), (1, 2, 40)]
     );
 
+    // Compaction is an out-of-band maintenance step.  It must preserve both
+    // state and MV, and the next keyed refresh must still find the state rows.
+    state.compact(runtime.client()).await.unwrap();
+    mv.compact(runtime.client()).await.unwrap();
+    assert_eq!(
+        mv_values(&runtime, &mv).await,
+        vec![(0, 1, 7), (0, 2, 20), (1, 1, 30), (1, 2, 40)]
+    );
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, 0, 2, 9)]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_agg_state(&view, &state)
+        .await
+        .unwrap();
+    assert_eq!(
+        mv_values(&runtime, &mv).await,
+        vec![(0, 1, 7), (0, 2, 9), (1, 1, 30), (1, 2, 40)]
+    );
+
     let state_partitions = runtime
         .client()
         .get_all_partition_info(&state.table_id)

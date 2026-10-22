@@ -535,8 +535,13 @@ contrib stream (affected groups, bounded batches)
   - state/MV 输出按有界 chunk 写入，state 与 MV 并行 append。
 - 不把完整 key 集合 collect 到 driver；每个 batch 的 key 集合和 state 结果
   都是有界的。
-- 小分区真实 delta：25 个窗口全部 `equal=true`，单窗口约 1.2–4.8s。
+- 小分区真实 delta：25 个窗口全部 `equal=true`，单窗口约 1.2–3.7s。
+- 在测试窗口之间显式执行 state/MV compaction：
+  - 第 10 轮后约 3.6s；
+  - 第 20 轮后约 3.3s；
+  - compaction 不计入 refresh 计时；
+  - compaction 后继续增量，最终仍 `equal=true`。
 - 仍需补：
   - state reader 的 `rows_scanned` 指标，证明 PK lookup 命中而不是全分区扫描；
-  - state/MV compaction 在测试窗口之间的显式调度；
-  - full-day 真实/合成增量与持久化 full_ref 对比。
+  - full-day 真实/合成增量与持久化 full_ref 对比；
+  - 100 轮文件数与 compaction 稳定性。
