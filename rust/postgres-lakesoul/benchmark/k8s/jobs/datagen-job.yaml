@@ -41,6 +41,8 @@ spec:
             # Empty = tpch.sh defaults.
             - name: PARTS
               value: "${PARTS}"
+            - name: BUCKETS
+              value: "${BUCKETS}"
             - name: TABLES
               value: "${TABLES}"
             - name: CHUNKS

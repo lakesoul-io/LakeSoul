@@ -353,6 +353,7 @@ def cmd_datagen(a) -> None:
         SF=str(a.sf),
         LOCATION=a.location,
         PARTS=a.parts,
+        BUCKETS=a.buckets,
         TABLES=a.tables,
         CHUNKS=str(a.chunks),
         LAYOUT=a.layout,
@@ -536,9 +537,10 @@ def main() -> None:
     g.add_argument("--sf", required=True)
     g.add_argument("--location", required=True)
     g.add_argument("--parts", default="", help="tpchgen partitions (default: tpch.sh)")
+    g.add_argument("--buckets", default="", help="hashBucketNum (default: tpch.sh)")
     g.add_argument("--tables", default="", help="space-separated subset (default: all)")
     g.add_argument("--chunks", type=int, default=1, help="upserts per table (datagen/tpch.sh CHUNKS)")
-    g.add_argument("--layout", default="pk", choices=["pk", "nopk"])
+    g.add_argument("--layout", default="pk", choices=["pk", "pkmonth", "nopk"])
     g.add_argument("--threads", type=int, default=4)
     g.add_argument("--cpu-req", default="1")
     g.add_argument("--cpu-lim", default="4")

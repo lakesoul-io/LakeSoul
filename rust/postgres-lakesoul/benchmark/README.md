@@ -10,7 +10,7 @@ TPC-H results.
 | `driver/` | `lsbench`, a stdlib-only async PG-wire driver (see `driver/README.md`) |
 | `workloads/tpch/` | q01–q22 with `{{SF}}` placeholders, answers for sf0.1/sf1/sf10 |
 | `workloads/mixes/` | load mixes: `short`, `cpu`, `mem`, `mixed` (paths relative to the mix file) |
-| `datagen/tpch.sh` | tpchgen → `lakesoul-console` loader (`LAYOUT=pk|nopk`, `CHUNKS`) |
+| `datagen/tpch.sh` | tpchgen → `lakesoul-console` loader (`LAYOUT=pk|pkmonth|nopk`, `BUCKETS`, `CHUNKS`) |
 | `k8s/base` | patches over `../k8s` overlay: Recreate strategy, bench image |
 | `k8s/profiles/{small,medium,throttled}` | coordinator/worker requests and limits |
 | `k8s/profiles/{large,xl}` | definitions only (no cluster capacity) |
@@ -44,7 +44,7 @@ TPC-H results.
 cd rust/postgres-lakesoul/benchmark
 # 1. Load data (Job in the cluster; pk layout = PRIMARY KEY + 16 hash buckets)
 python3 scripts/bench.py datagen --run-dir results/d01-datagen --bench-tag <tag> --sf 1 \
-  --location s3://<bucket>/bench/tpch_sf1 [--layout nopk] [--chunks 8]
+  --location s3://<bucket>/bench/tpch_sf1 [--layout pkmonth|nopk] [--buckets 16] [--chunks 8]
 # 2. Fresh (cold) deployment; waits for rollout and worker discovery
 python3 scripts/bench.py deploy --run-dir results/<run> --profile medium \
   --service-tag <service-tag> --bench-tag <tag> --workers 2 \
@@ -58,6 +58,18 @@ python3 scripts/report.py summary results/<run> --name tpch-sf1
 python3 scripts/report.py compare results/<base> results/<cand> --name tpch-sf1
 python3 scripts/report.py memory results/m2-*
 ```
+
+Layouts (`datagen/tpch.sh` documents them in full):
+
+| `--layout` | Schema | Distributed execution |
+|---|---|---|
+| `pk` | `tpch_sf<N>` | none: an unpartitioned PK table is one merge pinned to one task, so the whole query stays on the coordinator |
+| `pkmonth` | `tpch_sf<N>_pkmonth` | orders/lineitem range-partitioned by month (80/84 merges): scans spread over up to one task per month; the six dimension tables stay single-task |
+| `nopk` | `tpch_sf<N>_nopk` | append-only: scans split by bytes across worker tasks |
+
+`pkmonth` writes a file per month × bucket × chunk, so lower `--buckets` at
+small SF. The TPC-H queries do not filter the month columns, so they measure
+full-scan merge throughput, not partition pruning.
 
 `deploy` always recreates the pods, so the first measured iteration is cold.
 It returns only after the coordinator log reports
