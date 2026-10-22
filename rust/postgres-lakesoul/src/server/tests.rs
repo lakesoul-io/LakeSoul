@@ -429,6 +429,75 @@ async fn connection_close_releases_session() {
     assert_eq!(Arc::strong_count(&context), baseline - 1);
 }
 
+/// Connection churn: a completed connection must give back all of its
+/// session state, so retained memory does not grow with the number of
+/// connections served. `pg_catalog` is a schema of the connection's catalog
+/// and walks the connection's catalog list, which owns that catalog; while
+/// that cycle stands, every closed connection keeps its catalog, providers
+/// and `pg_catalog` tables alive.
+#[tokio::test]
+async fn completed_connections_retain_no_session_state() {
+    const CONNECTIONS: usize = 16;
+    let factory = test_factory().await;
+    let handler = LakeSoulStartupHandler::new(
+        Arc::clone(&factory),
+        Arc::new(crate::cancel::CancelRegistry::new()),
+        Arc::new(pgwire::api::ConnectionManager::new()),
+        crate::limits::ServerLimits::new(crate::limits::Limits::default()),
+    );
+    let router = LakeSoulQueryRouter::new();
+    let mut completed = Vec::with_capacity(CONNECTIONS);
+    for _ in 0..CONNECTIONS {
+        let mut client = MockClient::new();
+        client
+            .metadata_mut()
+            .insert(METADATA_USER.to_string(), "user_a".to_string());
+        client
+            .metadata_mut()
+            .insert(METADATA_DATABASE.to_string(), "default".to_string());
+        NoopStartupHandler::post_startup(
+            &handler,
+            &mut client,
+            PgWireFrontendMessage::Sync(PgSync::new()),
+        )
+        .await
+        .expect("post_startup");
+        // `pg_namespace` resolves the catalog list through `pg_catalog`. It
+        // walks only catalog and schema names, so tables other tests drop
+        // concurrently cannot fail the scan the way `pg_class` would.
+        let results = run_query(
+            &router,
+            &mut client,
+            "SELECT count(*) FROM pg_catalog.pg_namespace",
+        )
+        .await;
+        assert_eq!(first_column(&results).len(), 1);
+
+        let state = client
+            .session_extensions()
+            .get::<ConnectionSession>()
+            .expect("connection session installed");
+        let context = &state.session.context;
+        completed.push((
+            Arc::downgrade(context),
+            Arc::downgrade(&context.state().catalog_list().clone()),
+        ));
+        drop(state);
+        drop(client);
+    }
+
+    let retained = completed
+        .iter()
+        .filter(|(context, catalog_list)| {
+            context.strong_count() > 0 || catalog_list.strong_count() > 0
+        })
+        .count();
+    assert_eq!(
+        retained, 0,
+        "{retained} of {CONNECTIONS} completed connections still hold session state"
+    );
+}
+
 #[tokio::test]
 async fn startup_handler_installs_session() {
     let factory = test_factory().await;
