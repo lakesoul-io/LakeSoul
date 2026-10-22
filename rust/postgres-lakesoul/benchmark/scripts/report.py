@@ -24,6 +24,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from bench import PROM_MEMORY_POOL_LIMIT, PROM_MEMORY_POOL_RESERVED, PROM_MEMORY_RESERVATION_FAILURES
+
 
 def quantile(xs: list[float], q: float) -> float:
     if not xs:
@@ -266,7 +268,7 @@ def coordinator_restarts(pods_path: Path) -> tuple[int, str | None]:
 def cmd_memory(a) -> None:
     mib = 1 << 20
     print("| run | phase | ok/n | errors | coord restarts (reason) | peak cgroup MiB | limit MiB | "
-          "pool limit MiB | pool reserved max MiB | reservation failures |")
+          "pool limit MiB | pool reserved max MiB | reservation failures (max per 1m) |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     for run_dir in a.run_dirs:
         run = Path(run_dir)
@@ -290,9 +292,9 @@ def cmd_memory(a) -> None:
             coord = [sampler_summary(p) for p in paths]
             peak = max((c.get("peak_mem_current") or 0 for c in coord), default=0)
             limit = max((c.get("mem_max") or 0 for c in coord), default=0)
-            pool_limit = prom_max(run, name, "sum by (pod) (lakesoul_memory_pool_limit_bytes)", pods)
-            reserved = prom_max(run, name, "sum by (pod) (lakesoul_memory_pool_reserved_bytes)", pods)
-            failures = prom_max(run, name, "sum by (pod) (increase(lakesoul_memory_reservation_failures_total[15s]))", pods)
+            pool_limit = prom_max(run, name, PROM_MEMORY_POOL_LIMIT, pods)
+            reserved = prom_max(run, name, PROM_MEMORY_POOL_RESERVED, pods)
+            failures = prom_max(run, name, PROM_MEMORY_RESERVATION_FAILURES, pods)
             delta = restarts_now - prev_restarts
             prev_restarts = restarts_now
             print(f"| {run.name} | {name} | {ok}/{len(rows)} | {dict(errs) or ''} | "

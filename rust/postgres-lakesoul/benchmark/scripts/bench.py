@@ -459,13 +459,17 @@ def shlex_quote(s: str) -> str:
 # Range windows are 4x the 15 s scrape interval (k8s/observability/config/
 # prometheus.yml); a [15s] window holds at most one sample, so rate() and
 # increase() over it return nothing.
+# report.py looks series up by their exact query text: it imports these.
+PROM_MEMORY_POOL_RESERVED = 'sum by (pod) (lakesoul_memory_pool_reserved_bytes)'
+PROM_MEMORY_POOL_LIMIT = 'sum by (pod) (lakesoul_memory_pool_limit_bytes)'
+PROM_MEMORY_RESERVATION_FAILURES = 'sum by (pod) (increase(lakesoul_memory_reservation_failures_total[1m]))'
 PROM_SERIES = [
     'sum by (pod, outcome) (rate(lakesoul_query_requests_total[1m]))',
     'histogram_quantile(0.99, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))',
     'histogram_quantile(0.5, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))',
-    'sum by (pod) (lakesoul_memory_pool_reserved_bytes)',
-    'sum by (pod) (lakesoul_memory_pool_limit_bytes)',
-    'sum by (pod) (increase(lakesoul_memory_reservation_failures_total[1m]))',
+    PROM_MEMORY_POOL_RESERVED,
+    PROM_MEMORY_POOL_LIMIT,
+    PROM_MEMORY_RESERVATION_FAILURES,
     'sum by (pod, operation) (rate(lakesoul_object_store_requests_total[1m]))',
     'sum by (pod, operation) (rate(lakesoul_object_store_bytes_total[1m]))',
     'sum by (pod) (lakesoul_metadata_pool_connections)',
