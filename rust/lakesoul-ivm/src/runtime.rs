@@ -11,7 +11,7 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{ArrayRef, BinaryArray, BinaryBuilder};
@@ -2398,13 +2398,22 @@ fn project_group_keys_frame(
 /// count identical on both paths so a bootstrap and its first incremental
 /// windows run with the same parallelism.
 pub(crate) fn refresh_session() -> SessionContext {
-    let config = SessionConfig::new().with_target_partitions(4);
+    let target_partitions = std::env::var("LAKESOUL_IVM_TARGET_PARTITIONS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4);
+    let config = SessionConfig::new().with_target_partitions(target_partitions);
     let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4096);
+    let spill_dir = std::env::var("LAKESOUL_IVM_SPILL_DIR")
+        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let _ = std::fs::create_dir_all(&spill_dir);
     let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
         .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
+        .with_temp_file_path(&spill_dir)
+        .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
         .build()
         .expect("ivm refresh runtime env");
     SessionContext::new_with_config_rt(config, Arc::new(runtime))
@@ -4003,6 +4012,51 @@ impl IvmRuntime {
             .current_groups_for_partitions(&self.client, partitions)
             .await?;
         apply_filters(self.groups_table_frame(context, table, groups)?, filters)
+    }
+
+    /// The range-partition values touched by a source window.
+    ///
+    /// A refresh only needs the source/state rows of the partitions whose
+    /// changelog it is consuming.  The descriptors come from the source, so a
+    /// state table whose range columns have the same names and order can reuse
+    /// them directly.  Any descriptor that does not parse for `columns`
+    /// disables pruning: reading an extra partition is safe, dropping one is
+    /// not.
+    fn changed_partition_restriction(
+        &self,
+        window: &SourceWindow,
+        columns: &[String],
+    ) -> Option<Vec<(String, Vec<String>)>> {
+        if columns.is_empty() {
+            return None;
+        }
+        let mut values: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut saw_partition = false;
+        for descriptor in window
+            .added_files
+            .iter()
+            .map(|group| group.partition_desc.as_str())
+            .chain(window.before_versions.keys().map(String::as_str))
+        {
+            let parsed = parse_partition_values(descriptor, columns)?;
+            saw_partition = true;
+            for (column, value) in columns.iter().zip(parsed) {
+                values.entry(column.clone()).or_default().insert(value);
+            }
+        }
+        if !saw_partition {
+            return None;
+        }
+        Some(
+            columns
+                .iter()
+                .filter_map(|column| {
+                    values
+                        .get(column)
+                        .map(|values| (column.clone(), values.iter().cloned().collect()))
+                })
+                .collect(),
+        )
     }
 
     /// A lazy frame over explicit delta groups, keeping delete+insert rows.

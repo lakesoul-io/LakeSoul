@@ -3156,8 +3156,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let context = refresh_session();
         // The bootstrap is the whole current source; read it through the
-        // provider instead of materialising every initial file here.
-        let delta = if window.before_versions.is_empty() {
+        // provider instead of materialising every initial file here.  A new
+        // view has no cursors, and `before_versions` still contains the
+        // touched partition with a `None` value, so check the values rather
+        // than the map's emptiness.
+        let bootstrap = window
+            .before_versions
+            .values()
+            .all(|version| version.is_none());
+        let delta = if bootstrap {
             None
         } else {
             Some(self.groups_table_frame(
@@ -3167,6 +3174,8 @@ impl IvmRuntime {
             )?)
         };
         let keyed = !view.source.primary_keys.is_empty();
+        let source_partitions = self
+            .changed_partition_restriction(&window, &view.source.range_partition_columns);
         let versions: Vec<PartitionVersion> = window
             .before_versions
             .iter()
@@ -3204,7 +3213,17 @@ impl IvmRuntime {
                 &key_names,
                 None,
             )?;
-            let current = self.current_table_frame(&context, &view.source)?;
+            let current = if let Some(restriction) = source_partitions.as_deref() {
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.source,
+                    Vec::new(),
+                    restriction,
+                )
+                .await?
+            } else {
+                self.current_table_frame(&context, &view.source)?
+            };
             let new = current.join(
                 delta_keys,
                 JoinType::LeftSemi,
@@ -3213,7 +3232,7 @@ impl IvmRuntime {
                 None,
             )?;
             (old, new, None)
-        } else if window.before_versions.is_empty() {
+        } else if bootstrap {
             (
                 empty_old.clone(),
                 empty_old,
@@ -3276,7 +3295,7 @@ impl IvmRuntime {
             }),
         );
         context.register_udf(group_row_udf);
-        if window.before_versions.is_empty() {
+        if bootstrap {
             use futures::StreamExt;
             let frame = context.sql(&contrib_sql).await?;
             let mut stream = frame.execute_stream().await?;
@@ -3287,11 +3306,21 @@ impl IvmRuntime {
             let mut state_chunk: Vec<RecordBatch> = Vec::new();
             let mut mv_chunk: Vec<RecordBatch> = Vec::new();
             let mut chunk_rows = 0usize;
+            let mut contrib_rows = 0usize;
+            let mut state_writes = 0usize;
+            let mut mv_writes = 0usize;
+            let mut write_elapsed = std::time::Duration::ZERO;
+            let bootstrap_started = std::time::Instant::now();
+            let mut first_batch_elapsed = None;
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
                 if batch.num_rows() == 0 {
                     continue;
                 }
+                if first_batch_elapsed.is_none() {
+                    first_batch_elapsed = Some(bootstrap_started.elapsed());
+                }
+                contrib_rows += batch.num_rows();
                 let state_batch = Self::bootstrap_state_batch(
                     &batch,
                     &state_schema,
@@ -3304,26 +3333,44 @@ impl IvmRuntime {
                 state_chunk.push(state_batch);
                 mv_chunk.push(mv_batch);
                 if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                    commit_ids.extend(
-                        state
-                            .append_batches(
-                                &self.client,
-                                std::mem::take(&mut state_chunk),
-                            )
-                            .await?,
-                    );
-                    commit_ids.extend(
-                        view.mv
-                            .append_batches(&self.client, std::mem::take(&mut mv_chunk))
-                            .await?,
-                    );
+                    let write_started = std::time::Instant::now();
+                    let state_batches = std::mem::take(&mut state_chunk);
+                    let mv_batches = std::mem::take(&mut mv_chunk);
+                    let (state_ids, mv_ids) = futures::future::try_join(
+                        state.append_batches(&self.client, state_batches),
+                        view.mv.append_batches(&self.client, mv_batches),
+                    )
+                    .await?;
+                    commit_ids.extend(state_ids);
+                    commit_ids.extend(mv_ids);
+                    write_elapsed += write_started.elapsed();
+                    state_writes += 1;
+                    mv_writes += 1;
                     chunk_rows = 0;
                 }
             }
             if !state_chunk.is_empty() {
-                commit_ids.extend(state.append_batches(&self.client, state_chunk).await?);
-                commit_ids.extend(view.mv.append_batches(&self.client, mv_chunk).await?);
+                let write_started = std::time::Instant::now();
+                let (state_ids, mv_ids) = futures::future::try_join(
+                    state.append_batches(&self.client, state_chunk),
+                    view.mv.append_batches(&self.client, mv_chunk),
+                )
+                .await?;
+                commit_ids.extend(state_ids);
+                commit_ids.extend(mv_ids);
+                write_elapsed += write_started.elapsed();
+                state_writes += 1;
+                mv_writes += 1;
             }
+            tracing::info!(
+                contrib_rows,
+                state_writes,
+                mv_writes,
+                first_batch_elapsed = ?first_batch_elapsed,
+                write_elapsed = ?write_elapsed,
+                total_elapsed = ?bootstrap_started.elapsed(),
+                "multi-agg bootstrap finished"
+            );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
             self.metadata
                 .mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -3334,7 +3381,20 @@ impl IvmRuntime {
         let contrib = context.sql(&contrib_sql).await?;
         let merge_context = refresh_session();
         merge_context.register_table("contrib", contrib.into_view())?;
-        merge_context.register_table("state", Arc::new(self.table_provider(state)))?;
+        let state_partitions =
+            self.changed_partition_restriction(&window, &state.range_partition_columns);
+        let state_frame = if let Some(restriction) = state_partitions.as_deref() {
+            self.current_table_frame_filtered_partitions(
+                &merge_context,
+                state,
+                Vec::new(),
+                restriction,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&merge_context, state)?
+        };
+        merge_context.register_table("state", state_frame.into_view())?;
         let row = quote_ident(IVM_GROUP_ROW_COLUMN);
         let row_count = quote_ident(IVM_ROW_COUNT_COLUMN);
         let row_kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
