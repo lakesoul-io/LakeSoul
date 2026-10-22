@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import org.apache.flink.lakesoul.entry.clean.CleanUtils;
@@ -133,6 +134,31 @@ public class CleanUtilsLiveFileGuardTest {
 
         assertEquals(0, countCommits(compactionCommit));
         assertEquals(1, countCommits(updateCommit));
+    }
+
+    @Test
+    public void livePathLookupFailureKeepsFilesAndMetadata() throws Exception {
+        // A transient lookup failure (e.g. statement timeout) must abort the cleanup before
+        // any data_commit_info row is removed: the file paths only live in those rows.
+        Connection broken = DriverManager.getConnection(JDBC_URL, USER, PASSWORD);
+        broken.close();
+
+        assertThrows(
+                RuntimeException.class,
+                () ->
+                        new CleanUtils()
+                                .deleteFileAndDataCommitInfo(
+                                        Collections.singletonList(compactionCommit.toString()),
+                                        tableId,
+                                        "-5",
+                                        broken,
+                                        true));
+
+        assertTrue("shared file must survive a failed lookup", Files.exists(sharedFile));
+        assertTrue("expired file must survive a failed lookup", Files.exists(expiredFile));
+        assertTrue("update file must survive a failed lookup", Files.exists(updateFile));
+        assertEquals("superseded commit metadata must be kept", 1, countCommits(compactionCommit));
+        assertEquals("update commit metadata must be kept", 1, countCommits(updateCommit));
     }
 
     private void insertCommit(UUID commitId, String commitOp, String[][] fileOps) throws Exception {

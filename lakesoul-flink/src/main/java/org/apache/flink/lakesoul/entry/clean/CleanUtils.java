@@ -137,9 +137,15 @@ public class CleanUtils {
      * compaction reuses paths as well. A file is therefore only removed when the latest partition
      * version no longer references it.
      *
+     * <p>When the live file set cannot be resolved reliably (query failure, missing metadata), the
+     * cleanup is aborted and both files and data_commit_info rows are kept, so a later run can
+     * retry instead of losing the only reference to the files.
+     *
      * @param oldCompaction whether files may be deleted; false deletes metadata only
+     * @return true when the version was fully cleaned up and the caller may delete its
+     *     partition_info row; false when cleanup was skipped or incomplete
      */
-    public void deleteFileAndDataCommitInfo(
+    public boolean deleteFileAndDataCommitInfo(
             List<String> snapshot,
             String tableId,
             String partitionDesc,
@@ -150,29 +156,33 @@ public class CleanUtils {
             try {
                 if (hasMissingLiveCommit(connection, tableId, partitionDesc)) {
                     logger.error(
-                            "{}/{} latest snapshot has missing data_commit_info, skip file"
-                                    + " deletion",
+                            "{}/{} latest snapshot has missing data_commit_info, abort cleanup to"
+                                    + " keep metadata",
                             tableId,
                             partitionDesc);
-                } else {
-                    livePaths = getLatestSnapshotPaths(connection, tableId, partitionDesc);
-                    if (livePaths.isEmpty()) {
-                        logger.warn(
-                                "no live file path resolved for {}/{}, skip file deletion",
-                                tableId,
-                                partitionDesc);
-                        livePaths = null;
-                    }
+                    return false;
+                }
+                livePaths = getLatestSnapshotPaths(connection, tableId, partitionDesc);
+                if (livePaths.isEmpty()) {
+                    logger.warn(
+                            "no live file path resolved for {}/{}, abort cleanup to avoid deleting"
+                                    + " live data",
+                            tableId,
+                            partitionDesc);
+                    return false;
                 }
             } catch (SQLException e) {
-                logger.error(
-                        "failed to resolve live files for {}/{}, skip file deletion",
-                        tableId,
-                        partitionDesc,
+                // Do not swallow this and delete metadata: the file paths only exist in those
+                // rows. Failing the task keeps the previous retry contract.
+                throw new RuntimeException(
+                        String.format(
+                                "failed to resolve live files for %s/%s, abort cleanup for retry",
+                                tableId, partitionDesc),
                         e);
             }
         }
 
+        boolean complete = true;
         for (String commitId : snapshot) {
             if (livePaths != null) {
                 List<String> commitPaths;
@@ -183,6 +193,7 @@ public class CleanUtils {
                             "failed to query files of commit {}, keep data_commit_info for retry",
                             commitId,
                             e);
+                    complete = false;
                     continue;
                 }
                 List<String> deletable = new ArrayList<>();
@@ -212,6 +223,7 @@ public class CleanUtils {
                                         + " retry",
                                 commitId,
                                 e);
+                        complete = false;
                         continue;
                     }
                 }
@@ -219,6 +231,7 @@ public class CleanUtils {
 
             deleteDataCommitInfo(connection, tableId, partitionDesc, commitId);
         }
+        return complete;
     }
 
     private void deleteDataCommitInfo(

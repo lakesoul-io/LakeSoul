@@ -178,14 +178,19 @@ public class CompactionBroadcastProcessFunction
                             value.version < state.get(key).switchVersion
                                     || latestCompactVersionIsOld;
                     try (Connection connection = dataSource.getConnection()) {
-                        cleanUtils.deleteFileAndDataCommitInfo(
-                                value.snapshot,
-                                value.tableId,
-                                value.partitionDesc,
-                                connection,
-                                belongOldCompaction);
-                        cleanUtils.cleanPartitionInfo(
-                                value.tableId, value.partitionDesc, value.version, connection);
+                        boolean cleaned =
+                                cleanUtils.deleteFileAndDataCommitInfo(
+                                        value.snapshot,
+                                        value.tableId,
+                                        value.partitionDesc,
+                                        connection,
+                                        belongOldCompaction);
+                        if (cleaned) {
+                            cleanUtils.cleanPartitionInfo(
+                                    value.tableId, value.partitionDesc, value.version, connection);
+                        } else {
+                            log.warn(ctx.getCurrentKey() + " 清理未完成，保留 partition_info 等待重试");
+                        }
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -248,14 +253,19 @@ public class CompactionBroadcastProcessFunction
                                 || latestCompactVersionIsOld;
                 log.info(currentKey + " 执行旧版清理： " + belongOldCompaction);
                 try (Connection connection = dataSource.getConnection()) {
-                    cleanUtils.deleteFileAndDataCommitInfo(
-                            value.snapshot,
-                            value.tableId,
-                            value.partitionDesc,
-                            connection,
-                            belongOldCompaction);
-                    cleanUtils.cleanPartitionInfo(
-                            value.tableId, value.partitionDesc, value.version, connection);
+                    boolean cleaned =
+                            cleanUtils.deleteFileAndDataCommitInfo(
+                                    value.snapshot,
+                                    value.tableId,
+                                    value.partitionDesc,
+                                    connection,
+                                    belongOldCompaction);
+                    if (cleaned) {
+                        cleanUtils.cleanPartitionInfo(
+                                value.tableId, value.partitionDesc, value.version, connection);
+                    } else {
+                        log.warn(currentKey + " 清理未完成，保留 partition_info 等待重试");
+                    }
                     timerTsState.clear();
                 } catch (Exception e) {
                     throw new RuntimeException(e);
