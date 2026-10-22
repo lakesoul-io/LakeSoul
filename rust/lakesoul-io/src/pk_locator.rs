@@ -69,7 +69,6 @@ use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::file::metadata::PageIndexPolicy;
 use smallvec::SmallVec;
 use tracing::{debug, warn};
-use vortex::VortexSessionDefault;
 use vortex::array::VortexSessionExecute;
 use vortex::array::memory::MemorySessionExt;
 use vortex::arrow::ArrowSessionExt;
@@ -84,7 +83,7 @@ use vortex::session::VortexSession;
 
 use crate::cache::get_lakesoul_cache;
 use crate::config::LakeSoulIOConfig;
-use crate::file_format::PhysicalFormat;
+use crate::file_format::{PhysicalFormat, vortex_scan_session};
 
 /// Above this many candidate keys the locator is not worth it: the caller
 /// is better off scanning.
@@ -1135,7 +1134,7 @@ async fn get_or_load_file(
 /// more than the row-count check that decides whether to index at all).
 fn vortex_session(session: &mut Option<VortexSession>) -> VortexSession {
     session
-        .get_or_insert_with(|| VortexSession::default().with_tokio())
+        .get_or_insert_with(|| vortex_scan_session().with_tokio())
         .clone()
 }
 

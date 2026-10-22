@@ -151,3 +151,150 @@ fn test_target_partitions_is_parameterized() {
         assert_eq!(ctx.state().config_options().execution.target_partitions, 2);
     });
 }
+
+#[test]
+fn test_memory_limit_parser() {
+    use crate::session::parse_memory_limit;
+
+    assert_eq!(parse_memory_limit("0").unwrap(), 0);
+    assert_eq!(parse_memory_limit("512Mi").unwrap(), 512 * 1024 * 1024);
+    assert_eq!(parse_memory_limit("1G").unwrap(), 1_000_000_000);
+    for (suffix, multiplier) in [
+        ("K", 1000),
+        ("m", 1_000_000),
+        ("g", 1_000_000_000),
+        ("kI", 1024),
+        ("MI", 1024 * 1024),
+        ("gi", 1024 * 1024 * 1024),
+    ] {
+        assert_eq!(
+            parse_memory_limit(&format!("1{suffix}")).unwrap(),
+            multiplier
+        );
+    }
+    assert_eq!(
+        parse_memory_limit(&usize::MAX.to_string()).unwrap(),
+        usize::MAX
+    );
+    for invalid in [
+        "garbage",
+        "",
+        "-1",
+        "1.5Gi",
+        "1GB",
+        "1 Mi",
+        "18446744073709551616",
+        &format!("{}Gi", usize::MAX),
+    ] {
+        assert!(parse_memory_limit(invalid).is_err(), "{invalid}");
+    }
+}
+
+/// Exercise the real factory/planner/execution path, not just reservations.
+/// The budget is deliberately smaller than one generated batch, forcing the
+/// sort to exhaust resources even when its spill implementation is enabled.
+#[test]
+fn test_session_execution_memory_budget() {
+    use datafusion::common::DataFusionError;
+    use datafusion::execution::memory_pool::MemoryConsumer;
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    use crate::session::{ExecutionMemoryArgs, ExecutionMemoryPool};
+
+    fn metric(text: &str, name: &str) -> f64 {
+        text.lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("missing metric {name} in {text}"))
+            .parse()
+            .unwrap()
+    }
+
+    let rt = Runtime::new().unwrap();
+    for kind in [ExecutionMemoryPool::Fair, ExecutionMemoryPool::Greedy] {
+        for limit in [0, 1024] {
+            let recorder = PrometheusBuilder::new().build_recorder();
+            let handle = recorder.handle();
+            metrics::with_local_recorder(&recorder, || {
+                rt.block_on(async {
+                    let client =
+                        Arc::new(crate::MetaDataClient::from_env().await.unwrap());
+                    let pool = ExecutionMemoryArgs {
+                        memory_limit: limit,
+                        memory_pool: kind,
+                        vortex_decode_budget: None,
+                    }
+                    .create_pool();
+                    let factory = LakeSoulSessionFactory::new_with_memory_pool(
+                        client,
+                        &CoreArgs::default(),
+                        Arc::clone(&pool),
+                    )
+                    .unwrap();
+                    let ctx = factory
+                        .create_session(&LakeSoulSessionOptions::default())
+                        .unwrap();
+                    let other = factory
+                        .create_session(&LakeSoulSessionOptions::default())
+                        .unwrap();
+                    assert!(Arc::ptr_eq(
+                        &ctx.runtime_env().memory_pool,
+                        &other.runtime_env().memory_pool
+                    ));
+                    // A second connection cannot obtain a separate copy of the budget.
+                    if limit != 0 {
+                        let first = MemoryConsumer::new("connection-a")
+                            .register(&ctx.runtime_env().memory_pool);
+                        let second = MemoryConsumer::new("connection-b")
+                            .register(&other.runtime_env().memory_pool);
+                        first.try_grow(600).unwrap();
+                        assert_eq!(
+                            metric(
+                                &handle.render(),
+                                "lakesoul_memory_pool_reserved_bytes"
+                            ),
+                            600.0
+                        );
+                        assert!(second.try_grow(600).is_err());
+                    }
+                    let result = ctx
+                        .sql(
+                            "SELECT value FROM generate_series(1, 10000) AS g(value) \
+                             ORDER BY value DESC",
+                        )
+                        .await
+                        .unwrap()
+                        .collect()
+                        .await;
+                    if limit == 0 {
+                        let rows: usize =
+                            result.unwrap().iter().map(|batch| batch.num_rows()).sum();
+                        assert_eq!(rows, 10000);
+                    } else {
+                        let error = result.expect_err(
+                            "a batch cannot fit in the 1 KiB execution budget",
+                        );
+                        assert!(
+                            matches!(
+                                error.find_root(),
+                                DataFusionError::ResourcesExhausted(_)
+                            ),
+                            "{error}"
+                        );
+                    }
+                    assert_eq!(pool.reserved(), 0, "query must release all reservations");
+                });
+            });
+            let text = handle.render();
+            assert_eq!(
+                metric(&text, "lakesoul_memory_pool_limit_bytes"),
+                limit as f64
+            );
+            assert_eq!(metric(&text, "lakesoul_memory_pool_reserved_bytes"), 0.0);
+            if limit != 0 {
+                assert!(
+                    metric(&text, "lakesoul_memory_reservation_failures_total") > 0.0
+                );
+            }
+        }
+    }
+}

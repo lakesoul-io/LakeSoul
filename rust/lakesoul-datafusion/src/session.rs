@@ -4,17 +4,21 @@
 
 //! Reusable LakeSoul DataFusion session construction.
 //!
-//! [`LakeSoulSessionFactory`] owns immutable resources shared by all sessions
-//! (metadata client, session config template, object-store configuration and
-//! warehouse location) and builds an independent [`SessionContext`] on each
-//! call. PostgreSQL connection identity and settings are intentionally kept in
-//! the `postgres-lakesoul` crate.
+//! [`LakeSoulSessionFactory`] owns resources shared by all sessions (metadata
+//! client, session config template, object-store configuration, warehouse
+//! location and execution memory pool) and builds an independent
+//! [`SessionContext`] on each call. PostgreSQL connection identity and settings
+//! are intentionally kept in the `postgres-lakesoul` crate.
 
 use datafusion::catalog::{CatalogProvider, TableProviderFactory};
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
-use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::memory_pool::{
+    FairSpillPool, GreedyMemoryPool, MemoryConsumer, MemoryLimit, MemoryPool,
+    MemoryReservation, TrackConsumersPool, UnboundedMemoryPool,
+};
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -30,6 +34,8 @@ use lakesoul_io::object_store_metrics::MonitoredObjectStore;
 use lakesoul_io::physical_plan::MergeParquetExec;
 use object_store::local::LocalFileSystem;
 use rootcause::{bail, report};
+use std::fmt;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use url::Url;
 
@@ -49,6 +55,185 @@ use crate::planner::LakeSoulQueryPlanner;
 
 pub const DEFAULT_CATALOG: &str = "lakesoul";
 pub const DEFAULT_SCHEMA: &str = "default";
+
+/// Execution memory policy shared by every connection/task in a server process.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct ExecutionMemoryArgs {
+    /// Process-wide execution budget in bytes (K/M/G or Ki/Mi/Gi accepted); 0 is unbounded.
+    #[arg(long, env = "LAKESOUL_MEMORY_LIMIT", default_value = "0", value_parser = parse_memory_limit)]
+    pub memory_limit: usize,
+
+    /// Allocation policy used when the execution memory budget is nonzero.
+    #[arg(long, env = "LAKESOUL_MEMORY_POOL", value_enum, default_value = "fair")]
+    pub memory_pool: ExecutionMemoryPool,
+
+    /// Process-wide bytes of decoded Vortex data in flight (K/M/G or Ki/Mi/Gi
+    /// accepted). Defaults to a quarter of `--memory-limit` when that is
+    /// nonzero, and to unbounded otherwise; 0 is unbounded.
+    #[arg(long, env = "LAKESOUL_VORTEX_DECODE_BUDGET", value_parser = parse_memory_limit)]
+    pub vortex_decode_budget: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum ExecutionMemoryPool {
+    #[default]
+    Fair,
+    Greedy,
+}
+
+/// Parse a byte budget without rounding or silently overflowing `usize`.
+pub fn parse_memory_limit(value: &str) -> std::result::Result<usize, String> {
+    let split = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (digits, suffix) = value.split_at(split);
+    let bytes = digits
+        .parse::<usize>()
+        .map_err(|_| format!("invalid memory limit: {value:?}"))?;
+    let multiplier = match suffix.to_ascii_lowercase().as_str() {
+        "" => 1,
+        "k" => 1_000,
+        "m" => 1_000_000,
+        "g" => 1_000_000_000,
+        "ki" => 1_024,
+        "mi" => 1_048_576,
+        "gi" => 1_073_741_824,
+        _ => return Err(format!("invalid memory limit suffix: {value:?}")),
+    };
+    bytes
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("memory limit overflows usize: {value:?}"))
+}
+
+impl ExecutionMemoryArgs {
+    /// Create once at startup, after installing the metrics recorder.
+    pub fn create_pool(&self) -> Arc<dyn MemoryPool> {
+        let top = NonZeroUsize::new(5).unwrap();
+        let (kind, inner): (&str, Arc<dyn MemoryPool>) = if self.memory_limit == 0 {
+            ("unbounded", Arc::new(UnboundedMemoryPool::default()))
+        } else {
+            match self.memory_pool {
+                ExecutionMemoryPool::Fair => (
+                    "fair",
+                    Arc::new(TrackConsumersPool::new(
+                        FairSpillPool::new(self.memory_limit),
+                        top,
+                    )),
+                ),
+                ExecutionMemoryPool::Greedy => (
+                    "greedy",
+                    Arc::new(TrackConsumersPool::new(
+                        GreedyMemoryPool::new(self.memory_limit),
+                        top,
+                    )),
+                ),
+            }
+        };
+        let reserved = metrics::gauge!("lakesoul_memory_pool_reserved_bytes");
+        reserved.set(0.0);
+        metrics::gauge!("lakesoul_memory_pool_limit_bytes").set(self.memory_limit as f64);
+        let failures = metrics::counter!("lakesoul_memory_reservation_failures_total");
+        failures.absolute(0);
+        tracing::info!(
+            pool = kind,
+            limit_bytes = self.memory_limit,
+            "execution memory pool configured"
+        );
+        Arc::new(MonitoredMemoryPool {
+            inner,
+            reserved,
+            failures,
+        })
+    }
+
+    /// The effective [`vortex_decode_budget`](Self::vortex_decode_budget), if
+    /// decoding is bounded.
+    pub fn vortex_decode_budget_bytes(&self) -> Option<usize> {
+        match self.vortex_decode_budget {
+            Some(0) => None,
+            Some(bytes) => Some(bytes),
+            None => (self.memory_limit > 0).then_some(self.memory_limit / 4),
+        }
+    }
+
+    /// Installs the process-wide Vortex decode budget. Call once at startup,
+    /// before building session factories or workers.
+    pub fn install_vortex_decode_budget(&self) -> Result<()> {
+        let Some(bytes) = self.vortex_decode_budget_bytes() else {
+            tracing::info!("vortex decode budget unbounded");
+            return Ok(());
+        };
+        lakesoul_io::file_format::install_vortex_decode_budget(bytes)?;
+        tracing::info!(limit_bytes = bytes, "vortex decode budget configured");
+        Ok(())
+    }
+}
+
+/// Cached metric handles avoid recorder lookup/allocation on the hot path.
+/// Gauge deltas (not `set(inner.reserved())`) avoid stale snapshots when tasks
+/// concurrently grow and shrink the shared pool. Baseline uses this same thin
+/// wrapper, but deliberately omits consumer tracking and its locking overhead.
+#[derive(Debug)]
+struct MonitoredMemoryPool {
+    inner: Arc<dyn MemoryPool>,
+    reserved: metrics::Gauge,
+    failures: metrics::Counter,
+}
+
+impl fmt::Display for MonitoredMemoryPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl MemoryPool for MonitoredMemoryPool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn register(&self, consumer: &MemoryConsumer) {
+        self.inner.register(consumer);
+    }
+
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        self.inner.unregister(consumer);
+    }
+
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        self.inner.grow(reservation, additional);
+        self.reserved.increment(additional as f64);
+    }
+
+    fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+        self.inner.shrink(reservation, shrink);
+        self.reserved.decrement(shrink as f64);
+    }
+
+    fn try_grow(
+        &self,
+        reservation: &MemoryReservation,
+        additional: usize,
+    ) -> DataFusionResult<()> {
+        match self.inner.try_grow(reservation, additional) {
+            Ok(()) => {
+                self.reserved.increment(additional as f64);
+                Ok(())
+            }
+            Err(error) => {
+                self.failures.increment(1);
+                Err(error)
+            }
+        }
+    }
+
+    fn reserved(&self) -> usize {
+        self.inner.reserved()
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        self.inner.memory_limit()
+    }
+}
 
 /// Configuration used to create object-store clients.
 pub type ObjectStoreConfig = LakeSoulIOConfig;
@@ -209,13 +394,16 @@ fn align_repartition_file_min_size(
 /// Factory for independent LakeSoul [`SessionContext`]s.
 ///
 /// Every [`create_session`](Self::create_session) call clones the session
-/// config template, builds a fresh [`RuntimeEnv`] and wires the LakeSoul
-/// planner, table factory and catalog into a fresh context.
+/// config template, builds a fresh [`RuntimeEnv`] sharing the factory's memory
+/// pool, and wires the LakeSoul planner, table factory and catalog into a fresh
+/// context. Object-store registries and TMPDIR-backed spill managers remain
+/// independent per session.
 pub struct LakeSoulSessionFactory {
     meta_client: crate::MetaDataClientRef,
     session_template: SessionConfig,
     object_store_config: ObjectStoreConfig,
     warehouse: WarehouseConfig,
+    memory_pool: Arc<dyn MemoryPool>,
     planner: Arc<dyn QueryPlanner + Send + Sync>,
     table_factory: Arc<LakeSoulTableProviderFactory>,
     catalog_decorator: Option<Arc<CatalogDecorator>>,
@@ -234,6 +422,19 @@ pub struct LakeSoulSessionFactory {
 
 impl LakeSoulSessionFactory {
     pub fn new(meta_client: crate::MetaDataClientRef, args: &CoreArgs) -> Result<Self> {
+        Self::new_with_memory_pool(
+            meta_client,
+            args,
+            ExecutionMemoryArgs::default().create_pool(),
+        )
+    }
+
+    /// Build a factory using a pool allocated once by the server process.
+    pub fn new_with_memory_pool(
+        meta_client: crate::MetaDataClientRef,
+        args: &CoreArgs,
+        memory_pool: Arc<dyn MemoryPool>,
+    ) -> Result<Self> {
         let session_template = Self::session_template()?;
         let object_store_config =
             LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options())
@@ -252,6 +453,7 @@ impl LakeSoulSessionFactory {
             session_template,
             object_store_config,
             warehouse,
+            memory_pool,
             planner: LakeSoulQueryPlanner::new_ref(),
             table_factory,
             catalog_decorator: None,
@@ -327,7 +529,9 @@ impl LakeSoulSessionFactory {
         let session_config =
             session_config.with_extension(Arc::new(self.object_store_config.clone()));
 
-        let runtime = Arc::new(RuntimeEnv::default());
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::clone(&self.memory_pool))
+            .build_arc()?;
         register_warehouse_object_store(
             &self.warehouse,
             &self.object_store_config,
@@ -528,11 +732,16 @@ fn register_warehouse_object_store(
 ///
 /// Workers and coordinators must observe identical object-store configuration
 /// for encoded plans to resolve their stores on either side.
-pub fn build_worker_runtime_env(args: &CoreArgs) -> Result<Arc<RuntimeEnv>> {
+pub fn build_worker_runtime_env(
+    args: &CoreArgs,
+    memory: &ExecutionMemoryArgs,
+) -> Result<Arc<RuntimeEnv>> {
     let warehouse = parse_warehouse(args.warehouse_prefix.as_deref())?;
     let object_store_config =
         LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options()).build();
-    let runtime = Arc::new(RuntimeEnv::default());
+    let runtime = RuntimeEnvBuilder::new()
+        .with_memory_pool(memory.create_pool())
+        .build_arc()?;
     register_warehouse_object_store(&warehouse, &object_store_config, &runtime)?;
     Ok(runtime)
 }

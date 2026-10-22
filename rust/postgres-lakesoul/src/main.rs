@@ -11,6 +11,7 @@ use clap::Parser;
 use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
 use lakesoul_common::misc::JiffTime;
 use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
+use lakesoul_datafusion::session::ExecutionMemoryArgs;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
     LogFormat, PrometheusMetricsConfig, TracingConfig, TracingGuard, init_tracing,
@@ -63,6 +64,9 @@ struct Cli {
     #[command(flatten)]
     pub distributed: DistributedArgs,
 
+    #[command(flatten)]
+    pub memory: ExecutionMemoryArgs,
+
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
     #[clap(long, env = "LAKESOUL_PG_BIND", default_value = "127.0.0.1")]
@@ -105,12 +109,18 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
     // `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
+    install_prometheus_metrics(PrometheusMetricsConfig::new(
+        "postgres-lakesoul",
+        cli.metrics_addr,
+    ))?;
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     let auth_manager = Arc::new(AuthManager::new());
-    let session_factory = PgSessionFactory::new(
+    cli.memory.install_vortex_decode_budget()?;
+    let session_factory = PgSessionFactory::new_with_memory(
         Arc::clone(&meta_client),
         &cli.core,
         Arc::clone(&auth_manager),
+        &cli.memory,
     )?;
     info!(
         version = lakesoul_build_info::VERSION,
@@ -119,10 +129,6 @@ async fn main_inner(cli: Cli) -> Result<()> {
         profile = lakesoul_build_info::PROFILE,
         "postgres-lakesoul build identity"
     );
-    install_prometheus_metrics(PrometheusMetricsConfig::new(
-        "postgres-lakesoul",
-        cli.metrics_addr,
-    ))?;
     if let Some(endpoint) = tracing.otlp_endpoint() {
         info!(endpoint, "OTLP trace exporter enabled");
     }
