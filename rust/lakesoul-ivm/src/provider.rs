@@ -20,7 +20,7 @@
 //! of a key and resurrect an older one, so those stay with DataFusion's own
 //! `FilterExec`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -30,7 +30,7 @@ use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::utils::split_conjunction;
-use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType, lit};
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
@@ -76,6 +76,11 @@ pub struct IvmTableProvider {
     /// Whether the reader merges duplicate primary keys.  Unmerged scans
     /// expose the physical delete+insert changelog of a delta.
     merge: bool,
+    /// Optional per-hash-bucket key filters.  The refresh uses this for
+    /// state lookups: the full key list is much larger than one bucket's
+    /// slice, and handing every bucket partition the complete list makes the
+    /// locator carry redundant candidates.
+    bucket_filters: Option<HashMap<u32, Vec<Expr>>>,
 }
 
 impl IvmTableProvider {
@@ -87,6 +92,7 @@ impl IvmTableProvider {
             mode,
             groups: None,
             merge: true,
+            bucket_filters: None,
         }
     }
 
@@ -104,6 +110,7 @@ impl IvmTableProvider {
             mode: IvmReadMode::Raw,
             groups: Some(groups),
             merge: true,
+            bucket_filters: None,
         }
     }
 
@@ -119,6 +126,7 @@ impl IvmTableProvider {
             mode: IvmReadMode::Raw,
             groups: Some(groups),
             merge: false,
+            bucket_filters: None,
         }
     }
 
@@ -144,6 +152,18 @@ impl IvmTableProvider {
         versions: Vec<PartitionVersion>,
     ) -> Self {
         Self::new(table, client, IvmReadMode::AtVersions(versions))
+    }
+
+    /// Attach per-hash-bucket reader filters.
+    ///
+    /// The provider still applies the DataFusion filter for correctness; these
+    /// filters only narrow each bucket's reader and PK locator candidate set.
+    pub(crate) fn with_bucket_filters(
+        mut self,
+        filters: HashMap<u32, Vec<Expr>>,
+    ) -> Self {
+        self.bucket_filters = Some(filters);
+        self
     }
 
     /// The read mode.
@@ -281,6 +301,23 @@ impl IvmTableProvider {
             .reader_projection(projection)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
         let pushed = self.key_filters(filters);
+        let filters_per_group = if let Some(routing) = &self.bucket_filters {
+            groups
+                .iter()
+                .map(|group| {
+                    let bucket = group.files.first().and_then(|file| file_bucket(file));
+                    match bucket.and_then(|bucket| routing.get(&bucket)) {
+                        Some(filters) if !filters.is_empty() => filters.clone(),
+                        // Keep the partition but read no rows: its bucket has
+                        // no keys in this refresh.
+                        Some(_) => vec![lit(false)],
+                        None => pushed.clone(),
+                    }
+                })
+                .collect()
+        } else {
+            vec![pushed.clone(); groups.len()]
+        };
         // The raw mode keeps the CDC tombstones; every logical mode hides
         // them after merge-on-read.  An unmerged delta scan exposes the
         // physical changelog.
@@ -296,7 +333,7 @@ impl IvmTableProvider {
             groups,
             reader_projection,
             out_schema,
-            pushed,
+            filters_per_group,
             change_filter,
             self.merge,
         )
@@ -387,7 +424,7 @@ impl IvmTableProvider {
         groups: Vec<PartitionFiles>,
         reader_projection: Option<SchemaRef>,
         out_schema: SchemaRef,
-        filters: Vec<Expr>,
+        filters_per_group: Vec<Vec<Expr>>,
         change_filter: Option<String>,
         merge: bool,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
@@ -423,7 +460,10 @@ impl IvmTableProvider {
                 }
                 let reader_projection = reader_projection.clone();
                 let out_schema = out_schema.clone();
-                let filters = filters.clone();
+                let filters = filters_per_group
+                    .get(partition)
+                    .cloned()
+                    .unwrap_or_default();
                 let change_filter = change_filter.clone();
                 builder.spawn_blocking(move || {
                     let runtime = tokio::runtime::Builder::new_current_thread()

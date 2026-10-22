@@ -660,4 +660,70 @@ second incremental state read: 59.9s
 - 32GB cgroup 在第二次增量前仍会 OOM，48GB 可以完成；内存峰值需要继续
   优化，不能把 48GB 当成生产结论；
 - full-day 1% 的最终 full/MV 等价校验和 5% 压测仍未在本轮完成。
+### 7.8 按 bucket 预分流 state key，并复查内存
+
+7.7 的实现仍然把完整的 119k key filter 传给每个 bucket partition。每个
+partition 都会构造一份 `InList`，并用完整的 key 集去调用 PK locator，
+既浪费内存也浪费候选计算。
+
+现在在 recompute 侧先用与 writer 相同的 `compute_scalar_hash` 把
+`__ivm_group_row` 分到 bucket，再通过 provider 的 bucket filter 路由：
+每个 bucket partition 只拿到自己的约 7.5k 个 key；某个 bucket 没有 key 时
+直接使用 `false` filter，不再退化成全量 scan。provider 仍保留 DataFusion
+的完整 filter，保证结果正确。
+
+full-day 1% 复测（32GB cgroup，其余配置同 7.7）：
+
+```text
+first incremental:
+  source before lookup: 1.7s
+  state lookup:         2.76s
+  refresh total:        5.63s
+
+second incremental (PK index cached):
+  source before lookup: 2.2s
+  state lookup:         2.66s
+  refresh total:        5.61s
+```
+
+每次 state lookup 的 profile 从：
+
+```text
+keys=119k files=16 total≈0.7–1.1s ×16
+```
+
+变为：
+
+```text
+keys≈7.5k files=16 total≈1.4–1.7s ×16
+```
+
+把完整 key 集复制到 16 个 partition 是 32GB 下第二次增量 OOM 的重要内存
+放大点；按 bucket 预分流后，32GB cgroup 可以完成两轮增量，不再需要 48GB。
+剩余内存占用主要来自：
+
+- 有界的 119k contributions batch；
+- 每个 bucket 的 state 结果约 7.5k 行，最后合并成 119k 行；
+- 每个 DataFusion session 的 8GB 内存池上限（实际按需分配）；
+- state PK index 走本地 cache/mmap，不占 heap。
+
+下一步：5% 的最终等值校验，以及把 source 的 before key 也按 bucket 预分流
+（source 当前已经只有约 1.7s，优先级较低）。
+
+### 7.9 5% 增量结果
+
+同一 full-day fixture，32GB cgroup，16 buckets：
+
+```text
+source chunks: 128,920 / 128,047 / 22,899 keys
+state keys:    237,933
+state lookup:  5.7s
+refresh total: 10.4s
+```
+
+这次运行没有 OOM。full-day 1% 的最终 full/MV 等价校验在 48GB 下通过
+（full_hashes == mv_hashes，3,753,875 个 group）；32GB 下增量 refresh 本身
+完成了，但 pilot 紧接着执行的全量校验 aggregate 在 32GB 时 OOM，因此不能把
+“32GB 能完成校验”写成结论。生产 refresh 的内存峰值和校验/查询的内存峰值需要
+分开评估。
 

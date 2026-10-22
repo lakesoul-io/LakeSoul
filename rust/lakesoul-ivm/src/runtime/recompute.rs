@@ -3127,6 +3127,46 @@ impl IvmRuntime {
         }
     }
 
+    /// Split the state group-row keys into the hash buckets the writer used.
+    ///
+    /// Each provider bucket partition then receives only its own key filter,
+    /// instead of every partition carrying the full refresh key list.
+    fn state_bucket_filters(
+        batch: &RecordBatch,
+        bucket_num: u32,
+    ) -> Result<std::collections::HashMap<u32, Vec<Expr>>> {
+        let index = batch
+            .schema()
+            .index_of(IVM_GROUP_ROW_COLUMN)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let rows = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| report!("{IVM_GROUP_ROW_COLUMN} is not binary"))?;
+        let mut values: std::collections::HashMap<u32, Vec<ScalarValue>> =
+            (0..bucket_num).map(|bucket| (bucket, Vec::new())).collect();
+        for row in 0..rows.len() {
+            let value = ScalarValue::Binary(Some(rows.value(row).to_vec()));
+            let bucket = lakesoul_io::helpers::compute_scalar_hash(&value) % bucket_num;
+            values.entry(bucket).or_default().push(value);
+        }
+        Ok(values
+            .into_iter()
+            .map(|(bucket, values)| {
+                let filter = if values.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![
+                        col(IVM_GROUP_ROW_COLUMN)
+                            .in_list(values.into_iter().map(lit).collect(), false),
+                    ]
+                };
+                (bucket, filter)
+            })
+            .collect())
+    }
+
     /// Build a source PK filter from a bounded batch of key values.
     fn source_key_filters(
         primary_key: &str,
@@ -3728,17 +3768,12 @@ impl IvmRuntime {
         let merge_context = refresh_session();
         let state_partitions =
             self.changed_partition_restriction(&window, &state.range_partition_columns);
-        let state_lookup_context = refresh_session();
-        let state_lookup_frame = if let Some(restriction) = state_partitions.as_deref() {
-            self.current_table_frame_filtered_partitions(
-                &state_lookup_context,
-                state,
-                Vec::new(),
-                restriction,
-            )
-            .await?
+        let state_groups = if let Some(restriction) = state_partitions.as_deref() {
+            state
+                .current_groups_for_partitions(&self.client, restriction)
+                .await?
         } else {
-            self.current_table_frame(&state_lookup_context, state)?
+            state.current_groups(&self.client).await?
         };
         let row = quote_ident(IVM_GROUP_ROW_COLUMN);
         let row_count = quote_ident(IVM_ROW_COUNT_COLUMN);
@@ -3788,7 +3823,28 @@ impl IvmRuntime {
             let read_started = std::time::Instant::now();
             let state_batch = {
                 let filters = Self::state_key_filters(&batch)?;
-                let mut frame = state_lookup_frame.clone();
+                let bucket_num = if state.bucket_columns.len() == 1
+                    && state.bucket_columns[0] == IVM_GROUP_ROW_COLUMN
+                {
+                    state
+                        .hash_bucket_num
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|count| *count > 1)
+                } else {
+                    None
+                };
+                let provider = self.table_provider_groups(state, state_groups.clone());
+                let provider = if let Some(bucket_num) = bucket_num {
+                    provider.with_bucket_filters(Self::state_bucket_filters(
+                        &batch, bucket_num,
+                    )?)
+                } else {
+                    provider
+                };
+                let lookup_context = refresh_session();
+                lookup_context.register_table("state_lookup", Arc::new(provider))?;
+                let mut frame = lookup_context.table("state_lookup").await?;
                 for filter in filters {
                     frame = frame.filter(filter)?;
                 }
