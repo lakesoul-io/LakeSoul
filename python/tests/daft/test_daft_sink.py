@@ -99,6 +99,40 @@ def test_normalize_table_accepts_daft_arrow_representation_changes() -> None:
     assert normalized.to_pydict() == actual.to_pydict()
 
 
+@pytest.mark.parametrize("list_type", [pa.list_, pa.large_list])
+def test_normalize_table_accepts_fixed_size_vectors(list_type) -> None:
+    expected = pa.schema([pa.field("state", pa.list_(pa.float32(), 14))])
+    actual = pa.table(
+        {"state": pa.array([list(range(14)), None], type=list_type(pa.float32()))}
+    )
+
+    normalized = _normalize_table(actual, expected)
+
+    assert normalized.schema == expected
+    assert normalized.to_pydict() == actual.to_pydict()
+
+
+@pytest.mark.parametrize("length", [13, 15])
+def test_normalize_table_rejects_wrong_vector_length(length: int) -> None:
+    expected = pa.schema([pa.field("state", pa.list_(pa.float32(), 14))])
+    actual = pa.table(
+        {"state": pa.array([list(range(length))], type=pa.large_list(pa.float32()))}
+    )
+
+    with pytest.raises(pa.ArrowInvalid):
+        _normalize_table(actual, expected)
+
+
+def test_normalize_table_rejects_vector_element_type_change() -> None:
+    expected = pa.schema([pa.field("state", pa.list_(pa.float32(), 14))])
+    actual = pa.table(
+        {"state": pa.array([list(range(14))], type=pa.large_list(pa.int64()))}
+    )
+
+    with pytest.raises(ValueError, match="incompatible column"):
+        _normalize_table(actual, expected)
+
+
 def test_normalize_table_rejects_null_in_non_nullable_column() -> None:
     expected = pa.schema([pa.field("id", pa.int64(), nullable=False)])
     actual = pa.table({"id": pa.array([1, None], type=pa.int64())})

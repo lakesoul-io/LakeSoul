@@ -98,6 +98,41 @@ import_lerobot_gop(
 `lakesoul.embodied.daft` 还提供 `import_lerobot`（frames 布局）、`import_mcap`、`read_samples` 与 `read_gop_frames`。
 所有导入器（单机与 Daft、LeRobot 与 MCAP）都接受 `properties`（如 `blob_columns`），条目会按各建表的实际列过滤。
 
+## 数据处理流程
+
+导入后得到的原始记录称为 Raw。下面以 ALOHA 示例说明如何将 Raw 整理为供训练读取的 Prepared 表；质量规则和筛选策略由应用定义，导入接口不会自动执行这些处理。
+
+```text
+Raw → 质量检查 → 区间筛选（可选人工标注）
+    → Train/Val/Test 划分 → Prepared → 读取训练样本（下一节）
+```
+
+| 步骤 | 做什么、输出什么 | 对应 API 或示例逻辑 |
+|---|---|---|
+| 质量检查 | 检查帧号、时间戳、state/action 维度及有限值、图像解码和轨迹长度，记录问题与不可用范围。 | `table.scan().to_daft()` 读取，配合应用定义的 Daft 表达式/UDF。 |
+| 区间筛选 | 排除质量无效片段；可选结合人工行为标注决定是否保留。保留连续可用区间，防止窗口跨越缺帧或已排除片段。 | ALOHA 示例中的质量区间与行为筛选逻辑；人工标注不是必需步骤。 |
+| 划分集合 | 按完整 episode 分配 Train/Val/Test，同一 episode 的所有区间归属同一集合；相关录制可进一步按 session 分组。 | 应用定义的划分规则，输出 episode 到 `split` 的映射。 |
+| 写入 Prepared | 从 Raw 提取保留记录，保留原始帧号、时间戳和数据值，增加 `split` 与连续可用区间标识 `valid_interval_id`。 | Daft 过滤/关联，`catalog.create_table()` 与 `table.write_daft()`。 |
+
+如果各传感器尚未对齐，可使用下文介绍的 `align_daft()` 或 `SecondaryStream`，按任务要求设置时间方向和容差，并检查对齐结果。已对齐的数据无需重复处理。
+
+例如，应用完成筛选和划分后，得到包含 `split`、`valid_interval_id` 的 Daft DataFrame `selected_rows`，即可写入 Prepared：
+
+```python
+prepared = catalog.create_table(
+    "aloha_prepared",
+    path="s3://bucket/embodied/aloha_prepared",
+    schema=selected_rows.schema().to_pyarrow_schema(),
+    partition_by=["episode_id"],
+)
+prepared.write_daft(selected_rows, format="parquet")
+```
+
+Prepared 保存的是可用于采样的记录，还不是观察/动作窗口或 Tensor Batch。
+下一节介绍样本读取 API；使用 Prepared 时，应按 `valid_interval_id` 限制窗口边界，并按 `split` 分别读取训练和评估数据。区间标识应全局唯一，每个区间仅属于一个 episode 和一个 split；构建区间时需保证帧连续，因为窗口偏移按行计算。
+
+完整处理逻辑见 [ALOHA 示例的 prepare_dataset.py](https://github.com/lakesoul-io/LakeSoul/blob/main/python/examples/embodied/aloha/prepare_dataset.py)。其中 QC、人工标注应用和集合划分属于示例逻辑，不是独立的 LakeSoul 公共 API。
+
 ## 读取训练样本
 
 ### 单进程：`EmbodiedDataset`
@@ -359,6 +394,8 @@ blob pack 回收**不依赖** Flink clean job；clean job 仍负责清理过期�
 - 可运行示例：
   [`python/examples/embodied`](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples/embodied)
   （`generate_data.py`、`train.py` 及导入片段）；
+- [读取机器人轨迹与训练样本](./21-embodied-prepared-quickstart/index.mdx)
+  —— 走一遍已有的 Prepared 表：一条状态/动作记录、四路相机画面，以及一个训练窗口；
 - 基准脚本：
   [`script/benchmark/embodied`](https://github.com/lakesoul-io/LakeSoul/tree/main/script/benchmark/embodied)
   —— 全表扫描 vs 窗口采样（`run_benchmark.py`）、frames vs GOP 布局及 `--with-blob` 外置对比（`run_video_layout_benchmark.py`）。

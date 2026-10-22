@@ -105,6 +105,41 @@ import_lerobot_gop(
 MCAP — accept `properties` such as `blob_columns`; entries are filtered to the columns each
 created table has.
 
+## Data processing workflow
+
+Imported records are referred to as Raw. The ALOHA example prepares these records for training reads in a Prepared table. Quality rules and selection policies belong to the application; import APIs do not apply them automatically.
+
+```text
+Raw → quality checks → interval selection (optional manual annotations)
+    → Train/Val/Test split → Prepared → training sample reads (next section)
+```
+
+| Step | Purpose and output | API or example logic |
+|---|---|---|
+| Quality checks | Check frame indices, timestamps, state/action dimensions and finite values, image decoding and episode lengths. Record issues and unusable ranges. | `table.scan().to_daft()` with application-defined Daft expressions/UDFs. |
+| Interval selection | Exclude invalid ranges and optionally apply human behavior annotations. Identify continuous usable intervals so windows cannot cross missing or excluded frames. | Quality-interval and behavior-selection logic in the ALOHA example; manual annotation is optional. |
+| Dataset split | Assign whole episodes to Train/Val/Test, keeping every interval of an episode in the same split. Related recordings can be grouped by session. | Application-defined rules producing an episode-to-`split` mapping. |
+| Write Prepared | Select retained Raw records, preserve original frame indices, timestamps and values, and add `split` and a continuous usable interval identifier, `valid_interval_id`. | Daft filters/joins, `catalog.create_table()` and `table.write_daft()`. |
+
+If sensors are not yet aligned, use `align_daft()` or `SecondaryStream`, described below, with a task-appropriate direction and tolerance, and check the alignment results. Already aligned data does not need to be aligned again.
+
+After application-level selection and splitting produce a Daft DataFrame `selected_rows` containing `split` and `valid_interval_id`, write Prepared:
+
+```python
+prepared = catalog.create_table(
+    "aloha_prepared",
+    path="s3://bucket/embodied/aloha_prepared",
+    schema=selected_rows.schema().to_pyarrow_schema(),
+    partition_by=["episode_id"],
+)
+prepared.write_daft(selected_rows, format="parquet")
+```
+
+Prepared contains records for sampling, not observation/action windows or tensor batches.
+The next section introduces sample-reading APIs. When sampling Prepared, use `valid_interval_id` to constrain window boundaries and read training and evaluation data separately by `split`. Interval identifiers must be globally unique, and each interval must belong to one episode and one split. Check frame continuity when building intervals because window offsets count rows.
+
+See the [ALOHA prepare_dataset.py example](https://github.com/lakesoul-io/LakeSoul/blob/main/python/examples/embodied/aloha/prepare_dataset.py) for the complete processing logic. Its QC, annotation application and split policies are example logic, not separate public LakeSoul APIs.
+
 ## Reading training samples
 
 ### Single process: `EmbodiedDataset`
@@ -393,6 +428,9 @@ for the blob section of the cleanup guide.
 - Runnable examples:
   [`python/examples/embodied`](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples/embodied)
   (`generate_data.py`, `train.py`, plus import snippets);
+- [Reading a robot trajectory and a training sample](./21-embodied-prepared-quickstart/index.mdx)
+  — walk through an existing Prepared table: one state/action row, four camera frames, and one
+  training window;
 - Benchmark scripts:
   [`script/benchmark/embodied`](https://github.com/lakesoul-io/LakeSoul/tree/main/script/benchmark/embodied)
   — full-scan baseline vs window sampling (`run_benchmark.py`), frames vs GOP layouts with
