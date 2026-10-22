@@ -20,6 +20,7 @@
 //! of a key and resurrect an older one, so those stay with DataFusion's own
 //! `FilterExec`.
 
+use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -44,7 +45,7 @@ use lakesoul_metadata::MetaDataClient;
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
 use crate::observability::{self, RefreshIo};
-use crate::table::{IvmTable, PartitionFiles};
+use crate::table::{IvmTable, PartitionFiles, file_bucket};
 
 /// How an [`IvmTableProvider`] reads its table.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,12 +224,59 @@ impl IvmTableProvider {
         groups.map_err(|error| DataFusionError::Execution(error.to_string()))
     }
 
+    /// Split one range partition's files by their hash bucket.
+    ///
+    /// A LakeSoul metadata partition holds every bucket of that range
+    /// partition.  Reading it as one group makes the provider one DataFusion
+    /// partition and one reader task, even when the table has 16 buckets.
+    /// Bucket files contain disjoint merge keys, so splitting them preserves
+    /// merge-on-read semantics while exposing one stream per bucket.
+    fn split_bucket_groups(&self, groups: Vec<PartitionFiles>) -> Vec<PartitionFiles> {
+        if self.table.bucket_columns.is_empty() {
+            return groups;
+        }
+        let bucket_count = self
+            .table
+            .hash_bucket_num
+            .parse::<u32>()
+            .ok()
+            .filter(|count| *count > 1);
+        let mut split = Vec::with_capacity(groups.len());
+        for group in groups {
+            if group.files.len() <= 1 {
+                split.push(group);
+                continue;
+            }
+            let mut buckets: BTreeMap<Option<u32>, Vec<String>> = BTreeMap::new();
+            for file in group.files {
+                let bucket = file_bucket(&file)
+                    .filter(|bucket| bucket_count.is_none_or(|count| *bucket < count));
+                buckets.entry(bucket).or_default().push(file);
+            }
+            if buckets.len() <= 1 {
+                split.push(PartitionFiles {
+                    partition_desc: group.partition_desc,
+                    files: buckets.into_values().flatten().collect(),
+                });
+            } else {
+                for files in buckets.into_values() {
+                    split.push(PartitionFiles {
+                        partition_desc: group.partition_desc.clone(),
+                        files,
+                    });
+                }
+            }
+        }
+        split
+    }
+
     pub(crate) fn stream_plan_groups(
         &self,
         groups: Vec<PartitionFiles>,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let groups = self.split_bucket_groups(groups);
         let (reader_projection, out_schema) = self
             .reader_projection(projection)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;

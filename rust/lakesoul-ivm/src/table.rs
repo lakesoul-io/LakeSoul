@@ -43,7 +43,15 @@ type BatchSender =
 /// The largest state write (in rows) a refresh coalesces before appending.
 /// State batches above this size are split so one append stays bounded in
 /// memory; the writer still emits one file per hash bucket per append.
-pub(crate) const MAX_STATE_APPEND_ROWS: usize = 1_048_576;
+pub(crate) const MAX_STATE_APPEND_ROWS: usize = 262_144;
+
+/// The writer's target file size.  A bound here also makes the LakeSoul
+/// writer split a large batch and spill the remainder instead of buffering the
+/// whole append in memory.
+pub(crate) const MAX_WRITE_FILE_SIZE: u64 = 64 * 1024 * 1024;
+
+/// The in-memory multipart buffer used by the LakeSoul writer.
+pub(crate) const WRITE_MEMORY_BUFFER: usize = 8 * 1024 * 1024;
 
 /// The largest affected-key set a key-filtered state read resolves through the
 /// row-level pk index.  A refresh's candidate set is the change ratio times
@@ -480,7 +488,9 @@ impl IvmTable {
             .with_primary_keys(self.primary_keys.clone())
             .with_hash_partitioning_columns(self.bucket_columns.clone())
             .with_hash_bucket_num(self.hash_bucket_num.clone())
-            .with_physical_format(self.file_format);
+            .with_physical_format(self.file_format)
+            .with_max_file_size(MAX_WRITE_FILE_SIZE)
+            .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER);
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
         }
