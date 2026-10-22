@@ -545,3 +545,35 @@ contrib stream (affected groups, bounded batches)
   - state reader 的 `rows_scanned` 指标，证明 PK lookup 命中而不是全分区扫描；
   - full-day 真实/合成增量与持久化 full_ref 对比；
   - 100 轮文件数与 compaction 稳定性。
+
+### 7.5 persisted full_ref 的首轮结果
+
+测试 harness 新增一个持久化 `full_ref` 表：同一 source epoch 的 61-key
+`GROUP BY` 结果通过 LakeSoul writer 写成 Vortex，包含聚合和提交时间。
+
+4 threads、16 buckets、8GB session pool：
+
+| 项目 | 耗时 |
+|---|---:|
+| 全量聚合 `COUNT(*)`（未物化） | 9.0s |
+| 持久化 full_ref（一份 3.75M 行） | **11.8s** |
+| bootstrap（state + MV 两份输出） | **29.6s** |
+| bootstrap 聚合到第一批输出 | 8.6s |
+| bootstrap state/MV 并行写入 | 20.1s |
+
+full_ref 行数与 MV 均为 3,755,984，逐行 hash `equal=true`。
+小分区 full_ref：494,478 行，物化 0.86s，`equal=true`。
+
+因此公平比较下：
+
+- 全量物化一份结果约 11.8s；
+- bootstrap 两份输出约 29.6s，约 **2.5×**；
+- 之前 7–9s 与 bootstrap 的 5× 差异主要来自“COUNT 未物化”和“两份写入”，
+  不是 group-by 本身。
+
+后续优化重点仍是：
+
+1. 评估 state 只写一份、MV 异步生成；
+2. 复用一次排序写两种 schema；
+3. 减少 15 次 writer chunk 的建立/排序/提交开销；
+4. 检查 MV bucket 倾斜。
