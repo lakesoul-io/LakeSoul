@@ -65,10 +65,15 @@ fn with_spill_pool(
     default_size: &str,
 ) -> LakeSoulIOConfigBuilder {
     let size = std::env::var(size_env).unwrap_or_else(|_| default_size.to_string());
+    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4);
     let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
         .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
     let _ = std::fs::create_dir_all(&directory);
     builder
+        .with_thread_num(threads)
         .with_option(OPTION_KEY_POOL_SIZE, size)
         .with_option(OPTION_KEY_POOL_DIR, directory)
 }
@@ -513,7 +518,7 @@ impl IvmTable {
                 .with_max_file_size(MAX_WRITE_FILE_SIZE)
                 .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER),
             "LAKESOUL_IVM_WRITE_POOL_SIZE",
-            "512mb",
+            "1024mb",
         );
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
@@ -815,7 +820,7 @@ impl IvmTable {
                     .with_schema(schema)
                     .with_physical_format(self.file_format),
                 "LAKESOUL_IVM_READ_POOL_SIZE",
-                "512mb",
+                "2048mb",
             );
             if !range_columns.is_empty() {
                 builder = builder.with_range_partitions(range_columns.clone());
@@ -977,7 +982,7 @@ impl IvmTable {
                     .with_primary_keys(self.primary_keys.clone())
                     .with_physical_format(self.file_format),
                 "LAKESOUL_IVM_READ_POOL_SIZE",
-                "512mb",
+                "2048mb",
             );
             if !range_columns.is_empty() {
                 builder = builder.with_range_partitions(range_columns.clone());
@@ -1209,7 +1214,7 @@ impl IvmTable {
                 })
                 .with_physical_format(self.file_format),
             "LAKESOUL_IVM_READ_POOL_SIZE",
-            "512mb",
+            "2048mb",
         );
         if !range_columns.is_empty() {
             builder = builder.with_range_partitions(range_columns.clone());
@@ -1286,7 +1291,7 @@ impl IvmTable {
                 .with_primary_keys(self.primary_keys.clone())
                 .with_physical_format(self.file_format),
             "LAKESOUL_IVM_READ_POOL_SIZE",
-            "512mb",
+            "2048mb",
         );
         if !filters.is_empty() {
             builder = with_state_key_lookup(builder, self.file_format);

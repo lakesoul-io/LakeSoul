@@ -3311,10 +3311,14 @@ impl IvmRuntime {
             let mut mv_writes = 0usize;
             let mut write_elapsed = std::time::Duration::ZERO;
             let bootstrap_started = std::time::Instant::now();
+            let mut first_batch_elapsed = None;
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
                 if batch.num_rows() == 0 {
                     continue;
+                }
+                if first_batch_elapsed.is_none() {
+                    first_batch_elapsed = Some(bootstrap_started.elapsed());
                 }
                 contrib_rows += batch.num_rows();
                 let state_batch = Self::bootstrap_state_batch(
@@ -3330,39 +3334,41 @@ impl IvmRuntime {
                 mv_chunk.push(mv_batch);
                 if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
                     let write_started = std::time::Instant::now();
-                    commit_ids.extend(
-                        state
-                            .append_batches(
-                                &self.client,
-                                std::mem::take(&mut state_chunk),
-                            )
-                            .await?,
-                    );
-                    commit_ids.extend(
-                        view.mv
-                            .append_batches(&self.client, std::mem::take(&mut mv_chunk))
-                            .await?,
-                    );
+                    let state_batches = std::mem::take(&mut state_chunk);
+                    let mv_batches = std::mem::take(&mut mv_chunk);
+                    let (state_ids, mv_ids) = futures::future::try_join(
+                        state.append_batches(&self.client, state_batches),
+                        view.mv.append_batches(&self.client, mv_batches),
+                    )
+                    .await?;
+                    commit_ids.extend(state_ids);
+                    commit_ids.extend(mv_ids);
+                    write_elapsed += write_started.elapsed();
                     state_writes += 1;
                     mv_writes += 1;
-                    write_elapsed += write_started.elapsed();
                     chunk_rows = 0;
                 }
             }
             if !state_chunk.is_empty() {
                 let write_started = std::time::Instant::now();
-                commit_ids.extend(state.append_batches(&self.client, state_chunk).await?);
-                commit_ids.extend(view.mv.append_batches(&self.client, mv_chunk).await?);
+                let (state_ids, mv_ids) = futures::future::try_join(
+                    state.append_batches(&self.client, state_chunk),
+                    view.mv.append_batches(&self.client, mv_chunk),
+                )
+                .await?;
+                commit_ids.extend(state_ids);
+                commit_ids.extend(mv_ids);
+                write_elapsed += write_started.elapsed();
                 state_writes += 1;
                 mv_writes += 1;
-                write_elapsed += write_started.elapsed();
             }
             tracing::info!(
                 contrib_rows,
                 state_writes,
                 mv_writes,
-                total_elapsed = ?bootstrap_started.elapsed(),
+                first_batch_elapsed = ?first_batch_elapsed,
                 write_elapsed = ?write_elapsed,
+                total_elapsed = ?bootstrap_started.elapsed(),
                 "multi-agg bootstrap finished"
             );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
