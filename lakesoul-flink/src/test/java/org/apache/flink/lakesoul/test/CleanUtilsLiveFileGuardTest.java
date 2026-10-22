@@ -161,6 +161,65 @@ public class CleanUtilsLiveFileGuardTest {
         assertEquals("update commit metadata must be kept", 1, countCommits(updateCommit));
     }
 
+    @Test
+    public void missingLiveCommitMetadataAbortsCleanup() throws Exception {
+        // If a commit of the latest snapshot has no data_commit_info row the live set is
+        // incomplete; abort instead of deleting the old commit metadata.
+        try (PreparedStatement ps =
+                connection.prepareStatement(
+                        "delete from data_commit_info where table_id = ? and commit_id = ?")) {
+            ps.setString(1, tableId);
+            ps.setObject(2, updateCommit);
+            ps.executeUpdate();
+        }
+
+        boolean cleaned =
+                new CleanUtils()
+                        .deleteFileAndDataCommitInfo(
+                                Collections.singletonList(compactionCommit.toString()),
+                                tableId,
+                                "-5",
+                                connection,
+                                true);
+
+        assertFalse("cleanup must report incomplete", cleaned);
+        assertTrue(Files.exists(sharedFile));
+        assertTrue(Files.exists(expiredFile));
+        assertTrue(Files.exists(updateFile));
+        assertEquals("superseded commit metadata must be kept", 1, countCommits(compactionCommit));
+    }
+
+    @Test
+    public void emptyLiveFileSetAbortsCleanup() throws Exception {
+        // A commit with no add ops produces an empty live set. Abort rather than deleting
+        // the old metadata and leaving its files behind.
+        try (PreparedStatement ps =
+                connection.prepareStatement(
+                        "update data_commit_info set file_ops ="
+                                + " ARRAY[ROW(?, 'del', 1, 'id')::data_file_op]"
+                                + " where table_id = ? and commit_id = ?")) {
+            ps.setString(1, expiredFile.toUri().toString());
+            ps.setString(2, tableId);
+            ps.setObject(3, updateCommit);
+            ps.executeUpdate();
+        }
+
+        boolean cleaned =
+                new CleanUtils()
+                        .deleteFileAndDataCommitInfo(
+                                Collections.singletonList(compactionCommit.toString()),
+                                tableId,
+                                "-5",
+                                connection,
+                                true);
+
+        assertFalse("cleanup must report incomplete", cleaned);
+        assertTrue(Files.exists(sharedFile));
+        assertTrue(Files.exists(expiredFile));
+        assertTrue(Files.exists(updateFile));
+        assertEquals("superseded commit metadata must be kept", 1, countCommits(compactionCommit));
+    }
+
     private void insertCommit(UUID commitId, String commitOp, String[][] fileOps) throws Exception {
         StringBuilder array = new StringBuilder("ARRAY[");
         for (int i = 0; i < fileOps.length; i++) {
