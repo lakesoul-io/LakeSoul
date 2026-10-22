@@ -3156,8 +3156,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let context = refresh_session();
         // The bootstrap is the whole current source; read it through the
-        // provider instead of materialising every initial file here.
-        let delta = if window.before_versions.is_empty() {
+        // provider instead of materialising every initial file here.  A new
+        // view has no cursors, and `before_versions` still contains the
+        // touched partition with a `None` value, so check the values rather
+        // than the map's emptiness.
+        let bootstrap = window
+            .before_versions
+            .values()
+            .all(|version| version.is_none());
+        let delta = if bootstrap {
             None
         } else {
             Some(self.groups_table_frame(
@@ -3225,7 +3232,7 @@ impl IvmRuntime {
                 None,
             )?;
             (old, new, None)
-        } else if window.before_versions.is_empty() {
+        } else if bootstrap {
             (
                 empty_old.clone(),
                 empty_old,
@@ -3288,7 +3295,7 @@ impl IvmRuntime {
             }),
         );
         context.register_udf(group_row_udf);
-        if window.before_versions.is_empty() {
+        if bootstrap {
             use futures::StreamExt;
             let frame = context.sql(&contrib_sql).await?;
             let mut stream = frame.execute_stream().await?;
@@ -3299,11 +3306,17 @@ impl IvmRuntime {
             let mut state_chunk: Vec<RecordBatch> = Vec::new();
             let mut mv_chunk: Vec<RecordBatch> = Vec::new();
             let mut chunk_rows = 0usize;
+            let mut contrib_rows = 0usize;
+            let mut state_writes = 0usize;
+            let mut mv_writes = 0usize;
+            let mut write_elapsed = std::time::Duration::ZERO;
+            let bootstrap_started = std::time::Instant::now();
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
                 if batch.num_rows() == 0 {
                     continue;
                 }
+                contrib_rows += batch.num_rows();
                 let state_batch = Self::bootstrap_state_batch(
                     &batch,
                     &state_schema,
@@ -3316,6 +3329,7 @@ impl IvmRuntime {
                 state_chunk.push(state_batch);
                 mv_chunk.push(mv_batch);
                 if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                    let write_started = std::time::Instant::now();
                     commit_ids.extend(
                         state
                             .append_batches(
@@ -3329,13 +3343,28 @@ impl IvmRuntime {
                             .append_batches(&self.client, std::mem::take(&mut mv_chunk))
                             .await?,
                     );
+                    state_writes += 1;
+                    mv_writes += 1;
+                    write_elapsed += write_started.elapsed();
                     chunk_rows = 0;
                 }
             }
             if !state_chunk.is_empty() {
+                let write_started = std::time::Instant::now();
                 commit_ids.extend(state.append_batches(&self.client, state_chunk).await?);
                 commit_ids.extend(view.mv.append_batches(&self.client, mv_chunk).await?);
+                state_writes += 1;
+                mv_writes += 1;
+                write_elapsed += write_started.elapsed();
             }
+            tracing::info!(
+                contrib_rows,
+                state_writes,
+                mv_writes,
+                total_elapsed = ?bootstrap_started.elapsed(),
+                write_elapsed = ?write_elapsed,
+                "multi-agg bootstrap finished"
+            );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
             self.metadata
                 .mark_epoch_committed(&record, &mv_versions, &commit_ids)

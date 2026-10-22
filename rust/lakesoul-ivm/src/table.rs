@@ -26,7 +26,10 @@ use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_str,
 };
 use lakesoul_io::{
-    config::{LakeSoulIOConfig, OPTION_KEY_STABLE_SORT},
+    config::{
+        LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_POOL_DIR,
+        OPTION_KEY_POOL_SIZE, OPTION_KEY_STABLE_SORT,
+    },
     file_format::PhysicalFormat,
     reader::LakeSoulReader,
     writer::create_writer_with_io_config,
@@ -52,6 +55,23 @@ pub(crate) const MAX_WRITE_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
 /// The in-memory multipart buffer used by the LakeSoul writer.
 pub(crate) const WRITE_MEMORY_BUFFER: usize = 8 * 1024 * 1024;
+
+/// Give a LakeSoul reader/writer its own bounded memory pool and spill
+/// directory.  DataFusion's session limit does not automatically apply to the
+/// IO layer: its sort and merge operators create a separate runtime.
+fn with_spill_pool(
+    builder: LakeSoulIOConfigBuilder,
+    size_env: &str,
+    default_size: &str,
+) -> LakeSoulIOConfigBuilder {
+    let size = std::env::var(size_env).unwrap_or_else(|_| default_size.to_string());
+    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
+        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let _ = std::fs::create_dir_all(&directory);
+    builder
+        .with_option(OPTION_KEY_POOL_SIZE, size)
+        .with_option(OPTION_KEY_POOL_DIR, directory)
+}
 
 /// The largest affected-key set a key-filtered state read resolves through the
 /// row-level pk index.  A refresh's candidate set is the change ratio times
@@ -482,15 +502,19 @@ impl IvmTable {
             return Ok(Vec::new());
         }
 
-        let mut builder = LakeSoulIOConfig::builder()
-            .with_prefix(self.table_path.clone())
-            .with_schema(self.schema.clone())
-            .with_primary_keys(self.primary_keys.clone())
-            .with_hash_partitioning_columns(self.bucket_columns.clone())
-            .with_hash_bucket_num(self.hash_bucket_num.clone())
-            .with_physical_format(self.file_format)
-            .with_max_file_size(MAX_WRITE_FILE_SIZE)
-            .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER);
+        let mut builder = with_spill_pool(
+            LakeSoulIOConfig::builder()
+                .with_prefix(self.table_path.clone())
+                .with_schema(self.schema.clone())
+                .with_primary_keys(self.primary_keys.clone())
+                .with_hash_partitioning_columns(self.bucket_columns.clone())
+                .with_hash_bucket_num(self.hash_bucket_num.clone())
+                .with_physical_format(self.file_format)
+                .with_max_file_size(MAX_WRITE_FILE_SIZE)
+                .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER),
+            "LAKESOUL_IVM_WRITE_POOL_SIZE",
+            "512mb",
+        );
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
         }
@@ -785,10 +809,14 @@ impl IvmTable {
                 .cloned()
                 .collect::<Vec<_>>();
             let file_count = group.files.len() as u64;
-            let mut builder = LakeSoulIOConfig::builder()
-                .with_files(group.files)
-                .with_schema(schema)
-                .with_physical_format(self.file_format);
+            let mut builder = with_spill_pool(
+                LakeSoulIOConfig::builder()
+                    .with_files(group.files)
+                    .with_schema(schema)
+                    .with_physical_format(self.file_format),
+                "LAKESOUL_IVM_READ_POOL_SIZE",
+                "512mb",
+            );
             if !range_columns.is_empty() {
                 builder = builder.with_range_partitions(range_columns.clone());
                 if let Some(values) =
@@ -942,11 +970,15 @@ impl IvmTable {
                 .cloned()
                 .collect::<Vec<_>>();
             let group_files = group.files.len() as u64;
-            let mut builder = LakeSoulIOConfig::builder()
-                .with_files(group.files)
-                .with_schema(schema)
-                .with_primary_keys(self.primary_keys.clone())
-                .with_physical_format(self.file_format);
+            let mut builder = with_spill_pool(
+                LakeSoulIOConfig::builder()
+                    .with_files(group.files)
+                    .with_schema(schema)
+                    .with_primary_keys(self.primary_keys.clone())
+                    .with_physical_format(self.file_format),
+                "LAKESOUL_IVM_READ_POOL_SIZE",
+                "512mb",
+            );
             if !range_columns.is_empty() {
                 builder = builder.with_range_partitions(range_columns.clone());
                 if let Some(values) =
@@ -1166,15 +1198,19 @@ impl IvmTable {
             .cloned()
             .collect::<Vec<_>>();
         let file_count = group.files.len() as u64;
-        let mut builder = LakeSoulIOConfig::builder()
-            .with_files(group.files)
-            .with_schema(schema)
-            .with_primary_keys(if merge {
-                self.primary_keys.clone()
-            } else {
-                Vec::new()
-            })
-            .with_physical_format(self.file_format);
+        let mut builder = with_spill_pool(
+            LakeSoulIOConfig::builder()
+                .with_files(group.files)
+                .with_schema(schema)
+                .with_primary_keys(if merge {
+                    self.primary_keys.clone()
+                } else {
+                    Vec::new()
+                })
+                .with_physical_format(self.file_format),
+            "LAKESOUL_IVM_READ_POOL_SIZE",
+            "512mb",
+        );
         if !range_columns.is_empty() {
             builder = builder.with_range_partitions(range_columns.clone());
             if let Some(values) =
@@ -1243,11 +1279,15 @@ impl IvmTable {
             return Ok(Vec::new());
         }
         let file_count = files.len() as u64;
-        let mut builder = LakeSoulIOConfig::builder()
-            .with_files(files)
-            .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
-            .with_primary_keys(self.primary_keys.clone())
-            .with_physical_format(self.file_format);
+        let mut builder = with_spill_pool(
+            LakeSoulIOConfig::builder()
+                .with_files(files)
+                .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
+                .with_primary_keys(self.primary_keys.clone())
+                .with_physical_format(self.file_format),
+            "LAKESOUL_IVM_READ_POOL_SIZE",
+            "512mb",
+        );
         if !filters.is_empty() {
             builder = with_state_key_lookup(builder, self.file_format);
             // `with_filters` is deprecated in favour of the string/proto

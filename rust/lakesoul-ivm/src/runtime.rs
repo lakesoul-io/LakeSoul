@@ -2398,13 +2398,22 @@ fn project_group_keys_frame(
 /// count identical on both paths so a bootstrap and its first incremental
 /// windows run with the same parallelism.
 pub(crate) fn refresh_session() -> SessionContext {
-    let config = SessionConfig::new().with_target_partitions(4);
+    let target_partitions = std::env::var("LAKESOUL_IVM_TARGET_PARTITIONS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4);
+    let config = SessionConfig::new().with_target_partitions(target_partitions);
     let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4096);
+    let spill_dir = std::env::var("LAKESOUL_IVM_SPILL_DIR")
+        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let _ = std::fs::create_dir_all(&spill_dir);
     let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
         .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
+        .with_temp_file_path(&spill_dir)
+        .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
         .build()
         .expect("ivm refresh runtime env");
     SessionContext::new_with_config_rt(config, Arc::new(runtime))
