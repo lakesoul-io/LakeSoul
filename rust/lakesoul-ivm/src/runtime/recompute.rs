@@ -3144,22 +3144,32 @@ impl IvmRuntime {
             .as_any()
             .downcast_ref::<BinaryArray>()
             .ok_or_else(|| report!("{IVM_GROUP_ROW_COLUMN} is not binary"))?;
-        let mut values: std::collections::HashMap<u32, Vec<ScalarValue>> =
+        let values = (0..rows.len())
+            .map(|row| ScalarValue::Binary(Some(rows.value(row).to_vec())))
+            .collect::<Vec<_>>();
+        Self::bucket_filters_for_values(IVM_GROUP_ROW_COLUMN, &values, bucket_num)
+    }
+
+    /// Build per-bucket reader filters for primary-key values.
+    fn bucket_filters_for_values(
+        column: &str,
+        values: &[ScalarValue],
+        bucket_num: u32,
+    ) -> Result<std::collections::HashMap<u32, Vec<Expr>>> {
+        let mut buckets: std::collections::HashMap<u32, Vec<ScalarValue>> =
             (0..bucket_num).map(|bucket| (bucket, Vec::new())).collect();
-        for row in 0..rows.len() {
-            let value = ScalarValue::Binary(Some(rows.value(row).to_vec()));
-            let bucket = lakesoul_io::helpers::compute_scalar_hash(&value) % bucket_num;
-            values.entry(bucket).or_default().push(value);
+        for value in values {
+            let bucket = lakesoul_io::helpers::compute_scalar_hash(value) % bucket_num;
+            buckets.entry(bucket).or_default().push(value.clone());
         }
-        Ok(values
+        Ok(buckets
             .into_iter()
             .map(|(bucket, values)| {
                 let filter = if values.is_empty() {
                     Vec::new()
                 } else {
                     vec![
-                        col(IVM_GROUP_ROW_COLUMN)
-                            .in_list(values.into_iter().map(lit).collect(), false),
+                        col(column).in_list(values.into_iter().map(lit).collect(), false),
                     ]
                 };
                 (bucket, filter)
@@ -3186,7 +3196,7 @@ impl IvmRuntime {
         &self,
         context: &SessionContext,
         source: &IvmTable,
-        window: &SourceWindow,
+        before_groups: &[PartitionFiles],
         contrib_sql: &str,
         primary_key: &str,
         keys: &[ScalarValue],
@@ -3198,9 +3208,34 @@ impl IvmRuntime {
         }
         let chunk_started = std::time::Instant::now();
         let before_started = std::time::Instant::now();
-        let before = source
-            .read_before_window_filtered(&self.client, &window.before_versions, filters)
-            .await?;
+        let source_bucket_num = if source.bucket_columns.len() == 1
+            && source.bucket_columns[0] == primary_key
+        {
+            source
+                .hash_bucket_num
+                .parse::<u32>()
+                .ok()
+                .filter(|count| *count > 1)
+        } else {
+            None
+        };
+        let provider = self.table_provider_groups(source, before_groups.to_vec());
+        let provider = if let Some(bucket_num) = source_bucket_num {
+            provider.with_bucket_filters(Self::bucket_filters_for_values(
+                primary_key,
+                keys,
+                bucket_num,
+            )?)
+        } else {
+            provider
+        };
+        let lookup_context = refresh_session();
+        lookup_context.register_table("source_before", Arc::new(provider))?;
+        let mut before_frame = lookup_context.table("source_before").await?;
+        for filter in filters {
+            before_frame = before_frame.filter(filter)?;
+        }
+        let before = before_frame.collect().await?;
         let before_elapsed = before_started.elapsed();
         let before_rows = before.iter().map(|batch| batch.num_rows()).sum::<usize>();
         let empty = RecordBatch::new_empty(source.schema.clone());
@@ -3262,6 +3297,9 @@ impl IvmRuntime {
             ));
         }
         let primary_key = view.source.primary_keys[0].as_str();
+        let before_groups = source
+            .before_window_groups(&self.client, &window.before_versions)
+            .await?;
         let context = refresh_session();
         let encoder = Arc::new(GroupKeyRowEncoder::new(
             &view.source.schema,
@@ -3330,7 +3368,7 @@ impl IvmRuntime {
                     self.source_chunk_contributions(
                         &context,
                         source,
-                        window,
+                        &before_groups,
                         &contrib_sql,
                         primary_key,
                         &pending,
@@ -3349,7 +3387,7 @@ impl IvmRuntime {
                 self.source_chunk_contributions(
                     &context,
                     source,
-                    window,
+                    &before_groups,
                     &contrib_sql,
                     primary_key,
                     &pending,

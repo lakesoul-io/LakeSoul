@@ -727,3 +727,62 @@ refresh total: 10.4s
 “32GB 能完成校验”写成结论。生产 refresh 的内存峰值和校验/查询的内存峰值需要
 分开评估。
 
+### 7.10 source before 按 bucket 预分流、流式校验与分阶段内存
+
+source 的 before 读取也改为：
+
+- 从 `before_window_groups` 一次解析窗口前的文件组；
+- 用 source primary key 的 `compute_scalar_hash` 按 bucket 分流；
+- 通过 `IvmTableProvider::groups(...).with_bucket_filters(...)` 让每个
+  bucket partition 只拿本桶 key，并自动走 Vortex PK locator。
+
+full-day 1% profile：
+
+```text
+source bucket partitions: keys≈1.3k–12k files=4 total≈0.11–0.15s ×16
+source chunk:             0.9s
+state lookup:             2.07s
+refresh total:            3.7s
+```
+
+校验不再把 3.75M 个 md5 字符串收进 `Vec` 再排序，而是流式读取哈希结果，
+累加两个独立的 64-bit digest 和行数；full/MV digest 相等即通过。这样校验
+不需要在 driver 上保留全量哈希集合。
+
+full-day 1% 分阶段 RSS（32GB cgroup，pilot 进程自身采样；start/peak/end）：
+
+| 阶段 | start | peak | end |
+|---|---:|---:|---:|
+| initial full aggregate | 9.6GB | 20.6GB | 13.0GB |
+| bootstrap refresh | 13.1GB | 20.3GB | 13.0GB |
+| bootstrap validation | 15.8GB | 24.5GB | 16.5GB |
+| incremental refresh | 19.2GB | 19.3GB | 19.0GB |
+| incremental validation | 19.0GB | 23.2GB | 20.9GB |
+
+结论：
+
+- 流式校验后，32GB cgroup 可以完成 full-day 1% 的最终 full/MV 校验；
+- refresh 本身的峰值增量很小（约 0.1GB），但校验阶段仍有约 4GB 峰值增量；
+- process baseline 已包含 source load、bootstrap 表和 DataFusion session，不能把
+  peak 直接当成单个阶段 allocations；
+- 5% 已补测；refresh/validation 仍需继续观察，见 7.11。
+
+### 7.11 5% source bucket + 流式校验
+
+5% 增量复测（source bucket、流式校验、32GB）：
+
+```text
+source chunks: 130,233 / 129,220 / 20,413 keys
+source chunk:  2.2s / 2.5s / 2.8s
+state keys:    237,933
+state lookup:  7.05s
+refresh total: 16.52s
+validation:    full/mv rows=3,744,932, digest equal
+memory:
+  refresh:     start 23.6GB, peak 30.1GB, end 26.6GB
+  validation:  start 26.6GB, peak 31.1GB, end 27.6GB
+```
+
+5% 在 32GB cgroup 下完成了 refresh 和流式校验，但峰值已经接近上限；生产上
+不能假设 5% 变化仍能保持较大 headroom。
+
